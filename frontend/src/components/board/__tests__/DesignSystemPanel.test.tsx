@@ -18,16 +18,36 @@ const apiMock = vi.hoisted(() => ({
   setDefaultDesignSystem: vi.fn(),
   createDefaultBoardConfigVersion: vi.fn(),
 }));
+const permissionState = vi.hoisted(() => ({
+  isLoading: false,
+  error: null as Error | null,
+  ownerReviewRequired: false,
+  allowed: new Set<string>(),
+}));
+const importExportMock = vi.hoisted(() => ({
+  exportDesignSystems: vi.fn(),
+  exportDesignSystem: vi.fn(),
+  importDesignSystems: vi.fn(),
+}));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => apiMock }));
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    preset: 'Custom',
+    isLoading: permissionState.isLoading,
+    error: permissionState.error,
+    ownerReviewRequired: permissionState.ownerReviewRequired,
+    has: (flag: string) => permissionState.allowed.has(flag),
+  }),
+}));
 // The Export/Import buttons pull the import-export service through the API
 // context; stub the hook so this panel test does not need an ApiProvider.
 vi.mock('@/services/import-export-api', () => ({
   useImportExportApi: () => ({
     exportGuidelines: vi.fn(),
     importGuidelines: vi.fn(),
-    exportDesignSystems: vi.fn(),
-    exportDesignSystem: vi.fn(),
-    importDesignSystems: vi.fn(),
+    exportDesignSystems: importExportMock.exportDesignSystems,
+    exportDesignSystem: importExportMock.exportDesignSystem,
+    importDesignSystems: importExportMock.importDesignSystems,
     exportPresets: vi.fn(),
     importPresets: vi.fn(),
     exportBoardConfig: vi.fn(),
@@ -47,9 +67,37 @@ function ds(over: Record<string, unknown> = {}) {
   };
 }
 
+const pinnedGuidelineDefault = {
+  guideline_id: 'policy-guideline-1',
+  priority: 2,
+  revision_id: 'policy-guideline-1-revision-3',
+  revision_number: 3,
+  semantic_version: '1.2.0',
+  revision_digest: 'a'.repeat(64),
+};
+
+const designSystemPermissions = [
+  'design_system.entity.read',
+  'design_system.entity.create',
+  'design_system.entity.edit',
+  'design_system.entity.delete',
+  'design_system.import',
+  'design_system.export',
+  'design_system.board_link.read',
+  'design_system.board_link.create',
+  'design_system.board_link.delete',
+  'default_board_config.read',
+  'default_board_config.create',
+  'default_board_config.set_design_system',
+];
+
 describe('DesignSystemPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionState.isLoading = false;
+    permissionState.error = null;
+    permissionState.ownerReviewRequired = false;
+    permissionState.allowed = new Set(designSystemPermissions);
     apiMock.listDesignSystems.mockImplementation((scope: string) =>
       scope === 'global'
         ? Promise.resolve([ds({ id: 'g1', title: 'DS1', payload: { content: 'Use compact controls.' } }), ds({ id: 'g2', title: 'DS2' })])
@@ -67,7 +115,7 @@ describe('DesignSystemPanel', () => {
         is_active: true,
         scope: 'global',
         settings_payload: { design_system_gate_mode: 'blocking' },
-        guideline_default_refs: [],
+        guideline_default_refs: [pinnedGuidelineDefault],
         design_system_default_ref: { design_system_id: 'g1', version: 1, gate_mode: 'blocking' },
         created_by: 'u',
         created_at: null,
@@ -119,6 +167,57 @@ describe('DesignSystemPanel', () => {
     fireEvent.click(screen.getByTestId('dsp-tab-board'));
     await screen.findByTestId('dsp-inline-i1');
     expect(screen.getByTestId('dsp-inline-i1')).toBeInTheDocument();
+  });
+
+  it('keeps catalog, board-link, and default-config reads independent and blocks denied actions', async () => {
+    permissionState.allowed = new Set(['design_system.entity.read']);
+
+    render(<DesignSystemPanel boardId="b1" onClose={() => {}} />);
+
+    expect(await screen.findByTestId('dsp-global-g1')).toBeInTheDocument();
+    expect(apiMock.listDesignSystems).toHaveBeenCalledTimes(2);
+    expect(apiMock.getBoardDesignSystem).not.toHaveBeenCalled();
+    expect(apiMock.getActiveDefaultBoardConfig).not.toHaveBeenCalled();
+
+    expect(screen.getByRole('button', { name: /New design system/i })).toBeDisabled();
+    expect(screen.getByTestId('design_systems-export')).toBeDisabled();
+    expect(screen.getByTestId('design_systems-import')).toBeDisabled();
+    expect(screen.getByTestId('dsp-set-default-g1')).toBeDisabled();
+    expect(screen.getByTestId('dsp-link-g1')).toBeDisabled();
+    expect(screen.getByTestId('dsp-edit-g1')).toBeDisabled();
+    expect(screen.getByTestId('dsp-delete-g1')).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId('dsp-set-default-g1'));
+    fireEvent.click(screen.getByTestId('dsp-link-g1'));
+    fireEvent.click(screen.getByTestId('dsp-edit-g1'));
+    fireEvent.click(screen.getByTestId('dsp-delete-g1'));
+    expect(apiMock.createDefaultBoardConfigVersion).not.toHaveBeenCalled();
+    expect(apiMock.setDefaultDesignSystem).not.toHaveBeenCalled();
+    expect(apiMock.linkBoardDesignSystem).not.toHaveBeenCalled();
+    expect(apiMock.getDesignSystem).not.toHaveBeenCalled();
+    expect(apiMock.deleteDesignSystem).not.toHaveBeenCalled();
+  });
+
+  it('sets an existing default with set_design_system alone but requires create to clear it', async () => {
+    permissionState.allowed = new Set([
+      'design_system.entity.read',
+      'default_board_config.read',
+      'default_board_config.set_design_system',
+    ]);
+
+    render(<DesignSystemPanel boardId="b1" onClose={() => {}} />);
+
+    expect(await screen.findByTestId('dsp-set-default-g2')).toBeEnabled();
+    expect(screen.getByTestId('dsp-set-default-g1')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('dsp-set-default-g1'));
+    expect(apiMock.createDefaultBoardConfigVersion).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('dsp-set-default-g2'));
+    await waitFor(() => expect(apiMock.setDefaultDesignSystem).toHaveBeenCalledWith(
+      'tpl-1',
+      expect.objectContaining({ design_system_id: 'g2' }),
+    ));
+    expect(apiMock.createDefaultBoardConfigVersion).not.toHaveBeenCalled();
   });
 
   it('creates a global Design System with assistant context content', async () => {
@@ -318,7 +417,11 @@ describe('DesignSystemPanel', () => {
 
     await waitFor(() => expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalled());
     expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledWith(
-      expect.objectContaining({ design_system_default_ref: null, activate: true }),
+      expect.objectContaining({
+        guideline_default_refs: [pinnedGuidelineDefault],
+        design_system_default_ref: null,
+        activate: true,
+      }),
     );
     // Unsetting must NOT go through the set-default endpoint.
     expect(apiMock.setDefaultDesignSystem).not.toHaveBeenCalled();

@@ -203,10 +203,15 @@ def _consume_bootstrap_key_handoff(source: str | Path) -> str:
     try:
         try:
             claimed_metadata = os.lstat(claimed)
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, PermissionError) as exc:
             # Windows may report a successful racing rename to more than one
-            # caller while only one claim remains addressable. Treat a vanished
-            # claim as the losing consumer; it must never fall back to the DB.
+            # caller while only one claim remains addressable. The vanished
+            # claim surfaces as FileNotFoundError, or — while the winner's
+            # unlink leaves it delete-pending — as PermissionError. Either
+            # way this is the losing consumer; it must never fall back to
+            # the DB. A genuine POSIX permission problem stays fatal.
+            if isinstance(exc, PermissionError) and os.name != "nt":
+                raise
             raise RuntimeError(
                 "bootstrap credential handoff is missing or was already consumed"
             ) from exc
@@ -218,7 +223,19 @@ def _consume_bootstrap_key_handoff(source: str | Path) -> str:
             )
 
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(claimed, flags)
+        try:
+            descriptor = os.open(claimed, flags)
+        except (FileNotFoundError, PermissionError) as exc:
+            # Same Windows racing-rename anomaly handled at the lstat above:
+            # the losing consumer's claim can also vanish (FileNotFoundError)
+            # or turn delete-pending (PermissionError) between lstat and
+            # open. It must never fall back to the DB. A genuine POSIX
+            # permission problem stays fatal.
+            if isinstance(exc, PermissionError) and os.name != "nt":
+                raise
+            raise RuntimeError(
+                "bootstrap credential handoff is missing or was already consumed"
+            ) from exc
         opened_metadata = os.fstat(descriptor)
         if (
             opened_metadata.st_dev != claimed_metadata.st_dev
@@ -349,6 +366,25 @@ def _configure_community_relational_runtime(settings, *, echo: bool = False) -> 
     )
 
     configure_community_database(settings.database_url, echo=echo)
+    from okto_pulse.community.adapters.relational_effects import (
+        register_community_relational_effects,
+    )
+    from okto_pulse.community.adapters.requirement_lint_writer import (
+        CommunityRequirementLintWriterHook,
+    )
+    from okto_pulse.core.ports.requirement_lint import (
+        register_requirement_lint_writer_hook,
+    )
+
+    # CLI commands run outside the FastAPI composition root.  Register the
+    # same relational ports required by seeds, health reads and governed
+    # writes so `init` and offline maintenance fail closed only for genuine
+    # missing infrastructure, not because the CLI omitted edition wiring.
+    register_community_relational_effects(
+        settings=settings,
+        api_base_url=f"http://127.0.0.1:{settings.port}",
+    )
+    register_requirement_lint_writer_hook(CommunityRequirementLintWriterHook())
 
 
 def _fail_fast_if_server_running(operation: str) -> None:
@@ -445,17 +481,11 @@ def _bootstrap_global_discovery_graph() -> str:
             if obs_state == GraphRuntimeObservationState.CONFIRMED_ABSENT:
                 runtime.bootstrap()
                 outcome = "global_discovery_materialized"
-            elif (
-                obs_state
-                == GraphRuntimeObservationState.PRESENT_READABLE_CANDIDATE
-            ):
+            elif obs_state == GraphRuntimeObservationState.PRESENT_READABLE_CANDIDATE:
                 # Typed success no-op: never re-bootstrap or migrate an existing
                 # readable Global Discovery graph. Zero physical mutation.
                 outcome = "global_discovery_already_present"
-            elif (
-                obs_state
-                == GraphRuntimeObservationState.PROVIDER_UNAVAILABLE
-            ):
+            elif obs_state == GraphRuntimeObservationState.PROVIDER_UNAVAILABLE:
                 reason = (
                     f" reason={observation.reason_code}"
                     if observation.reason_code
@@ -931,6 +961,24 @@ def cmd_serve(args):
     api_port = args.api_port
     mcp_port = args.mcp_port
 
+    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.community.data_home import (
+        UninitializedDefaultDataHomeError,
+        assert_serve_data_home_ready,
+        data_home_banner_lines,
+    )
+    from okto_pulse.community.serve_lock import (
+        ServeAlreadyRunningError,
+        acquire_serve_lock,
+    )
+
+    settings = CommunitySettings()
+    try:
+        assert_serve_data_home_ready(settings)
+    except UninitializedDefaultDataHomeError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(2)
+
     if _is_port_in_use(api_port):
         print(
             f"Warning: Port {api_port} is already in use. API server may fail to start."
@@ -941,24 +989,19 @@ def cmd_serve(args):
         )
 
     # Ports go via env so create_community_app + the MCP runner read them.
-    # MUST be set BEFORE importing okto_pulse.community.main — that module
-    # evaluates `app = create_community_app()` at import time, which reads
-    # the env vars to inject /config.js with the correct API_URL/MCP_URL.
+    # MUST be set BEFORE _serve_dual calls get_module_app() — the lazy
+    # composition build reads the env vars to inject /config.js with the
+    # correct API_URL/MCP_URL.
     os.environ["OKTO_PULSE_PORT"] = str(api_port)
     os.environ["OKTO_PULSE_MCP_PORT"] = str(mcp_port)
-
-    from okto_pulse.community.config import CommunitySettings
-    from okto_pulse.community.serve_lock import (
-        ServeAlreadyRunningError,
-        acquire_serve_lock,
-    )
-
-    settings = CommunitySettings()
     frontend_dir = Path(__file__).resolve().parent / "frontend_dist"
     has_frontend = frontend_dir.exists() and (frontend_dir / "index.html").exists()
 
     try:
         with acquire_serve_lock(settings):
+            for line in data_home_banner_lines(settings):
+                print(f"  {line}")
+
             # Terms-of-Use pre-acceptance via CLI flag or env var.
             if getattr(args, "accept_terms", False):
                 os.environ["OKTO_PULSE_TERMS_ACCEPTED"] = "1"
@@ -992,7 +1035,9 @@ def cmd_serve(args):
             # via asyncio.gather. uvicorn signal capture is DISABLED for both; main.py handles SIGINT (asyncio.Runner) and installs SIGTERM/SIGBREAK handlers for the ordered shutdown (KGD-01).
             from okto_pulse.community.main import run
 
-            run()
+            exit_code = run()
+            if exit_code:
+                sys.exit(exit_code)
     except ServeAlreadyRunningError as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(2)
@@ -1001,6 +1046,7 @@ def cmd_serve(args):
 def cmd_status(args):
     """Show status of Okto Pulse Community."""
     from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.community.serve_lock import inspect_serve_lock_identity
 
     api_port = args.api_port
     mcp_port = args.mcp_port
@@ -1011,6 +1057,7 @@ def cmd_status(args):
 
     print("Okto Pulse Community Status")
     print(f"  Data dir: {data_path}")
+    print(f"  Source:   {settings.data_dir_origin}")
     print(f"  Database: {db_path}")
 
     if db_path.exists():
@@ -1038,6 +1085,19 @@ def cmd_status(args):
 
     api_up = _is_port_in_use(api_port)
     mcp_up = _is_port_in_use(mcp_port)
+    identity = inspect_serve_lock_identity(settings)
+    identity_state = identity["state"]
+    if identity_state == "confirmed":
+        identity_label = f"confirmed (instance {identity['instance_id']})"
+    elif identity_state == "unreadable":
+        identity_label = "unreadable (serve lock cannot be verified)"
+    elif identity_state == "identity_mismatch":
+        identity_label = f"identity mismatch ({identity['reason']})"
+    elif api_up or mcp_up:
+        identity_label = f"unknown ({identity['reason']})"
+    else:
+        identity_label = f"stopped ({identity['reason']})"
+    print(f"  Runtime identity: {identity_label}")
     print(f"\n  API server ({api_port}):  {'running' if api_up else 'stopped'}")
     print(f"  MCP server ({mcp_port}):  {'running' if mcp_up else 'stopped'}")
 
@@ -1539,9 +1599,11 @@ async def _apply_backfill(board_id: str, emit_json: bool, settings) -> None:
         if emit_json:
             output = {
                 "board_id": board_id,
-                "status": "already_in_progress"
-                if result.get("status") == "already_in_progress"
-                else "completed",
+                "status": (
+                    "already_in_progress"
+                    if result.get("status") == "already_in_progress"
+                    else "completed"
+                ),
                 "total_queued": total_queued,
                 "total_processed": total_processed,
                 "failed_count": failed_count,
@@ -1620,9 +1682,11 @@ def _card_to_dict(c):
         "origin_task_id": _field(c, "origin_task_id"),
         "sprint_id": _field(c, "sprint_id"),
         "spec_id": _field(c, "spec_id"),
-        "priority": str(p.value)
-        if hasattr(p, "value") and p is not None
-        else (str(p) if p is not None else None),
+        "priority": (
+            str(p.value)
+            if hasattr(p, "value") and p is not None
+            else (str(p) if p is not None else None)
+        ),
     }
 
 

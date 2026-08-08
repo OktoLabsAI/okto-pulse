@@ -14,6 +14,7 @@ from okto_pulse.community.adapters.resources import (
 )
 from okto_pulse.core.mcp import server
 from okto_pulse.core.mcp.manifest import tool_inventory_sha256
+from okto_pulse.core.mcp.ska_tool_manifest import build_ska_tool_manifest
 
 
 @pytest.mark.asyncio
@@ -32,20 +33,29 @@ async def test_live_catalog_initialize_tools_list_and_manifest_agree(
     transaction.commit()
     async with Client(host) as client:
         listed = await client.list_tools()
+        listed_resources = await client.list_resources()
         manifest_resource = await client.read_resource("okto-pulse://server-manifest")
         initialized = client.initialize_result
 
     manifest = json.loads(manifest_resource[0].text)
     names = sorted(tool.name for tool in listed)
     aliases = manifest["tool_inventory"]["aliases"]
+    frozen_ska_tools = {
+        entry["name"] for entry in build_ska_tool_manifest()["tools"]
+    }
 
-    assert initialized.serverInfo.version == "0.3.0"
+    assert initialized.serverInfo.version == "0.3.1"
     assert version("okto-pulse-core") == initialized.serverInfo.version
     assert version("okto-pulse") == initialized.serverInfo.version
-    assert len(names) == manifest["tool_inventory"]["count"] == 281
+    assert len(names) == manifest["tool_inventory"]["count"] == 312
+    assert len(names) - len(aliases) == 304
+    assert len(aliases) == 8
+    # SK-B adds the canonical policy-compliance guidance resource.
+    assert len(listed_resources) == 53
     assert manifest["tool_inventory"]["sha256"] == tool_inventory_sha256(
         {"tools": names, "aliases": aliases}
     )
+    assert frozen_ska_tools <= set(names)
     assert "okto_pulse_ask" in names
     assert "okto_pulse_remove_spec_entity" in names
     assert aliases["okto_pulse_ask_question"] == "okto_pulse_ask"

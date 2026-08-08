@@ -16,6 +16,9 @@ from okto_pulse.community.api.knowledge_propagation import (
     knowledge_propagation_error_response,
     rollback_and_record_knowledge_error,
 )
+from okto_pulse.community.api.permission_errors import (
+    permission_denied_http_error,
+)
 from okto_pulse.core.application.knowledge_propagation_projection import (
     project_knowledge_mutation_response,
     project_refresh_response,
@@ -60,6 +63,7 @@ from okto_pulse.core.application.use_cases import (
     ListTaskValidationsUseCase,
     MoveCardCommand,
     MoveCardUseCase,
+    PermissionDeniedError,
     RemoveCardDependencyCommand,
     RemoveCardDependencyUseCase,
     SubmitTaskValidationCommand,
@@ -78,6 +82,9 @@ from okto_pulse.core.application.use_cases.knowledge_propagation import (
     ReplaceCardKnowledgeAssignmentsUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
+from okto_pulse.core.domain.guideline_policy_transition import (
+    PolicyTransitionRejected,
+)
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.models import (
@@ -232,6 +239,8 @@ async def update_card(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
         )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     except (
         KnowledgePropagationPortError,
         KnowledgePropagationServiceError,
@@ -270,6 +279,8 @@ async def move_card(
             status_code=status.HTTP_409_CONFLICT,
             detail=_resource_gate_detail(e),
         )
+    except PolicyTransitionRejected as e:
+        raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except EntityNotFoundError:
@@ -358,6 +369,8 @@ async def add_dependency(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
         )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     return {
         "id": result.dependency_id,
         "card_id": card_id,
@@ -385,6 +398,8 @@ async def remove_dependency(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Dependency not found"
         )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
 
 
 @router.get("/{card_id}/activity", response_model=list[ActivityLogResponse])
@@ -506,6 +521,8 @@ async def delete_card(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
         )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
 
 
 # ---- Task Validation Endpoints ----
@@ -534,6 +551,8 @@ async def submit_task_validation(
             status_code=status.HTTP_409_CONFLICT,
             detail=_resource_gate_detail(e),
         )
+    except PolicyTransitionRejected as e:
+        raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)

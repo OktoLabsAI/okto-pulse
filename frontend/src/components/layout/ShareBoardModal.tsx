@@ -8,6 +8,7 @@ import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import type { BoardShare } from '@/types';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { usePermissions } from '@/hooks/usePermissions';
 
 interface ShareBoardModalProps {
   isOpen: boolean;
@@ -18,6 +19,11 @@ interface ShareBoardModalProps {
 
 export function ShareBoardModal({ isOpen, onClose, boardId, boardName }: ShareBoardModalProps) {
   const api = useDashboardApi();
+  const permissions = usePermissions(boardId);
+  const canReadShares = permissions.has('board.share.read');
+  const canCreateShare = permissions.has('board.share.create');
+  const canEditShare = permissions.has('board.share.edit');
+  const canRevokeShare = permissions.has('board.share.revoke');
   const [shares, setShares] = useState<BoardShare[]>([]);
   const [userId, setUserId] = useState('');
   const [permission, setPermission] = useState<'viewer' | 'editor' | 'admin'>('viewer');
@@ -26,12 +32,15 @@ export function ShareBoardModal({ isOpen, onClose, boardId, boardName }: ShareBo
   useEscapeToClose(onClose, { enabled: isOpen });
 
   useEffect(() => {
-    if (isOpen && boardId) {
-      loadShares();
+    if (isOpen && boardId && canReadShares) {
+      void loadShares();
+    } else if (!canReadShares) {
+      setShares([]);
     }
-  }, [isOpen, boardId]);
+  }, [isOpen, boardId, canReadShares]);
 
   const loadShares = async () => {
+    if (!canReadShares) return;
     try {
       const data = await api.listBoardShares(boardId);
       setShares(data);
@@ -42,6 +51,7 @@ export function ShareBoardModal({ isOpen, onClose, boardId, boardName }: ShareBo
 
   const handleShare = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canCreateShare) return;
     if (!userId.trim()) {
       toast.error('User ID is required');
       return;
@@ -61,6 +71,7 @@ export function ShareBoardModal({ isOpen, onClose, boardId, boardName }: ShareBo
   };
 
   const handleUpdatePermission = async (shareId: string, newPermission: 'viewer' | 'editor' | 'admin') => {
+    if (!canEditShare) return;
     try {
       await api.updateBoardShare(boardId, shareId, { permission: newPermission });
       toast.success('Permission updated');
@@ -71,6 +82,7 @@ export function ShareBoardModal({ isOpen, onClose, boardId, boardName }: ShareBo
   };
 
   const handleRevoke = async (shareId: string) => {
+    if (!canRevokeShare) return;
     if (!confirm('Revoke access for this user?')) return;
     try {
       await api.revokeBoardShare(boardId, shareId);
@@ -105,11 +117,13 @@ export function ShareBoardModal({ isOpen, onClose, boardId, boardName }: ShareBo
               value={userId}
               onChange={(e) => setUserId(e.target.value)}
               placeholder="User ID"
+              disabled={!canCreateShare}
               className="flex-1 px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none"
             />
             <select
               value={permission}
               onChange={(e) => setPermission(e.target.value as 'viewer' | 'editor' | 'admin')}
+              disabled={!canCreateShare}
               className="px-2 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
             >
               <option value="viewer">Viewer</option>
@@ -118,7 +132,7 @@ export function ShareBoardModal({ isOpen, onClose, boardId, boardName }: ShareBo
             </select>
             <button
               type="submit"
-              disabled={isLoading}
+              disabled={isLoading || !canCreateShare}
               className="px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1 text-sm"
             >
               <UserPlus size={14} />
@@ -128,7 +142,11 @@ export function ShareBoardModal({ isOpen, onClose, boardId, boardName }: ShareBo
 
         {/* Share list */}
         <div className="flex-1 overflow-y-auto p-4">
-          {shares.length === 0 ? (
+          {!canReadShares ? (
+            <p className="text-center text-gray-400 dark:text-gray-500 text-sm py-4">
+              You do not have permission to view board shares
+            </p>
+          ) : shares.length === 0 ? (
             <p className="text-center text-gray-400 dark:text-gray-500 text-sm py-4">
               Not shared with anyone yet
             </p>
@@ -151,6 +169,7 @@ export function ShareBoardModal({ isOpen, onClose, boardId, boardName }: ShareBo
                     <select
                       value={share.permission}
                       onChange={(e) => handleUpdatePermission(share.id, e.target.value as 'viewer' | 'editor' | 'admin')}
+                      disabled={!canEditShare}
                       className="text-xs px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
                     >
                       <option value="viewer">Viewer</option>
@@ -159,6 +178,7 @@ export function ShareBoardModal({ isOpen, onClose, boardId, boardName }: ShareBo
                     </select>
                     <button
                       onClick={() => handleRevoke(share.id)}
+                      disabled={!canRevokeShare}
                       className="p-1 text-red-400 hover:text-red-600"
                       title="Revoke access"
                     >

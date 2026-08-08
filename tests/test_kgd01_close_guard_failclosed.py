@@ -56,6 +56,7 @@ from okto_pulse.community.adapters.graph_memory_pressure import (
 from okto_pulse.core.kg.interfaces.graph_errors import GraphLockContention
 from okto_pulse.community.config import CommunitySettings
 from okto_pulse.core.infra.config import configure_settings, get_settings
+from repo_layout import resolve_core_repo
 
 KG_LOGGER = "okto_pulse.kg.schema"
 
@@ -732,8 +733,7 @@ def test_s10_serve_lock_takeover_requires_dead_pid(tmp_path: Path, dead_pid: int
 
 
 _CORE_TICK_SCRIPT = (
-    Path(__file__).resolve().parents[2]
-    / "okto_labs_pulse_core"
+    resolve_core_repo(Path(__file__).resolve().parents[1])
     / "scripts"
     / "run_kg_tick_once.py"
 )

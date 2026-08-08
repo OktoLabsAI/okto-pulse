@@ -15,14 +15,23 @@ import { useMemo, useState } from 'react';
 import { X, Check, AlertCircle, Shield } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
-import type { BoardSettings, SpecValidationSubmitPayload } from '@/types';
+import type {
+  BoardSettings,
+  ChecklistSpecState,
+  SpecValidationSubmitPayload,
+} from '@/types';
 import { ValidationErrorDisplay } from './ValidationErrorDisplay';
+import { SpecChecklistPanel } from './SpecChecklistPanel';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface SubmitSpecValidationModalProps {
   specId: string;
   specTitle: string;
+  boardId: string;
+  specVersion: number;
   settings: BoardSettings;
+  canReadChecklist: boolean;
+  canExecuteChecklist: boolean;
   onClose: () => void;
   onSubmitted: (result: { outcome: 'success' | 'failed'; spec_status?: string | null }) => void;
 }
@@ -33,7 +42,11 @@ const MIN_GENERAL_JUSTIFICATION = 20;
 export function SubmitSpecValidationModal({
   specId,
   specTitle,
+  boardId,
+  specVersion,
   settings,
+  canReadChecklist,
+  canExecuteChecklist,
   onClose,
   onSubmitted,
 }: SubmitSpecValidationModalProps) {
@@ -48,6 +61,8 @@ export function SubmitSpecValidationModal({
   const [recommendation, setRecommendation] = useState<'approve' | 'reject' | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
+  const [checklistState, setChecklistState] =
+    useState<ChecklistSpecState | null>(null);
 
   useEscapeToClose(onClose, { canClose: !submitting, priority: 10 });
 
@@ -74,7 +89,17 @@ export function SubmitSpecValidationModal({
     ambiguityJustification.trim().length >= MIN_JUSTIFICATION_PER_DIM &&
     generalJustification.trim().length >= MIN_GENERAL_JUSTIFICATION;
 
-  const canSubmit = justificationsValid && recommendation !== null && !submitting;
+  const checklistReady =
+    checklistState !== null
+    && (
+      checklistState.binding.mode !== 'blocking'
+      || checklistState.gate.allowed
+    );
+  const canSubmit =
+    justificationsValid
+    && recommendation !== null
+    && checklistReady
+    && !submitting;
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
@@ -124,6 +149,15 @@ export function SubmitSpecValidationModal({
         </div>
 
         <div className="px-6 py-5 space-y-5">
+          <SpecChecklistPanel
+            boardId={boardId}
+            specId={specId}
+            expectedSpecVersion={specVersion}
+            canRead={canReadChecklist}
+            canExecute={canExecuteChecklist}
+            onStateChange={setChecklistState}
+          />
+
           <DimensionSlider
             label="Completeness"
             value={completeness}
@@ -235,6 +269,11 @@ export function SubmitSpecValidationModal({
 
           {submissionError && (
             <ValidationErrorDisplay error={submissionError} />
+          )}
+          {!checklistReady && (
+            <div className="rounded border border-amber-200 bg-amber-50 p-2 font-mono text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+              {checklistState?.gate.reason ?? 'checklist_state_unavailable'}
+            </div>
           )}
         </div>
 

@@ -18,6 +18,7 @@ import math
 import os
 import re
 import signal
+import sys
 import time
 from pathlib import Path
 from typing import AsyncGenerator, Callable
@@ -51,6 +52,9 @@ from okto_pulse.community.adapters.scheduler import SingletonSchedulerControl
 from okto_pulse.community.adapters.workers import build_community_worker_registry
 from okto_pulse.community.auth import LocalAuthProvider
 from okto_pulse.community.config import CommunitySettings
+from okto_pulse.community.local_secrets import (
+    provision_guideline_policy_cursor_signing_key,
+)
 from okto_pulse.community.api import metrics_router
 from okto_pulse.community.runtime import (
     AccessLogQueryRedactionMiddleware,
@@ -75,6 +79,39 @@ _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 15.0
 _GRAPH_CLOSE_SHUTDOWN_TIMEOUT_S = 10.0
 _RECOVERY_NATIVE_DRAIN_TIMEOUT_S = 5.0
 _DEFAULT_METRICS_BEACON_INTERVAL_SECONDS = 3600.0
+
+
+def _log_native_runtime_budget() -> None:
+    """Publish one structured post-composition native runtime budget event."""
+
+    from okto_pulse.community.adapters.kg_runtime import (
+        build_native_runtime_budget_snapshot,
+    )
+
+    snapshot = build_native_runtime_budget_snapshot()
+    requested = dict(snapshot.requested)
+    normalized = dict(snapshot.normalized)
+    effective = dict(snapshot.effective)
+    sources = dict(snapshot.sources)
+    process_envelope = dict(snapshot.process_envelope)
+    _STARTUP_LOGGER.info(
+        "kg.native_runtime_budget effective=%s process_envelope=%s",
+        effective,
+        process_envelope,
+        extra={
+            "event": "kg.native_runtime_budget",
+            "source": snapshot.source,
+            "status": snapshot.status,
+            "requested": requested,
+            "normalized": normalized,
+            "effective": effective,
+            "sources": sources,
+            "process_envelope": process_envelope,
+            "is_direct_memory_telemetry": False,
+        },
+    )
+
+
 _DEFAULT_METRICS_BEACON_STARTUP_DELAY_SECONDS = 60.0
 _METRICS_LOG_LABEL = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,79}$")
 
@@ -456,7 +493,7 @@ FRONTEND_DIR = Path(__file__).parent / "frontend_dist"
 
 
 def _ensure_data_dir(settings: CommunitySettings) -> None:
-    """Create data directory structure if it doesn't exist."""
+    """Create local state and provision installation-owned secrets."""
     data_path = Path(settings.data_dir).expanduser().resolve()
     kg_base = Path(settings.kg_base_dir).expanduser().resolve()
     metrics_path = Path(settings.metrics_dir).expanduser().resolve()
@@ -477,6 +514,7 @@ def _ensure_data_dir(settings: CommunitySettings) -> None:
         os.chmod(str(data_path), 0o700)
     except (OSError, NotImplementedError):
         pass
+    provision_guideline_policy_cursor_signing_key(settings)
 
 
 # The former _configure_sqlite_pragmas helper (a partial WAL + foreign_keys
@@ -867,6 +905,7 @@ def create_community_app():
         )
 
         await apply_persisted_settings_to_core_settings()
+        _log_native_runtime_budget()
 
         from okto_pulse.community.adapters.kg_events import (
             register_community_kg_events_reader,
@@ -1079,6 +1118,14 @@ def create_community_app():
     )
 
     register_relational_application_adapter(CommunityRelationalApplicationAdapter())
+    from okto_pulse.community.adapters.requirement_lint_writer import (
+        CommunityRequirementLintWriterHook,
+    )
+    from okto_pulse.core.ports.requirement_lint import (
+        register_requirement_lint_writer_hook,
+    )
+
+    register_requirement_lint_writer_hook(CommunityRequirementLintWriterHook())
     from okto_pulse.community.adapters.relational_effects import (
         register_community_relational_effects,
     )
@@ -1111,6 +1158,16 @@ def create_community_app():
     )
 
     _rc_session_factory = get_session_factory()
+    from okto_pulse.community.adapters.sqlalchemy_quality_assessment import (
+        CommunitySqlAlchemyQualityAssessmentPreflightReader,
+    )
+    from okto_pulse.core.ports.quality_assessment import (
+        register_quality_assessment_preflight_reader,
+    )
+
+    register_quality_assessment_preflight_reader(
+        CommunitySqlAlchemyQualityAssessmentPreflightReader(_rc_session_factory)
+    )
 
     def _cancel_safe_rc_scope():
         return database_runtime.cancel_safe_session_scope(
@@ -1242,10 +1299,8 @@ def create_community_app():
             register_and_freeze_community_resource_catalog,
         )
 
-        mcp_cold_start_transaction = (
-            register_and_freeze_community_resource_catalog(
-                runtime_composition.runtime_values
-            )
+        mcp_cold_start_transaction = register_and_freeze_community_resource_catalog(
+            runtime_composition.runtime_values
         )
 
     try:
@@ -1299,9 +1354,39 @@ def _build_module_app():
         raise
 
 
-# Module-level app created on import — uvicorn needs "module:app" reference.
-# The print was moved to cmd_serve in cli.py to avoid showing wrong port.
-app = _build_module_app()
+# String annotations: tests monkeypatch AccessLogQueryRedactionMiddleware with
+# a plain function and re-import this module; a runtime-evaluated union
+# (`X | None`) would then raise TypeError at import.
+_MODULE_APP: "AccessLogQueryRedactionMiddleware | None" = None
+
+
+def get_module_app() -> "AccessLogQueryRedactionMiddleware":
+    """Build (ONCE) and return the module ASGI boundary.
+
+    Memoized because ``create_community_app()`` is NOT idempotent: it registers
+    process runtime values (configure_community_database,
+    register_relational_application_adapter, the KG/scheduler seams) and
+    freezes the MCP catalog. Two calls would mean two engines and a second
+    freeze attempt.
+
+    Lazy (instead of the old module-level ``app = _build_module_app()``)
+    because importing ``okto_pulse.community.main`` used to run the whole
+    composition root at pytest collection time — creating an AsyncEngine with
+    no running loop and publishing the relational adapter into a ContextVar
+    binding that later tests replace. See the comment in
+    tests/test_af09_mcp_trace_sink_adapter.py.
+    """
+
+    global _MODULE_APP
+    if _MODULE_APP is None:
+        _MODULE_APP = _build_module_app()
+    return _MODULE_APP
+
+
+def __getattr__(name: str):  # PEP 562 — covers `from ... import app` and `mod.app`
+    if name == "app":
+        return get_module_app()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 async def _wait_for_server_started(
@@ -1501,8 +1586,11 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
     lifespan, and the request-scoped MCP credential provider — so the MCP sub-app
     sees a fully-initialised runtime.
     """
-    composition = app.state.runtime_composition
-    transaction = app.state.mcp_cold_start_transaction
+    # Build here, already inside the server loop (PEP 562 lazy module app);
+    # _build_module_app/create_community_app roll back on BaseException.
+    module_app = get_module_app()
+    composition = module_app.state.runtime_composition
+    transaction = module_app.state.mcp_cold_start_transaction
 
     try:
         from okto_pulse.community.adapters.mcp_host import (
@@ -1538,7 +1626,7 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
             )
 
         api_config = uvicorn.Config(
-            app,
+            module_app,
             host=settings.host,
             port=api_port,
             ws="wsproto",
@@ -1720,7 +1808,7 @@ async def _lock_heartbeat_loop() -> None:
         raise
 
 
-def run():
+def run() -> int:
     """Run the community API + Frontend + MCP server (single process,
     two ports). Reads ``OKTO_PULSE_PORT`` / ``OKTO_PULSE_MCP_PORT`` env
     vars (set by the CLI) and falls back to the settings defaults.
@@ -1729,9 +1817,18 @@ def run():
         ServeAlreadyRunningError,
         acquire_serve_lock,
     )
+    from okto_pulse.community.data_home import (
+        UninitializedDefaultDataHomeError,
+        assert_serve_data_home_ready,
+    )
 
-    _enable_native_crash_diagnostics()
     settings = CommunitySettings()
+    try:
+        assert_serve_data_home_ready(settings)
+    except UninitializedDefaultDataHomeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    _enable_native_crash_diagnostics()
     api_port = int(
         os.environ.get("PORT", os.environ.get("OKTO_PULSE_PORT", str(settings.port)))
     )
@@ -1743,8 +1840,8 @@ def run():
     try:
         serve_lock = acquire_serve_lock(settings)
     except ServeAlreadyRunningError as exc:
-        print(str(exc))
-        return
+        print(str(exc), file=sys.stderr)
+        return 2
     with serve_lock:
         try:
             run_async_server(_serve_dual(api_port, mcp_port))
@@ -1752,7 +1849,8 @@ def run():
             # Ctrl+C / SIGINT — shutdown is graceful from here; suppress the
             # default Python traceback for a clean CLI exit.
             print("\nOkto Pulse stopped.")
+    return 0
 
 
 if __name__ == "__main__":
-    run()
+    raise SystemExit(run())

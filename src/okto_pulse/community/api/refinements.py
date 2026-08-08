@@ -41,11 +41,19 @@ from okto_pulse.community.api.refinements_pagination import (
     refinement_board_page_request,
     validate_board_refinement_query,
 )
+from okto_pulse.community.api.quality_summary_projection import (
+    load_quality_summaries_for_page,
+    quality_summary_field,
+)
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     PageRequest,
 )
-from okto_pulse.core.application.use_cases import EntityNotFoundError
+from okto_pulse.core.application.use_cases import (
+    ConflictError,
+    EntityNotFoundError,
+    PermissionDeniedError,
+)
 from okto_pulse.core.application.use_cases.refinements_crud import (
     AnswerRefinementQuestionCommand,
     AnswerRefinementQuestionUseCase,
@@ -83,18 +91,33 @@ from okto_pulse.core.application.use_cases.refinements_crud import (
     ListRefinementsUseCase,
     MoveRefinementCommand,
     MoveRefinementUseCase,
+    SetRefinementAmbiguityGateSkipCommand,
+    SetRefinementAmbiguityGateSkipUseCase,
     UpdateRefinementCommand,
     UpdateRefinementUseCase,
+)
+from okto_pulse.core.application.use_cases.research_decision_ledger import (
+    GetResearchDecisionHeadCommand,
+    GetResearchDecisionHeadUseCase,
+    ListResearchDecisionsRestCommand,
+    ListResearchDecisionsRestUseCase,
+    WriteResearchDecisionCommand,
+    WriteResearchDecisionUseCase,
 )
 from okto_pulse.core.application.knowledge_propagation_projection import (
     project_derive_spec_response,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
+from okto_pulse.core.domain.guideline_policy_transition import (
+    PolicyTransitionRejected,
+)
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.models.schemas import (
     BoardRefinementPageItem,
     PageEnvelope,
     RefinementCreate,
+    RefinementAmbiguityGateSkipResponse,
+    RefinementAmbiguityGateSkipUpdate,
     RefinementHistoryResponse,
     RefinementKnowledgeCreate,
     RefinementKnowledgeResponse,
@@ -111,14 +134,34 @@ from okto_pulse.core.models.schemas import (
     RefinementUpdate,
     DeriveSpecResponse,
 )
+from okto_pulse.core.models.research_decision_ledger import (
+    ResearchDecisionHeadResponse,
+    ResearchDecisionOffsetListResponse,
+    ResearchDecisionWriteRequest,
+    ResearchDecisionWriteResponse,
+)
+from okto_pulse.core.domain.research_decision_ledger import (
+    ResearchDecisionContractError,
+    ResearchDecisionStatus,
+)
+from okto_pulse.core.inbound.ska_contract_error import (
+    project_ska_contract_error,
+)
 from okto_pulse.core.models.knowledge_propagation import (
     DeriveSpecKnowledgeRequest,
 )
 from okto_pulse.core.ports.knowledge_propagation import (
     KnowledgePropagationPortError,
 )
+from okto_pulse.core.ports.research_decision_ledger import (
+    ResearchDecisionPersistenceError,
+)
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.services.architecture import ArchitectureDesignSelectionError
+from okto_pulse.core.services.research_decision_ledger import (
+    ResearchDecisionConflictError,
+    ResearchDecisionValidationError,
+)
 from okto_pulse.core.application.errors import (
     CancellationReasonRequiredError,
     QASelectionError,
@@ -230,6 +273,19 @@ async def list_refinements(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
             )
+        quality_summaries = await load_quality_summaries_for_page(
+            uow=uow,
+            user_id=user_id,
+            board_id=(
+                str(page.items[0].values["board_id"])
+                if page.items
+                else ""
+            ),
+            subject_type="refinement",
+            subject_ids=tuple(
+                str(record.values["id"]) for record in page.items
+            ),
+        )
         return project_page(
             page,
             lambda record: RefinementPageItem(
@@ -250,7 +306,11 @@ async def list_refinements(
                         "labels",
                         "archived",
                     ),
-                )
+                ),
+                **quality_summary_field(
+                    str(record.values["id"]),
+                    quality_summaries,
+                ),
             ),
         )
     try:
@@ -323,9 +383,24 @@ async def list_board_refinements(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": "board_not_found"},
         )
+    quality_summaries = await load_quality_summaries_for_page(
+        uow=uow,
+        user_id=user_id,
+        board_id=board_id,
+        subject_type="refinement",
+        subject_ids=tuple(
+            str(record.values["id"]) for record in page.items
+        ),
+    )
     return project_page(
         page,
-        lambda record: BoardRefinementPageItem(**record.values),
+        lambda record: BoardRefinementPageItem(
+            **record.values,
+            **quality_summary_field(
+                str(record.values["id"]),
+                quality_summaries,
+            ),
+        ),
     )
 
 
@@ -366,6 +441,62 @@ async def update_refinement(
     return result.refinement
 
 
+@router.patch(
+    "/refinements/{refinement_id}/ambiguity-gate-skip",
+    response_model=RefinementAmbiguityGateSkipResponse,
+)
+async def set_refinement_ambiguity_gate_skip(
+    refinement_id: str,
+    data: RefinementAmbiguityGateSkipUpdate,
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Apply/remove the audited human-only Refinement ambiguity override."""
+
+    try:
+        result = await SetRefinementAmbiguityGateSkipUseCase().execute(
+            SetRefinementAmbiguityGateSkipCommand(
+                refinement_id,
+                skip=data.skip_ambiguity_gate,
+                reason=data.reason,
+                expected_refinement_version=data.expected_refinement_version,
+            ),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except PermissionDeniedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error_code": "human_actor_required", "message": exc.message},
+        ) from exc
+    except ConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error_code": "version_conflict", "retryable": True},
+        ) from exc
+    except ValueError as exc:
+        error_code = str(exc)
+        if error_code == "refinement_ambiguity_skip_status_conflict":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"error_code": error_code, "retryable": False},
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error_code": error_code, "retryable": False},
+        ) from exc
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_not_found(exc),
+        ) from exc
+    return RefinementAmbiguityGateSkipResponse(
+        skipped=result.skipped,
+        activity_id=result.activity_id,
+        version=result.version,
+    )
+
+
 @router.post("/refinements/{refinement_id}/move", response_model=RefinementResponse)
 async def move_refinement(
     refinement_id: str,
@@ -382,6 +513,8 @@ async def move_refinement(
         )
     except CancellationReasonRequiredError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict())
+    except PolicyTransitionRejected as e:
+        raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
@@ -499,6 +632,203 @@ async def list_refinement_history(
             status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
         )
     return result.history
+
+
+# ==================== RESEARCH DECISION LEDGER ====================
+
+
+def _research_decision_http_error(exc: Exception) -> HTTPException:
+    projected = project_ska_contract_error(
+        exc,
+        family="research_decision",
+    )
+    raw_code = str(getattr(exc, "code", "") or str(exc))
+    code = str(projected["code"])
+    message = str(exc)
+    if message == raw_code and code != raw_code:
+        message = code
+    retryable = bool(projected["retryable"])
+    details = dict(projected["details"])
+    if isinstance(exc, PermissionDeniedError):
+        status_code = status.HTTP_403_FORBIDDEN
+        code = "forbidden"
+    elif isinstance(exc, EntityNotFoundError):
+        status_code = status.HTTP_404_NOT_FOUND
+        code = "research_decision_not_found"
+    elif isinstance(exc, ResearchDecisionConflictError):
+        status_code = status.HTTP_409_CONFLICT
+    elif isinstance(exc, ResearchDecisionPersistenceError):
+        status_code = (
+            status.HTTP_409_CONFLICT
+            if code.endswith("conflict")
+            else status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+    else:
+        status_code = (
+            status.HTTP_409_CONFLICT
+            if code == "version_conflict"
+            else status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            "error_code": code,
+            "message": message,
+            "retryable": retryable,
+            "details": details,
+        },
+    )
+
+
+def _validate_research_decision_pagination_query(
+    request: Request,
+) -> None:
+    values: dict[str, int] = {}
+    for field, default in (("offset", 0), ("limit", 25)):
+        raw = request.query_params.get(field)
+        if raw is None:
+            values[field] = default
+            continue
+        try:
+            values[field] = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error_code": "invalid_pagination",
+                    "message": f"research_decision_page_{field}_invalid",
+                    "retryable": False,
+                },
+            ) from exc
+    if values["offset"] < 0 or values["limit"] not in {25, 50, 100}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error_code": "invalid_pagination",
+                "message": "research_decision_pagination_invalid",
+                "retryable": False,
+                "allowed_limits": [25, 50, 100],
+            },
+        )
+
+
+@router.post(
+    "/refinements/{refinement_id}/research-decisions",
+    response_model=ResearchDecisionWriteResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def append_or_supersede_research_decision(
+    refinement_id: str,
+    data: ResearchDecisionWriteRequest,
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Append an immutable RDL entry or supersede its current head."""
+
+    try:
+        result = await WriteResearchDecisionUseCase().execute(
+            WriteResearchDecisionCommand(
+                board_id=None,
+                refinement_id=refinement_id,
+                expected_refinement_version=None,
+                expected_head_revision=data.expected_head_revision,
+                content=data.entry.to_domain(),
+                idempotency_key=data.idempotency_key,
+                ledger_id=data.ledger_id,
+                supersedes_entry_id=data.supersedes_entry_id,
+            ),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except (
+        EntityNotFoundError,
+        PermissionDeniedError,
+        ResearchDecisionConflictError,
+        ResearchDecisionPersistenceError,
+        ResearchDecisionValidationError,
+        ResearchDecisionContractError,
+        ValueError,
+    ) as exc:
+        raise _research_decision_http_error(exc) from exc
+    return ResearchDecisionWriteResponse.from_domain(result.receipt)
+
+
+@router.get(
+    "/refinements/{refinement_id}/research-decisions",
+    response_model=ResearchDecisionOffsetListResponse,
+    dependencies=[
+        Depends(_validate_research_decision_pagination_query),
+    ],
+)
+async def list_research_decisions(
+    refinement_id: str,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(
+        25,
+        json_schema_extra={"enum": [25, 50, 100]},
+    ),
+    ledger_id: str | None = Query(None),
+    status_filter: ResearchDecisionStatus | None = Query(None, alias="status"),
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """List immutable RDL entries in the frozen REST PageEnvelope."""
+
+    try:
+        result = await ListResearchDecisionsRestUseCase().execute(
+            ListResearchDecisionsRestCommand(
+                board_id=None,
+                refinement_id=refinement_id,
+                offset=offset,
+                limit=limit,
+                ledger_id=ledger_id,
+                status=status_filter,
+            ),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except (
+        EntityNotFoundError,
+        PermissionDeniedError,
+        ResearchDecisionPersistenceError,
+        ResearchDecisionContractError,
+        ValueError,
+    ) as exc:
+        raise _research_decision_http_error(exc) from exc
+    return ResearchDecisionOffsetListResponse.from_domain(result.page)
+
+
+@router.get(
+    "/refinements/{refinement_id}/research-decisions/head",
+    response_model=ResearchDecisionHeadResponse,
+)
+async def get_research_decision_head(
+    refinement_id: str,
+    ledger_id: str = Query(..., min_length=1),
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Return the authoritative current entry and CAS revision for one ledger."""
+
+    try:
+        result = await GetResearchDecisionHeadUseCase().execute(
+            GetResearchDecisionHeadCommand(
+                board_id=None,
+                refinement_id=refinement_id,
+                ledger_id=ledger_id,
+            ),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except (
+        EntityNotFoundError,
+        PermissionDeniedError,
+        ResearchDecisionPersistenceError,
+        ResearchDecisionContractError,
+        ValueError,
+    ) as exc:
+        raise _research_decision_http_error(exc) from exc
+    return ResearchDecisionHeadResponse.from_domain(result.entry, result.head)
 
 
 # ==================== REFINEMENT Q&A ====================

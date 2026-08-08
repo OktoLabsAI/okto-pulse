@@ -23,6 +23,7 @@ import {
   type KGCognitivePendingBadgesResponse,
   type KGCognitivePendingBadgeView,
 } from '@/services/kg-health-api';
+import { usePermissions } from '@/hooks/usePermissions';
 
 export interface UseCognitivePendingBadgesResult {
   badges: Record<string, KGCognitivePendingBadgeView>;
@@ -38,6 +39,13 @@ export function useCognitivePendingBadges(
   sourceRefs: string[],
   kgGenerationId: string | null = null,
 ): UseCognitivePendingBadgesResult {
+  const permissions = usePermissions(boardId);
+  const canReadCognitive = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+    && permissions.has('kg.operations.cognitive.read')
+  );
   const dedupedRefs = useMemo(
     () =>
       Array.from(new Set(sourceRefs.filter((ref): ref is string => !!ref))),
@@ -54,7 +62,7 @@ export function useCognitivePendingBadges(
 
   useEffect(() => {
     abortRef.current?.abort();
-    if (!boardId || dedupedRefs.length === 0) {
+    if (!boardId || !canReadCognitive || dedupedRefs.length === 0) {
       setData(null);
       setLoading(false);
       setError(null);
@@ -85,7 +93,7 @@ export function useCognitivePendingBadges(
     // refsKey + kgGenerationId + boardId + reloadTokenRef.current
     // re-trigger the effect. refsKey is the stable join of dedupedRefs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [boardId, refsKey, kgGenerationId, reloadTokenRef.current]);
+  }, [boardId, refsKey, kgGenerationId, canReadCognitive, reloadTokenRef.current]);
 
   return {
     badges: data?.badges ?? {},

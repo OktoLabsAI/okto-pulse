@@ -26,8 +26,9 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-# Importing community.main builds the app + wires the registry with the
-# Community adapters at import time (the e2e smoke surface).
+# community.main is imported for source/path introspection only — since the
+# PEP 562 lazy app, importing it no longer builds the app or wires the
+# registry (get_module_app() does, on first access).
 import okto_pulse.community.cli as _cli_mod
 import okto_pulse.community.main as _main_mod
 import okto_pulse.community.seed as _seed_mod

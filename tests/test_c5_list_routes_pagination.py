@@ -198,6 +198,12 @@ async def _build_engine(path: Path) -> AsyncEngine:
         )
         await conn.execute(
             text(
+                "UPDATE specs SET edition = 3, version = 42 "
+                "WHERE id = 'p00'"
+            )
+        )
+        await conn.execute(
+            text(
                 "INSERT INTO sprints "
                 "(id, spec_id, board_id, title, spec_version, status, lane_type, "
                 "version, created_by, archived, updated_at) VALUES "
@@ -436,7 +442,26 @@ def test_consumer_search_is_applied_before_the_window(
     assert [item["id"] for item in body["items"]] == [expected_id]
     assert body["total_filtered"] == 1
     assert body["total_overall"] == 25
-    assert 3 <= len(statements) <= 6, statements
+    if expected_id[0] in {"i", "p"}:
+        # Ideation and Spec pages include the two fixed API10 Quality summary
+        # reads after applying the consumer search in SQL.
+        assert len(statements) == 7, statements
+    else:
+        assert 3 <= len(statements) <= 6, statements
+
+
+def test_spec_page_projects_human_edition_and_technical_revision(
+    client: TestClient,
+) -> None:
+    response = client.get(
+        "/api/v1/boards/b1/specs?offset=0&limit=25&search=spec%200"
+    )
+
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["id"] == "p00"
+    assert item["edition"] == 3
+    assert item["version"] == 42
 
 
 def test_ideation_derivation_pending_is_server_side_and_null_safe(
@@ -691,14 +716,21 @@ def test_story_projection_is_lean_and_count_is_computed_in_sql(
 
 
 @pytest.mark.parametrize(("path", "_active_total"), LIST_CASES)
-def test_each_paginated_route_stays_within_six_statements(
+def test_each_paginated_route_stays_within_bounded_statements(
     client: TestClient, path: str, _active_total: int
 ) -> None:
     statements = client.app.state.sql_statements
     statements.clear()
     response = client.get(f"{path}?offset=0&limit=25")
     assert response.status_code == 200, response.text
-    assert 3 <= len(statements) <= 6, statements
+    if path == "/api/v1/ideations/i00/refinements":
+        # API10 adds one leaf-resolution statement plus the two fixed Quality
+        # batch reads after the pre-existing nested preflight/page baseline.
+        # This is exactly seven for the direct-permission fixture and remains
+        # capped at eight when preset lineage needs one extra read.
+        assert len(statements) == 7, statements
+    else:
+        assert 3 <= len(statements) <= 6, statements
 
 
 @pytest.mark.parametrize(
@@ -712,7 +744,7 @@ def test_each_paginated_route_stays_within_six_statements(
         "/api/v1/boards/b1/specs/p00/sprints?offset=0&limit=25",
     ),
 )
-def test_shared_reader_is_authorized_within_the_same_six_statement_cap(
+def test_shared_reader_is_authorized_within_the_bounded_statement_cap(
     client: TestClient, path: str
 ) -> None:
     client.app.dependency_overrides[require_user] = lambda: "v"
@@ -723,7 +755,40 @@ def test_shared_reader_is_authorized_within_the_same_six_statement_cap(
     finally:
         client.app.dependency_overrides[require_user] = lambda: "u"
     assert response.status_code == 200, response.text
-    assert 3 <= len(statements) <= 6, statements
+    quality_projection_counts = {
+        "/api/v1/boards/b1/ideations?offset=0&limit=25": 7,
+        "/api/v1/ideations/i00/refinements?offset=0&limit=25": 8,
+        "/api/v1/boards/b1/specs?offset=0&limit=25": 7,
+    }
+    if path in quality_projection_counts:
+        # The shared-reader fixture resolves its custom preset lineage before
+        # the two fixed API10 Quality projection reads. Nested refinements keep
+        # one additional leaf-resolution statement; both paths remain bounded.
+        assert len(statements) == quality_projection_counts[path], statements
+    else:
+        assert 3 <= len(statements) <= 6, statements
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "/api/v1/boards/b1/ideations?offset=0&limit=25&search=ideation%207",
+        "/api/v1/ideations/i00/refinements?offset=0&limit=25&search=refinement%207",
+        "/api/v1/boards/b1/specs?offset=0&limit=25&search=spec%207",
+    ),
+)
+def test_shared_reader_quality_search_stays_within_eight_statements(
+    client: TestClient, path: str
+) -> None:
+    client.app.dependency_overrides[require_user] = lambda: "v"
+    statements = client.app.state.sql_statements
+    statements.clear()
+    try:
+        response = client.get(path)
+    finally:
+        client.app.dependency_overrides[require_user] = lambda: "u"
+    assert response.status_code == 200, response.text
+    assert len(statements) == 8, statements
 
 
 def test_compact_permission_preflight_preserves_story_denial(

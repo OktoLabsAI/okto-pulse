@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 import okto_pulse.community.app as _community_app  # noqa: F401
 import okto_pulse.core.infra.database as database_module
+import okto_pulse.community.adapters.sqlalchemy_kg_governance as kg_governance_module
 from okto_pulse.community.adapters.relational_schema_lifecycle import (
     register_community_relational_schema_lifecycle,
 )
@@ -54,6 +55,47 @@ async def _count(session, model, predicate) -> int:
             )
         ).scalar_one()
     )
+
+
+@pytest.mark.asyncio
+async def test_purge_acquires_policy_board_mutex_before_erasure_permit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "board-erasure-mutex.sqlite3"
+    database_module.create_database(f"sqlite+aiosqlite:///{database_path.as_posix()}")
+    register_community_relational_schema_lifecycle()
+    await database_module.init_db()
+    async with get_session_factory()() as session:
+        session.add(Board(id=BOARD_ID, name="erase", owner_id="owner"))
+        await session.commit()
+
+    calls: list[str] = []
+
+    async def stop_after_mutex_call(session, *, board_id: str) -> None:
+        calls.append(board_id)
+        assert await session.get(BoardErasurePermit, board_id) is None
+        raise RuntimeError("stop_after_policy_board_mutex")
+
+    monkeypatch.setattr(
+        kg_governance_module,
+        "lock_policy_board",
+        stop_after_mutex_call,
+    )
+    async with get_session_factory()() as session:
+        with pytest.raises(
+            RuntimeError,
+            match="stop_after_policy_board_mutex",
+        ):
+            await CommunitySqlAlchemyKGGovernanceStore().purge_board_metadata(
+                session,
+                board_id=BOARD_ID,
+            )
+        await session.rollback()
+
+    assert calls == [BOARD_ID]
+    async with get_session_factory()() as session:
+        assert await session.get(BoardErasurePermit, BOARD_ID) is None
 
 
 @pytest.mark.asyncio

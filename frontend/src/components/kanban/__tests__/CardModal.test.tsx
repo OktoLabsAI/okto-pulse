@@ -1,12 +1,23 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CardModal, TestEvidenceTab } from '../CardModal';
-import type { Card, CardSummary, CardStatus, TestScenario } from '@/types';
+import type {
+  AllowedTransition,
+  AllowedTransitionsResponse,
+  Card,
+  CardSummary,
+  CardStatus,
+  PolicyComplianceTransitionDecision,
+  TestScenario,
+} from '@/types';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 
 const apiMock = vi.hoisted(() => ({
   getCard: vi.fn(),
   getSpec: vi.fn(),
+  getSprint: vi.fn(),
   getSpecKnowledge: vi.fn(),
+  getAllowedTransitions: vi.fn(),
   listAgentsForBoard: vi.fn(),
   getCardSeenStatus: vi.fn(),
   getCardDependencies: vi.fn(),
@@ -27,12 +38,22 @@ const apiMock = vi.hoisted(() => ({
   deleteCard: vi.fn(),
   uploadAttachment: vi.fn(),
   downloadAttachment: vi.fn(),
+  deleteAttachment: vi.fn(),
   unlinkTestTaskFromBug: vi.fn(),
+  submitTaskValidation: vi.fn(),
 }));
 
 const storeMock = vi.hoisted(() => ({
   selectedCardId: 'bug-1',
   isCardModalOpen: true,
+  currentBoard: {
+    id: 'board-1',
+    settings: {
+      min_confidence: 70,
+      min_completeness: 80,
+      max_drift: 50,
+    },
+  },
   columns: {} as Record<CardStatus, CardSummary[]>,
   closeCardModal: vi.fn(),
   removeCardFromColumn: vi.fn(),
@@ -49,9 +70,32 @@ const cardKnowledgeTabMock = vi.hoisted(() => ({
   render: vi.fn(),
 }));
 
+const permissionsMock = vi.hoisted(() => ({
+  has: vi.fn((_permission: string) => true),
+}));
+
+const policyComplianceMock = vi.hoisted(() => ({
+  panelProps: vi.fn(),
+  previewProps: vi.fn(),
+}));
+
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
 }));
+
+vi.mock('@/hooks/usePermissions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks/usePermissions')>();
+  return {
+    ...actual,
+    usePermissions: () => ({
+      preset: 'full_control',
+      isLoading: false,
+      error: null,
+      ownerReviewRequired: false,
+      has: permissionsMock.has,
+    }),
+  };
+});
 
 vi.mock('@/lib/exportMarkdown', () => ({
   exportCard: markdownMock.exportCard,
@@ -68,6 +112,7 @@ vi.mock('@/store/dashboard', () => ({
   useSelectedCard: () => storeMock.selectedCardId,
   useIsCardModalOpen: () => storeMock.isCardModalOpen,
   useColumns: () => storeMock.columns,
+  useCurrentBoard: () => storeMock.currentBoard,
 }));
 
 vi.mock('react-hot-toast', () => ({
@@ -91,12 +136,60 @@ vi.mock('@/components/specs/MockupsTab', () => ({
   MockupsTab: () => <div />,
 }));
 
+vi.mock('@/components/resources/ResourceGateDisclosure', () => ({
+  ResourceGateDisclosure: () => (
+    <div data-testid="resource-gate-disclosure" />
+  ),
+}));
+
 vi.mock('@/components/specs/SpecModal', () => ({
   SpecModal: () => <div />,
 }));
 
+vi.mock('@/components/policy-compliance', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@/components/policy-compliance')>();
+  return {
+    ...actual,
+    PolicyCompliancePanel: (props: {
+      boardId: string;
+      entityType: string;
+      subjectId: string;
+      refreshKey?: number;
+      onEvaluated?: () => void;
+      onRefreshed?: () => void;
+    }) => {
+      policyComplianceMock.panelProps(props);
+      return (
+        <div data-testid="policy-compliance-panel">
+          <button type="button" onClick={() => props.onEvaluated?.()}>
+            Policy evaluated
+          </button>
+          <button type="button" onClick={() => props.onRefreshed?.()}>
+            Policy refreshed
+          </button>
+        </div>
+      );
+    },
+    PolicyComplianceTransitionPreview: (props: {
+      preview: { status: string };
+      rejection?: { code: string } | null;
+    }) => {
+      policyComplianceMock.previewProps(props);
+      return (
+        <div data-testid="policy-transition-preview">
+          {props.preview.status}:{props.rejection?.code ?? 'none'}
+        </div>
+      );
+    },
+  };
+});
+
 vi.mock('../CardKnowledgeTab', () => ({
-  CardKnowledgeTab: (props: { onBusyChange?: (busy: boolean) => void }) => {
+  CardKnowledgeTab: (props: {
+    onBusyChange?: (busy: boolean) => void;
+    onUpdate?: () => Promise<void>;
+  }) => {
     cardKnowledgeTabMock.render(props);
     return (
       <div data-testid="card-knowledge-tab">
@@ -114,6 +207,12 @@ vi.mock('../CardKnowledgeTab', () => ({
           onClick={() => props.onBusyChange?.(false)}
         >
           Finish knowledge operation
+        </button>
+        <button
+          type="button"
+          onClick={() => void props.onUpdate?.()}
+        >
+          Complete knowledge mutation
         </button>
       </div>
     );
@@ -137,6 +236,24 @@ const emptyColumns = (): Record<CardStatus, CardSummary[]> => ({
   done: [],
   cancelled: [],
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushMicrotasks() {
+  await act(async () => {
+    for (let index = 0; index < 8; index += 1) {
+      await Promise.resolve();
+    }
+  });
+}
 
 const bugCard: Card = {
   id: 'bug-1',
@@ -174,11 +291,182 @@ const bugCard: Card = {
   validations: [],
 };
 
+function cardForType(cardType: 'normal' | 'bug' | 'test'): Card {
+  if (cardType === 'bug') return { ...bugCard };
+  return {
+    ...bugCard,
+    id: `${cardType}-1`,
+    title: cardType === 'test' ? 'Regression card' : 'Implementation card',
+    card_type: cardType,
+    origin_task_id: null,
+    severity: null,
+    expected_behavior: null,
+    observed_behavior: null,
+    linked_test_task_ids: null,
+    test_scenario_ids: cardType === 'test' ? ['ts-1'] : [],
+  };
+}
+
+function allowedTransition(
+  toStatus: CardStatus,
+  overrides: Partial<AllowedTransition> = {},
+): AllowedTransition {
+  return {
+    to_status: toStatus,
+    label: STATUS_LABELS_FOR_TEST[toStatus],
+    gate: 'none',
+    blocked_reason: null,
+    preconditions: [],
+    capabilities: [],
+    effects: [],
+    reason_codes: [],
+    policy_compliance: false,
+    policy_compliance_decision: null,
+    ...overrides,
+  };
+}
+
+const STATUS_LABELS_FOR_TEST: Record<CardStatus, string> = {
+  not_started: 'Not Started',
+  started: 'Started',
+  in_progress: 'In Progress',
+  validation: 'Validation',
+  on_hold: 'On Hold',
+  done: 'Done',
+  cancelled: 'Cancelled',
+};
+
+function transitionEnvelope(
+  entityId: string,
+  currentStatus: CardStatus,
+  allowedTransitions: AllowedTransition[],
+): AllowedTransitionsResponse {
+  return {
+    board_id: 'board-1',
+    entity_type: 'card',
+    entity_id: entityId,
+    current_status: currentStatus,
+    allowed_transitions: allowedTransitions,
+    source: 'core_sdlc_registry_v1',
+  };
+}
+
+function policyDecision(
+  state:
+    | 'policy_compliance_blocked'
+    | 'policy_compliance_ready',
+): PolicyComplianceTransitionDecision {
+  const blocked = state === 'policy_compliance_blocked';
+  return {
+    state,
+    allowed: !blocked,
+    policy_compliance_required: true,
+    reason_codes: [state],
+    decision_digest: 'a'.repeat(64),
+    fence_digest: 'b'.repeat(64),
+    receipt_ids: ['receipt-card-1'],
+    currentness: 'current',
+    currentness_reasons: [],
+    applicable_metric_count: 2,
+    applicable_blocking_metric_count: 2,
+    failed_metric_count: blocked ? 1 : 0,
+    blocking_metric_count: blocked ? 1 : 0,
+    waived_metric_count: 0,
+    advisory_issue_count: 0,
+    skipped_binding_count: 0,
+    diagnostic_codes: blocked ? ['policy_metric_threshold_failed'] : [],
+    binding_decisions: [{
+      binding_id: 'binding-card-1',
+      guideline_id: 'guideline-card-1',
+      enforcement: 'blocking',
+      applicable_metric_count: 2,
+      allowed: !blocked,
+      assessment_available: true,
+      receipt_id: 'receipt-card-1',
+      currentness: 'current',
+      currentness_reasons: [],
+      inadmissibility_cause: null,
+      failed_metric_count: blocked ? 1 : 0,
+      waived_metric_count: 0,
+      blocking_metric_count: blocked ? 1 : 0,
+      advisory_issue_count: 0,
+      skipped: false,
+      diagnostic_codes:
+        blocked ? ['policy_metric_threshold_failed'] : [],
+    }],
+  };
+}
+
+function policyRejection(
+  cardId: string,
+  fromStatus: CardStatus,
+  toStatus: CardStatus,
+): AuthenticatedFetchError {
+  return new AuthenticatedFetchError({
+    status: 409,
+    code: 'policy_compliance_blocked',
+    message: 'policy_compliance_blocked',
+    details: {
+      outcome: 'error',
+      error: 'policy_compliance_blocked',
+      code: 'policy_compliance_blocked',
+      message: 'policy_compliance_blocked',
+      reason_codes: ['policy_compliance_blocked'],
+      decision_digest: 'a'.repeat(64),
+      fence_digest: 'b'.repeat(64),
+      receipt_ids: ['receipt-card-1'],
+      currentness: 'current',
+      currentness_reasons: [],
+      counts: {
+        applicable_metrics: 2,
+        applicable_blocking_metrics: 2,
+        failed_metrics: 1,
+        blocking_metrics: 1,
+        waived_metrics: 0,
+        advisory_issues: 0,
+        skipped_bindings: 0,
+      },
+      diagnostic_codes: ['policy_metric_threshold_failed'],
+      binding_decisions: [{
+        binding_id: 'binding-card-1',
+        guideline_id: 'guideline-card-1',
+        enforcement: 'blocking',
+        applicable_metric_count: 2,
+        allowed: false,
+        assessment_available: true,
+        receipt_id: 'receipt-card-1',
+        currentness: 'current',
+        currentness_reasons: [],
+        inadmissibility_cause: null,
+        failed_metric_count: 1,
+        waived_metric_count: 0,
+        blocking_metric_count: 1,
+        advisory_issue_count: 0,
+        skipped: false,
+        diagnostic_codes: ['policy_metric_threshold_failed'],
+      }],
+      transition: {
+        entity_type: 'card',
+        subject_id: cardId,
+        from_status: fromStatus,
+        to_status: toStatus,
+      },
+      policy_compliance_required: true,
+    },
+  });
+}
+
 describe('CardModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionsMock.has.mockImplementation((_permission: string) => true);
     storeMock.selectedCardId = 'bug-1';
     storeMock.isCardModalOpen = true;
+    storeMock.currentBoard.settings = {
+      min_confidence: 70,
+      min_completeness: 80,
+      max_drift: 50,
+    };
     storeMock.columns = emptyColumns();
     storeMock.columns.in_progress = [
       {
@@ -224,6 +512,12 @@ describe('CardModal', () => {
     ];
 
     apiMock.getCard.mockResolvedValue(bugCard);
+    apiMock.getAllowedTransitions.mockResolvedValue(
+      transitionEnvelope('bug-1', 'not_started', [
+        allowedTransition('started'),
+        allowedTransition('cancelled'),
+      ]),
+    );
     apiMock.getSpec.mockResolvedValue({
       id: 'spec-1',
       title: 'Stories spec',
@@ -232,6 +526,11 @@ describe('CardModal', () => {
       api_contracts: [],
       technical_requirements: [],
       knowledge_bases: [],
+    });
+    apiMock.getSprint.mockResolvedValue({
+      id: 'sprint-1',
+      spec_id: 'spec-1',
+      board_id: 'board-1',
     });
     apiMock.getSpecKnowledge.mockResolvedValue(null);
     apiMock.listAgentsForBoard.mockResolvedValue([]);
@@ -283,9 +582,936 @@ describe('CardModal', () => {
     markdownMock.markdownFilenameForCard.mockReturnValue('bug_bug-traceability-is-hidden.md');
   });
 
-  it('shows the bug origin task and linked regression tests in details', async () => {
+  it.each([
+    {
+      cardType: 'normal' as const,
+      hasTests: false,
+      hasTaskValidation: true,
+    },
+    {
+      cardType: 'bug' as const,
+      hasTests: true,
+      hasTaskValidation: true,
+    },
+    {
+      cardType: 'test' as const,
+      hasTests: true,
+      hasTaskValidation: false,
+    },
+  ])(
+    'renders the canonical top-level workspace for a $cardType card',
+    async ({ cardType, hasTests, hasTaskValidation }) => {
+      const selectedCard = cardForType(cardType);
+      storeMock.selectedCardId = selectedCard.id;
+      apiMock.getCard.mockResolvedValue(selectedCard);
+
+      render(<CardModal boardId="board-1" />);
+
+      const tabs = await screen.findByRole('tablist', {
+        name: 'Card sections',
+      });
+      expect(within(tabs).getByRole('tab', { name: /^Details$/ })).toBeInTheDocument();
+      expect(within(tabs).getByRole('tab', { name: /^Resources/ })).toBeInTheDocument();
+      expect(within(tabs).getByRole('tab', { name: /^Q&A/ })).toBeInTheDocument();
+      expect(within(tabs).getByRole('tab', { name: /^Comments/ })).toBeInTheDocument();
+      expect(within(tabs).getByRole('tab', { name: /^References/ })).toBeInTheDocument();
+      expect(within(tabs).getByRole('tab', { name: /^Validation/ })).toBeInTheDocument();
+      expect(within(tabs).getByRole('tab', { name: /^Activity/ })).toBeInTheDocument();
+      expect(within(tabs).queryByRole('tab', { name: /^Tests/ }) !== null).toBe(hasTests);
+      expect(within(tabs).queryByRole('tab', { name: /Cancellation/i })).not.toBeInTheDocument();
+
+      fireEvent.click(within(tabs).getByRole('tab', { name: /^Validation/ }));
+      const validationTabs = await screen.findByRole('tablist', {
+        name: 'Card validation sections',
+      });
+      expect(
+        within(validationTabs).getByRole('tab', { name: /^Execution report/ }),
+      ).toBeInTheDocument();
+      expect(
+        within(validationTabs).queryByRole('tab', { name: /^Task validation/ }) !== null,
+      ).toBe(hasTaskValidation);
+      expect(
+        within(validationTabs).getByRole('tab', {
+          name: /^Policy Compliance$/,
+        }),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it('keeps cancellation audit context in Details instead of creating a transient tab', async () => {
+    const cancelledCard: Card = {
+      ...cardForType('normal'),
+      id: 'cancelled-1',
+      status: 'cancelled',
+      cancellation_reason: 'The implementation was superseded by a safer approach.',
+      cancelled_by: 'agent-1',
+      cancelled_at: '2026-07-28T13:00:00Z',
+    };
+    storeMock.selectedCardId = cancelledCard.id;
+    apiMock.getCard.mockResolvedValue(cancelledCard);
+    apiMock.getAllowedTransitions.mockResolvedValue(
+      transitionEnvelope(cancelledCard.id, 'cancelled', []),
+    );
+
     render(<CardModal boardId="board-1" />);
 
+    const tabs = await screen.findByRole('tablist', {
+      name: 'Card sections',
+    });
+    expect(within(tabs).queryByRole('tab', { name: /Cancellation/i })).not.toBeInTheDocument();
+    expect(await screen.findByTestId('cancellation-details')).toBeVisible();
+    expect(
+      screen.getByText('The implementation was superseded by a safer approach.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Cancelling a card can return a validated parent spec/i),
+    ).toBeInTheDocument();
+  });
+
+  it('shows only the current and canonically allowed lifecycle statuses', async () => {
+    render(<CardModal boardId="board-1" />);
+
+    const status = await screen.findByRole('combobox', {
+      name: 'Card status',
+    });
+    expect(
+      within(status).getAllByRole('option').map((option) => option.textContent),
+    ).toEqual(['Not Started', 'Started', 'Cancelled']);
+    expect(apiMock.getAllowedTransitions).toHaveBeenCalledWith('board-1', {
+      entity_type: 'card',
+      entity_id: 'bug-1',
+      current_status: 'not_started',
+    });
+  });
+
+  it('fails closed and excludes a policy-blocked transition from the lifecycle selector', async () => {
+    apiMock.getAllowedTransitions.mockResolvedValue(
+      transitionEnvelope('bug-1', 'not_started', [
+        allowedTransition('started', {
+          gate: 'policy_compliance',
+          blocked_reason: 'Policy Compliance blocked this transition.',
+          reason_codes: ['policy_compliance_blocked'],
+          policy_compliance: true,
+          policy_compliance_decision: policyDecision(
+            'policy_compliance_blocked',
+          ),
+        }),
+        allowedTransition('cancelled'),
+      ]),
+    );
+
+    render(<CardModal boardId="board-1" />);
+
+    const status = await screen.findByRole('combobox', {
+      name: 'Card status',
+    });
+    await waitFor(() => expect(status).not.toBeDisabled());
+    expect(
+      within(status).getAllByRole('option').map((option) => option.textContent),
+    ).toEqual(['Not Started', 'Cancelled']);
+
+    fireEvent.click(screen.getByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(
+      screen.getByRole('tab', { name: /^Policy Compliance$/ }),
+    );
+    expect(await screen.findByTestId('policy-transition-preview')).toHaveTextContent(
+      'ready:none',
+    );
+  });
+
+  it('keeps lifecycle fail-closed when the canonical transition envelope is malformed', async () => {
+    apiMock.getAllowedTransitions.mockResolvedValue({
+      ...transitionEnvelope('bug-1', 'not_started', [
+        allowedTransition('started'),
+      ]),
+      source: 'legacy_client_map',
+    });
+
+    render(<CardModal boardId="board-1" />);
+
+    const status = await screen.findByRole('combobox', {
+      name: 'Card status',
+    });
+    await waitFor(() => expect(status).toBeDisabled());
+    expect(
+      within(status).getAllByRole('option').map((option) => option.textContent),
+    ).toEqual(['Not Started']);
+
+    fireEvent.click(screen.getByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(
+      screen.getByRole('tab', { name: /^Policy Compliance$/ }),
+    );
+    expect(await screen.findByTestId('policy-transition-preview')).toHaveTextContent(
+      'error:none',
+    );
+  });
+
+  it('keeps a structured policy 409 visible after reloading transition authority', async () => {
+    apiMock.moveCard.mockRejectedValueOnce(
+      policyRejection('bug-1', 'not_started', 'started'),
+    );
+
+    render(<CardModal boardId="board-1" />);
+
+    const status = await screen.findByRole('combobox', {
+      name: 'Card status',
+    });
+    await waitFor(() => expect(status).not.toBeDisabled());
+    fireEvent.change(status, { target: { value: 'started' } });
+
+    await waitFor(() => expect(apiMock.moveCard).toHaveBeenCalledWith(
+      'bug-1',
+      expect.objectContaining({ status: 'started' }),
+    ));
+    fireEvent.click(screen.getByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(
+      screen.getByRole('tab', { name: /^Policy Compliance$/ }),
+    );
+    await waitFor(() => expect(
+      screen.getByTestId('policy-transition-preview'),
+    ).toHaveTextContent('ready:policy_compliance_blocked'));
+    expect(apiMock.getAllowedTransitions.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  it('exposes Policy Compliance as the only Validation workspace for a restricted test card', async () => {
+    const testCard = cardForType('test');
+    storeMock.selectedCardId = testCard.id;
+    apiMock.getCard.mockResolvedValue(testCard);
+    apiMock.getAllowedTransitions.mockResolvedValue(
+      transitionEnvelope(testCard.id, 'not_started', [
+        allowedTransition('started'),
+      ]),
+    );
+    permissionsMock.has.mockImplementation((permission: string) =>
+      permission === 'guidelines.assessments.read'
+      || ![
+        'card.conclusion.read',
+        'card.validation.read',
+      ].includes(permission)
+    );
+
+    render(<CardModal boardId="board-1" />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    const validationTabs = await screen.findByRole('tablist', {
+      name: 'Card validation sections',
+    });
+    expect(
+      within(validationTabs).getAllByRole('tab').map((tab) => tab.textContent),
+    ).toEqual(['Policy Compliance']);
+    fireEvent.click(
+      within(validationTabs).getByRole('tab', {
+        name: 'Policy Compliance',
+      }),
+    );
+    expect(await screen.findByTestId('policy-compliance-panel')).toBeVisible();
+    expect(policyComplianceMock.panelProps).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        boardId: 'board-1',
+        entityType: 'card',
+        subjectId: testCard.id,
+      }),
+    );
+  });
+
+  it('refreshes lifecycle authority after Policy Compliance evaluation and refresh', async () => {
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(
+      screen.getByRole('tab', { name: /^Policy Compliance$/ }),
+    );
+    await screen.findByTestId('policy-compliance-panel');
+    const initialCalls = apiMock.getAllowedTransitions.mock.calls.length;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Policy evaluated' }));
+    await waitFor(() => expect(
+      apiMock.getAllowedTransitions.mock.calls.length,
+    ).toBeGreaterThan(initialCalls));
+    const afterEvaluation = apiMock.getAllowedTransitions.mock.calls.length;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Policy refreshed' }));
+    await waitFor(() => expect(
+      apiMock.getAllowedTransitions.mock.calls.length,
+    ).toBeGreaterThan(afterEvaluation));
+  });
+
+  it('refreshes lifecycle authority after a Knowledge resource mutation', async () => {
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(
+      screen.getByRole('tab', { name: /^Policy Compliance$/ }),
+    );
+    await screen.findByTestId('policy-compliance-panel');
+    const initialCalls = apiMock.getAllowedTransitions.mock.calls.length;
+
+    fireEvent.click(screen.getByRole('tab', { name: /^Resources/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Knowledge/ }));
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Complete knowledge mutation' }),
+    );
+
+    await waitFor(() => expect(
+      apiMock.getAllowedTransitions.mock.calls.length,
+    ).toBeGreaterThan(initialCalls));
+  });
+
+  it('ignores a stale allowed-transitions response after switching cards', async () => {
+    const firstCard = {
+      ...cardForType('normal'),
+      id: 'transition-card-a',
+      title: 'Transition card A',
+    };
+    const secondCard = {
+      ...cardForType('normal'),
+      id: 'transition-card-b',
+      title: 'Transition card B',
+    };
+    let resolveFirstTransitions:
+      ((value: AllowedTransitionsResponse) => void) | undefined;
+    const delayedFirstTransitions =
+      new Promise<AllowedTransitionsResponse>((resolve) => {
+      resolveFirstTransitions = resolve;
+    });
+    storeMock.selectedCardId = firstCard.id;
+    apiMock.getCard.mockImplementation((cardId: string) =>
+      Promise.resolve(cardId === firstCard.id ? firstCard : secondCard)
+    );
+    apiMock.getAllowedTransitions.mockImplementation(
+      (_boardId: string, request: { entity_id: string }) =>
+        request.entity_id === firstCard.id
+          ? delayedFirstTransitions
+          : Promise.resolve(
+              transitionEnvelope(secondCard.id, 'not_started', [
+                allowedTransition('started'),
+              ]),
+            ),
+    );
+
+    const view = render(<CardModal boardId="board-1" />);
+    await screen.findByText(firstCard.title);
+    storeMock.selectedCardId = secondCard.id;
+    view.rerender(<CardModal boardId="board-1" />);
+    await screen.findByText(secondCard.title);
+
+    await waitFor(() => {
+      const status = screen.getByRole('combobox', { name: 'Card status' });
+      expect(
+        within(status).getAllByRole('option').map((option) => option.textContent),
+      ).toEqual(['Not Started', 'Started']);
+    });
+
+    resolveFirstTransitions?.(
+      transitionEnvelope(firstCard.id, 'not_started', [
+        allowedTransition('cancelled'),
+      ]),
+    );
+    await Promise.resolve();
+
+    const status = screen.getByRole('combobox', { name: 'Card status' });
+    expect(
+      within(status).getAllByRole('option').map((option) => option.textContent),
+    ).toEqual(['Not Started', 'Started']);
+  });
+
+  it('keeps read-only collaboration and requirement workspaces non-mutating', async () => {
+    const readOnlyCard: Card = {
+      ...cardForType('normal'),
+      id: 'read-only-1',
+      qa_items: [{
+        id: 'qa-1',
+        card_id: 'read-only-1',
+        question: 'Who validates the rollout evidence?',
+        answer: null,
+        asked_by: 'agent-1',
+        answered_by: null,
+        created_at: '2026-07-28T11:00:00Z',
+        answered_at: null,
+      }],
+      comments: [{
+        id: 'comment-1',
+        card_id: 'read-only-1',
+        content: 'Choose the release window',
+        author_id: 'agent-1',
+        comment_type: 'choice',
+        choices: [
+          { id: 'morning', label: 'Morning' },
+          { id: 'evening', label: 'Evening' },
+        ],
+        responses: [],
+        allow_free_text: true,
+        created_at: '2026-07-28T11:30:00Z',
+        updated_at: '2026-07-28T11:30:00Z',
+      }],
+    };
+    const deniedWrites = new Set([
+      'card.entity.edit_fields',
+      'card.qa.ask',
+      'card.qa.answer',
+      'card.comments.create',
+      'card.comments.create_choice',
+      'card.comments.respond_choice',
+    ]);
+    permissionsMock.has.mockImplementation(
+      (permission: string) => !deniedWrites.has(permission),
+    );
+    storeMock.selectedCardId = readOnlyCard.id;
+    apiMock.getCard.mockResolvedValue(readOnlyCard);
+
+    render(<CardModal boardId="board-1" />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: /^Q&A/ }));
+    expect(
+      screen.queryByPlaceholderText('Add a question... (use @ to mention)'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('Answer...')).not.toBeInTheDocument();
+    expect(
+      screen.getByText('Awaiting an answer from an authorized contributor.'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: /^Comments/ }));
+    expect(
+      screen.queryByPlaceholderText('Write a comment... (use @ to mention)'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Submit Response' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Morning' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('tab', { name: /^References/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Requirements/ }));
+    expect(
+      screen.queryByRole('switch', {
+        name: 'Skip task requirement link gate for this card',
+      }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText('Disabled')).toBeInTheDocument();
+    expect(apiMock.updateCard).not.toHaveBeenCalled();
+  });
+
+  it('disables only assignment when card.entity.assign is false', async () => {
+    permissionsMock.has.mockImplementation(
+      (permission: string) => permission !== 'card.entity.assign',
+    );
+
+    render(<CardModal boardId="board-1" />);
+
+    expect(await screen.findByRole('combobox', { name: 'Card assignee' }))
+      .toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Card priority' }))
+      .not.toBeDisabled();
+  });
+
+  it('disables existing-card mutations when interact_in for its state is false', async () => {
+    permissionsMock.has.mockImplementation(
+      (permission: string) => permission !== 'card.interact_in.not_started',
+    );
+
+    render(<CardModal boardId="board-1" />);
+
+    expect(await screen.findByRole('combobox', { name: 'Card status' }))
+      .toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Card assignee' }))
+      .toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Card priority' }))
+      .toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Delete' }))
+      .not.toBeInTheDocument();
+    expect(apiMock.updateCard).not.toHaveBeenCalled();
+    expect(apiMock.moveCard).not.toHaveBeenCalled();
+  });
+
+  it('does not leak knowledge roots from a previous card after switching to an orphan card', async () => {
+    const sourceCard: Card = {
+      ...cardForType('normal'),
+      id: 'card-with-spec',
+      title: 'Card with source spec',
+      spec_id: 'spec-a',
+    };
+    const orphanCard: Card = {
+      ...cardForType('normal'),
+      id: 'orphan-card',
+      title: 'Orphan card',
+      spec_id: null,
+    };
+    let resolveOldKnowledge: ((value: {
+      id: string;
+      title: string;
+      content: string;
+    }) => void) | undefined;
+    const delayedOldKnowledge = new Promise<{
+      id: string;
+      title: string;
+      content: string;
+    }>((resolve) => {
+      resolveOldKnowledge = resolve;
+    });
+    storeMock.selectedCardId = sourceCard.id;
+    apiMock.getCard.mockImplementation((cardId: string) =>
+      Promise.resolve(cardId === sourceCard.id ? sourceCard : orphanCard)
+    );
+    apiMock.getSpec.mockResolvedValue({
+      id: 'spec-a',
+      title: 'Source spec',
+      test_scenarios: [],
+      business_rules: [],
+      api_contracts: [],
+      technical_requirements: [],
+      knowledge_bases: [{ id: 'old-kb', title: 'Old root' }],
+    });
+    apiMock.getSpecKnowledge.mockReturnValue(delayedOldKnowledge);
+
+    const view = render(<CardModal boardId="board-1" />);
+    await screen.findByText('Card with source spec');
+    await waitFor(() => {
+      expect(apiMock.getSpecKnowledge).toHaveBeenCalledWith('spec-a', 'old-kb');
+    });
+
+    storeMock.selectedCardId = orphanCard.id;
+    view.rerender(<CardModal boardId="board-1" />);
+    await screen.findByText('Orphan card');
+    resolveOldKnowledge?.({
+      id: 'old-kb',
+      title: 'Old root',
+      content: 'Must not leak into the orphan card.',
+    });
+
+    fireEvent.click(await screen.findByRole('tab', { name: /^Resources/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Knowledge/ }));
+    await waitFor(() => {
+      expect(cardKnowledgeTabMock.render).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          card: expect.objectContaining({ id: orphanCard.id }),
+          specKnowledgeBases: [],
+        }),
+      );
+    });
+  });
+
+  it('submits the explicit task-validation contract from circular score inputs', async () => {
+    const validationCard: Card = {
+      ...cardForType('normal'),
+      id: 'validation-1',
+      status: 'validation',
+    };
+    storeMock.selectedCardId = validationCard.id;
+    apiMock.getCard.mockResolvedValue(validationCard);
+    apiMock.submitTaskValidation.mockResolvedValue({
+      id: 'validation-entry-1',
+      confidence: 91,
+      estimated_completeness: 89,
+      estimated_drift: 8,
+      confidence_justification: 'Confidence is supported by the full suite.',
+      completeness_justification: 'Every acceptance criterion has evidence.',
+      drift_justification: 'Only intentional implementation details differ.',
+      general_justification: 'The implementation is ready for independent approval.',
+      recommendation: 'approve',
+      verdict: 'pass',
+      evaluator_id: 'agent-1',
+      created_at: '2026-07-28T14:00:00Z',
+      resolved_thresholds: {
+        min_confidence: 80,
+        min_completeness: 80,
+        max_drift: 20,
+      },
+      threshold_violations: [],
+      card_status: 'done',
+    });
+
+    render(<CardModal boardId="board-1" />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Task validation/ }));
+
+    expect(
+      screen.getByRole('img', {
+        name: /Confidence score 80 out of 100, higher is better/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', {
+        name: /Drift score 20 out of 100, lower is better/i,
+      }),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Confidence score'), {
+      target: { value: '91' },
+    });
+    fireEvent.change(screen.getByLabelText('Completeness score'), {
+      target: { value: '89' },
+    });
+    fireEvent.change(screen.getByLabelText('Drift score'), {
+      target: { value: '8' },
+    });
+    fireEvent.change(
+      screen.getByPlaceholderText('Justify the confidence score...'),
+      { target: { value: 'Confidence is supported by the full suite.' } },
+    );
+    fireEvent.change(
+      screen.getByPlaceholderText('Justify the completeness score...'),
+      { target: { value: 'Every acceptance criterion has evidence.' } },
+    );
+    fireEvent.change(
+      screen.getByPlaceholderText('Justify the drift score...'),
+      { target: { value: 'Only intentional implementation details differ.' } },
+    );
+    fireEvent.change(
+      screen.getByPlaceholderText('Overall validation summary...'),
+      {
+        target: {
+          value: 'The implementation is ready for independent approval.',
+        },
+      },
+    );
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Submit Validation (Approve)',
+      }),
+    );
+
+    await waitFor(() => {
+      expect(apiMock.submitTaskValidation).toHaveBeenCalledWith(
+        validationCard.id,
+        {
+          confidence: 91,
+          confidence_justification: 'Confidence is supported by the full suite.',
+          estimated_completeness: 89,
+          completeness_justification: 'Every acceptance criterion has evidence.',
+          estimated_drift: 8,
+          drift_justification: 'Only intentional implementation details differ.',
+          general_justification: 'The implementation is ready for independent approval.',
+          recommendation: 'approve',
+        },
+      );
+    });
+  });
+
+  it('shows the active board thresholds in the task-validation form', async () => {
+    const validationCard: Card = {
+      ...cardForType('normal'),
+      id: 'validation-thresholds-1',
+      status: 'validation',
+    };
+    storeMock.currentBoard.settings = {
+      min_confidence: 85,
+      min_completeness: 90,
+      max_drift: 10,
+    };
+    storeMock.selectedCardId = validationCard.id;
+    apiMock.getCard.mockResolvedValue(validationCard);
+
+    render(<CardModal boardId="board-1" />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Task validation/ }));
+
+    expect(
+      await screen.findByRole('img', {
+        name: /Confidence score 80 out of 100.*Minimum 85.*threshold not met/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', {
+        name: /Completeness score 80 out of 100.*Minimum 90.*threshold not met/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', {
+        name: /Drift score 20 out of 100.*Maximum 10.*threshold not met/i,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('No threshold configured')).not.toBeInTheDocument();
+  });
+
+  it('resolves each task-validation threshold through sprint, spec, and board overrides', async () => {
+    const validationCard: Card = {
+      ...cardForType('normal'),
+      id: 'validation-mixed-thresholds-1',
+      status: 'validation',
+      sprint_id: 'sprint-1',
+    };
+    storeMock.currentBoard.settings = {
+      min_confidence: 70,
+      min_completeness: 80,
+      max_drift: 12,
+    };
+    storeMock.selectedCardId = validationCard.id;
+    apiMock.getCard.mockResolvedValue(validationCard);
+    apiMock.getSpec.mockResolvedValue({
+      id: 'spec-1',
+      title: 'Stories spec',
+      validation_min_confidence: 88,
+      validation_min_completeness: 92,
+      validation_max_drift: null,
+      test_scenarios: [],
+      business_rules: [],
+      api_contracts: [],
+      technical_requirements: [],
+      knowledge_bases: [],
+    });
+    apiMock.getSprint.mockResolvedValue({
+      id: 'sprint-1',
+      spec_id: 'spec-1',
+      board_id: 'board-1',
+      validation_min_confidence: 95,
+      validation_min_completeness: null,
+      validation_max_drift: null,
+    });
+
+    render(<CardModal boardId="board-1" />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Task validation/ }));
+
+    expect(
+      await screen.findByRole('img', {
+        name: /Confidence score 80 out of 100.*Minimum 95.*threshold not met/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', {
+        name: /Completeness score 80 out of 100.*Minimum 92.*threshold not met/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', {
+        name: /Drift score 20 out of 100.*Maximum 12.*threshold not met/i,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('task-validation-confidence-threshold-source'))
+      .toHaveTextContent('Threshold source: sprint');
+    expect(screen.getByTestId('task-validation-completeness-threshold-source'))
+      .toHaveTextContent('Threshold source: spec');
+    expect(screen.getByTestId('task-validation-drift-threshold-source'))
+      .toHaveTextContent('Threshold source: board');
+    expect(apiMock.getSprint).toHaveBeenCalledWith('sprint-1');
+  });
+
+  it('fails closed when threshold authority cannot load and retries explicitly', async () => {
+    const validationCard: Card = {
+      ...cardForType('normal'),
+      id: 'validation-threshold-retry-1',
+      status: 'validation',
+      sprint_id: 'sprint-threshold-retry',
+    };
+    storeMock.selectedCardId = validationCard.id;
+    apiMock.getCard.mockResolvedValue(validationCard);
+    apiMock.getSprint.mockRejectedValueOnce(new Error('sprint unavailable'));
+
+    render(<CardModal boardId="board-1" />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Task validation/ }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not load the authoritative Spec/Sprint validation thresholds.',
+    );
+    expect(
+      screen.queryByRole('button', { name: /Submit Validation/ }),
+    ).not.toBeInTheDocument();
+
+    apiMock.getSprint.mockResolvedValue({
+      id: 'sprint-threshold-retry',
+      spec_id: 'spec-1',
+      board_id: 'board-1',
+      validation_min_confidence: 96,
+      validation_min_completeness: 94,
+      validation_max_drift: 6,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry thresholds' }));
+
+    expect(
+      await screen.findByRole('img', {
+        name: /Confidence score 80 out of 100.*Minimum 96.*threshold not met/i,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('ignores an older same-card polling response that finishes last', async () => {
+    vi.useFakeTimers();
+    const staleRefresh = deferred<Card>();
+    const currentRefresh = deferred<Card>();
+    const initialCard: Card = {
+      ...cardForType('normal'),
+      id: 'validation-poll-generation-1',
+      status: 'validation',
+      updated_at: '2026-08-06T10:00:00Z',
+    };
+    const staleCard = {
+      ...initialCard,
+      updated_at: '2026-08-06T10:01:00Z',
+    };
+    const currentCard = {
+      ...initialCard,
+      updated_at: '2026-08-06T10:02:00Z',
+    };
+    const initialSpec = {
+      id: 'spec-1',
+      title: 'Initial authority',
+      validation_min_confidence: 71,
+      test_scenarios: [],
+      business_rules: [],
+      api_contracts: [],
+      technical_requirements: [],
+      knowledge_bases: [],
+    };
+    const currentSpec = {
+      ...initialSpec,
+      title: 'Current authority',
+      validation_min_confidence: 97,
+    };
+    const currentSpecResponse = deferred<typeof currentSpec>();
+    storeMock.selectedCardId = initialCard.id;
+    apiMock.getCard
+      .mockResolvedValueOnce(initialCard)
+      .mockImplementationOnce(() => staleRefresh.promise)
+      .mockImplementationOnce(() => currentRefresh.promise);
+    apiMock.getSpec
+      .mockResolvedValueOnce(initialSpec)
+      .mockImplementationOnce(() => currentSpecResponse.promise);
+
+    const view = render(<CardModal boardId="board-1" />);
+    try {
+      await flushMicrotasks();
+      fireEvent.click(screen.getByRole('tab', { name: /^Validation/ }));
+      fireEvent.click(screen.getByRole('tab', { name: /^Task validation/ }));
+      expect(
+        screen.getByRole('img', {
+          name: /Confidence score 80 out of 100.*Minimum 71.*threshold met/i,
+        }),
+      ).toBeInTheDocument();
+      fireEvent.change(
+        screen.getByPlaceholderText('Justify the confidence score...'),
+        { target: { value: 'Current confidence evidence.' } },
+      );
+      fireEvent.change(
+        screen.getByPlaceholderText('Justify the completeness score...'),
+        { target: { value: 'Current completeness evidence.' } },
+      );
+      fireEvent.change(
+        screen.getByPlaceholderText('Justify the drift score...'),
+        { target: { value: 'Current drift evidence.' } },
+      );
+      fireEvent.change(
+        screen.getByPlaceholderText('Overall validation summary...'),
+        { target: { value: 'Current authoritative validation summary.' } },
+      );
+      expect(
+        screen.getByRole('button', { name: 'Submit Validation (Approve)' }),
+      ).toBeEnabled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(apiMock.getCard).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(apiMock.getCard).toHaveBeenCalledTimes(3);
+
+      currentRefresh.resolve(currentCard);
+      await flushMicrotasks();
+      expect(screen.getByRole('status')).toHaveTextContent(
+        'Refreshing authoritative Task Validation thresholds.',
+      );
+      expect(
+        screen.getByRole('button', { name: 'Submit Validation (Approve)' }),
+      ).toBeDisabled();
+      expect(
+        screen.getByRole('img', {
+          name: /Confidence score 80 out of 100.*Minimum 71.*threshold met/i,
+        }),
+      ).toBeInTheDocument();
+
+      currentSpecResponse.resolve(currentSpec);
+      await flushMicrotasks();
+      expect(
+        screen.getByRole('img', {
+          name: /Confidence score 80 out of 100.*Minimum 97.*threshold not met/i,
+        }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Submit Validation (Approve)' }),
+      ).toBeEnabled();
+
+      staleRefresh.resolve(staleCard);
+      await flushMicrotasks();
+      expect(
+        screen.getByRole('img', {
+          name: /Confidence score 80 out of 100.*Minimum 97.*threshold not met/i,
+        }),
+      ).toBeInTheDocument();
+      expect(apiMock.getSpec).toHaveBeenCalledTimes(2);
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('renders validation history against the thresholds captured at submission time', async () => {
+    const validationCard: Card = {
+      ...cardForType('normal'),
+      id: 'validation-history-1',
+      status: 'done',
+      validations: [{
+        id: 'validation-entry-1',
+        confidence: 92,
+        estimated_completeness: 88,
+        estimated_drift: 9,
+        confidence_justification: 'The execution evidence is independently reproducible.',
+        completeness_justification: 'All required outputs are linked and verified.',
+        drift_justification: 'No unintended product behavior was introduced.',
+        general_justification: 'The implementation meets all acceptance criteria.',
+        recommendation: 'approve',
+        verdict: 'pass',
+        evaluator_id: 'agent-1',
+        created_at: '2026-07-28T14:00:00Z',
+        resolved_thresholds: {
+          min_confidence: 85,
+          min_completeness: 82,
+          max_drift: 15,
+          resolved_from: 'spec',
+          resolved_sources: {
+            required: 'spec',
+            min_confidence: 'sprint',
+            min_completeness: 'spec',
+            max_drift: 'board',
+          },
+        },
+        threshold_violations: [],
+      }],
+    };
+    storeMock.selectedCardId = validationCard.id;
+    apiMock.getCard.mockResolvedValue(validationCard);
+
+    render(<CardModal boardId="board-1" />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Task validation/ }));
+    fireEvent.click(
+      await screen.findByText('The implementation meets all acceptance criteria.'),
+    );
+
+    expect(
+      screen.getByTestId('task-validation-validation-entry-1-confidence-score'),
+    ).toHaveAttribute('data-status', 'met');
+    expect(
+      screen.getByRole('img', {
+        name: /Confidence score 92 out of 100.*Minimum 85.*threshold met/i,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', {
+        name: /Drift score 9 out of 100.*Maximum 15.*threshold met/i,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Threshold source: sprint')).toBeInTheDocument();
+    expect(screen.getByText('Threshold source: board')).toBeInTheDocument();
+  });
+
+  it('shows the bug origin task and linked regression tests in lineage references', async () => {
+    render(<CardModal boardId="board-1" />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: /References/i }));
     const panel = await screen.findByTestId('bug-traceability-panel');
     await waitFor(() => expect(apiMock.getCard).toHaveBeenCalledWith('bug-1'));
 
@@ -297,7 +1523,7 @@ describe('CardModal', () => {
     expect(within(panel).getByText('Started')).toBeInTheDocument();
   });
 
-  it('toggles the human task requirement link skip from card details', async () => {
+  it('toggles the human task requirement link skip from requirement references', async () => {
     const taskCard: Card = {
       ...bugCard,
       id: 'task-skip-1',
@@ -319,6 +1545,8 @@ describe('CardModal', () => {
 
     render(<CardModal boardId="board-1" />);
 
+    fireEvent.click(await screen.findByRole('tab', { name: /References/i }));
+    fireEvent.click(await screen.findByRole('tab', { name: /Requirements/i }));
     const toggle = await screen.findByRole('switch', {
       name: 'Skip task requirement link gate for this card',
     });
@@ -394,7 +1622,8 @@ describe('CardModal', () => {
     });
 
     render(<CardModal boardId="board-1" />);
-    fireEvent.click(await screen.findByRole('button', { name: /Evidence/i }));
+    fireEvent.click(await screen.findByRole('tab', { name: /Tests/i }));
+    fireEvent.click(await screen.findByRole('tab', { name: /Evidence/i }));
 
     const tab = await screen.findByTestId('test-evidence-tab');
     expect(within(tab).getByText('Scenario with execution evidence')).toBeInTheDocument();
@@ -472,7 +1701,7 @@ describe('CardModal', () => {
     apiMock.getCard.mockResolvedValue({ ...bugCard, linked_test_task_ids: [] });
 
     render(<CardModal boardId="board-1" />);
-    fireEvent.click(await screen.findByRole('button', { name: /Tests/i }));
+    fireEvent.click(await screen.findByRole('tab', { name: /Tests/i }));
 
     const panel = await screen.findByTestId('bug-workflow-remediation-panel');
     expect(within(panel).getByText('Path A · Reuse eligible scenario')).toBeInTheDocument();
@@ -502,7 +1731,7 @@ describe('CardModal', () => {
     ]);
 
     render(<CardModal boardId="board-1" />);
-    fireEvent.click(await screen.findByRole('button', { name: /Activity/i }));
+    fireEvent.click(await screen.findByRole('tab', { name: /Activity/i }));
 
     expect(await screen.findByTestId('activity-log-list')).toBeInTheDocument();
     expect(
@@ -532,7 +1761,7 @@ describe('CardModal', () => {
     }]);
 
     render(<CardModal boardId="board-1" />);
-    fireEvent.click(await screen.findByRole('button', { name: /Activity/i }));
+    fireEvent.click(await screen.findByRole('tab', { name: /Activity/i }));
     fireEvent.click(await screen.findByRole('button', {
       name: /Status changed.*Status: not_started → started/i,
     }));
@@ -549,7 +1778,7 @@ describe('CardModal', () => {
 
   it('preserves the no-activity empty state through the shared renderer', async () => {
     render(<CardModal boardId="board-1" />);
-    fireEvent.click(await screen.findByRole('button', { name: /Activity/i }));
+    fireEvent.click(await screen.findByRole('tab', { name: /Activity/i }));
 
     expect(await screen.findByText('No history yet')).toBeInTheDocument();
   });
@@ -558,8 +1787,9 @@ describe('CardModal', () => {
     'keeps the Knowledge tab mounted and ignores Escape, backdrop, and tab changes during %s',
     async (operation) => {
       render(<CardModal boardId="board-1" />);
-      fireEvent.click(await screen.findByRole('button', { name: /^Knowledge/ }));
-      expect(await screen.findByTestId('card-knowledge-tab')).toBeInTheDocument();
+      fireEvent.click(await screen.findByRole('tab', { name: /Resources/i }));
+      fireEvent.click(await screen.findByRole('tab', { name: /^Knowledge/ }));
+      expect(await screen.findByTestId('card-knowledge-tab')).toBeVisible();
       expect(cardKnowledgeTabMock.render).toHaveBeenLastCalledWith(
         expect.objectContaining({
           onBusyChange: expect.any(Function),
@@ -578,16 +1808,28 @@ describe('CardModal', () => {
       fireEvent.click(backdrop!);
       expect(storeMock.closeCardModal).not.toHaveBeenCalled();
 
-      fireEvent.click(screen.getByRole('button', { name: /^Details$/ }));
-      expect(screen.getByTestId('card-knowledge-tab')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('tab', { name: /^Details$/ }));
+      expect(screen.getByTestId('card-knowledge-tab')).toBeVisible();
 
       fireEvent.click(
         screen.getByRole('button', { name: 'Finish knowledge operation' }),
       );
-      fireEvent.click(screen.getByRole('button', { name: /^Details$/ }));
-      expect(screen.queryByTestId('card-knowledge-tab')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('tab', { name: /^Details$/ }));
+      expect(screen.getByTestId('card-knowledge-tab')).not.toBeVisible();
     },
   );
+
+  it('does not list amendment revisions without amendment.revision.read', async () => {
+    permissionsMock.has.mockImplementation(
+      (permission: string) => permission !== 'amendment.revision.read',
+    );
+
+    render(<CardModal boardId="board-1" />);
+
+    await waitFor(() => expect(apiMock.getCard).toHaveBeenCalledWith('bug-1'));
+    await waitFor(() => expect(apiMock.getBugRegressionScenarioCandidates).toHaveBeenCalled());
+    expect(apiMock.listAmendmentRevisions).not.toHaveBeenCalled();
+  });
 });
 
 describe('TestEvidenceTab — re-executable evidence visibility (spec 9e0bf979)', () => {
@@ -679,5 +1921,211 @@ describe('TestEvidenceTab — re-executable evidence visibility (spec 9e0bf979)'
     expect(screen.getByTestId('evidence-badge-present')).toBeInTheDocument();
     expect(screen.queryByText('Replay command')).not.toBeInTheDocument();
     expect(screen.queryByText('Non-replayable justification')).not.toBeInTheDocument();
+  });
+
+  it('renders negative as supported and a historical unknown type explicitly', () => {
+    render(
+      <TestEvidenceTab
+        scenarios={[
+          scenario({
+            id: 'negative',
+            scenario_type: 'negative',
+          }),
+          scenario({
+            id: 'legacy',
+            scenario_type: 'regression',
+          }),
+        ]}
+      />,
+    );
+
+    const badges = screen.getAllByTestId('scenario-type-badge');
+    expect(badges[0]).toHaveTextContent('negative');
+    expect(badges[0]).not.toHaveAttribute('data-unsupported');
+    expect(badges[0]).toHaveClass(
+      'bg-rose-50',
+      'text-rose-600',
+      'dark:bg-rose-900/30',
+      'dark:text-rose-300',
+    );
+    expect(badges[1]).toHaveTextContent('regression (unsupported)');
+    expect(badges[1]).toHaveAttribute('data-unsupported', 'true');
+  });
+});
+
+// SK-B2-S1 — TS-11: ExecutionReportsPanel renders the declared impact block
+// read-only (no edit controls) and skips it entirely when absent.
+describe('ExecutionReportsPanel impact evidence (TS-11)', () => {
+  const baseCard = {
+    id: 'card-ie',
+    board_id: 'board-1',
+    spec_id: 'spec-1',
+    title: 'IE card',
+    description: null,
+    details: null,
+    status: 'validation',
+    priority: 'high',
+    position: 0,
+    assignee_id: null,
+    created_by: 'agent-1',
+    created_at: '2026-08-02T00:00:00Z',
+    updated_at: '2026-08-02T00:00:00Z',
+    due_date: null,
+    labels: [],
+    card_type: 'normal',
+    archived: false,
+  } as unknown as import('@/types').Card;
+
+  it('renders every declared section read-only', async () => {
+    const { ExecutionReportsPanel } = await import('../CardModal');
+    const card = {
+      ...baseCard,
+      conclusions: [
+        {
+          text: 'done',
+          author_id: 'agent-1',
+          created_at: '2026-08-02T00:00:00Z',
+          completeness: 100,
+          completeness_justification: 'ok',
+          drift: 0,
+          drift_justification: 'ok',
+          source: 'move_to_validation',
+          impact_evidence: {
+            schema_version: 1,
+            files: [
+              {
+                repo: 'core',
+                path: 'src/okto_pulse/core/models/schemas.py',
+                change_kind: 'modified',
+              },
+            ],
+            symbols: [
+              {
+                name: 'ImpactEvidence',
+                kind: 'class',
+                action: 'created',
+                repo: 'core',
+                file: 'src/okto_pulse/core/models/schemas.py',
+              },
+            ],
+            surfaces: [
+              { kind: 'mcp_tool', identifier: 'okto_pulse_move_card' },
+            ],
+            tests: [
+              {
+                action: 'added',
+                repo: 'core',
+                test_file_path: 'tests/test_impact_evidence_shape.py',
+                scenario_id: 'ts_8138a59f',
+              },
+            ],
+            evidence_refs: ['ts_8138a59f'],
+          },
+        },
+      ],
+    } as unknown as import('@/types').Card;
+    render(<ExecutionReportsPanel card={card} />);
+    const block = screen.getByTestId('impact-evidence-readonly');
+    expect(block).toHaveTextContent('[core] modified: src/okto_pulse/core/models/schemas.py');
+    expect(block).toHaveTextContent('class/created: ImpactEvidence');
+    expect(block).toHaveTextContent('mcp_tool: okto_pulse_move_card');
+    expect(block).toHaveTextContent('ts_8138a59f');
+    expect(within(block).queryByRole('button')).toBeNull();
+    expect(within(block).queryByRole('textbox')).toBeNull();
+  });
+
+  it('omits the section entirely when the conclusion has no block', async () => {
+    const { ExecutionReportsPanel } = await import('../CardModal');
+    const card = {
+      ...baseCard,
+      conclusions: [
+        {
+          text: 'legacy',
+          author_id: 'agent-1',
+          created_at: '2026-08-02T00:00:00Z',
+          completeness: 100,
+          completeness_justification: 'ok',
+          drift: 0,
+          drift_justification: 'ok',
+        },
+      ],
+    } as unknown as import('@/types').Card;
+    render(<ExecutionReportsPanel card={card} />);
+    expect(screen.queryByTestId('impact-evidence-readonly')).toBeNull();
+  });
+});
+
+// SK-B2-S1 — TS-16: under 'require', the 409 impact_evidence_required
+// remediation renders IN-PLACE and the prompt keeps its state; the same
+// submit succeeds after the gate clears.
+describe('conclusion prompt keeps state on impact_evidence_required (TS-16)', () => {
+  it('shows the remediation without closing and retries successfully', async () => {
+    const normalCard = {
+      ...cardForType('normal'),
+      status: 'in_progress',
+    } as Card;
+    storeMock.selectedCardId = normalCard.id;
+    apiMock.getCard.mockResolvedValue(normalCard);
+    apiMock.getAllowedTransitions.mockResolvedValue(
+      transitionEnvelope(normalCard.id, 'in_progress', [
+        allowedTransition('validation'),
+        allowedTransition('on_hold'),
+      ]),
+    );
+    apiMock.moveCard
+      .mockRejectedValueOnce(
+        new Error(
+          'impact_evidence_required: This board requires declared impact evidence on the execution report',
+        ),
+      )
+      .mockResolvedValueOnce({ ...normalCard, status: 'validation' });
+
+    render(<CardModal boardId="board-1" />);
+
+    const status = await screen.findByRole('combobox', {
+      name: 'Card status',
+    });
+    await waitFor(() => expect(status).not.toBeDisabled());
+    fireEvent.change(status, { target: { value: 'validation' } });
+
+    // The executor-report prompt opens instead of calling the API.
+    expect(
+      await screen.findByText('Execution Report Required'),
+    ).toBeInTheDocument();
+    fireEvent.change(
+      screen.getByPlaceholderText(/## Implementation Summary/),
+      { target: { value: 'Executor claim' } },
+    );
+    fireEvent.change(
+      screen.getByPlaceholderText('Justify the completeness score...'),
+      { target: { value: 'complete' } },
+    );
+    fireEvent.change(
+      screen.getByPlaceholderText('Justify the drift score...'),
+      { target: { value: 'no drift' } },
+    );
+
+    const submit = screen.getByRole('button', {
+      name: /Complete & Move to/,
+    });
+    fireEvent.click(submit);
+
+    // Gate rejection: remediation in-place, prompt still open, state intact.
+    expect(
+      await screen.findByTestId('impact-evidence-gate-error'),
+    ).toHaveTextContent('impact_evidence_required');
+    expect(screen.getByText('Execution Report Required')).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText(/## Implementation Summary/),
+    ).toHaveValue('Executor claim');
+
+    // Same submit succeeds once the block/gate situation is resolved.
+    fireEvent.click(submit);
+    await waitFor(() =>
+      expect(
+        screen.queryByText('Execution Report Required'),
+      ).not.toBeInTheDocument(),
+    );
+    expect(apiMock.moveCard).toHaveBeenCalledTimes(2);
   });
 });

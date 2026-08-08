@@ -13,6 +13,11 @@ import { render, screen } from '@testing-library/react';
 import { PendingQueueTree } from '../PendingQueueTree';
 import type { PendingTreeNode } from '@/services/kg-api';
 
+const permissionHas = vi.hoisted(() => vi.fn((_flag: string) => true));
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({ preset: 'Full Control', isLoading: false, error: null, ownerReviewRequired: false, has: permissionHas }),
+}));
+
 vi.mock('@/services/kg-api', async () => {
   const actual = await vi.importActual<typeof import('@/services/kg-api')>('@/services/kg-api');
   return {

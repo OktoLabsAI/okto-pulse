@@ -72,6 +72,61 @@ def _receipt_from_payload(payload: dict[str, Any]) -> RebuildEffectReceipt:
     )
 
 
+def _policy_projection_error_code(exc: Exception) -> str:
+    code = getattr(exc, "code", None)
+    if (
+        isinstance(code, str)
+        and code.startswith("policy_constraint_")
+        and code.replace("_", "").isalnum()
+        and len(code) <= 120
+    ):
+        return code
+    return f"policy_constraint_projection_failed:{type(exc).__name__}"
+
+
+def _policy_projection_details(
+    result: object,
+    *,
+    board_id: str,
+) -> dict[str, object]:
+    active_count = int(getattr(result, "active_count"))
+    activated_count = int(getattr(result, "activated_count"))
+    ended_count = int(getattr(result, "ended_count"))
+    unadopted_active_count = int(
+        getattr(result, "unadopted_active_count")
+    )
+    node_ids = tuple(str(value) for value in getattr(result, "node_ids"))
+    if (
+        getattr(result, "board_id", None) != board_id
+        or getattr(result, "operation", None) != "rebuild"
+        or getattr(result, "event_id", object()) is not None
+        or any(
+            value < 0
+            for value in (
+                active_count,
+                activated_count,
+                ended_count,
+                unadopted_active_count,
+            )
+        )
+        or unadopted_active_count != 0
+        or active_count != len(node_ids)
+        or len(set(node_ids)) != len(node_ids)
+        or any(not value for value in node_ids)
+    ):
+        raise RuntimeError("policy_constraint_rebuild_result_invalid")
+    return {
+        "configured": True,
+        "status": "completed",
+        "activated_count": activated_count,
+        "ended_count": ended_count,
+        "active_count": active_count,
+        "unadopted_active_count": unadopted_active_count,
+        "node_ids": list(node_ids),
+        "replayed": bool(getattr(result, "replayed")),
+    }
+
+
 class CommunityRebuildEffects:
     def __init__(
         self,
@@ -399,9 +454,43 @@ class CommunityRebuildEffects:
         existing = self._load_receipt(command, effect_key)
         if existing is not None:
             return existing
-        # The enclosing KGRebuildService performs the generation write only when
-        # the step result is ok. This receipt is the Core processor's explicit
-        # authorization for that existing atomic promotion point.
+        # The enclosing KGRebuildService performs the generation write only
+        # after this step returns ``ok=True``.  Reconcile the separate
+        # relational-policy derivative here, before issuing that authorization;
+        # a failed projection therefore enters the processor's ordinary
+        # PROMOTION_FAILED compensation path and cannot expose a promoted
+        # generation with stale policy Constraints.
+        projection_details: dict[str, object] = {
+            "configured": self._owner.policy_constraint_rebuild is not None,
+            "status": "legacy_not_configured",
+        }
+        if self._owner.policy_constraint_rebuild is not None:
+            try:
+                projection_details = _policy_projection_details(
+                    self._owner.policy_constraint_rebuild(command.board_id),
+                    board_id=command.board_id,
+                )
+            except Exception as exc:
+                code = _policy_projection_error_code(exc)
+                return self._store_receipt(
+                    command,
+                    RebuildEffectReceipt(
+                        effect_key,
+                        "promote",
+                        False,
+                        code=code,
+                        details={
+                            "candidate_generation_id": (
+                                command.candidate_generation_id
+                            ),
+                            "policy_constraint_projection": {
+                                "configured": True,
+                                "status": "failed",
+                                "code": code,
+                            },
+                        },
+                    ),
+                )
         return self._store_receipt(
             command,
             RebuildEffectReceipt(
@@ -409,7 +498,10 @@ class CommunityRebuildEffects:
                 "promote",
                 True,
                 code="promotion_authorized",
-                details={"candidate_generation_id": command.candidate_generation_id},
+                details={
+                    "candidate_generation_id": command.candidate_generation_id,
+                    "policy_constraint_projection": projection_details,
+                },
             ),
         )
 
@@ -424,33 +516,173 @@ class CommunityRebuildEffects:
             "actions": [action.value for action in command.actions]
         }
         ok = True
+        had_previous_graph = self._quarantine_had_affected_files(
+            rebuild_command
+        )
+        queue_fenced = True
         if CompensationAction.CANCEL_ENQUEUED_SOURCES in command.actions:
-            details["queue"] = self._owner.compensate_pending_sources(
+            queue_result = self._owner.compensate_pending_sources(
                 board_id=command.board_id,
                 run_id=rebuild_command.manifest_ref or rebuild_command.run_id,
             )
-        if CompensationAction.RESTORE_QUARANTINE in command.actions:
-            restored = self._restore_latest_quarantine(rebuild_command)
-            details["quarantine_restore"] = restored
-            ok = bool(restored.get("ok", False))
+            details["queue"] = queue_result
+            queue_fenced = int(queue_result.get("active_remaining", -1)) == 0
+            ok = ok and queue_fenced
         if CompensationAction.DEMOTE_CANDIDATE_GENERATION in command.actions:
             details["candidate_demotion"] = {
                 "status": "not_persisted_by_effect_adapter",
                 "candidate_generation_id": rebuild_command.candidate_generation_id,
             }
-        if CompensationAction.DISCARD_CANDIDATE_GENERATION in command.actions:
+
+        wants_discard = (
+            CompensationAction.DISCARD_CANDIDATE_GENERATION
+            in command.actions
+        )
+        restored: dict[str, object] | None = None
+        if wants_discard and not had_previous_graph and queue_fenced:
+            # A fresh board has no predecessor to restore.  Discard and prove
+            # physical absence before the no-op restore phase.
+            discarded = self._discard_fresh_candidate(rebuild_command)
+            details["candidate_discard"] = discarded
+            ok = ok and bool(
+                discarded.get("status")
+                in {"already_absent", "discarded"}
+            )
+        elif wants_discard and not queue_fenced:
             details["candidate_discard"] = {
-                "status": "not_persisted_by_effect_adapter",
-                "candidate_generation_id": rebuild_command.candidate_generation_id,
+                "status": "blocked_by_active_queue",
+                "candidate_generation_id": (
+                    rebuild_command.candidate_generation_id
+                ),
             }
+
+        if (
+            CompensationAction.RESTORE_QUARANTINE in command.actions
+            and queue_fenced
+        ):
+            restored = self._restore_latest_quarantine(rebuild_command)
+            details["quarantine_restore"] = restored
+            ok = ok and bool(restored.get("ok", False))
+        elif CompensationAction.RESTORE_QUARANTINE in command.actions:
+            details["quarantine_restore"] = {
+                "ok": False,
+                "reason": "active_queue_not_fenced",
+            }
+
+        if wants_discard and had_previous_graph:
+            # ``apply_rebuild_compensation`` is one governed backup-swap:
+            # candidate live files are moved to this new quarantine before the
+            # predecessor is copied back and open-validated.  Expose that
+            # DISCARD→RESTORE evidence explicitly; a second purge here would
+            # destroy the restored predecessor.
+            report = (
+                dict(restored.get("report", {}))
+                if restored is not None
+                else {}
+            )
+            backup_quarantine_id = report.get("backup_quarantine_id")
+            atomic_ok = bool(
+                restored is not None
+                and restored.get("ok", False)
+                and backup_quarantine_id
+            )
+            details["candidate_discard"] = {
+                "status": (
+                    "discarded_by_atomic_backup_swap"
+                    if atomic_ok
+                    else "atomic_backup_swap_unconfirmed"
+                ),
+                "candidate_generation_id": (
+                    rebuild_command.candidate_generation_id
+                ),
+                "candidate_quarantine_id": backup_quarantine_id,
+                "live_candidate_absent_before_restore": atomic_ok,
+            }
+            ok = ok and atomic_ok
         receipt = RebuildEffectReceipt(
             effect_key,
             "compensate",
             ok,
-            code="compensated" if ok else "quarantine_restore_unavailable",
+            code="compensated" if ok else "compensation_incomplete",
             details=details,
         )
         return self._store_receipt(rebuild_command, receipt)
+
+    def _quarantine_had_affected_files(
+        self,
+        command: RebuildCommand,
+    ) -> bool:
+        receipt = self._load_receipt(
+            command,
+            f"{command.run_id}:quarantine",
+        )
+        return bool(
+            tuple(dict(receipt.details).get("affected_files", ()))
+            if receipt is not None
+            else ()
+        )
+
+    def _discard_fresh_candidate(
+        self,
+        command: RebuildCommand,
+    ) -> dict[str, object]:
+        restore = self._quarantine_restore
+        if restore is None:
+            try:
+                from okto_pulse.core.services.application_kg import (
+                    get_current_provider_registry,
+                )
+
+                restore = (
+                    get_current_provider_registry().require_quarantine_restore()
+                )
+                self._quarantine_restore = restore
+            except Exception as exc:
+                return {
+                    "status": "discard_failed",
+                    "code": (
+                        "rebuild_candidate_discard_unavailable:"
+                        f"{type(exc).__name__}"
+                    ),
+                    "candidate_generation_id": (
+                        command.candidate_generation_id
+                    ),
+                }
+        discard = getattr(restore, "discard_rebuild_candidate", None)
+        if not callable(discard):
+            return {
+                "status": "discard_failed",
+                "code": "governed_candidate_discard_unavailable",
+                "candidate_generation_id": command.candidate_generation_id,
+            }
+        try:
+            result = dict(
+                discard(
+                    expected_board_id=command.board_id,
+                    run_id=command.run_id,
+                    owner_token=command.owner_token,
+                )
+            )
+        except Exception as exc:
+            logger.error(
+                "kg.rebuild.candidate_discard_failed board=%s error_type=%s",
+                command.board_id,
+                type(exc).__name__,
+                extra={
+                    "event": "kg.rebuild.candidate_discard_failed",
+                    "board_id": command.board_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            return {
+                "status": "discard_failed",
+                "code": f"rebuild_candidate_discard_failed:{type(exc).__name__}",
+                "candidate_generation_id": command.candidate_generation_id,
+            }
+        result["candidate_generation_id"] = (
+            command.candidate_generation_id
+        )
+        return result
 
     def _checkpoint_command(self, run_id: str) -> RebuildCommand:
         checkpoint = self._owner._rebuild_checkpoint_cache.get(run_id)
@@ -505,15 +737,32 @@ class CommunityRebuildEffects:
         if self._quarantine_restore is None:
             return {"ok": False, "reason": "quarantine_restore_unavailable"}
         try:
+            build_plan = getattr(self._quarantine_restore, "plan", None)
             apply_compensation = getattr(
                 self._quarantine_restore,
                 "apply_rebuild_compensation",
                 None,
             )
-            if not callable(apply_compensation):
+            if not callable(build_plan) or not callable(apply_compensation):
                 return {
                     "ok": False,
                     "reason": "governed_quarantine_restore_unavailable",
+                    "quarantine_id": quarantine_id,
+                }
+            plan = build_plan(quarantine_id)
+            expected_files = tuple(
+                str(getattr(entry, "name", ""))
+                for entry in tuple(getattr(plan, "files", ()))
+            )
+            if (
+                getattr(plan, "quarantine_id", None) != quarantine_id
+                or getattr(plan, "board_id", None) != command.board_id
+                or not expected_files
+                or any(not value for value in expected_files)
+            ):
+                return {
+                    "ok": False,
+                    "reason": "quarantine_restore_plan_invalid",
                     "quarantine_id": quarantine_id,
                 }
             report = apply_compensation(
@@ -523,10 +772,12 @@ class CommunityRebuildEffects:
                 owner_token=command.owner_token,
             )
         except Exception as exc:
-            logger.exception(
-                "kg.rebuild.quarantine_restore_failed board=%s quarantine_id=%s",
+            logger.error(
+                "kg.rebuild.quarantine_restore_failed board=%s "
+                "quarantine_id=%s error_type=%s",
                 command.board_id,
                 quarantine_id,
+                type(exc).__name__,
                 extra={
                     "event": "kg.rebuild.quarantine_restore_failed",
                     "board_id": command.board_id,
@@ -537,16 +788,39 @@ class CommunityRebuildEffects:
             return {
                 "ok": False,
                 "reason": f"quarantine_restore_failed:{type(exc).__name__}",
-                "error": str(exc),
                 "quarantine_id": quarantine_id,
             }
+        restored_files = tuple(
+            str(value) for value in getattr(report, "restored_files", ())
+        )
+        backup_quarantine_id = str(
+            getattr(report, "backup_quarantine_id", "") or ""
+        )
+        report_ok = bool(
+            getattr(report, "applied", False)
+            and getattr(report, "open_validated", False)
+            and getattr(report, "quarantine_id", None) == quarantine_id
+            and getattr(report, "board_id", None) == command.board_id
+            and backup_quarantine_id
+            and restored_files == expected_files
+        )
         return {
-            "ok": bool(
-                getattr(report, "applied", False)
-                and getattr(report, "open_validated", False)
+            "ok": report_ok,
+            "reason": (
+                "restored" if report_ok else "quarantine_restore_report_invalid"
             ),
             "quarantine_id": quarantine_id,
-            "report": _safe(getattr(report, "__dict__", {})),
+            "report": {
+                "quarantine_id": quarantine_id,
+                "board_id": command.board_id,
+                "applied": bool(getattr(report, "applied", False)),
+                "backup_quarantine_id": backup_quarantine_id or None,
+                "restored_files": list(restored_files),
+                "restored_count": len(restored_files),
+                "open_validated": bool(
+                    getattr(report, "open_validated", False)
+                ),
+            },
         }
 
     def record_audit(

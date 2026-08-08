@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases.allowed_transitions import (
@@ -15,6 +17,20 @@ from okto_pulse.core.application.use_cases.base import (
     CommandValidationError,
     EntityNotFoundError,
 )
+from okto_pulse.core.domain.guideline_policy import (
+    GuidelineEnforcement,
+    PolicyCurrentness,
+)
+from okto_pulse.core.domain.guideline_semantic_assessment import (
+    SemanticAssessmentInadmissibilityCause,
+)
+from okto_pulse.core.domain.guideline_semantic_currentness import (
+    SemanticAssessmentCurrentnessReason,
+)
+from okto_pulse.core.domain.guideline_semantic_transition import (
+    PolicyTransitionDiagnosticCode,
+    PolicyTransitionReasonCode,
+)
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import get_realm_id, require_user
 from okto_pulse.core.repositories import PulseUnitOfWork
@@ -22,24 +38,91 @@ from okto_pulse.core.repositories import PulseUnitOfWork
 router = APIRouter()
 
 
-class AllowedTransitionResponse(BaseModel):
+class _ClosedResponseModel(BaseModel):
+    """Fail closed when Core adds or renames a public contract field."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class AllowedTransitionBindingDecisionResponse(_ClosedResponseModel):
+    binding_id: str
+    guideline_id: str
+    enforcement: GuidelineEnforcement
+    applicable_metric_count: int = Field(ge=0)
+    allowed: bool
+    assessment_available: bool
+    receipt_id: str | None
+    currentness: PolicyCurrentness | None
+    currentness_reasons: list[
+        SemanticAssessmentCurrentnessReason
+    ] = Field(default_factory=list)
+    inadmissibility_cause: SemanticAssessmentInadmissibilityCause | None
+    failed_metric_count: int = Field(ge=0)
+    waived_metric_count: int = Field(ge=0)
+    blocking_metric_count: int = Field(ge=0)
+    advisory_issue_count: int = Field(ge=0)
+    skipped: bool
+    diagnostic_codes: list[PolicyTransitionDiagnosticCode] = Field(
+        default_factory=list
+    )
+
+
+class AllowedTransitionPolicyComplianceDecisionResponse(
+    _ClosedResponseModel
+):
+    state: PolicyTransitionReasonCode
+    allowed: bool | None
+    policy_compliance_required: bool
+    reason_codes: list[PolicyTransitionReasonCode] = Field(
+        default_factory=list
+    )
+    decision_digest: str | None = None
+    fence_digest: str | None = None
+    receipt_ids: list[str] = Field(default_factory=list)
+    currentness: PolicyCurrentness | None = None
+    currentness_reasons: list[
+        SemanticAssessmentCurrentnessReason
+    ] = Field(default_factory=list)
+    applicable_metric_count: int | None = Field(default=None, ge=0)
+    applicable_blocking_metric_count: int | None = Field(
+        default=None,
+        ge=0,
+    )
+    failed_metric_count: int | None = Field(default=None, ge=0)
+    blocking_metric_count: int | None = Field(default=None, ge=0)
+    waived_metric_count: int | None = Field(default=None, ge=0)
+    advisory_issue_count: int | None = Field(default=None, ge=0)
+    skipped_binding_count: int | None = Field(default=None, ge=0)
+    diagnostic_codes: list[PolicyTransitionDiagnosticCode] = Field(
+        default_factory=list
+    )
+    binding_decisions: list[
+        AllowedTransitionBindingDecisionResponse
+    ] = Field(default_factory=list)
+
+
+class AllowedTransitionResponse(_ClosedResponseModel):
     to_status: str
     label: str
     gate: str
     blocked_reason: str | None = None
-    preconditions: list[str] = []
-    capabilities: list[str] = []
-    effects: list[str] = []
-    reason_codes: list[str] = []
+    preconditions: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+    effects: list[str] = Field(default_factory=list)
+    reason_codes: list[str] = Field(default_factory=list)
+    policy_compliance: bool = False
+    policy_compliance_decision: (
+        AllowedTransitionPolicyComplianceDecisionResponse | None
+    ) = None
 
 
-class AllowedTransitionsResponse(BaseModel):
+class AllowedTransitionsResponse(_ClosedResponseModel):
     board_id: str
     entity_type: str
     entity_id: str | None
     current_status: str
     allowed_transitions: list[AllowedTransitionResponse]
-    source: str = ALLOWED_TRANSITIONS_SOURCE
+    source: Literal["core_sdlc_registry_v1"] = ALLOWED_TRANSITIONS_SOURCE
 
 
 @router.get(

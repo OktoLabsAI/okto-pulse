@@ -133,7 +133,33 @@ def _apply_source_reader(base: Any) -> None:
     )
 
 
-def _apply_rebuild_ingestion(base: Any) -> None:
+def _policy_constraint_rebuild_callback(session_factory: Any):
+    """Bridge the synchronous rebuild step to the async projection port."""
+
+    from okto_pulse.community.adapters.sqlalchemy_policy_constraint_projection import (
+        CommunitySqlAlchemyPolicyConstraintProjection,
+    )
+    from okto_pulse.core.kg.async_bridge import run_async_blocking
+
+    projection = CommunitySqlAlchemyPolicyConstraintProjection()
+
+    def _rebuild(board_id: str):
+        async def _run():
+            async with session_factory() as session:
+                return await projection.rebuild_board(
+                    session,
+                    board_id=board_id,
+                )
+
+        return run_async_blocking(_run())
+
+    return _rebuild
+
+
+def _apply_rebuild_ingestion(
+    base: Any,
+    session_factory: Any | None = None,
+) -> None:
     """Fill the rebuild ingestion port with the Community SQLite adapter."""
     from okto_pulse.community.adapters.board_rebuild_ingestion import (
         CommunityBoardRebuildIngestionAdapter,
@@ -144,6 +170,11 @@ def _apply_rebuild_ingestion(base: Any) -> None:
         db_path_provider=resolve_pulse_db_path,
         artifact_store=base.rebuild_audit_artifact_store,
         quarantine_restore=getattr(base, "quarantine_restore", None),
+        policy_constraint_rebuild=(
+            _policy_constraint_rebuild_callback(session_factory)
+            if session_factory is not None
+            else None
+        ),
     )
 
 
@@ -260,6 +291,20 @@ def configure_community_kg_registry(
     register_community_kg_operational_ports()
 
     register_community_reranker()
+    # MKG-A-S1: cognitive graph commits are fail-closed unless their durable
+    # relational source ledger is composed.  Keep this inside the shared KG
+    # composition path so server, CLI init and offline/runtime smokes all wire
+    # the same Community-owned adapter before any consolidation.
+    from okto_pulse.community.adapters.sqlalchemy_kg_cognitive_source import (
+        CommunitySqlAlchemyCognitiveSourceStore,
+    )
+    from okto_pulse.core.ports.kg_cognitive_source import (
+        register_cognitive_source_store,
+    )
+
+    register_cognitive_source_store(
+        CommunitySqlAlchemyCognitiveSourceStore(session_factory)
+    )
     # MKG-C-S1 (FR1): off-graph equivalence ledger — registered here so BOTH
     # the server wiring and offline CLI curation commands resolve the same
     # fail-closed port.
@@ -309,7 +354,7 @@ def configure_community_kg_registry(
             )
         ),
     )
-    _apply_rebuild_ingestion(base)
+    _apply_rebuild_ingestion(base, session_factory)
     if include_graph:
         _apply_graph_providers(base)
     # R05-D/R-P2-02: supply event_bus / audit_repo / config from the Community

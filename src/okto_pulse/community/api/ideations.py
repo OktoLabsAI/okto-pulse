@@ -23,6 +23,10 @@ from okto_pulse.community.api.pagination import (
     search_groups,
     validate_ideation_pagination_query,
 )
+from okto_pulse.community.api.quality_summary_projection import (
+    load_quality_summaries_for_page,
+    quality_summary_field,
+)
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     PageRequest,
@@ -74,6 +78,9 @@ from okto_pulse.core.application.ideation_scope import (
     IdeationScopeValidationError,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
+from okto_pulse.core.domain.guideline_policy_transition import (
+    PolicyTransitionRejected,
+)
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.models.schemas import (
     IdeationAmbiguityGateSkipUpdate,
@@ -194,6 +201,15 @@ async def list_ideations(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
             )
+        quality_summaries = await load_quality_summaries_for_page(
+            uow=uow,
+            user_id=user_id,
+            board_id=board_id,
+            subject_type="ideation",
+            subject_ids=tuple(
+                str(record.values["id"]) for record in page.items
+            ),
+        )
         return project_page(
             page,
             lambda record: IdeationPageItem(
@@ -216,7 +232,11 @@ async def list_ideations(
                         "archived",
                         "scope_assessment",
                     ),
-                )
+                ),
+                **quality_summary_field(
+                    str(record.values["id"]),
+                    quality_summaries,
+                ),
             ),
         )
     try:
@@ -335,6 +355,8 @@ async def move_ideation(
         )
     except CancellationReasonRequiredError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict()) from e
+    except PolicyTransitionRejected as e:
+        raise RESTAdapterContract.http_error(e) from e
     except (AmbiguityGateError, EntityNotFoundError) as e:
         raise RESTAdapterContract.http_error(e, not_found_detail="Ideation not found") from e
     return result.ideation

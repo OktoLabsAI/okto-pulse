@@ -31,7 +31,6 @@ from okto_pulse.core.kg.tier_power import (
     get_schema_info,
 )
 from okto_pulse.community.api.deps import get_unit_of_work
-from okto_pulse.core.application.scope import ActorScope
 from okto_pulse.core.application.errors import BoostPersistError
 from okto_pulse.core.application.kg_runtime_access import (
     resolve_cypher_executor,
@@ -45,6 +44,10 @@ from okto_pulse.core.application.use_cases.base import (
     PermissionDeniedError,
 )
 from okto_pulse.core.application.use_cases.board_access import load_accessible_board
+from okto_pulse.core.application.use_cases.authorize_operation import (
+    AuthorizeOperationCommand,
+    AuthorizeOperationUseCase,
+)
 from okto_pulse.core.kg.cursor_codec import decode_cursor, encode_cursor
 from okto_pulse.community.api.auth_deps import get_current_user, get_realm_id, require_user
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
@@ -81,28 +84,6 @@ router = APIRouter(prefix="/kg", tags=["knowledge-graph"])
 __all__ = ["decode_cursor", "encode_cursor", "router"]
 
 logger = logging.getLogger("okto_pulse.api.kg_routes")
-_KG_ADMIN_PERMISSION = "kg.admin.historical_consolidation"
-
-
-def _permission_enabled(permissions: Any, required: str) -> bool:
-    if permissions is None:
-        return False
-    if hasattr(permissions, "check"):
-        return permissions.check(required) is None
-    if isinstance(permissions, dict):
-        if permissions.get(required) is True:
-            return True
-        cursor: Any = permissions
-        for part in required.split("."):
-            if not isinstance(cursor, dict) or part not in cursor:
-                return False
-            cursor = cursor[part]
-        return cursor is True
-    if isinstance(permissions, (list, tuple, set, frozenset)):
-        return required in permissions or "*" in permissions
-    return False
-
-
 def _kg_actor(
     *,
     user_id: str,
@@ -137,17 +118,37 @@ async def _ensure_board_access(
         raise HTTPException(status_code=404, detail="Board not found")
 
 
-def _require_kg_admin(actor: ActorContext) -> None:
-    actor_scope = ActorScope.from_context(actor)
-    roles = {role.lower() for role in actor_scope.roles}
-    if roles.intersection({"admin", "operator", "kg-admin", "kg_admin"}):
-        return
-    if _permission_enabled(actor_scope.permissions, _KG_ADMIN_PERMISSION):
-        return
-    raise HTTPException(
-        status_code=403,
-        detail=f"Permission denied: requires '{_KG_ADMIN_PERMISSION}'",
-    )
+async def _require_kg_operation(
+    actor: ActorContext,
+    *,
+    operation: str,
+    legacy_operation: str | None,
+    uow: PulseUnitOfWork | None = None,
+    board_id: str | None = None,
+    require_board_read: bool = False,
+) -> None:
+    try:
+        if require_board_read and board_id is not None:
+            await AuthorizeOperationUseCase().execute(
+                AuthorizeOperationCommand(
+                    "board.read",
+                    legacy_operation="board:read",
+                    board_id=board_id,
+                ),
+                actor=actor,
+                uow=uow,
+            )
+        await AuthorizeOperationUseCase().execute(
+            AuthorizeOperationCommand(
+                operation,
+                legacy_operation=legacy_operation,
+                board_id=board_id,
+            ),
+            actor=actor,
+            uow=uow,
+        )
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
 
 
 async def require_kg_actor(
@@ -230,29 +231,6 @@ async def require_kg_stream_board_actor(
         realm_id=realm_id,
         uow=uow,
     )
-
-
-async def require_kg_admin_board_actor(
-    board_id: str,
-    user_id: str = Depends(require_user),
-    user: dict[str, Any] | None = Depends(get_current_user),
-    realm_id: str | None = Depends(get_realm_id),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-) -> ActorContext:
-    actor = _kg_actor(
-        user_id=user_id,
-        user=user,
-        realm_id=realm_id,
-        board_id=board_id,
-    )
-    await _ensure_board_access(
-        board_id=board_id,
-        actor=actor,
-        uow=uow,
-        allowed_share_permissions={"editor", "admin"},
-    )
-    _require_kg_admin(actor)
-    return actor
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +373,8 @@ async def get_subgraph(
     min_relevance: float = Query(0.0, ge=0.0),
     type: str = "",
     graph_layer: str = "canonical",
-    _actor: ActorContext = Depends(require_kg_board_actor),
+    actor: ActorContext = Depends(require_kg_board_actor),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Return subgraph for visualization — Spec 8 / S1.1, S1.4, S1.5.
 
@@ -417,6 +396,16 @@ async def get_subgraph(
             "Bad Request",
             f"limit must be in range [1, 1000], got {limit}",
             "invalid_limit",
+        )
+
+    if center:
+        await _require_kg_operation(
+            actor,
+            operation="kg.query.related_context",
+            legacy_operation="board:read",
+            uow=uow,
+            board_id=board_id,
+            require_board_read=True,
         )
 
     svc = get_kg_service()
@@ -643,9 +632,18 @@ async def find_similar(
     topic: str = "",
     top_k: int = Query(10, ge=1, le=50),
     min_similarity: float = 0.3,
-    _actor: ActorContext = Depends(require_kg_board_actor),
+    actor: ActorContext = Depends(require_kg_board_actor),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Find similar decisions via semantic search."""
+    await _require_kg_operation(
+        actor,
+        operation="kg.query.similar_decisions",
+        legacy_operation="board:read",
+        uow=uow,
+        board_id=board_id,
+        require_board_read=True,
+    )
     if not topic:
         return _problem(400, "Bad Request", "topic query parameter is required")
     svc = get_kg_service()
@@ -662,9 +660,18 @@ async def find_similar(
 async def get_supersedence(
     board_id: str,
     decision_id: str,
-    _actor: ActorContext = Depends(require_kg_board_actor),
+    actor: ActorContext = Depends(require_kg_board_actor),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Get supersedence chain for a decision node."""
+    await _require_kg_operation(
+        actor,
+        operation="kg.query.supersedence_chain",
+        legacy_operation="board:read",
+        uow=uow,
+        board_id=board_id,
+        require_board_read=True,
+    )
     svc = get_kg_service()
     try:
         return svc.get_supersedence_chain(board_id, decision_id)
@@ -677,9 +684,18 @@ async def find_contradictions(
     board_id: str,
     node_id: str = "",
     limit: int = Query(50, ge=1, le=200),
-    _actor: ActorContext = Depends(require_kg_board_actor),
+    actor: ActorContext = Depends(require_kg_board_actor),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Find contradictions, optionally filtered by node_id."""
+    await _require_kg_operation(
+        actor,
+        operation="kg.query.contradictions",
+        legacy_operation="board:read",
+        uow=uow,
+        board_id=board_id,
+        require_board_read=True,
+    )
     svc = get_kg_service()
     try:
         results = svc.find_contradictions(
@@ -954,7 +970,7 @@ async def global_search(
 @router.post("/boards/{board_id}/historical-consolidation/start")
 async def start_historical(
     board_id: str,
-    actor: ActorContext = Depends(require_kg_admin_board_actor),
+    actor: ActorContext = Depends(require_kg_board_writer_actor),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Start historical backfill."""
@@ -972,7 +988,7 @@ async def start_historical(
 @router.post("/boards/{board_id}/historical-consolidation/cancel")
 async def cancel_historical_endpoint(
     board_id: str,
-    actor: ActorContext = Depends(require_kg_admin_board_actor),
+    actor: ActorContext = Depends(require_kg_board_writer_actor),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Cancel historical backfill."""
@@ -1049,6 +1065,11 @@ async def get_global_kg_settings(
     smoke-test tooling can tell stub-mode apart from a healthy load without
     needing to pick a board. MUST NOT trigger a model load (TR-4).
     """
+    await _require_kg_operation(
+        _actor,
+        operation="kg.operations.settings.read",
+        legacy_operation="kg.admin.settings_read",
+    )
     snapshot = snapshot_kg_runtime()
     payload = {
         "graph_store": snapshot.graph_store_name,
@@ -1066,18 +1087,19 @@ async def get_settings(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Get KG settings for a board."""
+    await _require_kg_operation(
+        actor,
+        operation="kg.operations.settings.read",
+        legacy_operation="kg.admin.settings_read",
+        uow=uow,
+        board_id=board_id,
+    )
     snapshot = snapshot_kg_runtime(board_id=board_id)
 
     # Check historical consolidation status (the only relational read in this
     # handler; the registry/embedding introspection below is not DB-bound).
     try:
-        progress = (
-            await GetHistoricalProgressUseCase().execute(
-                GetHistoricalProgressCommand(board_id),
-                actor=actor,
-                uow=uow,
-            )
-        ).progress
+        progress = await uow.services.kg.get_historical_progress(board_id)
     except (PermissionDeniedError, EntityNotFoundError) as exc:
         raise RESTAdapterContract.http_error(exc, not_found_detail="Board not found")
 
@@ -1099,18 +1121,40 @@ async def get_settings(
 async def update_settings(
     board_id: str,
     request: Request,
-    _actor: ActorContext = Depends(require_kg_board_writer_actor),
+    actor: ActorContext = Depends(require_kg_board_writer_actor),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Update KG settings for a board."""
+    await _require_kg_operation(
+        actor,
+        operation="kg.operations.settings.write",
+        legacy_operation="kg.admin.settings_write",
+        uow=uow,
+        board_id=board_id,
+    )
     return {"success": True}
 
 
 @router.post("/boards/{board_id}/cypher")
-async def cypher_query(board_id: str, cypher: str = "", params: dict | None = None,
-                       max_rows: int = 1000, timeout_ms: int = 5000,
-                       include_working: bool = False,
-                       _actor: ActorContext = Depends(require_kg_board_writer_actor)):
+async def cypher_query(
+    board_id: str,
+    cypher: str = "",
+    params: dict | None = None,
+    max_rows: int = 1000,
+    timeout_ms: int = 5000,
+    include_working: bool = False,
+    actor: ActorContext = Depends(require_kg_board_actor),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
     """Delegate to tier power query_cypher."""
+    await _require_kg_operation(
+        actor,
+        operation="kg.power.cypher",
+        legacy_operation="board:read",
+        uow=uow,
+        board_id=board_id,
+        require_board_read=True,
+    )
     try:
         result = execute_cypher_read_only(
             board_id,
@@ -1138,6 +1182,22 @@ async def schema_info(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Schema introspection."""
+    await _require_kg_operation(
+        actor,
+        operation="kg.power.schema_info",
+        legacy_operation="board:read",
+        uow=uow,
+        board_id=board_id or None,
+        require_board_read=True,
+    )
+    if include_internal:
+        await _require_kg_operation(
+            actor,
+            operation="kg.admin.settings_read",
+            legacy_operation=None,
+            uow=uow,
+            board_id=board_id or None,
+        )
     if board_id:
         await _ensure_board_access(board_id=board_id, actor=actor, uow=uow)
     result = get_schema_info(board_id or "default", include_internal=include_internal)
@@ -1335,6 +1395,12 @@ async def stream_kg_events(
         get_kg_events_hub,
     )
 
+    # FastAPI replaces ``Query`` defaults before an HTTP invocation, while
+    # direct adapter calls (used by the Core contract suite) receive the
+    # metadata object itself. Treat that unresolved optional default exactly
+    # like ``None`` so it cannot be mistaken for an explicit resume cursor.
+    if not isinstance(after_event_id, (str, type(None))):
+        after_event_id = None
     if since is None and after_event_id is not None:
         raise HTTPException(status_code=400, detail="after_event_id requires since")
     try:
@@ -1576,7 +1642,8 @@ class MigrateSchemaResponse(BaseModel):
 )
 async def post_migrate_schema(
     board_id: str,
-    _actor: ActorContext = Depends(require_kg_admin_board_actor),
+    actor: ActorContext = Depends(require_kg_board_writer_actor),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Force-apply schema migrations for a board (idempotent).
 
@@ -1590,6 +1657,13 @@ async def post_migrate_schema(
 
     Spec 818748f2.
     """
+    await _require_kg_operation(
+        actor,
+        operation="kg.operations.schema.migrate",
+        legacy_operation="kg.admin.settings_write",
+        uow=uow,
+        board_id=board_id,
+    )
     summary = await resolve_graph_schema_manager().migrate(board_id)
     if not summary["migrated"] and any(
         "board_not_found" in e for e in summary["errors"]

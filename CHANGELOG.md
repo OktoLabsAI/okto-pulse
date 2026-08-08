@@ -9,6 +9,24 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-27
+
+### Added
+
+- Quality and ambiguity receipts, pinpoint findings and governed assessment
+  actions in the Ideation, Refinement and Spec UI surfaces.
+- Refinement research decision ledger UI backed by append-only Community
+  persistence, plus curated Spec checklist configuration and execution views.
+- Clean-room wheel provenance, installed MCP/resource inventory and release
+  artifact checks for the paired Core and Community distributions.
+
+### Changed
+
+- Community now requires `okto-pulse-core>=0.3.1` and exposes the 292-tool Core
+  catalog (284 canonical tools and 8 aliases).
+- Test-scenario inputs are closed across REST, MCP and UI; `negative` is a
+  supported scenario type rather than an unsupported display fallback.
+
 ## [0.3.0] - 2026-07-14
 
 Version 0.3.0 makes Community the explicit local-first edition and composition

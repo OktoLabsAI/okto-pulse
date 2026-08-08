@@ -103,8 +103,8 @@ release oracle is:
 | Historical private reach-in baseline | `32` |
 | Current private reach-in budget | `0` |
 | Current governed private reach-ins | `0` |
-| Current full Community->Core import inventory | `725` |
-| Inventory classification | `public_contract=725`, `governed_temporary_reach_in=0` |
+| Current full Community->Core import inventory | `918` |
+| Inventory classification | `public_contract=918`, `governed_temporary_reach_in=0` |
 | Boundary violations | `0` violations, `0` stale ledger entries, `0` incomplete ledger entries, `0` baseline-growth violations |
 | Burn-down progression | `32 -> 21 -> 10 -> 0` after AF42 inventory, lifecycle/auth/MCP, then complete Community ORM ownership |
 | Community release command | `python -m pytest tests/test_af21_core_import_boundary.py tests/test_af25_docs_truthfulness.py tests/test_af33_capstone_community_readiness.py tests/test_af35_s1_community_adapters.py tests/test_af35_s2_community_kg_operational_adapters.py tests/test_af41_runtime_dependency_ownership.py tests/test_af41_serving_boundary.py tests/test_r06_mcp_auth_context_community.py tests/test_r08a_mcp_auth_adapter.py tests/test_cli_init.py tests/test_cli_kg_backfill.py tests/test_hnd2_credential_surface_gate.py tests/test_r01c_imp4_schema_lifecycle_orchestrator.py tests/test_r16b_relational_schema_migrator.py tests/test_r16c_data_bootstrapper.py -q` -> `105 passed` |
@@ -184,6 +184,8 @@ Adapter source map:
   `community/adapters/rebuild_audit_storage.py`.
 - Materialization-health adapters: `community/adapters/materialization_health.py`
   and `community/adapters/materialization_health_observability.py`.
+- Terminal-debt recovery adapters: `community/adapters/terminal_debt_source.py`
+  and `community/adapters/terminal_debt_snapshot.py`.
 - KG outbox/audit persistence: `community/adapters/sqlite_outbox_event_bus.py`,
   `community/adapters/sqlalchemy_audit_repo.py` and
   `community/adapters/kg_operational.py`.
@@ -210,7 +212,11 @@ Adapter source map:
   `community/adapters/bug_cognitive_context.py`.
 - Relational application and KG event adapters:
   `community/adapters/relational_application.py` and
-  `community/adapters/kg_events.py`.
+  `community/adapters/kg_events.py`; semantic-guideline KG events are emitted by
+  `community/adapters/semantic_guideline_kg_events.py`.
+- SK-A quality writes and bounded projection observability:
+  `community/adapters/requirement_lint_writer.py` and
+  `community/adapters/ska_observability.py`.
 - Telemetry: `community/adapters/telemetry_store.py`,
   `community/adapters/telemetry_sender.py`,
   `community/adapters/telemetry_state.py`,
@@ -247,7 +253,7 @@ core `adapter_readiness_inventory` when a port is added or retired.
 
 The source map above answers *"where does this file live?"*. This matrix answers the complementary
 question: **which core port does each adapter implement?** Core declares the `Protocol`; Community
-provides the only production implementation. **115 adapter modules** currently fill core's
+provides the only production implementation. **146 adapter modules** currently fill core's
 ~100 port protocols and 30 KG interfaces.
 
 Anything core needs that is not in this table is either supplied by another edition or an unfilled
@@ -367,4 +373,3 @@ against the graph adapters.
 ---
 
 [← Back to README](../README.md)
-

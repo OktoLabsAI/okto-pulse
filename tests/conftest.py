@@ -1,57 +1,226 @@
 from __future__ import annotations
 
+import logging
+import os
 import sys
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = REPO_ROOT.parent
 LOCAL_IMPORT_PATHS = (
     REPO_ROOT / "src",
-    WORKSPACE_ROOT / "okto_labs_pulse_core" / "src",
+    WORKSPACE_ROOT / "okto-pulse-core" / "src",
 )
 
 for path in reversed(LOCAL_IMPORT_PATHS):
     value = str(path)
-    if value not in sys.path:
-        sys.path.insert(0, value)
+    while value in sys.path:
+        sys.path.remove(value)
+    sys.path.insert(0, value)
+
+from okto_pulse.core.application.boundary.repository_checkout import (  # noqa: E402
+    activate_repository_checkout_paths,
+)
+
+# Purge stale legacy checkout roots before collection. The normalized sys.path
+# and PYTHONPATH are inherited by both multiprocessing spawn and subprocess
+# workers used by the storage and CLI suites.
+_REPOSITORY_PATHS = activate_repository_checkout_paths(
+    anchor_repo=REPO_ROOT,
+    required=False,
+)
 
 
-@pytest.fixture(autouse=True)
-def _reset_relational_schema_lifecycle_seam():
-    """Isolate the process-global relational schema-lifecycle seam per test.
+# =====================================================================
+# Isolamento do registry de runtime values entre testes
+# =====================================================================
+#
+# ``_active_runtime_values`` (okto-pulse-core/src/okto_pulse/core/
+# runtime_context.py:196) e um ContextVar que guarda um
+# ``_RuntimeValueBinding`` frozen (runtime_context.py:190-193) que APONTA
+# para um ``RuntimeValueRegistry`` mutavel.  Duas familias de chamada
+# alcancam esse estado com visibilidade DIFERENTE:
+#
+#   canal A  ContextVar.set()               -> so o Context atual
+#            (_current_runtime_binding(create=True),
+#             reset_runtime_values() SEM chaves,
+#             restore_runtime_values_for_tests, runtime_value_scope)
+#   canal B  registry.register()/.discard() -> muta o OBJETO apontado,
+#            visivel em TODO Context que copiou a referencia
+#
+# ``asyncio.run(...)``, testes async do pytest-asyncio e qualquer Task
+# rodam em ``contextvars.copy_context()``: a copia recebe o MESMO objeto
+# binding com um slot proprio.  Logo B atravessa nos dois sentidos e A nao
+# atravessa em nenhum.  A fixture antiga isolava SO pelo canal A, entao nao
+# via, nao continha e nao desfazia nada vindo do canal B -- e
+# ``RuntimeValueRegistry.copy()`` (runtime_context.py:84-96) carregava o
+# MESMO AsyncEngine de teste em teste (so quem implementa
+# ``clone_for_runtime`` e clonado), o vetor de "Event loop is closed".
+#
+# Solucao: UM binding para a sessao inteira (canal A uma unica vez) e todo
+# o trabalho por teste no canal B, que e simetrico.
 
-    R01C REPLAN-IMP4 activated the seam: the Community composition root
-    (``create_community_app`` / the CLI boots) registers a
-    ``RelationalSchemaLifecycleOrchestrator`` so ``init_db`` delegates the
-    lifecycle to the edition. That registration is a process-global. Without
-    isolation, ANY test that constructs the app leaks the registration into
-    later tests. Reset to the unregistered default (None) before AND after every
-    test so each test is hermetic; a test
-    that needs the orchestrator registers it explicitly within its own body."""
+from okto_pulse.core.runtime_context import (  # noqa: E402
+    RuntimeValueRegistry,
+    runtime_value_scope,
+)
+
+#: Registry unico da sessao.  A IDENTIDADE nunca muda.
+_SESSION_RUNTIME_VALUES = RuntimeValueRegistry()
+
+#: Vira ERRO em vez de silencio quando um teste deixa chaves para tras.
+#: Rode com OKTO_PULSE_TEST_STRICT_RUNTIME_LEAKS=1 para cacar contaminacao
+#: nova; mantenha desligado no default ate o backlog de conversao dos
+#: testes com asyncio.run zerar.
+_STRICT_RUNTIME_LEAKS = os.environ.get(
+    "OKTO_PULSE_TEST_STRICT_RUNTIME_LEAKS", ""
+) == "1"
+
+
+class _ContractTestRequirementLintHook:
+    """Hook de lint deterministico usado por toda a suite de contrato."""
+
+    async def stage_requirement_lint(self, context, command):  # noqa: ANN001
+        from okto_pulse.core.ports.requirement_lint import (
+            RequirementLintWriteResult,
+        )
+
+        del context
+        return RequirementLintWriteResult(
+            receipt_id=(
+                f"qar_test_{command.spec_id}_{command.spec_version}_"
+                f"{command.writer.value}"
+            ),
+            head_revision=command.spec_version,
+            evaluated_rule_count=1,
+            finding_count=0,
+        )
+
+
+def _stage_runtime_value_baseline(registry: RuntimeValueRegistry) -> None:
+    """Deixa o registry EXATAMENTE no baseline deterministico da suite.
+
+    A limpeza e uma sequencia de ``discard`` (canal B) no MESMO objeto, logo
+    e visivel dentro de qualquer ``asyncio.run`` que o teste abrir -- ao
+    contrario de ``reset_runtime_values()`` sem chaves, que troca o binding
+    e some (e que, sem binding, faz early-return MUDO).
+    """
+
     from okto_pulse.core import runtime_registry as _runtime_registry
-    from okto_pulse.core.runtime_context import (
-        capture_runtime_values_for_tests,
-        reset_runtime_values,
-        restore_runtime_values_for_tests,
+    from okto_pulse.core.infra.config import configure_settings
+    from okto_pulse.core.ports.requirement_lint import (
+        register_requirement_lint_writer_hook,
     )
     from okto_pulse.community.adapters.sqlalchemy_database import (
         configure_community_database,
     )
     from okto_pulse.community.config import CommunitySettings
-    from okto_pulse.core.infra.config import configure_settings
 
-    saved_runtime = capture_runtime_values_for_tests()
-    reset_runtime_values()
+    registry.discard(*registry.snapshot())
+
+    # R01C REPLAN-IMP4: o seam de schema-lifecycle e process-global e o
+    # composition root da Community o registra.  O baseline e o estado NAO
+    # registrado; um teste que precise do orchestrator registra no proprio
+    # corpo.  Idem para ports.relational_application.adapter: nada de herdar
+    # o registro one-shot do import de community/main.py.
     _runtime_registry.register_relational_runtime_factory(
         lambda url, echo=False: configure_community_database(url, echo=echo)
     )
+    register_requirement_lint_writer_hook(_ContractTestRequirementLintHook())
     configure_settings(CommunitySettings())
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _session_runtime_value_binding():
+    """Liga UM registry para a sessao inteira -- canal A usado uma so vez.
+
+    ``runtime_value_scope`` e a porta publica baseada em token.  Setup e
+    teardown de fixture SINCRONA rodam no Context do proprio pytest, entao
+    ``ContextVar.reset`` nunca cruza fronteira de contexto.  NUNCA converter
+    esta fixture para async.
+    """
+
+    with runtime_value_scope(_SESSION_RUNTIME_VALUES) as registry:
+        yield registry
+
+
+@pytest.fixture(autouse=True)
+def _reset_relational_schema_lifecycle_seam(_session_runtime_value_binding):
+    """Isola o registry de runtime values por teste, IN-PLACE.
+
+    Invariantes:
+      1. o binding NUNCA muda -> toda copia de contexto (asyncio.run, Task,
+         contexto de teardown de fixture async) enxerga o MESMO registry;
+      2. o registry entra e sai de cada teste no MESMO baseline;
+      3. nenhum objeto criado por um teste (engine, sessionmaker, adapter)
+         sobrevive ao teardown.
+    """
+
+    registry = _session_runtime_value_binding
+    _stage_runtime_value_baseline(registry)
+    baseline = dict(registry.snapshot())
     try:
         yield
     finally:
-        restore_runtime_values_for_tests(saved_runtime)
+        current = dict(registry.snapshot())
+        leaked = sorted(
+            key
+            for key, value in current.items()
+            if key not in baseline or baseline[key] is not value
+        )
+        _stage_runtime_value_baseline(registry)
+        if leaked and _STRICT_RUNTIME_LEAKS:
+            pytest.fail(
+                "runtime-value leak: o teste deixou chaves fora do baseline "
+                f"{leaked}. Registre dentro do proprio teste e limpe, ou use "
+                "runtime_value_scope(RuntimeValueRegistry()) no corpo.",
+                pytrace=False,
+            )
+
+
+@pytest_asyncio.fixture(autouse=True, loop_scope="function")
+async def _close_test_community_database_runtime(
+    _reset_relational_schema_lifecycle_seam,
+):
+    """Dispoe um runtime Community criado PELO TESTE antes do loop fechar.
+
+    O registry e o mesmo objeto que o teste mutou (canal B), entao o que
+    aparece aqui foi necessariamente criado dentro deste teste -- o baseline
+    encenado no setup nao contem runtime relacional algum.
+    """
+
+    yield
+
+    from okto_pulse.community.adapters.sqlalchemy_database import (
+        CommunityDatabaseRuntime,
+    )
+    from okto_pulse.core.ports.relational_runtime import (
+        is_database_runtime_configured,
+        resolve_database_runtime,
+    )
+
+    if not is_database_runtime_configured():
+        return
+    runtime = resolve_database_runtime()
+    if not isinstance(runtime, CommunityDatabaseRuntime):
+        return
+    try:
+        await runtime.close()
+    except RuntimeError as exc:  # pragma: no cover - caminho de defeito
+        if "Event loop is closed" not in str(exc):
+            raise
+        # O engine foi ligado a um loop que o PROPRIO teste ja fechou
+        # (padrao asyncio.run em teste sincrono).  As conexoes morreram com
+        # o loop; nao existe close correto aqui e falhar o teardown so
+        # mascararia o teste real.  O conserto e no teste contaminador.
+        logging.getLogger(__name__).warning(
+            "community.test.runtime_close_skipped reason=dead_event_loop "
+            "runtime=%r",
+            runtime,
+        )
 
 
 def require_active_runtime_registry():

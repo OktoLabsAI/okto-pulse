@@ -9,8 +9,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from okto_pulse.community.api.auth_deps import require_user
+from okto_pulse.community.api.auth_deps import require_principal
+from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core import get_settings
+from okto_pulse.core.application.use_cases.authorize_operation import (
+    AuthorizeOperationCommand,
+    AuthorizeOperationUseCase,
+)
+from okto_pulse.core.application.use_cases.base import PermissionDeniedError
+from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.telemetry.publish_health import HEALTH_SOURCE_UNAVAILABLE
 from okto_pulse.core.telemetry.schema import (
     SchemaReject,
@@ -21,6 +28,32 @@ from okto_pulse.core.telemetry.telemetry_port_registry import get_telemetry_port
 
 router = APIRouter(prefix="/api/v1", tags=["metrics"])
 logger = logging.getLogger("okto_pulse.api.metrics")
+
+
+_METRICS_HISTORICAL_AUTHORITIES: dict[str, str] = {
+    "metrics.local.summary.read": "board.read",
+    "metrics.publish_health.read": "board.read",
+    "metrics.local.events.create": "board.analytics_read",
+    "metrics.settings.edit": "board.analytics_read",
+    "metrics.settings.migration_notice_seen": "board.analytics_read",
+    "metrics.local.export": "board.analytics_read",
+    "metrics.local.purge": "board.analytics_read",
+}
+
+
+async def _authorize_metrics(principal: Principal, operation: str) -> None:
+    """Delegate the exact metrics decision to the transport-free Core policy."""
+
+    try:
+        await AuthorizeOperationUseCase().execute(
+            AuthorizeOperationCommand(
+                operation,
+                legacy_operation=_METRICS_HISTORICAL_AUTHORITIES[operation],
+            ),
+            actor=RESTAdapterContract.actor_from_principal(principal),
+        )
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
 
 
 class MetricsSettingsPayload(BaseModel):
@@ -86,13 +119,17 @@ def _public_event_error(
 @router.get("/metrics/local/summary")
 async def get_local_metrics_summary(
     window_days: int = Query(default=30, ge=1, le=400),
-    _: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ):
+    await _authorize_metrics(principal, "metrics.local.summary.read")
     return get_telemetry_port(get_settings()).summary(window_days=window_days)
 
 
 @router.get("/metrics/publish-health")
-async def get_metrics_publish_health(_: str = Depends(require_user)):
+async def get_metrics_publish_health(
+    principal: Principal = Depends(require_principal),
+):
+    await _authorize_metrics(principal, "metrics.publish_health.read")
     result = get_telemetry_port(get_settings()).publish_health()
     if result.get("error") == HEALTH_SOURCE_UNAVAILABLE:
         return JSONResponse(status_code=503, content=result)
@@ -102,8 +139,9 @@ async def get_metrics_publish_health(_: str = Depends(require_user)):
 @router.post("/metrics/local/events")
 async def post_local_metrics_event(
     payload: LocalMetricsEventPayload,
-    _: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ):
+    await _authorize_metrics(principal, "metrics.local.events.create")
     service = get_telemetry_port(get_settings())
     schema_version = service.config().schema_version
     rejected_fields_count = count_rejected_payload_fields(
@@ -147,8 +185,9 @@ async def post_local_metrics_event(
 @router.post("/metrics/settings")
 async def post_metrics_settings(
     payload: MetricsSettingsPayload,
-    _: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ):
+    await _authorize_metrics(principal, "metrics.settings.edit")
     required_ack = {
         "schema",
         "privacy_policy",
@@ -214,8 +253,12 @@ async def post_metrics_settings(
 @router.post("/metrics/settings/migration-notice/seen")
 async def mark_metrics_migration_notice_seen(
     payload: MigrationNoticeSeenPayload,
-    _: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ):
+    await _authorize_metrics(
+        principal,
+        "metrics.settings.migration_notice_seen",
+    )
     try:
         return get_telemetry_port(get_settings()).mark_migration_notice_seen(
             notice_key=payload.notice_key
@@ -225,12 +268,18 @@ async def mark_metrics_migration_notice_seen(
 
 
 @router.post("/metrics/local/export")
-async def export_local_metrics(_: str = Depends(require_user)):
+async def export_local_metrics(
+    principal: Principal = Depends(require_principal),
+):
+    await _authorize_metrics(principal, "metrics.local.export")
     return get_telemetry_port(get_settings()).export_events()
 
 
 @router.delete("/metrics/local")
-async def purge_local_metrics(_: str = Depends(require_user)):
+async def purge_local_metrics(
+    principal: Principal = Depends(require_principal),
+):
+    await _authorize_metrics(principal, "metrics.local.purge")
     return get_telemetry_port(get_settings()).purge_events()
 
 

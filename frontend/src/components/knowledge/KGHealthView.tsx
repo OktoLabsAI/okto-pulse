@@ -56,6 +56,7 @@ import {
 import { triggerKGTick } from '@/services/kg-tick-api';
 import { KGHealthCognitivePendingPanel } from './KGHealthCognitivePendingPanel';
 import { CandidateDecisionPanel } from './CandidateDecisionPanel';
+import { usePermissions } from '@/hooks/usePermissions';
 
 interface KGHealthViewProps {
   pollIntervalMs?: number;
@@ -71,6 +72,19 @@ export function KGHealthView({
 }: KGHealthViewProps) {
   const currentBoard = useDashboardStore((s) => s.currentBoard);
   const boardId = currentBoard?.id ?? null;
+  const permissions = usePermissions(boardId);
+  const policyReady = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+  );
+  const canReadHealth = policyReady && permissions.has('kg.operations.health.read');
+  const canReadCognitive = policyReady && permissions.has('kg.operations.cognitive.read');
+  const canRunTick = policyReady && permissions.has('kg.operations.tick.run');
+  const canRunRebuildPreflight = policyReady && permissions.has('kg.operations.rebuild.preflight');
+  const canRunRebuildConfirm = policyReady && permissions.has('kg.operations.rebuild.confirm');
+  const canRunRebuild = policyReady && permissions.has('kg.operations.rebuild.run');
+  const canReadRuntime = policyReady && permissions.has('runtime.settings.read');
 
   const [data, setData] = useState<KGHealth | null>(null);
   const [error, setError] = useState<Error | null>(null);
@@ -83,6 +97,7 @@ export function KGHealthView({
 
   const tick = useCallback(async () => {
     if (!boardId) return;
+    if (!canReadHealth) return;
     if (inFlightRef.current) return;
     if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
 
@@ -101,11 +116,18 @@ export function KGHealthView({
       inFlightRef.current = false;
       setLoading(false);
     }
-  }, [boardId]);
+  }, [boardId, canReadHealth]);
 
   useEffect(() => {
     if (!boardId) {
       setLoading(false);
+      return;
+    }
+    if (permissions.isLoading) return;
+    if (!canReadHealth) {
+      setLoading(false);
+      setData(null);
+      setError(new Error('You do not have permission to read KG health'));
       return;
     }
     setLoading(true);
@@ -119,7 +141,7 @@ export function KGHealthView({
       intervalRef.current = null;
       inFlightRef.current = false;
     };
-  }, [boardId, pollIntervalMs, tick]);
+  }, [boardId, pollIntervalMs, tick, canReadHealth, permissions.isLoading]);
 
   useEffect(() => {
     if (!boardId) return;
@@ -163,6 +185,15 @@ export function KGHealthView({
     return <EmptyState onClose={onClose} />;
   }
 
+  if (!permissions.isLoading && !canReadHealth) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3" data-testid="kg-health-permission-denied">
+        <p className="text-sm text-rose-600">You do not have permission to read KG health.</p>
+        <button type="button" onClick={onClose} className="btn btn-secondary text-sm">Close</button>
+      </div>
+    );
+  }
+
   return (
     <div
       className="flex flex-col h-full bg-surface-50 dark:bg-surface-950"
@@ -174,6 +205,7 @@ export function KGHealthView({
         lastFetchAt={lastFetchAt}
         onRefresh={handleRefresh}
         onClose={onClose}
+        canReadCognitive={canReadCognitive}
       />
       <div className="flex-1 overflow-auto p-6">
         {schemaMismatch && (
@@ -202,13 +234,19 @@ export function KGHealthView({
               totalNodes={data.total_nodes}
               pollIntervalMs={pollIntervalMs}
               onCompleted={handleRefresh}
+              canPreflight={canRunRebuildPreflight}
+              canConfirm={canRunRebuildConfirm}
+              canRun={canRunRebuild}
+              canReadCognitive={canReadCognitive}
             />
-            <KGHealthCognitivePendingPanel
-              boardId={boardId}
-              selectedKgGenerationId={data.current_kg_generation_id ?? null}
-              pollIntervalMs={pollIntervalMs}
-            />
-            <CandidateDecisionPanel boardId={boardId} />
+            {canReadCognitive && (
+              <KGHealthCognitivePendingPanel
+                boardId={boardId}
+                selectedKgGenerationId={data.current_kg_generation_id ?? null}
+                pollIntervalMs={pollIntervalMs}
+              />
+            )}
+            {canReadCognitive && <CandidateDecisionPanel boardId={boardId} />}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
               <SchemaTickCard
                 schemaVersion={data.schema_version}
@@ -224,6 +262,8 @@ export function KGHealthView({
                 onTickStarted={handleRefresh}
                 onOpenDecayTickSettings={handleOpenDecayTickSettings}
                 tickInProgress={data.tick_in_progress ?? false}
+                canRunTick={canRunTick}
+                canOpenDecayTickSettings={canReadRuntime}
               />
               <QueueDeadLetterCard
                 queueDepth={data.queue_depth}
@@ -385,9 +425,10 @@ interface HeaderBarProps {
   lastFetchAt: Date | null;
   onRefresh: () => void;
   onClose: () => void;
+  canReadCognitive: boolean;
 }
 
-function HeaderBar({ boardName, pollIntervalMs, lastFetchAt, onRefresh, onClose }: HeaderBarProps) {
+function HeaderBar({ boardName, pollIntervalMs, lastFetchAt, onRefresh, onClose, canReadCognitive }: HeaderBarProps) {
   const lastFetchLabel = lastFetchAt
     ? `last fetch ${Math.max(0, Math.floor((Date.now() - lastFetchAt.getTime()) / 1000))}s ago`
     : 'fetching...';
@@ -404,17 +445,19 @@ function HeaderBar({ boardName, pollIntervalMs, lastFetchAt, onRefresh, onClose 
         </div>
       </div>
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() =>
-            window.dispatchEvent(new CustomEvent('okto:open-cognitive-action-center'))
-          }
-          className="px-3 py-1.5 text-sm bg-violet-600 hover:bg-violet-700 text-white rounded-lg flex items-center gap-1.5"
-          aria-label="Open Cognitive Action Center"
-          data-testid="kg-open-cognitive-action-center"
-        >
-          <Brain className="w-4 h-4" aria-hidden /> Cognitive Action Center
-        </button>
+        {canReadCognitive && (
+          <button
+            type="button"
+            onClick={() =>
+              window.dispatchEvent(new CustomEvent('okto:open-cognitive-action-center'))
+            }
+            className="px-3 py-1.5 text-sm bg-violet-600 hover:bg-violet-700 text-white rounded-lg flex items-center gap-1.5"
+            aria-label="Open Cognitive Action Center"
+            data-testid="kg-open-cognitive-action-center"
+          >
+            <Brain className="w-4 h-4" aria-hidden /> Cognitive Action Center
+          </button>
+        )}
         <button
           type="button"
           onClick={onRefresh}
@@ -479,6 +522,8 @@ interface SchemaTickCardProps {
    *  usuário fechar o modal e voltar — ou se outra origem (cron/MCP)
    *  estiver rodando o tick agora. */
   tickInProgress: boolean;
+  canRunTick: boolean;
+  canOpenDecayTickSettings: boolean;
 }
 
 function SchemaTickCard({
@@ -495,6 +540,8 @@ function SchemaTickCard({
   onTickStarted,
   onOpenDecayTickSettings,
   tickInProgress,
+  canRunTick,
+  canOpenDecayTickSettings,
 }: SchemaTickCardProps) {
   // Spec 54399628 (Wave 2 NC f9732afc) — botão "Run tick now" com 4 estados:
   // idle / running / success (toast + handleRefresh) / error (toast).
@@ -518,7 +565,7 @@ function SchemaTickCard({
   const inFlightRef = useRef(false);
 
   const handleRunTickNow = useCallback(async () => {
-    if (inFlightRef.current || tickRunning || tickInProgress) return;
+    if (!canRunTick || inFlightRef.current || tickRunning || tickInProgress) return;
     inFlightRef.current = true;
     setTickRunning(true);
     // Cooldown lock — mantém o guard por 3s além do fetch para cobrir o
@@ -540,7 +587,7 @@ function SchemaTickCard({
     } finally {
       setTickRunning(false);
     }
-  }, [boardId, onTickStarted, tickRunning, tickInProgress]);
+  }, [boardId, onTickStarted, tickRunning, tickInProgress, canRunTick]);
 
   const tickClasses =
     tickInfo.status === 'never'
@@ -663,15 +710,21 @@ function SchemaTickCard({
         <button
           type="button"
           onClick={handleRunTickNow}
-          disabled={tickRunning || tickInProgress}
+          disabled={!canRunTick || tickRunning || tickInProgress}
           className={`w-full inline-flex items-center justify-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-            tickRunning || tickInProgress
+            !canRunTick || tickRunning || tickInProgress
               ? 'bg-surface-200 dark:bg-surface-700 text-surface-500 dark:text-surface-400 cursor-not-allowed'
               : 'bg-blue-600 hover:bg-blue-700 text-white'
           }`}
           data-testid="kg-tick-run-now"
           aria-label="Run KG decay tick now"
-          title={tickInProgress && !tickRunning ? 'Tick is already running globally (cron, MCP or another tab)' : undefined}
+          title={
+            !canRunTick
+              ? 'Requires kg.operations.tick.run'
+              : tickInProgress && !tickRunning
+                ? 'Tick is already running globally (cron, MCP or another tab)'
+                : undefined
+          }
         >
           {tickRunning || tickInProgress ? (
             <>
@@ -685,16 +738,18 @@ function SchemaTickCard({
             </>
           )}
         </button>
-        <button
-          type="button"
-          onClick={onOpenDecayTickSettings}
-          className="mt-2 w-full inline-flex items-center justify-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg border border-surface-300 dark:border-surface-600 text-surface-700 dark:text-surface-200 hover:bg-surface-50 dark:hover:bg-surface-700"
-          data-testid="kg-open-decay-settings"
-          aria-label="Open Runtime Settings Decay Tick tab"
-        >
-          <SlidersHorizontal className="w-3.5 h-3.5" aria-hidden />
-          Open Decay Tick settings
-        </button>
+        {canOpenDecayTickSettings && (
+          <button
+            type="button"
+            onClick={onOpenDecayTickSettings}
+            className="mt-2 w-full inline-flex items-center justify-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg border border-surface-300 dark:border-surface-600 text-surface-700 dark:text-surface-200 hover:bg-surface-50 dark:hover:bg-surface-700"
+            data-testid="kg-open-decay-settings"
+            aria-label="Open Runtime Settings Decay Tick tab"
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5" aria-hidden />
+            Open Decay Tick settings
+          </button>
+        )}
       </div>
     </Card>
   );
@@ -1181,6 +1236,10 @@ interface RecoveryPanelProps {
   totalNodes: number;
   pollIntervalMs: number;
   onCompleted: () => void;
+  canPreflight: boolean;
+  canConfirm: boolean;
+  canRun: boolean;
+  canReadCognitive: boolean;
 }
 
 interface RecoveryStatusView {
@@ -1352,6 +1411,10 @@ function RecoveryPanel({
   totalNodes,
   pollIntervalMs,
   onCompleted,
+  canPreflight,
+  canConfirm,
+  canRun,
+  canReadCognitive,
 }: RecoveryPanelProps) {
   const [preflight, setPreflight] = useState<RebuildPreflightResult | null>(null);
   const [preflightError, setPreflightError] = useState<string | null>(null);
@@ -1365,6 +1428,12 @@ function RecoveryPanel({
   const [cognitiveError, setCognitiveError] = useState<string | null>(null);
 
   const refreshPreflight = useCallback(async () => {
+    if (!canPreflight) {
+      setPreflight(null);
+      setPreflightError('Requires kg.operations.rebuild.preflight');
+      setPreflightLoading(false);
+      return;
+    }
     setPreflightLoading(true);
     setPreflightError(null);
     try {
@@ -1375,14 +1444,14 @@ function RecoveryPanel({
     } finally {
       setPreflightLoading(false);
     }
-  }, [boardId]);
+  }, [boardId, canPreflight]);
 
   useEffect(() => {
-    refreshPreflight();
+    void refreshPreflight();
   }, [refreshPreflight]);
 
   useEffect(() => {
-    if (!currentGenerationId) {
+    if (!currentGenerationId || !canReadCognitive) {
       setCognitiveCounts(null);
       setCognitiveError(null);
       return;
@@ -1418,9 +1487,10 @@ function RecoveryPanel({
       controller?.abort();
       clearInterval(intervalId);
     };
-  }, [boardId, currentGenerationId, pollIntervalMs]);
+  }, [boardId, currentGenerationId, pollIntervalMs, canReadCognitive]);
 
   const confirmRebuild = useCallback(async () => {
+    if (!canPreflight || !canConfirm || !canRun) return;
     if (!preflight) return;
     if (reason.trim().length === 0) {
       setRunError('Reason is required for the audit trail.');
@@ -1461,7 +1531,7 @@ function RecoveryPanel({
     } finally {
       setRunning(false);
     }
-  }, [preflight, reason, boardId, onCompleted]);
+  }, [preflight, reason, boardId, onCompleted, canPreflight, canConfirm, canRun]);
 
   const recoveryStatus = recoveryStatusView(overallState);
   const cognitiveStatus = cognitiveStateView(
@@ -1488,6 +1558,7 @@ function RecoveryPanel({
   const legacyUnknown = preflight?.legacy_unknown_count ?? 0;
   const skipped = preflight?.skipped_cancelled_count ?? 0;
   const reasonInvalid = reason.trim().length === 0;
+  const canExecuteRebuild = canPreflight && canConfirm && canRun;
   const isCompleted = lastResult?.outcome === 'completed';
 
   return (
@@ -1708,10 +1779,12 @@ function RecoveryPanel({
             <button
               type="button"
               onClick={confirmRebuild}
-              disabled={preflightLoading || running || reasonInvalid || !preflight}
+              disabled={!canExecuteRebuild || preflightLoading || running || reasonInvalid || !preflight}
               className="w-full rounded-md bg-rose-600 hover:bg-rose-700 disabled:opacity-60 disabled:cursor-not-allowed px-3 py-2 text-sm font-medium text-white flex items-center justify-center gap-2"
               title={
-                reasonInvalid
+                !canExecuteRebuild
+                  ? 'Requires kg.operations.rebuild.preflight, .confirm and .run'
+                  : reasonInvalid
                   ? 'Type a reason first'
                   : 'Run destructive rebuild now'
               }

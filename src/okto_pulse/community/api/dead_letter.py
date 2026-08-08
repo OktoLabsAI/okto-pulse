@@ -25,6 +25,7 @@ from okto_pulse.core.application.use_cases import (
 from okto_pulse.core.application.use_cases.list_dead_letter_rows import (
     DeadLetterBoardNotFoundError,
 )
+from okto_pulse.core.application.use_cases.base import PermissionDeniedError
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
@@ -82,4 +83,6 @@ async def get_dead_letter(
         )
     except DeadLetterBoardNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Board not found") from exc
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     return DeadLetterListResponse(**result.data)

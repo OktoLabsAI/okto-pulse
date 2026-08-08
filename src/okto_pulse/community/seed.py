@@ -27,8 +27,16 @@ from sqlalchemy import JSON as sa_JSON
 from sqlalchemy import bindparam, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from okto_pulse.community.adapters.sqlalchemy_models import Spec
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
+from okto_pulse.core.ports.requirement_lint import RequirementLintWriter
 from okto_pulse.core.services.application_agents import credential_marker, hash_api_key
+from okto_pulse.core.services.requirement_lint_writer import (
+    stage_spec_requirement_lint,
+)
+from okto_pulse.core.services.spec_entity_canonicalization import (
+    canonicalize_spec_requirement_fields,
+)
 
 logger = logging.getLogger("okto_pulse.community.seed")
 
@@ -147,16 +155,19 @@ async def seed_community_defaults(
         task_name="community.seed.primary_commit_and_credential_delivery",
     )
 
-    # Demo board with a pre-populated KG. Best-effort: a failure here must
-    # NOT block the initial boot — the primary board and agent are already
-    # committed and the user can still use the app.
+    # Demo is a separate relational UoW: the primary board/agent are already
+    # durable, but no partial Demo insert (including a failed requirement-lint
+    # write) may escape this boundary.  Fail closed after rolling that UoW back
+    # so callers cannot mistake an incomplete seed for a successful startup.
     try:
         await _seed_demo_board(db)
     except Exception as exc:
-        logger.warning(
+        await db.rollback()
+        logger.exception(
             "community.seed.demo_failed err=%s", exc,
             extra={"event": "community.seed.demo_failed"},
         )
+        raise
 
     return (
         board,
@@ -302,6 +313,39 @@ async def _seed_demo_board(db: AsyncSession) -> str | None:
         bindparam("acceptance_criteria", type_=sa_JSON),
         bindparam("business_rules", type_=sa_JSON),
     )
+    canonical_requirements = canonicalize_spec_requirement_fields(
+        {
+            "functional_requirements": [
+                {
+                    "title": "FR-1",
+                    "text": (
+                        "The demo board must render in the KG explorer on "
+                        "first open."
+                    ),
+                    "locale": "en",
+                }
+            ],
+            "technical_requirements": [
+                {
+                    "title": "TR-1",
+                    "text": (
+                        "Seed runs with the stub embedder so no network is "
+                        "required."
+                    ),
+                    "locale": "en",
+                }
+            ],
+            "acceptance_criteria": [
+                {
+                    "title": "AC-1",
+                    "text": (
+                        "GET /api/v1/kg/boards/{demo}/graph returns >= 3 nodes."
+                    ),
+                    "locale": "en",
+                }
+            ],
+        }
+    )
     await db.execute(
         spec_insert,
         {
@@ -310,14 +354,14 @@ async def _seed_demo_board(db: AsyncSession) -> str | None:
             "title": DEMO_SPEC_TITLE,
             "description": DEMO_SPEC_DESCRIPTION,
             "context": DEMO_SPEC_CONTEXT,
-            "functional_requirements": [
-                {"title": "FR-1", "text": "The demo board must render in the KG explorer on first open."}
+            "functional_requirements": canonical_requirements[
+                "functional_requirements"
             ],
-            "technical_requirements": [
-                {"title": "TR-1", "text": "Seed runs with the stub embedder so no network is required."}
+            "technical_requirements": canonical_requirements[
+                "technical_requirements"
             ],
-            "acceptance_criteria": [
-                {"title": "AC-1", "text": "GET /api/v1/kg/boards/{demo}/graph returns >= 3 nodes."}
+            "acceptance_criteria": canonical_requirements[
+                "acceptance_criteria"
             ],
             "business_rules": [
                 {"title": "BR-1", "rule": "Demo content is read-only in spirit — users can delete."}
@@ -370,6 +414,24 @@ async def _seed_demo_board(db: AsyncSession) -> str | None:
                 "created_by": "local-user",
             },
         )
+    demo_spec = await db.get(Spec, demo_spec_id)
+    if demo_spec is None:
+        raise RuntimeError("demo_spec_disappeared_before_requirement_lint")
+    await stage_spec_requirement_lint(
+        db,
+        demo_spec,
+        actor_id="system:community-seed",
+        writer=RequirementLintWriter.SEED,
+        changed_fields=(
+            "title",
+            "description",
+            "context",
+            "functional_requirements",
+            "technical_requirements",
+            "acceptance_criteria",
+            "business_rules",
+        ),
+    )
     await db.commit()
 
     # Run the KG consolidation in an isolated, deterministic stub-embedding

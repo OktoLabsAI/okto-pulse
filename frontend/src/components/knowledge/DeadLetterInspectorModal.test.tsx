@@ -7,6 +7,11 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 
+const permissionHas = vi.hoisted(() => vi.fn((_flag: string) => true));
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({ preset: 'Full Control', isLoading: false, error: null, ownerReviewRequired: false, has: permissionHas }),
+}));
+
 import { DeadLetterInspectorModal } from './DeadLetterInspectorModal';
 import * as dlqApi from '@/services/dead-letter-api';
 

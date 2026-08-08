@@ -11,6 +11,11 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
+const permissionHas = vi.hoisted(() => vi.fn((_flag: string) => true));
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({ preset: 'Full Control', isLoading: false, error: null, ownerReviewRequired: false, has: permissionHas }),
+}));
+
 import { CognitiveActionCenterView } from './CognitiveActionCenterView';
 import * as api from '@/services/cognitive-readiness-api';
 import type {

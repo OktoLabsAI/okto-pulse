@@ -10,7 +10,6 @@ limitation, identical to the current direct open_board_connection usage).
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
 import logging
 import re
 from typing import Any
@@ -29,11 +28,23 @@ from okto_pulse.core.services.application_kg import (
     revalidate_board_graph_write_lease,
 )
 from okto_pulse.core.kg.interfaces.graph_transaction import (
+    GraphNodePropertyBeforeImage,
     GraphStatementResult,
+    ProjectionActiveSetIntent,
+    ProjectionActiveSetReceipt,
+    ProjectionActiveSetReconciliationError,
+    ProjectionEdgeBeforeImage,
+    ProjectionNodeBeforeImage,
+    SOURCE_PROJECTION_REMOVED_REASON,
     SpecLineageEdgeSnapshot,
     SpecLineageReconciliationError,
     SpecLineageReconciliationReceipt,
     is_spec_lineage_rule_id,
+)
+from okto_pulse.core.kg.relational_projection import (
+    is_relational_projection_node,
+    parse_relational_projection_ref,
+    relational_projection_rule_node_type,
 )
 from okto_pulse.core.kg.schema_contract import (
     EDGE_METADATA_COLUMNS,
@@ -109,23 +120,8 @@ _POTENTIALLY_MUTATING_TOKENS = frozenset(
 )
 
 
-@dataclass(frozen=True)
-class _IncidentEdgeBeforeImage:
-    edge_type: str
-    from_type: str
-    to_type: str
-    from_id: str
-    to_id: str
-    attrs: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class _NodeBeforeImage:
-    node_type: str
-    node_id: str
-    source_session_id: Any
-    attrs: dict[str, Any]
-    incident_edges: tuple[_IncidentEdgeBeforeImage, ...]
+_IncidentEdgeBeforeImage = ProjectionEdgeBeforeImage
+_NodeBeforeImage = ProjectionNodeBeforeImage
 
 
 class TombstoneReplacementCompensationError(RuntimeError):
@@ -365,6 +361,54 @@ class _KuzuTransactionScope:
             f"MATCH (n:{node_type} {{id: $id}}) SET {assignments}",
             {"id": node_id, **values},
         )
+
+    def snapshot_node_properties(
+        self,
+        node_type: str,
+        node_id: str,
+        property_names: tuple[str, ...],
+    ) -> GraphNodePropertyBeforeImage | None:
+        if any(
+            not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(name))
+            for name in property_names
+        ):
+            raise ValueError("invalid graph property name")
+        projection = ", ".join(f"n.{name}" for name in property_names)
+        current = self.execute(
+            f"MATCH (n:{node_type} {{id: $node_id}}) "
+            f"RETURN {projection} LIMIT 1",
+            {"node_id": node_id},
+        )
+        if not current.rows:
+            return None
+        row = current.rows[0]
+        return GraphNodePropertyBeforeImage(
+            node_type=node_type,
+            node_id=node_id,
+            attrs={
+                name: row[index]
+                for index, name in enumerate(property_names)
+            },
+        )
+
+    def restore_node_properties(
+        self,
+        before_image: GraphNodePropertyBeforeImage,
+    ) -> None:
+        if not before_image.attrs:
+            return
+        assignments = ", ".join(
+            f"n.{name} = ${name}" for name in before_image.attrs
+        )
+        restored = self.execute(
+            f"MATCH (n:{before_image.node_type} {{id: $node_id}}) "
+            f"SET {assignments} RETURN n.id",
+            {"node_id": before_image.node_id, **before_image.attrs},
+        )
+        if not restored.rows:
+            raise LookupError(
+                "graph node missing during property before-image restore"
+            )
 
     @staticmethod
     def _canonical_snapshot_value(value: Any) -> Any:
@@ -1235,6 +1279,303 @@ class _KuzuTransactionScope:
                     attrs=dict(receipt.target_attrs),
                 )
             )
+
+    def _projection_owned_nodes(
+        self,
+        intent: ProjectionActiveSetIntent,
+    ) -> tuple[tuple[str, str, str, str], ...]:
+        """Read two bounded node tables, then apply the exact Core parser."""
+
+        owned: list[tuple[str, str, str, str]] = []
+        for node_type in ("Decision", "Alternative"):
+            exact_owner_node_ids = {
+                str(row[0] or "")
+                for row in self.execute(
+                    f"MATCH (n:{node_type})-[r:belongs_to]->"
+                    "(owner:Entity) "
+                    "RETURN n.id, owner.id, owner.source_artifact_ref, "
+                    "r.rule_id"
+                ).rows
+                if (
+                    (
+                        intent.owner_node_id is None
+                        or str(row[1] or "") == intent.owner_node_id
+                    )
+                    and str(row[2] or "")
+                    == f"refinement:{intent.owner_id}"
+                    and relational_projection_rule_node_type(
+                        str(row[3] or "")
+                    )
+                    == node_type
+                )
+            }
+            rows = self.execute(
+                f"MATCH (n:{node_type}) "
+                "RETURN n.id, n.source_artifact_ref, "
+                "n.created_by_agent, n.revocation_reason"
+            ).rows
+            for row in rows:
+                node_id = str(row[0] or "")
+                source_ref = str(row[1] or "")
+                created_by_agent = str(row[2] or "")
+                if not is_relational_projection_node(
+                    node_type=node_type,
+                    source_artifact_ref=source_ref,
+                    created_by_agent=created_by_agent,
+                    owner_type=intent.owner_type,
+                    owner_id=intent.owner_id,
+                    namespace=intent.namespace,
+                ):
+                    continue
+                reason = str(row[3] or "")
+                if (
+                    node_id not in exact_owner_node_ids
+                    and reason != SOURCE_PROJECTION_REMOVED_REASON
+                ):
+                    continue
+                owned.append(
+                    (
+                        node_type,
+                        node_id,
+                        source_ref,
+                        reason,
+                    )
+                )
+        return tuple(owned)
+
+    def _delete_projection_incident_edges(
+        self,
+        before_image: ProjectionNodeBeforeImage,
+    ) -> None:
+        seen: set[tuple[str, str, str, str, str]] = set()
+        for edge in before_image.incident_edges:
+            identity = (
+                edge.edge_type,
+                edge.from_type,
+                edge.to_type,
+                edge.from_id,
+                edge.to_id,
+            )
+            if identity in seen:
+                continue
+            seen.add(identity)
+            self.execute(
+                f"MATCH (a:{edge.from_type} {{id: $from_id}})"
+                f"-[r:{edge.edge_type}]->"
+                f"(b:{edge.to_type} {{id: $to_id}}) DELETE r",
+                {"from_id": edge.from_id, "to_id": edge.to_id},
+            )
+
+    def reconcile_projection_active_set(
+        self,
+        intent: ProjectionActiveSetIntent,
+    ) -> ProjectionActiveSetReceipt:
+        """Atomically replace one exact refinement/RDL active set."""
+
+        if intent.owner_type != "refinement" or intent.namespace != "rdl":
+            raise ProjectionActiveSetReconciliationError(
+                "projection_active_set_scope_invalid",
+                "Only the exact refinement/RDL relational projection is supported.",
+            )
+
+        active_by_ref: dict[str, tuple[str, str]] = {}
+        for ref in intent.active_nodes:
+            identity = parse_relational_projection_ref(ref.source_artifact_ref)
+            if (
+                identity is None
+                or identity.owner_type != intent.owner_type
+                or identity.owner_id != intent.owner_id
+                or identity.namespace != intent.namespace
+                or identity.node_type != ref.node_type
+            ):
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_member_invalid",
+                    "An active member is outside the exact projection scope.",
+                )
+            if ref.source_artifact_ref in active_by_ref:
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_member_duplicate",
+                    "The active projection contains a duplicate source reference.",
+                )
+            active_by_ref[ref.source_artifact_ref] = (ref.node_type, ref.node_id)
+
+        owned = self._projection_owned_nodes(intent)
+        owned_by_ref: dict[str, tuple[str, str, str]] = {}
+        for node_type, node_id, source_ref, reason in owned:
+            if source_ref in owned_by_ref:
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_source_ref_ambiguous",
+                    "A relational source reference resolves to multiple graph nodes.",
+                )
+            owned_by_ref[source_ref] = (node_type, node_id, reason)
+        for source_ref, expected in active_by_ref.items():
+            current = owned_by_ref.get(source_ref)
+            if current is None:
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_member_missing",
+                    "An active relational projection member is missing or has "
+                    "untrusted provenance.",
+                )
+            if current[:2] != expected:
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_identity_conflict",
+                    "An active relational source reference resolves to a "
+                    "different graph identity.",
+                )
+
+        active_refs = frozenset(active_by_ref)
+        before_images: list[ProjectionNodeBeforeImage] = []
+        for node_type, node_id, source_ref, reason in owned:
+            is_active = source_ref in active_refs
+            if is_active:
+                needs_change = reason == SOURCE_PROJECTION_REMOVED_REASON
+            elif reason not in {"", SOURCE_PROJECTION_REMOVED_REASON}:
+                # Never overwrite deletion/cancellation/supersedence provenance.
+                needs_change = False
+            else:
+                snapshot_without_edges = self._snapshot_node_before_image(
+                    node_type,
+                    node_id,
+                    include_incident_edges=False,
+                )
+                if snapshot_without_edges is None:
+                    raise ProjectionActiveSetReconciliationError(
+                        "projection_active_set_snapshot_failed",
+                        "A projection member disappeared while its before-image "
+                        "was being captured.",
+                    )
+                needs_change = (
+                    reason != SOURCE_PROJECTION_REMOVED_REASON
+                    or bool(self._snapshot_incident_edges(node_type, node_id))
+                )
+            if not needs_change:
+                continue
+            snapshot = self._snapshot_node_before_image(
+                node_type,
+                node_id,
+                include_incident_edges=True,
+            )
+            if snapshot is None:
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_snapshot_failed",
+                    "A projection member disappeared while its complete "
+                    "before-image was being captured.",
+                )
+            before_images.append(snapshot)
+
+        receipt = ProjectionActiveSetReceipt(
+            intent=intent,
+            before_images=tuple(before_images),
+        )
+        if not before_images:
+            return receipt
+
+        transaction_open = False
+        try:
+            transaction_open = True
+            self.execute("BEGIN TRANSACTION")
+            for before_image in before_images:
+                source_ref = str(
+                    before_image.attrs.get("source_artifact_ref") or ""
+                )
+                if source_ref in active_refs:
+                    restored = self.execute(
+                        f"MATCH (n:{before_image.node_type} "
+                        "{id: $node_id}) "
+                        "WHERE n.revocation_reason = $reason "
+                        "SET n.revocation_reason = '' RETURN n.id",
+                        {
+                            "node_id": before_image.node_id,
+                            "reason": SOURCE_PROJECTION_REMOVED_REASON,
+                        },
+                    )
+                    if not restored.rows:
+                        raise RuntimeError(
+                            "projection_active_member_restore_unconfirmed"
+                        )
+                    continue
+                self._delete_projection_incident_edges(before_image)
+                removed = self.execute(
+                    f"MATCH (n:{before_image.node_type} "
+                    "{id: $node_id}) "
+                    "WHERE coalesce(n.revocation_reason, '') IN "
+                    "['', $reason] "
+                    "SET n.revocation_reason = $reason RETURN n.id",
+                    {
+                        "node_id": before_image.node_id,
+                        "reason": SOURCE_PROJECTION_REMOVED_REASON,
+                    },
+                )
+                if not removed.rows:
+                    raise RuntimeError(
+                        "projection_stale_member_tombstone_unconfirmed"
+                    )
+                current = self._snapshot_node_before_image(
+                    before_image.node_type,
+                    before_image.node_id,
+                    include_incident_edges=True,
+                )
+                if (
+                    current is None
+                    or str(current.attrs.get("revocation_reason") or "")
+                    != SOURCE_PROJECTION_REMOVED_REASON
+                    or current.incident_edges
+                ):
+                    raise RuntimeError(
+                        "projection_stale_member_cleanup_unconfirmed"
+                    )
+            self.execute("COMMIT")
+            transaction_open = False
+        except BaseException as apply_error:
+            rollback_error: BaseException | None = None
+            if transaction_open:
+                rollback_confirmed = False
+                for _attempt in range(2):
+                    try:
+                        _materialize(self._conn.execute("ROLLBACK"))
+                    except BaseException as exc:
+                        rollback_error = exc
+                        if "NO ACTIVE TRANSACTION" in str(exc).upper():
+                            rollback_confirmed = True
+                            break
+                    else:
+                        rollback_confirmed = True
+                        break
+                if not rollback_confirmed:
+                    self._close(
+                        phase="projection_active_set_cleanup_unconfirmed"
+                    )
+                    raise ProjectionActiveSetReconciliationError(
+                        "projection_active_set_transaction_cleanup_unconfirmed",
+                        "The native projection transaction could not be proven "
+                        "closed; the writer scope was poisoned.",
+                        receipt=receipt,
+                    ) from rollback_error
+                transaction_open = False
+            try:
+                self.compensate_projection_active_set(receipt)
+            except BaseException as restore_error:
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_apply_and_restore_failed",
+                    "Projection reconciliation failed and its complete "
+                    "before-image could not be restored.",
+                    receipt=receipt,
+                ) from restore_error
+            raise ProjectionActiveSetReconciliationError(
+                "projection_active_set_apply_failed",
+                "Projection reconciliation failed and was restored.",
+                receipt=receipt,
+            ) from apply_error
+        return receipt
+
+    def compensate_projection_active_set(
+        self,
+        receipt: ProjectionActiveSetReceipt,
+    ) -> None:
+        """Restore every projection node and all incident edges exactly."""
+
+        for before_image in receipt.before_images:
+            self._restore_node_before_image(before_image)
 
     def find_node_types(self, node_id: str) -> tuple[str, ...]:
         from okto_pulse.community.adapters.kg_runtime import NODE_TYPES

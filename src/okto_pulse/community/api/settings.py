@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
 from okto_pulse.community.api.deps import get_unit_of_work, scheduler_control_from_request
+from okto_pulse.community.api.permission_errors import permission_denied_http_error
 from okto_pulse.core.application.use_cases.operational_rest import (
     GetRuntimeSettingsCommand,
     GetRuntimeSettingsUseCase,
@@ -118,11 +119,14 @@ async def get_runtime(
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> RuntimeSettingsResponse:
     """Return the currently effective runtime settings + restart flag."""
-    result = await GetRuntimeSettingsUseCase().execute(
-        GetRuntimeSettingsCommand(),
-        actor=RESTAdapterContract.actor_from_principal(principal),
-        uow=db,
-    )
+    try:
+        result = await GetRuntimeSettingsUseCase().execute(
+            GetRuntimeSettingsCommand(),
+            actor=RESTAdapterContract.actor_from_principal(principal),
+            uow=db,
+        )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     data = result.data
     return RuntimeSettingsResponse(**data)
 
@@ -159,7 +163,7 @@ async def put_runtime(
         )
         data = result.data
     except PermissionDeniedError as exc:
-        raise HTTPException(status_code=403, detail=exc.message) from exc
+        raise permission_denied_http_error(exc) from exc
     except ConfigChangeBlocked as exc:
         # Safe error envelope: bounded reason + setting_group + audit_event.
         # Raw values are NEVER in the response body (TR12).

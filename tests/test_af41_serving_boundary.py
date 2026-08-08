@@ -102,6 +102,11 @@ async def test_af41_serve_dual_builds_two_uvicorn_servers_with_community_trace(
     async def fake_heartbeat_loop() -> None:
         await asyncio.Event().wait()
 
+    # Build the module app under the REAL settings first; the FakeSettings
+    # patch below must only affect _serve_dual's serve-config read, not the
+    # lazy get_module_app() composition build (PEP 562 module app).
+    main_mod.get_module_app()
+
     monkeypatch.setattr(main_mod, "CommunitySettings", FakeSettings)
     monkeypatch.setattr(main_mod.uvicorn, "Config", FakeConfig)
     monkeypatch.setattr(main_mod.uvicorn, "Server", FakeServer)

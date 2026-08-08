@@ -17,6 +17,7 @@ interface KanbanCardProps {
   card: CardSummary;
   onClick: (cardId: string) => void;
   nameMap: Record<string, string>;
+  canDrag?: boolean;
   /** KG-03.6 — read-only cognitive consolidation badge. Resolved at
    * the KanbanBoard level in one batch HTTP request; the card just
    * renders whatever the parent passes. */
@@ -29,7 +30,7 @@ function displayName(id: string, nameMap: Record<string, string>): string {
   return id.slice(0, 8);
 }
 
-export function KanbanCard({ card, onClick, nameMap, cognitiveBadge }: KanbanCardProps) {
+export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBadge }: KanbanCardProps) {
   const {
     attributes,
     listeners,
@@ -37,7 +38,7 @@ export function KanbanCard({ card, onClick, nameMap, cognitiveBadge }: KanbanCar
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: card.id, disabled: !!card.archived });
+  } = useSortable({ id: card.id, disabled: !!card.archived || !canDrag });
 
   const isBug = card.card_type === 'bug';
   const isTest = card.card_type === 'test';
@@ -82,7 +83,13 @@ export function KanbanCard({ card, onClick, nameMap, cognitiveBadge }: KanbanCar
     >
       <div className="flex items-start gap-2">
         <div
-          className="mt-0.5 py-2 px-1 -ml-1 cursor-grab text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded hover:bg-gray-100 dark:hover:bg-gray-600 self-stretch flex items-center"
+          className={`mt-0.5 py-2 px-1 -ml-1 text-gray-400 rounded self-stretch flex items-center ${
+            canDrag && !card.archived
+              ? 'cursor-grab hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600'
+              : 'cursor-not-allowed opacity-30'
+          }`}
+          title={canDrag ? 'Move card' : 'You cannot move this card in its current state'}
+          aria-disabled={!canDrag || !!card.archived}
           {...listeners}
         >
           <GripVertical size={14} />

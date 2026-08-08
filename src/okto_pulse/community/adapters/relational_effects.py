@@ -108,6 +108,9 @@ from okto_pulse.core.ports.relational_services import (
     register_traceability_adapter,
 )
 from okto_pulse.core.ports.realm_access import register_realm_access_port
+from okto_pulse.core.ports.policy_constraint_projection import (
+    register_policy_constraint_projection_port,
+)
 
 
 class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
@@ -410,6 +413,9 @@ def register_community_relational_effects(
     from okto_pulse.community.adapters.sqlalchemy_realm_access import (
         CommunitySqlAlchemyRealmAccess,
     )
+    from okto_pulse.community.adapters.sqlalchemy_policy_constraint_projection import (
+        CommunitySqlAlchemyPolicyConstraintProjection,
+    )
     from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import (
         CommunitySqlAlchemyResourceGateAdapter,
     )
@@ -505,6 +511,9 @@ def register_community_relational_effects(
     register_runtime_settings_adapter(runtime_settings_adapter)
     register_traceability_adapter(traceability_adapter)
     register_realm_access_port(CommunitySqlAlchemyRealmAccess())
+    register_policy_constraint_projection_port(
+        CommunitySqlAlchemyPolicyConstraintProjection()
+    )
     return _relational_effects
 
 

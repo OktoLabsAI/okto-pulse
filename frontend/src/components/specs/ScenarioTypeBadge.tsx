@@ -10,19 +10,28 @@
  * new writes already fail closed on the backend (card 58844a26).
  */
 
-export const SCENARIO_TYPES = ['unit', 'integration', 'e2e', 'manual'] as const;
+import type { TestScenarioType } from '@/types';
+
+export const SCENARIO_TYPES = [
+  'unit',
+  'integration',
+  'e2e',
+  'manual',
+  'negative',
+] as const;
 
 const SCENARIO_TYPE_COLORS: Record<string, string> = {
   unit: 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-300',
   integration: 'bg-violet-50 text-violet-600 dark:bg-violet-900/30 dark:text-violet-300',
   e2e: 'bg-amber-50 text-amber-600 dark:bg-amber-900/30 dark:text-amber-300',
   manual: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
+  negative: 'bg-rose-50 text-rose-600 dark:bg-rose-900/30 dark:text-rose-300',
 };
 
 const UNSUPPORTED_CLASS =
   'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300';
 
-export function isSupportedScenarioType(value: string): boolean {
+export function isSupportedScenarioType(value: string): value is TestScenarioType {
   return (SCENARIO_TYPES as readonly string[]).includes(value);
 }
 

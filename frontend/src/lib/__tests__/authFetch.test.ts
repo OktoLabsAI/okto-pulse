@@ -188,6 +188,50 @@ describe('authFetch – typed HTTP error metadata', () => {
       code: 'knowledge_propagation_idempotency_conflict',
     });
   });
+
+  it('preserves the complete Policy Compliance rejection envelope', async () => {
+    const detail = {
+      outcome: 'error',
+      error: 'policy_compliance_receipt_stale',
+      code: 'policy_compliance_receipt_stale',
+      message: 'policy_compliance_receipt_stale',
+      reason_codes: ['policy_compliance_receipt_stale'],
+      decision_digest: 'a'.repeat(64),
+      fence_digest: 'b'.repeat(64),
+      receipt_id: 'receipt-1',
+      currentness: 'stale',
+      currentness_reasons: ['subject_content_changed'],
+      counts: {
+        applicable_rules: 2,
+        applicable_blocking_rules: 1,
+        blocking_rules: 0,
+        waived_rules: 0,
+        advisory_issues: 0,
+      },
+      transition: {
+        entity_type: 'spec',
+        subject_id: 'spec-1',
+        from_status: 'approved',
+        to_status: 'validated',
+      },
+      policy_compliance_required: true,
+    };
+    const client = makeClient(fakeResponse(409, { detail }));
+
+    let caught: unknown;
+    try {
+      await client.fetchJson('/api/specs/spec-1/move');
+      expect.fail('should have thrown');
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({
+      status: 409,
+      code: 'policy_compliance_receipt_stale',
+      details: detail,
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

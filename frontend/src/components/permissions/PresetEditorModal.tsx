@@ -10,22 +10,55 @@ import { PermissionFlagsEditor, countAllFlags, setAllFlags } from './PermissionF
 import type { FlagsMap } from './PermissionFlagsEditor';
 import type { PermissionPreset } from '@/types';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { PresetLineageInfo } from './PresetLineageInfo';
+import { resolvePresetLineage } from './presetResolution';
+import { usePermissions } from '@/hooks/usePermissions';
+import { useCurrentBoard } from '@/store/dashboard';
 
 interface PresetEditorModalProps {
   /** Preset to edit. Null = create new. */
   preset: PermissionPreset | null;
-  /** Base preset flags for "Reset to Base" (when cloned). */
-  baseFlags?: FlagsMap | null;
+  /** Complete visible catalog used to resolve immutable lineage identities. */
+  presets: readonly PermissionPreset[];
   /** Template flags for new preset (all false by default). */
   templateFlags?: FlagsMap;
   onClose: () => void;
   onSaved: () => void;
+  /** Optional explicit scope; existing callers fall back to the current board. */
+  boardId?: string | null;
 }
 
-export function PresetEditorModal({ preset, baseFlags, templateFlags, onClose, onSaved }: PresetEditorModalProps) {
+export function PresetEditorModal({
+  preset,
+  presets,
+  templateFlags,
+  onClose,
+  onSaved,
+  boardId,
+}: PresetEditorModalProps) {
   const api = useDashboardApi();
+  const currentBoard = useCurrentBoard();
+  const permissions = usePermissions(boardId ?? currentBoard?.id);
+  const policyAuthorityReady = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+  );
+  const canCreatePreset = policyAuthorityReady
+    && permissions.has('permission_preset.entity.create');
+  const canEditPreset = policyAuthorityReady
+    && permissions.has('permission_preset.entity.edit');
+  const canClonePreset = policyAuthorityReady
+    && permissions.has('permission_preset.clone');
   const isBuiltIn = preset?.is_builtin ?? false;
   const isNew = !preset;
+  const canModifyPreset = isNew ? canCreatePreset : canEditPreset;
+  const lineage = preset && !preset.is_builtin
+    ? resolvePresetLineage(preset, presets)
+    : null;
+  const baseFlags = lineage?.canResetToBase && lineage.directBase
+    ? lineage.directBase.flags as unknown as FlagsMap
+    : null;
 
   const [name, setName] = useState(preset?.name || '');
   const [description, setDescription] = useState(preset?.description || '');
@@ -39,6 +72,7 @@ export function PresetEditorModal({ preset, baseFlags, templateFlags, onClose, o
   const { total, enabled } = countAllFlags(flags);
 
   const handleSave = async () => {
+    if (!canModifyPreset) return;
     if (!name.trim()) {
       toast.error('Preset name is required');
       return;
@@ -62,10 +96,10 @@ export function PresetEditorModal({ preset, baseFlags, templateFlags, onClose, o
   };
 
   const handleCloneBuiltIn = async () => {
-    if (!preset) return;
+    if (!preset || !canClonePreset) return;
     setSaving(true);
     try {
-      await api.createPreset({
+      await api.clonePreset(preset.id, {
         name: `${preset.name} (copy)`,
         description: `Cloned from ${preset.name}`,
         flags: JSON.parse(JSON.stringify(preset.flags)),
@@ -89,7 +123,11 @@ export function PresetEditorModal({ preset, baseFlags, templateFlags, onClose, o
             <div className="flex items-center gap-2">
               <Shield size={18} className="text-violet-500" />
               <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
-                {isNew ? 'New Preset' : isBuiltIn ? `View: ${preset.name}` : `Edit: ${preset.name}`}
+                {isNew
+                  ? 'New Preset'
+                  : isBuiltIn || !canEditPreset
+                    ? `View: ${preset.name}`
+                    : `Edit: ${preset.name}`}
               </h2>
               {isBuiltIn && (
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400 font-medium">
@@ -98,6 +136,14 @@ export function PresetEditorModal({ preset, baseFlags, templateFlags, onClose, o
               )}
               {!isBuiltIn && !isNew && (
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-violet-100 text-violet-600 font-medium">custom</span>
+              )}
+              {preset?.owner_review_required && (
+                <span
+                  className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 font-medium"
+                  title={preset.review_reason || 'Preset lineage requires owner review'}
+                >
+                  owner review required
+                </span>
               )}
             </div>
             <p className="text-xs text-gray-400 mt-0.5">{enabled} of {total} flags enabled</p>
@@ -110,12 +156,16 @@ export function PresetEditorModal({ preset, baseFlags, templateFlags, onClose, o
         {/* Name / Description */}
         {!isBuiltIn && (
           <div className="px-6 py-3 border-b border-gray-100 dark:border-gray-700 space-y-2 shrink-0">
+            {preset && (
+              <PresetLineageInfo preset={preset} presets={presets} />
+            )}
             <div className="flex gap-3">
               <div className="flex-1">
                 <label className="text-[10px] text-gray-400 uppercase tracking-wide">Name</label>
                 <input
                   type="text"
                   value={name}
+                  disabled={!canModifyPreset}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="Preset name..."
                   className="w-full px-3 py-1.5 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-700 dark:text-gray-200 mt-0.5"
@@ -126,6 +176,7 @@ export function PresetEditorModal({ preset, baseFlags, templateFlags, onClose, o
                 <input
                   type="text"
                   value={description}
+                  disabled={!canModifyPreset}
                   onChange={(e) => setDescription(e.target.value)}
                   placeholder="What this preset is for..."
                   className="w-full px-3 py-1.5 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-700 dark:text-gray-200 mt-0.5"
@@ -133,14 +184,19 @@ export function PresetEditorModal({ preset, baseFlags, templateFlags, onClose, o
               </div>
             </div>
             <div className="flex gap-2">
-              <button onClick={() => setFlags(setAllFlags(flags, true))} className="text-[10px] px-2 py-1 rounded bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900/30 dark:text-green-300">
+              <button disabled={!canModifyPreset} onClick={() => setFlags(setAllFlags(flags, true))} className="text-[10px] px-2 py-1 rounded bg-green-100 text-green-700 hover:bg-green-200 disabled:opacity-40 dark:bg-green-900/30 dark:text-green-300">
                 Enable All
               </button>
-              <button onClick={() => setFlags(setAllFlags(flags, false))} className="text-[10px] px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900/30 dark:text-red-300">
+              <button disabled={!canModifyPreset} onClick={() => setFlags(setAllFlags(flags, false))} className="text-[10px] px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-40 dark:bg-red-900/30 dark:text-red-300">
                 Disable All
               </button>
               {baseFlags && (
-                <button onClick={() => setFlags(JSON.parse(JSON.stringify(baseFlags)))} className="text-[10px] px-2 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-300">
+                <button
+                  onClick={() => setFlags(JSON.parse(JSON.stringify(baseFlags)))}
+                  disabled={!canModifyPreset}
+                  className="text-[10px] px-2 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-300"
+                  title={`Restore flags from ${lineage?.baseLabel ?? 'base preset'}`}
+                >
                   Reset to Base
                 </button>
               )}
@@ -150,7 +206,11 @@ export function PresetEditorModal({ preset, baseFlags, templateFlags, onClose, o
 
         {/* Flags editor */}
         <div className="flex-1 overflow-y-auto">
-          <PermissionFlagsEditor flags={flags} onChange={isBuiltIn ? undefined : setFlags} readOnly={isBuiltIn} />
+          <PermissionFlagsEditor
+            flags={flags}
+            onChange={isBuiltIn || !canModifyPreset ? undefined : setFlags}
+            readOnly={isBuiltIn || !canModifyPreset}
+          />
         </div>
 
         {/* Footer */}
@@ -161,11 +221,11 @@ export function PresetEditorModal({ preset, baseFlags, templateFlags, onClose, o
               {isBuiltIn ? 'Close' : 'Cancel'}
             </button>
             {isBuiltIn ? (
-              <button onClick={handleCloneBuiltIn} disabled={saving} className="px-4 py-2 text-sm bg-violet-500 text-white rounded-lg hover:bg-violet-600 font-medium disabled:opacity-50">
+              <button onClick={handleCloneBuiltIn} disabled={saving || !canClonePreset} className="px-4 py-2 text-sm bg-violet-500 text-white rounded-lg hover:bg-violet-600 font-medium disabled:opacity-50">
                 {saving ? 'Cloning...' : 'Clone to customize'}
               </button>
             ) : (
-              <button onClick={handleSave} disabled={saving || !name.trim()} className="px-4 py-2 text-sm bg-violet-500 text-white rounded-lg hover:bg-violet-600 font-medium disabled:opacity-50">
+              <button onClick={handleSave} disabled={saving || !canModifyPreset || !name.trim()} className="px-4 py-2 text-sm bg-violet-500 text-white rounded-lg hover:bg-violet-600 font-medium disabled:opacity-50">
                 {saving ? 'Saving...' : isNew ? 'Create Preset' : 'Save Preset'}
               </button>
             )}

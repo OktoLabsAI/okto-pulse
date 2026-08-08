@@ -442,7 +442,7 @@ async def test_actual_fastmcp_run_and_status_outlive_blocked_native_work(
     )
     prepared_recovery_admitter(store, command)
 
-    async def authorized():
+    async def authorized(*_args, **_kwargs):
         return SimpleNamespace(agent_id="agent-test"), None
 
     class RecoveryService:

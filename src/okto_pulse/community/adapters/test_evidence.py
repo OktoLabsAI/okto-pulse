@@ -343,7 +343,7 @@ def _community_version() -> str:
     try:
         return metadata.version("okto-pulse")
     except metadata.PackageNotFoundError:
-        return "0.3.0"
+        return "0.3.1"
 
 
 def _resolve_manifest_path(

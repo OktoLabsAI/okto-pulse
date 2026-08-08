@@ -12,18 +12,21 @@ pool_timeout=10/pool_recycle=1800/pool_pre_ping=True``.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
 import contextlib
-from contextlib import asynccontextmanager, contextmanager
-from contextvars import ContextVar
 import logging
 import os
 import time
+import traceback
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-import traceback
-from typing import Any, Awaitable
+from typing import Any
 
+from filelock import AsyncFileLock
+from filelock import Timeout as FileLockTimeout
+from okto_pulse.core.domain.realm import RealmScope
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -31,10 +34,10 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from okto_pulse.core.domain.realm import RealmScope
 
 logger = logging.getLogger(__name__)
 _SESSION_CLEANUP_DRAIN_TIMEOUT_S = 5.0
+_SCHEMA_PROCESS_LOCK_TIMEOUT_S = 300.0
 _checkout_owner: ContextVar[str] = ContextVar(
     "community_database_checkout_owner",
     default="unattributed",
@@ -43,6 +46,45 @@ _checkout_owner: ContextVar[str] = ContextVar(
 
 class CommunityDatabasePathUnavailable(RuntimeError):
     """The active Community database has no local SQLite file path."""
+
+
+class CommunitySchemaLifecycleLockTimeout(RuntimeError):
+    """The bounded cross-process SQLite lifecycle lock could not be acquired."""
+
+
+def _schema_process_lock_path(runtime: CommunityDatabaseRuntime) -> Path | None:
+    database_path = runtime.local_database_path()
+    if database_path is None:
+        return None
+    return database_path.with_name(f"{database_path.name}.schema-lifecycle.lock")
+
+
+@asynccontextmanager
+async def _serialized_schema_lifecycle(
+    runtime: CommunityDatabaseRuntime,
+) -> AsyncIterator[None]:
+    lock_path = _schema_process_lock_path(runtime)
+    if lock_path is None:
+        # In-memory SQLite cannot be shared by independent processes.
+        yield
+        return
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    process_lock = AsyncFileLock(
+        str(lock_path),
+        timeout=_SCHEMA_PROCESS_LOCK_TIMEOUT_S,
+    )
+    try:
+        await process_lock.acquire()
+    except FileLockTimeout as exc:
+        raise CommunitySchemaLifecycleLockTimeout(
+            "community SQLite schema lifecycle lock timed out "
+            f"after {_SCHEMA_PROCESS_LOCK_TIMEOUT_S:.1f}s: {lock_path}"
+        ) from exc
+    try:
+        yield
+    finally:
+        await asyncio.shield(process_lock.release())
 
 
 @dataclass(frozen=True)
@@ -304,9 +346,16 @@ def build_community_session_factory(
     ``class_=AsyncSession`` and ``expire_on_commit=False`` are preserved so the
     repositories keep read-after-write semantics on committed instances.
     """
+    from .sqlalchemy_policy_subject_versioning import (
+        CommunitySemanticSession,
+        install_policy_subject_versioning,
+    )
+
+    install_policy_subject_versioning()
     return async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
         info={"realm_scope": RealmScope.local()},
     )
@@ -432,14 +481,10 @@ def install_community_pool_observability(engine: AsyncEngine) -> None:
             ) in checked_out.values()
             if now - started_at > _POOL_STALE_CHECKOUT_WARN_SECONDS
         ]
-        if (
-            stale
-            and now - last_stale_warn_at > _POOL_STALE_WARN_INTERVAL_SECONDS
-        ):
+        if stale and now - last_stale_warn_at > _POOL_STALE_WARN_INTERVAL_SECONDS:
             last_stale_warn_at = now
             oldest = max(
-                age
-                for age, _task_name, _task, _site, _owner, _statement in stale
+                age for age, _task_name, _task, _site, _owner, _statement in stale
             )
             stale_tasks = sorted(
                 {
@@ -468,10 +513,7 @@ def install_community_pool_observability(engine: AsyncEngine) -> None:
                 }
             )
             checkout_owners = sorted(
-                {
-                    owner
-                    for _age, _task_name, _task, _site, owner, _statement in stale
-                }
+                {owner for _age, _task_name, _task, _site, owner, _statement in stale}
             )
             last_statements = sorted(
                 {
@@ -506,7 +548,9 @@ def install_community_pool_observability(engine: AsyncEngine) -> None:
             )
 
     @event.listens_for(sync_engine, "before_cursor_execute")
-    def _on_cursor_execute(conn, _cursor, statement, _parameters, _context, _many):  # noqa: ANN001
+    def _on_cursor_execute(
+        conn, _cursor, statement, _parameters, _context, _many
+    ):  # noqa: ANN001
         record_id = conn.info.get("pulse_checkout_record_id")
         observation = checked_out.get(record_id)
         if observation is None:
@@ -583,7 +627,9 @@ async def init_db() -> None:
 
     from okto_pulse.core.ports.relational_runtime import init_db as initialize_schema
 
-    await initialize_schema()
+    runtime = resolve_community_database_runtime()
+    async with _serialized_schema_lifecycle(runtime):
+        await initialize_schema()
 
 
 async def close_db() -> None:
@@ -624,6 +670,7 @@ __all__ = [
     "community_database_checkout_owner",
     "CommunityDatabaseRuntime",
     "CommunityDatabasePathUnavailable",
+    "CommunitySchemaLifecycleLockTimeout",
     "close_db",
     "get_engine",
     "get_session_factory",

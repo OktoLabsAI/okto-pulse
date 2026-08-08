@@ -2,9 +2,9 @@
  * ScenarioTypeBadge — supported enum + historical-invalid reporting
  * (spec ac16b3c9, IMP card bf52c32f).
  *
- * The badge advertises ONLY unit/integration/e2e/manual and renders any
+ * The badge advertises ONLY unit/integration/e2e/manual/negative and renders any
  * persisted value outside that enum EXPLICITLY as `<value> (unsupported)` with a
- * warning marker + tooltip — so a stale value like `regression`/`negative` is
+ * warning marker + tooltip — so a stale value like `regression` is
  * surfaced for remediation instead of being shown as a plain supported label.
  */
 
@@ -20,9 +20,15 @@ import {
 afterEach(() => cleanup());
 
 describe('ScenarioTypeBadge', () => {
-  it('advertises exactly unit/integration/e2e/manual and nothing else', () => {
-    expect([...SCENARIO_TYPES]).toEqual(['unit', 'integration', 'e2e', 'manual']);
-    expect(isSupportedScenarioType('negative')).toBe(false);
+  it('advertises exactly the five canonical values and nothing else', () => {
+    expect([...SCENARIO_TYPES]).toEqual([
+      'unit',
+      'integration',
+      'e2e',
+      'manual',
+      'negative',
+    ]);
+    expect(isSupportedScenarioType('negative')).toBe(true);
     expect(isSupportedScenarioType('regression')).toBe(false);
   });
 
@@ -37,6 +43,15 @@ describe('ScenarioTypeBadge', () => {
     }
   });
 
+  it('renders negative as supported with the governed rose class', () => {
+    render(<ScenarioTypeBadge scenarioType="negative" />);
+    const badge = screen.getByTestId('scenario-type-badge');
+    expect(badge).not.toHaveAttribute('data-unsupported');
+    expect(badge.className).toContain(
+      'bg-rose-50 text-rose-600 dark:bg-rose-900/30 dark:text-rose-300',
+    );
+  });
+
   it('reports a historical/invalid persisted type EXPLICITLY (not silently coerced)', () => {
     render(<ScenarioTypeBadge scenarioType="regression" />);
     const badge = screen.getByTestId('scenario-type-badge');
@@ -44,7 +59,7 @@ describe('ScenarioTypeBadge', () => {
     expect(badge.getAttribute('data-unsupported')).toBe('true');
     const title = badge.getAttribute('title') ?? '';
     expect(title).toContain('Unsupported scenario_type');
-    expect(title).toContain('unit, integration, e2e, manual');
+    expect(title).toContain('unit, integration, e2e, manual, negative');
     // the invalid value is NOT relabelled as a supported type — intent preserved.
     expect(badge.textContent).not.toBe('integration');
   });

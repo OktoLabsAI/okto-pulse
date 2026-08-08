@@ -12,6 +12,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 
+const permissionHas = vi.hoisted(() => vi.fn((_flag: string) => true));
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({ preset: 'Full Control', isLoading: false, error: null, ownerReviewRequired: false, has: permissionHas }),
+}));
+
 import { KGHealthCognitivePendingPanel } from '../KGHealthCognitivePendingPanel';
 import * as kgHealthApi from '@/services/kg-health-api';
 import type { KGCognitivePendingResponse } from '@/services/kg-health-api';

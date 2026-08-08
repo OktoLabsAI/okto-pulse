@@ -26,7 +26,11 @@ _JSON_FIELDS = (
 
 def _record(row: Any) -> StructuredSpecRecord:
     values = {
-        field_name: copy.deepcopy(getattr(row, field_name, None) or [])
+        # Preserve stored NULL versus an authored empty list. Requirement-lint
+        # currentness is rederived from the persisted Spec, so normalizing an
+        # untouched NULL here would make the structured writer stage a
+        # different semantic snapshot and its receipt would be stale at birth.
+        field_name: copy.deepcopy(getattr(row, field_name, None))
         for field_name in _JSON_FIELDS
     }
     return StructuredSpecRecord(
@@ -35,6 +39,9 @@ def _record(row: Any) -> StructuredSpecRecord:
         status=row.status,
         version=int(row.version),
         archived=bool(row.archived),
+        title=row.title,
+        description=row.description,
+        context=row.context,
         **values,
     )
 

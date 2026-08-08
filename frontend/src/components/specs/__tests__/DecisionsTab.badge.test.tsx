@@ -11,11 +11,24 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 
 import { DecisionsTab } from '../DecisionsTab';
 import * as kgHealthApi from '@/services/kg-health-api';
 import type { Spec } from '@/types';
+
+const { hasPermission } = vi.hoisted(() => ({
+  hasPermission: vi.fn(),
+}));
+
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    isLoading: false,
+    error: null,
+    ownerReviewRequired: false,
+    has: hasPermission,
+  }),
+}));
 
 vi.mock('@/services/kg-health-api', async () => {
   const actual = await vi.importActual<typeof kgHealthApi>(
@@ -80,6 +93,7 @@ function buildSpec(): Spec {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  hasPermission.mockReturnValue(true);
 });
 
 afterEach(() => {
@@ -147,5 +161,18 @@ describe('DecisionsTab cognitive badge wiring', () => {
     // Only dec_alpha has show_badge=true; dec_beta hides itself.
     expect(badges).toHaveLength(1);
     expect(badges[0].getAttribute('data-status')).toBe('pending');
+  });
+
+  it('does not request cognitive badges without kg.operations.cognitive.read', async () => {
+    hasPermission.mockReturnValue(false);
+
+    render(
+      <DecisionsTab spec={buildSpec()} onUpdate={() => undefined} />,
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(kgHealthApi.getKGCognitivePendingBadges).not.toHaveBeenCalled();
   });
 });

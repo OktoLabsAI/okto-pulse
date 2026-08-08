@@ -19,6 +19,11 @@ import {
   waitFor,
 } from '@testing-library/react';
 
+const permissionHas = vi.hoisted(() => vi.fn((_flag: string) => true));
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({ preset: 'Full Control', isLoading: false, error: null, ownerReviewRequired: false, has: permissionHas }),
+}));
+
 import { CandidateDecisionPanel } from '../CandidateDecisionPanel';
 import * as api from '@/services/candidate-decisions-api';
 import type {

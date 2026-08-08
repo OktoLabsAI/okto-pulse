@@ -23,6 +23,9 @@ from okto_pulse.core.kg.board_source_store import (
     canonical_content_hash,
     card_artifact_type,
     decision_sources_from_spec,
+    projected_root_content_hash,
+    quality_current_head_fingerprint,
+    research_decision_current_head_fingerprint,
     row_status,
     to_iso,
     updated_at,
@@ -32,11 +35,44 @@ from okto_pulse.core.kg.interfaces.board_source_reader import (
     SourceReadFailure,
     SourceUnavailableError,
 )
+from okto_pulse.core.domain.quality_assessment import AssessmentDigestSet
+from okto_pulse.core.domain.quality_canonicalization import (
+    SEMANTIC_FIELD_MANIFEST_V1,
+)
 from okto_pulse.core.ports.kg_cognitive_source import (
     canonical_cognitive_source_fingerprint,
 )
+from okto_pulse.core.services.quality_projection_currentness import (
+    evaluate_quality_projection_currentness,
+)
 
 logger = logging.getLogger("okto_pulse.community.board_source_reader")
+
+_QUALITY_SUBJECT_TABLES = {
+    "ideation": "ideations",
+    "refinement": "refinements",
+    "spec": "specs",
+}
+_QUALITY_QA_TABLES = {
+    "ideation": ("ideation_qa_items", "ideation_id"),
+    "refinement": ("refinement_qa_items", "refinement_id"),
+    "spec": ("spec_qa_items", "spec_id"),
+}
+_QUALITY_JSON_FIELDS = frozenset(
+    {
+        "acceptance_criteria",
+        "api_contracts",
+        "business_rules",
+        "decisions",
+        "functional_requirements",
+        "in_scope",
+        "integration_requirements",
+        "observability_requirements",
+        "out_of_scope",
+        "technical_requirements",
+        "test_scenarios",
+    }
+)
 
 
 # SQL table ownership lives in the edition adapter. Core retains only the DTO
@@ -49,17 +85,42 @@ ARTIFACT_QUERIES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ("sprint", "sprints", "status", SPRINT_CONTENT_COLUMNS),
 )
 
+_NORMATIVE_QA_COLUMNS = frozenset(
+    {
+        "id",
+        "question",
+        "question_type",
+        "choices",
+        "allow_free_text",
+        "answer",
+        "selected",
+        "answered_at",
+        "revision",
+        "lifecycle",
+        "tombstoned",
+    }
+)
+
 _REQUIRED_SOURCE_TABLES = frozenset(
     {
         "boards",
         *(table for _, table, _, _ in ARTIFACT_QUERIES),
         "cards",
         "amendment_hotfix_revisions",
+        "ideation_qa_items",
+        "quality_assessment_heads",
+        "quality_assessment_receipts",
+        "refinement_qa_items",
+        "research_decision_entries",
+        "research_decision_heads",
+        "spec_qa_items",
     }
 )
 
 _REQUIRED_SOURCE_COLUMNS: dict[str, frozenset[str]] = {
-    "boards": frozenset({"id"}),
+    "boards": frozenset(
+        {"id", "name", "description", "realm_id", "settings"}
+    ),
     **{
         table: frozenset(
             {
@@ -90,7 +151,573 @@ _REQUIRED_SOURCE_COLUMNS: dict[str, frozenset[str]] = {
             *AMENDMENT_CONTENT_COLUMNS,
         }
     ),
+    "ideation_qa_items": _NORMATIVE_QA_COLUMNS | {"ideation_id"},
+    "quality_assessment_heads": frozenset(
+        {
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "assessment_kind",
+            "receipt_id",
+            "revision",
+            "updated_at",
+        }
+    ),
+    "quality_assessment_receipts": frozenset(
+        {
+            "id",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "subject_version",
+            "assessment_kind",
+            "origin",
+            "source",
+            "channel",
+            "outcome",
+            "scale_kind",
+            "scale_minimum",
+            "scale_maximum",
+            "scale_direction",
+            "score",
+            "justification",
+            "content_digest",
+            "clarification_digest",
+            "ruleset_digest",
+            "taxonomy_digest",
+            "policy_digest",
+            "input_digest",
+            "canonicalization_version",
+            "ruleset_version",
+            "taxonomy_version",
+            "analyzer_version",
+            "policy_version",
+            "run_identity_digest",
+            "authority_digest",
+            "created_by",
+            "created_at",
+            "predecessor_receipt_id",
+            "contract_version",
+            "head_revision",
+        }
+    ),
+    "refinement_qa_items": _NORMATIVE_QA_COLUMNS | {"refinement_id"},
+    "research_decision_entries": frozenset(
+        {
+            "id",
+            "ledger_id",
+            "board_id",
+            "refinement_id",
+            "refinement_version",
+            "predecessor_entry_id",
+            "unknown",
+            "status",
+            "anchor_type",
+            "anchor_ref",
+            "evidence_refs",
+            "alternatives",
+            "decision",
+            "rationale",
+            "confidence",
+            "evidence_absence_justification",
+            "created_by",
+            "created_at",
+        }
+    ),
+    "research_decision_heads": frozenset(
+        {
+            "ledger_id",
+            "board_id",
+            "refinement_id",
+            "current_entry_id",
+            "revision",
+            "refinement_version",
+            "status",
+            "updated_by",
+            "updated_at",
+        }
+    ),
+    "spec_qa_items": _NORMATIVE_QA_COLUMNS | {"spec_id"},
 }
+
+
+def _source_catalog_gaps(
+    conn: sqlite3.Connection,
+) -> tuple[list[str], dict[str, list[str]]]:
+    tables = {
+        str(row["name"])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    missing_tables = sorted(_REQUIRED_SOURCE_TABLES - tables)
+    missing_columns: dict[str, list[str]] = {}
+    for table, required in _REQUIRED_SOURCE_COLUMNS.items():
+        if table not in tables:
+            continue
+        missing = required - _table_columns(conn, table)
+        if missing:
+            missing_columns[table] = sorted(missing)
+    return missing_tables, missing_columns
+
+
+def _projection_scope_sql(
+    alias: str,
+    *,
+    board_id: str | None,
+    realm_id: str | None,
+) -> tuple[str, str, tuple[str, ...]]:
+    if (board_id is None) == (realm_id is None):
+        raise ValueError("exactly one projection scope is required")
+    if board_id is not None:
+        return "", f"{alias}.board_id = ?", (board_id,)
+    return (
+        f" INNER JOIN boards AS scope_board ON scope_board.id = {alias}.board_id",
+        "scope_board.realm_id = ?",
+        (str(realm_id),),
+    )
+
+
+def _quality_json_value(
+    value: object,
+    *,
+    field_name: str,
+) -> object:
+    if value is None or not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise sqlite3.DatabaseError(
+            f"quality projection JSON is invalid: {field_name}"
+        ) from exc
+
+
+def _quality_board_settings(value: object) -> dict[str, object]:
+    if value is None:
+        return {}
+    resolved = (
+        _quality_json_value(value, field_name="boards.settings")
+        if isinstance(value, str)
+        else value
+    )
+    if not isinstance(resolved, dict):
+        raise sqlite3.DatabaseError(
+            "quality projection board settings are invalid"
+        )
+    return dict(resolved)
+
+
+def _quality_projection_contexts(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str | None,
+    realm_id: str | None,
+) -> tuple[
+    dict[tuple[str, str, str], dict[str, object]],
+    dict[tuple[str, str, str], tuple[dict[str, object], ...]],
+    dict[str, dict[str, object]],
+]:
+    if (board_id is None) == (realm_id is None):
+        raise ValueError("exactly one projection scope is required")
+    if board_id is not None:
+        board_rows = conn.execute(
+            "SELECT id, settings FROM boards WHERE id = ?",
+            (board_id,),
+        ).fetchall()
+    else:
+        board_rows = conn.execute(
+            "SELECT id, settings FROM boards WHERE realm_id = ? "
+            "ORDER BY id COLLATE BINARY",
+            (str(realm_id),),
+        ).fetchall()
+    board_settings = {
+        str(row["id"]): _quality_board_settings(row["settings"])
+        for row in board_rows
+    }
+
+    subjects: dict[tuple[str, str, str], dict[str, object]] = {}
+    qa_items: dict[tuple[str, str, str], list[dict[str, object]]] = {}
+    for subject_type, table_name in _QUALITY_SUBJECT_TABLES.items():
+        if board_id is not None:
+            subject_rows = conn.execute(
+                f'SELECT subject.* FROM "{table_name}" AS subject '
+                "WHERE subject.board_id = ? "
+                "ORDER BY subject.id COLLATE BINARY",
+                (board_id,),
+            ).fetchall()
+        else:
+            subject_rows = conn.execute(
+                f'SELECT subject.* FROM "{table_name}" AS subject '
+                "INNER JOIN boards AS board "
+                "ON board.id = subject.board_id "
+                "WHERE board.realm_id = ? "
+                "ORDER BY subject.board_id COLLATE BINARY, "
+                "subject.id COLLATE BINARY",
+                (str(realm_id),),
+            ).fetchall()
+        for row in subject_rows:
+            subject_board_id = str(row["board_id"])
+            subject_id = str(row["id"])
+            payload: dict[str, object] = {
+                "id": subject_id,
+                "version": int(row["version"]),
+            }
+            for field_name in SEMANTIC_FIELD_MANIFEST_V1[subject_type]:
+                raw_value = row[field_name]
+                payload[field_name] = (
+                    _quality_json_value(
+                        raw_value,
+                        field_name=f"{table_name}.{field_name}",
+                    )
+                    if field_name in _QUALITY_JSON_FIELDS
+                    else raw_value
+                )
+            key = (subject_board_id, subject_type, subject_id)
+            subjects[key] = payload
+            qa_items[key] = []
+
+        qa_table, subject_fk = _QUALITY_QA_TABLES[subject_type]
+        if board_id is not None:
+            qa_rows = conn.execute(
+                f'SELECT qa.*, subject.board_id AS subject_board_id '
+                f'FROM "{qa_table}" AS qa '
+                f'INNER JOIN "{table_name}" AS subject '
+                f"ON subject.id = qa.{subject_fk} "
+                "WHERE subject.board_id = ? "
+                "ORDER BY qa.id COLLATE BINARY",
+                (board_id,),
+            ).fetchall()
+        else:
+            qa_rows = conn.execute(
+                f'SELECT qa.*, subject.board_id AS subject_board_id '
+                f'FROM "{qa_table}" AS qa '
+                f'INNER JOIN "{table_name}" AS subject '
+                f"ON subject.id = qa.{subject_fk} "
+                "INNER JOIN boards AS board "
+                "ON board.id = subject.board_id "
+                "WHERE board.realm_id = ? "
+                "ORDER BY subject.board_id COLLATE BINARY, "
+                "qa.id COLLATE BINARY",
+                (str(realm_id),),
+            ).fetchall()
+        for row in qa_rows:
+            key = (
+                str(row["subject_board_id"]),
+                subject_type,
+                str(row[subject_fk]),
+            )
+            if key not in qa_items:
+                raise sqlite3.DatabaseError(
+                    "quality projection Q&A has no current subject"
+                )
+            qa_items[key].append(
+                {
+                    "id": str(row["id"]),
+                    "revision": int(row["revision"]),
+                    "question": row["question"],
+                    "question_type": row["question_type"],
+                    "choices": _quality_json_value(
+                        row["choices"],
+                        field_name=f"{qa_table}.choices",
+                    )
+                    or [],
+                    "allow_free_text": bool(row["allow_free_text"]),
+                    "answer": row["answer"],
+                    "selected": _quality_json_value(
+                        row["selected"],
+                        field_name=f"{qa_table}.selected",
+                    )
+                    or [],
+                    "answered_at": row["answered_at"],
+                    "lifecycle": row["lifecycle"],
+                    "tombstoned": bool(row["tombstoned"]),
+                }
+            )
+    return (
+        subjects,
+        {
+            key: tuple(items)
+            for key, items in qa_items.items()
+        },
+        board_settings,
+    )
+
+
+def _current_quality_head_fingerprints(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str | None = None,
+    realm_id: str | None = None,
+) -> dict[tuple[str, str, str], tuple[str, ...]]:
+    scope_join, scope_where, params = _projection_scope_sql(
+        "head",
+        board_id=board_id,
+        realm_id=realm_id,
+    )
+    rows = conn.execute(
+        "SELECT head.board_id, head.subject_type, head.subject_id, "
+        "head.assessment_kind, head.receipt_id, "
+        "head.revision AS current_head_revision, "
+        "head.updated_at AS current_head_updated_at, "
+        "receipt.id AS bound_receipt_id, receipt.subject_version, "
+        "receipt.origin, receipt.source, receipt.channel, receipt.outcome, "
+        "receipt.scale_kind, receipt.scale_minimum, receipt.scale_maximum, "
+        "receipt.scale_direction, receipt.score, receipt.justification, "
+        "receipt.content_digest, receipt.clarification_digest, "
+        "receipt.ruleset_digest, receipt.taxonomy_digest, "
+        "receipt.policy_digest, receipt.input_digest, "
+        "receipt.canonicalization_version, receipt.ruleset_version, "
+        "receipt.taxonomy_version, receipt.analyzer_version, "
+        "receipt.policy_version, receipt.run_identity_digest, "
+        "receipt.authority_digest, receipt.created_by, "
+        "receipt.created_at AS receipt_created_at, "
+        "receipt.predecessor_receipt_id, receipt.contract_version, "
+        "receipt.head_revision AS receipt_head_revision "
+        "FROM quality_assessment_heads AS head "
+        f"{scope_join} "
+        "LEFT JOIN quality_assessment_receipts AS receipt "
+        "ON receipt.id = head.receipt_id "
+        "AND receipt.board_id = head.board_id "
+        "AND receipt.subject_type = head.subject_type "
+        "AND receipt.subject_id = head.subject_id "
+        "AND receipt.assessment_kind = head.assessment_kind "
+        f"WHERE {scope_where} "
+        "ORDER BY head.board_id COLLATE BINARY, "
+        "head.subject_type COLLATE BINARY, head.subject_id COLLATE BINARY, "
+        "head.assessment_kind COLLATE BINARY, head.receipt_id COLLATE BINARY",
+        params,
+    ).fetchall()
+    if not rows:
+        return {}
+    subjects, qa_items, settings_by_board = _quality_projection_contexts(
+        conn,
+        board_id=board_id,
+        realm_id=realm_id,
+    )
+    collected: dict[tuple[str, str, str], list[str]] = {}
+    for row in rows:
+        if row["bound_receipt_id"] is None:
+            raise sqlite3.DatabaseError(
+                "quality assessment head has no matching current receipt"
+            )
+        if row["receipt_head_revision"] != row["current_head_revision"]:
+            raise sqlite3.DatabaseError(
+                "quality assessment head revision does not match receipt"
+            )
+        key = (
+            str(row["board_id"]),
+            str(row["subject_type"]),
+            str(row["subject_id"]),
+        )
+        subject = subjects.get(key)
+        settings = settings_by_board.get(key[0])
+        if subject is None or settings is None:
+            raise sqlite3.DatabaseError(
+                "quality assessment head has no current subject context"
+            )
+        try:
+            assessed_digests = AssessmentDigestSet(
+                content_digest=str(row["content_digest"]),
+                clarification_digest=str(row["clarification_digest"]),
+                ruleset_digest=str(row["ruleset_digest"]),
+                taxonomy_digest=str(row["taxonomy_digest"]),
+                policy_digest=str(row["policy_digest"]),
+                input_digest=str(row["input_digest"]),
+                canonicalization_version=str(
+                    row["canonicalization_version"]
+                ),
+            )
+            currentness = evaluate_quality_projection_currentness(
+                board_id=key[0],
+                subject_type=key[1],
+                subject_id=key[2],
+                assessed_subject_version=int(row["subject_version"]),
+                assessed_digests=assessed_digests,
+                assessment_kind=str(row["assessment_kind"]),
+                origin=str(row["origin"]),
+                source=str(row["source"]),
+                current_subject=subject,
+                qa_items=qa_items.get(key, ()),
+                board_settings=settings,
+            )
+        except ValueError as exc:
+            raise sqlite3.DatabaseError(
+                "quality assessment currentness cannot be derived"
+            ) from exc
+        if not currentness.current:
+            continue
+        collected.setdefault(key, []).append(
+            quality_current_head_fingerprint(
+                {
+                    "board_id": key[0],
+                    "subject_type": key[1],
+                    "subject_id": key[2],
+                    "subject_version": int(row["subject_version"]),
+                    "assessment_kind": str(row["assessment_kind"]),
+                    "receipt_id": str(row["bound_receipt_id"]),
+                    "head_revision": int(row["current_head_revision"]),
+                    "outcome": str(row["outcome"]),
+                    "score": row["score"],
+                    "justification": str(row["justification"]),
+                    "scale_kind": str(row["scale_kind"]),
+                    "scale_minimum": row["scale_minimum"],
+                    "scale_maximum": row["scale_maximum"],
+                    "scale_direction": str(row["scale_direction"]),
+                    "content_digest": str(row["content_digest"]),
+                    "clarification_digest": str(
+                        row["clarification_digest"]
+                    ),
+                    "ruleset_digest": str(row["ruleset_digest"]),
+                    "taxonomy_digest": str(row["taxonomy_digest"]),
+                    "policy_digest": str(row["policy_digest"]),
+                    "input_digest": str(row["input_digest"]),
+                    "canonicalization_version": str(
+                        row["canonicalization_version"]
+                    ),
+                    "ruleset_version": str(row["ruleset_version"]),
+                    "taxonomy_version": str(row["taxonomy_version"]),
+                    "analyzer_version": str(row["analyzer_version"]),
+                    "policy_version": str(row["policy_version"]),
+                    "created_at": row["receipt_created_at"],
+                    "updated_at": row["current_head_updated_at"],
+                }
+            )
+        )
+    return {
+        key: tuple(sorted(fingerprints))
+        for key, fingerprints in collected.items()
+    }
+
+
+def _current_research_decision_head_fingerprints(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str | None = None,
+    realm_id: str | None = None,
+) -> dict[tuple[str, str, str], tuple[str, ...]]:
+    scope_join, scope_where, params = _projection_scope_sql(
+        "head",
+        board_id=board_id,
+        realm_id=realm_id,
+    )
+    rows = conn.execute(
+        "SELECT head.board_id, head.refinement_id, head.ledger_id, "
+        "head.current_entry_id, head.revision AS current_head_revision, "
+        "head.refinement_version AS current_head_refinement_version, "
+        "head.status AS current_head_status, head.updated_by, "
+        "head.updated_at AS current_head_updated_at, "
+        "entry.id AS bound_entry_id, "
+        "entry.refinement_version AS entry_refinement_version, "
+        "entry.predecessor_entry_id, entry.unknown, "
+        "entry.status AS entry_status, entry.anchor_type, entry.anchor_ref, "
+        "entry.evidence_refs, entry.alternatives, entry.decision, "
+        "entry.rationale, entry.confidence, "
+        "entry.evidence_absence_justification, entry.created_by, "
+        "entry.created_at AS entry_created_at "
+        "FROM research_decision_heads AS head "
+        f"{scope_join} "
+        "LEFT JOIN research_decision_entries AS entry "
+        "ON entry.id = head.current_entry_id "
+        "AND entry.ledger_id = head.ledger_id "
+        "AND entry.board_id = head.board_id "
+        "AND entry.refinement_id = head.refinement_id "
+        f"WHERE {scope_where} "
+        "ORDER BY head.board_id COLLATE BINARY, "
+        "head.refinement_id COLLATE BINARY, head.ledger_id COLLATE BINARY",
+        params,
+    ).fetchall()
+    collected: dict[tuple[str, str, str], list[str]] = {}
+    for row in rows:
+        if row["bound_entry_id"] is None:
+            raise sqlite3.DatabaseError(
+                "research decision head has no matching current entry"
+            )
+        if (
+            row["entry_refinement_version"]
+            != row["current_head_refinement_version"]
+            or row["entry_status"] != row["current_head_status"]
+        ):
+            raise sqlite3.DatabaseError(
+                "research decision head does not match current entry"
+            )
+        key = (
+            str(row["board_id"]),
+            "refinement",
+            str(row["refinement_id"]),
+        )
+        collected.setdefault(key, []).append(
+            research_decision_current_head_fingerprint(
+                {
+                    "board_id": key[0],
+                    "refinement_id": key[2],
+                    "refinement_version": int(
+                        row["entry_refinement_version"]
+                    ),
+                    "ledger_id": str(row["ledger_id"]),
+                    "entry_id": str(row["bound_entry_id"]),
+                    "head_revision": int(row["current_head_revision"]),
+                    "predecessor_entry_id": row["predecessor_entry_id"],
+                    "unknown": str(row["unknown"]),
+                    "status": str(row["entry_status"]),
+                    "anchor_type": str(row["anchor_type"]),
+                    "anchor_ref": str(row["anchor_ref"]),
+                    "evidence_refs": _quality_json_value(
+                        row["evidence_refs"],
+                        field_name="research_decision_entries.evidence_refs",
+                    )
+                    or [],
+                    "alternatives": _quality_json_value(
+                        row["alternatives"],
+                        field_name="research_decision_entries.alternatives",
+                    )
+                    or [],
+                    "decision": row["decision"],
+                    "rationale": row["rationale"],
+                    "confidence": row["confidence"],
+                    "evidence_absence_justification": row[
+                        "evidence_absence_justification"
+                    ],
+                    "created_by": str(row["created_by"]),
+                    "created_at": row["entry_created_at"],
+                    "updated_at": row["current_head_updated_at"],
+                }
+            )
+        )
+    return {
+        key: tuple(sorted(fingerprints))
+        for key, fingerprints in collected.items()
+    }
+
+
+def _root_source_hashes(
+    row: sqlite3.Row,
+    *,
+    board_id: str,
+    artifact_type: str,
+    content_columns: tuple[str, ...],
+    quality_fingerprints: dict[tuple[str, str, str], tuple[str, ...]],
+    research_fingerprints: dict[tuple[str, str, str], tuple[str, ...]],
+) -> tuple[str, str, str]:
+    row_id = str(row["id"])
+    content_hash_v2 = canonical_content_hash(row, content_columns)
+    content_hash_v1 = (
+        canonical_content_hash(row, SPEC_CONTENT_COLUMNS_V1)
+        if artifact_type == "spec"
+        else content_hash_v2
+    )
+    content_hash_v3 = projected_root_content_hash(
+        content_hash_v2,
+        quality_head_fingerprints=quality_fingerprints.get(
+            (board_id, artifact_type, row_id),
+            (),
+        ),
+        research_decision_head_fingerprints=research_fingerprints.get(
+            (board_id, artifact_type, row_id),
+            (),
+        ),
+    )
+    return content_hash_v1, content_hash_v2, content_hash_v3
 
 
 def resolve_pulse_db_path() -> Path:
@@ -175,6 +802,12 @@ def read_realm_source_snapshot(
     normalized_realm_id = str(realm_id).strip()
     if not normalized_realm_id:
         raise ValueError("realm_id must be non-empty")
+    missing_tables, missing_columns = _source_catalog_gaps(connection)
+    if missing_tables or missing_columns:
+        raise sqlite3.DatabaseError(
+            "board source catalog is incomplete for realm snapshot: "
+            f"tables={missing_tables} columns={missing_columns}"
+        )
     boards = connection.execute(
         "SELECT id, name, description, settings FROM boards "
         "WHERE realm_id = ? ORDER BY id COLLATE BINARY",
@@ -195,6 +828,14 @@ def read_realm_source_snapshot(
     captured: dict[str, list[dict[str, Any]]] = {
         str(row["id"]): [] for row in boards
     }
+    quality_fingerprints = _current_quality_head_fingerprints(
+        connection,
+        realm_id=normalized_realm_id,
+    )
+    research_fingerprints = _current_research_decision_head_fingerprints(
+        connection,
+        realm_id=normalized_realm_id,
+    )
 
     def realm_rows(table_name: str) -> list[sqlite3.Row]:
         return connection.execute(
@@ -212,22 +853,36 @@ def read_realm_source_snapshot(
             row_id = str(row["id"])
             version_raw = row["version"] if "version" in row.keys() else 1
             source_version = str(version_raw if version_raw is not None else 1)
+            content_hash = canonical_content_hash(row, content_cols)
+            compatibility_hashes: tuple[str, str] | None = None
+            if artifact_type in {"ideation", "refinement", "spec"}:
+                content_hash_v1, content_hash_v2, content_hash = (
+                    _root_source_hashes(
+                        row,
+                        board_id=board_id,
+                        artifact_type=artifact_type,
+                        content_columns=content_cols,
+                        quality_fingerprints=quality_fingerprints,
+                        research_fingerprints=research_fingerprints,
+                    )
+                )
+                compatibility_hashes = (content_hash_v1, content_hash_v2)
             source_row: dict[str, Any] = {
                 "artifact_type": artifact_type,
                 "id": row_id,
                 "source_ref": f"{artifact_type}:{row_id}",
                 "source_version": source_version,
-                "content_hash": canonical_content_hash(row, content_cols),
+                "content_hash": content_hash,
                 "created_at": to_iso(row["created_at"]),
                 "updated_at": updated_at(row),
                 "status": row_status(row, status_col),
                 "source_artifact_status": row_status(row, status_col),
                 "has_minimal_evidence": True,
             }
+            if compatibility_hashes is not None:
+                source_row["content_hash_v1"] = compatibility_hashes[0]
+                source_row["content_hash_v2"] = compatibility_hashes[1]
             if artifact_type == "spec":
-                source_row["content_hash_v1"] = canonical_content_hash(
-                    row, SPEC_CONTENT_COLUMNS_V1
-                )
                 source_row["source_manifest_version"] = SPEC_SOURCE_MANIFEST_VERSION
             working_ttl_days = ttl_by_board[board_id]
             if working_ttl_days is not None:
@@ -459,13 +1114,7 @@ class CommunityBoardSourceReader:
         conn: sqlite3.Connection,
         board_id: str,
     ) -> BoardSourceSnapshot:
-        tables = {
-            str(row["name"])
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
-        }
-        missing_tables = sorted(_REQUIRED_SOURCE_TABLES - tables)
+        missing_tables, missing_columns = _source_catalog_gaps(conn)
         if missing_tables:
             logger.warning(
                 "kg.board_source_reader.table_missing tables=%s - snapshot incomplete",
@@ -477,11 +1126,6 @@ class CommunityBoardSourceReader:
                 cause="table_missing",
             )
 
-        missing_columns: dict[str, list[str]] = {}
-        for table, required in _REQUIRED_SOURCE_COLUMNS.items():
-            missing = required - _table_columns(conn, table)
-            if missing:
-                missing_columns[table] = sorted(missing)
         if missing_columns:
             details = ",".join(
                 f"{table}:[{'|'.join(columns)}]"
@@ -517,6 +1161,16 @@ class CommunityBoardSourceReader:
 
         out: list[dict[str, Any]] = []
         working_ttl_days = _board_working_ttl_days(conn, board_id)
+        quality_fingerprints = _current_quality_head_fingerprints(
+            conn,
+            board_id=board_id,
+        )
+        research_fingerprints = (
+            _current_research_decision_head_fingerprints(
+                conn,
+                board_id=board_id,
+            )
+        )
         for artifact_type, table, status_col, content_cols in ARTIFACT_QUERIES:
             rows = conn.execute(
                 f"SELECT * FROM {table} "
@@ -529,6 +1183,19 @@ class CommunityBoardSourceReader:
                 version_raw = row["version"] if "version" in row.keys() else 1
                 source_version = str(version_raw if version_raw is not None else 1)
                 content_hash = canonical_content_hash(row, content_cols)
+                compatibility_hashes: tuple[str, str] | None = None
+                if artifact_type in {"ideation", "refinement", "spec"}:
+                    content_hash_v1, content_hash_v2, content_hash = (
+                        _root_source_hashes(
+                            row,
+                            board_id=board_id,
+                            artifact_type=artifact_type,
+                            content_columns=content_cols,
+                            quality_fingerprints=quality_fingerprints,
+                            research_fingerprints=research_fingerprints,
+                        )
+                    )
+                    compatibility_hashes = (content_hash_v1, content_hash_v2)
                 source_row = {
                     "artifact_type": artifact_type,
                     "id": row_id,
@@ -541,10 +1208,10 @@ class CommunityBoardSourceReader:
                     "source_artifact_status": row_status(row, status_col),
                     "has_minimal_evidence": True,
                 }
+                if compatibility_hashes is not None:
+                    source_row["content_hash_v1"] = compatibility_hashes[0]
+                    source_row["content_hash_v2"] = compatibility_hashes[1]
                 if artifact_type == "spec":
-                    source_row["content_hash_v1"] = canonical_content_hash(
-                        row, SPEC_CONTENT_COLUMNS_V1
-                    )
                     source_row["source_manifest_version"] = SPEC_SOURCE_MANIFEST_VERSION
                 if working_ttl_days is not None:
                     source_row["working_ttl_days"] = working_ttl_days

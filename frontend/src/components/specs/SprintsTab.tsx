@@ -126,7 +126,9 @@ export function SprintsTab({ specId, boardId }: SprintsTabProps) {
                 {sprint.test_scenario_ids && (
                   <span>{sprint.test_scenario_ids.length} tests</span>
                 )}
-                <span>v{sprint.spec_version}</span>
+                <span title={`Spec technical revision r${sprint.spec_version}`}>
+                  r{sprint.spec_version}
+                </span>
                 <ChevronRight size={14} />
               </div>
             </div>

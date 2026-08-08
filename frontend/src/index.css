@@ -294,6 +294,40 @@ h1, h2, h3, h4, h5, h6,
   to { opacity: 1; transform: translateX(0); }
 }
 
+/* Toast slides in from the right edge and slides back out to the right.
+   The offset covers the card width plus the container's right margin so the
+   card starts and ends fully off-screen. */
+@keyframes pulseToastIn {
+  from {
+    opacity: 0.4;
+    transform: translateX(calc(100% + 2rem));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes pulseToastOut {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(calc(100% + 2rem));
+  }
+}
+
+.pulse-toast[data-visible='true'] {
+  animation: pulseToastIn 280ms cubic-bezier(0.21, 1.02, 0.68, 1) both;
+}
+
+.pulse-toast[data-visible='false'] {
+  animation: pulseToastOut 240ms cubic-bezier(0.4, 0, 1, 1) both;
+  pointer-events: none;
+}
+
 /* Staggered list items — add .animate-list to parent */
 .animate-list > * {
   animation: slideUp 0.25s ease-out both;
@@ -372,5 +406,13 @@ h1, h2, h3, h4, h5, h6,
 @media (prefers-reduced-motion: reduce) {
   .pulse-loader__trace {
     animation-duration: 4s;
+  }
+
+  .pulse-toast[data-visible='true'] {
+    animation-duration: 1ms;
+  }
+
+  .pulse-toast[data-visible='false'] {
+    animation-duration: 1ms;
   }
 }

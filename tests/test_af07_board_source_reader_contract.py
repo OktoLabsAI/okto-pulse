@@ -11,11 +11,10 @@ import pytest
 from okto_pulse.community.adapters.board_source_reader import (
     ARTIFACT_QUERIES,
     CommunityBoardSourceReader,
+    _REQUIRED_SOURCE_COLUMNS,
 )
 from okto_pulse.core.kg.interfaces.board_source_reader import SourceUnavailableError
 from okto_pulse.core.kg.board_source_store import (
-    AMENDMENT_CONTENT_COLUMNS,
-    CARD_CONTENT_COLUMNS,
     IDEATION_CONTENT_COLUMNS,
     REFINEMENT_CONTENT_COLUMNS,
     SPEC_CONTENT_COLUMNS_V2,
@@ -131,7 +130,10 @@ def _read_story(db_path: Path) -> dict[str, object]:
 def _story_db(tmp_path: Path, *, ttl_days: int) -> Path:
     db_path = tmp_path / f"story_ttl_{ttl_days}.db"
     with sqlite3.connect(str(db_path)) as conn:
-        conn.execute("CREATE TABLE boards (id TEXT, settings TEXT)")
+        conn.execute(
+            "CREATE TABLE boards ("
+            "id TEXT, name TEXT, description TEXT, realm_id TEXT, settings TEXT)"
+        )
         conn.execute(
             "CREATE TABLE stories ("
             "id TEXT, board_id TEXT, status TEXT, created_at TEXT, updated_at TEXT, "
@@ -141,29 +143,9 @@ def _story_db(tmp_path: Path, *, ttl_days: int) -> Path:
         # Card 5 makes the source census fail closed: even an empty source
         # family must be represented in the schema before any row is trusted.
         required_columns = {
-            table: {
-                "id",
-                "board_id",
-                "created_at",
-                status_col,
-                *content_cols,
-            }
-            for _, table, status_col, content_cols in ARTIFACT_QUERIES
-            if table != "stories"
-        }
-        required_columns["cards"] = {
-            "id",
-            "board_id",
-            "created_at",
-            "status",
-            *CARD_CONTENT_COLUMNS,
-        }
-        required_columns["amendment_hotfix_revisions"] = {
-            "id",
-            "board_id",
-            "created_at",
-            "status",
-            *AMENDMENT_CONTENT_COLUMNS,
+            table: set(columns)
+            for table, columns in _REQUIRED_SOURCE_COLUMNS.items()
+            if table not in {"boards", "stories"}
         }
         for table, columns in sorted(required_columns.items()):
             declarations = ", ".join(
@@ -171,8 +153,14 @@ def _story_db(tmp_path: Path, *, ttl_days: int) -> Path:
             )
             conn.execute(f"CREATE TABLE {table} ({declarations})")
         conn.execute(
-            "INSERT INTO boards VALUES (?, ?)",
-            ("b1", json.dumps({"kg_working_ttl_days": ttl_days})),
+            "INSERT INTO boards VALUES (?, ?, ?, ?, ?)",
+            (
+                "b1",
+                "Board one",
+                "",
+                "realm-af07",
+                json.dumps({"kg_working_ttl_days": ttl_days}),
+            ),
         )
         conn.execute(
             "INSERT INTO stories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",

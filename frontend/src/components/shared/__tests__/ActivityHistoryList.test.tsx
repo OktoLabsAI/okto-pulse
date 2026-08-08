@@ -77,4 +77,22 @@ describe('ActivityHistoryList', () => {
 
     expect(screen.getByText('Card moved')).toHaveClass('bg-cyan-100', 'text-cyan-700');
   });
+
+  it('accepts a technical-revision formatter without changing the default', () => {
+    render(
+      <ActivityHistoryList
+        entries={[historyEntry]}
+        versionLabel={(version) => ({
+          text: `r${version}`,
+          title: `Technical revision r${version}`,
+        })}
+      />,
+    );
+
+    expect(screen.getByText('r17')).toHaveAttribute(
+      'title',
+      'Technical revision r17',
+    );
+    expect(screen.queryByText('v17')).not.toBeInTheDocument();
+  });
 });

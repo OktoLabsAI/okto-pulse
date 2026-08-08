@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Info, RotateCcw, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -11,10 +11,12 @@ import {
   type MetricsSummary,
 } from '@/services/metrics-api';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { usePermissions } from '@/hooks/usePermissions';
 
 interface MetricsSettingsPanelProps {
   onClose: () => void;
   initialPrompt?: boolean;
+  boardId: string | null | undefined;
 }
 
 const ACK_ITEMS = [
@@ -56,15 +58,36 @@ function modeLabel(mode: MetricsMode): string {
   return mode === 'anonymous_beacon' ? 'On' : 'Off';
 }
 
-export function MetricsSettingsPanel({ onClose, initialPrompt = false }: MetricsSettingsPanelProps) {
+export function MetricsSettingsPanel({
+  onClose,
+  initialPrompt = false,
+  boardId,
+}: MetricsSettingsPanelProps) {
   useEscapeToClose(onClose);
+  const permissions = usePermissions(boardId);
+  const policyReady = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+  );
+  const canReadSummary = policyReady && permissions.has('metrics.local.summary.read');
+  const canEditSettings = policyReady && permissions.has('metrics.settings.edit');
+  const canMarkMigrationNotice = (
+    policyReady
+    && permissions.has('metrics.settings.migration_notice_seen')
+  );
   const [data, setData] = useState<MetricsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [draftMode, setDraftMode] = useState<MetricsMode>('disabled');
   const shownMigrationNotices = useRef<Set<string>>(new Set());
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
+    if (!canReadSummary) {
+      setData(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const summary = await getMetricsSummary();
@@ -75,15 +98,19 @@ export function MetricsSettingsPanel({ onClose, initialPrompt = false }: Metrics
     } finally {
       setLoading(false);
     }
-  };
+  }, [canReadSummary]);
 
   useEffect(() => {
-    refresh();
-  }, []);
+    void refresh();
+  }, [refresh]);
 
   useEffect(() => {
     const notice = data?.migration_notice;
-    if (!notice?.pending || notice.type !== 'local_only_to_disabled') return;
+    if (
+      !canMarkMigrationNotice
+      || !notice?.pending
+      || notice.type !== 'local_only_to_disabled'
+    ) return;
     if (shownMigrationNotices.current.has(notice.type)) return;
     shownMigrationNotices.current.add(notice.type);
     toast('Metrics were turned off');
@@ -91,10 +118,10 @@ export function MetricsSettingsPanel({ onClose, initialPrompt = false }: Metrics
       shownMigrationNotices.current.delete(notice.type);
       toast.error(err?.message ?? 'Failed to confirm metrics notice');
     });
-  }, [data?.migration_notice]);
+  }, [canMarkMigrationNotice, data?.migration_notice]);
 
   const saveSettings = async (nextMode: MetricsMode) => {
-    if (!data || saving) return;
+    if (!data || saving || !canEditSettings) return;
     const previousMode = data.ui_mode === 'on' ? 'anonymous_beacon' : 'disabled';
     setDraftMode(nextMode);
     setSaving(true);
@@ -139,7 +166,15 @@ export function MetricsSettingsPanel({ onClose, initialPrompt = false }: Metrics
           </button>
         </div>
 
-        {loading && <div className="text-sm text-gray-500 dark:text-gray-400">Loading metrics...</div>}
+        {(loading || permissions.isLoading) && (
+          <div className="text-sm text-gray-500 dark:text-gray-400">Loading metrics...</div>
+        )}
+
+        {!permissions.isLoading && !canReadSummary && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-100">
+            You do not have permission to read local metrics.
+          </div>
+        )}
 
         {!loading && data && (
           <div className="space-y-5">
@@ -158,7 +193,8 @@ export function MetricsSettingsPanel({ onClose, initialPrompt = false }: Metrics
                 type="button"
                 role="switch"
                 aria-checked={draftMode === 'anonymous_beacon'}
-                disabled={saving}
+                disabled={saving || !canEditSettings}
+                title={canEditSettings ? 'Change metrics sharing' : 'Requires metrics.settings.edit'}
                 data-testid="metrics-on-off-toggle"
                 onClick={() => {
                   const nextMode = draftMode === 'anonymous_beacon' ? 'disabled' : 'anonymous_beacon';

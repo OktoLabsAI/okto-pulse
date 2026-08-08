@@ -8,6 +8,7 @@ import { useState } from 'react';
 import * as kgApi from '@/services/kg-api';
 import type { PendingTreeNode } from '@/services/kg-api';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { usePermissions } from '@/hooks/usePermissions';
 
 interface Props {
   boardId: string;
@@ -17,6 +18,13 @@ interface Props {
 }
 
 export function RetryFromHereDialog({ boardId, node, onClose, onSuccess }: Props) {
+  const permissions = usePermissions(boardId);
+  const canReprocessQueue = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+    && permissions.has('kg.operations.queue.reprocess')
+  );
   const [recursive, setRecursive] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -24,9 +32,13 @@ export function RetryFromHereDialog({ boardId, node, onClose, onSuccess }: Props
   useEscapeToClose(onClose, { canClose: !submitting, priority: 10 });
 
   const queueEntryId = node.queue_entry_id;
-  const canRetry = Boolean(queueEntryId);
+  const canRetry = Boolean(queueEntryId) && canReprocessQueue;
 
   async function handleSubmit() {
+    if (!canReprocessQueue) {
+      setError('You do not have permission to reprocess KG queue entries.');
+      return;
+    }
     if (!queueEntryId) {
       setError('This artifact does not have a queue entry to retry.');
       return;
@@ -97,6 +109,7 @@ export function RetryFromHereDialog({ boardId, node, onClose, onSuccess }: Props
             type="button"
             onClick={handleSubmit}
             disabled={!canRetry || submitting}
+            title={!canReprocessQueue ? 'Requires kg.operations.queue.reprocess' : undefined}
             className="px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
             data-testid="retry-confirm"
           >

@@ -9,10 +9,10 @@ forbid extra fields and named bypass intents are rejected with a structured erro
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases.admin_catalog import (
@@ -39,7 +39,7 @@ from okto_pulse.core.application.use_cases.import_export import (
     validate_items,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.community.api.auth_deps import require_principal, require_user
+from okto_pulse.community.api.auth_deps import require_principal
 from okto_pulse.core.application.use_cases import PermissionDeniedError
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.repositories import PulseUnitOfWork
@@ -55,21 +55,118 @@ router = APIRouter()
 
 # query_scope is derived inside the admin/catalog use cases from the REST actor.
 
+NonEmptyString = Annotated[str, Field(strict=True, min_length=1)]
+NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
+PositiveInt = Annotated[int, Field(strict=True, ge=1)]
+RevisionDigest = Annotated[
+    str,
+    Field(strict=True, pattern=r"^[0-9a-f]{64}$"),
+]
+
+
+class GuidelineDefaultRefRequest(BaseModel):
+    """Native B11 write contract for one immutable default revision pin.
+
+    All four revision fields are required so a native client cannot silently
+    promote a historical default to the current head.  Core verifies the pin
+    against the selected immutable revision.  Identity-only refs and legacy
+    aliases intentionally stay out of this native contract.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    guideline_id: NonEmptyString
+    priority: NonNegativeInt = 0
+    revision_id: NonEmptyString
+    revision_number: PositiveInt
+    semantic_version: NonEmptyString
+    revision_digest: RevisionDigest
+
+
+class _CompatibleGuidelineDefaultRefRequest(GuidelineDefaultRefRequest):
+    """Compatibility-only aliases accepted by board-config import.
+
+    They are never exposed by native create/update endpoints.  This lets a
+    historical export retain honest legacy provenance while the live write
+    surface remains closed to the six canonical B11 fields.
+    """
+
+    revision_id: NonEmptyString | None = None
+    revision_number: PositiveInt | None = None
+    semantic_version: NonEmptyString | None = None
+    revision_digest: RevisionDigest | None = None
+    guideline_version: PositiveInt | None = None
+    legacy_version: PositiveInt | None = None
+    legacy_version_unresolvable: bool | None = None
+
+
+class GuidelineRevisionPinResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    revision_id: NonEmptyString
+    revision_number: PositiveInt
+    semantic_version: NonEmptyString
+    revision_digest: RevisionDigest
+
+
+class DefaultGuidelineCandidateResponse(BaseModel):
+    """Unambiguous head-vs-default candidate projection.
+
+    The scalar revision fields are retained additively for old readers and
+    always mirror ``head_revision``.  New clients should use the nested objects.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    guideline_id: NonEmptyString
+    title: str
+    scope: str
+    guideline_version: PositiveInt
+    revision_id: NonEmptyString
+    revision_number: PositiveInt
+    semantic_version: NonEmptyString
+    revision_digest: RevisionDigest
+    head_revision: GuidelineRevisionPinResponse
+    default_revision: GuidelineRevisionPinResponse | None
+    retired: bool
+    eligible: bool
+    eligibility_reason: Literal["guideline_retired"] | None
+    is_default: bool
+    priority: NonNegativeInt | None
+
+
+class DefaultGuidelineCandidatesResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scope: str
+    template_id: str | None
+    template_version: PositiveInt | None
+    candidates: list[DefaultGuidelineCandidateResponse]
+
 
 class DefaultBoardConfigVersionCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     settings_payload: dict[str, Any] | None = None
     scope: str = "global"
-    guideline_default_refs: list[Any] | None = None
+    guideline_default_refs: list[GuidelineDefaultRefRequest] | None = None
     design_system_default_ref: dict[str, Any] | None = None
+    spec_checklist_mode: Literal["off", "advisory", "blocking"] | None = None
     activate: bool = False
+
+
+class _DefaultBoardConfigImportVersionRequest(
+    DefaultBoardConfigVersionCreateRequest
+):
+    """Import twin that alone accepts the documented legacy pin aliases."""
+
+    guideline_default_refs: list[_CompatibleGuidelineDefaultRefRequest] | None = None
 
 
 class UpdateDefaultGuidelineRefsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    guideline_default_refs: list[Any] | None = None
+    guideline_default_refs: list[GuidelineDefaultRefRequest] | None = None
 
 
 class SetTemplateDesignSystemRequest(BaseModel):
@@ -97,38 +194,76 @@ def _invalid_request(exc: ValidationError) -> HTTPException:
     )
 
 
+def _reject_duplicate_guideline_refs(
+    refs: list[GuidelineDefaultRefRequest] | None,
+) -> None:
+    """Reject a duplicate identity before any use case can open a write path."""
+
+    seen: set[str] = set()
+    for ref in refs or []:
+        if ref.guideline_id in seen:
+            raise DefaultBoardConfigurationError(
+                "default_guideline_duplicate",
+                "A guideline can appear only once in a default configuration.",
+                422,
+                {"guideline_id": ref.guideline_id},
+            )
+        seen.add(ref.guideline_id)
+
+
+def _reject_inline_guideline_refs(raw: dict[str, Any]) -> None:
+    """Preserve the stable semantic reason before closed-schema validation."""
+
+    refs = raw.get("guideline_default_refs")
+    if not isinstance(refs, list):
+        return
+    for position, ref in enumerate(refs):
+        if isinstance(ref, dict) and not ref.get("guideline_id"):
+            raise DefaultBoardConfigurationError(
+                "default_guideline_inline_not_allowed",
+                "Inline guideline defaults are not allowed; reference a global "
+                "catalog guideline by guideline_id.",
+                422,
+                {"position": position, "ref": ref},
+            )
+
+
 @router.get("/default-board-config/active")
 async def get_active_default_board_config(
     scope: str = "global",
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
         result = await GetActiveDefaultBoardConfigUseCase().execute(
             DefaultBoardConfigCommand(scope=scope),
-            actor=RESTAdapterContract.actor(actor),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=db,
         )
         return result.data
     except DefaultBoardConfigurationError as exc:
         raise _err(exc)
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
 
 
 @router.get("/default-board-config/versions")
 async def list_default_board_config_versions(
     scope: str = "global",
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
         result = await ListDefaultBoardConfigVersionsUseCase().execute(
             DefaultBoardConfigCommand(scope=scope),
-            actor=RESTAdapterContract.actor(actor),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=db,
         )
         return result.data
     except DefaultBoardConfigurationError as exc:
         raise _err(exc)
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
 
 
 @router.post("/default-board-config/versions")
@@ -139,9 +274,13 @@ async def create_default_board_config_version(
 ) -> dict[str, Any]:
     try:
         reject_bypass_fields(raw)
+        _reject_inline_guideline_refs(raw)
         req = DefaultBoardConfigVersionCreateRequest.model_validate(raw)
+        _reject_duplicate_guideline_refs(req.guideline_default_refs)
     except AmendmentRevisionApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.to_dict())
+    except DefaultBoardConfigurationError as exc:
+        raise _err(exc)
     except ValidationError as exc:
         raise _invalid_request(exc)
     try:
@@ -161,7 +300,7 @@ async def create_default_board_config_version(
 async def export_default_board_config(
     scope: str = "global",
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     """Export every default board configuration version (oldest first, the
     active one marked ``is_active``) as a schema_version-1 envelope
@@ -169,11 +308,13 @@ async def export_default_board_config(
     try:
         return await ExportBoardConfigUseCase().execute(
             ExportBoardConfigCommand(scope=scope),
-            actor=RESTAdapterContract.actor(actor),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=db,
         )
     except DefaultBoardConfigurationError as exc:
         raise _err(exc)
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
 
 
 @router.post("/default-board-config/import")
@@ -207,7 +348,9 @@ async def import_default_board_config(
             reject_bypass_fields(payload)
         except AmendmentRevisionApiError as exc:
             raise ImportItemError(-1, exc.to_dict())
-        return DefaultBoardConfigVersionCreateRequest.model_validate(payload).model_dump()
+        return _DefaultBoardConfigImportVersionRequest.model_validate(
+            payload
+        ).model_dump(exclude_unset=True)
 
     parsed, errors = validate_items(raw_items, _validate)
     if errors:
@@ -277,40 +420,49 @@ async def deactivate_default_board_config_version(
 async def get_board_default_config_diff(
     board_id: str,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
         result = await GetBoardDefaultConfigDiffUseCase().execute(
             DefaultBoardConfigCommand(board_id=board_id),
-            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
+            ),
             uow=db,
         )
         return result.data
     except DefaultBoardConfigurationError as exc:
         raise _err(exc)
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
 
 
 # -- guideline defaults (spec 8a2fad91 / card 5cb88511) ----------------------
 
 
-@router.get("/guidelines/default-candidates")
+@router.get(
+    "/guidelines/default-candidates",
+    response_model=DefaultGuidelineCandidatesResponse,
+)
 async def list_default_guideline_candidates(
     scope: str = "global",
     template_id: str | None = None,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     """Global catalog guidelines with derived eligibility + current default status
     from the umbrella template (api_019810c9)."""
     try:
         result = await ListDefaultGuidelineCandidatesUseCase().execute(
             DefaultBoardConfigCommand(scope=scope, template_id=template_id or ""),
-            actor=RESTAdapterContract.actor(actor),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=db,
         )
         return result.data
     except DefaultBoardConfigurationError as exc:
         raise _err(exc)
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
 
 
 @router.post("/default-board-configurations/{template_id}/guidelines")
@@ -324,16 +476,20 @@ async def update_default_guideline_refs(
     guidelines (api_0845ff2a). Active template => copy-on-write new version."""
     try:
         reject_bypass_fields(raw)
+        _reject_inline_guideline_refs(raw)
         req = UpdateDefaultGuidelineRefsRequest.model_validate(raw)
+        _reject_duplicate_guideline_refs(req.guideline_default_refs)
     except AmendmentRevisionApiError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.to_dict())
+    except DefaultBoardConfigurationError as exc:
+        raise _err(exc)
     except ValidationError as exc:
         raise _invalid_request(exc)
     try:
         result = await UpdateDefaultGuidelineRefsUseCase().execute(
             DefaultBoardConfigCommand(
                 template_id=template_id,
-                payload={"guideline_default_refs": req.guideline_default_refs},
+                payload=req.model_dump(),
             ),
             actor=RESTAdapterContract.actor_from_principal(principal),
             uow=db,

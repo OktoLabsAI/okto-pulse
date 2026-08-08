@@ -5,19 +5,23 @@
 import React, { useState } from 'react';
 import { X } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { getErrorMessage } from '@/lib/getErrorMessage';
+import { showErrorToast } from '@/lib/toastError';
 import { useDashboardApi } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboard';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { usePermissions } from '@/hooks/usePermissions';
 
 interface CreateBoardModalProps {
   isOpen: boolean;
   onClose: () => void;
+  boardId?: string | null;
 }
 
-export function CreateBoardModal({ isOpen, onClose }: CreateBoardModalProps) {
+export function CreateBoardModal({ isOpen, onClose, boardId }: CreateBoardModalProps) {
   const api = useDashboardApi();
   const { addBoard } = useDashboardStore();
+  const permissions = usePermissions(boardId);
+  const canCreateBoard = permissions.has('board.admin.create');
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -27,6 +31,7 @@ export function CreateBoardModal({ isOpen, onClose }: CreateBoardModalProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canCreateBoard) return;
 
     if (!name.trim()) {
       toast.error('Name is required');
@@ -47,7 +52,7 @@ export function CreateBoardModal({ isOpen, onClose }: CreateBoardModalProps) {
       setDescription('');
       onClose();
     } catch (err) {
-      toast.error(getErrorMessage(err));
+      showErrorToast(err, 'Failed to create board');
     } finally {
       setIsLoading(false);
     }
@@ -99,7 +104,7 @@ export function CreateBoardModal({ isOpen, onClose }: CreateBoardModalProps) {
             <button type="button" onClick={onClose} className="btn btn-secondary">
               Cancel
             </button>
-            <button type="submit" disabled={isLoading} className="btn btn-primary">
+            <button type="submit" disabled={isLoading || !canCreateBoard} className="btn btn-primary">
               {isLoading ? 'Creating...' : 'Create Board'}
             </button>
           </div>

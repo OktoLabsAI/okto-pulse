@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import update
 
 from okto_pulse.community.adapters.coordination import (
     CommunitySqlAlchemyClaimRepository,
+)
+from okto_pulse.community.adapters.sqlalchemy_consolidation import (
+    CommunitySqlAlchemyConsolidationPersistence,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
     DomainEventHandlerExecution,
@@ -20,6 +23,7 @@ from okto_pulse.core.kg.board_source_store import (
     CARD_CONTENT_COLUMNS,
     SPEC_CONTENT_COLUMNS_V2,
     canonical_content_hash,
+    projected_root_content_hash,
 )
 from okto_pulse.core.ports.domain_event_delivery import (
     CardBoostFacts,
@@ -100,7 +104,14 @@ class CommunitySqlAlchemyDomainEventDeliveryStore:
                 board_id=row.board_id,
                 actor_id=row.actor_id,
                 actor_type=row.actor_type,
-                occurred_at=row.occurred_at,
+                # SQLite drops timezone metadata even for
+                # ``DateTime(timezone=True)``.  Domain events require an aware
+                # UTC instant at the delivery boundary.
+                occurred_at=(
+                    row.occurred_at.replace(tzinfo=timezone.utc)
+                    if row.occurred_at.tzinfo is None
+                    else row.occurred_at.astimezone(timezone.utc)
+                ),
                 payload=(
                     dict(row.payload_json)
                     if isinstance(row.payload_json, dict)
@@ -199,6 +210,11 @@ class CommunitySqlAlchemyDomainEventPublisher:
 
 
 class CommunitySqlAlchemyDomainEventFactReader:
+    def __init__(self) -> None:
+        self._consolidation_persistence = (
+            CommunitySqlAlchemyConsolidationPersistence()
+        )
+
     async def load_card_boost_facts(
         self, context: Any, *, card_id: str
     ) -> CardBoostFacts | None:
@@ -238,10 +254,33 @@ class CommunitySqlAlchemyDomainEventFactReader:
         spec = await context.get(Spec, spec_id)
         if spec is None:
             return None
+        board_id = str(spec.board_id or "")
+        if not board_id:
+            raise RuntimeError("cognitive_spec_board_scope_invalid")
+        projection_inputs = (
+            await self._consolidation_persistence.load_projection_inputs(
+                context,
+                board_id=board_id,
+                artifact_type="spec",
+                artifact_id=str(spec.id),
+                artifact=spec,
+            )
+        )
+        base_content_hash = _content_hash(spec, SPEC_CONTENT_COLUMNS_V2)
         return CognitiveSpecFacts(
             spec_id=spec.id,
             context=spec.context,
-            content_hash=_content_hash(spec, SPEC_CONTENT_COLUMNS_V2),
+            content_hash=projected_root_content_hash(
+                base_content_hash,
+                quality_head_fingerprints=(
+                    assessment.projection_fingerprint
+                    for assessment in projection_inputs.quality_assessments
+                ),
+                research_decision_head_fingerprints=(
+                    decision.projection_fingerprint
+                    for decision in projection_inputs.research_decisions
+                ),
+            ),
         )
 
 

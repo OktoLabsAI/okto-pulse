@@ -3,15 +3,30 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SprintModal } from '../SprintModal';
 import { deriveSprintDisplayCounts } from '../sprintDisplayCounts';
 import type { CardSummaryForSpec, Sprint } from '@/types';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
+import type {
+  PolicyCompliancePanelProps,
+  PolicyComplianceTransitionPreviewProps,
+} from '@/components/policy-compliance';
 
 const apiMock = vi.hoisted(() => ({
   getSprint: vi.fn(),
   getSpec: vi.fn(),
+  getAllowedTransitions: vi.fn(),
   updateSprint: vi.fn(),
   moveSprint: vi.fn(),
   listSprintHistory: vi.fn(),
   assignTasksToSprint: vi.fn(),
   unassignTasksFromSprint: vi.fn(),
+}));
+
+const permissionState = vi.hoisted(() => ({
+  flags: new Set<string>(),
+  denied: new Set<string>(),
+}));
+
+const policyComponentState = vi.hoisted(() => ({
+  panelProps: null as PolicyCompliancePanelProps | null,
 }));
 
 const markdownMock = vi.hoisted(() => ({
@@ -23,6 +38,56 @@ const markdownMock = vi.hoisted(() => ({
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
 }));
+
+vi.mock('@/hooks/usePermissions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks/usePermissions')>();
+  return {
+    ...actual,
+    usePermissions: () => ({
+      preset: null,
+      isLoading: false,
+      error: null,
+      ownerReviewRequired: false,
+      has: (flag: string) => (
+        flag.startsWith('sprint.')
+          ? !permissionState.denied.has(flag)
+          : permissionState.flags.has(flag)
+      ),
+    }),
+  };
+});
+
+vi.mock('@/components/policy-compliance', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('@/components/policy-compliance')
+  >();
+  return {
+    ...actual,
+    PolicyCompliancePanel: (props: PolicyCompliancePanelProps) => {
+      policyComponentState.panelProps = props;
+      return (
+        <div
+          data-testid="policy-compliance-panel"
+          data-board-id={props.boardId}
+          data-entity-type={props.entityType}
+          data-subject-id={props.subjectId}
+          data-refresh-key={props.refreshKey}
+        />
+      );
+    },
+    PolicyComplianceTransitionPreview: ({
+      preview,
+      rejection,
+    }: PolicyComplianceTransitionPreviewProps) => (
+      <div
+        data-testid="policy-transition-preview"
+        data-status={preview.status}
+      >
+        {rejection?.code || ''}
+      </div>
+    ),
+  };
+});
 
 vi.mock('@/lib/exportMarkdown', () => ({
   exportSprint: markdownMock.exportSprint,
@@ -94,6 +159,187 @@ function sprint(overrides: Partial<Sprint> = {}): Sprint {
     ...overrides,
   };
 }
+
+function transition(
+  toStatus: string,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    to_status: toStatus,
+    label: toStatus.charAt(0).toUpperCase() + toStatus.slice(1),
+    gate: 'none',
+    blocked_reason: null,
+    preconditions: [],
+    capabilities: [],
+    effects: [],
+    reason_codes: [],
+    policy_compliance: false,
+    policy_compliance_decision: null,
+    ...overrides,
+  };
+}
+
+function policyDecision(allowed: boolean) {
+  return {
+    state: allowed
+      ? 'policy_compliance_ready'
+      : 'policy_compliance_blocked',
+    allowed,
+    policy_compliance_required: true,
+    reason_codes: [
+      allowed
+        ? 'policy_compliance_ready'
+        : 'policy_compliance_blocked',
+    ],
+    decision_digest: 'a'.repeat(64),
+    fence_digest: 'b'.repeat(64),
+    receipt_ids: ['receipt-sprint-1'],
+    currentness: 'current',
+    currentness_reasons: [],
+    applicable_metric_count: 2,
+    applicable_blocking_metric_count: 2,
+    failed_metric_count: allowed ? 0 : 1,
+    blocking_metric_count: allowed ? 0 : 1,
+    waived_metric_count: 0,
+    advisory_issue_count: 0,
+    skipped_binding_count: 0,
+    diagnostic_codes: allowed ? [] : ['policy_metric_threshold_failed'],
+    binding_decisions: [{
+      binding_id: 'binding-sprint-1',
+      guideline_id: 'guideline-sprint-1',
+      enforcement: 'blocking',
+      applicable_metric_count: 2,
+      allowed,
+      assessment_available: true,
+      receipt_id: 'receipt-sprint-1',
+      currentness: 'current',
+      currentness_reasons: [],
+      inadmissibility_cause: null,
+      failed_metric_count: allowed ? 0 : 1,
+      waived_metric_count: 0,
+      blocking_metric_count: allowed ? 0 : 1,
+      advisory_issue_count: 0,
+      skipped: false,
+      diagnostic_codes:
+        allowed ? [] : ['policy_metric_threshold_failed'],
+    }],
+  };
+}
+
+function transitionResponse(
+  status: string,
+  allowedTransitions: ReturnType<typeof transition>[],
+) {
+  return {
+    board_id: 'board-1',
+    entity_type: 'sprint',
+    entity_id: 'sprint-1',
+    current_status: status,
+    source: 'core_sdlc_registry_v1',
+    allowed_transitions: allowedTransitions,
+  };
+}
+
+function defaultTransitions(status: string) {
+  if (status === 'active') {
+    return [
+      transition('draft', {
+        gate: 'reopen',
+        capabilities: ['reopen'],
+      }),
+      transition('review', {
+        gate: 'sprint_review',
+        capabilities: ['request_review'],
+      }),
+      transition('cancelled', { gate: 'cancel' }),
+    ];
+  }
+  if (status === 'review') {
+    return [
+      transition('active', {
+        gate: 'rework',
+        capabilities: ['reopen'],
+      }),
+      transition('closed', {
+        gate: 'sprint_completion',
+        capabilities: ['complete'],
+        policy_compliance: true,
+        policy_compliance_decision: policyDecision(true),
+      }),
+      transition('cancelled', { gate: 'cancel' }),
+    ];
+  }
+  return [];
+}
+
+function structuredPolicyRejection() {
+  return new AuthenticatedFetchError({
+    message: 'Policy Compliance blocked the transition.',
+    status: 409,
+    code: 'policy_compliance_blocked',
+    details: {
+      outcome: 'error',
+      error: 'policy_compliance_blocked',
+      code: 'policy_compliance_blocked',
+      message: 'Policy Compliance blocked the transition.',
+      policy_compliance_required: true,
+      reason_codes: ['policy_compliance_blocked'],
+      decision_digest: 'c'.repeat(64),
+      fence_digest: 'd'.repeat(64),
+      receipt_ids: ['receipt-sprint-1'],
+      currentness: 'current',
+      currentness_reasons: [],
+      counts: {
+        applicable_metrics: 2,
+        applicable_blocking_metrics: 2,
+        failed_metrics: 1,
+        blocking_metrics: 1,
+        waived_metrics: 0,
+        advisory_issues: 0,
+        skipped_bindings: 0,
+      },
+      diagnostic_codes: ['policy_metric_threshold_failed'],
+      binding_decisions: [{
+        binding_id: 'binding-sprint-1',
+        guideline_id: 'guideline-sprint-1',
+        enforcement: 'blocking',
+        applicable_metric_count: 2,
+        allowed: false,
+        assessment_available: true,
+        receipt_id: 'receipt-sprint-1',
+        currentness: 'current',
+        currentness_reasons: [],
+        inadmissibility_cause: null,
+        failed_metric_count: 1,
+        waived_metric_count: 0,
+        blocking_metric_count: 1,
+        advisory_issue_count: 0,
+        skipped: false,
+        diagnostic_codes: ['policy_metric_threshold_failed'],
+      }],
+      transition: {
+        entity_type: 'sprint',
+        subject_id: 'sprint-1',
+        from_status: 'review',
+        to_status: 'closed',
+      },
+    },
+  });
+}
+
+beforeEach(() => {
+  permissionState.flags = new Set();
+  permissionState.denied = new Set();
+  policyComponentState.panelProps = null;
+  apiMock.getAllowedTransitions.mockImplementation(
+    (_boardId: string, params: { current_status?: string }) => {
+      const status = params.current_status || 'active';
+      return Promise.resolve(
+        transitionResponse(status, defaultTransitions(status)),
+      );
+    },
+  );
+});
 
 async function renderSprint(overrides: Partial<Sprint> = {}) {
   currentSprint = sprint(overrides);
@@ -302,5 +548,252 @@ describe('SprintModal read-first inline editing', () => {
     expect(screen.getByText('What should be deliverable at the end of this sprint?')).toBeInTheDocument();
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     expect(apiMock.updateSprint).not.toHaveBeenCalled();
+  });
+
+  it('keeps sprint text read-only when edit_fields is false', async () => {
+    permissionState.denied = new Set(['sprint.entity.edit_fields']);
+    await renderSprint({ objective: 'Existing objective' });
+
+    fireEvent.click(screen.getByText('Existing objective'));
+
+    expect(screen.queryByDisplayValue('Existing objective')).not.toBeInTheDocument();
+    expect(apiMock.updateSprint).not.toHaveBeenCalled();
+  });
+
+  it('disables sprint mutations when interact_in for its state is false', async () => {
+    permissionState.denied = new Set(['sprint.interact_in.active']);
+    await renderSprint({ status: 'active', objective: 'Existing objective' });
+
+    expect(screen.queryByRole('button', { name: 'Review' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel Sprint' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('Existing objective'));
+    expect(screen.queryByDisplayValue('Existing objective')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^Cards/i }));
+    expect(screen.getByRole('button', { name: /Assign Cards/i })).toBeDisabled();
+    expect(apiMock.updateSprint).not.toHaveBeenCalled();
+    expect(apiMock.moveSprint).not.toHaveBeenCalled();
+  });
+});
+
+describe('SprintModal Policy Compliance', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiMock.listSprintHistory.mockResolvedValue([]);
+    apiMock.moveSprint.mockResolvedValue({});
+    apiMock.assignTasksToSprint.mockResolvedValue({});
+    apiMock.unassignTasksFromSprint.mockResolvedValue({});
+  });
+
+  it('exposes accessible Evaluation subtabs only with the exact read permission', async () => {
+    permissionState.flags = new Set(['guidelines.assessments.read']);
+    await renderSprint({ status: 'review', version: 7 });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Evaluations/i }));
+
+    expect(
+      screen.getByRole('tab', { name: 'Sprint Evaluation' }),
+    ).toHaveAttribute('aria-selected', 'true');
+    const policyTab = screen.getByRole('tab', {
+      name: 'Policy Compliance',
+    });
+    expect(policyTab).toHaveAttribute('aria-selected', 'false');
+
+    fireEvent.click(policyTab);
+
+    expect(screen.getByTestId('policy-compliance-panel')).toHaveAttribute(
+      'data-board-id',
+      'board-1',
+    );
+    expect(screen.getByTestId('policy-compliance-panel')).toHaveAttribute(
+      'data-entity-type',
+      'sprint',
+    );
+    expect(screen.getByTestId('policy-compliance-panel')).toHaveAttribute(
+      'data-subject-id',
+      'sprint-1',
+    );
+    expect(screen.getByTestId('policy-transition-preview')).toHaveAttribute(
+      'data-status',
+      'ready',
+    );
+    expect(apiMock.getAllowedTransitions).toHaveBeenCalledWith('board-1', {
+      entity_type: 'sprint',
+      entity_id: 'sprint-1',
+      current_status: 'review',
+    });
+  });
+
+  it('does not expose Policy Compliance for adjacent or absent permissions', async () => {
+    permissionState.flags = new Set(['guidelines.read']);
+    await renderSprint({ status: 'review' });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Evaluations/i }));
+
+    expect(
+      screen.getByRole('tab', { name: 'Sprint Evaluation' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('tab', { name: 'Policy Compliance' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('policy-compliance-panel'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('fails closed on governed review-to-closed while retaining authorized recovery and cancellation', async () => {
+    apiMock.getAllowedTransitions.mockResolvedValue(
+      transitionResponse('review', [
+        transition('active', {
+          gate: 'rework',
+          capabilities: ['reopen'],
+        }),
+        transition('closed', {
+          gate: 'sprint_completion',
+          capabilities: ['complete'],
+          policy_compliance: true,
+          policy_compliance_decision: policyDecision(false),
+        }),
+        transition('cancelled', { gate: 'cancel' }),
+      ]),
+    );
+
+    await renderSprint({ status: 'review' });
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('button', { name: 'Closed' }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Active' }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Cancel Sprint' }),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it('enables governed review-to-closed only when the backend decision is actionable', async () => {
+    await renderSprint({ status: 'review' });
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: 'Closed' }),
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.getByRole('button', { name: 'Cancel Sprint' }),
+    ).toBeInTheDocument();
+  });
+
+  it('removes every lifecycle control when the authority envelope is malformed', async () => {
+    permissionState.flags = new Set(['guidelines.assessments.read']);
+    apiMock.getAllowedTransitions.mockResolvedValue({
+      ...transitionResponse('review', defaultTransitions('review')),
+      source: 'untrusted_source',
+    });
+
+    await renderSprint({ status: 'review' });
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('button', { name: 'Closed' }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: 'Active' }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: 'Cancel Sprint' }),
+      ).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Evaluations/i }));
+    fireEvent.click(screen.getByRole('tab', {
+      name: 'Policy Compliance',
+    }));
+    expect(screen.getByTestId('policy-transition-preview')).toHaveAttribute(
+      'data-status',
+      'error',
+    );
+  });
+
+  it('does not invent a cancellation action when the backend omits that edge', async () => {
+    apiMock.getAllowedTransitions.mockResolvedValue(
+      transitionResponse('review', [
+        transition('active', {
+          gate: 'rework',
+          capabilities: ['reopen'],
+        }),
+      ]),
+    );
+
+    await renderSprint({ status: 'review' });
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole('button', { name: 'Active' }),
+      ).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByRole('button', { name: 'Cancel Sprint' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('persists a structured 409 rejection and refreshes transition authority', async () => {
+    permissionState.flags = new Set(['guidelines.assessments.read']);
+    apiMock.moveSprint.mockRejectedValue(structuredPolicyRejection());
+    await renderSprint({ status: 'review' });
+
+    const closeAction = await screen.findByRole('button', {
+      name: 'Closed',
+    });
+    fireEvent.click(closeAction);
+
+    await waitFor(() => {
+      expect(apiMock.moveSprint).toHaveBeenCalledWith('sprint-1', {
+        status: 'closed',
+        expected_version: 1,
+      });
+    });
+    await waitFor(() => {
+      expect(apiMock.getAllowedTransitions).toHaveBeenCalledTimes(2);
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Evaluations/i }));
+    fireEvent.click(screen.getByRole('tab', {
+      name: 'Policy Compliance',
+    }));
+    expect(screen.getByTestId('policy-transition-preview')).toHaveTextContent(
+      'policy_compliance_blocked',
+    );
+  });
+
+  it('refreshes evidence and lifecycle authority even when sprint.version is unchanged', async () => {
+    permissionState.flags = new Set(['guidelines.assessments.read']);
+    await renderSprint({ status: 'review', version: 4 });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Evaluations/i }));
+    fireEvent.click(screen.getByRole('tab', {
+      name: 'Policy Compliance',
+    }));
+    const firstRefreshKey = Number(
+      screen.getByTestId('policy-compliance-panel')
+        .getAttribute('data-refresh-key'),
+    );
+
+    fireEvent.click(screen.getByTitle('Refresh'));
+
+    await waitFor(() => {
+      expect(apiMock.getSprint).toHaveBeenCalledTimes(2);
+    });
+    await waitFor(() => {
+      const nextRefreshKey = Number(
+        screen.getByTestId('policy-compliance-panel')
+          .getAttribute('data-refresh-key'),
+      );
+      expect(nextRefreshKey).toBeGreaterThan(firstRefreshKey);
+    });
+    await waitFor(() => {
+      expect(apiMock.getAllowedTransitions).toHaveBeenCalledTimes(2);
+    });
   });
 });

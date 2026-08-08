@@ -1431,7 +1431,7 @@ wheels = [
 
 [[package]]
 name = "okto-pulse"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -1468,8 +1468,8 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0,<1.0.0" },
     { name = "ladybug", specifier = ">=0.16.0,<0.17.0" },
     { name = "mcp", specifier = ">=1.20.0,<2.0.0" },
-    { name = "okto-pulse-core", specifier = ">=0.3.0,<1.0.0" },
-    { name = "pydantic", specifier = ">=2.5.0,<2.14" },
+    { name = "okto-pulse-core", specifier = ">=0.3.1,<1.0.0" },
+    { name = "pydantic", specifier = ">=2.12.0,<2.14" },
     { name = "pydantic-settings", specifier = ">=2.1.0,<3.0.0" },
     { name = "python-multipart", specifier = ">=0.0.6,<1.0.0" },
     { name = "requests", specifier = ">=2.32.0,<3.0.0" },
@@ -1482,14 +1482,15 @@ requires-dist = [
 
 [[package]]
 name = "okto-pulse-core"
-version = "0.3.0"
+version = "0.3.1"
 source = { registry = "../okto_labs_pulse_core/dist" }
 dependencies = [
     { name = "pydantic" },
+    { name = "pydantic-core" },
     { name = "pyyaml" },
 ]
 wheels = [
-    { path = "okto_pulse_core-0.3.0-py3-none-any.whl" },
+    { path = "okto_pulse_core-0.3.1-py3-none-any.whl" },
 ]
 
 [[package]]

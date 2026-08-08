@@ -20,6 +20,9 @@ from okto_pulse.core.application.boundary.saas_closure_report import (
     render_saas_closure_readme,
     validate_saas_closure_readmes,
 )
+from okto_pulse.core.application.boundary.repository_checkout import (
+    resolve_repository_checkout,
+)
 
 
 def build_community_saas_closure_report(
@@ -49,11 +52,12 @@ def _default_community_repo() -> Path:
 
 
 def _default_core_repo(community_repo: Path) -> Path:
-    for name in ("okto_labs_pulse_core", "okto-pulse-core"):
-        candidate = community_repo.parent / name
-        if candidate.is_dir():
-            return candidate
-    return community_repo.parent / "okto-pulse-core"
+    checkout = resolve_repository_checkout(
+        "core",
+        anchor_repo=community_repo,
+    )
+    assert checkout is not None
+    return checkout.repo_root
 
 
 def _payload(

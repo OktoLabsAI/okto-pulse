@@ -29,6 +29,9 @@ from okto_pulse.community.adapters.sqlalchemy_audit_repo import (
     CommunityAuditRepository,
     _is_sqlite_write_contention,
 )
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    CommunitySemanticSession,
+)
 from okto_pulse.community.adapters.sqlalchemy_models import (
     AppSetting,
     Base,
@@ -74,6 +77,7 @@ async def _database(
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
         expire_on_commit=False,
     )
     async with engine.begin() as connection:

@@ -26,6 +26,7 @@ import {
   type DeadLetterRow,
 } from '@/services/dead-letter-api';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { usePermissions } from '@/hooks/usePermissions';
 
 interface DeadLetterInspectorModalProps {
   boardId: string;
@@ -36,6 +37,13 @@ export function DeadLetterInspectorModal({
   boardId,
   onClose,
 }: DeadLetterInspectorModalProps) {
+  const permissions = usePermissions(boardId);
+  const canReadQueue = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+    && permissions.has('kg.operations.queue.read')
+  );
   const [data, setData] = useState<DeadLetterListResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -44,6 +52,11 @@ export function DeadLetterInspectorModal({
   useEscapeToClose(onClose);
 
   const fetchData = useCallback(async () => {
+    if (!canReadQueue) {
+      setLoading(false);
+      setError('You do not have permission to read KG dead-letter rows');
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -54,11 +67,12 @@ export function DeadLetterInspectorModal({
     } finally {
       setLoading(false);
     }
-  }, [boardId]);
+  }, [boardId, canReadQueue]);
 
   useEffect(() => {
+    if (permissions.isLoading) return;
     void fetchData();
-  }, [fetchData]);
+  }, [fetchData, permissions.isLoading]);
 
   const toggleExpand = (rowId: string) => {
     setExpandedIds((prev) => {

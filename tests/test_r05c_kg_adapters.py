@@ -29,8 +29,9 @@ from pathlib import Path
 
 import pytest
 
-# Importing community.main wires the registry with the Community adapters
-# (incl. the six graph adapters) at import time — the e2e smoke surface.
+# community.main is imported for source/path introspection only — since the
+# PEP 562 lazy app, importing it no longer wires the registry (the six graph
+# adapters are wired by get_module_app() / configure_community_kg_registry).
 import okto_pulse.community.cli as _cli_mod
 import okto_pulse.community.main as _main_mod
 import okto_pulse.community.seed as _seed_mod

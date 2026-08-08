@@ -13,6 +13,7 @@ def test_response_model_owns_the_atomic_schema_1_1_fields() -> None:
     assert "materialization_state" in fields
     assert "materialization_generation" in fields
     assert "probe_reason_codes" in fields
+    assert "native_runtime_budget" in fields
     assert list(fields).count("global_outbox_dead_letter_count") == 1
 
 

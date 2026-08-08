@@ -9,14 +9,10 @@ import pytest
 
 from okto_pulse.community.adapters import board_source_reader as reader_module
 from okto_pulse.community.adapters.board_source_reader import (
-    ARTIFACT_QUERIES,
     CommunityBoardSourceReader,
+    _REQUIRED_SOURCE_COLUMNS,
 )
 from okto_pulse.core.application.rebuild_ports import BoardSourceSnapshot
-from okto_pulse.core.kg.board_source_store import (
-    AMENDMENT_CONTENT_COLUMNS,
-    CARD_CONTENT_COLUMNS,
-)
 from okto_pulse.core.kg.interfaces.board_source_reader import (
     SourceReadFailure,
     SourceUnavailableError,
@@ -35,9 +31,9 @@ def _source_database(
     """Create the smallest structurally complete, empty source database."""
 
     with sqlite3.connect(path) as connection:
-        board_columns = {"id", "settings"}
-        if include_realm_column:
-            board_columns.add("realm_id")
+        board_columns = set(_REQUIRED_SOURCE_COLUMNS["boards"])
+        if not include_realm_column:
+            board_columns.remove("realm_id")
         if omit_column is not None and omit_column[0] == "boards":
             board_columns.remove(omit_column[1])
         board_declarations = [
@@ -48,38 +44,22 @@ def _source_database(
         if board_exists and "id" in board_columns:
             if include_realm_column:
                 connection.execute(
-                    "INSERT INTO boards (id, settings, realm_id) VALUES (?, ?, ?)",
-                    ("board-card5", "{}", realm_id),
+                    "INSERT INTO boards "
+                    "(id, name, description, settings, realm_id) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    ("board-card5", "Card 5", "", "{}", realm_id),
                 )
             else:
                 connection.execute(
-                    "INSERT INTO boards (id, settings) VALUES (?, ?)",
-                    ("board-card5", "{}"),
+                    "INSERT INTO boards (id, name, description, settings) "
+                    "VALUES (?, ?, ?, ?)",
+                    ("board-card5", "Card 5", "", "{}"),
                 )
 
         required_columns = {
-            table: {
-                "id",
-                "board_id",
-                "created_at",
-                status_col,
-                *content_cols,
-            }
-            for _, table, status_col, content_cols in ARTIFACT_QUERIES
-        }
-        required_columns["cards"] = {
-            "id",
-            "board_id",
-            "created_at",
-            "status",
-            *CARD_CONTENT_COLUMNS,
-        }
-        required_columns["amendment_hotfix_revisions"] = {
-            "id",
-            "board_id",
-            "created_at",
-            "status",
-            *AMENDMENT_CONTENT_COLUMNS,
+            table: set(columns)
+            for table, columns in _REQUIRED_SOURCE_COLUMNS.items()
+            if table != "boards"
         }
         for table, columns in sorted(required_columns.items()):
             if table == omit_table:
@@ -176,7 +156,7 @@ def test_missing_board_makes_the_requested_realm_incomplete(tmp_path: Path) -> N
     assert snapshot.cause == "realm_incomplete"
 
 
-def test_legacy_board_without_realm_column_can_be_complete_and_empty(
+def test_legacy_board_without_required_realm_column_is_incomplete(
     tmp_path: Path,
 ) -> None:
     database = _source_database(
@@ -187,8 +167,8 @@ def test_legacy_board_without_realm_column_can_be_complete_and_empty(
     snapshot = CommunityBoardSourceReader(database).fetch("board-card5")
 
     assert snapshot.rows == ()
-    assert snapshot.complete is True
-    assert snapshot.cause is None
+    assert snapshot.complete is False
+    assert snapshot.cause == "realm_incomplete"
 
 
 def test_proven_empty_realm_is_a_complete_empty_snapshot(tmp_path: Path) -> None:

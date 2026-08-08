@@ -538,6 +538,14 @@ async def test_real_http_runtime_executes_before_signed_receipt(tmp_path):
         whole_spec.test_scenarios[0].evidence.execution_receipt
         == evidence["execution_receipt"]
     )
+    # Evidence normalization must not materialize the nested default. The
+    # service still needs to distinguish omission so it can preserve an
+    # existing scenario type (or default only a genuinely new scenario).
+    assert "scenario_type" not in whole_spec.test_scenarios[0].model_fields_set
+    assert (
+        "scenario_type"
+        not in whole_spec.model_dump(exclude_unset=True)["test_scenarios"][0]
+    )
 
 
 @pytest.mark.asyncio

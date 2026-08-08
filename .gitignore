@@ -48,6 +48,8 @@ frontend/dist/
 htmlcov/
 .coverage
 test-results/
+/.tmp/
+/scripts/.tmp/
 
 # MCP config
 .mcp.json

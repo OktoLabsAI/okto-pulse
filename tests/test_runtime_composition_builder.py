@@ -14,7 +14,9 @@ from okto_pulse.community.adapters.runtime_composition import (
 )
 
 
-MAIN_PATH = Path(__file__).resolve().parents[1] / "src" / "okto_pulse" / "community" / "main.py"
+MAIN_PATH = (
+    Path(__file__).resolve().parents[1] / "src" / "okto_pulse" / "community" / "main.py"
+)
 
 
 def _providers(**overrides):
@@ -41,15 +43,15 @@ def test_builder_returns_complete_immutable_provider_identity() -> None:
         CommunitySettingsSnapshotProvider,
     )
     assert (
-        composition.settings_provider.get_settings_snapshot()
-        is providers["settings"]
+        composition.settings_provider.get_settings_snapshot() is providers["settings"]
     )
     assert composition.auth_provider is providers["auth_provider"]
     assert composition.uow_factory is providers["uow_factory"]
     assert composition.worker_registry is providers["worker_registry"]
-    assert composition.content_ingestion_resolver is providers[
-        "content_ingestion_resolver"
-    ]
+    assert (
+        composition.content_ingestion_resolver
+        is providers["content_ingestion_resolver"]
+    )
     assert composition.missing_required() == []
 
 
@@ -95,6 +97,37 @@ def test_main_builds_and_registers_providers_before_create_app() -> None:
         )
     ]
     assert late_registrations == []
+
+
+def test_main_provisions_local_secrets_before_settings_snapshot() -> None:
+    tree = ast.parse(MAIN_PATH.read_text(encoding="utf-8"), filename=str(MAIN_PATH))
+    functions = {
+        node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
+    }
+    ensure_data_dir = functions["_ensure_data_dir"]
+    create_community_app = functions["create_community_app"]
+
+    ensure_calls = {
+        node.func.id
+        for node in ast.walk(ensure_data_dir)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "provision_guideline_policy_cursor_signing_key" in ensure_calls
+
+    calls = [
+        node
+        for node in ast.walk(create_community_app)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    ]
+    ensure_line = min(
+        call.lineno for call in calls if call.func.id == "_ensure_data_dir"
+    )
+    composition_line = min(
+        call.lineno
+        for call in calls
+        if call.func.id == "build_community_runtime_composition"
+    )
+    assert ensure_line < composition_line
 
 
 def test_lifespan_uses_the_worker_registry_owned_by_the_app_composition() -> None:

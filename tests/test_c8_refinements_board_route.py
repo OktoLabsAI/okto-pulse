@@ -284,7 +284,9 @@ def test_all_filters_are_pre_window_and_adjacent_pages_are_deterministic(
     assert first_body["offset"] == 0
     assert first_body["limit"] == 25
     assert len(first_body["items"]) == 25
-    assert 1 <= len(statements) <= 6, statements
+    # The batched Quality summary adds one page-bounded statement while
+    # preserving a constant query budget for page sizes 1..200.
+    assert 1 <= len(statements) <= 7, statements
 
     assert all(REQUIRED_ITEM_KEYS <= set(item) for item in first_body["items"])
     assert all(not (HEAVY_ITEM_KEYS & set(item)) for item in first_body["items"])
@@ -301,7 +303,7 @@ def test_all_filters_are_pre_window_and_adjacent_pages_are_deterministic(
     assert second_body["total_filtered"] == 31
     assert second_body["total_overall"] == 35
     assert len(second_body["items"]) == 6
-    assert 1 <= len(statements) <= 6, statements
+    assert 1 <= len(statements) <= 7, statements
 
     ids = [item["id"] for item in first_body["items"] + second_body["items"]]
     assert ids == [f"r{index:03d}" for index in range(30, -1, -1)]

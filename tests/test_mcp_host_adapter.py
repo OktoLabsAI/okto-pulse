@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from fastmcp import Client
+from pydantic import BaseModel, ConfigDict
 
 from okto_pulse.community.adapters import mcp_host
 from okto_pulse.community.adapters.mcp_host import (
@@ -17,6 +18,9 @@ from okto_pulse.community.adapters.mcp_host import (
     CommunityMcpRuntimeCompositionMiddleware,
     build_community_mcp_asgi_app,
     register_community_mcp_host,
+)
+from okto_pulse.community.inbound.physical_identity import (
+    COMMUNITY_BOARD_ID_MAX_LENGTH,
 )
 from okto_pulse.core.composition import RuntimeComposition, current_runtime_composition
 from okto_pulse.core.mcp.catalog import CoreMcpCatalog
@@ -34,6 +38,12 @@ from okto_pulse.core.ports.mcp_resources import (
     freeze_mcp_resource_catalog,
 )
 from okto_pulse.core.runtime_context import resolve_runtime_value
+
+
+class _ClosedSchemaPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: str
 
 
 def _frozen_projection(
@@ -272,6 +282,126 @@ async def test_community_host_materializes_core_tools_and_resources() -> None:
         content = await client.read_resource("okto-pulse://test/catalog")
     assert content[0].text == "FROZEN projection content"
     assert host._okto_pulse_resource_projection_identity == frozen.identity
+
+
+@pytest.mark.asyncio
+async def test_community_host_preserves_opted_in_closed_core_tool_schema() -> None:
+    catalog = CoreMcpCatalog(
+        name="closed-schema-contract",
+        version="1.0",
+        instructions="closed",
+    )
+
+    async def catalog_closed(payload: _ClosedSchemaPayload) -> str:
+        return payload.value
+
+    catalog_closed.__mcp_closed_schema__ = True
+    catalog.tool()(catalog_closed)
+    core_tool = next(iter(catalog.iter_tools()))
+    assert core_tool.parameters["additionalProperties"] is False
+
+    frozen = _frozen_projection()
+    host = CommunityMcpHostProvider().materialize_catalog(
+        catalog,
+        resource_catalog=frozen,
+        projection_identity=frozen.identity,
+    )
+    published = await host.get_tool("catalog_closed")
+
+    assert published.parameters == core_tool.parameters
+    payload_schema = published.parameters["properties"]["payload"]
+    assert payload_schema["additionalProperties"] is False
+
+
+@pytest.mark.asyncio
+async def test_community_host_narrows_live_policy_board_schema_only_locally() -> None:
+    from okto_pulse.core.mcp import server
+
+    frozen = freeze_mcp_resource_catalog(server.effective_resource_catalog())
+    host = CommunityMcpHostProvider().materialize_catalog(
+        server.mcp,
+        resource_catalog=frozen,
+        projection_identity=frozen.identity,
+    )
+    opted_in = tuple(
+        tool
+        for tool in server.mcp.iter_tools()
+        if getattr(tool.fn, "__mcp_closed_schema__", False)
+    )
+
+    assert len(opted_in) == 20
+
+    def assert_closed(value: object) -> None:
+        if isinstance(value, dict):
+            if "properties" in value:
+                assert value.get("additionalProperties") is False, value
+            elif value.get("type") == "object":
+                # Typed mappings (for example metric-code -> threshold) have
+                # dynamic domain keys but still close every mapped value.
+                assert isinstance(value.get("additionalProperties"), dict), value
+            for child in value.values():
+                assert_closed(child)
+        elif isinstance(value, list):
+            for child in value:
+                assert_closed(child)
+
+    for core_tool in opted_in:
+        published = await host.get_tool(core_tool.name)
+        assert core_tool.parameters["properties"]["board_id"]["maxLength"] == 255
+        expected = dict(core_tool.parameters)
+        expected["properties"] = dict(core_tool.parameters["properties"])
+        expected["properties"]["board_id"] = dict(
+            core_tool.parameters["properties"]["board_id"]
+        )
+        expected["properties"]["board_id"]["maxLength"] = (
+            COMMUNITY_BOARD_ID_MAX_LENGTH
+        )
+        assert published.parameters == expected
+        assert_closed(published.parameters)
+
+
+@pytest.mark.asyncio
+async def test_community_mcp_board_boundary_precedes_policy_handler() -> None:
+    calls: list[str] = []
+    catalog = CoreMcpCatalog(
+        name="community-board-boundary",
+        version="1.0",
+        instructions="physical boundary",
+    )
+
+    async def okto_pulse_list_guideline_revisions(board_id: str) -> str:
+        calls.append(board_id)
+        return board_id
+
+    okto_pulse_list_guideline_revisions.__mcp_closed_schema__ = True
+    catalog.tool()(okto_pulse_list_guideline_revisions)
+    frozen = _frozen_projection()
+    host = CommunityMcpHostProvider().materialize_catalog(
+        catalog,
+        resource_catalog=frozen,
+        projection_identity=frozen.identity,
+    )
+    published = await host.get_tool("okto_pulse_list_guideline_revisions")
+
+    async with Client(host) as client:
+        accepted = await client.call_tool(
+            "okto_pulse_list_guideline_revisions",
+            {"board_id": "b" * 36},
+        )
+        rejected = await client.call_tool(
+            "okto_pulse_list_guideline_revisions",
+            {"board_id": "b" * 37},
+            raise_on_error=False,
+        )
+
+    assert published.parameters["properties"]["board_id"]["maxLength"] == 36
+    assert accepted.structured_content["data"] == "b" * 36
+    assert rejected.is_error is True
+    assert rejected.structured_content["error_code"] == "validation_failed"
+    assert rejected.structured_content["data"]["issues"][0]["loc"] == [
+        "board_id"
+    ]
+    assert calls == ["b" * 36]
 
 
 def test_community_host_rejects_unfrozen_mismatched_or_forged_projection() -> None:

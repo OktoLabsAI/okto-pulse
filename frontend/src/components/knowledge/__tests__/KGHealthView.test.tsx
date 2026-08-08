@@ -17,6 +17,11 @@ import * as dashboardStore from '@/store/dashboard';
 import type { KGHealth, KGCognitivePendingCounts } from '@/services/kg-health-api';
 import { EXPECTED_KG_HEALTH_SCHEMA_VERSION } from '@/constants/kg';
 
+const permissionHas = vi.hoisted(() => vi.fn((_flag: string) => true));
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({ preset: 'Full Control', isLoading: false, error: null, ownerReviewRequired: false, has: permissionHas }),
+}));
+
 vi.mock('@/services/kg-health-api');
 vi.mock('@/store/dashboard');
 

@@ -9,8 +9,17 @@ import { Plus, Users, Share2, RefreshCw, PanelLeftClose, PanelLeftOpen, Moon, Su
 import { GuidelinesPanel } from '@/components/guidelines';
 import { DefaultBoardConfigPanel } from '@/components/board/DefaultBoardConfigPanel';
 import { DesignSystemPanel } from '@/components/board/DesignSystemPanel';
-import { BoardSettingsForm, normalizeDesignSystemGateMode } from '@/components/board/BoardSettingsForm';
-import { HelpPanel } from '@/components/help';
+import { ChecklistBindingSettings } from '@/components/board/ChecklistBindingSettings';
+import {
+  BoardSettingsForm,
+  normalizeDesignSystemGateMode,
+} from '@/components/board/BoardSettingsForm';
+import { normalizeRefinementAmbiguityThreshold } from '@/components/board/refinementAmbiguitySettings';
+import {
+  HelpPanel,
+  subscribeContextualHelp,
+  type HelpSectionId,
+} from '@/components/help';
 import { PresetListModal } from '@/components/permissions';
 import { KnowledgeGraphPage } from '@/components/knowledge';
 import { RuntimeSettingsPanel } from '@/components/layout/RuntimeSettingsPanel';
@@ -22,6 +31,7 @@ import pulseIcon from '@/assets/pulse-icon.svg';
 import oktolabsIcon from '@/assets/oktolabs-icon.svg';
 import { useTheme } from '@/hooks/useTheme';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { usePermissions } from '@/hooks/usePermissions';
 import { useDashboardApi } from '@/services/api';
 import toast from 'react-hot-toast';
 import type { BoardSettings } from '@/types';
@@ -48,6 +58,62 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   const { isSignedIn, isLoaded } = authAdapter.useAuth();
   const AdapterUserButton = authAdapter.UserButton;
   const currentBoard = useCurrentBoard();
+  const permissions = usePermissions(currentBoard?.id);
+  const policyAuthorityReady = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+  );
+  const canReadGuidelineRevisions = (
+    policyAuthorityReady
+    && permissions.has('guidelines.revisions.read')
+  );
+  const canReadPolicyWaivers = (
+    policyAuthorityReady
+    && permissions.has('guidelines.waiver.read')
+  );
+  const canCreateGuidelineRevisions = (
+    policyAuthorityReady
+    && permissions.has('guidelines.revisions.create')
+  );
+  const canOpenGuidelines = (
+    canReadGuidelineRevisions
+    || canCreateGuidelineRevisions
+    || canReadPolicyWaivers
+  );
+  const canReadMetrics = (
+    policyAuthorityReady
+    && permissions.has('metrics.local.summary.read')
+  );
+  const canReadRuntime = (
+    policyAuthorityReady
+    && permissions.has('runtime.settings.read')
+  );
+  const canReadKGHealth = (
+    policyAuthorityReady
+    && permissions.has('kg.operations.health.read')
+  );
+  const canCreateBoard = policyAuthorityReady && permissions.has('board.admin.create');
+  const canEditBoard = policyAuthorityReady && permissions.has('board.admin.edit');
+  const canDeleteBoard = policyAuthorityReady && permissions.has('board.admin.delete');
+  const canOpenAgents = policyAuthorityReady && [
+    'agent.entity.read',
+    'agent.entity.create',
+    'agent.entity.edit',
+    'agent.entity.delete',
+    'agent.api_key.rotate',
+    'agent.board_access.read',
+    'agent.board_access.grant',
+    'agent.board_access.edit',
+    'agent.board_access.revoke',
+  ].some((flag) => permissions.has(flag));
+  const canOpenBoardShares = policyAuthorityReady && [
+    'board.share.read',
+    'board.share.create',
+    'board.share.edit',
+    'board.share.revoke',
+    'board.share.leave',
+  ].some((flag) => permissions.has(flag));
   const { theme, toggle: toggleTheme } = useTheme();
   const api = useDashboardApi();
   const [showSettings, setShowSettings] = useState(false);
@@ -60,6 +126,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
   const [showDesignSystem, setShowDesignSystem] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [localShowHelp, setLocalShowHelp] = useState(false);
+  const [helpInitialSection, setHelpInitialSection] = useState<HelpSectionId | undefined>();
   const [showAbout, setShowAbout] = useState(false);
   const [showPresets, setShowPresets] = useState(false);
   const [localShowKnowledgeGraph, setLocalShowKnowledgeGraph] = useState(false);
@@ -74,6 +141,23 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     }
     onHelpOpenChange?.(open);
   };
+
+  useEffect(() => subscribeContextualHelp(({ sectionId }) => {
+    setHelpInitialSection(sectionId);
+    if (helpOpen === undefined) {
+      setLocalShowHelp(true);
+    }
+    onHelpOpenChange?.(true);
+  }), [helpOpen, onHelpOpenChange]);
+  useEffect(() => {
+    if (
+      showGuidelines
+      && !permissions.isLoading
+      && !canOpenGuidelines
+    ) {
+      setShowGuidelines(false);
+    }
+  }, [canOpenGuidelines, permissions.isLoading, showGuidelines]);
   const showKnowledgeGraph = knowledgeGraphOpen ?? localShowKnowledgeGraph;
   const setShowKnowledgeGraph = (open: boolean) => {
     if (knowledgeGraphOpen === undefined) {
@@ -112,16 +196,21 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
   useEffect(() => {
     const handler = (event: Event) => {
+      if (!canReadRuntime) return;
       const detail = (event as CustomEvent<{ initialTab?: 'graphdb' | 'eventqueue' | 'decaytick' }>).detail;
       setRuntimeSettingsInitialTab(detail?.initialTab ?? 'graphdb');
       setShowRuntimeSettings(true);
     };
     window.addEventListener('okto:open-runtime-settings', handler);
     return () => window.removeEventListener('okto:open-runtime-settings', handler);
-  }, []);
+  }, [canReadRuntime]);
 
   useEffect(() => {
-    if (!showSettings || !currentBoard?.id) {
+    if (
+      !showSettings
+      || !currentBoard?.id
+      || !canReadGuidelineRevisions
+    ) {
       setBoardGuidelineCount(null);
       setBoardGuidelinesLoadFailed(false);
       return;
@@ -141,7 +230,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     return () => {
       cancelled = true;
     };
-  }, [showSettings, currentBoard?.id]);
+  }, [api, canReadGuidelineRevisions, showSettings, currentBoard?.id]);
 
   const settings: BoardSettings = currentBoard?.settings
     ? {
@@ -158,6 +247,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         allow_agent_self_answering: currentBoard.settings.allow_agent_self_answering ?? false,
         require_full_context_for_critical_actions: currentBoard.settings.require_full_context_for_critical_actions ?? true,
         qa_require_role_separation: currentBoard.settings.qa_require_role_separation ?? false,
+        reviewer_separation_mode: currentBoard.settings.reviewer_separation_mode ?? 'off',
         skip_test_evidence_global: currentBoard.settings.skip_test_evidence_global ?? false,
         require_task_validation: currentBoard.settings.require_task_validation ?? true,
         min_confidence: currentBoard.settings.min_confidence ?? 70,
@@ -169,10 +259,16 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         max_spec_ambiguity: currentBoard.settings.max_spec_ambiguity ?? 30,
         require_ideation_ambiguity_gate: currentBoard.settings.require_ideation_ambiguity_gate ?? false,
         max_ideation_ambiguity: currentBoard.settings.max_ideation_ambiguity ?? 3,
+        require_refinement_ambiguity_gate: currentBoard.settings.require_refinement_ambiguity_gate ?? false,
+        max_refinement_ambiguity: normalizeRefinementAmbiguityThreshold(
+          currentBoard.settings.max_refinement_ambiguity,
+        ),
         require_spec_resource_task_coverage: currentBoard.settings.require_spec_resource_task_coverage ?? true,
         auto_derive_spec_resources_enabled: currentBoard.settings.auto_derive_spec_resources_enabled ?? false,
         auto_derive_spec_resource_types: currentBoard.settings.auto_derive_spec_resource_types ?? [],
         design_system_gate_mode: normalizeDesignSystemGateMode(currentBoard.settings.design_system_gate_mode),
+        lint_languages: currentBoard.settings.lint_languages ?? [],
+        impact_evidence_mode: currentBoard.settings.impact_evidence_mode ?? 'off',
       }
     : {
         max_scenarios_per_card: 3,
@@ -188,6 +284,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         allow_agent_self_answering: false,
         require_full_context_for_critical_actions: true,
         qa_require_role_separation: false,
+        reviewer_separation_mode: 'off',
         skip_test_evidence_global: false,
         require_task_validation: true,
         min_confidence: 70,
@@ -199,14 +296,18 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         max_spec_ambiguity: 30,
         require_ideation_ambiguity_gate: false,
         max_ideation_ambiguity: 3,
+        require_refinement_ambiguity_gate: false,
+        max_refinement_ambiguity: 3,
         require_spec_resource_task_coverage: true,
         auto_derive_spec_resources_enabled: false,
         auto_derive_spec_resource_types: [],
         design_system_gate_mode: 'off',
+        lint_languages: [],
+        impact_evidence_mode: 'off',
       };
 
   const updateSettings = async (patch: Partial<BoardSettings>) => {
-    if (!currentBoard) return;
+    if (!currentBoard || !canEditBoard) return;
     try {
       await api.updateBoard(currentBoard.id, { settings: patch });
       onBoardUpdated?.();
@@ -309,7 +410,12 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                   <div className="absolute right-0 top-full mt-2 w-56 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl z-50 py-1">
                     {/* + New Dashboard */}
                     <button
-                      onClick={() => { setShowMenu(false); onCreateBoard?.(); }}
+                      onClick={() => {
+                        if (!canCreateBoard) return;
+                        setShowMenu(false);
+                        onCreateBoard?.();
+                      }}
+                      disabled={!canCreateBoard}
                       className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
                     >
                       <Plus size={14} />
@@ -319,13 +425,17 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                     <hr className="my-1 border-gray-200 dark:border-gray-700" />
 
                     {/* Guidelines */}
-                    <button
-                      onClick={() => { setShowMenu(false); setShowGuidelines(true); }}
-                      className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
-                    >
-                      <BookOpen size={14} />
-                      Guidelines
-                    </button>
+                    {canOpenGuidelines && (
+                      <button
+                        type="button"
+                        data-testid="menu-guidelines"
+                        onClick={() => { setShowMenu(false); setShowGuidelines(true); }}
+                        className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
+                      >
+                        <BookOpen size={14} />
+                        Guidelines
+                      </button>
+                    )}
 
                     {/* Design System */}
                     <button
@@ -356,7 +466,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                     </button>
 
                     {/* KG Health (spec d754d004) */}
-                    {onOpenKGHealth && (
+                    {onOpenKGHealth && canReadKGHealth && (
                       <button
                         onClick={() => { setShowMenu(false); onOpenKGHealth(); }}
                         className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
@@ -369,7 +479,12 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
                     {/* Agents */}
                     <button
-                      onClick={() => { setShowMenu(false); onOpenAgents?.(); }}
+                      onClick={() => {
+                        if (!canOpenAgents) return;
+                        setShowMenu(false);
+                        onOpenAgents?.();
+                      }}
+                      disabled={!canOpenAgents}
                       className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
                       data-tour-id="agents.modal.entry"
                     >
@@ -382,7 +497,12 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                     {/* Share — only when portal adapter provides it */}
                     {portalAdapter.ShareBoardModal && (
                       <button
-                        onClick={() => { setShowMenu(false); onShareBoard?.(); }}
+                        onClick={() => {
+                          if (!canOpenBoardShares) return;
+                          setShowMenu(false);
+                          onShareBoard?.();
+                        }}
+                        disabled={!canOpenBoardShares}
                         className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
                       >
                         <Share2 size={14} />
@@ -416,7 +536,13 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                         setRuntimeSettingsInitialTab('graphdb');
                         setShowRuntimeSettings(true);
                       }}
-                      className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
+                      disabled={!canReadRuntime}
+                      title={canReadRuntime ? 'Settings' : 'Requires runtime.settings.read'}
+                      className={`w-full text-left px-4 py-2 text-sm flex items-center gap-2 ${
+                        canReadRuntime
+                          ? 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
+                          : 'cursor-not-allowed text-gray-300 dark:text-gray-600'
+                      }`}
                       data-testid="menu-settings"
                     >
                       <SlidersHorizontal size={14} />
@@ -425,7 +551,13 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
                     <button
                       onClick={() => { setShowMenu(false); setShowMetricsSettings(true); }}
-                      className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
+                      disabled={!canReadMetrics}
+                      title={canReadMetrics ? 'Metrics' : 'Requires metrics.local.summary.read'}
+                      className={`w-full text-left px-4 py-2 text-sm flex items-center gap-2 ${
+                        canReadMetrics
+                          ? 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
+                          : 'cursor-not-allowed text-gray-300 dark:text-gray-600'
+                      }`}
                       data-testid="menu-metrics"
                     >
                       <Activity size={14} />
@@ -445,7 +577,11 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
                     {/* Help */}
                     <button
-                      onClick={() => { setShowMenu(false); setShowHelp(true); }}
+                      onClick={() => {
+                        setShowMenu(false);
+                        setHelpInitialSection(undefined);
+                        setShowHelp(true);
+                      }}
                       className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
                       data-tour-id="help.guided_tours"
                     >
@@ -469,7 +605,13 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
               {/* Board panel (opens from menu — renamed from "Settings" in 0.1.4) */}
               {showSettings && createPortal((
-                <div className="modal-overlay p-4" onClick={() => setShowSettings(false)}>
+                <div
+                  className={`modal-overlay p-4 ${
+                    showHelp ? 'invisible pointer-events-none' : ''
+                  }`}
+                  aria-hidden={showHelp || undefined}
+                  onClick={() => setShowSettings(false)}
+                >
                   <div
                     ref={settingsRef}
                     className="modal-content max-w-4xl !h-auto max-h-[90vh]"
@@ -535,11 +677,24 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                       </div>
 
                       {boardSettingsTab === 'board' && (
-                        <BoardSettingsForm
-                          settings={settings}
-                          onChange={updateSettings}
-                          contextWarnings={boardContextWarnings}
-                        />
+                        <>
+                          <fieldset disabled={!canEditBoard}>
+                            <BoardSettingsForm
+                              settings={settings}
+                              onChange={updateSettings}
+                              contextWarnings={boardContextWarnings}
+                            />
+                          </fieldset>
+                          {currentBoard?.id && (
+                            <ChecklistBindingSettings
+                              boardId={currentBoard.id}
+                              onOpenHelp={() => {
+                                setHelpInitialSection('curated-spec-checklist');
+                                setShowHelp(true);
+                              }}
+                            />
+                          )}
+                        </>
                       )}
 
                       {boardSettingsTab === 'global' && currentBoard?.id && (
@@ -547,7 +702,13 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                           className="rounded-lg border border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900/40"
                           data-testid="settings-default-board-config"
                         >
-                          <DefaultBoardConfigPanel boardId={currentBoard.id} />
+                          <DefaultBoardConfigPanel
+                            boardId={currentBoard.id}
+                            onOpenHelp={() => {
+                              setHelpInitialSection('curated-spec-checklist');
+                              setShowHelp(true);
+                            }}
+                          />
                         </section>
                       )}
                     </div>
@@ -555,7 +716,10 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                     <div className="modal-footer !justify-between">
                       <button
                         type="button"
-                        onClick={onDeleteBoard}
+                        onClick={() => {
+                          if (canDeleteBoard) onDeleteBoard?.();
+                        }}
+                        disabled={!canDeleteBoard}
                         className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-950/30"
                       >
                         <Trash2 size={13} />
@@ -583,7 +747,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
     </header>
 
-      {showGuidelines && currentBoard && (
+      {showGuidelines && currentBoard && canOpenGuidelines && (
         <GuidelinesPanel
           boardId={currentBoard.id}
           onClose={() => setShowGuidelines(false)}
@@ -598,7 +762,10 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
       )}
 
       {showHelp && (
-        <HelpPanel onClose={() => setShowHelp(false)} />
+        <HelpPanel
+          initialSectionId={helpInitialSection}
+          onClose={() => setShowHelp(false)}
+        />
       )}
 
       {showRuntimeSettings && (
@@ -611,6 +778,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
       {showMetricsSettings && (
         <MetricsSettingsPanel
+          boardId={currentBoard?.id}
           onClose={() => setShowMetricsSettings(false)}
         />
       )}

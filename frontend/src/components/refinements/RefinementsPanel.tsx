@@ -32,6 +32,7 @@ import { RefinementModal } from './RefinementModal';
 import { CognitivePendingBadge } from '@/components/knowledge/CognitivePendingBadge';
 import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
 import { QABadge } from '@/components/shared/QABadge';
+import { QualitySummaryBadges } from '@/components/quality';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { AccessiblePaginator } from '@/components/shared/AccessiblePaginator';
 import { usePersistedPagination } from '@/hooks/usePersistedPagination';
@@ -324,6 +325,10 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
                             {refinement.description}
                           </p>
                         )}
+                        <QualitySummaryBadges
+                          summaries={refinement.quality_summaries}
+                          className="mt-2"
+                        />
                         {/* Open Q&A badge on its own row, above the labels */}
                         {refinement.open_qa_count ? (
                           <div className="mt-2">

@@ -28,7 +28,9 @@ from okto_pulse.core.application.use_cases.admin_catalog import (
     TransitionAmendmentRevisionUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.community.api.auth_deps import require_user
+from okto_pulse.community.api.auth_deps import require_principal
+from okto_pulse.core.application.use_cases import PermissionDeniedError
+from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.services.amendment_revision_api import (
     AmendmentRevisionApiError,
@@ -91,7 +93,7 @@ async def create_amendment_revision(
     bug_id: str,
     raw: dict[str, Any] = Body(default_factory=dict),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
         reject_bypass_fields(raw)  # FR5 structured rejection of named bypass intents
@@ -105,12 +107,16 @@ async def create_amendment_revision(
             CreateAmendmentRevisionCommand(
                 board_id, bug_id, req.model_dump(exclude_none=True)
             ),
-            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
+            ),
             uow=db,
         )
         return result.data
     except AmendmentRevisionApiError as exc:
         raise _err(exc)
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
 
 
 @router.get("/boards/{board_id}/bugs/{bug_id}/amendment-revisions")
@@ -118,17 +124,21 @@ async def list_amendment_revisions(
     board_id: str,
     bug_id: str,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
         result = await ListAmendmentRevisionsUseCase().execute(
             ListAmendmentRevisionsCommand(board_id, bug_id),
-            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
+            ),
             uow=db,
         )
         return result.data
     except AmendmentRevisionApiError as exc:
         raise _err(exc)
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
 
 
 @router.get("/boards/{board_id}/bugs/{bug_id}/amendment-revisions/{amendment_id}")
@@ -137,17 +147,21 @@ async def get_amendment_revision(
     bug_id: str,
     amendment_id: str,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
         result = await GetAmendmentRevisionUseCase().execute(
             GetAmendmentRevisionCommand(board_id, bug_id, amendment_id),
-            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
+            ),
             uow=db,
         )
         return result.data
     except AmendmentRevisionApiError as exc:
         raise _err(exc)
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
 
 
 @router.post("/boards/{board_id}/bugs/{bug_id}/amendment-revisions/{amendment_id}/associate")
@@ -157,7 +171,7 @@ async def associate_amendment_revision_artifacts(
     amendment_id: str,
     raw: dict[str, Any] = Body(default_factory=dict),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
         reject_bypass_fields(raw)
@@ -171,12 +185,16 @@ async def associate_amendment_revision_artifacts(
             AssociateAmendmentRevisionCommand(
                 board_id, bug_id, amendment_id, req.model_dump(exclude_none=True)
             ),
-            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
+            ),
             uow=db,
         )
         return result.data
     except AmendmentRevisionApiError as exc:
         raise _err(exc)
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
 
 
 @router.post("/boards/{board_id}/bugs/{bug_id}/amendment-revisions/{amendment_id}/lifecycle")
@@ -186,7 +204,7 @@ async def transition_amendment_revision(
     amendment_id: str,
     raw: dict[str, Any] = Body(default_factory=dict),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
         reject_bypass_fields(raw)  # FR5: named bypass intents rejected fail-closed
@@ -200,9 +218,13 @@ async def transition_amendment_revision(
             TransitionAmendmentRevisionCommand(
                 board_id, bug_id, amendment_id, req.model_dump(exclude_none=True)
             ),
-            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
+            ),
             uow=db,
         )
         return result.data
     except AmendmentRevisionApiError as exc:
         raise _err(exc)
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)

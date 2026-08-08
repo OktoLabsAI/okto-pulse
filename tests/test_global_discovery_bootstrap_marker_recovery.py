@@ -965,7 +965,6 @@ def test_freeze_ruling_scratch_clone_oracles(tmp_path):
     marker-absent resume performs zero factory constructions, zero validation
     and zero clear."""
 
-    import hashlib as _hl
     import json as _json
 
     from okto_pulse.community.adapters.global_discovery_layout import (

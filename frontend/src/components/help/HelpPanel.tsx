@@ -3,7 +3,7 @@
  * Content adapts based on edition (community vs ecosystem).
  */
 
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 
 // MCP configuration - uses runtime config or environment variable or defaults to port 8101
 const getMcpBaseUrl = () => {
@@ -28,20 +28,22 @@ const WEB_URL = typeof window !== 'undefined' && (window as any).OKTO_PULSE_CONF
   : (typeof import.meta.env.VITE_API_URL !== 'undefined' && import.meta.env.VITE_API_URL !== '/api/v1'
       ? import.meta.env.VITE_API_URL.replace('/api/v1', '')
       : `http://127.0.0.1:8100`);
-import { X, ChevronRight, Rocket, Lightbulb, FileText, LayoutList, Bug, BarChart3, BookOpen, Shield, Users, Bot, GitBranch, Settings, CheckCircle, Network, Play, RotateCcw, SkipForward, Undo2 } from 'lucide-react';
+import { X, ChevronRight, Rocket, Lightbulb, FileText, LayoutList, Bug, BarChart3, BookOpen, Shield, Users, Bot, GitBranch, Settings, CheckCircle, ListChecks, Network, Play, RotateCcw, SkipForward, Undo2 } from 'lucide-react';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { useOptionalGuidedHelp, type GuidedHelpSurface, type GuidedHelpTourProgressStatus } from '@/components/guided-help';
 import pulseIcon from '@/assets/pulse-icon.svg';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import type { HelpSectionId } from './contextualHelp';
 
 interface HelpPanelProps {
   onClose: () => void;
+  initialSectionId?: HelpSectionId;
 }
 
 const isEcosystem = typeof __AUTH_MODE__ !== 'undefined' && __AUTH_MODE__ === 'clerk';
 
 interface Section {
-  id: string;
+  id: HelpSectionId;
   title: string;
   icon: ReactNode;
   content: string;
@@ -696,7 +698,7 @@ Additional status: \`cancelled\`
 | Tab | Purpose |
 |-----|---------|
 | **Details** | Title, description, context (supports Markdown + Mermaid diagrams), functional & technical requirements, acceptance criteria |
-| **Test Scenarios** | Given/When/Then format with types (unit, integration, e2e, manual), status tracking, task linking, **EvidenceBadge** (✓/?) for scenarios in \`automated/passed/failed\` — see Test Evidence Gate in Governance |
+| **Test Scenarios** | Given/When/Then format with types (unit, integration, e2e, manual, negative), status tracking, task linking, **EvidenceBadge** (✓/?) for scenarios in \`automated/passed/failed\` — use **negative** for invalid, forbidden, or denial paths that the product must reject; see Test Evidence Gate in Governance |
 | **Business Rules** | When/Then format for domain logic, linked to functional requirements |
 | **API Contracts** | Endpoint definitions — method, path, request body, success/error responses |
 | **Technical Reqs** | Technical constraints and implementation details, linked to task cards |
@@ -707,6 +709,10 @@ Additional status: \`cancelled\`
 | **Cards** | View all derived task cards, link/unlink cards |
 | **Sprints** | Create and manage sprints, assign cards, use sprint suggestion algorithm |
 | **History** | Full change log with field-level diffs |
+
+### Negative scenario outcomes
+
+\`negative\` describes an **expected failure path**, not a test that is expected to fail. For a negative scenario, \`passed\` means the expected error/status **and the expected invariants** occurred; \`failed\` means the observed behavior diverged from those expectations.
 
 ### Coverage governance
 
@@ -934,15 +940,21 @@ Guidelines are reusable documents that define standards, patterns, and conventio
 ### Types
 
 - **Board guidelines** — Specific to a single board
-- **Global guidelines** — Available across all boards, can be linked to any board
+- **Global guidelines** — Available across all boards and can be added to each
+  board through a reviewed impact step
 
 ### Creating guidelines
 
-Open **Guidelines** from the menu. You'll see two tabs:
-1. **Board Guidelines** — Review current board guidelines and create inline guidelines
-2. **Global Catalog** — Create, edit, link, and unlink global guidelines for the current board
+Open **Guidelines** from the menu. The tabs you can see depend on your capabilities:
 
-Guidelines support **Markdown** with Mermaid diagrams, tags, and version tracking (global only).
+1. **Board Guidelines** — Review current board guidelines and create inline guidelines
+2. **Global Catalog** — Create immutable revisions, add guidelines to the
+   current board, and manage exact adopted revisions
+3. **Waivers** — Request and review governed exceptions when your role permits it
+
+Guideline prose supports **Markdown**, Mermaid diagrams, and tags. Both global
+and inline guidelines have immutable revision history; publishing a new
+revision never silently changes a board or a Global Default.
 
 ### Use cases
 
@@ -951,6 +963,209 @@ Guidelines support **Markdown** with Mermaid diagrams, tags, and version trackin
 - Review checklists
 - Onboarding documentation
 - Decision records
+
+For semantic metrics, board adoption, compliance receipts, waivers and
+permissions, read **Policy Governance** in this Help guide.
+`,
+    },
+    {
+      id: 'policy-governance',
+      title: 'Policy Governance',
+      icon: <Shield size={16} />,
+      content: `
+## Policy Governance — Semantic guidelines with auditable board behavior
+
+Policy Governance turns reusable guideline prose into optional, explainable
+semantic assessments. A guideline always provides context to people and
+agents. Authors may also define custom metrics that evaluators score from 0 to
+100 using a written rubric.
+
+### Revisions and semantic versions
+
+Published guideline revisions are immutable. Editing creates a successor and
+the author selects the semantic-version impact:
+
+- **Patch** — compatible wording or metadata correction
+- **Minor** — a compatible semantic metric expansion
+- **Major** — metric meaning, target, direction, or another incompatible
+  assessment contract changes
+
+The current head is fenced against concurrent edits, and the server rejects a
+selected bump below the minimum required by the change. Use **Retire** or
+**Supersede** instead of deleting governed history.
+
+### Context and semantic metrics
+
+A guideline can contain prose only. This **context-only** form is valid and
+still helps people and agents without creating a scored policy gate. Add
+semantic metrics only when the guideline defines a quality that can be judged
+consistently from evidence.
+
+The active authoring interface intentionally does not expose policy classes,
+codes, Facts, predicates, or operators. Authors describe the quality in plain
+language and provide a concrete scoring rubric; stable metric identity is
+managed as read-only technical metadata.
+
+### Add to board, review impact and adopt
+
+Boards and Global Defaults pin an exact revision. A newer head is visible as an
+update, but is never adopted automatically.
+
+1. Select **Add to board** (or **Configure for this board** for an existing
+   binding).
+2. Choose **Advisory** or **Blocking**, the minimum assessment confidence, and
+   optional board overrides for metric thresholds.
+3. Review the impact preview and its affected targets, artifacts, and waivers.
+4. If authority changed while the dialog was open, refresh and review a new
+   preview before confirming.
+
+**Remove from board** stops future application while preserving revision, binding,
+Activity and KG lineage. Import uses a dry-run before commit and never
+overwrites a different revision with the same identity and version.
+
+### Policy Compliance
+
+Evaluation records confidence plus one result for every applicable custom
+metric. Each result includes a 0–100 score, rationale, evidence references, and
+pinpoint findings. Threshold comparison is deterministic after the semantic
+assessment has been recorded:
+
+| State | Meaning |
+|-------|---------|
+| **Ready** | Applicable metric thresholds passed, or only advisory findings remain |
+| **Blocked** | A current blocking finding prevents a supported transition |
+| **Ready with waivers** | Blocking findings are covered by effective waivers |
+| **Not applicable** | No adopted semantic metric targets this subject |
+
+A receipt is current only while the subject version, adopted policy set,
+metric contract and binding head still match. Stale history remains
+auditable but never authorizes a transition. Fix the subject or guideline and
+evaluate again.
+
+Advisory findings never block. Blocking bindings compose with the existing
+entity gate at supported completion transitions; they do not create another
+state machine or replace ambiguity, Resources, checklist, validation,
+evaluation, test or cognitive gates. Policy Compliance is not a Quality score.
+
+### Governed waivers
+
+A waiver belongs to one exact, waivable finding. A request requires a
+justification, evidence and future expiry. An authorized reviewer who is
+independent from the requester may approve or reject it; revalidation also
+requires that separation.
+
+**Approved** does not always mean **effective**. The waiver must still be
+unexpired and match current subject, guideline revision and metric evidence.
+Expiry, revocation or source drift removes its effect.
+
+### Lists and evidence
+
+Policy lists use opaque keyset cursors. Keep filters and projection unchanged
+between pages, pass the cursor back without decoding it, and keep the same
+waiver snapshot time. **Summary** is for browsing; load **Full** for the
+bounded score, rationale, evidence and pinpoint set you need. Receipt and
+waiver-event history is append-only.
+
+### Capabilities and fail-closed UI
+
+| Area | Capability group |
+|------|------------------|
+| Revisions | \`guidelines.revisions.*\` |
+| Metric authoring | \`guidelines.metrics.author\` |
+| Impact and adoption | \`guidelines.impact.preview\`, \`guidelines.adoption.manage\` |
+| Assessments | \`guidelines.assessments.read\`, \`guidelines.assessments.record\` |
+| Waivers | \`guidelines.waiver.*\` |
+
+Menus, tabs and actions remain hidden or disabled until current board authority
+is known. A missing capability, malformed permission response or custom deny
+does not inherit access. Full Control receives all introduced leaves; other
+presets receive only their explicit matrix.
+
+### Recover safely
+
+- **Permission denied** — request the exact capability; unchanged retry is not recovery.
+- **Invalid cursor** — restart from the first page with a new snapshot.
+- **Conflict** — refresh the exact revision, preview or binding head and review again; do not auto-replay.
+- **Under-bump** — choose at least the minimum version returned by the server.
+- **Unavailable assessment** — blocking policy fails closed; report or retry without changing the intent.
+
+A human skip is an explicit board-owner exception for one binding and subject
+version. Agents cannot create it through MCP. It never changes the assessment
+evidence, remains visible in the transition decision, and becomes ineffective
+when its governed scope drifts or it is revoked.
+
+AI agents should read the single canonical MCP protocol
+\`okto-pulse://reference/policy-compliance\` before authoring, adoption,
+evaluation, transition reliance or waiver operations.
+`,
+    },
+    {
+      id: 'semantic-guideline-metrics',
+      title: 'Semantic guideline metrics',
+      icon: <ListChecks size={16} />,
+      content: `
+## Semantic guideline metrics — Authoring and board configuration
+
+Use semantic metrics when a guideline describes a quality that requires
+judgment, such as architectural fit, evidence strength, or user-value clarity.
+Keep the guideline context-only when prose is sufficient.
+
+### Confidence is fixed and system-owned
+
+Every assessment carries a **Confidence** score from 0 to 100. It communicates
+how strongly the available evidence supports the assessment. Confidence is
+not a custom metric: it cannot be renamed, removed, targeted, or added to the
+metric override map.
+
+The board's **minimum confidence** is a currentness safeguard. A blocking
+binding cannot pass from an assessment below that value, even when its metric
+scores pass.
+
+### What authors configure
+
+Each custom metric contains:
+
+| Field | Purpose |
+|-------|---------|
+| **Title** | Human-readable quality being assessed |
+| **Description** | What the score communicates |
+| **Evaluation rubric** | Concrete meaning of low, medium, and high scores, including expected evidence |
+| **Evaluated entities** | One or more target entity types |
+| **Passing direction** | **Higher is better** (minimum) or **Lower is better** (maximum) |
+| **Default threshold** | Guideline-wide passing value from 0 to 100 |
+
+Metric order is preserved in every revision. The technical Metric ID and
+stable key support history, findings, and board overrides; they are shown
+read-only under **Technical details**.
+
+Good rubrics identify observable evidence and anchor score ranges. For example:
+"0–39: no user outcome is stated; 40–69: outcome exists but is not measurable;
+70–89: measurable outcome and acceptance evidence are present; 90–100:
+evidence also covers trade-offs and failure cases."
+
+### Context-only revisions
+
+A revision with no custom metrics remains available as context to all entities.
+It produces no scored metric result and creates no blocking behavior. Add a
+metric in a later immutable revision when the team is ready to evaluate it.
+
+### Board-specific behavior
+
+When adding or updating a guideline on a board:
+
+1. Choose **Advisory** to record findings without blocking, or **Blocking** to
+   participate in supported transition gates.
+2. Set minimum assessment confidence from 0 to 100.
+3. Keep each metric's revision default or enable a board-specific threshold
+   override. Overrides use the stable metric key and never include
+   \`confidence\`.
+4. Generate a fresh impact preview.
+5. Confirm adoption only while the preview digest and binding head remain
+   current.
+
+Changing any setting invalidates the visible preview. A stale preview or
+binding-head conflict requires a new preview; the UI never silently replays a
+different configuration.
 `,
     },
     {
@@ -1344,6 +1559,106 @@ Changes apply without restarting the server. The Decay Tick tab also polls \`/kg
 Individual specs can override board-level settings. Toggle the skip flags directly on the spec to bypass specific checks for that spec only.
 `,
     },
+    {
+      id: 'requirement-lint',
+      title: 'Requirement lint',
+      icon: <BarChart3 size={16} />,
+      content: `
+## Requirement lint — deterministic advisory analysis
+
+Requirement lint checks a Spec's governed semantic content after relevant changes. It is available in **Spec → Validation → Requirement lint** and is read-only in the UI: the server creates a new immutable receipt automatically.
+
+### Reading the result
+
+The headline is a **finding count**, not a percentage or approval score:
+
+- **Findings** — issues detected by the deterministic ruleset.
+- **Evaluated rules** — rules that applied to the current Spec input.
+- **Lower is better** — zero means the ruleset found no issue in that run.
+
+Findings carry severity, category, a precise anchor and suggested remediation. Expand **Pinpoint findings** to locate the affected field or structured child. Expand **Receipt history** to audit earlier runs.
+
+### Current and stale receipts
+
+A receipt is **current** only while its Spec content, ruleset, taxonomy and policy inputs still match the evaluated revision. A semantic edit can make the previous receipt stale and trigger a replacement. Historical receipts remain traceable and are never rewritten.
+
+### Advisory authority
+
+Requirement lint never changes Spec transition eligibility. **Zero findings does not authorize a transition**, and one or more findings do not block it. When available, **Checklist** and **Spec Validation** are the authoritative controls shown in the neighboring Validation sub-tabs.
+
+Use lint findings to improve the Spec before formal validation; use the authoritative controls to determine whether the Spec may advance.
+`,
+    },
+    {
+      id: 'curated-spec-checklist',
+      title: 'Curated Spec Checklist',
+      icon: <ListChecks size={16} />,
+      content: `
+## Curated Spec Checklist — Traceable Spec quality governance
+
+The Curated Spec Checklist is a **board-level policy** that controls how the immutable \`/specify/v1\` checklist participates in Spec Validation. “Curated” means that its ten ordered checks are maintained by Okto Pulse rather than edited independently on each board.
+
+Configure the policy for the current board in **Menu → Board → Board Config**. Configure the value inherited by future boards in **Menu → Board → Global Default**. Changing the global default is forward-only: it does not alter existing boards.
+
+### Policy modes
+
+| Mode | Checklist execution | Validation effect |
+|------|---------------------|-------------------|
+| **Off** | Disabled | Never blocks validation |
+| **Advisory** | Enabled and stored as traceable evidence | Never blocks validation |
+| **Blocking** | Required | Requires a current passing receipt before the Spec can be validated |
+
+**Advisory** is the recommended adoption mode while a team calibrates evidence and anchors. Promote the policy to **Blocking** once checklist runs are consistent. Use **Off** only for an intentional opt-out or legacy compatibility.
+
+### The ten curated checks
+
+1. Scope and boundaries
+2. Functional requirement value
+3. Testable FR and AC coverage
+4. Measurable acceptance criteria
+5. Edge cases and failure paths
+6. Dependencies and assumptions
+7. No unresolved placeholders
+8. Functional and technical requirement separation
+9. Stable IDs and traceability
+10. Decision rationale
+
+Every result requires a concrete **anchor** to evidence in the Spec. Items 5, 6, 8 and 10 may be marked **Not applicable**, with a required rationale. All ten ordered results are submitted together.
+
+### Receipts and currentness
+
+A completed run produces an immutable, auditable receipt. The Spec modal shows its result, counts, currentness and paginated receipt history.
+
+A receipt becomes **stale** when the evaluated Spec technical revision, content, inputs, or executable checklist identity changes. Changing only the policy from Advisory to Blocking does not make an otherwise current receipt stale; an existing native receipt with no failed items can immediately satisfy Blocking.
+
+The visible states are:
+
+- \`off\` — policy disabled
+- \`not_started\` — no receipt exists
+- \`current\` — receipt still matches the Spec
+- \`stale\` — the Spec or executable inputs changed
+- \`failed\` — at least one checklist item failed
+
+### Relationship with Spec Validation
+
+The checklist and the score-based Spec Validation Gate are independent and cumulative:
+
+- With \`require_spec_validation=true\`, use the formal Spec Validation submission; a Blocking checklist must also be satisfied.
+- With \`require_spec_validation=false\`, a direct \`approved → validated\` transition is available, but a Blocking checklist still applies.
+
+Turning off the score-based gate does not turn off this checklist. Select the **Off** checklist mode when that separate gate must also be disabled.
+
+### Governance and permissions
+
+Only an authenticated human with board write authority can change the current board's checklist mode. Changing the Global Default requires catalog admin/operator authority. Agents cannot change the board binding or the checklist mode carried by a Global Default.
+
+Agent permissions are cumulative: inspection requires both \`board:read\` and \`spec.checklist.read\`; execution requires both \`specs:update\` and \`spec.checklist.execute\`. **Full Control** and **Spec** presets can read and execute; **Validator**, **QA**, **Reporter**, **Sprint Manager**, and **Executor** have read access by default.
+
+### Defaults
+
+When a new Global Default version omits this field, it inherits the active template's mode. If no value exists — including historical templates — the forward default is **Advisory**. New boards snapshot the selected mode from the active Global Default; existing boards are never changed retroactively. Legacy boards that predate checklist governance keep their effective **Off** compatibility behavior until explicitly configured.
+`,
+    },
   ];
 
   if (isEcosystem) {
@@ -1441,16 +1756,64 @@ Both appear in the sidebar for quick switching.
   return sections;
 }
 
-export function HelpPanel({ onClose }: HelpPanelProps) {
-  useEscapeToClose(onClose);
+export function HelpPanel({ onClose, initialSectionId }: HelpPanelProps) {
+  useEscapeToClose(onClose, { priority: 200 });
+  const dialogRef = useRef<HTMLDivElement>(null);
   const sections = getSections();
-  const [activeSection, setActiveSection] = useState(() => sections[0]?.id ?? 'quickstart');
+  const [activeSection, setActiveSection] = useState(() => (
+    sections.some((section) => section.id === initialSectionId)
+      ? initialSectionId!
+      : sections[0]?.id ?? 'quickstart'
+  ));
 
   const current = sections.find(s => s.id === activeSection) || sections[0];
 
+  useEffect(() => {
+    if (
+      initialSectionId
+      && getSections().some((section) => section.id === initialSectionId)
+    ) {
+      setActiveSection(initialSectionId);
+    }
+  }, [initialSectionId]);
+
+  useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const openerDialog = previouslyFocused?.closest<HTMLElement>(
+      '[role="dialog"]',
+    ) ?? null;
+    const openerAriaModal = openerDialog?.getAttribute('aria-modal') ?? null;
+    const openerAriaHidden = openerDialog?.getAttribute('aria-hidden') ?? null;
+    if (openerDialog && openerDialog !== dialogRef.current) {
+      openerDialog.removeAttribute('aria-modal');
+      openerDialog.setAttribute('aria-hidden', 'true');
+    }
+    dialogRef.current?.focus();
+    return () => {
+      if (openerDialog && openerDialog !== dialogRef.current) {
+        if (openerAriaModal === null) {
+          openerDialog.removeAttribute('aria-modal');
+        } else {
+          openerDialog.setAttribute('aria-modal', openerAriaModal);
+        }
+        if (openerAriaHidden === null) {
+          openerDialog.removeAttribute('aria-hidden');
+        } else {
+          openerDialog.setAttribute('aria-hidden', openerAriaHidden);
+        }
+      }
+      previouslyFocused?.focus();
+    };
+  }, []);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40" onClick={onClose}>
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="help-panel-title"
+        tabIndex={-1}
         className="relative w-[90vw] max-w-5xl bg-white dark:bg-gray-900 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700 flex overflow-hidden"
         style={{ height: '85vh' }}
         onClick={e => e.stopPropagation()}
@@ -1460,7 +1823,7 @@ export function HelpPanel({ onClose }: HelpPanelProps) {
           <div className="px-4 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2.5">
             <img src={pulseIcon} alt="Okto Pulse" className="h-8 w-8" />
             <div>
-              <h2 className="text-sm font-bold text-gray-800 dark:text-gray-200">
+              <h2 id="help-panel-title" className="text-sm font-bold text-gray-800 dark:text-gray-200">
                 Help Guide
               </h2>
               <p className="text-[10px] text-gray-400 mt-0.5">
@@ -1496,6 +1859,7 @@ export function HelpPanel({ onClose }: HelpPanelProps) {
             </h3>
             <button
               onClick={onClose}
+              aria-label="Close help"
               className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
             >
               <X size={18} />

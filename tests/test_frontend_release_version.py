@@ -53,3 +53,25 @@ def test_packaged_frontend_contains_current_about_version_only() -> None:
     assert about_bundles[0].count(label) == 1
     assert expected_version in about_bundles[0]
     assert sum(source.count(stale) for source in javascript) == 0
+
+
+def test_packaged_frontend_attests_negative_scenario_type_and_help() -> None:
+    bundle_root = ROOT / "src" / "okto_pulse" / "community" / "frontend_dist"
+    javascript = [path.read_text(encoding="utf-8") for path in bundle_root.rglob("*.js")]
+    type_contract = "types (unit, integration, e2e, manual, negative)"
+    help_contract = (
+        "use **negative** for invalid, forbidden, or denial paths "
+        "that the product must reject"
+    )
+    negative_style = (
+        "bg-rose-50 text-rose-600 dark:bg-rose-900/30 dark:text-rose-300"
+    )
+
+    contract_bundles = [
+        source
+        for source in javascript
+        if type_contract in source and help_contract in source
+    ]
+    assert len(contract_bundles) == 1
+    assert negative_style in contract_bundles[0]
+    assert not any("negative (unsupported)" in source for source in javascript)

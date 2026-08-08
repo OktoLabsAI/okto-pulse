@@ -95,7 +95,14 @@ def test_explicit_repository_mappers_keep_domain_free_of_orm_state() -> None:
     ideation = Ideation(
         id="idea-1", board_id=board.id, title="Idea", created_by="owner"
     )
-    spec = Spec(id="spec-1", board_id=board.id, title="Spec", created_by="owner")
+    spec = Spec(
+        id="spec-1",
+        board_id=board.id,
+        title="Spec",
+        created_by="owner",
+        edition=4,
+        version=17,
+    )
 
     pairs = (
         (board, board_to_row, board_to_domain),
@@ -106,6 +113,9 @@ def test_explicit_repository_mappers_keep_domain_free_of_orm_state() -> None:
         row = to_row(entity)
         restored = to_domain(row)
         assert restored == entity
+        if isinstance(entity, Spec):
+            assert restored.edition == 4
+            assert restored.version == 17
         assert not hasattr(restored, "_sa_instance_state")
         assert hasattr(row, "_sa_instance_state")
 

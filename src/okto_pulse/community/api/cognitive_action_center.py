@@ -27,6 +27,7 @@ from okto_pulse.core.application.use_cases.cognitive_readiness import (
     ListCognitiveReadinessItemsCommand,
     ListCognitiveReadinessItemsUseCase,
 )
+from okto_pulse.core.application.use_cases.base import PermissionDeniedError
 from okto_pulse.core.application.use_cases.operational_rest import (
     BoardNotFoundError,
     ClearCognitiveSkipUseCase,
@@ -129,6 +130,8 @@ async def list_cognitive_readiness_items(
         )
     except BoardNotFoundError as exc:
         raise _board_not_found(exc) from exc
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except CognitiveReadinessError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.to_dict()) from exc
 
@@ -176,6 +179,8 @@ async def record_cognitive_skip_endpoint(
         )
     except BoardNotFoundError as exc:
         raise _board_not_found(exc) from exc
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except CognitiveReadinessError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.to_dict()) from exc
     data = result.data
@@ -213,6 +218,8 @@ async def clear_cognitive_skip_endpoint(
         )
     except BoardNotFoundError as exc:
         raise _board_not_found(exc) from exc
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except CognitiveReadinessError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.to_dict()) from exc
     data = result.data
@@ -247,5 +254,7 @@ async def get_cognitive_readiness_metrics(
         return result.data
     except BoardNotFoundError as exc:
         raise _board_not_found(exc) from exc
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except CognitiveReadinessError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.to_dict()) from exc

@@ -44,12 +44,42 @@ WARMUP = 5
 PAGE = 25
 
 COMM_REPO = Path(__file__).resolve().parents[1]
-CORE_REPO = Path(
-    os.environ.get(
-        "PGB_CORE_REPO",
-        str(COMM_REPO.parent / "okto_labs_pulse_core"),
+
+
+def _resolve_core_repo() -> Path:
+    configured = str(os.environ.get("PGB_CORE_REPO", "")).strip()
+    candidates = (
+        (Path(configured).expanduser(), "PGB_CORE_REPO")
+        if configured
+        else (COMM_REPO.parent / "okto-pulse-core", "current")
     )
-).resolve()
+    ordered = (
+        (candidates,)
+        if configured
+        else (
+            candidates,
+            (COMM_REPO.parent / "okto_labs_pulse_core", "legacy"),
+        )
+    )
+    checked: list[str] = []
+    for candidate, selected_by in ordered:
+        resolved = candidate.resolve()
+        checked.append(str(resolved))
+        if (resolved / "pyproject.toml").is_file() and (
+            resolved / "src" / "okto_pulse" / "core"
+        ).is_dir():
+            return resolved
+        if selected_by == "PGB_CORE_REPO":
+            raise RuntimeError(
+                f"PGB_CORE_REPO does not point to a valid Core checkout: {resolved}"
+            )
+    raise RuntimeError(
+        "Unable to locate the Core checkout; "
+        f"checked current before legacy: {checked}"
+    )
+
+
+CORE_REPO = _resolve_core_repo()
 
 # --------------------------------------------------------------------------- #
 # env capture
