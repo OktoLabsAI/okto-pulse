@@ -9,6 +9,38 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- A recursive permission editor that renders every one of the 397 permission
+  leaves exposed by the application, with a full-coverage regression.
+- Reviewer-separation controls in both Board settings and Global Default Board
+  Configuration.
+- Route and UI regressions for board sharing, permission presets and canonical
+  authorization projection.
+
+### Changed
+
+- REST and UI authorization now consume the centralized Core operation policy
+  and the canonical namespaces for agent, board administration and sharing,
+  permission presets, default configuration, design system, runtime, metrics,
+  amendments and Knowledge Graph operations.
+- The bundled frontend distribution was rebuilt from the reconciled source.
+
+### Fixed
+
+- Permission UI state now refreshes reliably when the selected role or board
+  changes.
+- Inline guidelines no longer present an inapplicable unlink action.
+- Guideline import and export preserve evaluation metrics, immutable identity
+  and version creation semantics for repeated IDs.
+
+### Validation
+
+- The Board E2E flow proves traceability and semantic-guideline policy blocks,
+  then completes successfully after current independent assessment evidence.
+- Ruff, 65 focused Community regressions, frontend build, distribution
+  verification and the lint ratchet pass after reconciliation with `develop`.
+
 ## [0.3.1] - 2026-07-27
 
 ### Added

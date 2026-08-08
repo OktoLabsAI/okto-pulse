@@ -16,6 +16,24 @@ Spec checklist execution state.
 - Paired-wheel provenance and installed inventory gates ratchet the exposed MCP
   contract to 312 tools (304 canonical and 8 aliases).
 
+#### Permission-governance hardening changeset — 2026-08-08
+
+- The permission editor is recursive and proves coverage of all 397 permission
+  leaves exposed by the application.
+- REST and UI routes project the centralized Core operation policy, including
+  exact denial, legacy fallback and role semantics for board sharing, presets,
+  defaults and administrative operations.
+- Reviewer separation is configurable from Board settings and Global Default
+  Board Configuration; the E2E board was validated with board enforcement off
+  and the global default set to enforce.
+- Guideline import and export cover global and inline guidelines, with and
+  without evaluation metrics, including repeated-ID imports that create a new
+  immutable version.
+- Board E2E validation proves both the traceability and semantic-guideline
+  blocks before completing the cards with current independent assessment
+  evidence. Ruff, 65 focused regressions, frontend build, distribution
+  verification and the lint ratchet pass on the reconciled release branch.
+
 
 ### 0.3.0
 
