@@ -155,6 +155,96 @@ Readonly<Record<string, string>> = (
   COMPOSED_PERMISSION_INTRODUCTIONS.historicalAuthorities
 );
 
+const STATIC_INTRODUCED_PERMISSION_LEAVES = new Set(
+  INTRODUCED_PERMISSION_LEAVES,
+);
+
+const POST_SKB_INTRODUCED_PREFIXES = [
+  'agent.',
+  'board.admin.',
+  'board.share.',
+  'permission_preset.',
+  'default_board_config.',
+  'design_system.',
+  'runtime.',
+  'metrics.',
+  'amendment.',
+  'kg.operations.',
+  'ideation.knowledge.',
+  'story.mockups.',
+  'test_scenario.interact_in.',
+] as const;
+
+const POST_SKB_INTRODUCED_EXACT_LEAVES = new Set([
+  'ideation.qa.delete',
+  'refinement.qa.delete',
+  'spec.qa.delete',
+  'sprint.qa.delete',
+  'spec.tests.execute',
+  'spec.tests.edit',
+  'spec.tests.delete',
+  'sprint.tasks.assign',
+  'ideation.interact_in.review',
+  'ideation.interact_in.approved',
+]);
+
+const SDLC_TRANSITION_ENTITIES = new Set([
+  'story',
+  'ideation',
+  'refinement',
+  'spec',
+  'card',
+  'sprint',
+  'test_scenario',
+]);
+
+// Exact transition leaves that predate the SDLC-registry projection. Core
+// deliberately keeps these outside the fail-closed introduction manifest so
+// historical snapshots and board ceilings retain their original semantics.
+const PRE_REGISTRY_TRANSITION_PERMISSION_LEAVES = new Set([
+  'card.move.in_progress_to_done',
+  'card.move.in_progress_to_on_hold',
+  'card.move.in_progress_to_validation',
+  'card.move.not_started_to_started',
+  'card.move.on_hold_to_in_progress',
+  'card.move.started_to_in_progress',
+  'card.move.validation_to_cancelled',
+  'card.move.validation_to_done',
+  'card.move.validation_to_on_hold',
+  'refinement.move.approved_to_done',
+  'refinement.move.review_to_approved',
+  'spec.move.approved_to_draft',
+  'spec.move.approved_to_validated',
+  'spec.move.draft_to_review',
+  'spec.move.in_progress_to_done',
+  'spec.move.review_to_approved',
+  'spec.move.validated_to_draft',
+  'spec.move.validated_to_in_progress',
+  'sprint.move.active_to_review',
+  'sprint.move.draft_to_active',
+  'sprint.move.review_to_closed',
+  'story.move.draft_to_ready',
+  'story.move.draft_to_triage',
+  'story.move.ready_to_triage',
+  'story.move.triage_to_draft',
+  'story.move.triage_to_ready',
+]);
+
+/** Keep the client fail-closed for every post-SK-B manifest generation. */
+export function isIntroducedPermissionLeaf(path: string): boolean {
+  if (
+    STATIC_INTRODUCED_PERMISSION_LEAVES.has(path)
+    || POST_SKB_INTRODUCED_EXACT_LEAVES.has(path)
+    || POST_SKB_INTRODUCED_PREFIXES.some((prefix) => path.startsWith(prefix))
+  ) {
+    return true;
+  }
+  const [entity, branch] = path.split('.', 3);
+  return branch === 'move'
+    && SDLC_TRANSITION_ENTITIES.has(entity)
+    && !PRE_REGISTRY_TRANSITION_PERMISSION_LEAVES.has(path);
+}
+
 type PermissionDocument = Record<string, unknown>;
 
 function isDocument(value: unknown): value is PermissionDocument {
@@ -296,7 +386,8 @@ export function applyBoardCeiling(
   for (const [path, value] of booleanLeaves(ceiling)) {
     if (value === false) setNested(effective, path, false);
   }
-  for (const path of INTRODUCED_PERMISSION_LEAVES) {
+  for (const [path] of booleanLeaves(base)) {
+    if (!isIntroducedPermissionLeaf(path)) continue;
     if (
       getNested(base, path).present
       && getNested(ceiling, path).value !== true
@@ -329,7 +420,8 @@ export function boardCeilingDelta(
 
   const ceiling: PermissionDocument = {};
   for (const path of restrictions) setNested(ceiling, path, false);
-  for (const path of INTRODUCED_PERMISSION_LEAVES) {
+  for (const [path] of booleanLeaves(base)) {
+    if (!isIntroducedPermissionLeaf(path)) continue;
     const baseValue = getNested(base, path).value;
     const desiredValue = getNested(desired, path).value;
     if (baseValue === true && desiredValue === true) {

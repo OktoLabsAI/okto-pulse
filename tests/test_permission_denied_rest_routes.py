@@ -10,9 +10,14 @@ from fastapi.testclient import TestClient
 from okto_pulse.community.api import boards as boards_api
 from okto_pulse.community.api import cards as cards_api
 from okto_pulse.community.api import sprints as sprints_api
-from okto_pulse.community.api.auth_deps import get_realm_id, require_user
+from okto_pulse.community.api.auth_deps import (
+    get_realm_id,
+    require_principal,
+    require_user,
+)
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases import PermissionDeniedError
+from okto_pulse.core.ports.authentication import Principal
 
 
 @pytest.fixture
@@ -23,6 +28,11 @@ def client() -> TestClient:
     app.include_router(sprints_api.router)
     app.dependency_overrides[require_user] = lambda: "actor"
     app.dependency_overrides[get_realm_id] = lambda: "local"
+    app.dependency_overrides[require_principal] = lambda: Principal(
+        subject="actor",
+        realm_id="local",
+        actor_kind="human",
+    )
     app.dependency_overrides[get_unit_of_work] = lambda: object()
     return TestClient(app, raise_server_exceptions=False)
 

@@ -9,7 +9,7 @@ anyway). Missing and inaccessible boards share the same 404 envelope.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from okto_pulse.community.api.auth_deps import get_realm_id, require_user
 from okto_pulse.community.api.deps import get_unit_of_work
@@ -19,6 +19,7 @@ from okto_pulse.core.application.use_cases.permission_presets import (
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.application.use_cases.base import EntityNotFoundError
+from okto_pulse.core.ports.permission_policy import permission_introduction_manifests
 from okto_pulse.core.repositories import PulseUnitOfWork
 
 router = APIRouter()
@@ -28,6 +29,7 @@ class PermissionsResponse(BaseModel):
     board_id: str
     preset_name: str | None
     flags: dict
+    introduced_historical_authorities: dict[str, str] = Field(default_factory=dict)
     owner_review_required: bool = False
     review_reason: str | None = None
 
@@ -69,10 +71,16 @@ async def get_my_permissions(
             detail="Board not found",
         ) from exc
     permissions = result.permissions
+    introduced_historical_authorities = {
+        leaf: authority
+        for manifest in permission_introduction_manifests()
+        for leaf, authority in manifest.historical_authorities
+    }
     return PermissionsResponse(
         board_id=permissions.board_id,
         preset_name=permissions.preset_name,
         flags=permissions.flags,
+        introduced_historical_authorities=introduced_historical_authorities,
         owner_review_required=permissions.owner_review_required,
         review_reason=permissions.review_reason,
     )

@@ -17,7 +17,7 @@ import {
 } from '@/services/permissions-api';
 import {
   INTRODUCED_PERMISSION_HISTORICAL_AUTHORITIES,
-  INTRODUCED_PERMISSION_LEAVES,
+  isIntroducedPermissionLeaf,
 } from '@/components/permissions/permissionLayers';
 
 export {
@@ -27,10 +27,6 @@ export {
 } from '@/components/permissions/permissionLayers';
 
 const CACHE_TTL_MS = 60_000;
-
-const failClosedIntroducedFlags = new Set<string>(
-  INTRODUCED_PERMISSION_LEAVES,
-);
 
 interface CacheEntry {
   data: PermissionsResponse;
@@ -92,18 +88,40 @@ export interface UsePermissionsResult {
   has: (flag: string) => boolean;
 }
 
+/**
+ * Mirror Core's two-part authorization for mutations on an existing entity.
+ *
+ * Creation has no existing state and must use ``has(action)`` directly. Every
+ * other entity mutation requires both its exact action leaf and the current
+ * ``<entity>.interact_in.<status>`` leaf. Keeping this composition next to the
+ * hook prevents individual UI surfaces from accidentally checking only one
+ * half of the contract.
+ */
+export function hasPermissionWithState(
+  has: (flag: string) => boolean,
+  action: string,
+  entity: string,
+  status: string | null | undefined,
+): boolean {
+  const actionAllowed = has(action);
+  const stateAllowed = Boolean(status)
+    && has(`${entity}.interact_in.${status}`);
+  return actionAllowed && stateAllowed;
+}
+
 export function hasEffectivePermission(
   data: PermissionsResponse | null,
   flag: string,
 ): boolean {
-  const introduced = failClosedIntroducedFlags.has(flag);
+  const introduced = isIntroducedPermissionLeaf(flag);
   if (!data) return !introduced;
   if (introduced && data.owner_review_required) return false;
   const value = getNested(data.flags, flag);
   if (value === undefined) return !introduced;
   if (value !== true) return false;
   const historicalAuthority =
-    INTRODUCED_PERMISSION_HISTORICAL_AUTHORITIES[flag];
+    data.introduced_historical_authorities?.[flag]
+    ?? INTRODUCED_PERMISSION_HISTORICAL_AUTHORITIES[flag];
   return (
     historicalAuthority === undefined
     || getNested(data.flags, historicalAuthority) === true

@@ -7,6 +7,7 @@ import { useState, useEffect } from 'react';
 import type { AuditEntry } from '@/types/knowledge-graph';
 import * as kgApi from '@/services/kg-api';
 import { KGRefreshButton } from './KGRefreshButton';
+import { usePermissions } from '@/hooks/usePermissions';
 
 interface Props {
   boardId: string;
@@ -19,15 +20,29 @@ const STATUS_BADGE: Record<string, string> = {
 };
 
 export function AuditLogView({ boardId }: Props) {
+  const permissions = usePermissions(boardId);
+  const canReadAudit = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+    && permissions.has('kg.operations.audit.read')
+  );
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    loadAudit();
-  }, [boardId]);
+    if (permissions.isLoading) return;
+    if (!canReadAudit) {
+      setLoading(false);
+      setError('You do not have permission to read the KG audit log');
+      return;
+    }
+    void loadAudit();
+  }, [boardId, canReadAudit, permissions.isLoading]);
 
   async function loadAudit() {
+    if (!canReadAudit) return;
     setLoading(true);
     setError(null);
     try {

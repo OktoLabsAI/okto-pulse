@@ -8,6 +8,7 @@ import { Pencil } from 'lucide-react';
 interface EditableFieldProps {
   value: string;
   onSave: (value: string) => Promise<void> | void;
+  disabled?: boolean;
   multiline?: boolean;
   placeholder?: string;
   renderView?: (value: string) => React.ReactNode;
@@ -16,6 +17,7 @@ interface EditableFieldProps {
 export function EditableField({
   value,
   onSave,
+  disabled = false,
   multiline = false,
   placeholder = 'Click to edit...',
   renderView,
@@ -28,6 +30,10 @@ export function EditableField({
   useEffect(() => {
     setDraft(value);
   }, [value]);
+
+  useEffect(() => {
+    if (disabled) setEditing(false);
+  }, [disabled]);
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -120,18 +126,25 @@ export function EditableField({
 
   return (
     <div
-      onClick={() => setEditing(true)}
-      className="group relative cursor-pointer rounded-lg border border-transparent hover:border-gray-200 dark:hover:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors px-1 -mx-1"
+      onClick={() => { if (!disabled) setEditing(true); }}
+      aria-disabled={disabled}
+      className={`group relative rounded-lg border border-transparent transition-colors px-1 -mx-1 ${
+        disabled
+          ? 'cursor-default'
+          : 'cursor-pointer hover:border-gray-200 dark:hover:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800/50'
+      }`}
     >
       {value ? (
         renderView ? renderView(value) : <p className="text-sm text-gray-700 dark:text-gray-300">{value}</p>
       ) : (
         <p className="text-sm text-gray-400 dark:text-gray-500 italic">{placeholder}</p>
       )}
-      <Pencil
-        size={12}
-        className="absolute top-1 right-1 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity"
-      />
+      {!disabled && (
+        <Pencil
+          size={12}
+          className="absolute top-1 right-1 text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity"
+        />
+      )}
     </div>
   );
 }

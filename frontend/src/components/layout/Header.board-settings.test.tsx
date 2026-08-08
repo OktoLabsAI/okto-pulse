@@ -228,6 +228,9 @@ describe('Header Board settings resource automation', () => {
     grant(
       'guidelines.revisions.read',
       'guidelines.adoption.manage',
+      'runtime.settings.read',
+      'metrics.local.summary.read',
+      'board.admin.edit',
     );
   });
 
@@ -663,5 +666,48 @@ describe('Header Board settings resource automation', () => {
     expect(screen.getByTestId('runtime-settings-panel')).toHaveTextContent(
       'runtime settings tab: graphdb',
     );
+  });
+
+  it('does not update board settings without board.admin.edit', () => {
+    grant('guidelines.revisions.read');
+    renderOpenHeader();
+
+    const toggle = screen.getByTestId('toggle-spec-resource-automation');
+    expect(toggle).toBeDisabled();
+    fireEvent.click(toggle);
+    expect(apiMock.updateBoard).not.toHaveBeenCalled();
+  });
+
+  it('disables board admin and agent menu actions when their exact leaves are denied', () => {
+    grant();
+    const onCreateBoard = vi.fn();
+    const onDeleteBoard = vi.fn();
+    const onOpenAgents = vi.fn();
+    render(
+      <Header
+        onCreateBoard={onCreateBoard}
+        onDeleteBoard={onDeleteBoard}
+        onOpenAgents={onOpenAgents}
+      />,
+    );
+
+    openHeaderMenu();
+    const create = screen.getByRole('button', { name: 'New Dashboard' });
+    const agents = screen.getByRole('button', { name: 'Agents' });
+    expect(create).toBeDisabled();
+    expect(agents).toBeDisabled();
+    fireEvent.click(create);
+    fireEvent.click(agents);
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('okto:open-board-settings'));
+    });
+    const remove = screen.getByRole('button', { name: 'Delete board' });
+    expect(remove).toBeDisabled();
+    fireEvent.click(remove);
+
+    expect(onCreateBoard).not.toHaveBeenCalled();
+    expect(onOpenAgents).not.toHaveBeenCalled();
+    expect(onDeleteBoard).not.toHaveBeenCalled();
   });
 });

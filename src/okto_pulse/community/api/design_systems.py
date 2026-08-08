@@ -15,6 +15,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.permission_errors import permission_denied_http_error
+from okto_pulse.core.application.use_cases import PermissionDeniedError
 from okto_pulse.core.application.use_cases.admin_catalog import (
     CreateDesignSystemUseCase,
     DeleteDesignSystemUseCase,
@@ -38,7 +40,8 @@ from okto_pulse.core.application.use_cases.import_export import (
     validate_items,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.community.api.auth_deps import require_user
+from okto_pulse.community.api.auth_deps import require_principal
+from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.services.amendment_revision_api import (
     AmendmentRevisionApiError,
@@ -49,6 +52,14 @@ from okto_pulse.core.services.design_system import (
 )
 
 router = APIRouter()
+
+
+async def _execute_authorized(use_case, command, *, actor, uow):
+    """Project the shared Core permission outcome at the REST boundary."""
+    try:
+        return await use_case.execute(command, actor=actor, uow=uow)
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
 
 
 class CreateDesignSystemRequest(BaseModel):
@@ -100,7 +111,7 @@ def _invalid_request(exc: ValidationError) -> HTTPException:
 async def create_design_system(
     raw: dict[str, Any] = Body(default_factory=dict),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
         reject_bypass_fields(raw)
@@ -110,9 +121,12 @@ async def create_design_system(
     except ValidationError as exc:
         raise _invalid_request(exc)
     try:
-        result = await CreateDesignSystemUseCase().execute(
+        result = await _execute_authorized(
+            CreateDesignSystemUseCase(),
             DesignSystemCommand(payload=req.model_dump()),
-            actor=RESTAdapterContract.actor(actor, board_id=req.board_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=req.board_id
+            ),
             uow=db,
         )
         return result.data
@@ -128,10 +142,11 @@ async def list_design_systems(
     cursor: str | None = None,
     profile: str = "summary",
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
-        result = await ListDesignSystemsUseCase().execute(
+        result = await _execute_authorized(
+            ListDesignSystemsUseCase(),
             DesignSystemCommand(
                 scope=scope,
                 board_id=board_id or "",
@@ -139,7 +154,9 @@ async def list_design_systems(
                 cursor=cursor,
                 profile=profile,
             ),
-            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
+            ),
             uow=db,
         )
         return result.data
@@ -156,13 +173,14 @@ async def list_design_systems(
 @router.get("/design-systems/export")
 async def export_design_systems(
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     """Export the whole GLOBAL Design System catalog as a schema_version-1
     envelope (kind=design_systems)."""
-    result = await ExportDesignSystemsUseCase().execute(
+    result = await _execute_authorized(
+        ExportDesignSystemsUseCase(),
         ExportDesignSystemsCommand(),
-        actor=RESTAdapterContract.actor(actor),
+        actor=RESTAdapterContract.actor_from_principal(principal),
         uow=db,
     )
     return result
@@ -173,7 +191,7 @@ async def import_design_systems(
     envelope: dict[str, Any] = Body(default_factory=dict),
     dry_run: bool = False,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     """Import one or more Design Systems into the GLOBAL catalog.
 
@@ -203,9 +221,10 @@ async def import_design_systems(
             detail={"created": 0, "skipped": [], "errors": errors},
         )
     try:
-        result = await ImportDesignSystemsUseCase().execute(
+        result = await _execute_authorized(
+            ImportDesignSystemsUseCase(),
             ImportDesignSystemsCommand(items=parsed, dry_run=dry_run),
-            actor=RESTAdapterContract.actor(actor),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=db,
         )
     except ImportItemError as exc:
@@ -225,16 +244,19 @@ async def export_design_system(
     design_system_id: str,
     board_id: str | None = None,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     """Export a single Design System (any scope) as a one-item envelope."""
     try:
-        result = await ExportDesignSystemsUseCase().execute(
+        result = await _execute_authorized(
+            ExportDesignSystemsUseCase(),
             ExportDesignSystemsCommand(
                 design_system_id=design_system_id,
                 board_id=board_id,
             ),
-            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
+            ),
             uow=db,
         )
         return result
@@ -248,16 +270,19 @@ async def get_design_system(
     board_id: str | None = None,
     profile: str = "full",
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
-        result = await GetDesignSystemUseCase().execute(
+        result = await _execute_authorized(
+            GetDesignSystemUseCase(),
             DesignSystemCommand(
                 design_system_id=design_system_id,
                 board_id=board_id or "",
                 profile=profile,
             ),
-            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
+            ),
             uow=db,
         )
         return result.data
@@ -271,7 +296,7 @@ async def update_design_system(
     raw: dict[str, Any] = Body(default_factory=dict),
     board_id: str | None = None,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
         reject_bypass_fields(raw)
@@ -281,13 +306,16 @@ async def update_design_system(
     except ValidationError as exc:
         raise _invalid_request(exc)
     try:
-        result = await UpdateDesignSystemUseCase().execute(
+        result = await _execute_authorized(
+            UpdateDesignSystemUseCase(),
             DesignSystemCommand(
                 design_system_id=design_system_id,
                 board_id=board_id or "",
                 payload=req.model_dump(exclude_unset=True),
             ),
-            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
+            ),
             uow=db,
         )
         return result.data
@@ -300,15 +328,18 @@ async def delete_design_system(
     design_system_id: str,
     board_id: str | None = None,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> None:
     try:
-        result = await DeleteDesignSystemUseCase().execute(
+        result = await _execute_authorized(
+            DeleteDesignSystemUseCase(),
             DesignSystemCommand(
                 design_system_id=design_system_id,
                 board_id=board_id or "",
             ),
-            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
+            ),
             uow=db,
         )
     except DesignSystemError as exc:
@@ -329,7 +360,7 @@ async def link_board_design_system(
     board_id: str,
     raw: dict[str, Any] = Body(default_factory=dict),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
         reject_bypass_fields(raw)
@@ -339,9 +370,12 @@ async def link_board_design_system(
     except ValidationError as exc:
         raise _invalid_request(exc)
     try:
-        result = await LinkBoardDesignSystemUseCase().execute(
+        result = await _execute_authorized(
+            LinkBoardDesignSystemUseCase(),
             DesignSystemCommand(board_id=board_id, payload=req.model_dump()),
-            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
+            ),
             uow=db,
         )
         link = result.data
@@ -358,12 +392,15 @@ async def link_board_design_system(
 async def unlink_board_design_system(
     board_id: str,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> None:
     try:
-        result = await UnlinkBoardDesignSystemUseCase().execute(
+        result = await _execute_authorized(
+            UnlinkBoardDesignSystemUseCase(),
             DesignSystemCommand(board_id=board_id),
-            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
+            ),
             uow=db,
         )
     except DesignSystemError as exc:
@@ -383,12 +420,15 @@ async def unlink_board_design_system(
 async def get_board_design_system(
     board_id: str,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
-        result = await GetBoardDesignSystemUseCase().execute(
+        result = await _execute_authorized(
+            GetBoardDesignSystemUseCase(),
             DesignSystemCommand(board_id=board_id),
-            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
+            ),
             uow=db,
         )
         return result.data

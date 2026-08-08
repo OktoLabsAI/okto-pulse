@@ -19,6 +19,16 @@ vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
 }));
 
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    preset: 'Full Control',
+    isLoading: false,
+    error: null,
+    ownerReviewRequired: false,
+    has: () => true,
+  }),
+}));
+
 vi.mock('@/services/import-export-api', () => ({
   useImportExportApi: () => importExportMock,
 }));

@@ -10,8 +10,9 @@ NOT invalidate.
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from okto_pulse.community.api.auth_deps import get_realm_id, require_user
+from okto_pulse.community.api.auth_deps import require_principal
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.permission_errors import permission_denied_http_error
 from okto_pulse.core.application.use_cases import (
     ConflictError,
     CreateAgentCommand,
@@ -27,6 +28,7 @@ from okto_pulse.core.application.use_cases import (
     ListAgentsForBoardUseCase,
     ListAgentsForUserCommand,
     ListAgentsForUserUseCase,
+    PermissionDeniedError,
     RegenerateAgentKeyCommand,
     RegenerateAgentKeyUseCase,
     RevokeBoardAccessCommand,
@@ -46,9 +48,18 @@ from okto_pulse.core.models import (
     AgentSummary,
     AgentUpdate,
 )
+from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.repositories import PulseUnitOfWork
 
 router = APIRouter()
+
+
+async def _execute_authorized(use_case, command, *, actor, uow):
+    """Project the shared Core permission outcome at the REST boundary."""
+    try:
+        return await use_case.execute(command, actor=actor, uow=uow)
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -59,13 +70,14 @@ router = APIRouter()
 @router.post("", response_model=AgentRevealResponse, status_code=status.HTTP_201_CREATED)
 async def create_agent(
     data: AgentCreate,
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Create a new global agent and reveal its credential once."""
-    result = await CreateAgentUseCase().execute(
+    result = await _execute_authorized(
+        CreateAgentUseCase(),
         CreateAgentCommand(data),
-        actor=RESTAdapterContract.actor(user_id),
+        actor=RESTAdapterContract.actor_from_principal(principal),
         uow=uow,
     )
     return AgentRevealResponse(
@@ -76,13 +88,14 @@ async def create_agent(
 
 @router.get("", response_model=list[AgentResponse])
 async def list_my_agents(
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """List all agents owned by the current user without credentials."""
-    result = await ListAgentsForUserUseCase().execute(
+    result = await _execute_authorized(
+        ListAgentsForUserUseCase(),
         ListAgentsForUserCommand(),
-        actor=RESTAdapterContract.actor(user_id),
+        actor=RESTAdapterContract.actor_from_principal(principal),
         uow=uow,
     )
     return result.agents
@@ -91,14 +104,18 @@ async def list_my_agents(
 @router.get("/board/{board_id}", response_model=list[AgentSummary])
 async def list_agents_for_board(
     board_id: str,
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """List all agents with access to a board."""
     try:
-        result = await ListAgentsForBoardUseCase().execute(
+        result = await _execute_authorized(
+            ListAgentsForBoardUseCase(),
             ListAgentsForBoardCommand(board_id),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal,
+                board_id=board_id,
+            ),
             uow=uow,
         )
     except EntityNotFoundError:
@@ -109,14 +126,15 @@ async def list_agents_for_board(
 @router.get("/{agent_id}", response_model=AgentResponse)
 async def get_agent(
     agent_id: str,
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Get an agent by ID (owner only)."""
     try:
-        result = await GetAgentUseCase().execute(
+        result = await _execute_authorized(
+            GetAgentUseCase(),
             GetAgentCommand(agent_id),
-            actor=RESTAdapterContract.actor(user_id),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=uow,
         )
     except EntityNotFoundError:
@@ -128,7 +146,7 @@ async def get_agent(
 async def update_agent(
     agent_id: str,
     data: AgentUpdate,
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Update an agent (owner only).
@@ -139,9 +157,10 @@ async def update_agent(
     proven invalidation point (ac_8e695cf2) is preserved exactly.
     """
     try:
-        result = await UpdateAgentUseCase().execute(
+        result = await _execute_authorized(
+            UpdateAgentUseCase(),
             UpdateAgentCommand(agent_id, data),
-            actor=RESTAdapterContract.actor(user_id),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=uow,
         )
     except EntityNotFoundError:
@@ -156,14 +175,15 @@ async def update_agent(
 @router.post("/{agent_id}/regenerate-key", response_model=AgentRevealResponse)
 async def regenerate_agent_key(
     agent_id: str,
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Regenerate an agent's API key and reveal the new credential once."""
     try:
-        result = await RegenerateAgentKeyUseCase().execute(
+        result = await _execute_authorized(
+            RegenerateAgentKeyUseCase(),
             RegenerateAgentKeyCommand(agent_id),
-            actor=RESTAdapterContract.actor(user_id),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=uow,
         )
     except EntityNotFoundError:
@@ -179,14 +199,15 @@ async def regenerate_agent_key(
 @router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_agent(
     agent_id: str,
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Delete an agent (owner only). No cache invalidation (not a proven point)."""
     try:
-        await DeleteAgentUseCase().execute(
+        await _execute_authorized(
+            DeleteAgentUseCase(),
             DeleteAgentCommand(agent_id),
-            actor=RESTAdapterContract.actor(user_id),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=uow,
         )
     except EntityNotFoundError:
@@ -206,19 +227,18 @@ async def delete_agent(
 async def grant_board_access(
     agent_id: str,
     board_id: str,
-    user_id: str = Depends(require_user),
-    realm_id: str | None = Depends(get_realm_id),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Grant an agent access to a board. Requires owning both the agent and the board.
 
     No cache invalidation (not a proven invalidation point — ac_8e695cf2)."""
     try:
-        result = await GrantBoardAccessUseCase().execute(
+        result = await _execute_authorized(
+            GrantBoardAccessUseCase(),
             GrantBoardAccessCommand(agent_id, board_id),
-            actor=RESTAdapterContract.actor(
-                user_id,
-                realm_id=realm_id,
+            actor=RESTAdapterContract.actor_from_principal(
+                principal,
                 board_id=board_id,
             ),
             uow=uow,
@@ -236,8 +256,7 @@ async def update_board_overrides(
     agent_id: str,
     board_id: str,
     data: AgentBoardOverridesUpdate,
-    user_id: str = Depends(require_user),
-    realm_id: str | None = Depends(get_realm_id),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Update permission overrides for an agent on a board (ceiling model).
@@ -248,11 +267,11 @@ async def update_board_overrides(
     proven invalidation point (ac_8e695cf2) is preserved exactly.
     """
     try:
-        result = await UpdateBoardOverridesUseCase().execute(
+        result = await _execute_authorized(
+            UpdateBoardOverridesUseCase(),
             UpdateBoardOverridesCommand(agent_id, board_id, data.permission_overrides),
-            actor=RESTAdapterContract.actor(
-                user_id,
-                realm_id=realm_id,
+            actor=RESTAdapterContract.actor_from_principal(
+                principal,
                 board_id=board_id,
             ),
             uow=uow,
@@ -276,19 +295,18 @@ async def update_board_overrides(
 async def revoke_board_access(
     agent_id: str,
     board_id: str,
-    user_id: str = Depends(require_user),
-    realm_id: str | None = Depends(get_realm_id),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Revoke access only when the actor owns both the agent and the board.
 
     No cache invalidation (not a proven invalidation point — ac_8e695cf2)."""
     try:
-        await RevokeBoardAccessUseCase().execute(
+        await _execute_authorized(
+            RevokeBoardAccessUseCase(),
             RevokeBoardAccessCommand(agent_id, board_id),
-            actor=RESTAdapterContract.actor(
-                user_id,
-                realm_id=realm_id,
+            actor=RESTAdapterContract.actor_from_principal(
+                principal,
                 board_id=board_id,
             ),
             uow=uow,

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CreateCardModal } from '../CreateCardModal';
 
@@ -12,6 +12,10 @@ const apiMock = vi.hoisted(() => ({
 
 const storeMock = vi.hoisted(() => ({
   addCardToColumn: vi.fn(),
+}));
+
+const permissionState = vi.hoisted(() => ({
+  denied: new Set<string>(),
 }));
 
 vi.mock('@/services/api', () => ({
@@ -28,6 +32,16 @@ vi.mock('@/store/dashboard', () => ({
     done: [],
     on_hold: [],
     cancelled: [],
+  }),
+}));
+
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    preset: 'full_control',
+    isLoading: false,
+    error: null,
+    ownerReviewRequired: false,
+    has: (flag: string) => !permissionState.denied.has(flag),
   }),
 }));
 
@@ -188,6 +202,7 @@ async function chooseSpec() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  permissionState.denied = new Set();
   apiMock.listAgentsForBoard.mockResolvedValue([]);
   apiMock.listSpecs.mockImplementation(
     (_boardId: string, status: string) =>
@@ -199,6 +214,27 @@ beforeEach(() => {
 });
 
 describe('CreateCardModal selective Knowledge integration', () => {
+  it('routes standard and test card types through their distinct create leaves', async () => {
+    permissionState.denied = new Set(['card.entity.create']);
+    render(
+      <CreateCardModal boardId="board-1" initialStatus="not_started" onClose={vi.fn()} />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Task' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Bug' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Test' })).toBeEnabled();
+
+    permissionState.denied = new Set(['card.entity.create_test']);
+    const { unmount } = render(
+      <CreateCardModal boardId="board-2" initialStatus="not_started" onClose={vi.fn()} />,
+    );
+    const dialogs = screen.getAllByRole('dialog');
+    const secondDialog = dialogs.at(-1)!;
+    expect(within(secondDialog).getByRole('button', { name: 'Test' })).toBeDisabled();
+    expect(within(secondDialog).getByRole('button', { name: 'Task' })).toBeEnabled();
+    unmount();
+  });
+
   it('starts with zero KBs selected and sends an authoritative v2 omitted envelope', async () => {
     const onClose = vi.fn();
     render(
@@ -426,5 +462,18 @@ describe('CreateCardModal selective Knowledge integration', () => {
       await Promise.resolve();
     });
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
+  it('does not load board agents without agent.board_access.read', async () => {
+    permissionState.denied = new Set(['agent.board_access.read']);
+
+    render(
+      <CreateCardModal boardId="board-1" initialStatus="not_started" onClose={vi.fn()} />,
+    );
+
+    await screen.findByRole('option', {
+      name: 'Selective propagation spec (approved)',
+    });
+    expect(apiMock.listAgentsForBoard).not.toHaveBeenCalled();
   });
 });

@@ -12,6 +12,20 @@ import * as runtimeApi from '@/services/runtime-settings-api';
 import * as healthApi from '@/services/queue-health-api';
 import * as kgTickApi from '@/services/kg-tick-api';
 
+const permissionMock = vi.hoisted(() => ({
+  has: vi.fn((_flag: string) => true),
+}));
+
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    preset: 'Full Control',
+    isLoading: false,
+    error: null,
+    ownerReviewRequired: false,
+    has: permissionMock.has,
+  }),
+}));
+
 const FRESH_SETTINGS: runtimeApi.RuntimeSettings = {
   kg_kuzu_buffer_pool_mb: 512,
   kg_kuzu_max_db_size_gb: 2,
@@ -47,6 +61,8 @@ const FRESH_HEALTH: healthApi.QueueHealth = {
 };
 
 beforeEach(() => {
+  permissionMock.has.mockReset();
+  permissionMock.has.mockReturnValue(true);
   vi.useFakeTimers({ shouldAdvanceTime: true });
   vi.spyOn(runtimeApi, 'getRuntimeSettings').mockResolvedValue({ ...FRESH_SETTINGS });
   vi.spyOn(runtimeApi, 'putRuntimeSettings').mockImplementation(async (patch) => {
@@ -411,5 +427,31 @@ describe('Decay Tick tab — f9732afc', () => {
 
     await waitFor(() => expect(putSpy).toHaveBeenCalled());
     await waitFor(() => expect(tickSpy).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe('runtime permission projection', () => {
+  test('does not read settings without runtime.settings.read', async () => {
+    permissionMock.has.mockReturnValue(false);
+
+    render(<RuntimeSettingsPanel onClose={() => {}} />);
+
+    expect(
+      await screen.findByText('You do not have permission to read runtime settings'),
+    ).toBeInTheDocument();
+    expect(runtimeApi.getRuntimeSettings).not.toHaveBeenCalled();
+  });
+
+  test('keeps the save action disabled without runtime.settings.write', async () => {
+    permissionMock.has.mockImplementation((flag: string) => flag !== 'runtime.settings.write');
+    const putSpy = vi.mocked(runtimeApi.putRuntimeSettings);
+
+    render(<RuntimeSettingsPanel onClose={() => {}} />);
+
+    const save = await screen.findByTestId('save-runtime-settings');
+    expect(save).toBeDisabled();
+    expect(save).toHaveAttribute('title', 'Requires runtime.settings.write');
+    fireEvent.click(save);
+    expect(putSpy).not.toHaveBeenCalled();
   });
 });

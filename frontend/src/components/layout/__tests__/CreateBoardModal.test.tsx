@@ -24,9 +24,20 @@ const apiMock = vi.hoisted(() => ({
 const storeMock = vi.hoisted(() => ({
   addBoard: vi.fn(),
 }));
+const permissionState = vi.hoisted(() => ({ allowed: true }));
 
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
+}));
+
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    preset: 'full_control',
+    isLoading: false,
+    error: null,
+    ownerReviewRequired: false,
+    has: (flag: string) => flag === 'board.admin.create' && permissionState.allowed,
+  }),
 }));
 
 vi.mock('@/store/dashboard', () => ({
@@ -40,6 +51,7 @@ vi.mock('react-hot-toast', () => ({
 describe('CreateBoardModal error surfacing (AC6)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionState.allowed = true;
   });
 
   it('shows backend detail (not fallback) when createBoard rejects', async () => {
@@ -73,6 +85,7 @@ describe('CreateBoardModal error surfacing (AC6)', () => {
 describe('CreateBoardModal sidebar freshness (AC4)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionState.allowed = true;
   });
 
   it('calls addBoard with the returned board on successful submit', async () => {
@@ -102,5 +115,18 @@ describe('CreateBoardModal sidebar freshness (AC4)', () => {
 
     expect((toast as any).success).toHaveBeenCalledWith('Board created');
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+describe('CreateBoardModal authorization', () => {
+  it('requires the exact board.admin.create leaf before calling the API', () => {
+    vi.clearAllMocks();
+    permissionState.allowed = false;
+    render(<CreateBoardModal isOpen={true} onClose={vi.fn()} boardId="board-1" />);
+
+    const submit = screen.getByRole('button', { name: /create board/i });
+    expect(submit).toBeDisabled();
+    fireEvent.submit(submit.closest('form')!);
+    expect(apiMock.createBoard).not.toHaveBeenCalled();
   });
 });

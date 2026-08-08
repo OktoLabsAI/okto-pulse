@@ -47,6 +47,7 @@ import {
   type ReadinessEffect,
   type ReadinessSignalFilter,
 } from '@/types/cognitive-readiness';
+import { usePermissions } from '@/hooks/usePermissions';
 
 interface CognitiveActionCenterViewProps {
   boardId: string;
@@ -109,6 +110,15 @@ export function CognitiveActionCenterView({
   boardId,
   onClose,
 }: CognitiveActionCenterViewProps) {
+  const permissions = usePermissions(boardId);
+  const policyReady = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+  );
+  const canReadCognitive = policyReady && permissions.has('kg.operations.cognitive.read');
+  const canSkipCognitive = policyReady && permissions.has('kg.operations.cognitive.skip');
+  const canClearCognitive = policyReady && permissions.has('kg.operations.cognitive.clear');
   const [data, setData] = useState<CognitiveReadinessListResponse | null>(null);
   const [metrics, setMetrics] = useState<CognitiveReadinessMetrics | null>(null);
   const [signal, setSignal] = useState<ReadinessSignalFilter>('all');
@@ -118,6 +128,11 @@ export function CognitiveActionCenterView({
   const [error, setError] = useState<string | null>(null);
 
   const fetchAll = useCallback(async () => {
+    if (!canReadCognitive) {
+      setLoading(false);
+      setError('You do not have permission to read cognitive readiness');
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -136,11 +151,12 @@ export function CognitiveActionCenterView({
     } finally {
       setLoading(false);
     }
-  }, [boardId, signal, activeSearch]);
+  }, [boardId, signal, activeSearch, canReadCognitive]);
 
   useEffect(() => {
+    if (permissions.isLoading) return;
     void fetchAll();
-  }, [fetchAll]);
+  }, [fetchAll, permissions.isLoading]);
 
   const enforcementActive = data?.summary.enforcement_active ?? false;
 
@@ -277,6 +293,8 @@ export function CognitiveActionCenterView({
                   item={item}
                   boardId={boardId}
                   onChanged={fetchAll}
+                  canSkip={canSkipCognitive}
+                  canClear={canClearCognitive}
                 />
               ))}
             </tbody>
@@ -349,9 +367,11 @@ interface ReadinessRowProps {
   item: CognitiveReadinessItem;
   boardId: string;
   onChanged: () => void;
+  canSkip: boolean;
+  canClear: boolean;
 }
 
-function ReadinessRow({ item, boardId, onChanged }: ReadinessRowProps) {
+function ReadinessRow({ item, boardId, onChanged, canSkip, canClear }: ReadinessRowProps) {
   const [skipping, setSkipping] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -360,6 +380,7 @@ function ReadinessRow({ item, boardId, onChanged }: ReadinessRowProps) {
   const aliasExtra = item.aliases.filter((a) => a !== item.source_ref_original);
 
   const onClear = async () => {
+    if (!canClear) return;
     setBusy(true);
     setActionError(null);
     try {
@@ -373,6 +394,7 @@ function ReadinessRow({ item, boardId, onChanged }: ReadinessRowProps) {
   };
 
   const onSkipSubmit = async (reasonCode: string, justification: string, revisitAt: string) => {
+    if (!canSkip) return;
     setBusy(true);
     setActionError(null);
     try {
@@ -472,7 +494,7 @@ function ReadinessRow({ item, boardId, onChanged }: ReadinessRowProps) {
             >
               Resolve technical
             </span>
-          ) : item.status === 'skipped' ? (
+          ) : item.status === 'skipped' && canClear ? (
             <button
               type="button"
               onClick={onClear}
@@ -482,7 +504,7 @@ function ReadinessRow({ item, boardId, onChanged }: ReadinessRowProps) {
             >
               Clear / reopen
             </button>
-          ) : (
+          ) : item.status !== 'skipped' && canSkip ? (
             <button
               type="button"
               onClick={() => setSkipping((s) => !s)}
@@ -492,7 +514,7 @@ function ReadinessRow({ item, boardId, onChanged }: ReadinessRowProps) {
             >
               Skip…
             </button>
-          )}
+          ) : null}
         </td>
       </tr>
       {(skipping || actionError) && (

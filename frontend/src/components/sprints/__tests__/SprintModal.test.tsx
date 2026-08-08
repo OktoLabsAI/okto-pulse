@@ -22,6 +22,7 @@ const apiMock = vi.hoisted(() => ({
 
 const permissionState = vi.hoisted(() => ({
   flags: new Set<string>(),
+  denied: new Set<string>(),
 }));
 
 const policyComponentState = vi.hoisted(() => ({
@@ -38,15 +39,23 @@ vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
 }));
 
-vi.mock('@/hooks/usePermissions', () => ({
-  usePermissions: () => ({
-    preset: null,
-    isLoading: false,
-    error: null,
-    ownerReviewRequired: false,
-    has: (flag: string) => permissionState.flags.has(flag),
-  }),
-}));
+vi.mock('@/hooks/usePermissions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks/usePermissions')>();
+  return {
+    ...actual,
+    usePermissions: () => ({
+      preset: null,
+      isLoading: false,
+      error: null,
+      ownerReviewRequired: false,
+      has: (flag: string) => (
+        flag.startsWith('sprint.')
+          ? !permissionState.denied.has(flag)
+          : permissionState.flags.has(flag)
+      ),
+    }),
+  };
+});
 
 vi.mock('@/components/policy-compliance', async (importOriginal) => {
   const actual = await importOriginal<
@@ -320,6 +329,7 @@ function structuredPolicyRejection() {
 
 beforeEach(() => {
   permissionState.flags = new Set();
+  permissionState.denied = new Set();
   policyComponentState.panelProps = null;
   apiMock.getAllowedTransitions.mockImplementation(
     (_boardId: string, params: { current_status?: string }) => {
@@ -538,6 +548,30 @@ describe('SprintModal read-first inline editing', () => {
     expect(screen.getByText('What should be deliverable at the end of this sprint?')).toBeInTheDocument();
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     expect(apiMock.updateSprint).not.toHaveBeenCalled();
+  });
+
+  it('keeps sprint text read-only when edit_fields is false', async () => {
+    permissionState.denied = new Set(['sprint.entity.edit_fields']);
+    await renderSprint({ objective: 'Existing objective' });
+
+    fireEvent.click(screen.getByText('Existing objective'));
+
+    expect(screen.queryByDisplayValue('Existing objective')).not.toBeInTheDocument();
+    expect(apiMock.updateSprint).not.toHaveBeenCalled();
+  });
+
+  it('disables sprint mutations when interact_in for its state is false', async () => {
+    permissionState.denied = new Set(['sprint.interact_in.active']);
+    await renderSprint({ status: 'active', objective: 'Existing objective' });
+
+    expect(screen.queryByRole('button', { name: 'Review' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel Sprint' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('Existing objective'));
+    expect(screen.queryByDisplayValue('Existing objective')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^Cards/i }));
+    expect(screen.getByRole('button', { name: /Assign Cards/i })).toBeDisabled();
+    expect(apiMock.updateSprint).not.toHaveBeenCalled();
+    expect(apiMock.moveSprint).not.toHaveBeenCalled();
   });
 });
 

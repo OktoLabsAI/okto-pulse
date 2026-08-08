@@ -7,6 +7,7 @@ import {
   composePermissionIntroductionManifests,
   INTRODUCED_PERMISSION_HISTORICAL_AUTHORITIES,
   INTRODUCED_PERMISSION_LEAVES,
+  isIntroducedPermissionLeaf,
   PERMISSION_INTRODUCTION_MANIFESTS,
   permissionDelta,
   SKA_PERMISSION_INTRODUCTION_V1_LEAVES,
@@ -306,5 +307,36 @@ describe('permission layers', () => {
         waiver: { request: false, revoke: false },
       },
     });
+  });
+
+  it.each([
+    'agent.entity.create',
+    'board.admin.delete',
+    'board.share.manage',
+    'permission_preset.entity.update',
+    'default_board_config.entity.update',
+    'design_system.entity.import',
+    'runtime.settings.write',
+    'metrics.read',
+    'amendment.entity.approve',
+    'kg.operations.rebuild',
+    'ideation.move.review_to_approved',
+    'test_scenario.move.ready_to_automated',
+    'test_scenario.interact_in.passed',
+    'sprint.tasks.assign',
+  ])('recognizes post-SK-B introduced leaf %s', (leaf) => {
+    expect(isIntroducedPermissionLeaf(leaf)).toBe(true);
+  });
+
+  it.each([
+    'board.read',
+    'card.entity.edit_fields',
+    'sprint.entity.assign',
+    'guidelines.read',
+    'story.move.draft_to_ready',
+    'sprint.move.active_to_review',
+    'card.move.in_progress_to_validation',
+  ])('does not reclassify historical leaf %s', (leaf) => {
+    expect(isIntroducedPermissionLeaf(leaf)).toBe(false);
   });
 });

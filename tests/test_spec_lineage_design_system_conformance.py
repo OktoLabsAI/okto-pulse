@@ -53,15 +53,17 @@ from okto_pulse.community.adapters.sqlalchemy_spec_resource_propagation import (
 from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
     CommunityUnitOfWorkFactory,
 )
-from okto_pulse.community.api.auth_deps import require_user
+from okto_pulse.community.api.auth_deps import require_principal, require_user
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.community.api.design_systems import router as design_system_router
 from okto_pulse.community.api.refinements import router as refinement_router
 from okto_pulse.core.domain.enums import IdeationStatus
+from okto_pulse.core.domain.permissions import get_builtin_presets
 from okto_pulse.core.mcp import server as mcp_server
 from okto_pulse.core.ports.architecture_persistence import (
     register_architecture_persistence_port,
 )
+from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.ports.design_system import (
     DesignSystemRecord,
     register_design_system_store,
@@ -183,6 +185,17 @@ def _rest_app(runtime: _Runtime) -> FastAPI:
 
     app.dependency_overrides[get_unit_of_work] = _uow
     app.dependency_overrides[require_user] = lambda: ACTOR_ID
+    full_control = next(
+        preset["flags"]
+        for preset in get_builtin_presets()
+        if preset["name"] == "Full Control"
+    )
+    app.dependency_overrides[require_principal] = lambda: Principal(
+        subject=ACTOR_ID,
+        realm_id="local",
+        claims={"roles": ["admin"], "permissions": full_control},
+        actor_kind="human",
+    )
     return app
 
 

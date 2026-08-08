@@ -14,6 +14,8 @@ from okto_pulse.community.adapters.telemetry_sender import (
     sign_payload,
 )
 from okto_pulse.community.api import metrics as metrics_api
+from okto_pulse.core.ports.authentication import Principal
+from okto_pulse.core.ports.permission_policy import registered_permission_flags
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.community.adapters.telemetry_effect_config import (
     COMMUNITY_DEFAULT_METRICS_BEACON_URL,
@@ -34,13 +36,62 @@ def _settings(tmp_path: Path, **overrides) -> CoreSettings:
     return CoreSettings(**values)
 
 
-def _metrics_client(tmp_path: Path, monkeypatch, **overrides) -> TestClient:
+def _metrics_client(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    permissions: dict[str, object] | None = None,
+    **overrides,
+) -> TestClient:
     settings = _settings(tmp_path, **overrides)
     monkeypatch.setattr(metrics_api, "get_settings", lambda: settings)
     app = FastAPI()
     app.include_router(metrics_api.router)
-    app.dependency_overrides[metrics_api.require_user] = lambda: "test-user"
+    app.dependency_overrides[metrics_api.require_principal] = lambda: Principal(
+        subject="test-user",
+        realm_id="local",
+        actor_kind="human",
+        claims={
+            "permissions": (
+                registered_permission_flags()
+                if permissions is None
+                else permissions
+            )
+        },
+    )
     return TestClient(app)
+
+
+def test_metrics_routes_fail_closed_before_touching_telemetry_service(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def service_lookup(*_args, **_kwargs):
+        raise AssertionError("telemetry service must not be resolved after denial")
+
+    monkeypatch.setattr(metrics_api, "get_telemetry_port", service_lookup)
+    client = _metrics_client(tmp_path, monkeypatch, permissions={})
+
+    responses = (
+        client.get("/api/v1/metrics/local/summary"),
+        client.get("/api/v1/metrics/publish-health"),
+        client.post(
+            "/api/v1/metrics/local/events",
+            json={"event_type": "guided_help", "payload": {}},
+        ),
+        client.post(
+            "/api/v1/metrics/settings",
+            json={"mode": "disabled", "source": "settings_ui"},
+        ),
+        client.post(
+            "/api/v1/metrics/settings/migration-notice/seen",
+            json={"notice_key": "legacy"},
+        ),
+        client.post("/api/v1/metrics/local/export"),
+        client.delete("/api/v1/metrics/local"),
+    )
+
+    assert [response.status_code for response in responses] == [403] * 7
 
 
 def _assert_no_payload_labels(record) -> None:

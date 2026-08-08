@@ -28,6 +28,20 @@ vi.mock('react-hot-toast', () => ({
   default: toastMock,
 }));
 
+const permissionMock = vi.hoisted(() => ({
+  has: vi.fn((_flag: string) => true),
+}));
+
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    preset: 'Full Control',
+    isLoading: false,
+    error: null,
+    ownerReviewRequired: false,
+    has: permissionMock.has,
+  }),
+}));
+
 const ACK_IDS = [
   'schema',
   'privacy_policy',
@@ -89,6 +103,8 @@ describe('MetricsSettingsPanel', () => {
     toastMock.mockReset();
     toastMock.error.mockReset();
     toastMock.success.mockReset();
+    permissionMock.has.mockReset();
+    permissionMock.has.mockReturnValue(true);
     metricsApi.markMetricsMigrationNoticeSeen.mockResolvedValue({
       notice_key: 'local_only_to_disabled',
       pending: false,
@@ -111,7 +127,7 @@ describe('MetricsSettingsPanel', () => {
   it('renders only the On/Off toggle and saves the full anonymous metrics package when toggled', async () => {
     metricsApi.getMetricsSummary.mockResolvedValue(summary());
 
-    render(<MetricsSettingsPanel onClose={() => {}} />);
+    render(<MetricsSettingsPanel boardId="board-1" onClose={() => {}} />);
 
     await screen.findByTestId('metrics-on-off-toggle');
     expect(screen.queryByTestId('metrics-mode-local_only')).not.toBeInTheDocument();
@@ -143,7 +159,7 @@ describe('MetricsSettingsPanel', () => {
       }),
     );
 
-    render(<MetricsSettingsPanel onClose={() => {}} />);
+    render(<MetricsSettingsPanel boardId="board-1" onClose={() => {}} />);
 
     await screen.findByTestId('metrics-on-off-toggle');
     expect(screen.getByTestId('metrics-on-off-toggle')).toHaveAttribute('aria-checked', 'true');
@@ -172,7 +188,7 @@ describe('MetricsSettingsPanel', () => {
       }),
     );
 
-    render(<MetricsSettingsPanel onClose={() => {}} />);
+    render(<MetricsSettingsPanel boardId="board-1" onClose={() => {}} />);
 
     expect(await screen.findByTestId('metrics-scope')).toHaveTextContent(
       'All eligible anonymous aggregate metrics are included',
@@ -206,12 +222,34 @@ describe('MetricsSettingsPanel', () => {
       }),
     );
 
-    render(<MetricsSettingsPanel onClose={() => {}} />);
+    render(<MetricsSettingsPanel boardId="board-1" onClose={() => {}} />);
 
     await screen.findByTestId('metrics-on-off-toggle');
 
     await waitFor(() => expect(toastMock).toHaveBeenCalledWith('Metrics were turned off'));
     expect(metricsApi.markMetricsMigrationNoticeSeen).toHaveBeenCalledTimes(1);
     expect(metricsApi.markMetricsMigrationNoticeSeen).toHaveBeenCalledWith('local_only_to_disabled');
+  });
+
+  it('does not load metrics when the canonical read permission is denied', async () => {
+    permissionMock.has.mockReturnValue(false);
+
+    render(<MetricsSettingsPanel boardId="board-1" onClose={() => {}} />);
+
+    expect(await screen.findByText('You do not have permission to read local metrics.')).toBeInTheDocument();
+    expect(metricsApi.getMetricsSummary).not.toHaveBeenCalled();
+  });
+
+  it('keeps settings read-only without metrics.settings.edit', async () => {
+    permissionMock.has.mockImplementation((flag: string) => flag !== 'metrics.settings.edit');
+    metricsApi.getMetricsSummary.mockResolvedValue(summary());
+
+    render(<MetricsSettingsPanel boardId="board-1" onClose={() => {}} />);
+
+    const toggle = await screen.findByTestId('metrics-on-off-toggle');
+    expect(toggle).toBeDisabled();
+    expect(toggle).toHaveAttribute('title', 'Requires metrics.settings.edit');
+    fireEvent.click(toggle);
+    expect(metricsApi.updateMetricsMode).not.toHaveBeenCalled();
   });
 });

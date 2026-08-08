@@ -207,14 +207,28 @@ export function DefaultBoardConfigPanel({
     && !permissions.error
     && !permissions.ownerReviewRequired
   );
-  const canReadGuidelineRevisions = (
-    policyAuthorityReady
-    && permissions.has('guidelines.revisions.read')
-  );
-  const canManageGuidelineDefaults = (
-    canReadGuidelineRevisions
-    && permissions.has('guidelines.adoption.manage')
-  );
+  const canReadDefaultConfig = policyAuthorityReady
+    && permissions.has('default_board_config.read');
+  const canReadDefaultConfigDiff = policyAuthorityReady
+    && permissions.has('default_board_config.diff_read');
+  const canReadDefaultGuidelineCandidates = policyAuthorityReady
+    && permissions.has('default_board_config.candidates_read');
+  const canExportDefaultConfig = policyAuthorityReady
+    && permissions.has('default_board_config.export');
+  const canCreateDefaultConfig = policyAuthorityReady
+    && permissions.has('default_board_config.create');
+  const canActivateDefaultConfig = policyAuthorityReady
+    && permissions.has('default_board_config.activate');
+  const canDeactivateDefaultConfig = policyAuthorityReady
+    && permissions.has('default_board_config.deactivate');
+  const canImportDefaultConfig = policyAuthorityReady
+    && permissions.has('default_board_config.import');
+  const canSetDefaultDesignSystem = policyAuthorityReady
+    && permissions.has('default_board_config.set_design_system');
+  const canEditDefaultGuidelines = policyAuthorityReady
+    && permissions.has('default_board_config.guidelines.edit');
+  const canManageGuidelineDefaults = canCreateDefaultConfig
+    && canEditDefaultGuidelines;
   const importExportApi = useImportExportApi();
   const importExportRef = useRef(importExportApi);
   importExportRef.current = importExportApi;
@@ -243,15 +257,31 @@ export function DefaultBoardConfigPanel({
     useRef<DefaultBoardConfigGuidelineRef[] | null>(null);
 
   const load = useCallback(async () => {
+    if (!policyAuthorityReady) {
+      setActive(null);
+      setVersions(null);
+      setDiff(null);
+      setCandidates(null);
+      setError(null);
+      setCandidatesError(null);
+      setLoading(permissions.isLoading);
+      return;
+    }
     setLoading(true);
     setError(null);
     setCandidatesError(null);
 
     const [activeResult, versionsResult, diffResult, candidatesResult] = await Promise.allSettled([
-      apiRef.current.getActiveDefaultBoardConfig(),
-      apiRef.current.listDefaultBoardConfigVersions(),
-      apiRef.current.getBoardDefaultConfigDiff(boardId),
-      canReadGuidelineRevisions
+      canReadDefaultConfig
+        ? apiRef.current.getActiveDefaultBoardConfig()
+        : Promise.resolve(null),
+      canReadDefaultConfig
+        ? apiRef.current.listDefaultBoardConfigVersions()
+        : Promise.resolve(null),
+      canReadDefaultConfigDiff
+        ? apiRef.current.getBoardDefaultConfigDiff(boardId)
+        : Promise.resolve(null),
+      canReadDefaultGuidelineCandidates
         ? apiRef.current.listDefaultGuidelineCandidates()
         : Promise.resolve(null),
     ]);
@@ -278,14 +308,21 @@ export function DefaultBoardConfigPanel({
     if (candidatesResult.status === 'fulfilled') {
       setCandidates(candidatesResult.value);
     }
-    else {
+    else if (canReadDefaultGuidelineCandidates) {
       setCandidates(null);
       setCandidatesError('Default guideline candidates are unavailable.');
     }
 
     setError(errors.length > 0 ? Array.from(new Set(errors)).join(' ') : null);
     setLoading(false);
-  }, [boardId, canReadGuidelineRevisions]);
+  }, [
+    boardId,
+    canReadDefaultConfig,
+    canReadDefaultConfigDiff,
+    canReadDefaultGuidelineCandidates,
+    permissions.isLoading,
+    policyAuthorityReady,
+  ]);
 
   useEffect(() => {
     void load();
@@ -340,11 +377,18 @@ export function DefaultBoardConfigPanel({
   guidelineRefsRef.current = draftGuidelineRefs;
 
   const settingsDirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(baseSettings);
+  const designSystemDirty = draft !== null
+    && draft.design_system_gate_mode !== baseSettings.design_system_gate_mode;
   const guidelinesDirty = draftGuidelineRefs !== null && JSON.stringify(draftGuidelineRefs) !== JSON.stringify(baseGuidelineRefs);
   const checklistDirty = draftChecklistMode !== null && draftChecklistMode !== baseChecklistMode;
   const isDirty = settingsDirty || guidelinesDirty || checklistDirty;
 
   const onDraftChange = (patch: Partial<BoardSettings>) => {
+    if (!canCreateDefaultConfig) return;
+    if (
+      patch.design_system_gate_mode !== undefined
+      && !canSetDefaultDesignSystem
+    ) return;
     setDraft((prev) => ({ ...(prev ?? baseSettings), ...patch }));
   };
   const toggleGuidelineDefault = (candidate: DefaultGuidelineCandidate) => {
@@ -393,10 +437,12 @@ export function DefaultBoardConfigPanel({
     const checklistModeCurrent = draftChecklistModeRef.current ?? baseChecklistMode;
     const refsCurrent = guidelineRefsRef.current ?? baseGuidelineRefs;
     if (
-      guidelineRefsIntegrityError
+      !canCreateDefaultConfig
+      || guidelineRefsIntegrityError
+      || (designSystemDirty && !canSetDefaultDesignSystem)
       || (
         guidelineRefsRef.current !== null
-        && !canManageGuidelineDefaults
+        && !canEditDefaultGuidelines
       )
       || (
         draftRef.current === null
@@ -414,7 +460,11 @@ export function DefaultBoardConfigPanel({
     const nextDesignSystemRef = activeTemplate?.design_system_default_ref
       ? { ...activeTemplate.design_system_default_ref }
       : null;
-    if (nextDesignSystemRef && typeof settingsCurrent.design_system_gate_mode === 'string') {
+    if (
+      canSetDefaultDesignSystem
+      && nextDesignSystemRef
+      && typeof settingsCurrent.design_system_gate_mode === 'string'
+    ) {
       nextDesignSystemRef.gate_mode = settingsCurrent.design_system_gate_mode as GateMode;
     }
     const payload: CreateDefaultBoardConfigVersionRequest = {
@@ -446,6 +496,11 @@ export function DefaultBoardConfigPanel({
   const dsGate = ds?.gate_mode ?? (mergedSettings.design_system_gate_mode as string | undefined) ?? 'off';
   const isLegacy = diff?.snapshot_state === 'legacy_no_snapshot';
   const hasOverrides = (diff?.fields.length ?? 0) > 0;
+  const canDeactivateActiveTemplate = canDeactivateDefaultConfig
+    && (
+      baseGuidelineRefs.length === 0
+      || canEditDefaultGuidelines
+    );
 
   return (
     <div data-testid="default-board-config-panel" className="space-y-5 p-4">
@@ -470,6 +525,8 @@ export function DefaultBoardConfigPanel({
             onExport={() => importExportRef.current.exportBoardConfig()}
             onImport={(envelope, options) => importExportRef.current.importBoardConfig(envelope, options)}
             onImported={() => load()}
+            canExport={canExportDefaultConfig}
+            canImport={canImportDefaultConfig}
           />
           {isDirty && (
             <span data-testid="dbc-template-dirty" className="text-[11px] font-medium text-amber-600 dark:text-amber-400">
@@ -490,8 +547,10 @@ export function DefaultBoardConfigPanel({
             disabled={
               busy
               || !isDirty
+              || !canCreateDefaultConfig
               || Boolean(guidelineRefsIntegrityError)
-              || (guidelinesDirty && !canManageGuidelineDefaults)
+              || (guidelinesDirty && !canEditDefaultGuidelines)
+              || (designSystemDirty && !canSetDefaultDesignSystem)
             }
             onClick={saveDraft}
             data-testid="dbc-save-template"
@@ -538,7 +597,11 @@ export function DefaultBoardConfigPanel({
         />
       </section>
 
-      {!activeTemplate && (
+      {!canReadDefaultConfig ? (
+        <div data-testid="dbc-read-unavailable" className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-800/50 dark:text-gray-300">
+          Default configuration details are hidden until <code>default_board_config.read</code> is granted.
+        </div>
+      ) : !activeTemplate && (
         <div data-testid="dbc-no-active" className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
           No active default template. New boards are created with BoardSettings defaults until a template is activated.
         </div>
@@ -553,7 +616,14 @@ export function DefaultBoardConfigPanel({
             Same controls as Board Config. Changes are staged until you Save (top right).
           </p>
         </div>
-        <BoardSettingsForm settings={formSettings} onChange={onDraftChange} />
+        {!canSetDefaultDesignSystem && canCreateDefaultConfig && (
+          <p data-testid="dbc-design-system-edit-unavailable" className="mb-2 text-[11px] text-gray-500 dark:text-gray-400">
+            Design System defaults require <code>default_board_config.set_design_system</code>.
+          </p>
+        )}
+        <fieldset disabled={busy || !canCreateDefaultConfig}>
+          <BoardSettingsForm settings={formSettings} onChange={onDraftChange} />
+        </fieldset>
       </section>
 
       <section
@@ -587,10 +657,11 @@ export function DefaultBoardConfigPanel({
         <ChecklistModeSelector
           value={checklistMode}
           onChange={(nextMode) => {
+            if (!canCreateDefaultConfig) return;
             draftChecklistModeRef.current = nextMode;
             setDraftChecklistMode(nextMode);
           }}
-          disabled={busy}
+          disabled={busy || !canCreateDefaultConfig}
           testIdPrefix="dbc-checklist-mode"
         />
       </section>
@@ -618,13 +689,13 @@ export function DefaultBoardConfigPanel({
                 {guidelineRefsIntegrityError}
               </p>
             )}
-            {!canReadGuidelineRevisions ? (
+            {!canReadDefaultGuidelineCandidates ? (
               <p
                 data-testid="dbc-guideline-authority-unavailable"
                 className="text-xs text-gray-500 dark:text-gray-400"
               >
                 Guideline defaults are hidden until
-                {' '}<code>guidelines.revisions.read</code> is verified.
+                {' '}<code>default_board_config.candidates_read</code> is verified.
               </p>
             ) : candidatesError ? (
               <p data-testid="dbc-candidates-error" className="text-xs text-amber-700 dark:text-amber-300">
@@ -782,7 +853,11 @@ export function DefaultBoardConfigPanel({
             Board diff
           </div>
           <div className="space-y-3 p-4 text-sm">
-            {isLegacy ? (
+            {!canReadDefaultConfigDiff ? (
+              <p data-testid="dbc-diff-unavailable" className="text-xs text-gray-500 dark:text-gray-400">
+                Board diff requires <code>default_board_config.diff_read</code>.
+              </p>
+            ) : isLegacy ? (
               <div data-testid="dbc-legacy" className="rounded border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-800/50 dark:text-gray-300">
                 Legacy board - no applied template snapshot.
               </div>
@@ -836,7 +911,21 @@ export function DefaultBoardConfigPanel({
             {versionCount > 0 ? (
               <>
                 <div data-testid="dbc-versions" className="divide-y divide-gray-100 text-xs dark:divide-gray-800">
-                  {pagedVersions.map((t: DefaultBoardConfigTemplate) => (
+                  {pagedVersions.map((t: DefaultBoardConfigTemplate) => {
+                    let activationChangesGuidelines = true;
+                    try {
+                      activationChangesGuidelines = JSON.stringify(
+                        canonicalDefaultGuidelineRefs(t.guideline_default_refs ?? []),
+                      ) !== JSON.stringify(baseGuidelineRefs);
+                    } catch {
+                      // Invalid stored refs must never bypass the stricter gate.
+                    }
+                    const canActivateVersion = canActivateDefaultConfig
+                      && (
+                        !activationChangesGuidelines
+                        || canEditDefaultGuidelines
+                      );
+                    return (
                     <div key={t.id} data-testid={`dbc-version-${t.version}`} className="grid grid-cols-[68px_minmax(0,1fr)_auto] items-center gap-2 px-4 py-3">
                       <span className="font-mono text-gray-900 dark:text-white">v{t.version}</span>
                       <span className={`w-fit rounded px-2 py-1 text-[10px] ${t.is_active ? badgeClass('green') : badgeClass('slate')}`}>
@@ -845,8 +934,11 @@ export function DefaultBoardConfigPanel({
                       {!t.is_active && (
                         <button
                           type="button"
-                          disabled={busy}
-                          onClick={() => runAction(() => apiRef.current.activateDefaultBoardConfigVersion(t.id))}
+                          disabled={busy || !canActivateVersion}
+                          onClick={() => {
+                            if (!canActivateVersion) return;
+                            void runAction(() => apiRef.current.activateDefaultBoardConfigVersion(t.id));
+                          }}
                           data-testid={`dbc-activate-${t.version}`}
                           className="rounded border border-gray-300 px-2 py-1 text-[10px] disabled:opacity-50 dark:border-gray-700"
                         >
@@ -854,7 +946,8 @@ export function DefaultBoardConfigPanel({
                         </button>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
                 {versionCount > VERSION_PAGE_SIZE && (
                   <div
@@ -895,8 +988,11 @@ export function DefaultBoardConfigPanel({
           {activeTemplate && (
             <button
               type="button"
-              disabled={busy}
-              onClick={() => runAction(() => apiRef.current.deactivateDefaultBoardConfigVersion(activeTemplate.id))}
+              disabled={busy || !canDeactivateActiveTemplate}
+              onClick={() => {
+                if (!canDeactivateActiveTemplate) return;
+                void runAction(() => apiRef.current.deactivateDefaultBoardConfigVersion(activeTemplate.id));
+              }}
               data-testid="dbc-deactivate"
               className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
             >

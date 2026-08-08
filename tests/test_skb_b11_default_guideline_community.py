@@ -422,7 +422,11 @@ def test_b11_candidate_rest_projection_is_closed_and_reasoned(monkeypatch) -> No
     )
     app = FastAPI()
     app.include_router(api.router, prefix="/api/v1")
-    app.dependency_overrides[api.require_user] = lambda: OWNER_ID
+    app.dependency_overrides[api.require_principal] = lambda: Principal(
+        subject=OWNER_ID,
+        realm_id="local",
+        actor_kind="human",
+    )
     app.dependency_overrides[api.get_unit_of_work] = lambda: object()
     with TestClient(app) as client:
         response = client.get("/api/v1/guidelines/default-candidates")

@@ -55,6 +55,7 @@ from okto_pulse.core.domain.checklist import (
     ChecklistTargetType,
 )
 from okto_pulse.core.domain.enums import SpecStatus
+from okto_pulse.core.domain.permissions import get_builtin_presets
 from okto_pulse.core.events import EventBus
 from okto_pulse.core.events.handlers.checklist_binding_audit import (
     ChecklistBindingAuditHandler,
@@ -96,6 +97,23 @@ from okto_pulse.core.services.ska_observability import (
     reset_ska_metric_samples_for_tests,
     ska_metric_samples,
 )
+
+
+_FULL_CONTROL_FLAGS = next(
+    preset["flags"]
+    for preset in get_builtin_presets()
+    if preset["name"] == "Full Control"
+)
+
+
+def _full_control_actor(actor_id: str, source: str = "rest") -> ActorContext:
+    return ActorContext(
+        actor_id,
+        source,
+        actor_kind="human" if source == "rest" else "agent",
+        permissions=_FULL_CONTROL_FLAGS,
+        roles=("admin",),
+    )
 
 pytestmark = pytest.mark.asyncio
 
@@ -661,7 +679,7 @@ async def test_create_board_atomically_bootstraps_advisory_binding(
     uow = CommunityUnitOfWork(session)
     result = await CreateBoardUseCase().execute(
         CreateBoardCommand(BoardCreate(name="Checklist bootstrap")),
-        actor=ActorContext("new-board-owner", "rest"),
+        actor=_full_control_actor("new-board-owner"),
         uow=uow,
     )
 
@@ -753,7 +771,7 @@ async def test_create_board_materializes_active_default_checklist_mode(
     )
     result = await CreateBoardUseCase().execute(
         CreateBoardCommand(BoardCreate(name=f"Checklist {configured_mode}")),
-        actor=ActorContext("new-board-owner", "rest"),
+        actor=_full_control_actor("new-board-owner"),
         uow=CommunityUnitOfWork(session),
     )
 
@@ -800,7 +818,7 @@ async def test_create_board_projects_legacy_null_default_mode_as_advisory(
 
     result = await CreateBoardUseCase().execute(
         CreateBoardCommand(BoardCreate(name="Checklist legacy null")),
-        actor=ActorContext("new-board-owner", "rest"),
+        actor=_full_control_actor("new-board-owner"),
         uow=CommunityUnitOfWork(session),
     )
 
@@ -842,7 +860,7 @@ async def test_default_config_diff_includes_local_checklist_mode_override(
         spec_checklist_mode="blocking",
         activate=True,
     )
-    actor = ActorContext("diff-board-owner", "rest")
+    actor = _full_control_actor("diff-board-owner")
     request_uow = CommunityUnitOfWork(session, actor=actor)
     result = await CreateBoardUseCase().execute(
         CreateBoardCommand(BoardCreate(name="Checklist diff")),
@@ -888,7 +906,13 @@ async def test_default_config_diff_includes_local_checklist_mode_override(
 
     mcp_diff = await McpGetBoardDefaultConfigDiffUseCase().execute(
         McpGetBoardDefaultConfigDiffCommand(result.board.id),
-        actor=ActorContext("diff-board-agent", "mcp"),
+        actor=ActorContext(
+            "diff-board-agent",
+            "mcp",
+            actor_kind="agent",
+            board_id=result.board.id,
+            permissions=["*"],
+        ),
         uow=request_uow,
     )
     assert mcp_diff.data == diff.data
@@ -924,7 +948,7 @@ async def test_board_bootstrap_rolls_back_board_binding_history_and_outbox(
     with pytest.raises(RuntimeError, match="forced_checklist_outbox_failure"):
         await CreateBoardUseCase().execute(
             CreateBoardCommand(BoardCreate(name="Must rollback atomically")),
-            actor=ActorContext("rollback-owner", "rest"),
+            actor=_full_control_actor("rollback-owner"),
             uow=uow,
         )
     await session.rollback()

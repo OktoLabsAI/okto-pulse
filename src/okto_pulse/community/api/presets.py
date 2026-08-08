@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.permission_errors import permission_denied_http_error
 from okto_pulse.core.application.use_cases import (
     EntityNotFoundError,
     PermissionDeniedError,
@@ -34,7 +35,8 @@ from okto_pulse.core.application.use_cases.permission_presets import (
     UpdatePermissionPresetUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.community.api.auth_deps import require_user
+from okto_pulse.community.api.auth_deps import require_principal
+from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.ports.permission_policy import (
     PermissionContractViolation,
@@ -42,6 +44,14 @@ from okto_pulse.core.ports.permission_policy import (
 )
 
 router = APIRouter()
+
+
+async def _execute_authorized(use_case, command, *, actor, uow):
+    """Project the shared Core permission outcome at the REST boundary."""
+    try:
+        return await use_case.execute(command, actor=actor, uow=uow)
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -111,13 +121,14 @@ class PresetResponse(BaseModel):
 
 @router.get("", response_model=list[PresetResponse])
 async def list_presets(
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """List all presets: built-in + custom owned by the user."""
-    result = await ListPermissionPresetsUseCase().execute(
+    result = await _execute_authorized(
+        ListPermissionPresetsUseCase(),
         ListPermissionPresetsCommand(),
-        actor=RESTAdapterContract.actor(user_id),
+        actor=RESTAdapterContract.actor_from_principal(principal),
         uow=uow,
     )
     return result.presets
@@ -126,17 +137,18 @@ async def list_presets(
 @router.post("", response_model=PresetResponse, status_code=status.HTTP_201_CREATED)
 async def create_preset(
     data: PresetCreate,
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Create a custom preset."""
-    result = await CreatePermissionPresetUseCase().execute(
+    result = await _execute_authorized(
+        CreatePermissionPresetUseCase(),
         CreatePermissionPresetCommand(
             name=data.name,
             description=data.description,
             flags=data.flags,
         ),
-        actor=RESTAdapterContract.actor(user_id),
+        actor=RESTAdapterContract.actor_from_principal(principal),
         uow=uow,
     )
     return result.preset
@@ -144,14 +156,15 @@ async def create_preset(
 
 @router.get("/export")
 async def export_presets(
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Export every preset visible to the user (built-in + own custom) as a
     schema_version-1 envelope (kind=presets)."""
-    return await ExportPresetsUseCase().execute(
+    return await _execute_authorized(
+        ExportPresetsUseCase(),
         ExportPresetsCommand(),
-        actor=RESTAdapterContract.actor(user_id),
+        actor=RESTAdapterContract.actor_from_principal(principal),
         uow=uow,
     )
 
@@ -159,14 +172,15 @@ async def export_presets(
 @router.get("/{preset_id}/export")
 async def export_preset(
     preset_id: str,
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Export one permission preset as a one-item envelope."""
     try:
-        return await ExportPresetsUseCase().execute(
+        return await _execute_authorized(
+            ExportPresetsUseCase(),
             ExportPresetsCommand(preset_id=preset_id),
-            actor=RESTAdapterContract.actor(user_id),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=uow,
         )
     except EntityNotFoundError:
@@ -178,7 +192,7 @@ async def import_presets(
     envelope: dict,
     dry_run: bool = False,
     replace_existing: bool = False,
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Import presets, replacing matching custom ids only after confirmation."""
@@ -196,13 +210,14 @@ async def import_presets(
             detail={"created": 0, "skipped": [], "errors": errors},
         )
     try:
-        result = await ImportPresetsUseCase().execute(
+        result = await _execute_authorized(
+            ImportPresetsUseCase(),
             ImportPresetsCommand(
                 items=parsed,
                 dry_run=dry_run,
                 replace_existing=replace_existing,
             ),
-            actor=RESTAdapterContract.actor(user_id),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=uow,
         )
     except ImportItemError as exc:
@@ -221,19 +236,20 @@ async def import_presets(
 async def clone_preset(
     preset_id: str,
     data: PresetCreate,
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Clone an existing preset (built-in or custom) as a new custom preset."""
     try:
-        result = await ClonePermissionPresetUseCase().execute(
+        result = await _execute_authorized(
+            ClonePermissionPresetUseCase(),
             ClonePermissionPresetCommand(
                 preset_id=preset_id,
                 name=data.name,
                 description=data.description,
                 flags=data.flags,
             ),
-            actor=RESTAdapterContract.actor(user_id),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=uow,
         )
     except EntityNotFoundError:
@@ -245,42 +261,40 @@ async def clone_preset(
 async def update_preset(
     preset_id: str,
     data: PresetUpdate,
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Update a custom preset. Built-in presets cannot be modified."""
     try:
-        result = await UpdatePermissionPresetUseCase().execute(
+        result = await _execute_authorized(
+            UpdatePermissionPresetUseCase(),
             UpdatePermissionPresetCommand(
                 preset_id=preset_id,
                 name=data.name,
                 description=data.description,
                 flags=data.flags,
             ),
-            actor=RESTAdapterContract.actor(user_id),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=uow,
         )
     except EntityNotFoundError:
         raise HTTPException(status_code=404, detail="Preset not found")
-    except PermissionDeniedError as exc:
-        raise HTTPException(status_code=403, detail=exc.message)
     return result.preset
 
 
 @router.delete("/{preset_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_preset(
     preset_id: str,
-    user_id: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Delete a custom preset. Built-in presets cannot be deleted."""
     try:
-        await DeletePermissionPresetUseCase().execute(
+        await _execute_authorized(
+            DeletePermissionPresetUseCase(),
             DeletePermissionPresetCommand(preset_id=preset_id),
-            actor=RESTAdapterContract.actor(user_id),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=uow,
         )
     except EntityNotFoundError:
         raise HTTPException(status_code=404, detail="Preset not found")
-    except PermissionDeniedError as exc:
-        raise HTTPException(status_code=403, detail=exc.message)

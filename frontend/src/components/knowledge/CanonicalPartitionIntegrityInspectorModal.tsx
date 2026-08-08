@@ -20,6 +20,7 @@ import {
   type CanonicalPartitionIntegrityResponse,
 } from '@/services/kg-health-api';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { usePermissions } from '@/hooks/usePermissions';
 
 interface CanonicalPartitionIntegrityInspectorModalProps {
   boardId: string;
@@ -44,6 +45,13 @@ export function CanonicalPartitionIntegrityInspectorModal({
   boardId,
   onClose,
 }: CanonicalPartitionIntegrityInspectorModalProps) {
+  const permissions = usePermissions(boardId);
+  const canReadIntegrity = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+    && permissions.has('kg.operations.integrity.read')
+  );
   const [data, setData] = useState<CanonicalPartitionIntegrityResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -51,6 +59,11 @@ export function CanonicalPartitionIntegrityInspectorModal({
   useEscapeToClose(onClose);
 
   const fetchData = useCallback(async () => {
+    if (!canReadIntegrity) {
+      setLoading(false);
+      setError('You do not have permission to read KG integrity data');
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -61,11 +74,12 @@ export function CanonicalPartitionIntegrityInspectorModal({
     } finally {
       setLoading(false);
     }
-  }, [boardId]);
+  }, [boardId, canReadIntegrity]);
 
   useEffect(() => {
+    if (permissions.isLoading) return;
     void fetchData();
-  }, [fetchData]);
+  }, [fetchData, permissions.isLoading]);
 
   return (
     <div

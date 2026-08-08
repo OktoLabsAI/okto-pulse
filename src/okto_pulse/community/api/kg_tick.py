@@ -16,9 +16,7 @@ tick, forçando recompute completo ignorando staleness threshold.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
 from datetime import datetime, timezone
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
@@ -35,7 +33,14 @@ from okto_pulse.core.application.kg_tick import (
     refuse_tick_if_degraded as _core_refuse_tick_if_degraded,
 )
 from okto_pulse.core.application.use_cases.board_access import load_accessible_board
-from okto_pulse.core.application.use_cases.base import ActorContext
+from okto_pulse.core.application.use_cases.authorize_operation import (
+    AuthorizeOperationCommand,
+    AuthorizeOperationUseCase,
+)
+from okto_pulse.core.application.use_cases.base import (
+    ActorContext,
+    PermissionDeniedError,
+)
 from okto_pulse.core.ports.coordination import (
     CoordinationProviderMissing,
     get_lease_provider,
@@ -49,48 +54,6 @@ import logging
 logger = logging.getLogger("okto_pulse.api.kg_tick")
 router = APIRouter()
 
-_GLOBAL_TICK_PERMISSIONS = (
-    "kg.tick.run.global",
-    "kg.admin.historical_consolidation",
-    "board.read.all",
-    "boards.read.all",
-)
-
-
-def _permission_enabled(permissions: Any, required: str) -> bool:
-    if isinstance(permissions, Mapping):
-        if permissions.get("*") is True or permissions.get(required) is True:
-            return True
-        cursor: Any = permissions
-        for part in required.split("."):
-            if not isinstance(cursor, Mapping) or part not in cursor:
-                return False
-            cursor = cursor[part]
-        return cursor is True
-    checker = getattr(permissions, "check", None)
-    if callable(checker):
-        try:
-            return checker(required) is None
-        except Exception:
-            return False
-    if isinstance(permissions, (list, tuple, set, frozenset)):
-        return required in permissions or "*" in permissions
-    return False
-
-
-def _require_global_tick_access(actor: ActorContext) -> None:
-    roles = {str(role).lower() for role in actor.roles}
-    if roles.intersection({"admin", "operator"}) or any(
-        _permission_enabled(actor.permissions, permission)
-        for permission in _GLOBAL_TICK_PERMISSIONS
-    ):
-        return
-    raise HTTPException(
-        status_code=403,
-        detail="Global tick requires an admin or operator capability",
-    )
-
-
 async def _require_tick_access(
     board_id: str | None,
     principal: Principal,
@@ -98,7 +61,6 @@ async def _require_tick_access(
 ) -> ActorContext:
     actor = RESTAdapterContract.actor_from_principal(principal, board_id=board_id)
     if board_id is None:
-        _require_global_tick_access(actor)
         return actor
     if (
         await load_accessible_board(
@@ -172,7 +134,19 @@ async def run_tick_now(
     Returns 409 when the tick lease is already held by the cron OR
     another manual trigger.
     """
-    await _require_tick_access(payload.board_id, principal, db)
+    actor = await _require_tick_access(payload.board_id, principal, db)
+    try:
+        await AuthorizeOperationUseCase().execute(
+            AuthorizeOperationCommand(
+                "kg.operations.tick.run",
+                legacy_operation="kg.admin.settings_write",
+                board_id=payload.board_id,
+            ),
+            actor=actor,
+            uow=db,
+        )
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     user = principal.subject
 
     try:

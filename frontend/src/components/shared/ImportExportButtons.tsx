@@ -33,6 +33,9 @@ interface ImportExportButtonsProps {
   confirmReplacements?: boolean;
   /** Refresh hook invoked after a successful (non-error) import. */
   onImported?: () => void | Promise<void>;
+  /** Optional action-level gates. Omitted keeps existing callers permissive. */
+  canExport?: boolean;
+  canImport?: boolean;
 }
 
 export function ImportExportButtons({
@@ -41,6 +44,8 @@ export function ImportExportButtons({
   onImport,
   onImported,
   confirmReplacements = false,
+  canExport = true,
+  canImport = true,
 }: ImportExportButtonsProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
@@ -49,6 +54,7 @@ export function ImportExportButtons({
     'inline-flex items-center gap-1 rounded-md border border-gray-300 px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800';
 
   const handleExport = async () => {
+    if (!canExport) return;
     setBusy(true);
     try {
       const envelope = await onExport();
@@ -62,6 +68,7 @@ export function ImportExportButtons({
   };
 
   const handleImportFiles = async (files: File[]) => {
+    if (!canImport) return;
     setBusy(true);
     try {
       const envelopes: ImportExportEnvelope[] = [];
@@ -130,7 +137,7 @@ export function ImportExportButtons({
     <>
       <button
         type="button"
-        disabled={busy}
+        disabled={busy || !canExport}
         onClick={handleExport}
         data-testid={`${kind}-export`}
         title="Download the complete catalog as a JSON file"
@@ -141,8 +148,10 @@ export function ImportExportButtons({
       </button>
       <button
         type="button"
-        disabled={busy}
-        onClick={() => fileInputRef.current?.click()}
+        disabled={busy || !canImport}
+        onClick={() => {
+          if (canImport) fileInputRef.current?.click();
+        }}
         data-testid={`${kind}-import`}
         title="Import one or more previously exported JSON files"
         className={buttonClass}
@@ -153,6 +162,7 @@ export function ImportExportButtons({
       <input
         ref={fileInputRef}
         type="file"
+        disabled={!canImport}
         multiple
         accept="application/json,.json"
         data-testid={`${kind}-import-input`}
@@ -160,7 +170,7 @@ export function ImportExportButtons({
         onChange={(e) => {
           const files = Array.from(e.target.files ?? []);
           e.target.value = ''; // allow re-importing the same file
-          if (files.length > 0) void handleImportFiles(files);
+          if (canImport && files.length > 0) void handleImportFiles(files);
         }}
       />
     </>
@@ -172,6 +182,8 @@ interface ExportItemButtonProps {
   itemLabel: string;
   itemId: string;
   onExport: () => Promise<ImportExportEnvelope>;
+  /** Optional action-level gate. Omitted keeps existing callers permissive. */
+  canExport?: boolean;
 }
 
 /** Compact per-row export action that downloads a one-item envelope. */
@@ -180,10 +192,12 @@ export function ExportItemButton({
   itemLabel,
   itemId,
   onExport,
+  canExport = true,
 }: ExportItemButtonProps) {
   const [busy, setBusy] = useState(false);
 
   const handleExport = async () => {
+    if (!canExport) return;
     setBusy(true);
     try {
       const envelope = await onExport();
@@ -204,7 +218,7 @@ export function ExportItemButton({
   return (
     <button
       type="button"
-      disabled={busy}
+      disabled={busy || !canExport}
       onClick={() => void handleExport()}
       data-testid={`${kind}-export-${itemId}`}
       title={`Export ${itemLabel} as JSON`}

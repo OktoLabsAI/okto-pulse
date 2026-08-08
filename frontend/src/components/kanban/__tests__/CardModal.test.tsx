@@ -83,15 +83,19 @@ vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
 }));
 
-vi.mock('@/hooks/usePermissions', () => ({
-  usePermissions: () => ({
-    preset: 'full_control',
-    isLoading: false,
-    error: null,
-    ownerReviewRequired: false,
-    has: permissionsMock.has,
-  }),
-}));
+vi.mock('@/hooks/usePermissions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks/usePermissions')>();
+  return {
+    ...actual,
+    usePermissions: () => ({
+      preset: 'full_control',
+      isLoading: false,
+      error: null,
+      ownerReviewRequired: false,
+      has: permissionsMock.has,
+    }),
+  };
+});
 
 vi.mock('@/lib/exportMarkdown', () => ({
   exportCard: markdownMock.exportCard,
@@ -982,6 +986,38 @@ describe('CardModal', () => {
     expect(apiMock.updateCard).not.toHaveBeenCalled();
   });
 
+  it('disables only assignment when card.entity.assign is false', async () => {
+    permissionsMock.has.mockImplementation(
+      (permission: string) => permission !== 'card.entity.assign',
+    );
+
+    render(<CardModal boardId="board-1" />);
+
+    expect(await screen.findByRole('combobox', { name: 'Card assignee' }))
+      .toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Card priority' }))
+      .not.toBeDisabled();
+  });
+
+  it('disables existing-card mutations when interact_in for its state is false', async () => {
+    permissionsMock.has.mockImplementation(
+      (permission: string) => permission !== 'card.interact_in.not_started',
+    );
+
+    render(<CardModal boardId="board-1" />);
+
+    expect(await screen.findByRole('combobox', { name: 'Card status' }))
+      .toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Card assignee' }))
+      .toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Card priority' }))
+      .toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Delete' }))
+      .not.toBeInTheDocument();
+    expect(apiMock.updateCard).not.toHaveBeenCalled();
+    expect(apiMock.moveCard).not.toHaveBeenCalled();
+  });
+
   it('does not leak knowledge roots from a previous card after switching to an orphan card', async () => {
     const sourceCard: Card = {
       ...cardForType('normal'),
@@ -1782,6 +1818,18 @@ describe('CardModal', () => {
       expect(screen.getByTestId('card-knowledge-tab')).not.toBeVisible();
     },
   );
+
+  it('does not list amendment revisions without amendment.revision.read', async () => {
+    permissionsMock.has.mockImplementation(
+      (permission: string) => permission !== 'amendment.revision.read',
+    );
+
+    render(<CardModal boardId="board-1" />);
+
+    await waitFor(() => expect(apiMock.getCard).toHaveBeenCalledWith('bug-1'));
+    await waitFor(() => expect(apiMock.getBugRegressionScenarioCandidates).toHaveBeenCalled());
+    expect(apiMock.listAmendmentRevisions).not.toHaveBeenCalled();
+  });
 });
 
 describe('TestEvidenceTab — re-executable evidence visibility (spec 9e0bf979)', () => {

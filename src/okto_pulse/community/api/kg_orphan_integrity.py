@@ -16,6 +16,7 @@ from okto_pulse.core.application.use_cases.operational_rest import (
     OrphanIntegrityReportCommand,
     RunOrphanBackfillUseCase,
 )
+from okto_pulse.core.application.use_cases.base import PermissionDeniedError
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.kg.orphan_integrity import (
@@ -104,6 +105,8 @@ async def get_kg_orphan_integrity_report(
         )
     except BoardNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Board not found") from exc
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except Exception as exc:
         raise _graph_unavailable_error(board_id, exc) from exc
 
@@ -135,6 +138,8 @@ async def post_kg_orphan_integrity_backfill(
         )
     except BoardNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Board not found") from exc
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except Exception as exc:
         raise _graph_unavailable_error(body.board_id, exc) from exc
     if isinstance(result.data, dict) and "refused_by_health" in result.data:

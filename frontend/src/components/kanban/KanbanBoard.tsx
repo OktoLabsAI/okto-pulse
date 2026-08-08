@@ -42,6 +42,10 @@ import {
 import { SearchInput } from '@/components/shared/SearchInput';
 import { KanbanColumn, type KanbanCardFilterType } from './KanbanColumn';
 import { useCognitivePendingBadges } from '@/hooks/useCognitivePendingBadges';
+import {
+  hasPermissionWithState,
+  usePermissions,
+} from '@/hooks/usePermissions';
 import { CardModal } from './CardModal';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { CreateCardModal } from './CreateCardModal';
@@ -94,6 +98,7 @@ function createDefaultCardTypeFilters(): CardTypeFiltersByStatus {
 
 export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
   const api = useDashboardApi();
+  const permissions = usePermissions(boardId);
   const apiRef = useRef(api);
   apiRef.current = api;
   const columns = useColumns();
@@ -124,11 +129,13 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
   // Execution report modal for Validation/Done moves
   const [conclusionPending, setConclusionPending] = useState<{
     cardId: string;
+    sourceStatus: CardStatus;
     destination: KanbanDropDestination;
   } | null>(null);
   // Cancellation justification modal for drops on the Cancelled column (ITEM 17)
   const [cancelPending, setCancelPending] = useState<{
     cardId: string;
+    sourceStatus: CardStatus;
     destination: KanbanDropDestination;
   } | null>(null);
   const [conclusionText, setConclusionText] = useState('');
@@ -162,6 +169,24 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
   } | null>(null);
   const [viewAllContextKey, setViewAllContextKey] = useState<string | null>(null);
   const specDropdownRef = useRef<HTMLDivElement>(null);
+  const hasPermission = permissions.has;
+  const canCreateCard = hasPermission('card.entity.create')
+    || hasPermission('card.entity.create_test');
+  const canMoveCard = useCallback((
+    sourceStatus: CardStatus,
+    targetStatus: CardStatus,
+  ) => hasPermissionWithState(
+    hasPermission,
+    sourceStatus === targetStatus
+      ? 'card.entity.edit_fields'
+      : `card.move.${sourceStatus}_to_${targetStatus}`,
+    'card',
+    sourceStatus,
+  ), [hasPermission]);
+  const canStartCardDrag = useCallback(
+    (card: CardSummary) => hasPermission(`card.interact_in.${card.status}`),
+    [hasPermission],
+  );
 
   const resetConclusionFields = () => {
     setConclusionText('');
@@ -409,6 +434,7 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
     for (const status of CARD_STATUSES) {
       const card = (renderedColumns[status] || []).find((c) => c.id === cardId);
       if (card) {
+        if (!canStartCardDrag(card)) return;
         setActiveCard(card);
         setDragFromStatus(status);
         break;
@@ -443,18 +469,19 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
       return;
     }
     const { targetStatus, targetIndex } = destination;
+    if (!canMoveCard(fromStatus, targetStatus)) return;
 
     const card = Object.values(renderedColumns).flat().find((c) => c.id === cardId);
 
     // ITEM 17: cancelling requires a justification — intercept the drop.
     if (targetStatus === 'cancelled' && fromStatus !== 'cancelled') {
-      setCancelPending({ cardId, destination });
+      setCancelPending({ cardId, sourceStatus: fromStatus, destination });
       return;
     }
 
     // Require the executor's report before a reviewer sees the card in Validation.
     if (requiresExecutionReport(card, targetStatus, fromStatus)) {
-      setConclusionPending({ cardId, destination });
+      setConclusionPending({ cardId, sourceStatus: fromStatus, destination });
       resetConclusionFields();
       return;
     }
@@ -474,13 +501,15 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
   };
 
   const handleAddCard = (status: CardStatus) => {
+    if (!canCreateCard) return;
     setCreateCardStatus(status);
   };
 
   const handleConclusionSubmit = async () => {
     if (!conclusionPending || !conclusionText.trim() || !conclusionCompletenessJustification.trim() || !conclusionDriftJustification.trim()) return;
-    const { cardId, destination } = conclusionPending;
+    const { cardId, sourceStatus, destination } = conclusionPending;
     const { targetStatus, targetIndex } = destination;
+    if (!canMoveCard(sourceStatus, targetStatus)) return;
 
     // AC-16: the modal only closes after the move SUCCEEDS. A gate rejection
     // (409 impact_evidence_required) renders its remediation inline and every
@@ -515,7 +544,11 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
 
   const handleCancelSubmit = async (reason: string) => {
     if (!cancelPending) return;
-    const { cardId, destination } = cancelPending;
+    const { cardId, sourceStatus, destination } = cancelPending;
+    if (!canMoveCard(sourceStatus, destination.targetStatus)) {
+      setCancelPending(null);
+      return;
+    }
     setCancelPending(null);
 
     optimisticMoveCard(cardId, 'cancelled', destination.targetIndex);
@@ -707,6 +740,8 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
                 onToggleCardType: (type: KanbanCardFilterType) => toggleCardTypeFilter(status, type),
                 onCardClick: handleCardClick,
                 onAddCard: handleAddCard,
+                canAddCard: canCreateCard,
+                canDragCard: canStartCardDrag,
                 nameMap,
                 cognitiveBadges,
               };

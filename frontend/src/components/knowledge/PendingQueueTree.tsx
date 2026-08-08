@@ -18,6 +18,7 @@ import * as kgApi from '@/services/kg-api';
 import type { PendingTreeNode, PendingTreeLevels } from '@/services/kg-api';
 import { RetryFromHereDialog } from './RetryFromHereDialog';
 import { KGRefreshButton } from './KGRefreshButton';
+import { usePermissions } from '@/hooks/usePermissions';
 
 interface Props {
   boardId: string;
@@ -71,9 +72,10 @@ interface RowProps {
   expanded: Set<string>;
   toggle: (id: string) => void;
   onRetry: (node: PendingTreeNode) => void;
+  canRetry: boolean;
 }
 
-function TreeRow({ node, depth, expanded, toggle, onRetry }: RowProps) {
+function TreeRow({ node, depth, expanded, toggle, onRetry, canRetry }: RowProps) {
   const hasChildren = node.children && node.children.length > 0;
   const isOpen = expanded.has(node.id);
   return (
@@ -110,7 +112,7 @@ function TreeRow({ node, depth, expanded, toggle, onRetry }: RowProps) {
             ↻{node.retry_count}
           </span>
         )}
-        {(node.status === 'failed' || node.status === 'pending') && node.queue_entry_id && (
+        {canRetry && (node.status === 'failed' || node.status === 'pending') && node.queue_entry_id && (
           <button
             type="button"
             onClick={() => onRetry(node)}
@@ -131,6 +133,7 @@ function TreeRow({ node, depth, expanded, toggle, onRetry }: RowProps) {
               expanded={expanded}
               toggle={toggle}
               onRetry={onRetry}
+              canRetry={canRetry}
             />
           ))}
         </div>
@@ -140,6 +143,14 @@ function TreeRow({ node, depth, expanded, toggle, onRetry }: RowProps) {
 }
 
 export function PendingQueueTree({ boardId, initialData }: Props) {
+  const permissions = usePermissions(boardId);
+  const policyReady = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+  );
+  const canReadQueue = policyReady && permissions.has('kg.operations.queue.read');
+  const canReprocessQueue = policyReady && permissions.has('kg.operations.queue.reprocess');
   const [data, setData] = useState<typeof initialData | null>(initialData ?? null);
   const [loading, setLoading] = useState(!initialData);
   const [error, setError] = useState<string | null>(null);
@@ -147,6 +158,11 @@ export function PendingQueueTree({ boardId, initialData }: Props) {
   const [retryTarget, setRetryTarget] = useState<PendingTreeNode | null>(null);
 
   const refetch = useCallback(async () => {
+    if (!canReadQueue) {
+      setLoading(false);
+      setError('You do not have permission to read the KG queue');
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -161,13 +177,14 @@ export function PendingQueueTree({ boardId, initialData }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [boardId]);
+  }, [boardId, canReadQueue]);
 
   useEffect(() => {
+    if (permissions.isLoading) return;
     if (!initialData) {
       void refetch();
     }
-  }, [initialData, refetch]);
+  }, [initialData, permissions.isLoading, refetch]);
 
   const toggle = useCallback((id: string) => {
     setExpanded((prev) => {
@@ -287,6 +304,7 @@ export function PendingQueueTree({ boardId, initialData }: Props) {
             expanded={expanded}
             toggle={toggle}
             onRetry={setRetryTarget}
+            canRetry={canReprocessQueue}
           />
         ))}
       </div>

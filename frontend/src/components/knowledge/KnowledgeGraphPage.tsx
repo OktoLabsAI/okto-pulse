@@ -34,6 +34,7 @@ import type { KGNode, KGEdge, KGStats } from '@/types/knowledge-graph';
 import * as kgApi from '@/services/kg-api';
 import { getKGHealth, type KGHealth } from '@/services/kg-health-api';
 import { PulseLoader } from '@/components/shared/PulseLoader';
+import { usePermissions } from '@/hooks/usePermissions';
 
 interface Props {
   boardId: string;
@@ -131,6 +132,14 @@ export function GraphVisibilityMismatchState({
 }
 
 export function KnowledgeGraphPage({ boardId }: Props) {
+  const permissions = usePermissions(boardId);
+  const policyReady = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+  );
+  const canReadHealth = policyReady && permissions.has('kg.operations.health.read');
+  const canReadHistorical = policyReady && permissions.has('kg.operations.historical.read');
   const [nodes, setNodes] = useState<KGNode[]>([]);
   const [edges, setEdges] = useState<KGEdge[]>([]);
   const [graphMetadata, setGraphMetadata] = useState<kgApi.GraphMetadata | null>(null);
@@ -208,8 +217,10 @@ export function KnowledgeGraphPage({ boardId }: Props) {
             type: serverNodeType,
             graph_layer: filters.graphLayer,
           }),
-          getKGHealth(boardId).catch(() => null),
-          kgApi.getHistoricalProgress(boardId).catch(() => null),
+          canReadHealth ? getKGHealth(boardId).catch(() => null) : Promise.resolve(null),
+          canReadHistorical
+            ? kgApi.getHistoricalProgress(boardId).catch(() => null)
+            : Promise.resolve(null),
           kgApi.getStats(boardId, { graph_layer: filters.graphLayer }).catch(() => null),
         ]);
         setNodes(data.nodes || []);
@@ -225,7 +236,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
         setLoading(false);
       }
     },
-    [boardId, filters.graphLayer, serverNodeType],
+    [boardId, filters.graphLayer, serverNodeType, canReadHealth, canReadHistorical],
   );
 
   useEffect(() => {

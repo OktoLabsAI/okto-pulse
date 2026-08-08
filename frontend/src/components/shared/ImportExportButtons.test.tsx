@@ -119,4 +119,45 @@ describe('ImportExportButtons', () => {
     expect(onImport).toHaveBeenCalledTimes(1);
     expect(onImported).not.toHaveBeenCalled();
   });
+
+  it('keeps import and export gates independent and never invokes a denied callback', async () => {
+    const onExport = vi.fn().mockResolvedValue(envelope('d1'));
+    const onImport = vi.fn().mockResolvedValue(summary());
+    const { rerender } = render(
+      <ImportExportButtons
+        kind="design_systems"
+        onExport={onExport}
+        onImport={onImport}
+        canExport={false}
+        canImport
+      />,
+    );
+
+    expect(screen.getByTestId('design_systems-export')).toBeDisabled();
+    expect(screen.getByTestId('design_systems-import')).toBeEnabled();
+    fireEvent.click(screen.getByTestId('design_systems-export'));
+    expect(onExport).not.toHaveBeenCalled();
+
+    rerender(
+      <ImportExportButtons
+        kind="design_systems"
+        onExport={onExport}
+        onImport={onImport}
+        canExport
+        canImport={false}
+      />,
+    );
+    expect(screen.getByTestId('design_systems-export')).toBeEnabled();
+    expect(screen.getByTestId('design_systems-import')).toBeDisabled();
+    fireEvent.change(screen.getByTestId('design_systems-import-input'), {
+      target: {
+        files: [new File(
+          [JSON.stringify(envelope('d1'))],
+          'd1.json',
+          { type: 'application/json' },
+        )],
+      },
+    });
+    expect(onImport).not.toHaveBeenCalled();
+  });
 });

@@ -16,9 +16,22 @@ const apiMock = vi.hoisted(() => ({
   updateAgent: vi.fn(),
   updateAgentBoardOverrides: vi.fn(),
 }));
+const permissionState = vi.hoisted(() => ({
+  denied: new Set<string>(),
+}));
 
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
+}));
+
+vi.mock('@/hooks/usePermissions', () => ({
+  usePermissions: () => ({
+    preset: 'full_control',
+    isLoading: false,
+    error: null,
+    ownerReviewRequired: false,
+    has: (flag: string) => !permissionState.denied.has(flag),
+  }),
 }));
 
 vi.mock('@/store/dashboard', () => ({
@@ -77,6 +90,7 @@ function preset(
 describe('AgentsModal reveal-once credentials', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionState.denied = new Set();
     apiMock.listPresets.mockResolvedValue([] satisfies PermissionPreset[]);
     apiMock.listAgentsForBoard.mockResolvedValue([]);
     Object.assign(navigator, {
@@ -424,5 +438,37 @@ describe('AgentsModal reveal-once credentials', () => {
         null,
       );
     });
+  });
+
+  it('does not issue agent reads when the exact read leaves are denied', async () => {
+    permissionState.denied = new Set([
+      'agent.entity.read',
+      'agent.board_access.read',
+      'permission_preset.entity.read',
+    ]);
+    apiMock.listMyAgents.mockResolvedValue([]);
+
+    render(<AgentsModal isOpen onClose={() => {}} />);
+
+    expect(await screen.findByText('You do not have permission to view agents')).toBeInTheDocument();
+    expect(apiMock.listMyAgents).not.toHaveBeenCalled();
+    expect(apiMock.listPresets).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /board access/i }));
+    expect(await screen.findByText('You do not have permission to view board access')).toBeInTheDocument();
+    expect(apiMock.listAgentsForBoard).not.toHaveBeenCalled();
+  });
+
+  it('requires agent.api_key.rotate before invoking key rotation', async () => {
+    permissionState.denied = new Set(['agent.api_key.rotate']);
+    apiMock.listMyAgents.mockResolvedValue([agent('agent-locked', 'Locked Agent')]);
+
+    render(<AgentsModal isOpen onClose={() => {}} />);
+
+    await screen.findByText('Locked Agent');
+    const rotate = screen.getByTitle('Regenerate key');
+    expect(rotate).toBeDisabled();
+    fireEvent.click(rotate);
+    expect(apiMock.regenerateAgentKey).not.toHaveBeenCalled();
   });
 });

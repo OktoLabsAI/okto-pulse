@@ -11,6 +11,7 @@ export interface PermissionsResponse {
   board_id: string;
   preset_name: string | null;
   flags: Record<string, unknown>;
+  introduced_historical_authorities?: Record<string, string>;
   owner_review_required: boolean;
   review_reason: string | null;
 }

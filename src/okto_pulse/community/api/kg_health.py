@@ -30,6 +30,7 @@ from okto_pulse.core.application.use_cases.kg_health import (
     GetKgHealthReadinessUseCase,
     GetKgHealthUseCase,
 )
+from okto_pulse.core.application.use_cases.base import PermissionDeniedError
 from okto_pulse.core.application.use_cases.operational_rest import (
     BoardNotFoundError as AccessBoardNotFoundError,
     CognitiveEffectivenessInventoryCommand,
@@ -391,6 +392,8 @@ async def get_kg_health_endpoint(
         if "graph_primary_bytes" in footprint:
             footprint["graph_lbug_bytes"] = footprint.pop("graph_primary_bytes")
         data["storage_footprint_proxy"] = footprint
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except (AccessBoardNotFoundError, KgBoardNotFoundError) as exc:
         raise HTTPException(status_code=404, detail="Board not found") from exc
     return KGHealthResponse(**data)
@@ -435,6 +438,8 @@ async def get_kg_health_readiness_endpoint(
         return result.data
     except InvalidProfileError as exc:
         raise HTTPException(status_code=400, detail="invalid_profile") from exc
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except (AccessBoardNotFoundError, KgBoardNotFoundError) as exc:
         raise HTTPException(status_code=404, detail="Board not found") from exc
 
@@ -469,6 +474,8 @@ async def get_cognitive_effectiveness_inventory_endpoint(
             uow=db,
         )
         return result.data
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except (AccessBoardNotFoundError, KgBoardNotFoundError) as exc:
         raise HTTPException(status_code=404, detail="Board not found") from exc
     except CognitiveEffectivenessError as exc:

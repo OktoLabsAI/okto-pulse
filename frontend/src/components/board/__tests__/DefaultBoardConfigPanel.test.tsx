@@ -121,16 +121,26 @@ function grant(...permissions: string[]) {
   permissionState.allowed = new Set(permissions);
 }
 
+const defaultConfigPermissions = [
+  'default_board_config.read',
+  'default_board_config.diff_read',
+  'default_board_config.candidates_read',
+  'default_board_config.export',
+  'default_board_config.create',
+  'default_board_config.activate',
+  'default_board_config.deactivate',
+  'default_board_config.import',
+  'default_board_config.set_design_system',
+  'default_board_config.guidelines.edit',
+];
+
 describe('DefaultBoardConfigPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     permissionState.isLoading = false;
     permissionState.error = null;
     permissionState.ownerReviewRequired = false;
-    grant(
-      'guidelines.revisions.read',
-      'guidelines.adoption.manage',
-    );
+    grant(...defaultConfigPermissions);
     apiMock.getActiveDefaultBoardConfig.mockResolvedValue({
       scope: 'global',
       active: tmpl({
@@ -179,28 +189,28 @@ describe('DefaultBoardConfigPanel', () => {
       isLoading: true,
       error: null,
       ownerReviewRequired: false,
-      permissions: ['guidelines.revisions.read'],
+      permissions: ['default_board_config.candidates_read'],
     },
     {
       label: 'permission error',
       isLoading: false,
       error: new Error('permission service unavailable'),
       ownerReviewRequired: false,
-      permissions: ['guidelines.revisions.read'],
+      permissions: ['default_board_config.candidates_read'],
     },
     {
       label: 'owner review',
       isLoading: false,
       error: null,
       ownerReviewRequired: true,
-      permissions: ['guidelines.revisions.read'],
+      permissions: ['default_board_config.candidates_read'],
     },
     {
       label: 'explicit deny',
       isLoading: false,
       error: null,
       ownerReviewRequired: false,
-      permissions: ['guidelines.adoption.manage'],
+      permissions: ['default_board_config.guidelines.edit'],
     },
   ])(
     'fails closed for guideline defaults while authority is $label and keeps Help visible',
@@ -217,9 +227,14 @@ describe('DefaultBoardConfigPanel', () => {
 
       render(<DefaultBoardConfigPanel boardId="b1" />);
 
+      if (isLoading) {
+        expect(await screen.findByTestId('dbc-loading')).toBeInTheDocument();
+        expect(apiMock.listDefaultGuidelineCandidates).not.toHaveBeenCalled();
+        return;
+      }
       expect(
         await screen.findByTestId('dbc-guideline-authority-unavailable'),
-      ).toHaveTextContent('guidelines.revisions.read');
+      ).toHaveTextContent('default_board_config.candidates_read');
       expect(
         screen.getByTestId('default-guideline-policy-help'),
       ).toHaveTextContent('How exact pins work');
@@ -228,7 +243,11 @@ describe('DefaultBoardConfigPanel', () => {
   );
 
   it('loads exact pins for a read-only actor but disables every adoption affordance', async () => {
-    grant('guidelines.revisions.read');
+    grant(
+      'default_board_config.read',
+      'default_board_config.diff_read',
+      'default_board_config.candidates_read',
+    );
 
     render(<DefaultBoardConfigPanel boardId="b1" />);
 
@@ -276,6 +295,95 @@ describe('DefaultBoardConfigPanel', () => {
     expect(screen.getByTestId('dbc-diff-fields').textContent).toMatch(/max_scenarios_per_card/);
     // The board diff was fetched from the REAL API with the board id.
     expect(apiMock.getBoardDefaultConfigDiff).toHaveBeenCalledWith('b1');
+  });
+
+  it('loads each administrative projection only through its exact read leaf', async () => {
+    grant('default_board_config.diff_read');
+
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+    await screen.findByTestId('default-board-config-panel');
+
+    expect(apiMock.getBoardDefaultConfigDiff).toHaveBeenCalledWith('b1');
+    expect(apiMock.getActiveDefaultBoardConfig).not.toHaveBeenCalled();
+    expect(apiMock.listDefaultBoardConfigVersions).not.toHaveBeenCalled();
+    expect(apiMock.listDefaultGuidelineCandidates).not.toHaveBeenCalled();
+    expect(screen.getByTestId('dbc-read-unavailable')).toHaveTextContent(
+      'default_board_config.read',
+    );
+    expect(screen.getByTestId('dbc-guideline-authority-unavailable'))
+      .toHaveTextContent('default_board_config.candidates_read');
+  });
+
+  it('does not dispatch denied create, activate, or deactivate operations', async () => {
+    grant('default_board_config.read');
+
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+
+    expect(await screen.findByTestId('dbc-activate-1')).toBeDisabled();
+    expect(screen.getByTestId('dbc-deactivate')).toBeDisabled();
+    expect(screen.getByTestId('dbc-save-template')).toBeDisabled();
+    expect(screen.getByTestId('board_config-export')).toBeDisabled();
+    expect(screen.getByTestId('board_config-import')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('dbc-activate-1'));
+    fireEvent.click(screen.getByTestId('dbc-deactivate'));
+    fireEvent.click(screen.getByTestId('dbc-save-template'));
+
+    expect(apiMock.createDefaultBoardConfigVersion).not.toHaveBeenCalled();
+    expect(apiMock.activateDefaultBoardConfigVersion).not.toHaveBeenCalled();
+    expect(apiMock.deactivateDefaultBoardConfigVersion).not.toHaveBeenCalled();
+  });
+
+  it('allows ordinary version creation without granting Design System mutation', async () => {
+    grant(
+      'default_board_config.read',
+      'default_board_config.create',
+    );
+
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+    await screen.findByTestId('default-board-config-panel');
+
+    expect(screen.getByTestId('dbc-design-system-edit-unavailable'))
+      .toHaveTextContent('default_board_config.set_design_system');
+    fireEvent.click(screen.getByTestId('design-system-gate-mode-blocking'));
+    expect(screen.getByTestId('design-system-gate-mode-advisory'))
+      .toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(screen.getByRole('switch', {
+      name: 'Require task validation',
+    }));
+    fireEvent.click(screen.getByTestId('dbc-save-template'));
+
+    await waitFor(() => expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledTimes(1));
+    expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        design_system_default_ref: {
+          design_system_id: 'ds-1',
+          gate_mode: 'advisory',
+        },
+      }),
+    );
+  });
+
+  it('composes guideline edit authority with lifecycle actions that change exact pins', async () => {
+    grant(
+      'default_board_config.read',
+      'default_board_config.candidates_read',
+      'default_board_config.create',
+      'default_board_config.activate',
+      'default_board_config.deactivate',
+    );
+
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+
+    expect(await screen.findByTestId('dbc-toggle-default-g2')).toBeDisabled();
+    expect(screen.getByTestId('dbc-activate-1')).toBeDisabled();
+    expect(screen.getByTestId('dbc-deactivate')).toBeDisabled();
+    fireEvent.click(screen.getByTestId('dbc-toggle-default-g2'));
+    fireEvent.click(screen.getByTestId('dbc-activate-1'));
+    fireEvent.click(screen.getByTestId('dbc-deactivate'));
+    expect(apiMock.createDefaultBoardConfigVersion).not.toHaveBeenCalled();
+    expect(apiMock.activateDefaultBoardConfigVersion).not.toHaveBeenCalled();
+    expect(apiMock.deactivateDefaultBoardConfigVersion).not.toHaveBeenCalled();
   });
 
   it('admin activate action hits the real API and reloads', async () => {

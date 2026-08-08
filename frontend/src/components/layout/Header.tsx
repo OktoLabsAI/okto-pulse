@@ -81,6 +81,39 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
     || canCreateGuidelineRevisions
     || canReadPolicyWaivers
   );
+  const canReadMetrics = (
+    policyAuthorityReady
+    && permissions.has('metrics.local.summary.read')
+  );
+  const canReadRuntime = (
+    policyAuthorityReady
+    && permissions.has('runtime.settings.read')
+  );
+  const canReadKGHealth = (
+    policyAuthorityReady
+    && permissions.has('kg.operations.health.read')
+  );
+  const canCreateBoard = policyAuthorityReady && permissions.has('board.admin.create');
+  const canEditBoard = policyAuthorityReady && permissions.has('board.admin.edit');
+  const canDeleteBoard = policyAuthorityReady && permissions.has('board.admin.delete');
+  const canOpenAgents = policyAuthorityReady && [
+    'agent.entity.read',
+    'agent.entity.create',
+    'agent.entity.edit',
+    'agent.entity.delete',
+    'agent.api_key.rotate',
+    'agent.board_access.read',
+    'agent.board_access.grant',
+    'agent.board_access.edit',
+    'agent.board_access.revoke',
+  ].some((flag) => permissions.has(flag));
+  const canOpenBoardShares = policyAuthorityReady && [
+    'board.share.read',
+    'board.share.create',
+    'board.share.edit',
+    'board.share.revoke',
+    'board.share.leave',
+  ].some((flag) => permissions.has(flag));
   const { theme, toggle: toggleTheme } = useTheme();
   const api = useDashboardApi();
   const [showSettings, setShowSettings] = useState(false);
@@ -163,13 +196,14 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
   useEffect(() => {
     const handler = (event: Event) => {
+      if (!canReadRuntime) return;
       const detail = (event as CustomEvent<{ initialTab?: 'graphdb' | 'eventqueue' | 'decaytick' }>).detail;
       setRuntimeSettingsInitialTab(detail?.initialTab ?? 'graphdb');
       setShowRuntimeSettings(true);
     };
     window.addEventListener('okto:open-runtime-settings', handler);
     return () => window.removeEventListener('okto:open-runtime-settings', handler);
-  }, []);
+  }, [canReadRuntime]);
 
   useEffect(() => {
     if (
@@ -273,7 +307,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
       };
 
   const updateSettings = async (patch: Partial<BoardSettings>) => {
-    if (!currentBoard) return;
+    if (!currentBoard || !canEditBoard) return;
     try {
       await api.updateBoard(currentBoard.id, { settings: patch });
       onBoardUpdated?.();
@@ -376,7 +410,12 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                   <div className="absolute right-0 top-full mt-2 w-56 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl z-50 py-1">
                     {/* + New Dashboard */}
                     <button
-                      onClick={() => { setShowMenu(false); onCreateBoard?.(); }}
+                      onClick={() => {
+                        if (!canCreateBoard) return;
+                        setShowMenu(false);
+                        onCreateBoard?.();
+                      }}
+                      disabled={!canCreateBoard}
                       className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
                     >
                       <Plus size={14} />
@@ -427,7 +466,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                     </button>
 
                     {/* KG Health (spec d754d004) */}
-                    {onOpenKGHealth && (
+                    {onOpenKGHealth && canReadKGHealth && (
                       <button
                         onClick={() => { setShowMenu(false); onOpenKGHealth(); }}
                         className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
@@ -440,7 +479,12 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
                     {/* Agents */}
                     <button
-                      onClick={() => { setShowMenu(false); onOpenAgents?.(); }}
+                      onClick={() => {
+                        if (!canOpenAgents) return;
+                        setShowMenu(false);
+                        onOpenAgents?.();
+                      }}
+                      disabled={!canOpenAgents}
                       className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
                       data-tour-id="agents.modal.entry"
                     >
@@ -453,7 +497,12 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                     {/* Share — only when portal adapter provides it */}
                     {portalAdapter.ShareBoardModal && (
                       <button
-                        onClick={() => { setShowMenu(false); onShareBoard?.(); }}
+                        onClick={() => {
+                          if (!canOpenBoardShares) return;
+                          setShowMenu(false);
+                          onShareBoard?.();
+                        }}
+                        disabled={!canOpenBoardShares}
                         className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
                       >
                         <Share2 size={14} />
@@ -487,7 +536,13 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                         setRuntimeSettingsInitialTab('graphdb');
                         setShowRuntimeSettings(true);
                       }}
-                      className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
+                      disabled={!canReadRuntime}
+                      title={canReadRuntime ? 'Settings' : 'Requires runtime.settings.read'}
+                      className={`w-full text-left px-4 py-2 text-sm flex items-center gap-2 ${
+                        canReadRuntime
+                          ? 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
+                          : 'cursor-not-allowed text-gray-300 dark:text-gray-600'
+                      }`}
                       data-testid="menu-settings"
                     >
                       <SlidersHorizontal size={14} />
@@ -496,7 +551,13 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
                     <button
                       onClick={() => { setShowMenu(false); setShowMetricsSettings(true); }}
-                      className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2"
+                      disabled={!canReadMetrics}
+                      title={canReadMetrics ? 'Metrics' : 'Requires metrics.local.summary.read'}
+                      className={`w-full text-left px-4 py-2 text-sm flex items-center gap-2 ${
+                        canReadMetrics
+                          ? 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
+                          : 'cursor-not-allowed text-gray-300 dark:text-gray-600'
+                      }`}
                       data-testid="menu-metrics"
                     >
                       <Activity size={14} />
@@ -617,11 +678,13 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
                       {boardSettingsTab === 'board' && (
                         <>
-                          <BoardSettingsForm
-                            settings={settings}
-                            onChange={updateSettings}
-                            contextWarnings={boardContextWarnings}
-                          />
+                          <fieldset disabled={!canEditBoard}>
+                            <BoardSettingsForm
+                              settings={settings}
+                              onChange={updateSettings}
+                              contextWarnings={boardContextWarnings}
+                            />
+                          </fieldset>
                           {currentBoard?.id && (
                             <ChecklistBindingSettings
                               boardId={currentBoard.id}
@@ -653,7 +716,10 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
                     <div className="modal-footer !justify-between">
                       <button
                         type="button"
-                        onClick={onDeleteBoard}
+                        onClick={() => {
+                          if (canDeleteBoard) onDeleteBoard?.();
+                        }}
+                        disabled={!canDeleteBoard}
                         className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-950/30"
                       >
                         <Trash2 size={13} />
@@ -712,6 +778,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
 
       {showMetricsSettings && (
         <MetricsSettingsPanel
+          boardId={currentBoard?.id}
           onClose={() => setShowMetricsSettings(false)}
         />
       )}

@@ -31,6 +31,7 @@ import logoLight from '@/assets/logo-light.png';
 import logoDark from '@/assets/logo-dark.png';
 import { CURRENT_METRICS_SCHEMA_VERSION, getMetricsSummary } from '@/services/metrics-api';
 import { showErrorToast } from '@/lib/toastError';
+import { usePermissions } from '@/hooks/usePermissions';
 
 const METRICS_PROMPT_DISMISSED_KEY = `okto-pulse:metrics-opt-in-prompt-dismissed:${CURRENT_METRICS_SCHEMA_VERSION}`;
 
@@ -163,6 +164,34 @@ function App() {
   const { isLoaded, isSignedIn } = authAdapter.useAuth();
   const terms = useTermsAcceptance();
   const currentBoard = useDashboardStore((s) => s.currentBoard);
+  const permissions = usePermissions(currentBoard?.id);
+  const policyAuthorityReady = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+  );
+  const canReadKGHealth = policyAuthorityReady && permissions.has('kg.operations.health.read');
+  const canReadKGCognitive = policyAuthorityReady && permissions.has('kg.operations.cognitive.read');
+  const canCreateBoard = permissions.has('board.admin.create');
+  const canDeleteBoard = permissions.has('board.admin.delete');
+  const canOpenAgents = [
+    'agent.entity.read',
+    'agent.entity.create',
+    'agent.entity.edit',
+    'agent.entity.delete',
+    'agent.api_key.rotate',
+    'agent.board_access.read',
+    'agent.board_access.grant',
+    'agent.board_access.edit',
+    'agent.board_access.revoke',
+  ].some((flag) => permissions.has(flag));
+  const canOpenBoardShares = [
+    'board.share.read',
+    'board.share.create',
+    'board.share.edit',
+    'board.share.revoke',
+    'board.share.leave',
+  ].some((flag) => permissions.has(flag));
   const setBoards = useDashboardStore((s) => s.setBoards);
   const setSharedBoards = useDashboardStore((s) => s.setSharedBoards);
   const setCurrentBoard = useDashboardStore((s) => s.setCurrentBoard);
@@ -265,6 +294,7 @@ function App() {
   // Health header drill-down), mirroring the okto:open-board-settings pattern.
   useEffect(() => {
     const open = () => {
+      if (!canReadKGCognitive) return;
       if (!window.location.pathname.startsWith('/cognitive-action-center')) {
         window.history.pushState({}, '', '/cognitive-action-center');
       }
@@ -272,7 +302,7 @@ function App() {
     };
     window.addEventListener('okto:open-cognitive-action-center', open);
     return () => window.removeEventListener('okto:open-cognitive-action-center', open);
-  }, []);
+  }, [canReadKGCognitive]);
 
   // NC-9 Wave 2 frontend (spec 5cb09dbc): poll board settings to drive the
   // EvidenceGateSkipBanner. Re-runs when the active board changes or when
@@ -336,6 +366,7 @@ function App() {
   };
 
   const openKGHealth = () => {
+    if (!canReadKGHealth) return;
     if (!window.location.pathname.startsWith('/kg-health')) {
       window.history.pushState({}, '', '/kg-health');
     }
@@ -416,7 +447,7 @@ function App() {
   };
 
   const deleteBoard = async () => {
-    if (!currentBoard) return;
+    if (!currentBoard || !canDeleteBoard) return;
     if (!confirm(`Delete board "${currentBoard.name}" and all its cards? This cannot be undone.`)) return;
     try {
       await api.deleteBoard(currentBoard.id);
@@ -466,7 +497,11 @@ function App() {
       <OnboardingModal onClose={() => setOnboardingOpen(false)} />
     )}
     {metricsPromptOpen && !terms.needsAcceptance && !onboardingOpen && (
-      <MetricsSettingsPanel initialPrompt onClose={closeMetricsPrompt} />
+      <MetricsSettingsPanel
+        boardId={currentBoard?.id}
+        initialPrompt
+        onClose={closeMetricsPrompt}
+      />
     )}
     <div className={`flex h-screen min-h-0 flex-col overflow-hidden bg-surface-50 dark:bg-surface-950 ${terms.needsAcceptance ? 'pointer-events-none select-none' : ''}`}>
       {portalAdapter.PortalBar && (
@@ -480,14 +515,14 @@ function App() {
         onOpenBoardSettings={openBoardSettings}
       />
       <Header
-        onCreateBoard={() => setCreateBoardOpen(true)}
-        onOpenAgents={() => setAgentsModalOpen(true)}
-        onShareBoard={() => setShareModalOpen(true)}
+        onCreateBoard={() => { if (canCreateBoard) setCreateBoardOpen(true); }}
+        onOpenAgents={() => { if (canOpenAgents) setAgentsModalOpen(true); }}
+        onShareBoard={() => { if (canOpenBoardShares) setShareModalOpen(true); }}
         onRefreshBoard={refreshBoard}
         onDeleteBoard={deleteBoard}
         onBoardUpdated={refreshBoard}
         onOpenAnalytics={openAnalytics}
-        onOpenKGHealth={openKGHealth}
+        onOpenKGHealth={canReadKGHealth ? openKGHealth : undefined}
         helpOpen={helpPanelOpen}
         onHelpOpenChange={setHelpPanelOpen}
         knowledgeGraphOpen={knowledgeGraphOpen}
@@ -502,7 +537,8 @@ function App() {
         <Sidebar
           isOpen={sidebarOpen}
           onSelectBoard={selectBoard}
-          onCreateBoard={() => setCreateBoardOpen(true)}
+          onCreateBoard={() => { if (canCreateBoard) setCreateBoardOpen(true); }}
+          canCreateBoard={canCreateBoard}
         />
 
         <main className="flex min-h-0 flex-1 min-w-0 flex-col overflow-hidden p-4">
@@ -551,7 +587,8 @@ function App() {
               <div className="text-center text-gray-500 dark:text-gray-400">
                 <p className="mb-4">Select or create a board to get started</p>
                 <button
-                  onClick={() => setCreateBoardOpen(true)}
+                  onClick={() => { if (canCreateBoard) setCreateBoardOpen(true); }}
+                  disabled={!canCreateBoard}
                   className="btn btn-primary"
                 >
                   Create Board
@@ -565,6 +602,7 @@ function App() {
       <CreateBoardModal
         isOpen={createBoardOpen}
         onClose={() => setCreateBoardOpen(false)}
+        boardId={currentBoard?.id}
       />
 
       <AgentsModal
@@ -604,14 +642,14 @@ function App() {
       )}
 
       {/* KG Health fullscreen overlay (spec d754d004) */}
-      {showKGHealth && (
+      {showKGHealth && canReadKGHealth && (
         <div className="fixed inset-0 z-50 bg-gray-50 dark:bg-gray-900 flex flex-col">
           <KGHealthView onClose={closeKGHealth} />
         </div>
       )}
 
       {/* Cognitive Action Center fullscreen overlay (spec 2731a346 / S3.3) */}
-      {showCognitiveActionCenter && currentBoard && (
+      {showCognitiveActionCenter && currentBoard && canReadKGCognitive && (
         <div className="fixed inset-0 z-50 bg-gray-50 dark:bg-gray-900 flex flex-col">
           <CognitiveActionCenterView
             boardId={currentBoard.id}

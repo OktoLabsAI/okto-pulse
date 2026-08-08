@@ -25,6 +25,7 @@ import {
 } from '@/components/shared/ImportExportButtons';
 import { canonicalDefaultGuidelineRefs } from '@/components/guidelines/defaultGuidelineRefs';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { usePermissions } from '@/hooks/usePermissions';
 import type {
   BoardDesignSystemEffectiveResponse,
   DefaultBoardConfigActiveResponse,
@@ -76,6 +77,36 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
   const api = useDashboardApi();
   const apiRef = useRef(api);
   apiRef.current = api;
+  const permissions = usePermissions(boardId);
+  const policyAuthorityReady = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+  );
+  const canReadDesignSystems = policyAuthorityReady
+    && permissions.has('design_system.entity.read');
+  const canCreateDesignSystem = policyAuthorityReady
+    && permissions.has('design_system.entity.create');
+  const canEditDesignSystem = policyAuthorityReady
+    && permissions.has('design_system.entity.edit');
+  const canDeleteDesignSystem = policyAuthorityReady
+    && permissions.has('design_system.entity.delete');
+  const canImportDesignSystems = policyAuthorityReady
+    && permissions.has('design_system.import');
+  const canExportDesignSystems = policyAuthorityReady
+    && permissions.has('design_system.export');
+  const canReadBoardLink = policyAuthorityReady
+    && permissions.has('design_system.board_link.read');
+  const canCreateBoardLink = policyAuthorityReady
+    && permissions.has('design_system.board_link.create');
+  const canDeleteBoardLink = policyAuthorityReady
+    && permissions.has('design_system.board_link.delete');
+  const canReadDefaultConfig = policyAuthorityReady
+    && permissions.has('default_board_config.read');
+  const canCreateDefaultConfig = policyAuthorityReady
+    && permissions.has('default_board_config.create');
+  const canSetDefaultDesignSystem = policyAuthorityReady
+    && permissions.has('default_board_config.set_design_system');
   const importExportApi = useImportExportApi();
   const importExportRef = useRef(importExportApi);
   importExportRef.current = importExportApi;
@@ -97,14 +128,31 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
   const [showHelp, setShowHelp] = useState(false);
 
   const load = useCallback(async () => {
+    if (!policyAuthorityReady) {
+      setGlobals([]);
+      setInlines([]);
+      setEffective(null);
+      setDefaultConfig(null);
+      setError(null);
+      setLoading(permissions.isLoading);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       const [g, i, e, cfg] = await Promise.all([
-        apiRef.current.listDesignSystems('global'),
-        apiRef.current.listDesignSystems('inline', boardId),
-        apiRef.current.getBoardDesignSystem(boardId),
-        apiRef.current.getActiveDefaultBoardConfig(),
+        canReadDesignSystems
+          ? apiRef.current.listDesignSystems('global')
+          : Promise.resolve([] as DesignSystem[]),
+        canReadDesignSystems
+          ? apiRef.current.listDesignSystems('inline', boardId)
+          : Promise.resolve([] as DesignSystem[]),
+        canReadBoardLink
+          ? apiRef.current.getBoardDesignSystem(boardId)
+          : Promise.resolve(null),
+        canReadDefaultConfig
+          ? apiRef.current.getActiveDefaultBoardConfig()
+          : Promise.resolve(null),
       ]);
       setGlobals(g);
       setInlines(i);
@@ -115,7 +163,14 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
     } finally {
       setLoading(false);
     }
-  }, [boardId]);
+  }, [
+    boardId,
+    canReadBoardLink,
+    canReadDefaultConfig,
+    canReadDesignSystems,
+    permissions.isLoading,
+    policyAuthorityReady,
+  ]);
 
   useEffect(() => {
     void load();
@@ -146,6 +201,7 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
   };
 
   const openCreateGlobal = () => {
+    if (!canCreateDesignSystem) return;
     setTitle('');
     setContent('');
     setEditing(null);
@@ -154,6 +210,7 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
   };
 
   const openCreateInline = () => {
+    if (!canCreateDesignSystem) return;
     setTitle('');
     setContent('');
     setEditing(null);
@@ -162,6 +219,7 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
   };
 
   const openEdit = async (designSystem: DesignSystem) => {
+    if (!canEditDesignSystem) return;
     setBusy(true);
     setError(null);
     try {
@@ -185,44 +243,64 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
     }
   };
 
-  const createGlobal = () => run(async () => {
-    await apiRef.current.createDesignSystem({
-      title: title.trim(),
-      scope: 'global',
-      payload: buildPayload(content),
+  const createGlobal = () => {
+    if (!canCreateDesignSystem) return;
+    void run(async () => {
+      await apiRef.current.createDesignSystem({
+        title: title.trim(),
+        scope: 'global',
+        payload: buildPayload(content),
+      });
+      resetForm();
     });
-    resetForm();
-  });
+  };
 
-  const createInline = () => run(async () => {
-    await apiRef.current.createDesignSystem({
-      title: title.trim(),
-      scope: 'inline',
-      board_id: boardId,
-      payload: buildPayload(content),
+  const createInline = () => {
+    if (!canCreateDesignSystem) return;
+    void run(async () => {
+      await apiRef.current.createDesignSystem({
+        title: title.trim(),
+        scope: 'inline',
+        board_id: boardId,
+        payload: buildPayload(content),
+      });
+      resetForm();
     });
-    resetForm();
-  });
+  };
 
-  const saveEdit = () => run(async () => {
-    if (!editing) return;
-    await apiRef.current.updateDesignSystem(editing.id, {
-      title: title.trim(),
-      payload: buildPayload(content),
+  const saveEdit = () => {
+    if (!editing || !canEditDesignSystem) return;
+    void run(async () => {
+      await apiRef.current.updateDesignSystem(editing.id, {
+        title: title.trim(),
+        payload: buildPayload(content),
+      });
+      resetForm();
     });
-    resetForm();
-  });
+  };
 
   const ensureTemplateId = useCallback(async (): Promise<string> => {
     if (defaultConfig?.active?.id) return defaultConfig.active.id;
+    if (!canCreateDefaultConfig) {
+      throw new Error('Creating a default configuration is not permitted.');
+    }
     const created = await apiRef.current.createDefaultBoardConfigVersion({ activate: true });
     return created.id;
-  }, [defaultConfig?.active?.id]);
+  }, [canCreateDefaultConfig, defaultConfig?.active?.id]);
 
   const effectiveId = effective?.effective?.design_system_id ?? null;
   const effectiveTitle = effective?.effective?.title ?? effectiveId;
   const defaultRef = defaultConfig?.active?.design_system_default_ref ?? null;
   const defaultId = defaultRef?.design_system_id ?? null;
+  const canSetAsDefault = canReadDefaultConfig
+    && canSetDefaultDesignSystem
+    && (
+      Boolean(defaultConfig?.active?.id)
+      || canCreateDefaultConfig
+    );
+  const canUnsetDefault = canReadDefaultConfig
+    && canSetDefaultDesignSystem
+    && canCreateDefaultConfig;
   const resolvedDefaultGateMode = normalizeGateMode(
     defaultConfig?.active?.settings_payload?.design_system_gate_mode
       ?? defaultRef?.gate_mode
@@ -240,36 +318,52 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
       : 0;
   const boardDesignSystemCount = inlines.length + boardLinkedDesignSystemCount;
 
-  const setAsDefault = (designSystem: DesignSystem) => run(async () => {
-    const templateId = await ensureTemplateId();
-    await apiRef.current.setDefaultDesignSystem(templateId, {
-      design_system_id: designSystem.id,
-      version: designSystem.version,
-      gate_mode: resolvedDefaultGateMode,
+  const setAsDefault = (designSystem: DesignSystem) => {
+    if (!canSetAsDefault) return;
+    void run(async () => {
+      const templateId = await ensureTemplateId();
+      await apiRef.current.setDefaultDesignSystem(templateId, {
+        design_system_id: designSystem.id,
+        version: designSystem.version,
+        gate_mode: resolvedDefaultGateMode,
+      });
     });
-  });
+  };
 
   // The backend has no "clear default" endpoint (set_template_design_system requires a
   // real design_system_id). To UNSET, copy-on-write a new active template version that
   // is identical to the current one but with the Design System default cleared.
-  const unsetDefault = () => run(async () => {
+  const unsetDefault = () => {
+    if (!canUnsetDefault) return;
     const tpl = defaultConfig?.active;
     if (!tpl) return;
-    await apiRef.current.createDefaultBoardConfigVersion({
-      settings_payload: tpl.settings_payload ?? {},
-      guideline_default_refs: canonicalDefaultGuidelineRefs(
-        tpl.guideline_default_refs ?? [],
-      ),
-      design_system_default_ref: null,
-      activate: true,
-    });
-  });
+    void run(() => apiRef.current.createDefaultBoardConfigVersion({
+        settings_payload: tpl.settings_payload ?? {},
+        guideline_default_refs: canonicalDefaultGuidelineRefs(
+          tpl.guideline_default_refs ?? [],
+        ),
+        design_system_default_ref: null,
+        activate: true,
+      }),
+    );
+  };
 
   // Toggle: a non-default global becomes the default; the current default is cleared.
   const toggleDefault = (designSystem: DesignSystem) =>
     defaultId === designSystem.id ? unsetDefault() : setAsDefault(designSystem);
 
+  const linkToBoard = (designSystemId: string) => {
+    if (!canCreateBoardLink) return;
+    void run(() => apiRef.current.linkBoardDesignSystem(boardId, designSystemId));
+  };
+
+  const unlinkFromBoard = () => {
+    if (!canDeleteBoardLink) return;
+    void run(() => apiRef.current.unlinkBoardDesignSystem(boardId));
+  };
+
   const handleDelete = (designSystem: DesignSystem) => {
+    if (!canDeleteDesignSystem) return;
     const warnings: string[] = [];
     if (effectiveId === designSystem.id) warnings.push("the board's effective Design System");
     if (defaultId === designSystem.id) warnings.push('the global default');
@@ -280,11 +374,17 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
     void run(() => apiRef.current.deleteDesignSystem(designSystem.id));
   };
 
-  const createOrEditForm = (saveLabel: string, onSave: () => void, testId: string) => (
+  const createOrEditForm = (
+    saveLabel: string,
+    onSave: () => void,
+    testId: string,
+    canSave: boolean,
+  ) => (
     <div className="space-y-3 rounded-md border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900/70">
       <input
         type="text"
         value={title}
+        disabled={!canSave}
         onChange={(e) => setTitle(e.target.value)}
         placeholder="Design System title"
         data-testid="dsp-new-title"
@@ -292,6 +392,7 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
       />
       <textarea
         value={content}
+        disabled={!canSave}
         onChange={(e) => setContent(e.target.value)}
         rows={9}
         placeholder="Content for assistant context: tokens, components, layout rules, accessibility expectations, evidence required for mockups."
@@ -301,7 +402,7 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
       <div className="flex gap-2">
         <button
           type="button"
-          disabled={busy || !title.trim()}
+          disabled={busy || !canSave || !title.trim()}
           onClick={onSave}
           data-testid={testId}
           className="rounded-md bg-gray-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-white dark:text-gray-900"
@@ -385,6 +486,8 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
               onExport={() => importExportRef.current.exportDesignSystems()}
               onImport={(envelope, options) => importExportRef.current.importDesignSystems(envelope, options)}
               onImported={() => load()}
+              canExport={canExportDesignSystems}
+              canImport={canImportDesignSystems}
             />
             <button
               type="button"
@@ -441,7 +544,11 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                 <div className="mt-0.5 truncate">{effective?.effective ? effectiveTitle : 'none'}</div>
                 <div className="mt-1 font-medium text-gray-700 dark:text-gray-200">Default template</div>
                 <div className="mt-0.5">
-                  {defaultConfig?.active ? `v${defaultConfig.active.version}` : 'No active template'}
+                  {!canReadDefaultConfig
+                    ? 'not permitted'
+                    : defaultConfig?.active
+                      ? `v${defaultConfig.active.version}`
+                      : 'No active template'}
                 </div>
               </div>
             </nav>
@@ -458,7 +565,12 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
 
                 {editing && (
                   <section>
-                    {createOrEditForm('Save changes', saveEdit, 'dsp-save-edit')}
+                    {createOrEditForm(
+                      'Save changes',
+                      saveEdit,
+                      'dsp-save-edit',
+                      canEditDesignSystem,
+                    )}
                   </section>
                 )}
 
@@ -468,8 +580,9 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
+                        disabled={!canCreateDesignSystem}
                         onClick={openCreateGlobal}
-                        className="inline-flex items-center gap-1 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white dark:bg-white dark:text-gray-900"
+                        className="inline-flex items-center gap-1 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white dark:text-gray-900"
                       >
                         <Plus size={13} /> New design system
                       </button>
@@ -485,9 +598,18 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                       </div>
                     </div>
 
-                    {showGlobalForm && createOrEditForm('Create Global', createGlobal, 'dsp-create-global')}
+                    {showGlobalForm && createOrEditForm(
+                      'Create Global',
+                      createGlobal,
+                      'dsp-create-global',
+                      canCreateDesignSystem,
+                    )}
 
-                    {filteredGlobals.length === 0 ? (
+                    {!canReadDesignSystems ? (
+                      <div data-testid="dsp-catalog-read-unavailable" className="py-10 text-center text-gray-400">
+                        Design Systems are hidden until <code>design_system.entity.read</code> is granted.
+                      </div>
+                    ) : filteredGlobals.length === 0 ? (
                       <div data-testid="dsp-no-globals" className="py-10 text-center text-gray-400">
                         <Globe size={36} className="mx-auto mb-2 opacity-40" />
                         <p className="text-sm">{globalSearch ? 'No matching Design Systems' : 'No global Design Systems yet.'}</p>
@@ -521,10 +643,20 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                                     itemId={d.id}
                                     itemLabel={d.title}
                                     onExport={() => importExportRef.current.exportDesignSystem(d.id)}
+                                    canExport={canExportDesignSystems}
                                   />
                                   <button
                                     type="button"
-                                    disabled={busy || d.scope !== 'global' || d.status !== 'active'}
+                                    disabled={
+                                      busy
+                                      || d.scope !== 'global'
+                                      || d.status !== 'active'
+                                      || (
+                                        isDefault
+                                          ? !canUnsetDefault
+                                          : !canSetAsDefault
+                                      )
+                                    }
                                     onClick={() => toggleDefault(d)}
                                     data-testid={`dsp-set-default-${d.id}`}
                                     title={isDefault ? 'Remove as the default for new boards' : 'Set as the default for new boards'}
@@ -539,8 +671,8 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                                   {isBoardLinked ? (
                                     <button
                                       type="button"
-                                      disabled={busy}
-                                      onClick={() => run(() => apiRef.current.unlinkBoardDesignSystem(boardId))}
+                                      disabled={busy || !canDeleteBoardLink}
+                                      onClick={unlinkFromBoard}
                                       data-testid={`dsp-unlink-${d.id}`}
                                       title="Stop using on this board (fall back to the default)"
                                       className="rounded border border-gray-300 px-2 py-1 text-[10px] disabled:opacity-50 dark:border-gray-600"
@@ -550,8 +682,8 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                                   ) : (
                                     <button
                                       type="button"
-                                      disabled={busy}
-                                      onClick={() => run(() => apiRef.current.linkBoardDesignSystem(boardId, d.id))}
+                                      disabled={busy || !canCreateBoardLink}
+                                      onClick={() => linkToBoard(d.id)}
                                       data-testid={`dsp-link-${d.id}`}
                                       title="Use on this board"
                                       className="rounded border border-gray-300 px-2 py-1 text-[10px] disabled:opacity-50 dark:border-gray-600"
@@ -561,7 +693,7 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                                   )}
                                   <button
                                     type="button"
-                                    disabled={busy}
+                                    disabled={busy || !canEditDesignSystem}
                                     onClick={() => openEdit(d)}
                                     data-testid={`dsp-edit-${d.id}`}
                                     title="Edit"
@@ -571,7 +703,7 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                                   </button>
                                   <button
                                     type="button"
-                                    disabled={busy}
+                                    disabled={busy || !canDeleteDesignSystem}
                                     onClick={() => handleDelete(d)}
                                     data-testid={`dsp-delete-${d.id}`}
                                     title="Delete this Design System"
@@ -599,20 +731,30 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                       </div>
                       <button
                         type="button"
+                        disabled={!canCreateDesignSystem}
                         onClick={openCreateInline}
-                        className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium dark:border-gray-700"
+                        className="inline-flex items-center gap-1 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700"
                       >
                         <Plus size={13} /> Create Inline
                       </button>
                     </div>
 
-                    {showInlineForm && createOrEditForm('Create Inline', createInline, 'dsp-create-inline')}
+                    {showInlineForm && createOrEditForm(
+                      'Create Inline',
+                      createInline,
+                      'dsp-create-inline',
+                      canCreateDesignSystem,
+                    )}
 
                     <div data-testid="dsp-effective" className="rounded-md border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-900/60">
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <div className="text-xs uppercase text-gray-500 dark:text-gray-400">Effective Design System</div>
-                          {effective?.effective ? (
+                          {!canReadBoardLink ? (
+                            <div data-testid="dsp-board-link-read-unavailable" className="mt-2 text-gray-500">
+                              Board selection requires <code>design_system.board_link.read</code>.
+                            </div>
+                          ) : effective?.effective ? (
                             <>
                               <div className="mt-2 font-semibold text-gray-900 dark:text-white">{effectiveTitle}</div>
                               <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -631,8 +773,8 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                         {effective?.effective?.source === 'board_link' && (
                           <button
                             type="button"
-                            disabled={busy}
-                            onClick={() => run(() => apiRef.current.unlinkBoardDesignSystem(boardId))}
+                            disabled={busy || !canDeleteBoardLink}
+                            onClick={unlinkFromBoard}
                             data-testid="dsp-unlink"
                             title="Remove this board's selection and fall back to the default"
                             className="rounded border border-gray-300 px-2 py-1 text-xs disabled:opacity-50 dark:border-gray-700"
@@ -668,12 +810,13 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                                     itemId={d.id}
                                     itemLabel={d.title}
                                     onExport={() => importExportRef.current.exportDesignSystem(d.id)}
+                                    canExport={canExportDesignSystems}
                                   />
                                   {linked ? (
                                     <button
                                       type="button"
-                                      disabled={busy}
-                                      onClick={() => run(() => apiRef.current.unlinkBoardDesignSystem(boardId))}
+                                      disabled={busy || !canDeleteBoardLink}
+                                      onClick={unlinkFromBoard}
                                       data-testid={`dsp-unlink-${d.id}`}
                                       title="Stop using on this board"
                                       className="rounded border border-gray-300 px-2 py-1 text-[10px] disabled:opacity-50 dark:border-gray-600"
@@ -683,8 +826,8 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                                   ) : (
                                     <button
                                       type="button"
-                                      disabled={busy}
-                                      onClick={() => run(() => apiRef.current.linkBoardDesignSystem(boardId, d.id))}
+                                      disabled={busy || !canCreateBoardLink}
+                                      onClick={() => linkToBoard(d.id)}
                                       data-testid={`dsp-link-${d.id}`}
                                       title="Use on this board"
                                       className="rounded border border-gray-300 px-2 py-1 text-[10px] disabled:opacity-50 dark:border-gray-600"
@@ -694,7 +837,7 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                                   )}
                                   <button
                                     type="button"
-                                    disabled={busy}
+                                    disabled={busy || !canEditDesignSystem}
                                     onClick={() => openEdit(d)}
                                     data-testid={`dsp-edit-${d.id}`}
                                     title="Edit"
@@ -704,7 +847,7 @@ export function DesignSystemPanel({ boardId, onClose }: { boardId: string; onClo
                                   </button>
                                   <button
                                     type="button"
-                                    disabled={busy}
+                                    disabled={busy || !canDeleteDesignSystem}
                                     onClick={() => handleDelete(d)}
                                     data-testid={`dsp-delete-${d.id}`}
                                     title="Delete this inline Design System"

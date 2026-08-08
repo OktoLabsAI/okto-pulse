@@ -19,6 +19,7 @@ import {
 import type { AgentPermissionBase } from '@/components/permissions';
 import type { Agent, AgentSummary, PermissionPreset } from '@/types';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { usePermissions } from '@/hooks/usePermissions';
 
 type McpFormat = 'claude' | 'cursor' | 'vscode' | 'windsurf' | 'claude-cli' | 'okto-cli';
 type Tab = 'my-agents' | 'board-access';
@@ -90,6 +91,17 @@ function PermissionBaseReviewNotice({
 export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
   const api = useDashboardApi();
   const currentBoard = useCurrentBoard();
+  const permissions = usePermissions(currentBoard?.id);
+  const canReadAgents = permissions.has('agent.entity.read');
+  const canCreateAgent = permissions.has('agent.entity.create');
+  const canEditAgent = permissions.has('agent.entity.edit');
+  const canDeleteAgent = permissions.has('agent.entity.delete');
+  const canRotateAgentKey = permissions.has('agent.api_key.rotate');
+  const canReadBoardAccess = permissions.has('agent.board_access.read');
+  const canGrantBoardAccess = permissions.has('agent.board_access.grant');
+  const canEditBoardAccess = permissions.has('agent.board_access.edit');
+  const canRevokeBoardAccess = permissions.has('agent.board_access.revoke');
+  const canReadPresets = permissions.has('permission_preset.entity.read');
 
   const [activeTab, setActiveTab] = useState<Tab>('my-agents');
   const [myAgents, setMyAgents] = useState<Agent[]>([]);
@@ -110,15 +122,19 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
   // Load my agents and presets on open
   useEffect(() => {
     if (isOpen) {
-      loadMyAgents();
-      loadPresets();
+      void loadMyAgents();
+      void loadPresets();
     } else {
       setRevealedAgentKeys({});
       setExpandedAgentId(null);
     }
-  }, [isOpen]);
+  }, [isOpen, canReadAgents, canReadPresets]);
 
   const loadPresets = async () => {
+    if (!canReadPresets) {
+      setPresets([]);
+      return;
+    }
     try {
       const data = await api.listPresets();
       setPresets(data);
@@ -128,11 +144,15 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
   // Load board agents when switching to board-access tab
   useEffect(() => {
     if (isOpen && activeTab === 'board-access' && currentBoard) {
-      loadBoardAgents();
+      void loadBoardAgents();
     }
-  }, [isOpen, activeTab, currentBoard]);
+  }, [isOpen, activeTab, currentBoard?.id, canReadBoardAccess]);
 
   const loadMyAgents = async () => {
+    if (!canReadAgents) {
+      setMyAgents([]);
+      return;
+    }
     setIsLoading(true);
     try {
       const agents = await api.listMyAgents();
@@ -145,7 +165,10 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
   };
 
   const loadBoardAgents = async () => {
-    if (!currentBoard) return;
+    if (!currentBoard || !canReadBoardAccess) {
+      setBoardAgents([]);
+      return;
+    }
     setIsLoading(true);
     try {
       const agents = await api.listAgentsForBoard(currentBoard.id);
@@ -159,7 +182,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
 
   const handleCreateAgent = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newAgentName.trim()) return;
+    if (!canCreateAgent || !newAgentName.trim()) return;
 
     try {
       const result = await api.createAgent({
@@ -195,6 +218,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
   };
 
   const handleRegenerateKey = async (agentId: string) => {
+    if (!canRotateAgentKey) return;
     if (!confirm('Are you sure? The old key will stop working.')) return;
     try {
       const result = await api.regenerateAgentKey(agentId);
@@ -211,6 +235,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
   };
 
   const handleDeleteAgent = async (agentId: string) => {
+    if (!canDeleteAgent) return;
     if (!confirm('Are you sure you want to delete this agent?')) return;
     try {
       await api.deleteAgent(agentId);
@@ -227,12 +252,12 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
   };
 
   const handleGrantAccess = async () => {
-    if (!currentBoard || !grantAgentId) return;
+    if (!canGrantBoardAccess || !currentBoard || !grantAgentId) return;
     try {
       await api.grantAgentBoardAccess(grantAgentId, currentBoard.id);
       toast.success('Access granted!');
       setGrantAgentId('');
-      loadBoardAgents();
+      void loadBoardAgents();
     } catch (err: any) {
       const msg = err?.message?.includes('409') ? 'Access already granted' : 'Failed to grant access';
       toast.error(msg);
@@ -240,12 +265,12 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
   };
 
   const handleRevokeAccess = async (agentId: string) => {
-    if (!currentBoard) return;
+    if (!canRevokeBoardAccess || !currentBoard) return;
     if (!confirm('Revoke this agent access to the board?')) return;
     try {
       await api.revokeAgentBoardAccess(agentId, currentBoard.id);
       toast.success('Access revoked');
-      loadBoardAgents();
+      void loadBoardAgents();
     } catch {
       toast.error('Failed to revoke access');
     }
@@ -317,6 +342,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                       onChange={(e) => setNewAgentName(e.target.value)}
                       className="w-full px-3 py-2 border border-gray-300 text-gray-700 dark:text-gray-300 rounded-lg dark:bg-gray-700 dark:border-gray-600"
                       placeholder="Ex: Claude Assistant"
+                      disabled={!canCreateAgent}
                     />
                   </div>
                   <div>
@@ -327,6 +353,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                       onChange={(e) => setNewAgentDescription(e.target.value)}
                       className="w-full px-3 py-2 border border-gray-300 text-gray-700 dark:text-gray-300 rounded-lg dark:bg-gray-700 dark:border-gray-600"
                       placeholder="E.g.: Task automation agent"
+                      disabled={!canCreateAgent}
                     />
                   </div>
                   <div>
@@ -337,6 +364,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                       className="w-full px-3 py-2 border border-gray-300 text-gray-700 dark:text-gray-300 rounded-lg dark:bg-gray-700 dark:border-gray-600 resize-none"
                       rows={2}
                       placeholder="E.g.: Review PRs and create feedback cards"
+                      disabled={!canCreateAgent}
                     />
                   </div>
                   <div>
@@ -344,6 +372,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                     <select
                       value={newAgentPresetId}
                       onChange={(e) => setNewAgentPresetId(e.target.value)}
+                      disabled={!canCreateAgent}
                       className="w-full px-3 py-2 border border-gray-300 text-gray-700 dark:text-gray-300 rounded-lg dark:bg-gray-700 dark:border-gray-600"
                     >
                       <option value="">Full Control (default)</option>
@@ -355,7 +384,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                     </select>
                   </div>
                   <div className="flex gap-2">
-                    <button type="submit" className="btn btn-primary">
+                    <button type="submit" disabled={!canCreateAgent} className="btn btn-primary">
                       Create Agent
                     </button>
                     <button type="button" onClick={() => setShowCreateForm(false)} className="btn btn-secondary">
@@ -366,6 +395,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
               ) : (
                 <button
                   onClick={() => setShowCreateForm(true)}
+                  disabled={!canCreateAgent}
                   className="w-full py-2 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg text-gray-500 dark:text-gray-400 hover:border-blue-500 hover:text-blue-500 flex items-center justify-center gap-2"
                 >
                   <Plus size={16} />
@@ -374,7 +404,11 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
               )}
 
               {/* Agents list */}
-              {isLoading ? (
+              {!canReadAgents ? (
+                <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                  You do not have permission to view agents
+                </div>
+              ) : isLoading ? (
                 <div className="text-center py-8 text-gray-500 dark:text-gray-400">Loading...</div>
               ) : myAgents.length === 0 ? (
                 <div className="text-center py-8 text-gray-500 dark:text-gray-400">
@@ -424,6 +458,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                             </button>
                             <button
                               onClick={() => handleRegenerateKey(agent.id)}
+                              disabled={!canRotateAgentKey}
                               className="p-1.5 text-gray-400 dark:text-gray-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded"
                               title="Regenerate key"
                             >
@@ -431,6 +466,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                             </button>
                             <button
                               onClick={() => handleDeleteAgent(agent.id)}
+                              disabled={!canDeleteAgent}
                               className="p-1.5 text-gray-400 dark:text-gray-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded"
                               title="Delete agent"
                             >
@@ -485,6 +521,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                                   <select
                                     value={agent.preset_id || ''}
                                     onChange={async (e) => {
+                                      if (!canEditAgent) return;
                                       try {
                                         // Send explicit null (not undefined) so JSON.stringify keeps the
                                         // field — the backend uses its presence to reset permission_flags
@@ -494,6 +531,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                                         toast.success('Preset updated');
                                       } catch { toast.error('Failed to update preset'); }
                                     }}
+                                    disabled={!canEditAgent}
                                     className="flex-1 px-2 py-1.5 border border-gray-300 text-gray-700 dark:text-gray-300 rounded text-xs dark:bg-gray-700 dark:border-gray-600"
                                   >
                                     <option value="">Full Control</option>
@@ -519,7 +557,9 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                                     />
                                     <PermissionFlagsEditor
                                       flags={effectivePermissions}
+                                      readOnly={!canEditAgent}
                                       onChange={async (newFlags) => {
+                                        if (!canEditAgent) return;
                                         const delta = permissionDelta(
                                           permissionBase as unknown as Record<string, unknown>,
                                           newFlags as unknown as Record<string, unknown>,
@@ -618,6 +658,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                 <select
                   value={grantAgentId}
                   onChange={(e) => setGrantAgentId(e.target.value)}
+                  disabled={!canGrantBoardAccess}
                   className="flex-1 px-3 py-2 border border-gray-300 text-gray-700 dark:text-gray-300 rounded-lg dark:bg-gray-700 dark:border-gray-600 text-sm"
                 >
                   <option value="">Select an agent...</option>
@@ -629,7 +670,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                 </select>
                 <button
                   onClick={handleGrantAccess}
-                  disabled={!grantAgentId}
+                  disabled={!canGrantBoardAccess || !grantAgentId}
                   className="btn btn-primary whitespace-nowrap disabled:opacity-50"
                 >
                   <Plus size={14} className="inline mr-1 -mt-0.5" />
@@ -638,7 +679,11 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
               </div>
 
               {/* Board agents list */}
-              {isLoading ? (
+              {!canReadBoardAccess ? (
+                <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                  You do not have permission to view board access
+                </div>
+              ) : isLoading ? (
                 <div className="text-center py-8 text-gray-500 dark:text-gray-400">Loading...</div>
               ) : boardAgents.length === 0 ? (
                 <div className="text-center py-8 text-gray-500 dark:text-gray-400">
@@ -669,6 +714,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                           </button>
                           <button
                             onClick={() => handleRevokeAccess(agent.id)}
+                            disabled={!canRevokeBoardAccess}
                             className="px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded border border-red-200 dark:border-red-800 shrink-0"
                           >
                             Revoke
@@ -715,13 +761,13 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                                   <select
                                     defaultValue=""
                                     onChange={async (e) => {
-                                      if (!currentBoard) return;
+                                      if (!canEditBoardAccess || !currentBoard) return;
                                       const presetId = e.target.value;
                                       if (!presetId) {
                                         try {
                                           await api.updateAgentBoardOverrides(agent.id, currentBoard.id, null);
                                           toast.success('Overrides cleared');
-                                          loadBoardAgents();
+                                          void loadBoardAgents();
                                         } catch { toast.error('Failed'); }
                                         return;
                                       }
@@ -742,10 +788,11 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                                             ceiling,
                                           );
                                           toast.success(`Overrides set to ${preset.name}`);
-                                          loadBoardAgents();
+                                          void loadBoardAgents();
                                         } catch { toast.error('Failed'); }
                                       }
                                     }}
+                                    disabled={!canEditBoardAccess}
                                     className="flex-1 px-2 py-1.5 border border-gray-300 text-gray-700 dark:text-gray-300 rounded text-xs dark:bg-gray-700 dark:border-gray-600"
                                   >
                                     <option value="">No overrides (full agent permissions)</option>
@@ -757,13 +804,14 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                                   </select>
                                   <button
                                     onClick={async () => {
-                                      if (!currentBoard) return;
+                                      if (!canEditBoardAccess || !currentBoard) return;
                                       try {
                                         await api.updateAgentBoardOverrides(agent.id, currentBoard.id, null);
                                         toast.success('Overrides cleared');
-                                        loadBoardAgents();
+                                        void loadBoardAgents();
                                       } catch { toast.error('Failed'); }
                                     }}
+                                    disabled={!canEditBoardAccess}
                                     className="text-[10px] px-2 py-1 rounded bg-gray-200 text-gray-600 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-400 shrink-0"
                                   >
                                     Clear
@@ -778,8 +826,9 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                                     />
                                     <PermissionFlagsEditor
                                       flags={effectiveFlags}
+                                      readOnly={!canEditBoardAccess}
                                       onChange={async (newFlags) => {
-                                        if (!currentBoard) return;
+                                        if (!canEditBoardAccess || !currentBoard) return;
                                         const ceiling = boardCeilingDelta(
                                           baseFlags as unknown as Record<string, unknown>,
                                           newFlags as unknown as Record<string, unknown>,
@@ -791,7 +840,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                                             ceiling,
                                           );
                                           toast.success('Board permissions updated');
-                                          loadBoardAgents();
+                                          void loadBoardAgents();
                                         } catch { toast.error('Failed'); }
                                       }}
                                     />

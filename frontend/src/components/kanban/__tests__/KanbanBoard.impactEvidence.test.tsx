@@ -68,6 +68,10 @@ const mocks = vi.hoisted(() => {
   return { moveCard, emptyColumns, card, dashboardState, dashboardHook, dragHandlers };
 });
 
+const permissionState = vi.hoisted(() => ({
+  denied: new Set<string>(),
+}));
+
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => ({
     getBoardColumns: vi.fn().mockResolvedValue({ columns: mocks.dashboardState.columns }),
@@ -87,6 +91,20 @@ vi.mock('@/store/dashboard', () => ({
 vi.mock('@/hooks/useCognitivePendingBadges', () => ({
   useCognitivePendingBadges: () => ({ badges: new Map() }),
 }));
+
+vi.mock('@/hooks/usePermissions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks/usePermissions')>();
+  return {
+    ...actual,
+    usePermissions: () => ({
+      preset: 'full_control',
+      isLoading: false,
+      error: null,
+      ownerReviewRequired: false,
+      has: (flag: string) => !permissionState.denied.has(flag),
+    }),
+  };
+});
 
 // Capture onDragEnd so the drop can be driven deterministically in jsdom.
 vi.mock('@dnd-kit/core', async () => {
@@ -160,7 +178,22 @@ async function fillReport() {
 describe('KanbanBoard DnD execution report — impact evidence (TS-16)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    permissionState.denied = new Set();
     mocks.dragHandlers.onDragEnd = undefined;
+  });
+
+  it.each([
+    'card.move.in_progress_to_validation',
+    'card.interact_in.in_progress',
+  ])('does not start a predictable move when %s is false', async (denied) => {
+    permissionState.denied = new Set([denied]);
+    render(<KanbanBoard boardId="board-1" refreshKey={0} />);
+    await waitFor(() => expect(mocks.dragHandlers.onDragEnd).toBeDefined());
+
+    dropOnValidation();
+
+    expect(screen.queryByText('Execution Report Required')).not.toBeInTheDocument();
+    expect(mocks.moveCard).not.toHaveBeenCalled();
   });
 
   it('mounts the shared editor inside the max-w-lg modal', async () => {

@@ -11,6 +11,7 @@ export {
   composePermissionIntroductionManifests,
   INTRODUCED_PERMISSION_HISTORICAL_AUTHORITIES,
   INTRODUCED_PERMISSION_LEAVES,
+  isIntroducedPermissionLeaf,
   PERMISSION_INTRODUCTION_MANIFESTS,
   permissionDelta,
   SKA_PERMISSION_INTRODUCTION_V1,

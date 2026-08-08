@@ -2,7 +2,7 @@
  * PresetListModal — List, create, clone, edit, delete permission presets.
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { X, Plus, Shield, Copy, Pencil, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
@@ -21,9 +21,13 @@ import { PresetLineageInfo } from './PresetLineageInfo';
 import { disabledFullControlTemplate } from './presetResolution';
 import type { PermissionPreset } from '@/types';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
+import { usePermissions } from '@/hooks/usePermissions';
+import { useCurrentBoard } from '@/store/dashboard';
 
 interface PresetListModalProps {
   onClose: () => void;
+  /** Optional explicit scope; existing callers fall back to the current board. */
+  boardId?: string | null;
 }
 
 const ENTITY_BG: Record<string, string> = {
@@ -39,29 +43,66 @@ const ENTITY_BG: Record<string, string> = {
   kg: 'bg-indigo-50 text-indigo-600 dark:bg-indigo-900/20 dark:text-indigo-300',
 };
 
-export function PresetListModal({ onClose }: PresetListModalProps) {
+export function PresetListModal({ onClose, boardId }: PresetListModalProps) {
   const api = useDashboardApi();
+  const apiRef = useRef(api);
+  apiRef.current = api;
   const importExportApi = useImportExportApi();
+  const importExportRef = useRef(importExportApi);
+  importExportRef.current = importExportApi;
+  const currentBoard = useCurrentBoard();
+  const resolvedBoardId = boardId ?? currentBoard?.id;
+  const permissions = usePermissions(resolvedBoardId);
+  const policyAuthorityReady = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+  );
+  const canReadPresets = policyAuthorityReady
+    && permissions.has('permission_preset.entity.read');
+  const canCreatePreset = policyAuthorityReady
+    && permissions.has('permission_preset.entity.create');
+  const canEditPreset = policyAuthorityReady
+    && permissions.has('permission_preset.entity.edit');
+  const canDeletePreset = policyAuthorityReady
+    && permissions.has('permission_preset.entity.delete');
+  const canClonePreset = policyAuthorityReady
+    && permissions.has('permission_preset.clone');
+  const canImportPresets = policyAuthorityReady
+    && permissions.has('permission_preset.import');
+  const canExportPresets = policyAuthorityReady
+    && permissions.has('permission_preset.export');
   const [presets, setPresets] = useState<PermissionPreset[]>([]);
   const [loading, setLoading] = useState(true);
   const [editorPreset, setEditorPreset] = useState<PermissionPreset | null | 'new'>(null);
 
   useEscapeToClose(onClose);
 
-  useEffect(() => { loadPresets(); }, []);
-
-  const loadPresets = async () => {
+  const loadPresets = useCallback(async () => {
+    if (!policyAuthorityReady) {
+      setPresets([]);
+      setLoading(permissions.isLoading);
+      return;
+    }
+    if (!canReadPresets) {
+      setPresets([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      const data = await api.listPresets();
+      const data = await apiRef.current.listPresets();
       setPresets(data);
     } catch { toast.error('Failed to load presets'); }
     finally { setLoading(false); }
-  };
+  }, [canReadPresets, permissions.isLoading, policyAuthorityReady]);
+
+  useEffect(() => { void loadPresets(); }, [loadPresets]);
 
   const handleClone = async (preset: PermissionPreset) => {
+    if (!canClonePreset) return;
     try {
-      await api.clonePreset(preset.id, {
+      await apiRef.current.clonePreset(preset.id, {
         name: `${preset.name} (copy)`,
         description: `Cloned from ${preset.name}`,
         flags: JSON.parse(JSON.stringify(preset.flags)),
@@ -74,9 +115,10 @@ export function PresetListModal({ onClose }: PresetListModalProps) {
   };
 
   const handleDelete = async (preset: PermissionPreset) => {
+    if (!canDeletePreset) return;
     if (!confirm(`Delete preset "${preset.name}"? This cannot be undone.`)) return;
     try {
-      await api.deletePreset(preset.id);
+      await apiRef.current.deletePreset(preset.id);
       toast.success('Preset deleted');
       await loadPresets();
     } catch (err: any) {
@@ -101,14 +143,19 @@ export function PresetListModal({ onClose }: PresetListModalProps) {
             <div className="flex items-center gap-2">
               <ImportExportButtons
                 kind="presets"
-                onExport={() => importExportApi.exportPresets()}
-                onImport={(envelope, options) => importExportApi.importPresets(envelope, options)}
+                onExport={() => importExportRef.current.exportPresets()}
+                onImport={(envelope, options) => importExportRef.current.importPresets(envelope, options)}
                 onImported={() => loadPresets()}
                 confirmReplacements
+                canExport={canExportPresets}
+                canImport={canImportPresets}
               />
               <button
-                onClick={() => setEditorPreset('new')}
-                className="px-3 py-1.5 bg-violet-500 text-white rounded-lg text-sm font-medium hover:bg-violet-600 flex items-center gap-1"
+                disabled={!canCreatePreset}
+                onClick={() => {
+                  if (canCreatePreset) setEditorPreset('new');
+                }}
+                className="px-3 py-1.5 bg-violet-500 text-white rounded-lg text-sm font-medium hover:bg-violet-600 disabled:cursor-not-allowed disabled:opacity-50 flex items-center gap-1"
               >
                 <Plus size={14} />
                 New Preset
@@ -123,6 +170,10 @@ export function PresetListModal({ onClose }: PresetListModalProps) {
           <div className="flex-1 overflow-y-auto p-6 space-y-3">
             {loading ? (
               <div className="text-center py-8 text-gray-500 dark:text-gray-400">Loading presets...</div>
+            ) : !canReadPresets ? (
+              <div data-testid="preset-read-unavailable" className="text-center py-8 text-gray-500 dark:text-gray-400">
+                Presets are hidden until <code>permission_preset.entity.read</code> is granted.
+              </div>
             ) : (
               <>
                 {/* Built-in */}
@@ -134,7 +185,9 @@ export function PresetListModal({ onClose }: PresetListModalProps) {
                     presets={presets}
                     onView={() => setEditorPreset(preset)}
                     onClone={() => handleClone(preset)}
-                    onExport={() => importExportApi.exportPreset(preset.id)}
+                    onExport={() => importExportRef.current.exportPreset(preset.id)}
+                    canClone={canClonePreset}
+                    canExport={canExportPresets}
                   />
                 ))}
 
@@ -150,16 +203,23 @@ export function PresetListModal({ onClose }: PresetListModalProps) {
                       presets={presets}
                       onView={() => setEditorPreset(preset)}
                       onClone={() => handleClone(preset)}
-                      onExport={() => importExportApi.exportPreset(preset.id)}
+                      onExport={() => importExportRef.current.exportPreset(preset.id)}
                       onEdit={() => setEditorPreset(preset)}
                       onDelete={() => handleDelete(preset)}
+                      canClone={canClonePreset}
+                      canEdit={canEditPreset}
+                      canDelete={canDeletePreset}
+                      canExport={canExportPresets}
                     />
                   ))
                 )}
 
                 <button
-                  onClick={() => setEditorPreset('new')}
-                  className="w-full py-3 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl text-gray-400 hover:border-violet-400 hover:text-violet-500 flex items-center justify-center gap-2 text-sm"
+                  disabled={!canCreatePreset}
+                  onClick={() => {
+                    if (canCreatePreset) setEditorPreset('new');
+                  }}
+                  className="w-full py-3 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl text-gray-400 hover:border-violet-400 hover:text-violet-500 disabled:cursor-not-allowed disabled:opacity-50 flex items-center justify-center gap-2 text-sm"
                 >
                   <Plus size={14} />
                   Create custom preset
@@ -174,6 +234,7 @@ export function PresetListModal({ onClose }: PresetListModalProps) {
       {editorPreset !== null && (
         <PresetEditorModal
           preset={editorPreset === 'new' ? null : editorPreset}
+          boardId={resolvedBoardId}
           presets={presets}
           templateFlags={
             editorPreset === 'new'
@@ -196,6 +257,10 @@ function PresetCard({
   onEdit,
   onDelete,
   onExport,
+  canClone,
+  canEdit = false,
+  canDelete = false,
+  canExport,
 }: {
   preset: PermissionPreset;
   presets: readonly PermissionPreset[];
@@ -204,6 +269,10 @@ function PresetCard({
   onEdit?: () => void;
   onDelete?: () => void;
   onExport: () => Promise<ImportExportEnvelope>;
+  canClone: boolean;
+  canEdit?: boolean;
+  canDelete?: boolean;
+  canExport: boolean;
 }) {
   const flags = preset.flags as FlagsMap;
   const perEntity = countPerEntity(flags);
@@ -254,17 +323,18 @@ function PresetCard({
             itemId={preset.id}
             itemLabel={preset.name}
             onExport={onExport}
+            canExport={canExport}
           />
           {onEdit && (
-            <button onClick={onEdit} className="p-1 text-gray-400 hover:text-blue-500" title="Edit">
+            <button disabled={!canEdit} onClick={onEdit} className="p-1 text-gray-400 hover:text-blue-500 disabled:opacity-40" title="Edit">
               <Pencil size={13} />
             </button>
           )}
-          <button onClick={onClone} className="p-1 text-gray-400 hover:text-blue-500" title="Clone">
+          <button disabled={!canClone} onClick={onClone} className="p-1 text-gray-400 hover:text-blue-500 disabled:opacity-40" title="Clone">
             <Copy size={13} />
           </button>
           {onDelete && (
-            <button onClick={onDelete} className="p-1 text-gray-400 hover:text-red-500" title="Delete">
+            <button disabled={!canDelete} onClick={onDelete} className="p-1 text-gray-400 hover:text-red-500 disabled:opacity-40" title="Delete">
               <Trash2 size={13} />
             </button>
           )}

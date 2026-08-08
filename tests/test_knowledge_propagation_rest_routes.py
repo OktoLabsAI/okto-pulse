@@ -16,11 +16,13 @@ from okto_pulse.core.domain.knowledge_selection import (
     KnowledgePropagationMode,
     KnowledgeSelectionState,
 )
+from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.models import CardCreate
 from okto_pulse.core.models.knowledge_propagation import (
     DeriveSpecKnowledgeRequest,
     KnowledgeAssignmentReplaceRequest,
 )
+from okto_pulse.core.ports.authentication import Principal
 
 
 def _v2_envelope() -> dict[str, Any]:
@@ -234,8 +236,9 @@ async def test_board_card_create_without_envelope_stays_on_v1(
         "board-1",
         request=object(),  # type: ignore[arg-type]
         data=CardCreate(title="legacy"),
-        user_id="user-1",
-        realm_id=None,
+        principal=Principal(
+            "user-1", realm_id=LOCAL_REALM_ID, actor_kind="human"
+        ),
         uow=object(),  # type: ignore[arg-type]
     )
 
@@ -261,8 +264,9 @@ async def test_board_card_create_rejects_explicit_null_field_before_target(
         "board-1",
         request=object(),  # type: ignore[arg-type]
         data=data,
-        user_id="user-1",
-        realm_id=None,
+        principal=Principal(
+            "user-1", realm_id=LOCAL_REALM_ID, actor_kind="human"
+        ),
         uow=object(),  # type: ignore[arg-type]
     )
 

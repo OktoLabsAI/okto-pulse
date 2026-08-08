@@ -12,6 +12,7 @@ interface ValidationGateOverrideProps {
   maxDrift: number | null;
   parentLabel: string; // "Board default" or "Spec/Board"
   onUpdate: (patch: TaskValidationGateOverride) => Promise<void>;
+  disabled?: boolean;
 }
 
 function toState(value: boolean | null): GateState {
@@ -32,6 +33,7 @@ export function ValidationGateOverride({
   maxDrift,
   parentLabel,
   onUpdate,
+  disabled = false,
 }: ValidationGateOverrideProps) {
   const inputIdPrefix = useId();
   const currentState = toState(requireValue);
@@ -50,12 +52,14 @@ export function ValidationGateOverride({
   }, [maxDrift]);
 
   const handleStateChange = async (newState: GateState) => {
+    if (disabled) return;
     if (newState === currentState) return;
     const newRequire = fromState(newState);
     await onUpdate({ require_task_validation: newRequire });
   };
 
   const handleThresholdBlur = async (field: 'conf' | 'compl' | 'drift', rawValue: string) => {
+    if (disabled) return;
     const trimmed = rawValue.trim();
     const parsed = trimmed === '' ? null : Number(trimmed);
     if (parsed !== null && (isNaN(parsed) || parsed < 0 || parsed > 100)) return;
@@ -94,8 +98,9 @@ export function ValidationGateOverride({
             <button
               key={opt}
               type="button"
+              disabled={disabled}
               onClick={() => handleStateChange(opt)}
-              className={`flex-1 py-1.5 px-3 text-xs rounded-md font-medium transition-all ${
+              className={`flex-1 py-1.5 px-3 text-xs rounded-md font-medium transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
                 isActive ? activeClass : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'
               }`}
             >
@@ -130,11 +135,12 @@ export function ValidationGateOverride({
                 type="number"
                 min={0}
                 max={100}
+                disabled={disabled}
                 value={localConf}
                 onChange={(e) => setLocalConf(e.target.value)}
                 onBlur={(e) => handleThresholdBlur('conf', e.target.value)}
                 placeholder="70"
-                className="w-full text-center text-xs font-mono border border-violet-200 dark:border-violet-700 rounded px-1.5 py-1 bg-white dark:bg-gray-800 text-gray-800 dark:text-white"
+                className="w-full text-center text-xs font-mono border border-violet-200 dark:border-violet-700 rounded px-1.5 py-1 bg-white dark:bg-gray-800 text-gray-800 dark:text-white disabled:cursor-not-allowed disabled:opacity-50"
             />
           </div>
           <div className="space-y-1">
@@ -149,11 +155,12 @@ export function ValidationGateOverride({
                 type="number"
                 min={0}
                 max={100}
+                disabled={disabled}
                 value={localCompl}
                 onChange={(e) => setLocalCompl(e.target.value)}
                 onBlur={(e) => handleThresholdBlur('compl', e.target.value)}
                 placeholder="80"
-                className="w-full text-center text-xs font-mono border border-violet-200 dark:border-violet-700 rounded px-1.5 py-1 bg-white dark:bg-gray-800 text-gray-800 dark:text-white"
+                className="w-full text-center text-xs font-mono border border-violet-200 dark:border-violet-700 rounded px-1.5 py-1 bg-white dark:bg-gray-800 text-gray-800 dark:text-white disabled:cursor-not-allowed disabled:opacity-50"
             />
           </div>
           <div className="space-y-1">
@@ -168,11 +175,12 @@ export function ValidationGateOverride({
                 type="number"
                 min={0}
                 max={100}
+                disabled={disabled}
                 value={localDrift}
                 onChange={(e) => setLocalDrift(e.target.value)}
                 onBlur={(e) => handleThresholdBlur('drift', e.target.value)}
                 placeholder="50"
-                className="w-full text-center text-xs font-mono border border-violet-200 dark:border-violet-700 rounded px-1.5 py-1 bg-white dark:bg-gray-800 text-gray-800 dark:text-white"
+                className="w-full text-center text-xs font-mono border border-violet-200 dark:border-violet-700 rounded px-1.5 py-1 bg-white dark:bg-gray-800 text-gray-800 dark:text-white disabled:cursor-not-allowed disabled:opacity-50"
             />
           </div>
         </div>

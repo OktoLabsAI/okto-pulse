@@ -33,7 +33,10 @@ import { EvidenceBadge } from '@/components/specs/EvidenceBadge';
 import { ScenarioTypeBadge } from '@/components/specs/ScenarioTypeBadge';
 import { EditableField } from '@/components/shared/EditableField';
 import { openLineageGraph } from '@/components/traceability';
-import { usePermissions } from '@/hooks/usePermissions';
+import {
+  hasPermissionWithState,
+  usePermissions,
+} from '@/hooks/usePermissions';
 import { SettingsToggle } from '@/components/board/BoardSettingsForm';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import {
@@ -380,10 +383,16 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const linkedScenarioIds = new Set(card?.test_scenario_ids || []);
   const linkedEvidenceScenarios = specScenarios.filter((scenario) => linkedScenarioIds.has(scenario.id));
   const evidenceProvidedCount = linkedEvidenceScenarios.filter(hasScenarioEvidence).length;
+  const canMutateCard = (action: string) => hasPermissionWithState(
+    perms.has,
+    action,
+    'card',
+    card?.status,
+  );
   const canReadIR = perms.has('spec.integration_requirements.read');
   const canReadOR = perms.has('spec.observability_requirements.read');
-  const canLinkIRTasks = perms.has('spec.integration_requirements.link_task') && perms.has('card.link_to.ir');
-  const canLinkORTasks = perms.has('spec.observability_requirements.link_task') && perms.has('card.link_to.or');
+  const canLinkIRTasks = perms.has('spec.integration_requirements.link_task') && canMutateCard('card.link_to.ir');
+  const canLinkORTasks = perms.has('spec.observability_requirements.link_task') && canMutateCard('card.link_to.or');
   const canReadTests = perms.has('card.tests.read');
   const canReadMockups = perms.has('card.mockups.read');
   const canReadArchitecture = perms.has('card.architecture.read');
@@ -395,21 +404,28 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const canReadValidation = perms.has('card.validation.read');
   const canReadPolicyCompliance = perms.has('guidelines.assessments.read');
   const canReadActivity = perms.has('card.activity_read');
-  const canEditCardFields = perms.has('card.entity.edit_fields');
-  const canAskQA = perms.has('card.qa.ask');
-  const canAnswerQA = perms.has('card.qa.answer');
-  const canCreateComments = perms.has('card.comments.create');
-  const canCreateChoiceComments = perms.has('card.comments.create_choice');
-  const canRespondToChoiceComments = perms.has('card.comments.respond_choice');
-  const canUploadAttachments = perms.has('card.attachments.upload');
-  const canDeleteAttachments = perms.has('card.attachments.delete');
-  const canDeleteCard = perms.has('card.entity.delete');
-  const canManageDependencies = perms.has('card.entity.manage_dependencies');
-  const canLinkScenarios = perms.has('card.link_to.scenario');
-  const canLinkRules = perms.has('card.link_to.rule');
-  const canLinkContracts = perms.has('card.link_to.contract');
-  const canLinkTRs = perms.has('card.link_to.tr');
-  const canSubmitValidation = perms.has('card.validation.submit');
+  const canEditCardFields = canMutateCard('card.entity.edit_fields');
+  const canEditBugFields = canMutateCard('card.entity.edit_bug_fields');
+  const canAssignCard = canMutateCard('card.entity.assign');
+  const canLinkTests = canMutateCard('card.entity.link_tests');
+  const canAskQA = canMutateCard('card.qa.ask');
+  const canAnswerQA = canMutateCard('card.qa.answer');
+  const canCreateComments = canMutateCard('card.comments.create');
+  const canCreateChoiceComments = canMutateCard('card.comments.create_choice');
+  const canRespondToChoiceComments = canMutateCard('card.comments.respond_choice');
+  const canUploadAttachments = canMutateCard('card.attachments.upload');
+  const canDeleteAttachments = canMutateCard('card.attachments.delete');
+  const canDeleteCard = canMutateCard('card.entity.delete');
+  const canManageDependencies = canMutateCard('card.entity.manage_dependencies');
+  const canLinkScenarios = canMutateCard('card.link_to.scenario');
+  const canLinkRules = canMutateCard('card.link_to.rule');
+  const canLinkContracts = canMutateCard('card.link_to.contract');
+  const canLinkTRs = canMutateCard('card.link_to.tr');
+  const canSubmitValidation = canMutateCard('card.validation.submit');
+  const canReadAmendmentRevisions = perms.has('amendment.revision.read');
+  const canCreateAmendment = perms.has('amendment.revision.create');
+  const canAssociateAmendment = perms.has('amendment.revision.associate');
+  const canReadBoardAgents = perms.has('agent.board_access.read');
   const hasAmendmentWorkspace = Boolean(
     bugRegressionPreview?.semantic_gap_required
     || (amendmentRevisions?.revisions.length || 0) > 0,
@@ -482,13 +498,17 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
             .catch(() => {
               if (isCurrentLoad()) setBugRegressionPreview(null);
             });
-          api.listAmendmentRevisions(data.board_id, data.id)
-            .then((revisions) => {
-              if (isCurrentLoad()) setAmendmentRevisions(revisions);
-            })
-            .catch(() => {
-              if (isCurrentLoad()) setAmendmentRevisions(null);
-            });
+          if (canReadAmendmentRevisions) {
+            api.listAmendmentRevisions(data.board_id, data.id)
+              .then((revisions) => {
+                if (isCurrentLoad()) setAmendmentRevisions(revisions);
+              })
+              .catch(() => {
+                if (isCurrentLoad()) setAmendmentRevisions(null);
+              });
+          } else {
+            setAmendmentRevisions(null);
+          }
         }
         const specRequest: Promise<Spec | null | undefined> = data.spec_id
           ? api.getSpec(data.spec_id).catch(() => undefined)
@@ -561,13 +581,17 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
       .finally(() => {
         if (isCurrentFullLoad()) setIsLoading(false);
       });
-    api.listAgentsForBoard(boardId)
-      .then((agents) => {
-        if (isCurrentLoad()) {
-          setBoardMembers(agents.map((a) => ({ id: a.id, name: a.name })));
-        }
-      })
-      .catch(() => {});
+    if (canReadBoardAgents) {
+      api.listAgentsForBoard(boardId)
+        .then((agents) => {
+          if (isCurrentLoad()) {
+            setBoardMembers(agents.map((a) => ({ id: a.id, name: a.name })));
+          }
+        })
+        .catch(() => {});
+    } else {
+      setBoardMembers([]);
+    }
     api.getCardSeenStatus(cardId)
       .then((data) => {
         if (isCurrentLoad()) setSeenStatus(data.items);
@@ -616,17 +640,21 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                 setBugRegressionPreview(null);
               }
             });
-          api.listAmendmentRevisions(data.board_id, data.id)
-            .then((revisions) => {
-              if (isCurrentRefresh()) {
-                setAmendmentRevisions(revisions);
-              }
-            })
-            .catch(() => {
-              if (isCurrentRefresh()) {
-                setAmendmentRevisions(null);
-              }
-            });
+          if (canReadAmendmentRevisions) {
+            api.listAmendmentRevisions(data.board_id, data.id)
+              .then((revisions) => {
+                if (isCurrentRefresh()) {
+                  setAmendmentRevisions(revisions);
+                }
+              })
+              .catch(() => {
+                if (isCurrentRefresh()) {
+                  setAmendmentRevisions(null);
+                }
+              });
+          } else {
+            setAmendmentRevisions(null);
+          }
         } else {
           setBugRegressionPreview(null);
           setAmendmentRevisions(null);
@@ -701,6 +729,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
       .catch(() => {});
   }, [
     api,
+    canReadAmendmentRevisions,
     card?.id,
     card?.updated_at,
     isLoading,
@@ -712,7 +741,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   // render, and NEVER a gate skip/bypass; these only REMEDIATE via the new
   // amendment-revision surfaces.
   const handleCreateAmendment = useCallback(async () => {
-    if (!card) return;
+    if (!card || !canCreateAmendment) return;
     setAmendmentBusy(true);
     try {
       await api.createAmendmentRevision(card.board_id, card.id, {
@@ -725,10 +754,10 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     } finally {
       setAmendmentBusy(false);
     }
-  }, [api, card, silentRefresh]);
+  }, [api, canCreateAmendment, card, silentRefresh]);
 
   const handleAssociateAmendment = useCallback(async (amendmentId: string) => {
-    if (!card) return;
+    if (!card || !canAssociateAmendment) return;
     setAmendmentBusy(true);
     try {
       await api.associateAmendmentRevisionArtifacts(card.board_id, card.id, amendmentId, {
@@ -741,7 +770,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     } finally {
       setAmendmentBusy(false);
     }
-  }, [api, card, silentRefresh]);
+  }, [api, canAssociateAmendment, card, silentRefresh]);
 
   useEffect(() => {
     if (selectedCardId && isOpen) {
@@ -755,7 +784,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
       setTaskValidationHierarchyLoading(false);
       setTaskValidationHierarchyError(null);
     }
-  }, [selectedCardId, isOpen]);
+  }, [selectedCardId, isOpen, canReadAmendmentRevisions, canReadBoardAgents]);
 
   useEffect(() => {
     if (!card) return;
@@ -880,6 +909,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
 
   const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }, cancellationReason?: string, impactEvidence?: ImpactEvidence): Promise<boolean> => {
     if (!card || status === card.status) return false;
+    if (!canMutateCard(`card.move.${card.status}_to_${status}`)) return false;
 
     // ITEM 17: cancelling requires a justification — intercept with the dialog.
     if (status === 'cancelled' && !cancellationReason) {
@@ -953,7 +983,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   };
 
   const handleAssigneeChange = async (assigneeId: string) => {
-    if (!card) return;
+    if (!card || !canAssignCard) return;
     try {
       const updated = await api.updateCard(card.id, { assignee_id: assigneeId || undefined });
       applyCardUpdate(updated);
@@ -964,7 +994,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   };
 
   const handlePriorityChange = async (priority: string) => {
-    if (!card) return;
+    if (!card || !canEditCardFields) return;
     try {
       const updated = await api.updateCard(card.id, { priority: priority as CardPriority });
       applyCardUpdate(updated);
@@ -975,7 +1005,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   };
 
   const handleDelete = async () => {
-    if (!card) return;
+    if (!card || !canDeleteCard) return;
     if (!confirm('Are you sure you want to delete this card?')) return;
 
     try {
@@ -1023,7 +1053,10 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
             (status): status is CardStatus =>
               Object.prototype.hasOwnProperty.call(STATUS_LABELS, status)
               && status !== card.status,
-          ),
+          )
+          .filter((status) => canMutateCard(
+            `card.move.${card.status}_to_${status}`,
+          )),
       ].filter(
         (status, index, statuses) => statuses.indexOf(status) === index,
       )
@@ -1128,10 +1161,11 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
               disabled={
                 !card
                 || isLoading
-                || knowledgeMutationBusy
-                || movingStatus !== null
-                || policyTransitionAuthority.preview.status !== 'ready'
-              }
+                 || knowledgeMutationBusy
+                 || movingStatus !== null
+                 || policyTransitionAuthority.preview.status !== 'ready'
+                 || allowedStatuses.length <= 1
+               }
               aria-label="Card status"
               className="text-sm border border-gray-300 rounded px-2 py-1 bg-white dark:bg-gray-700 dark:border-gray-600 text-gray-900 dark:text-gray-100"
             >
@@ -1154,11 +1188,15 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
               </span>
             )}
             <h2
-              className="font-semibold text-lg whitespace-pre-wrap break-words line-clamp-3 cursor-text hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-1 -mx-1 outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white dark:focus:bg-gray-700"
-              contentEditable={!isLoading && !!card}
+              className={`font-semibold text-lg whitespace-pre-wrap break-words line-clamp-3 rounded px-1 -mx-1 outline-none ${
+                canEditCardFields
+                  ? 'cursor-text hover:bg-gray-100 dark:hover:bg-gray-700 focus:ring-2 focus:ring-blue-400 focus:bg-white dark:focus:bg-gray-700'
+                  : 'cursor-default'
+              }`}
+              contentEditable={!isLoading && !!card && canEditCardFields}
               suppressContentEditableWarning
               onBlur={async (e) => {
-                if (!card) return;
+                if (!card || !canEditCardFields) return;
                 const newTitle = (e.currentTarget.textContent || '').trim();
                 if (!newTitle || newTitle === card.title) {
                   e.currentTarget.textContent = card.title;
@@ -1317,6 +1355,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                     <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Description</h3>
                     <EditableField
                       value={card.description || ''}
+                      disabled={!canEditCardFields}
                       onSave={async (val) => {
                         const updated = await api.updateCard(card.id, { description: val });
                         applyCardUpdate(updated);
@@ -1337,7 +1376,9 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                           {(['critical', 'major', 'minor'] as BugSeverity[]).map((sev) => (
                             <button
                               key={sev}
+                              disabled={!canEditBugFields}
                               onClick={async () => {
+                                if (!canEditBugFields) return;
                                 const updated = await api.updateCard(card.id, { severity: sev });
                                 applyCardUpdate(updated);
                               }}
@@ -1347,7 +1388,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                                   : sev === 'major' ? 'bg-orange-500 text-white ring-2 ring-orange-300'
                                   : 'bg-yellow-500 text-white ring-2 ring-yellow-300'
                                   : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400 hover:bg-gray-200'
-                              }`}
+                              } disabled:cursor-not-allowed disabled:opacity-50`}
                             >
                               {BUG_SEVERITY_LABELS[sev]}
                             </button>
@@ -1361,6 +1402,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                         <div className="border border-gray-200 dark:border-gray-600 rounded-lg bg-green-50 dark:bg-green-900/10">
                           <EditableField
                             value={card.expected_behavior || ''}
+                            disabled={!canEditBugFields}
                             onSave={async (val) => {
                               const updated = await api.updateCard(card.id, { expected_behavior: val });
                               applyCardUpdate(updated);
@@ -1378,6 +1420,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                         <div className="border border-red-200 dark:border-red-600/40 rounded-lg bg-red-50 dark:bg-red-900/10">
                           <EditableField
                             value={card.observed_behavior || ''}
+                            disabled={!canEditBugFields}
                             onSave={async (val) => {
                               const updated = await api.updateCard(card.id, { observed_behavior: val });
                               applyCardUpdate(updated);
@@ -1395,6 +1438,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                         <div className="border border-gray-200 dark:border-gray-600 rounded-lg bg-gray-50 dark:bg-gray-800">
                           <EditableField
                             value={card.steps_to_reproduce || ''}
+                            disabled={!canEditBugFields}
                             onSave={async (val) => {
                               const updated = await api.updateCard(card.id, { steps_to_reproduce: val });
                               applyCardUpdate(updated);
@@ -1412,6 +1456,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                         <div className="border border-blue-200 dark:border-blue-600/40 rounded-lg bg-blue-50 dark:bg-blue-900/10">
                           <EditableField
                             value={card.action_plan || ''}
+                            disabled={!canEditBugFields}
                             onSave={async (val) => {
                               const updated = await api.updateCard(card.id, { action_plan: val });
                               applyCardUpdate(updated);
@@ -1431,7 +1476,9 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                     <select
                       value={card.assignee_id || ''}
                       onChange={(e) => handleAssigneeChange(e.target.value)}
-                      className="text-sm border border-gray-300 rounded px-3 py-1.5 bg-white dark:bg-gray-700 dark:border-gray-600 text-gray-900 dark:text-gray-100 w-full"
+                      disabled={!canAssignCard}
+                      aria-label="Card assignee"
+                      className="text-sm border border-gray-300 rounded px-3 py-1.5 bg-white dark:bg-gray-700 dark:border-gray-600 text-gray-900 dark:text-gray-100 w-full disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <option value="">None</option>
                       {(() => {
@@ -1459,7 +1506,9 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                     <select
                       value={card.priority || 'none'}
                       onChange={(e) => handlePriorityChange(e.target.value)}
-                      className="text-sm border border-gray-300 rounded px-3 py-1.5 bg-white dark:bg-gray-700 dark:border-gray-600 text-gray-900 dark:text-gray-100 w-full"
+                      disabled={!canEditCardFields}
+                      aria-label="Card priority"
+                      className="text-sm border border-gray-300 rounded px-3 py-1.5 bg-white dark:bg-gray-700 dark:border-gray-600 text-gray-900 dark:text-gray-100 w-full disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {CARD_PRIORITIES.map((p) => (
                         <option key={p} value={p}>{PRIORITY_LABELS[p]}</option>
@@ -1471,6 +1520,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                     <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-1">Details</h3>
                     <EditableField
                       value={card.details || ''}
+                      disabled={!canEditCardFields}
                       onSave={async (val) => {
                         const updated = await api.updateCard(card.id, { details: val });
                         applyCardUpdate(updated);
@@ -1825,7 +1875,9 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                                 </div>
                               </div>
                               <button
+                                disabled={!canLinkTests}
                                 onClick={async () => {
+                                  if (!canLinkTests) return;
                                   try {
                                     await api.unlinkTestTaskFromBug(card.id, taskId);
                                     const updated = await api.getCard(card.id);
@@ -1835,8 +1887,8 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                                     toast.error('Failed to unlink');
                                   }
                                 }}
-                                className="p-1 text-gray-400 hover:text-red-500"
-                                title="Unlink"
+                                className="p-1 text-gray-400 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-30"
+                                title={canLinkTests ? 'Unlink' : 'Missing permission: card.entity.link_tests'}
                               >
                                 <X size={14} />
                               </button>
@@ -1922,6 +1974,8 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                         onCreateAmendment={handleCreateAmendment}
                         onAssociate={handleAssociateAmendment}
                         busy={amendmentBusy}
+                        canCreate={canCreateAmendment}
+                        canAssociate={canAssociateAmendment}
                       />
                     </AccessibleTabPanel>
                   )}

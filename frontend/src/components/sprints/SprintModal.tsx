@@ -28,7 +28,10 @@ import {
 import { openLineageGraph } from '@/components/traceability';
 import { deriveSprintDisplayCounts, normalizeSprintCardType } from './sprintDisplayCounts';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
-import { usePermissions } from '@/hooks/usePermissions';
+import {
+  hasPermissionWithState,
+  usePermissions,
+} from '@/hooks/usePermissions';
 
 type SprintTab = 'details' | 'scope' | 'cards' | 'evaluations' | 'qa' | 'history' | 'cancellation';
 type SprintEvaluationTab = 'sprint-evaluation' | 'policy-compliance';
@@ -185,6 +188,17 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
     useState<SprintEvaluationTab>('sprint-evaluation');
   const [policyRefreshGeneration, setPolicyRefreshGeneration] = useState(0);
   const permissions = usePermissions(sprint?.board_id);
+  const canMutateSprint = (action: string) => hasPermissionWithState(
+    permissions.has,
+    action,
+    'sprint',
+    sprint?.status,
+  );
+  const canEditSprintFields = canMutateSprint('sprint.entity.edit_fields');
+  const canEditSprintCoverage = canMutateSprint(
+    'sprint.entity.edit_coverage_flags',
+  );
+  const canAssignSprintCards = canMutateSprint('sprint.tasks.assign');
   const canReadPolicyCompliance = permissions.has(
     'guidelines.assessments.read',
   );
@@ -214,6 +228,10 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
     }
   }, [canReadPolicyCompliance, evaluationTab]);
 
+  useEffect(() => {
+    if (!canAssignSprintCards) setShowAssign(false);
+  }, [canAssignSprintCards]);
+
   const loadSprint = async () => {
     try {
       setLoading(true);
@@ -238,6 +256,7 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
 
   const performMove = async (status: SprintStatus, cancellationReason?: string) => {
     if (!sprint) return;
+    if (!canMutateSprint(`sprint.move.${sprint.status}_to_${status}`)) return;
     setMovingTo(status);
     transitionAuthority.clearRejection();
     try {
@@ -275,6 +294,7 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
   };
 
   const handleSprintTextSave = async (field: 'objective' | 'expected_outcome', value: string) => {
+    if (!canEditSprintFields) return;
     try {
       await api.updateSprint(sprintId, {
         [field]: value.trim() || null,
@@ -301,13 +321,22 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
   const currentRank = FLOW_STATUSES.indexOf(sprint.status);
   const forward = transitionAuthority.actionableTransitions.find((transition) => {
     const rank = FLOW_STATUSES.indexOf(transition.to_status as SprintStatus);
-    return rank > currentRank;
+    return rank > currentRank
+      && canMutateSprint(
+        `sprint.move.${sprint.status}_to_${transition.to_status}`,
+      );
   });
   const selectedTransition = forward || transitionAuthority.actionableTransitions.find(
-    (transition) => transition.capabilities?.includes('reopen'),
+    (transition) => transition.capabilities?.includes('reopen')
+      && canMutateSprint(
+        `sprint.move.${sprint.status}_to_${transition.to_status}`,
+      ),
   );
   const cancelTransition = transitionAuthority.actionableTransitions.find(
-    (transition) => transition.to_status === 'cancelled',
+    (transition) => transition.to_status === 'cancelled'
+      && canMutateSprint(
+        `sprint.move.${sprint.status}_to_${transition.to_status}`,
+      ),
   );
   const action = selectedTransition
     ? {
@@ -452,6 +481,7 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
                 <h4 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-1">Objective</h4>
                 <EditableField
                   value={sprint.objective || ''}
+                  disabled={!canEditSprintFields}
                   onSave={(value) => handleSprintTextSave('objective', value)}
                   multiline
                   placeholder="What is this sprint trying to achieve?"
@@ -466,6 +496,7 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
                 <h4 className="text-xs font-medium text-gray-500 dark:text-gray-400 uppercase mb-1">Expected Outcome</h4>
                 <EditableField
                   value={sprint.expected_outcome || ''}
+                  disabled={!canEditSprintFields}
                   onSave={(value) => handleSprintTextSave('expected_outcome', value)}
                   multiline
                   placeholder="What should be deliverable at the end of this sprint?"
@@ -523,7 +554,9 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
                   minCompleteness={sprint.validation_min_completeness ?? null}
                   maxDrift={sprint.validation_max_drift ?? null}
                   parentLabel="Spec/Board"
+                  disabled={!canEditSprintCoverage}
                   onUpdate={async (patch) => {
+                    if (!canEditSprintCoverage) return;
                     try {
                       await api.updateSprint(sprintId, patch);
                       loadSprint();
@@ -783,7 +816,9 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
                   {displayCounts.tasks} tasks and {displayCounts.bugs} bugs assigned
                 </span>
                 <button
+                  disabled={!canAssignSprintCards}
                   onClick={async () => {
+                    if (!canAssignSprintCards) return;
                     if (!showAssign && sprint.spec_id) {
                       try {
                         const spec = await api.getSpec(sprint.spec_id);
@@ -792,7 +827,8 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
                     }
                     setShowAssign(!showAssign);
                   }}
-                  className="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800"
+                  className="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 disabled:cursor-not-allowed disabled:opacity-40"
+                  title={canAssignSprintCards ? undefined : 'Missing permission: sprint.tasks.assign'}
                 >
                   {showAssign ? 'Done' : '+ Assign Cards'}
                 </button>
@@ -813,7 +849,9 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
                           {cardType === 'bug' && <span className="text-[9px] px-1 bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 rounded">bug</span>}
                         </div>
                         <button
+                          disabled={!canAssignSprintCards}
                           onClick={async () => {
+                            if (!canAssignSprintCards) return;
                             try {
                               if (isAssigned) {
                                 await api.unassignTasksFromSprint(sprintId, [c.id]);
@@ -827,7 +865,7 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
                               setSpecCards((spec.cards || []).filter((x: any) => !x.sprint_id || x.sprint_id === sprintId));
                             } catch (e: any) { toast.error(e?.message || 'Failed'); }
                           }}
-                          className={`text-xs px-2 py-0.5 rounded ${isAssigned ? 'text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20' : 'text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20'}`}
+                          className={`text-xs px-2 py-0.5 rounded disabled:cursor-not-allowed disabled:opacity-40 ${isAssigned ? 'text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20' : 'text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-900/20'}`}
                         >
                           {isAssigned ? 'Remove' : '+ Add'}
                         </button>

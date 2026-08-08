@@ -39,7 +39,7 @@ from okto_pulse.core.application.use_cases.import_export import (
     validate_items,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.community.api.auth_deps import require_principal, require_user
+from okto_pulse.community.api.auth_deps import require_principal
 from okto_pulse.core.application.use_cases import PermissionDeniedError
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.repositories import PulseUnitOfWork
@@ -232,34 +232,38 @@ def _reject_inline_guideline_refs(raw: dict[str, Any]) -> None:
 async def get_active_default_board_config(
     scope: str = "global",
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
         result = await GetActiveDefaultBoardConfigUseCase().execute(
             DefaultBoardConfigCommand(scope=scope),
-            actor=RESTAdapterContract.actor(actor),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=db,
         )
         return result.data
     except DefaultBoardConfigurationError as exc:
         raise _err(exc)
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
 
 
 @router.get("/default-board-config/versions")
 async def list_default_board_config_versions(
     scope: str = "global",
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
         result = await ListDefaultBoardConfigVersionsUseCase().execute(
             DefaultBoardConfigCommand(scope=scope),
-            actor=RESTAdapterContract.actor(actor),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=db,
         )
         return result.data
     except DefaultBoardConfigurationError as exc:
         raise _err(exc)
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
 
 
 @router.post("/default-board-config/versions")
@@ -296,7 +300,7 @@ async def create_default_board_config_version(
 async def export_default_board_config(
     scope: str = "global",
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     """Export every default board configuration version (oldest first, the
     active one marked ``is_active``) as a schema_version-1 envelope
@@ -304,11 +308,13 @@ async def export_default_board_config(
     try:
         return await ExportBoardConfigUseCase().execute(
             ExportBoardConfigCommand(scope=scope),
-            actor=RESTAdapterContract.actor(actor),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=db,
         )
     except DefaultBoardConfigurationError as exc:
         raise _err(exc)
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
 
 
 @router.post("/default-board-config/import")
@@ -414,17 +420,21 @@ async def deactivate_default_board_config_version(
 async def get_board_default_config_diff(
     board_id: str,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     try:
         result = await GetBoardDefaultConfigDiffUseCase().execute(
             DefaultBoardConfigCommand(board_id=board_id),
-            actor=RESTAdapterContract.actor(actor, board_id=board_id),
+            actor=RESTAdapterContract.actor_from_principal(
+                principal, board_id=board_id
+            ),
             uow=db,
         )
         return result.data
     except DefaultBoardConfigurationError as exc:
         raise _err(exc)
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
 
 
 # -- guideline defaults (spec 8a2fad91 / card 5cb88511) ----------------------
@@ -438,19 +448,21 @@ async def list_default_guideline_candidates(
     scope: str = "global",
     template_id: str | None = None,
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-    actor: str = Depends(require_user),
+    principal: Principal = Depends(require_principal),
 ) -> dict[str, Any]:
     """Global catalog guidelines with derived eligibility + current default status
     from the umbrella template (api_019810c9)."""
     try:
         result = await ListDefaultGuidelineCandidatesUseCase().execute(
             DefaultBoardConfigCommand(scope=scope, template_id=template_id or ""),
-            actor=RESTAdapterContract.actor(actor),
+            actor=RESTAdapterContract.actor_from_principal(principal),
             uow=db,
         )
         return result.data
     except DefaultBoardConfigurationError as exc:
         raise _err(exc)
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc)
 
 
 @router.post("/default-board-configurations/{template_id}/guidelines")

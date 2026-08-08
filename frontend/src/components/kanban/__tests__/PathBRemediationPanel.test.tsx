@@ -56,6 +56,8 @@ function renderPanel(props: {
   preview?: BugRegressionScenarioPreview | null;
   onCreate?: () => void;
   onAssociate?: (id: string) => void;
+  canCreate?: boolean;
+  canAssociate?: boolean;
 }) {
   const onCreate = props.onCreate ?? vi.fn();
   const onAssociate = props.onAssociate ?? vi.fn();
@@ -66,6 +68,8 @@ function renderPanel(props: {
       bugRegressionPreview={props.preview ?? null}
       onCreateAmendment={onCreate}
       onAssociate={onAssociate}
+      canCreate={props.canCreate}
+      canAssociate={props.canAssociate}
     />,
   );
   return { ...utils, onCreate, onAssociate };
@@ -172,6 +176,36 @@ describe('PathBRemediationPanel', () => {
 
     fireEvent.click(screen.getByTestId('associate-amd-7'));
     expect(onAssociate).toHaveBeenCalledWith('amd-7');
+  });
+
+  it('gates create and associate independently with amendment permissions', () => {
+    const { rerender, onCreate, onAssociate } = renderPanel({
+      preview: PATH_B_PREVIEW,
+      revisions: [revision({ id: 'amd-7' })],
+      canCreate: false,
+      canAssociate: true,
+    });
+
+    expect(screen.getByTestId('create-amendment-action')).toBeDisabled();
+    expect(screen.getByTestId('associate-amd-7')).not.toBeDisabled();
+    fireEvent.click(screen.getByTestId('create-amendment-action'));
+    fireEvent.click(screen.getByTestId('associate-amd-7'));
+    expect(onCreate).not.toHaveBeenCalled();
+    expect(onAssociate).toHaveBeenCalledWith('amd-7');
+
+    rerender(
+      <PathBRemediationPanel
+        revisions={[revision({ id: 'amd-7' })]}
+        pathBResolution={null}
+        bugRegressionPreview={PATH_B_PREVIEW}
+        onCreateAmendment={onCreate}
+        onAssociate={onAssociate}
+        canCreate
+        canAssociate={false}
+      />,
+    );
+    expect(screen.getByTestId('create-amendment-action')).not.toBeDisabled();
+    expect(screen.getByTestId('associate-amd-7')).toBeDisabled();
   });
 
   // Card 62f6f196 / ts_b6d87391 — a blocked bug surfaces a create OR associate

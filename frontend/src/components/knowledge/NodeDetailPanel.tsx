@@ -11,6 +11,7 @@ import { NODE_TYPE_CONFIG } from '@/types/knowledge-graph';
 import * as kgApi from '@/services/kg-api';
 import { RelevanceBadge } from './RelevanceBadge';
 import { useOptionalModalStack } from '@/contexts/ModalStackContext';
+import { usePermissions } from '@/hooks/usePermissions';
 
 interface Props {
   node: KGNode;
@@ -34,6 +35,13 @@ interface ChainNode {
 }
 
 export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Props) {
+  const permissions = usePermissions(boardId);
+  const canBoostNode = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+    && permissions.has('kg.operations.node.boost')
+  );
   const config = NODE_TYPE_CONFIG[node.node_type] || NODE_TYPE_CONFIG.Decision;
   const [similar, setSimilar] = useState<SimilarResult[] | null>(null);
   const [chain, setChain] = useState<ChainNode[] | null>(null);
@@ -94,6 +102,7 @@ export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Prop
   const [optimisticScore, setOptimisticScore] = useState<number | null>(null);
 
   async function handleBoost() {
+    if (!canBoostNode) return;
     setBoosting(true);
     const before = typeof optimisticScore === 'number' ? optimisticScore : node.relevance_score ?? 0.5;
     const optimistic = Math.min(1.5, before + 0.3);
@@ -166,9 +175,13 @@ export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Prop
             <button
               type="button"
               onClick={handleBoost}
-              disabled={boosting || displayScore >= 1.5}
+              disabled={!canBoostNode || boosting || displayScore >= 1.5}
               className="px-2 py-0.5 text-xs rounded bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-400 text-white font-medium"
-              title="Adds +0.3 to the relevance score (clamped at 1.5)"
+              title={
+                canBoostNode
+                  ? 'Adds +0.3 to the relevance score (clamped at 1.5)'
+                  : 'Requires kg.operations.node.boost'
+              }
             >
               {boosting ? '...' : 'Boost'}
             </button>

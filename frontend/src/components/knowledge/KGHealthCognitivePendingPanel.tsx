@@ -31,6 +31,7 @@ import {
   type KGCognitivePendingResponse,
 } from '@/services/kg-health-api';
 import { recordKGCognitivePendingPanelState } from '@/services/kg-cognitive-pending-telemetry';
+import { usePermissions } from '@/hooks/usePermissions';
 
 interface KGHealthCognitivePendingPanelProps {
   boardId: string | null;
@@ -48,6 +49,13 @@ export function KGHealthCognitivePendingPanel({
   selectedKgGenerationId,
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
 }: KGHealthCognitivePendingPanelProps) {
+  const permissions = usePermissions(boardId);
+  const canReadCognitive = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+    && permissions.has('kg.operations.cognitive.read')
+  );
   const [data, setData] = useState<KGCognitivePendingResponse | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [uiState, setUiState] = useState<UIState>('loading');
@@ -68,6 +76,12 @@ export function KGHealthCognitivePendingPanel({
     if (!boardId) {
       setUiState('empty');
       setData(null);
+      return;
+    }
+    if (!canReadCognitive) {
+      const permissionError = new Error('You do not have permission to read cognitive state');
+      setError(permissionError);
+      setUiState('error');
       return;
     }
     if (inFlightRef.current) return;
@@ -112,7 +126,7 @@ export function KGHealthCognitivePendingPanel({
     } finally {
       inFlightRef.current = false;
     }
-  }, [boardId, selectedKgGenerationId, pageIndex]);
+  }, [boardId, selectedKgGenerationId, pageIndex, canReadCognitive]);
 
   useEffect(() => {
     setPageIndex(0);
@@ -130,14 +144,14 @@ export function KGHealthCognitivePendingPanel({
   }, [data, pageIndex]);
 
   useEffect(() => {
-    if (!boardId) return;
+    if (!boardId || permissions.isLoading) return;
     fetchOnce();
     intervalRef.current = setInterval(fetchOnce, pollIntervalMs);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
       abortRef.current?.abort();
     };
-  }, [boardId, selectedKgGenerationId, pollIntervalMs, fetchOnce]);
+  }, [boardId, selectedKgGenerationId, pollIntervalMs, fetchOnce, permissions.isLoading]);
 
   const handleRefresh = useCallback(() => {
     void fetchOnce();
