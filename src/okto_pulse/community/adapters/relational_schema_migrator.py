@@ -434,6 +434,14 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "migration audit.",
     ),
     (
+        "_migrate_semantic_pinpoint_v2_schema",
+        "post_create_all",
+        False,
+        "Install the additive actionable-pinpoint v2 assessment ledger, "
+        "lossless versioned payloads, cross-contract idempotency and "
+        "SQLite/PostgreSQL immutability guards.",
+    ),
+    (
         "_migrate_seed_semantic_configurations_for_legacy_bindings",
         "post_create_all",
         False,

@@ -52,7 +52,7 @@ class CommunitySettings(CoreSettings, BaseSettings):
     metrics_dir: str = ""
     metrics_beacon_url: str = COMMUNITY_DEFAULT_METRICS_BEACON_URL
     mcp_server_name: str = "okto-pulse"
-    mcp_server_version: str = "0.3.1"
+    mcp_server_version: str = "0.3.2"
     mcp_port: int = 8101
     cors_origins: str = "*"
     kg_base_dir: str = "~/.okto-pulse"

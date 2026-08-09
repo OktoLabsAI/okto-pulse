@@ -461,6 +461,81 @@ export interface SemanticAssessmentResponse {
   assessment: SemanticAssessmentListItem;
 }
 
+export type SemanticAssessmentContractVersion = 'v1' | 'v2';
+export type SemanticPinpointKind = 'evidence' | 'issue';
+export type SemanticPinpointSeverity = 'low' | 'medium' | 'high' | 'critical';
+export type SemanticAnchorAvailability =
+  | 'available'
+  | 'removed'
+  | 'inaccessible';
+
+export interface SemanticAnchorV2 {
+  anchor_type: SemanticPinpointAnchorType;
+  anchor_ref: string | null;
+  excerpt_hash: string | null;
+}
+
+export interface SemanticAnchorSnapshotV2 {
+  label: string;
+  excerpt: string | null;
+  source_version: string;
+  availability_at_seal: SemanticAnchorAvailability;
+}
+
+export interface SemanticPinpointV2 {
+  contract_version: 'v2';
+  pinpoint_key: string;
+  kind: SemanticPinpointKind;
+  title: string;
+  detail: string;
+  severity: SemanticPinpointSeverity | null;
+  remediation: string | null;
+  anchor: SemanticAnchorV2;
+  anchor_snapshot: SemanticAnchorSnapshotV2;
+  blocking: boolean;
+}
+
+export interface SemanticMetricResultV2 {
+  metric_result_id: string;
+  metric_result_digest: string;
+  metric_id: string;
+  metric_code: string;
+  score: number;
+  direction: GuidelineMetricDirection;
+  default_threshold: number;
+  effective_threshold: number;
+  threshold_source: SemanticThresholdSource;
+  outcome: SemanticMetricOutcome;
+  blocking: boolean;
+  pinpoints: SemanticPinpointV2[];
+}
+
+export interface SemanticAssessmentCurrentV2 {
+  receipt_id: string;
+  receipt_digest: string;
+  currentness: 'current';
+  board_id: string;
+  subject_type: PolicyEntityType;
+  subject_id: string;
+  subject_version: number;
+  binding_id: string;
+  guideline_id: string;
+  guideline_revision_id: string;
+  confidence: number;
+  recorded_at: string;
+  metrics: SemanticMetricResultV2[];
+}
+
+export type SemanticCurrentAssessmentResponse =
+  | {
+      contract_version: 'v1';
+      assessment: SemanticAssessmentDetail;
+    }
+  | {
+      contract_version: 'v2';
+      assessment: SemanticAssessmentCurrentV2;
+    };
+
 export interface SemanticWaiverResponse {
   waiver: SemanticWaiverListItem;
 }

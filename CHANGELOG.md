@@ -9,8 +9,16 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-09
+
 ### Added
 
+- Semantic-guideline assessment v2 persistence, REST/OpenAPI transport and
+  feature-capability rollout controls.
+- Actionable Policy Compliance pinpoints with human-readable location snapshots,
+  remediation and circular confidence/metric score presentation.
+- Safe semantic-anchor resolvers for Card and Spec modals, with fail-closed
+  behavior for unknown or unavailable content.
 - A recursive permission editor that renders every one of the 397 permission
   leaves exposed by the application, with a full-coverage regression.
 - Reviewer-separation controls in both Board settings and Global Default Board
@@ -20,6 +28,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Community now requires `okto-pulse-core>=0.3.2`.
+- Authlib is constrained to the supported 1.6 compatibility line while
+  FastMCP 2.x still imports the deprecated `authlib.jose` namespace.
 - REST and UI authorization now consume the centralized Core operation policy
   and the canonical namespaces for agent, board administration and sharing,
   permission presets, default configuration, design system, runtime, metrics,
@@ -28,6 +39,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Policy Compliance findings no longer reduce visible Spec or Card locations
+  to opaque identifiers when a sealed human-readable snapshot is authorized.
 - Permission UI state now refreshes reliably when the selected role or board
   changes.
 - Inline guidelines no longer present an inapplicable unlink action.

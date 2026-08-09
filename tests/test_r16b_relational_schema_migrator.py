@@ -165,10 +165,10 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
     # plus the SK-B3 closure backfill of the 5-column unique authority index
     # on guideline_board_bindings (structural prerequisite of the
     # binding-configuration composite FK on migrated databases).
-    assert len(migrate_names) == 61, (
-        f"expected 60 _migrate_*, found {len(migrate_names)}"
+    assert len(migrate_names) == 62, (
+        f"expected 62 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 61
+    assert len(ledger_migrate_ids) == 62
     ordered_ids = [step.step_id for step in ledger]
     assert ordered_ids.index(
         "_migrate_guideline_policy_lifecycle_substrate"
@@ -481,6 +481,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         "_migrate_policy_compliance_v1_schema",
         "_migrate_policy_waiver_v1_schema",
         "_migrate_semantic_guideline_governance_schema",
+        "_migrate_semantic_pinpoint_v2_schema",
         kb_governance_convergence_step,
         "_migrate_knowledge_propagation_v2_schema",
         "_migrate_rebuild_guideline_import_candidates_semantic_shape",

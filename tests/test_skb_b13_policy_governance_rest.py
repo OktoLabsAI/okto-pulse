@@ -1511,13 +1511,16 @@ def test_every_governance_success_schema_is_recursively_closed_and_exact() -> No
             visit(value, visited)
 
     checked_operations = 0
-    for path_item in document["paths"].values():
+    for path, path_item in document["paths"].items():
         for method in ("get", "post", "patch", "delete"):
             operation = path_item.get(method)
             if operation is None:
                 continue
             responses = operation["responses"]
-            assert "422" not in responses
+            if path.endswith("/semantic-guideline-assessments/v2"):
+                assert "422" in responses
+            else:
+                assert "422" not in responses
             assert {"400", "401", "403", "404", "409", "503"}.issubset(
                 responses
             )
@@ -1532,6 +1535,11 @@ def test_every_governance_success_schema_is_recursively_closed_and_exact() -> No
             ):
                 visit(
                     responses[status_code]["content"]["application/json"]["schema"],
+                    set(),
+                )
+            if "422" in responses:
+                visit(
+                    responses["422"]["content"]["application/json"]["schema"],
                     set(),
                 )
             success_schemas = [

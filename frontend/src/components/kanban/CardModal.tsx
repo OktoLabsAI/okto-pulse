@@ -61,6 +61,7 @@ import {
   type ResolvedTaskValidationThresholds,
   type TaskValidationThresholdSource,
 } from './taskValidationThresholds';
+import { resolveCardSemanticAnchor } from './cardSemanticAnchors';
 
 /** Resolve an actor ID to a display name using the members list. */
 function resolveActorName(id: string | null | undefined, members: { id: string; name: string }[]): string {
@@ -2176,6 +2177,10 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                           subjectId={card.id}
                           transitionPreview={policyTransitionAuthority.preview}
                           refreshKey={policyAuthorityRefreshKey}
+                          resolveSemanticAnchor={resolveCardSemanticAnchor}
+                          onNavigateSemanticAnchor={() => {
+                            setActiveTab('details');
+                          }}
                           onEvaluated={() => {
                             policyTransitionAuthority.clearRejection();
                             void policyTransitionAuthority.refresh();

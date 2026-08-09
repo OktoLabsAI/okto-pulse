@@ -60,6 +60,15 @@ from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     bind_semantic_subject_actor,
     unbind_semantic_subject_actor,
 )
+from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_v2 import (
+    CommunitySqlAlchemySemanticGuidelineAssessmentV2,
+)
+from okto_pulse.community.adapters.sqlalchemy_semantic_subject_projection import (
+    CommunitySqlAlchemySemanticSubjectProjection,
+)
+from okto_pulse.community.adapters.semantic_assessment_v2_capabilities import (
+    CommunitySemanticAssessmentV2Capabilities,
+)
 from okto_pulse.core.ports.knowledge_propagation import KnowledgeTargetKey
 
 if TYPE_CHECKING:
@@ -210,6 +219,16 @@ class CommunityUnitOfWork:
         self.ideations = CommunityIdeationRepository(session, self.realm_scope)
         self.specs = CommunitySpecRepository(session, self.realm_scope)
         self.services = build_application_service_catalog(session)
+        self.semantic_subject_projection = (
+            CommunitySqlAlchemySemanticSubjectProjection(session)
+        )
+        self.semantic_assessment_v2 = (
+            CommunitySqlAlchemySemanticGuidelineAssessmentV2(session)
+        )
+        self.semantic_assessment_v2_reader = self.semantic_assessment_v2
+        self.semantic_assessment_v2_capability = (
+            CommunitySemanticAssessmentV2Capabilities(session)
+        )
 
     async def __aenter__(self) -> "CommunityUnitOfWork":
         return self

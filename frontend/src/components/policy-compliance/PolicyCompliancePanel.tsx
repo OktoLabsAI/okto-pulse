@@ -27,11 +27,13 @@ import {
   usePolicyGovernanceApi,
 } from '@/services/policy-governance-api';
 import { useDashboardApi } from '@/services/api';
+import { recordPolicyComplianceRender } from '@/services/policy-compliance-telemetry';
 import type {
   GuidelineMetricDirection,
   NonEmptyArray,
   PolicyEntityType,
   SemanticAssessmentDetail,
+  SemanticCurrentAssessmentResponse,
   SemanticEvidenceRef,
   SemanticFindingDetail,
   SemanticSkipDetail,
@@ -39,6 +41,11 @@ import type {
 } from '@/types/policy-governance';
 
 import {
+  ActionablePinpoint,
+  PolicyComplianceReadOnlyActions,
+} from './ActionablePinpoint';
+import {
+  parseCurrentSemanticAssessmentResponse,
   parseSemanticAssessmentDetail,
   parseCreatedSemanticSkipResponse,
   parseSemanticDetailPage,
@@ -47,7 +54,13 @@ import {
   parseSemanticWaiverDetail,
   parseRequestedSemanticWaiverResponse,
   parseRevokedSemanticSkipResponse,
+  resolveSemanticPolicyViewModel,
+  semanticPolicyRenderTelemetry,
   semanticMetricDirection,
+  type SemanticAnchorResolution,
+  type SemanticPolicyUiState,
+  type SemanticPolicyResolverOptions,
+  type SemanticPolicyViewModel,
   type SemanticSubjectExpectation,
 } from './semanticPolicyModel';
 import {
@@ -81,6 +94,14 @@ export interface PolicyCompliancePanelProps {
   onEvaluated?: () => void;
   onRefreshed?: () => void;
   refreshKey?: number;
+  /** Current subject authorization resolver; absent authority fails closed. */
+  resolveSemanticAnchor?: (
+    anchor: Parameters<NonNullable<SemanticPolicyResolverOptions['resolveAnchor']>>[0],
+  ) => SemanticAnchorResolution;
+  /** Optional host navigation for a target returned by the authorized resolver. */
+  onNavigateSemanticAnchor?: (target: string) => void;
+  /** Optional host guidance action; the panel also provides safe inline guidance. */
+  onOpenReassessmentGuidance?: () => void;
 }
 
 function formatTimestamp(value: string): string {
@@ -234,6 +255,58 @@ type ComplianceAuthorityState =
       items: BindingComplianceAuthority[];
       message: string;
     };
+
+interface CurrentSemanticAssessmentState {
+  scope: string;
+  status: 'idle' | 'loading' | 'ready' | 'error';
+  responses: Record<string, SemanticCurrentAssessmentResponse>;
+  missingBindingIds: string[];
+  message: string | null;
+}
+
+function primarySemanticState(
+  view: SemanticPolicyViewModel,
+): SemanticPolicyUiState {
+  if (view.currentness === 'stale') return 'stale';
+  if (view.contractVersion === 'v1') return 'legacy';
+  const priority: SemanticPolicyUiState[] = [
+    'fail',
+    'waived_fail_finding',
+    'non_blocking_warning',
+    'positive_evidence',
+  ];
+  return priority.find((state) => view.uiStates.includes(state))
+    ?? 'no_visible_pinpoints';
+}
+
+function SemanticStateChip({ state }: { state: SemanticPolicyUiState }) {
+  const tone = state === 'fail'
+    ? 'bg-red-100 text-red-700 dark:bg-red-400/15 dark:text-red-200'
+    : state === 'positive_evidence'
+      ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200'
+      : state === 'waived_fail_finding'
+        ? 'bg-violet-100 text-violet-700 dark:bg-violet-400/15 dark:text-violet-200'
+        : state === 'stale' || state === 'non_blocking_warning'
+          ? 'bg-amber-100 text-amber-700 dark:bg-amber-400/15 dark:text-amber-200'
+          : 'bg-surface-100 text-surface-600 dark:bg-surface-700/60 dark:text-surface-300';
+  const label = state === 'positive_evidence'
+    ? 'Passed'
+    : state === 'non_blocking_warning'
+      ? 'Warning · Passed'
+      : state === 'waived_fail_finding'
+        ? 'Waiver active'
+        : state === 'legacy'
+          ? 'V1 · Read-only'
+          : state.split('_').join(' ');
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${tone}`}>
+      {state === 'fail' || state === 'stale'
+        ? <AlertTriangle size={11} aria-hidden="true" />
+        : <CheckCircle2 size={11} aria-hidden="true" />}
+      {label}
+    </span>
+  );
+}
 
 function EnforcementBadge({
   enforcement,
@@ -1088,6 +1161,9 @@ export function PolicyCompliancePanel({
   onRequestWaiver,
   onRefreshed,
   refreshKey = 0,
+  resolveSemanticAnchor,
+  onNavigateSemanticAnchor,
+  onOpenReassessmentGuidance,
 }: PolicyCompliancePanelProps) {
   const api = usePolicyGovernanceApi();
   const permissions = usePermissions(boardId);
@@ -1096,6 +1172,8 @@ export function PolicyCompliancePanel({
   const [waiversExpanded, setWaiversExpanded] = useState(false);
   const [skipsExpanded, setSkipsExpanded] = useState(false);
   const [localRefresh, setLocalRefresh] = useState(0);
+  const [guidanceVisible, setGuidanceVisible] = useState(false);
+  const advancedDetailsRef = useRef<HTMLDetailsElement | null>(null);
   const [waiverFinding, setWaiverFinding] =
     useState<SemanticFindingDetail | null>(null);
   const [skipDialog, setSkipDialog] = useState<SkipDialogState | null>(null);
@@ -1149,6 +1227,15 @@ export function PolicyCompliancePanel({
   const dashboardApi = useDashboardApi();
   const [complianceAuthority, setComplianceAuthority] =
     useState<ComplianceAuthorityState>({ status: 'loading', items: [] });
+  const semanticScope = JSON.stringify([boardId, entityType, subjectId]);
+  const [currentSemantic, setCurrentSemantic] =
+    useState<CurrentSemanticAssessmentState>({
+      scope: semanticScope,
+      status: 'idle',
+      responses: {},
+      missingBindingIds: [],
+      message: null,
+    });
 
   useEffect(() => {
     if (!canRead) return undefined;
@@ -1231,10 +1318,73 @@ export function PolicyCompliancePanel({
   }, [canRead, resetScope]);
 
   useEffect(() => {
+    if (!canRead || complianceAuthority.status !== 'ready') return undefined;
+    const controller = new AbortController();
+    let cancelled = false;
+    setCurrentSemantic((previous) => ({
+      scope: semanticScope,
+      status: 'loading',
+      responses: previous.scope === semanticScope ? previous.responses : {},
+      missingBindingIds: [],
+      message: null,
+    }));
+    void (async () => {
+      const responses: Record<string, SemanticCurrentAssessmentResponse> = {};
+      const missingBindingIds: string[] = [];
+      const errors: string[] = [];
+      await Promise.all(complianceAuthority.items.map(async (binding) => {
+        try {
+          const response = await api.getCurrentSemanticGuidelineAssessment(
+            boardId,
+            entityType,
+            subjectId,
+            binding.bindingId,
+            'detail',
+            controller.signal,
+          );
+          responses[binding.bindingId] =
+            parseCurrentSemanticAssessmentResponse(response, expectation);
+        } catch (caught) {
+          if (
+            caught instanceof PolicyGovernanceApiError
+            && (caught.status === 404 || caught.kind === 'not_found')
+          ) {
+            missingBindingIds.push(binding.bindingId);
+            return;
+          }
+          errors.push(semanticError(caught).message);
+        }
+      }));
+      if (cancelled) return;
+      setCurrentSemantic((previous) => ({
+        scope: semanticScope,
+        status: errors.length > 0 ? 'error' : 'ready',
+        responses: errors.length > 0 && previous.scope === semanticScope
+          ? { ...previous.responses, ...responses }
+          : responses,
+        missingBindingIds,
+        message: errors.length > 0
+          ? 'Assessment could not be refreshed. The last valid evidence remains visible.'
+          : null,
+      }));
+    })();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+    // The authority reload caused by resetScope is the refresh trigger. Keeping
+    // resetScope here as well would race one request against stale authority and
+    // then issue a second request when the refreshed authority arrives.
+    // The api hook identity stays excluded for request-loop protection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canRead, complianceAuthority, semanticScope]);
+
+  useEffect(() => {
     setHistoryExpanded(false);
     setFindingsExpanded(false);
     setWaiversExpanded(false);
     setSkipsExpanded(false);
+    setGuidanceVisible(false);
     setWaiverFinding(null);
     setSkipDialog(null);
   }, [boardId, entityType, subjectId]);
@@ -1316,12 +1466,67 @@ export function PolicyCompliancePanel({
   ]);
 
   const waivers = useOpaqueCursorCollection({
-    enabled: canReadWaivers && waiversExpanded,
+    enabled: canReadWaivers,
     resetKey: `${resetScope}:waivers:${evaluatedAt}`,
     loadPage: loadWaiverPage,
     getItemKey: (item: SemanticWaiverDetail) => item.waiver_id,
     classifyError: semanticError,
   });
+
+  const currentSemanticViews = useMemo(() => {
+    const waivedByBinding = new Map<string, Set<string>>();
+    for (const waiver of waivers.items) {
+      if (waiver.status !== 'approved' || waiver.currentness !== 'current') {
+        continue;
+      }
+      const codes = waivedByBinding.get(waiver.binding_id) ?? new Set<string>();
+      codes.add(waiver.metric_code);
+      waivedByBinding.set(waiver.binding_id, codes);
+    }
+    const views = new Map<string, SemanticPolicyViewModel>();
+    let error: string | null = null;
+    for (const [bindingId, response] of Object.entries(
+      currentSemantic.responses,
+    )) {
+      try {
+        views.set(bindingId, resolveSemanticPolicyViewModel(response, {
+          resolveAnchor: resolveSemanticAnchor,
+          canViewTechnicalDetails: true,
+          waivedMetricCodes: waivedByBinding.get(bindingId),
+        }));
+      } catch (caught) {
+        error = semanticError(caught).message;
+      }
+    }
+    return { views, error };
+  }, [currentSemantic.responses, resolveSemanticAnchor, waivers.items]);
+
+  useEffect(() => {
+    if (currentSemantic.status === 'loading') {
+      recordPolicyComplianceRender(
+        semanticPolicyRenderTelemetry('loading', 'none'),
+      );
+      return;
+    }
+    if (currentSemantic.status === 'error' || currentSemanticViews.error) {
+      recordPolicyComplianceRender(
+        semanticPolicyRenderTelemetry('recoverable_transport_error', 'none'),
+      );
+    }
+    for (const view of currentSemanticViews.views.values()) {
+      recordPolicyComplianceRender(semanticPolicyRenderTelemetry(
+        primarySemanticState(view),
+        view.contractVersion,
+      ));
+    }
+    if (currentSemantic.status === 'ready') {
+      currentSemantic.missingBindingIds.forEach(() => {
+        recordPolicyComplianceRender(
+          semanticPolicyRenderTelemetry('no_assessment', 'none'),
+        );
+      });
+    }
+  }, [currentSemantic, currentSemanticViews]);
 
   const loadSkipPage = useCallback(async (
     cursor: string | undefined,
@@ -1375,14 +1580,6 @@ export function PolicyCompliancePanel({
       error,
     };
   }, [assessments.items]);
-
-  const currentAssessmentByBinding = useMemo(() => {
-    const byBinding = new Map<string, SemanticAssessmentDetail>();
-    for (const assessment of currentResolution.items) {
-      byBinding.set(assessment.binding_id, assessment);
-    }
-    return byBinding;
-  }, [currentResolution.items]);
 
   const activeSkipResolution = useMemo(() => {
     const result = new Map<string, SemanticSkipDetail>();
@@ -1495,12 +1692,16 @@ export function PolicyCompliancePanel({
             <button
               type="button"
               onClick={refreshAll}
-              disabled={assessments.loading}
+              disabled={assessments.loading || currentSemantic.status === 'loading'}
               className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-surface-300 bg-white px-2.5 py-1 text-xs text-surface-700 hover:bg-surface-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-surface-600 dark:bg-surface-800 dark:text-surface-200"
             >
               <RefreshCw
                 size={13}
-                className={assessments.loading ? 'animate-spin' : ''}
+                className={
+                  assessments.loading || currentSemantic.status === 'loading'
+                    ? 'animate-spin'
+                    : ''
+                }
                 aria-hidden="true"
               />
               Refresh
@@ -1536,31 +1737,85 @@ export function PolicyCompliancePanel({
               guidelines remain context-only here.
             </p>
           ) : (
-            complianceAuthority.items.map((binding) => {
-              const assessment =
-                currentAssessmentByBinding.get(binding.bindingId) ?? null;
-              const resultByMetric = new Map(
-                (assessment?.metric_results ?? []).map((result) => [
-                  result.metric_id,
-                  result,
-                ]),
-              );
-              return (
+            <>
+              {currentSemantic.status === 'error' && (
+                <div role="alert" aria-live="assertive" className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-800 dark:border-red-800 dark:bg-red-950/30 dark:text-red-200">
+                  {currentSemantic.message}
+                  <div className="mt-2">
+                    <PolicyComplianceReadOnlyActions onRetry={refreshAll} />
+                  </div>
+                </div>
+              )}
+              {currentSemanticViews.error && (
+                <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-800 dark:border-red-800 dark:bg-red-950/30 dark:text-red-200">
+                  Semantic assessment evidence could not be projected safely.
+                </p>
+              )}
+              {complianceAuthority.items.map((binding) => {
+                const view = currentSemanticViews.views.get(binding.bindingId);
+                const state = view ? primarySemanticState(view) : null;
+                const resultByCode = new Map(
+                  (view?.metrics ?? []).map((result) => [
+                    result.metricCode,
+                    result,
+                  ]),
+                );
+                const isLoading = currentSemantic.status === 'loading' && !view;
+                const noAssessment = currentSemantic.status === 'ready'
+                  && currentSemantic.missingBindingIds.includes(binding.bindingId);
+                const pinpoints = view?.metrics.flatMap((metric) =>
+                  metric.pinpoints.map((pinpoint) => ({
+                    metricState: metric.uiState,
+                    pinpoint,
+                  }))
+                ) ?? [];
+                return (
                 <article
                   key={binding.bindingId}
                   data-testid={`guideline-compliance-${binding.bindingId}`}
-                  className="space-y-2 rounded-xl border border-surface-200 p-3 dark:border-surface-700"
+                  className="space-y-3 rounded-xl border border-surface-200 p-3 dark:border-surface-700"
+                  aria-busy={isLoading}
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="text-sm font-semibold text-surface-900 dark:text-white">
                       {binding.guidelineTitle}
                     </span>
                     <EnforcementBadge enforcement={binding.enforcement} />
-                    <ComplianceStateChip assessment={assessment} />
+                    {state
+                      ? <SemanticStateChip state={state} />
+                      : <ComplianceStateChip assessment={null} />}
+                    {view && (
+                      <span className="rounded-full bg-surface-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-surface-600 dark:bg-surface-800 dark:text-surface-300">
+                        {view.contractVersion}
+                      </span>
+                    )}
                   </div>
+                  {isLoading && (
+                    <div role="status" className="space-y-2 rounded-lg border border-surface-200 p-3 text-xs text-surface-500 dark:border-surface-700 dark:text-surface-400">
+                      <span className="block h-3 w-36 animate-pulse rounded bg-surface-200 dark:bg-surface-700" />
+                      Loading assessment evidence…
+                    </div>
+                  )}
+                  {noAssessment && (
+                    <div className="rounded-lg border border-dashed border-surface-300 p-3 text-xs text-surface-600 dark:border-surface-700 dark:text-surface-300" data-testid="policy-compliance-no-assessment">
+                      <p className="font-semibold">No assessment recorded</p>
+                      <p className="mt-1">Ask an independent agent to assess the current version. Scores cannot be entered here.</p>
+                    </div>
+                  )}
                   <div className="flex flex-wrap items-start justify-start gap-x-6 gap-y-3 pt-1">
+                    {view && (
+                      <div className="w-32" data-testid={`guideline-confidence-${binding.bindingId}`}>
+                        <MetricScoreRing
+                          label="Confidence"
+                          value={view.confidence}
+                          direction="higher-is-better"
+                          threshold={binding.minimumConfidence}
+                          testId={`guideline-confidence-ring-${binding.bindingId}`}
+                        />
+                      </div>
+                    )}
                     {binding.metrics.map((metric) => {
-                      const result = resultByMetric.get(metric.metricId);
+                      const result = resultByCode.get(metric.code);
                       return (
                         <div
                           key={metric.metricId}
@@ -1572,9 +1827,7 @@ export function PolicyCompliancePanel({
                             <MetricScoreRing
                               label={metric.title}
                               value={result.score}
-                              direction={semanticMetricDirection(
-                                metric.direction,
-                              )}
+                              direction={semanticMetricDirection(result.direction)}
                               threshold={metric.effectiveThreshold}
                               testId={`guideline-metric-ring-${metric.metricId}`}
                             />
@@ -1607,27 +1860,72 @@ export function PolicyCompliancePanel({
                       );
                     })}
                   </div>
-                  {assessment && (
+                  {view && pinpoints.length === 0 && (
+                    <p className="rounded-lg border border-dashed border-surface-300 p-3 text-xs text-surface-600 dark:border-surface-700 dark:text-surface-300" data-testid="policy-compliance-no-visible-pinpoints">
+                      Assessment has no visible pinpoints.
+                    </p>
+                  )}
+                  {pinpoints.length > 0 && (
+                    <section className="space-y-2" aria-label={`${binding.guidelineTitle} pinpoints`}>
+                      <h4 className="text-xs font-semibold text-surface-800 dark:text-surface-100">Actionable pinpoints</h4>
+                      <div className="space-y-2">
+                        {pinpoints.map(({ metricState, pinpoint }, index) => (
+                          <ActionablePinpoint
+                            key={`${pinpoint.contractVersion}:${index}:${pinpoint.title}`}
+                            pinpoint={pinpoint}
+                            policyState={pinpoint.state === 'removed'
+                              ? 'removed'
+                              : pinpoint.state === 'inaccessible'
+                                ? 'inaccessible'
+                                : metricState}
+                            onNavigate={onNavigateSemanticAnchor}
+                          />
+                        ))}
+                      </div>
+                    </section>
+                  )}
+                  {view && (
                     <p className="flex flex-wrap items-center gap-2 text-[11px] text-surface-500 dark:text-surface-400">
-                      <CurrentnessBadge
-                        currentness={assessment.currentness}
-                      />
+                      <CurrentnessBadge currentness={view.currentness} />
                       <span>
-                        Confidence {assessment.confidence}
+                        Confidence {view.confidence}
                         {binding.minimumConfidence !== null
                           ? ` (min ${binding.minimumConfidence})`
                           : ''}
                       </span>
-                      <span>{formatTimestamp(assessment.recorded_at)}</span>
+                      <span>{formatTimestamp(view.recordedAt)}</span>
+                    </p>
+                  )}
+                  <PolicyComplianceReadOnlyActions
+                    onViewHistory={() => {
+                      if (advancedDetailsRef.current) {
+                        advancedDetailsRef.current.open = true;
+                      }
+                      setHistoryExpanded(true);
+                    }}
+                    onViewReassessmentGuidance={
+                      state === 'stale' || noAssessment
+                        ? () => {
+                            setGuidanceVisible(true);
+                            onOpenReassessmentGuidance?.();
+                          }
+                        : undefined
+                    }
+                  />
+                  {guidanceVisible && (state === 'stale' || noAssessment) && (
+                    <p role="status" aria-live="polite" className="rounded-lg bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+                      Reassessment is performed by an independent agent against the current subject and binding fences; this browser never accepts a manual score or executes cognition.
                     </p>
                   )}
                 </article>
-              );
-            })
+                );
+              })}
+            </>
           )}
         </section>
 
         <details
+          ref={advancedDetailsRef}
           className="rounded-xl border border-surface-200 dark:border-surface-700"
           data-testid="policy-compliance-advanced"
         >

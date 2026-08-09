@@ -1,6 +1,14 @@
 export {
   PolicyCompliancePanel,
 } from './PolicyCompliancePanel';
+export {
+  ActionablePinpoint,
+  PolicyComplianceReadOnlyActions,
+} from './ActionablePinpoint';
+export type {
+  ActionablePinpointProps,
+  PolicyComplianceReadOnlyActionsProps,
+} from './ActionablePinpoint';
 export type {
   PolicyCompliancePanelProps,
 } from './PolicyCompliancePanel';

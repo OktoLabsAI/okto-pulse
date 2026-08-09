@@ -100,6 +100,7 @@ POLICY_COMPLIANCE_IMMUTABILITY_TRIGGER_PREFIX = "trg_policy_compliance_immutable
 POLICY_WAIVER_TRIGGER_PREFIX = "trg_policy_waiver_v2"
 POLICY_WAIVER_PREDECESSOR_TRIGGER_PREFIX = "trg_policy_waiver_v1"
 SEMANTIC_GUIDELINE_TRIGGER_PREFIX = "trg_semantic_guideline_v3"
+SEMANTIC_PINPOINT_V2_TRIGGER_PREFIX = "trg_semantic_pinpoint_v2"
 
 
 def _guideline_binding_fence_payload_v2(
@@ -14977,6 +14978,229 @@ WHERE NOT trigger.tgisinternal
     return None if changed else "skipped"
 
 
+def semantic_pinpoint_v2_owned_tables() -> tuple[object, ...]:
+    """Return the additive SK-B3.1 ledger tables in dependency order."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        SemanticGuidelineAssessmentV2Row,
+        SemanticGuidelineFindingV2Row,
+        SemanticGuidelineMetricResultV2Row,
+    )
+
+    return (
+        SemanticGuidelineAssessmentV2Row.__table__,
+        SemanticGuidelineMetricResultV2Row.__table__,
+        SemanticGuidelineFindingV2Row.__table__,
+    )
+
+
+def semantic_pinpoint_v2_sqlite_trigger_manifest(
+) -> dict[str, tuple[str, str]]:
+    """Exact SQLite immutability and cross-contract idempotency guards."""
+
+    receipt, result, finding = (
+        table.name for table in semantic_pinpoint_v2_owned_tables()
+    )
+    manifest: dict[str, tuple[str, str]] = {}
+    for table_name, message in (
+        (receipt, "semantic_assessment_v2_immutable"),
+        (result, "semantic_metric_result_v2_immutable"),
+        (finding, "semantic_finding_v2_immutable"),
+    ):
+        update_name = f"{SEMANTIC_PINPOINT_V2_TRIGGER_PREFIX}_{table_name}_u"
+        delete_name = f"{SEMANTIC_PINPOINT_V2_TRIGGER_PREFIX}_{table_name}_d"
+        manifest[update_name] = (
+            table_name,
+            f'''CREATE TRIGGER "{update_name}"
+BEFORE UPDATE ON "{table_name}"
+BEGIN
+    SELECT RAISE(ABORT, '{message}');
+END''',
+        )
+        manifest[delete_name] = (
+            table_name,
+            f'''CREATE TRIGGER "{delete_name}"
+BEFORE DELETE ON "{table_name}"
+WHEN NOT EXISTS (
+    SELECT 1 FROM "kg_board_erasure_permits" AS permit
+    WHERE permit.board_id = OLD.board_id
+)
+BEGIN
+    SELECT RAISE(ABORT, '{message}');
+END''',
+        )
+
+    receipt_insert = f"{SEMANTIC_PINPOINT_V2_TRIGGER_PREFIX}_receipt_i"
+    manifest[receipt_insert] = (
+        receipt,
+        f'''CREATE TRIGGER "{receipt_insert}"
+BEFORE INSERT ON "{receipt}"
+WHEN NEW.contract_version <> 'semantic-guideline-assessment/v2'
+  OR json_type(NEW.payload) <> 'object'
+  OR json_extract(NEW.payload, '$.contract_version') <> 2
+  OR EXISTS (
+      SELECT 1 FROM semantic_guideline_assessment_receipts AS legacy
+      WHERE legacy.board_id = NEW.board_id
+        AND legacy.idempotency_key = NEW.idempotency_key
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_assessment_idempotency_contract_conflict');
+END''',
+    )
+    legacy_receipt_insert = (
+        f"{SEMANTIC_PINPOINT_V2_TRIGGER_PREFIX}_legacy_receipt_i"
+    )
+    manifest[legacy_receipt_insert] = (
+        "semantic_guideline_assessment_receipts",
+        f'''CREATE TRIGGER "{legacy_receipt_insert}"
+BEFORE INSERT ON "semantic_guideline_assessment_receipts"
+WHEN EXISTS (
+    SELECT 1 FROM "{receipt}" AS v2
+    WHERE v2.board_id = NEW.board_id
+      AND v2.idempotency_key = NEW.idempotency_key
+)
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_assessment_idempotency_contract_conflict');
+END''',
+    )
+    result_insert = f"{SEMANTIC_PINPOINT_V2_TRIGGER_PREFIX}_result_i"
+    manifest[result_insert] = (
+        result,
+        f'''CREATE TRIGGER "{result_insert}"
+BEFORE INSERT ON "{result}"
+WHEN NEW.contract_version <> 'semantic-metric-result/v2'
+  OR json_type(NEW.payload) <> 'object'
+  OR json_extract(NEW.payload, '$.contract_version') <> 2
+  OR json_extract(NEW.payload, '$.receipt_id') <> NEW.receipt_id
+  OR json_extract(NEW.payload, '$.metric_result_id') <> NEW.result_id
+  OR NOT EXISTS (
+      SELECT 1 FROM "{receipt}" AS aggregate
+      WHERE aggregate.receipt_id = NEW.receipt_id
+        AND aggregate.board_id = NEW.board_id
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_metric_result_v2_invalid');
+END''',
+    )
+    finding_insert = f"{SEMANTIC_PINPOINT_V2_TRIGGER_PREFIX}_finding_i"
+    manifest[finding_insert] = (
+        finding,
+        f'''CREATE TRIGGER "{finding_insert}"
+BEFORE INSERT ON "{finding}"
+WHEN NEW.contract_version <> 'semantic-metric-finding/v2'
+  OR json_type(NEW.payload) <> 'object'
+  OR json_extract(NEW.payload, '$.contract_version') <> 2
+  OR json_extract(NEW.payload, '$.finding_id') <> NEW.finding_id
+  OR NOT EXISTS (
+      SELECT 1 FROM "{result}" AS metric
+      WHERE metric.result_id = NEW.metric_result_id
+        AND metric.receipt_id = NEW.receipt_id
+        AND metric.board_id = NEW.board_id
+        AND metric.outcome = 'fail'
+        AND metric.result_digest = NEW.metric_result_digest
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_finding_v2_invalid');
+END''',
+    )
+    return manifest
+
+
+def semantic_pinpoint_v2_postgresql_ddl(
+) -> tuple[str, dict[str, tuple[str, str, int]]]:
+    """Return PostgreSQL guards equivalent to the SQLite v2 manifest."""
+
+    receipt, result, finding = (
+        table.name for table in semantic_pinpoint_v2_owned_tables()
+    )
+    function_name = "semantic_pinpoint_v2_guard"
+    function_sql = f'''
+CREATE OR REPLACE FUNCTION {function_name}() RETURNS trigger AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        RAISE EXCEPTION 'semantic_pinpoint_v2_immutable';
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        IF EXISTS (
+            SELECT 1 FROM kg_board_erasure_permits AS permit
+            WHERE permit.board_id = OLD.board_id
+        ) THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'semantic_pinpoint_v2_immutable';
+    END IF;
+    IF TG_TABLE_NAME = 'semantic_guideline_assessment_receipts' THEN
+        IF EXISTS (
+            SELECT 1 FROM {receipt} AS v2
+            WHERE v2.board_id = NEW.board_id
+              AND v2.idempotency_key = NEW.idempotency_key
+        ) THEN
+            RAISE EXCEPTION 'semantic_assessment_idempotency_contract_conflict';
+        END IF;
+    ELSIF TG_TABLE_NAME = '{receipt}' THEN
+        IF NEW.contract_version <> 'semantic-guideline-assessment/v2'
+           OR jsonb_typeof(NEW.payload::jsonb) <> 'object'
+           OR NEW.payload::jsonb ->> 'contract_version' <> '2'
+           OR EXISTS (
+               SELECT 1 FROM semantic_guideline_assessment_receipts AS legacy
+               WHERE legacy.board_id = NEW.board_id
+                 AND legacy.idempotency_key = NEW.idempotency_key
+           ) THEN
+            RAISE EXCEPTION 'semantic_assessment_idempotency_contract_conflict';
+        END IF;
+    ELSIF TG_TABLE_NAME = '{result}' THEN
+        IF NEW.contract_version <> 'semantic-metric-result/v2'
+           OR jsonb_typeof(NEW.payload::jsonb) <> 'object'
+           OR NEW.payload::jsonb ->> 'contract_version' <> '2'
+           OR NEW.payload::jsonb ->> 'receipt_id' <> NEW.receipt_id
+           OR NEW.payload::jsonb ->> 'metric_result_id' <> NEW.result_id
+           OR NOT EXISTS (
+               SELECT 1 FROM {receipt} AS aggregate
+               WHERE aggregate.receipt_id = NEW.receipt_id
+                 AND aggregate.board_id = NEW.board_id
+           ) THEN
+            RAISE EXCEPTION 'semantic_metric_result_v2_invalid';
+        END IF;
+    ELSIF TG_TABLE_NAME = '{finding}' THEN
+        IF NEW.contract_version <> 'semantic-metric-finding/v2'
+           OR jsonb_typeof(NEW.payload::jsonb) <> 'object'
+           OR NEW.payload::jsonb ->> 'contract_version' <> '2'
+           OR NEW.payload::jsonb ->> 'finding_id' <> NEW.finding_id
+           OR NOT EXISTS (
+               SELECT 1 FROM {result} AS metric
+               WHERE metric.result_id = NEW.metric_result_id
+                 AND metric.receipt_id = NEW.receipt_id
+                 AND metric.board_id = NEW.board_id
+                 AND metric.outcome = 'fail'
+                 AND metric.result_digest = NEW.metric_result_digest
+           ) THEN
+            RAISE EXCEPTION 'semantic_finding_v2_invalid';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql'''
+    specs: dict[str, tuple[str, str, int]] = {}
+    # PostgreSQL tgtype: row(1) + before(2) + operation bit.
+    for table_name, stem in (
+        (receipt, "receipt"),
+        (result, "result"),
+        (finding, "finding"),
+    ):
+        insert_name = f"trg_spv2_{stem}_i"
+        update_name = f"trg_spv2_{stem}_u"
+        delete_name = f"trg_spv2_{stem}_d"
+        specs[insert_name] = (table_name, "INSERT", 7)
+        specs[update_name] = (table_name, "UPDATE", 19)
+        specs[delete_name] = (table_name, "DELETE", 11)
+    specs["trg_spv2_legacy_receipt_i"] = (
+        "semantic_guideline_assessment_receipts",
+        "INSERT",
+        7,
+    )
+    return function_sql, specs
+
+
 def semantic_guideline_owned_tables() -> tuple[object, ...]:
     """Return the single ORM-owned manifest for all semantic v2 tables."""
 
@@ -16678,6 +16902,159 @@ WHERE NOT trigger.tgisinternal
                     )
                     changed = True
 
+    return None if changed else "skipped"
+
+
+async def _migrate_semantic_pinpoint_v2_schema() -> str | None:
+    """Converge the additive actionable-pinpoint ledger and exact guards."""
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+
+    engine = get_engine()
+    changed = False
+
+    def _table_names(sync_conn: object) -> set[str]:
+        return set(sa_inspect(sync_conn).get_table_names())
+
+    async with engine.begin() as conn:
+        dialect = conn.dialect.name
+        if dialect not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "semantic pinpoint v2 migration supports only SQLite and PostgreSQL"
+            )
+        if dialect == "sqlite":
+            await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+            await conn.exec_driver_sql("BEGIN IMMEDIATE")
+        table_names = await conn.run_sync(_table_names)
+        for table in semantic_pinpoint_v2_owned_tables():
+            if table.name not in table_names:
+                await conn.run_sync(
+                    lambda sync_conn, owned=table: owned.create(
+                        sync_conn, checkfirst=True
+                    )
+                )
+                table_names.add(table.name)
+                changed = True
+            contract = await conn.run_sync(
+                (
+                    lambda sync_conn, owned=table: _sqlite_owned_table_contract(
+                        sync_conn, owned
+                    )
+                )
+                if dialect == "sqlite"
+                else (
+                    lambda sync_conn, owned=table: _postgresql_owned_table_contract(
+                        sync_conn, owned
+                    )
+                )
+            )
+            if contract["observed"] != contract["expected"]:
+                raise RuntimeError(
+                    "semantic pinpoint v2 table has a non-canonical contract: "
+                    + table.name
+                )
+
+        if dialect == "sqlite":
+            expected = semantic_pinpoint_v2_sqlite_trigger_manifest()
+            rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, tbl_name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name LIKE :prefix"
+                        ),
+                        {"prefix": f"{SEMANTIC_PINPOINT_V2_TRIGGER_PREFIX}%"},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing = {str(row["name"]): row for row in rows}
+            unexpected = set(existing) - set(expected)
+            if unexpected:
+                raise RuntimeError(
+                    "semantic pinpoint v2 has unexpected owned triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for trigger_name, (table_name, trigger_sql) in expected.items():
+                observed = existing.get(trigger_name)
+                if observed is None:
+                    await conn.execute(sa_text(trigger_sql))
+                    changed = True
+                elif (
+                    str(observed["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        observed["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
+                ):
+                    raise RuntimeError(
+                        "semantic pinpoint v2 owned trigger is corrupt: "
+                        + trigger_name
+                    )
+        else:
+            function_sql, trigger_specs = semantic_pinpoint_v2_postgresql_ddl()
+            await conn.execute(sa_text(function_sql))
+            rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            """
+SELECT trigger.tgname AS trigger_name,
+       relation.relname AS table_name,
+       function.proname AS function_name,
+       trigger.tgtype AS trigger_type,
+       trigger.tgenabled AS trigger_enabled
+FROM pg_trigger AS trigger
+JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+JOIN pg_proc AS function ON function.oid = trigger.tgfoid
+WHERE NOT trigger.tgisinternal
+  AND trigger.tgname LIKE 'trg_spv2_%'
+"""
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing = {str(row["trigger_name"]): row for row in rows}
+            unexpected = set(existing) - set(trigger_specs)
+            if unexpected:
+                raise RuntimeError(
+                    "semantic pinpoint v2 has unexpected PostgreSQL triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for trigger_name, (
+                table_name,
+                operation_clause,
+                expected_type,
+            ) in trigger_specs.items():
+                observed = existing.get(trigger_name)
+                if observed is None:
+                    await conn.execute(
+                        sa_text(
+                            f'CREATE TRIGGER "{trigger_name}" '
+                            f"BEFORE {operation_clause} "
+                            f'ON "{table_name}" FOR EACH ROW '
+                            "EXECUTE FUNCTION semantic_pinpoint_v2_guard()"
+                        )
+                    )
+                    changed = True
+                    continue
+                if (
+                    str(observed["table_name"]) != table_name
+                    or str(observed["function_name"])
+                    != "semantic_pinpoint_v2_guard"
+                    or int(observed["trigger_type"]) != expected_type
+                    or str(observed["trigger_enabled"]) != "O"
+                ):
+                    raise RuntimeError(
+                        "semantic pinpoint v2 PostgreSQL trigger is corrupt: "
+                        + trigger_name
+                    )
     return None if changed else "skipped"
 
 
@@ -18705,6 +19082,9 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_policy_waiver_v1_schema": _migrate_policy_waiver_v1_schema,
     "_migrate_semantic_guideline_governance_schema": (
         _migrate_semantic_guideline_governance_schema
+    ),
+    "_migrate_semantic_pinpoint_v2_schema": (
+        _migrate_semantic_pinpoint_v2_schema
     ),
     "_migrate_seed_semantic_configurations_for_legacy_bindings": (
         _migrate_seed_semantic_configurations_for_legacy_bindings

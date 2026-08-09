@@ -10,9 +10,15 @@ import pytest_asyncio
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = REPO_ROOT.parent
+CONFIGURED_CORE_REPO = os.environ.get("OKTO_PULSE_CORE_REPO")
+CORE_REPO = (
+    Path(CONFIGURED_CORE_REPO).expanduser().resolve()
+    if CONFIGURED_CORE_REPO
+    else WORKSPACE_ROOT / "okto-pulse-core"
+)
 LOCAL_IMPORT_PATHS = (
     REPO_ROOT / "src",
-    WORKSPACE_ROOT / "okto-pulse-core" / "src",
+    CORE_REPO / "src",
 )
 
 for path in reversed(LOCAL_IMPORT_PATHS):

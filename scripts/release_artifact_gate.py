@@ -30,9 +30,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-EXPECTED_VERSION = "0.3.1"
-EXPECTED_MCP_TOOL_COUNT = 312
-EXPECTED_CANONICAL_TOOL_COUNT = 304
+EXPECTED_VERSION = "0.3.2"
+EXPECTED_MCP_TOOL_COUNT = 313
+EXPECTED_CANONICAL_TOOL_COUNT = 305
 EXPECTED_TOOL_ALIAS_COUNT = 8
 EXPECTED_RESOURCE_COUNT = 53
 MINIMUM_SUPPORTED_PYTHON = (3, 11)
@@ -562,7 +562,7 @@ origins = {
 
 core_dist = metadata.distribution("okto-pulse-core")
 community_dist = metadata.distribution("okto-pulse")
-assert core_dist.version == community_dist.version == "0.3.1"
+assert core_dist.version == community_dist.version == "0.3.2"
 for distribution in (core_dist, community_dist):
     root = Path(distribution.locate_file("")).resolve()
     assert under(root, venv), (distribution.metadata["Name"], root, venv)
@@ -612,7 +612,7 @@ label = "Community Edition \u2014 v"
 about = [source for source in sources if label in source]
 assert len(about) == 1, len(about)
 assert about[0].count(label) == 1
-assert "0.3.1" in about[0]
+assert "0.3.2" in about[0]
 assert not any("Community Edition \u2014 v0.3.0" in source for source in sources)
 
 print("INSTALLED_ORIGIN_PROBE=" + json.dumps({
@@ -628,7 +628,7 @@ print("INSTALLED_ORIGIN_PROBE=" + json.dumps({
         "resource_count": resource_manifest["resource_count"],
         "resource_manifest_sha256": resource_manifest["manifest_sha256"],
     },
-    "about_version": "0.3.1",
+    "about_version": "0.3.2",
 }, sort_keys=True))
 """
 
@@ -713,9 +713,9 @@ async def main():
     frozen_ska_tools = {
         entry["name"] for entry in build_ska_tool_manifest()["tools"]
     }
-    assert initialized.serverInfo.version == "0.3.1"
-    assert metadata.version("okto-pulse-core") == "0.3.1"
-    assert metadata.version("okto-pulse") == "0.3.1"
+    assert initialized.serverInfo.version == "0.3.2"
+    assert metadata.version("okto-pulse-core") == "0.3.2"
+    assert metadata.version("okto-pulse") == "0.3.2"
     assert (
         len(names)
         == manifest["tool_inventory"]["count"]
@@ -901,7 +901,7 @@ def _installed_gate(
         env=env,
         timeout=120,
     )
-    expected_cli = "okto-pulse 0.3.1 (okto-pulse-core 0.3.1)"
+    expected_cli = "okto-pulse 0.3.2 (okto-pulse-core 0.3.2)"
     if cli.stdout.strip() != expected_cli:
         raise ReleaseArtifactGateError(
             "installed CLI version mismatch: "

@@ -30,6 +30,7 @@ import type {
 
 const policyApiMock = vi.hoisted(() => ({
   listSemanticGuidelineAssessments: vi.fn(),
+  getCurrentSemanticGuidelineAssessment: vi.fn(),
   listSemanticGuidelineFindings: vi.fn(),
   listSemanticMetricWaivers: vi.fn(),
   requestSemanticMetricWaiver: vi.fn(),
@@ -81,6 +82,7 @@ vi.mock('@/hooks/usePermissions', () => ({
 }));
 
 import { PolicyCompliancePanel } from '../PolicyCompliancePanel';
+import { PolicyGovernanceApiError } from '@/services/policy-governance-api';
 
 const HASH_A = 'a'.repeat(64);
 const HASH_B = 'b'.repeat(64);
@@ -190,6 +192,109 @@ function assessment({
     assessor_independent: assessorIndependent,
     confidence_admissible: confidence >= minimumConfidence,
     metric_results: metricResults,
+  };
+}
+
+function currentV2Assessment(
+  entityType: 'ideation' | 'refinement' | 'spec' | 'card' | 'sprint',
+  subjectId: string,
+) {
+  return {
+    contract_version: 'v2' as const,
+    assessment: {
+      receipt_id: `receipt-v2-${entityType}`,
+      receipt_digest: HASH_A,
+      currentness: 'current' as const,
+      board_id: 'board-1',
+      subject_type: entityType,
+      subject_id: subjectId,
+      subject_version: 7,
+      binding_id: 'binding-1',
+      guideline_id: 'guideline-1',
+      guideline_revision_id: 'guideline-1-revision-3',
+      confidence: 94,
+      recorded_at: '2026-08-08T12:00:00Z',
+      metrics: [{
+        metric_result_id: `result-v2-${entityType}`,
+        metric_result_digest: HASH_B,
+        metric_id: 'metric-1',
+        metric_code: 'architecture.segregation',
+        score: 86,
+        direction: 'minimum' as const,
+        default_threshold: 75,
+        effective_threshold: 75,
+        threshold_source: 'default' as const,
+        outcome: 'pass' as const,
+        blocking: false,
+        pinpoints: [{
+          contract_version: 'v2' as const,
+          pinpoint_key: `pinpoint-v2-${entityType}`,
+          kind: 'evidence' as const,
+          title: 'Domain boundary is explicit',
+          detail: 'The business responsibility is isolated from runtime details.',
+          severity: null,
+          remediation: null,
+          anchor: {
+            anchor_type: 'field' as const,
+            anchor_ref: 'technical_requirements',
+            excerpt_hash: HASH_B,
+          },
+          anchor_snapshot: {
+            label: 'Technical requirements',
+            excerpt: 'Runtime adapters remain outside the domain boundary.',
+            source_version: '7',
+            availability_at_seal: 'available' as const,
+          },
+          blocking: false,
+        }],
+      }],
+    },
+  };
+}
+
+function adoptedGuideline() {
+  return {
+    id: 'guideline-1',
+    guideline: {
+      id: 'guideline-1',
+      title: 'Hexagonal architecture',
+      content: 'Core declares WHAT; community provides HOW.',
+      tags: [],
+      scope: 'global',
+      board_id: null,
+      owner_id: 'owner-1',
+      revision_id: 'guideline-1-revision-3',
+      created_at: '2026-07-27T00:00:00Z',
+      updated_at: '2026-07-27T00:00:00Z',
+    },
+    priority: 10,
+    scope: 'global',
+    binding_id: 'binding-1',
+    binding_revision: 3,
+    enforcement: 'advisory',
+    minimum_confidence: 80,
+    metric_threshold_overrides: {},
+    binding_state: 'active',
+    source_kind: 'native',
+  };
+}
+
+function guidelineRevisionFor(
+  entityType: 'ideation' | 'refinement' | 'spec' | 'card' | 'sprint',
+) {
+  return {
+    revision: {
+      metrics: [{
+        metric_id: 'metric-1',
+        code: 'architecture.segregation',
+        title: 'Segregation',
+        description: 'Business vs technical separation.',
+        evaluation_rubric: 'Rubric.',
+        target_entity_types: [entityType],
+        direction: 'minimum',
+        default_threshold: 75,
+      }],
+    },
   };
 }
 
@@ -413,6 +518,10 @@ beforeEach(() => {
   policyApiMock.listSemanticGuidelineAssessments.mockResolvedValue(
     page([assessment()]),
   );
+  policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
+    contract_version: 'v1',
+    assessment: assessment(),
+  });
   policyApiMock.listSemanticGuidelineFindings.mockResolvedValue(page([]));
   policyApiMock.listSemanticMetricWaivers.mockResolvedValue(page([]));
   policyApiMock.listSemanticPolicySkips.mockResolvedValue(page([]));
@@ -1095,7 +1204,7 @@ describe('guideline compliance summary', () => {
     expect(
       within(card).getByTestId('compliance-enforcement-advisory'),
     ).toBeVisible();
-    expect(within(card).getByText('Passed')).toBeVisible();
+    expect(within(card).getByText('V1 · Read-only')).toBeVisible();
     expect(
       within(card).getByTitle('Business vs technical separation.'),
     ).toHaveTextContent('Segregation');
@@ -1105,6 +1214,157 @@ describe('guideline compliance summary', () => {
     expect(
       within(card).queryByText('Runtime provenance'),
     ).not.toBeInTheDocument();
+  });
+
+  it.each([
+    'ideation',
+    'refinement',
+    'spec',
+    'card',
+    'sprint',
+  ] as const)(
+    'projects the same read-only v2 confidence and actionable pinpoint in the %s surface',
+    async (entityType) => {
+      const subjectId = `${entityType}-1`;
+      const navigate = vi.fn();
+      dashboardApiMock.getBoardGuidelines.mockResolvedValue([{
+        id: 'guideline-1',
+        guideline: {
+          id: 'guideline-1',
+          title: 'Hexagonal architecture',
+          content: 'Core declares WHAT; community provides HOW.',
+          tags: [],
+          scope: 'global',
+          board_id: null,
+          owner_id: 'owner-1',
+          revision_id: 'guideline-1-revision-3',
+          created_at: '2026-07-27T00:00:00Z',
+          updated_at: '2026-07-27T00:00:00Z',
+        },
+        priority: 10,
+        scope: 'global',
+        binding_id: 'binding-1',
+        binding_revision: 3,
+        enforcement: 'advisory',
+        minimum_confidence: 80,
+        metric_threshold_overrides: {},
+        binding_state: 'active',
+        source_kind: 'native',
+      }]);
+      policyApiMock.getGuidelineRevision.mockResolvedValue({
+        revision: {
+          metrics: [{
+            metric_id: 'metric-1',
+            code: 'architecture.segregation',
+            title: 'Segregation',
+            description: 'Business vs technical separation.',
+            evaluation_rubric: 'Rubric.',
+            target_entity_types: [entityType],
+            direction: 'minimum',
+            default_threshold: 75,
+          }],
+        },
+      });
+      policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue(
+        currentV2Assessment(entityType, subjectId),
+      );
+
+      renderPanel({
+        entityType,
+        subjectId,
+        resolveSemanticAnchor: () => ({
+          state: 'available',
+          navigationTarget: `${entityType}:${subjectId}:technical_requirements`,
+        }),
+        onNavigateSemanticAnchor: navigate,
+      });
+
+      const card = await screen.findByTestId('guideline-compliance-binding-1');
+      expect(
+        within(card).getByTestId('guideline-confidence-ring-binding-1'),
+      ).toHaveAttribute('data-status', 'met');
+      expect(within(card).getByText('Passed')).toBeVisible();
+      expect(within(card).getByText('v2')).toBeVisible();
+      expect(within(card).getByText('Domain boundary is explicit')).toBeVisible();
+      expect(within(card).getByText('Technical requirements')).toBeVisible();
+      expect(
+        within(card).getByText(
+          'Runtime adapters remain outside the domain boundary.',
+        ),
+      ).toBeVisible();
+      expect(within(card).queryByRole('spinbutton')).not.toBeInTheDocument();
+
+      fireEvent.click(within(card).getByRole('button', {
+        name: 'Go to location',
+      }));
+      expect(navigate).toHaveBeenCalledWith(
+        `${entityType}:${subjectId}:technical_requirements`,
+      );
+      expect(
+        policyApiMock.getCurrentSemanticGuidelineAssessment,
+      ).toHaveBeenCalledWith(
+        'board-1',
+        entityType,
+        subjectId,
+        'binding-1',
+        'detail',
+        expect.any(AbortSignal),
+      );
+    },
+  );
+
+  it('preserves the last valid v2 evidence and offers retry after a refresh error', async () => {
+    dashboardApiMock.getBoardGuidelines.mockResolvedValue([adoptedGuideline()]);
+    policyApiMock.getGuidelineRevision.mockResolvedValue(
+      guidelineRevisionFor('spec'),
+    );
+    policyApiMock.getCurrentSemanticGuidelineAssessment
+      .mockResolvedValueOnce(currentV2Assessment('spec', 'spec-1'))
+      .mockRejectedValueOnce(new Error('temporary transport failure'));
+
+    renderPanel({
+      resolveSemanticAnchor: () => ({
+        state: 'available',
+        navigationTarget: 'spec:spec-1:technical_requirements',
+      }),
+    });
+
+    expect(await screen.findByText('Domain boundary is explicit')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /last valid evidence remains visible/i,
+    );
+    expect(screen.getByText('Domain boundary is explicit')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeVisible();
+  });
+
+  it('renders a no-assessment state with reassessment guidance and no score input', async () => {
+    dashboardApiMock.getBoardGuidelines.mockResolvedValue([adoptedGuideline()]);
+    policyApiMock.getGuidelineRevision.mockResolvedValue(
+      guidelineRevisionFor('spec'),
+    );
+    policyApiMock.getCurrentSemanticGuidelineAssessment.mockRejectedValue(
+      new PolicyGovernanceApiError({
+        message: 'Assessment not found.',
+        status: 404,
+        kind: 'not_found',
+        code: 'semantic_assessment_not_found',
+      }),
+    );
+
+    renderPanel();
+
+    expect(
+      await screen.findByTestId('policy-compliance-no-assessment'),
+    ).toHaveTextContent('Scores cannot be entered here.');
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', {
+      name: 'View reassessment guidance',
+    }));
+    expect(await screen.findByText(
+      /Reassessment is performed by an independent agent/i,
+    )).toBeVisible();
   });
 });
 

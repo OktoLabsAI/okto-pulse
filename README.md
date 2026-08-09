@@ -63,14 +63,14 @@ Every stage has structured artifacts, lineage, status transitions and validation
 
 ## Platform Surface
 
-Current 0.3.1 surface:
+Current 0.3.2 surface:
 
 | Surface | Count |
 | --- | ---: |
 | Governance gates | 17 |
-| Core MCP tools | 312 |
+| Core MCP tools | 313 |
 | Community-only MCP tools | 0 |
-| MCP tools exposed by `okto-pulse serve` | 312 |
+| MCP tools exposed by `okto-pulse serve` | 313 |
 
 The community package materializes the full `okto-pulse-core` command catalog in
 its FastMCP host. That means installed community runtimes expose the complete
@@ -408,11 +408,11 @@ Use the contextual error message as the source of truth when reporting an issue.
 
 ## Release Notes
 
-**Current: 0.3.1** — Community adds the quality-governance UI and persistence
-for receipt-backed ambiguity assessments, refinement research decisions and
-curated Spec checklists, with installed-artifact provenance gates.
+**Current: 0.3.2** — Community adds actionable semantic-guideline assessments,
+human-readable pinpoints, immutable evidence snapshots and the matching
+Policy Compliance UI and persistence.
 
-**→ [Full release notes](docs/RELEASE-NOTES.md)** — 0.3.1 and 0.3.0 changesets, plus 0.2.6, 0.2.5,
+**→ [Full release notes](docs/RELEASE-NOTES.md)** — 0.3.2, 0.3.1 and 0.3.0 changesets, plus 0.2.6, 0.2.5,
 0.2.3, 0.2.2, 0.2.1 and 0.2.0.
 
 ## SaaS Closure Audit

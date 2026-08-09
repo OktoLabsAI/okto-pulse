@@ -10034,3 +10034,169 @@ class QualityAssessmentLifecycleStaleTransitionRow(Base):
     assessment_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     receipt_id: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+# SK-B3.1: actionable semantic pinpoint contract v2.  These tables are
+# deliberately parallel to the established semantic-guideline ledger above:
+# an old row is never upgraded in-place or reinterpreted as a v2 row.
+
+
+class SemanticGuidelineAssessmentV2Row(Base):
+    """Immutable, lossless v2 assessment aggregate."""
+
+    __tablename__ = "semantic_guideline_assessments_v2"
+    __table_args__ = (
+        UniqueConstraint(
+            "board_id",
+            "idempotency_key",
+            name="uq_sg_assessment_v2_idempotency",
+        ),
+        CheckConstraint(
+            "contract_version = 'semantic-guideline-assessment/v2'",
+            name="ck_sg_assessment_v2_contract",
+        ),
+        CheckConstraint(
+            "subject_version >= 1 AND binding_revision >= 1 "
+            "AND confidence >= 0 AND confidence <= 100",
+            name="ck_sg_assessment_v2_ranges",
+        ),
+        CheckConstraint(
+            "length(request_digest) = 64 AND length(receipt_digest) = 64 "
+            "AND length(subject_content_digest) = 64 "
+            "AND length(revision_digest) = 64 "
+            "AND length(configuration_digest) = 64",
+            name="ck_sg_assessment_v2_digests",
+        ),
+        Index(
+            "ix_sg_assessment_v2_current",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "recorded_at",
+            "receipt_id",
+        ),
+    )
+
+    receipt_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    contract_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    subject_content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    binding_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    binding_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    guideline_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    revision_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    revision_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    configuration_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    confidence: Mapped[int] = mapped_column(Integer, nullable=False)
+    assessor_agent_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    receipt_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class SemanticGuidelineMetricResultV2Row(Base):
+    """Immutable v2 metric result with its complete pinpoint snapshot."""
+
+    __tablename__ = "semantic_guideline_metric_results_v2"
+    __table_args__ = (
+        UniqueConstraint(
+            "receipt_id",
+            "metric_id",
+            name="uq_sg_metric_result_v2_metric",
+        ),
+        CheckConstraint(
+            "contract_version = 'semantic-metric-result/v2'",
+            name="ck_sg_metric_result_v2_contract",
+        ),
+        CheckConstraint(
+            "outcome IN ('pass', 'fail') AND length(result_digest) = 64",
+            name="ck_sg_metric_result_v2_shape",
+        ),
+        Index(
+            "ix_sg_metric_result_v2_subject",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "outcome",
+            "metric_code",
+        ),
+    )
+
+    result_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    contract_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    receipt_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "semantic_guideline_assessments_v2.receipt_id",
+            ondelete="CASCADE",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    board_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    metric_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    metric_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    result_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class SemanticGuidelineFindingV2Row(Base):
+    """Exactly one immutable v2 finding for each failed metric result."""
+
+    __tablename__ = "semantic_guideline_findings_v2"
+    __table_args__ = (
+        UniqueConstraint(
+            "metric_result_id",
+            name="uq_sg_finding_v2_metric_result",
+        ),
+        CheckConstraint(
+            "contract_version = 'semantic-metric-finding/v2'",
+            name="ck_sg_finding_v2_contract",
+        ),
+        CheckConstraint(
+            "length(finding_digest) = 64 AND length(metric_result_digest) = 64",
+            name="ck_sg_finding_v2_digests",
+        ),
+        Index(
+            "ix_sg_finding_v2_queue",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "metric_code",
+            "created_at",
+        ),
+    )
+
+    finding_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    contract_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    metric_result_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "semantic_guideline_metric_results_v2.result_id",
+            ondelete="CASCADE",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    receipt_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    board_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    metric_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    metric_result_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    finding_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)

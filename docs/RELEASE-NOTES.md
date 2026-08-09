@@ -3,7 +3,24 @@
 Changeset per version, newest first.
 
 
-### 0.3.1 - current
+### 0.3.2 - current
+
+This release makes semantic-guideline evidence actionable throughout the local
+Community experience. V2 assessments preserve human-readable anchor snapshots,
+metric rationale, remediation and exact currentness fences.
+
+- Policy Compliance renders circular confidence and metric scores alongside
+  issue/evidence pinpoints instead of opaque element identifiers.
+- Card and Spec modals resolve only fields and structured items already visible
+  to the current UI authority, keeping unknown anchors fail-closed.
+- SQLAlchemy persistence and REST/OpenAPI surfaces implement the sealed v2
+  assessment contract and capability rollout switches.
+- FastMCP remains on its supported Authlib 1.6 compatibility line, removing the
+  startup deprecation warning until the joserfc-based host migration.
+- Community requires the matching `okto-pulse-core>=0.3.2` release.
+
+
+### 0.3.1
 
 This is the **quality-governance release**: Community exposes receipt-backed
 ambiguity assessments and pinpoint findings in the Ideation, Refinement and Spec

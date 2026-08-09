@@ -16,6 +16,7 @@ import {
   AccessibleTabList,
   AccessibleTabPanel,
 } from '@/components/shared/AccessibleTabs';
+import { resolveSpecSemanticAnchor } from './specSemanticAnchors';
 
 type ValidationSubTab =
   | 'checklist'
@@ -133,6 +134,12 @@ export function SpecValidationPanel({
     preferredValidationTab(specStatus, availableTabs),
   );
   const tabIdPrefix = useId();
+  const resolveSemanticAnchor = useMemo(
+    () => (
+      anchor: Parameters<typeof resolveSpecSemanticAnchor>[0],
+    ) => resolveSpecSemanticAnchor(anchor, anchorTexts),
+    [anchorTexts],
+  );
 
   useEffect(() => {
     if (!availableTabs.includes(activeTab)) {
@@ -237,6 +244,7 @@ export function SpecValidationPanel({
             subjectVersion={specVersion}
             transitionPreview={policyTransitionPreview}
             refreshKey={specVersion}
+            resolveSemanticAnchor={resolveSemanticAnchor}
             onEvaluated={onPolicyEvaluated}
             onRefreshed={onPolicyEvaluated}
           />

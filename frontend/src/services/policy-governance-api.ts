@@ -307,7 +307,7 @@ export interface PolicyGovernanceApi {
     bindingId: string,
     projection?: Policy.PolicyProjection,
     signal?: AbortSignal,
-  ): Promise<Policy.SemanticAssessmentResponse>;
+  ): Promise<Policy.SemanticCurrentAssessmentResponse>;
   getSemanticGuidelineAssessment(
     boardId: string,
     receiptId: string,
@@ -538,7 +538,7 @@ export function createPolicyGovernanceApi(
         binding_id: bindingId,
         projection,
       });
-      return requestJson<Policy.SemanticAssessmentResponse>(
+      return requestJson<Policy.SemanticCurrentAssessmentResponse>(
         transport,
         `${boardRoot(boardId)}/semantic-guideline-assessments/current?${params.toString()}`,
         { signal },
