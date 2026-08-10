@@ -45,7 +45,7 @@ dependencies = [
     "ladybug>=0.16.0,<0.17.0",
     "requests>=2.32.0,<3.0.0",
     "filelock>=3.16.0,<4.0.0",
-    "chardet>=3.0.2,<6.0.0",
+    "chardet>=3.0.2,<8.0.0",
     "sentence-transformers>=2.5.0,<6.0.0",
 ]
 
