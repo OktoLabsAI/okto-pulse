@@ -122,6 +122,10 @@ _CROSS_EDITION_CONTRACT_EXPECTATION: tuple[str, ...] = (
     "okto_pulse.core.services.bug_regression_preview",
     "okto_pulse.core.services.cancellation",
     "okto_pulse.core.services.checklist",
+    "okto_pulse.core.services.code_evidence",
+    "okto_pulse.core.services.code_evidence_rebase",
+    "okto_pulse.core.services.code_investigation",
+    "okto_pulse.core.services.code_traceability_gate",
     "okto_pulse.core.services.cognitive_effectiveness_service",
     "okto_pulse.core.services.default_board_config_api",
     "okto_pulse.core.services.default_board_configuration",
@@ -130,8 +134,10 @@ _CROSS_EDITION_CONTRACT_EXPECTATION: tuple[str, ...] = (
     "okto_pulse.core.services.discovery_selector_catalog",
     "okto_pulse.core.services.effective_resource_propagation",
     "okto_pulse.core.services.gate_contracts",
+    "okto_pulse.core.services.governance_observability",
     "okto_pulse.core.services.kg_health_readiness_service",
     "okto_pulse.core.services.knowledge_propagation",
+    "okto_pulse.core.services.implementation_targets",
     "okto_pulse.core.services.quality_assessment",
     "okto_pulse.core.services.quality_assessment_legacy_import",
     "okto_pulse.core.services.quality_assessment_lifecycle",
@@ -147,6 +153,7 @@ _CROSS_EDITION_CONTRACT_EXPECTATION: tuple[str, ...] = (
     "okto_pulse.core.services.spec_entity_canonicalization",
     "okto_pulse.core.services.spec_structured_entities",
     "okto_pulse.core.services.test_scenario_lifecycle",
+    "okto_pulse.core.services.traceability",
     "okto_pulse.core.telemetry",
 )
 
@@ -193,7 +200,6 @@ PRIVATE_CORE_IMPLEMENTATION_SURFACES: tuple[str, ...] = (
     "okto_pulse.core.repositories.sqlalchemy",
     "okto_pulse.core.services.main",
     "okto_pulse.core.services.settings_service",
-    "okto_pulse.core.services.traceability",
 )
 
 

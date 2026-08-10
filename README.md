@@ -68,9 +68,9 @@ Current 0.3.2 surface:
 | Surface | Count |
 | --- | ---: |
 | Governance gates | 17 |
-| Core MCP tools | 313 |
+| Core MCP tools | 332 |
 | Community-only MCP tools | 0 |
-| MCP tools exposed by `okto-pulse serve` | 313 |
+| MCP tools exposed by `okto-pulse serve` | 332 |
 
 The community package materializes the full `okto-pulse-core` command catalog in
 its FastMCP host. That means installed community runtimes expose the complete
@@ -132,6 +132,13 @@ Go to `http://localhost:8100`, select the default board and start with either:
 ## Connect an AI Coding Agent
 
 Most agent tools can discover the generated `.mcp.json` automatically when they run from the same directory.
+
+Community keeps its local REST identity deliberately human-only. Authenticated
+agent submissions use the Core MCP surface locally; a SaaS edition may inject
+an agent-aware `AuthenticationPort` into the same edition-neutral REST
+contract. Neither path makes Community acquire, clone, browse, probe or inspect
+source code: the external agent checks access and capabilities in its own
+environment and submits only the bounded result.
 
 | Agent or tool | Setup |
 | --- | --- |

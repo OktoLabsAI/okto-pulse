@@ -467,6 +467,14 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "immutability guards for quality, RDL, checklist, and legacy-import rows.",
     ),
     (
+        "_migrate_code_traceability_schema",
+        "post_create_all",
+        False,
+        "Install structured Code Traceability attestations, frozen Refinement/Spec "
+        "lineage, CAS heads, and permit-aware SQLite/PostgreSQL guards without "
+        "introducing any repository or filesystem access in Community.",
+    ),
+    (
         "_migrate_agent_permissions",
         "post_create_all",
         False,

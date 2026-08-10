@@ -1043,6 +1043,87 @@ def cmd_serve(args):
         sys.exit(2)
 
 
+def _emit_code_traceability_diagnostics(payload, *, emit_json: bool) -> None:
+    """Render bounded diagnostics without exposing acquisition controls."""
+
+    if emit_json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+        return
+    if isinstance(payload, list):
+        if not payload:
+            print("No persisted records matched the filters.")
+            return
+        for record in payload:
+            subject = (
+                f"{record.get('subject_type', '-')}:{record.get('subject_id', '-')}"
+            )
+            state = record.get("status", record.get("outcome", "-"))
+            timestamp = record.get("created_at", record.get("received_at", "-"))
+            print(f"{record.get('id', '-')}  {subject}  {state}  {timestamp}")
+        return
+    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+
+
+def cmd_code_traceability(args):
+    """Inspect Pulse-owned Code Traceability state without investigating source."""
+
+    from okto_pulse.community.commands.code_traceability_diagnostics import (
+        CodeTraceabilityDiagnosticsError,
+        diagnose,
+        inspect_record,
+        list_receipts,
+        list_requests,
+        open_read_only_database,
+    )
+    from okto_pulse.community.config import CommunitySettings
+
+    settings = CommunitySettings()
+    db_path = Path(settings.data_dir) / "data" / "pulse.db"
+    command = args.code_traceability_command
+    emit_json = bool(getattr(args, "json", False))
+    try:
+        with open_read_only_database(str(db_path)) as connection:
+            if command == "requests":
+                payload = list_requests(
+                    connection,
+                    board_id=args.board_id,
+                    status=args.status,
+                    limit=args.limit,
+                )
+            elif command == "receipts":
+                payload = list_receipts(
+                    connection,
+                    board_id=args.board_id,
+                    outcome=args.outcome,
+                    limit=args.limit,
+                )
+            elif command == "inspect":
+                payload = inspect_record(
+                    connection,
+                    board_id=args.board_id,
+                    kind=args.kind,
+                    record_id=args.record_id,
+                )
+            elif command == "diagnose":
+                payload = diagnose(connection, board_id=args.board_id)
+            else:
+                raise CodeTraceabilityDiagnosticsError(
+                    "code_traceability_diagnostics_command_invalid",
+                    "A diagnostics subcommand is required",
+                )
+    except CodeTraceabilityDiagnosticsError as exc:
+        error = {"code": exc.code, "message": str(exc)}
+        if emit_json:
+            print(json.dumps(error, sort_keys=True), file=sys.stderr)
+        else:
+            print(f"ERROR [{exc.code}]: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+    _emit_code_traceability_diagnostics(payload, emit_json=emit_json)
+    if command == "diagnose" and not payload["healthy"]:
+        raise SystemExit(1)
+
+
 def cmd_status(args):
     """Show status of Okto Pulse Community."""
     from okto_pulse.community.config import CommunitySettings
@@ -2319,6 +2400,61 @@ def main():
     )
     sub_status.set_defaults(func=cmd_status)
 
+    # Read-only Code Traceability operator diagnostics. Investigation and
+    # source access remain responsibilities of the authenticated external agent.
+    sub_traceability = subparsers.add_parser(
+        "code-traceability",
+        help="Inspect persisted investigation requests, receipts, schema, and policy",
+    )
+    traceability_sub = sub_traceability.add_subparsers(
+        dest="code_traceability_command",
+        help="Code Traceability diagnostics",
+    )
+
+    traceability_requests = traceability_sub.add_parser(
+        "requests",
+        help="List persisted investigation requests",
+    )
+    traceability_requests.add_argument("board_id", help="Board UUID")
+    traceability_requests.add_argument(
+        "--status",
+        choices=("open", "consumed", "expired", "revoked"),
+    )
+    traceability_requests.add_argument("--limit", type=int, default=50)
+    traceability_requests.add_argument("--json", action="store_true")
+    traceability_requests.set_defaults(func=cmd_code_traceability)
+
+    traceability_receipts = traceability_sub.add_parser(
+        "receipts",
+        help="List persisted agent-attested receipts",
+    )
+    traceability_receipts.add_argument("board_id", help="Board UUID")
+    traceability_receipts.add_argument(
+        "--outcome",
+        choices=("accessible", "partial", "unavailable"),
+    )
+    traceability_receipts.add_argument("--limit", type=int, default=50)
+    traceability_receipts.add_argument("--json", action="store_true")
+    traceability_receipts.set_defaults(func=cmd_code_traceability)
+
+    traceability_inspect = traceability_sub.add_parser(
+        "inspect",
+        help="Inspect one persisted request or receipt",
+    )
+    traceability_inspect.add_argument("board_id", help="Board UUID")
+    traceability_inspect.add_argument("kind", choices=("request", "receipt"))
+    traceability_inspect.add_argument("record_id", help="Request or receipt ID")
+    traceability_inspect.add_argument("--json", action="store_true")
+    traceability_inspect.set_defaults(func=cmd_code_traceability)
+
+    traceability_diagnose = traceability_sub.add_parser(
+        "diagnose",
+        help="Validate persisted schema and board policy",
+    )
+    traceability_diagnose.add_argument("board_id", help="Board UUID")
+    traceability_diagnose.add_argument("--json", action="store_true")
+    traceability_diagnose.set_defaults(func=cmd_code_traceability)
+
     # metrics
     sub_metrics = subparsers.add_parser(
         "metrics",
@@ -2579,6 +2715,12 @@ def main():
     if args.command == "metrics" and not getattr(args, "metrics_command", None):
         _print_banner()
         sub_metrics.print_help()
+        sys.exit(1)
+    if args.command == "code-traceability" and not getattr(
+        args, "code_traceability_command", None
+    ):
+        _print_banner()
+        sub_traceability.print_help()
         sys.exit(1)
 
     _print_banner()

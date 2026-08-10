@@ -35,6 +35,7 @@ import {
   Download,
   GitBranch,
   Shield,
+  Fingerprint,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { v4 as uuidv4 } from 'uuid';
@@ -84,6 +85,10 @@ import {
 } from '@/components/policy-compliance';
 import { useOptionalModalStack } from '@/contexts/ModalStackContext';
 import type { RefinementModalTab } from '@/components/shared/tabRouting';
+import {
+  CodeEvidencePanel,
+  useCodeTraceabilityAuthority,
+} from '@/components/code-traceability';
 import { ResearchDecisionTab } from './ResearchDecisionPanel';
 import { RefinementResourcesPanel } from './RefinementResourcesPanel';
 import {
@@ -779,6 +784,8 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
   const canAssessQuality = perms.has('refinement.quality.assess');
   const canProposeQualityQuestions = perms.has('refinement.qa.ask');
   const canReadResearchDecisions = perms.has('refinement.research_decisions.read');
+  const { canReadProjection: canReadCodeTraceability } =
+    useCodeTraceabilityAuthority(_boardId);
   const canReadPolicyCompliance = perms.has(
     'guidelines.assessments.read',
   );
@@ -822,11 +829,13 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
     if (
       (activeTab === 'validation' && !canViewValidation)
       || (activeTab === 'research-decisions' && !canReadResearchDecisions)
+      || (activeTab === 'code-evidence' && !canReadCodeTraceability)
     ) {
       setActiveTab('details');
     }
   }, [
     activeTab,
+    canReadCodeTraceability,
     canReadResearchDecisions,
     canViewValidation,
   ]);
@@ -1172,6 +1181,9 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
   const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
     { id: 'research-decisions', label: 'Research decisions', icon: <Lightbulb size={14} />, permission: 'refinement.research_decisions.read' },
+    ...(canReadCodeTraceability
+      ? [{ id: 'code-evidence' as ModalTab, label: 'Code Evidence', icon: <Fingerprint size={14} /> }]
+      : []),
     { id: 'resources', label: 'Resources', icon: <Layers size={14} /> },
     { id: 'qa', label: 'Q&A', icon: <MessageCircleQuestion size={14} />, count: refinement.qa_items?.length || 0, highlight: unansweredQA > 0 },
     { id: 'references', label: 'References', icon: <Link2 size={14} /> },
@@ -1391,6 +1403,21 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
               )}
             </div>
           </AccessibleTabPanel>
+
+          {canReadCodeTraceability && (
+            <AccessibleTabPanel
+              idBase={`refinement-${refinement.id}`}
+              tabId="code-evidence"
+              value={activeTab}
+              mount="lazy-keep"
+            >
+              <CodeEvidencePanel
+                boardId={refinement.board_id}
+                subjectId={refinement.id}
+                subjectVersion={refinement.version}
+              />
+            </AccessibleTabPanel>
+          )}
 
           <AccessibleTabPanel
             idBase={`refinement-${refinement.id}`}

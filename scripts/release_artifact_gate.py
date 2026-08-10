@@ -31,10 +31,10 @@ from pathlib import Path
 from typing import Any
 
 EXPECTED_VERSION = "0.3.2"
-EXPECTED_MCP_TOOL_COUNT = 313
-EXPECTED_CANONICAL_TOOL_COUNT = 305
+EXPECTED_MCP_TOOL_COUNT = 332
+EXPECTED_CANONICAL_TOOL_COUNT = 324
 EXPECTED_TOOL_ALIAS_COUNT = 8
-EXPECTED_RESOURCE_COUNT = 53
+EXPECTED_RESOURCE_COUNT = 55
 MINIMUM_SUPPORTED_PYTHON = (3, 11)
 COMMUNITY_REPO = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT_ENV = "OKTO_PULSE_WORKSPACE_ROOT"
@@ -592,7 +592,7 @@ assert under(resource_manifest_path, venv), resource_manifest_path
 tool_manifest = json.loads(tool_manifest_path.read_text(encoding="utf-8"))
 resource_manifest = json.loads(resource_manifest_path.read_text(encoding="utf-8"))
 assert tool_manifest["tool_count"] == 11
-assert resource_manifest["resource_count"] == 21
+assert resource_manifest["resource_count"] == 22
 
 bad_sys_path = []
 for value in sys.path:

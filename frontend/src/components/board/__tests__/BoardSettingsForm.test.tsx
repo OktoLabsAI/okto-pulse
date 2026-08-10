@@ -152,3 +152,35 @@ describe('BoardSettingsForm — execution report evidence mode', () => {
     );
   });
 });
+
+describe('BoardSettingsForm — agent-mediated Code Traceability', () => {
+  it('renders the permanent source-blind disclosure without repository controls', () => {
+    render(<BoardSettingsForm settings={baseSettings} onChange={vi.fn()} />);
+
+    expect(screen.getByText('Agent-mediated Code Traceability')).toBeInTheDocument();
+    expect(screen.getByTestId('code-traceability-source-blind-disclosure')).toHaveTextContent(
+      'Pulse does not access source code',
+    );
+    expect(screen.queryByLabelText(/repository|provider|checkout|filesystem/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /connect|sync|clone|probe|submit|check/i })).not.toBeInTheDocument();
+  });
+
+  it('materializes safe defaults and patches the nested policy as one complete value', () => {
+    const onChange = vi.fn();
+    render(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
+
+    const mode = screen.getByLabelText('Code Traceability enforcement mode');
+    expect(mode).toHaveValue('off');
+    fireEvent.change(mode, { target: { value: 'advisory' } });
+
+    expect(onChange).toHaveBeenCalledWith({
+      code_traceability: expect.objectContaining({
+        mode: 'advisory',
+        evidence_attestation: 'preferred',
+        target_resolution: 'advisory',
+        accepted_attestor_policy: 'granular_permission',
+        receipt_content: 'safe_excerpt',
+      }),
+    });
+  });
+});

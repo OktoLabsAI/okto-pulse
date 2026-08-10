@@ -21,11 +21,24 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
+    from okto_pulse.core.mcp import server as core_mcp_server
+    from okto_pulse.core.mcp.manifest import build_server_manifest
+
+    tool_inventory = build_server_manifest(
+        core_mcp_server.mcp,
+        include_tool_names=True,
+    )["tool_inventory"]
+    live_tool_count = tool_inventory["count"]
+    live_alias_count = len(tool_inventory["aliases"])
+    live_canonical_count = live_tool_count - live_alias_count
+    live_resource_count = len(core_mcp_server.resource_registry_projection())
+
+    assert Path(core_mcp_server.__file__).resolve().is_relative_to(module.CORE_REPO)
     assert module.EXPECTED_VERSION == "0.3.2"
-    assert module.EXPECTED_MCP_TOOL_COUNT == 313
-    assert module.EXPECTED_CANONICAL_TOOL_COUNT == 305
-    assert module.EXPECTED_TOOL_ALIAS_COUNT == 8
-    assert module.EXPECTED_RESOURCE_COUNT == 53
+    assert module.EXPECTED_MCP_TOOL_COUNT == live_tool_count == 332
+    assert module.EXPECTED_CANONICAL_TOOL_COUNT == live_canonical_count == 324
+    assert module.EXPECTED_TOOL_ALIAS_COUNT == live_alias_count == 8
+    assert module.EXPECTED_RESOURCE_COUNT == live_resource_count == 55
     assert module.MINIMUM_SUPPORTED_PYTHON == (3, 11)
     assert module.CORE_REPO.name in {
         "okto-pulse-core",
@@ -137,7 +150,7 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     origin = evidence["installed"]["origin_probe"]
     assert origin["about_version"] == "0.3.2"
     assert origin["ska_contract_manifests"]["tool_count"] == 11
-    assert origin["ska_contract_manifests"]["resource_count"] == 21
+    assert origin["ska_contract_manifests"]["resource_count"] == 22
     assert len(origin["required_core_resources"]) == 2
     for distribution in ("core", "community"):
         provenance = evidence["installed"]["payload_provenance"][distribution]
@@ -197,9 +210,9 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     )
     mcp_http = evidence["installed"]["mcp_http"]
     assert mcp_http["transport"] == "streamable-http-loopback"
-    assert mcp_http["tool_count"] == 313
-    assert mcp_http["canonical_tool_count"] == 304
+    assert mcp_http["tool_count"] == 332
+    assert mcp_http["canonical_tool_count"] == 324
     assert mcp_http["tool_alias_count"] == 8
-    assert mcp_http["resource_count"] == 53
+    assert mcp_http["resource_count"] == 55
     assert mcp_http["ska_tool_count"] == 11
     assert (work_dir / "release-artifact-evidence.json").is_file()

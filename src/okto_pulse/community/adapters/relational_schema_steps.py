@@ -18572,6 +18572,1072 @@ def _remove_known_fixture_graph_if_present(engine: object) -> bool:
     return True
 
 
+CODE_TRACEABILITY_TRIGGER_PREFIX = "trg_code_traceability_v1"
+
+
+def code_traceability_owned_tables() -> tuple[object, ...]:
+    """Return the complete relational Code Traceability table census."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        CodeEvidenceDispositionRow,
+        CodeEvidenceRow,
+        CodeEvidenceSpecLinkRow,
+        CodeInvestigationHeadRow,
+        CodeInvestigationReceiptRevocationRow,
+        CodeInvestigationReceiptRow,
+        CodeInvestigationRequestRow,
+        CodeTraceabilityWaiverRow,
+        ImplementationTargetEvidenceLinkRow,
+        ImplementationTargetExecutionRecordRow,
+        ImplementationTargetResolutionRow,
+        ImplementationTargetRow,
+        ImplementationTargetSpecLinkRow,
+        TargetOverlapAcknowledgementRow,
+    )
+
+    return (
+        CodeInvestigationRequestRow.__table__,
+        CodeInvestigationReceiptRow.__table__,
+        CodeInvestigationReceiptRevocationRow.__table__,
+        CodeInvestigationHeadRow.__table__,
+        CodeEvidenceRow.__table__,
+        CodeEvidenceSpecLinkRow.__table__,
+        CodeEvidenceDispositionRow.__table__,
+        ImplementationTargetRow.__table__,
+        ImplementationTargetSpecLinkRow.__table__,
+        ImplementationTargetEvidenceLinkRow.__table__,
+        ImplementationTargetResolutionRow.__table__,
+        ImplementationTargetExecutionRecordRow.__table__,
+        TargetOverlapAcknowledgementRow.__table__,
+        CodeTraceabilityWaiverRow.__table__,
+    )
+
+
+def code_traceability_sqlite_trigger_manifest() -> dict[str, tuple[str, str]]:
+    """Return exact, permit-aware SQLite guards for structured attestations."""
+
+    tables = {table.name: table for table in code_traceability_owned_tables()}
+    permit_table = "kg_board_erasure_permits"
+    manifest: dict[str, tuple[str, str]] = {}
+
+    def same_columns(table_name: str, *, except_columns: set[str]) -> str:
+        return "\n      AND ".join(
+            f'NEW."{column.name}" IS OLD."{column.name}"'
+            for column in tables[table_name].columns
+            if column.name not in except_columns
+        )
+
+    def add_delete_guard(
+        table_name: str,
+        *,
+        alias: str,
+        message: str,
+    ) -> None:
+        name = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_{alias}_d"
+        manifest[name] = (
+            table_name,
+            f'''CREATE TRIGGER "{name}"
+BEFORE DELETE ON "{table_name}"
+WHEN NOT EXISTS (
+    SELECT 1 FROM "{permit_table}" AS permit
+    WHERE permit.board_id = OLD.board_id
+)
+BEGIN
+    SELECT RAISE(ABORT, '{message}');
+END''',
+        )
+
+    def add_immutable_update(
+        table_name: str,
+        *,
+        alias: str,
+        message: str,
+    ) -> None:
+        name = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_{alias}_u"
+        manifest[name] = (
+            table_name,
+            f'''CREATE TRIGGER "{name}"
+BEFORE UPDATE ON "{table_name}"
+BEGIN
+    SELECT RAISE(ABORT, '{message}');
+END''',
+        )
+
+    # Fully append-only records.  Deletion is possible only while the
+    # board-erasure transaction owns the explicit board permit.
+    for table_name, alias, message in (
+        (
+            "code_investigation_receipts",
+            "receipt",
+            "code_investigation_receipt_immutable",
+        ),
+        (
+            "code_investigation_receipt_revocations",
+            "revocation",
+            "code_investigation_revocation_immutable",
+        ),
+        (
+            "implementation_target_resolutions",
+            "resolution",
+            "implementation_target_resolution_immutable",
+        ),
+        (
+            "implementation_target_execution_records",
+            "execution",
+            "implementation_target_execution_immutable",
+        ),
+        (
+            "target_overlap_acknowledgements",
+            "ack",
+            "target_overlap_acknowledgement_immutable",
+        ),
+    ):
+        add_immutable_update(table_name, alias=alias, message=message)
+        add_delete_guard(table_name, alias=alias, message=message)
+
+    request_same = same_columns(
+        "code_investigation_requests",
+        except_columns={"status", "consumed_at"},
+    )
+    request_update = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_request_u"
+    manifest[request_update] = (
+        "code_investigation_requests",
+        f'''CREATE TRIGGER "{request_update}"
+BEFORE UPDATE ON "code_investigation_requests"
+WHEN NOT (
+    OLD.status = 'open'
+    AND NEW.status IN ('consumed', 'expired', 'revoked')
+    AND {request_same}
+    AND (
+        (
+            NEW.status = 'consumed'
+            AND NEW.consumed_at IS NOT NULL
+            AND EXISTS (
+                SELECT 1 FROM code_investigation_receipts AS receipt
+                WHERE receipt.request_id = OLD.id
+            )
+        )
+        OR (
+            NEW.status IN ('expired', 'revoked')
+            AND NEW.consumed_at IS NULL
+        )
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_investigation_request_transition_invalid');
+END''',
+    )
+    add_delete_guard(
+        "code_investigation_requests",
+        alias="request",
+        message="code_investigation_request_delete_forbidden",
+    )
+
+    receipt_insert = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_receipt_i"
+    manifest[receipt_insert] = (
+        "code_investigation_receipts",
+        f'''CREATE TRIGGER "{receipt_insert}"
+BEFORE INSERT ON "code_investigation_receipts"
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM code_investigation_requests AS request
+    WHERE request.id = NEW.request_id
+      AND request.board_id = NEW.board_id
+      AND request.subject_type = NEW.subject_type
+      AND request.subject_id = NEW.subject_id
+      AND request.subject_version = NEW.subject_version
+      AND request.issued_to_actor_id = NEW.attestor_actor_id
+      AND request.source_ref = NEW.source_ref
+      AND request.selector_scope_digest = NEW.selector_scope_digest
+      AND request.canonicalization_profile = NEW.canonicalization_profile
+      AND request.limits_profile = NEW.limits_profile
+      AND request.status = 'open'
+      AND request.expires_at > CURRENT_TIMESTAMP
+      AND NEW.generation = request.expected_head_generation + 1
+      AND NEW.predecessor_receipt_id IS request.expected_predecessor_receipt_id
+      AND (
+          (
+              request.expected_head_generation = 0
+              AND request.expected_predecessor_receipt_id IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM code_investigation_heads AS head
+                  WHERE head.board_id = request.board_id
+                    AND head.source_ref = request.source_ref
+              )
+          )
+          OR EXISTS (
+              SELECT 1 FROM code_investigation_heads AS head
+              WHERE head.board_id = request.board_id
+                AND head.source_ref = request.source_ref
+                AND head.generation = request.expected_head_generation
+                AND head.latest_receipt_id =
+                    request.expected_predecessor_receipt_id
+          )
+      )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_investigation_receipt_request_invalid');
+END''',
+    )
+
+    head_insert = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_head_i"
+    manifest[head_insert] = (
+        "code_investigation_heads",
+        f'''CREATE TRIGGER "{head_insert}"
+BEFORE INSERT ON "code_investigation_heads"
+WHEN NEW.generation <> 1
+   OR NEW.revision <> 1
+   OR NOT EXISTS (
+       SELECT 1 FROM code_investigation_receipts AS receipt
+       WHERE receipt.id = NEW.latest_receipt_id
+         AND receipt.board_id = NEW.board_id
+         AND receipt.source_ref = NEW.source_ref
+         AND receipt.generation = NEW.generation
+         AND receipt.predecessor_receipt_id IS NULL
+         AND receipt.acceptance_status = 'accepted'
+         AND (
+             (
+                 receipt.trust_level <> 'conflicted'
+                 AND NEW.state = 'current'
+                 AND NEW.current_receipt_id = NEW.latest_receipt_id
+             )
+             OR (
+                 receipt.trust_level = 'conflicted'
+                 AND NEW.state = 'conflicted'
+                 AND NEW.current_receipt_id IS NULL
+             )
+         )
+   )
+BEGIN
+    SELECT RAISE(ABORT, 'code_investigation_head_insert_invalid');
+END''',
+    )
+    head_update = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_head_u"
+    manifest[head_update] = (
+        "code_investigation_heads",
+        f'''CREATE TRIGGER "{head_update}"
+BEFORE UPDATE ON "code_investigation_heads"
+WHEN NEW.board_id IS NOT OLD.board_id
+   OR NEW.source_ref IS NOT OLD.source_ref
+   OR NEW.generation <> OLD.generation + 1
+   OR NEW.revision <> OLD.revision + 1
+   OR NOT EXISTS (
+       SELECT 1 FROM code_investigation_receipts AS receipt
+       WHERE receipt.id = NEW.latest_receipt_id
+         AND receipt.board_id = NEW.board_id
+         AND receipt.source_ref = NEW.source_ref
+         AND receipt.generation = NEW.generation
+         AND receipt.predecessor_receipt_id = OLD.latest_receipt_id
+         AND receipt.acceptance_status = 'accepted'
+         AND (
+             (
+                 receipt.trust_level <> 'conflicted'
+                 AND NEW.state = 'current'
+                 AND NEW.current_receipt_id = NEW.latest_receipt_id
+             )
+             OR (
+                 receipt.trust_level = 'conflicted'
+                 AND NEW.state = 'conflicted'
+                 AND NEW.current_receipt_id IS OLD.current_receipt_id
+             )
+         )
+   )
+BEGIN
+    SELECT RAISE(ABORT, 'code_investigation_head_cas_invalid');
+END''',
+    )
+    add_delete_guard(
+        "code_investigation_heads",
+        alias="head",
+        message="code_investigation_head_delete_forbidden",
+    )
+
+    evidence_insert = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_evidence_i"
+    manifest[evidence_insert] = (
+        "code_evidence",
+        f'''CREATE TRIGGER "{evidence_insert}"
+BEFORE INSERT ON "code_evidence"
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM code_investigation_receipts AS receipt
+    JOIN code_investigation_heads AS head
+      ON head.board_id = receipt.board_id
+     AND head.source_ref = receipt.source_ref
+    WHERE receipt.id = NEW.investigation_receipt_id
+      AND receipt.board_id = NEW.board_id
+      AND receipt.source_ref = NEW.source_ref
+      AND receipt.subject_type = NEW.parent_type
+      AND receipt.subject_id = COALESCE(
+          NEW.refinement_id, NEW.spec_id, NEW.card_id
+      )
+      AND receipt.subject_version = NEW.parent_version
+      AND receipt.declared_revision IS NEW.declared_revision
+      AND receipt.workspace_state_id = NEW.workspace_state_id
+      AND receipt.declared_dirty = NEW.declared_dirty
+      AND receipt.reproducibility_claim = NEW.reproducibility_claim
+      AND head.state = 'current'
+      AND head.current_receipt_id = receipt.id
+      AND NOT EXISTS (
+          SELECT 1 FROM code_investigation_receipt_revocations AS revocation
+          WHERE revocation.board_id = NEW.board_id
+            AND revocation.receipt_id = receipt.id
+      )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_receipt_cas_invalid');
+END''',
+    )
+
+    evidence_same = same_columns(
+        "code_evidence",
+        except_columns={"lifecycle_status", "revocation_reason"},
+    )
+    evidence_update = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_evidence_u"
+    manifest[evidence_update] = (
+        "code_evidence",
+        f'''CREATE TRIGGER "{evidence_update}"
+BEFORE UPDATE ON "code_evidence"
+WHEN NOT (
+    OLD.lifecycle_status = 'active'
+    AND NEW.lifecycle_status IN ('superseded', 'revoked')
+    AND {evidence_same}
+    AND (
+        NEW.lifecycle_status = 'revoked'
+        OR EXISTS (
+            SELECT 1 FROM code_evidence AS successor
+            WHERE successor.supersedes_evidence_id = OLD.id
+              AND successor.board_id = OLD.board_id
+        )
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_content_immutable');
+END''',
+    )
+    add_delete_guard(
+        "code_evidence",
+        alias="evidence",
+        message="code_evidence_delete_forbidden",
+    )
+
+    spec_link_insert = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_spec_link_i"
+    manifest[spec_link_insert] = (
+        "code_evidence_spec_links",
+        f'''CREATE TRIGGER "{spec_link_insert}"
+BEFORE INSERT ON "code_evidence_spec_links"
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM specs AS spec
+    JOIN code_evidence AS evidence ON evidence.id = NEW.evidence_id
+    WHERE spec.id = NEW.spec_id
+      AND spec.board_id = NEW.board_id
+      AND evidence.board_id = NEW.board_id
+      AND evidence.lifecycle_status = 'active'
+      AND evidence.payload_sha256 = NEW.evidence_content_sha256
+      AND NEW.spec_version = spec.version + 1
+      AND NOT EXISTS (
+          SELECT 1 FROM code_evidence_dispositions AS disposition
+          WHERE disposition.board_id = NEW.board_id
+            AND disposition.spec_id = NEW.spec_id
+            AND disposition.evidence_id = NEW.evidence_id
+            AND disposition.active = true
+      )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_spec_link_cas_invalid');
+END''',
+    )
+
+    disposition_insert = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_disposition_i"
+    manifest[disposition_insert] = (
+        "code_evidence_dispositions",
+        f'''CREATE TRIGGER "{disposition_insert}"
+BEFORE INSERT ON "code_evidence_dispositions"
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM specs AS spec
+    JOIN code_evidence AS evidence ON evidence.id = NEW.evidence_id
+    WHERE spec.id = NEW.spec_id
+      AND spec.board_id = NEW.board_id
+      AND evidence.board_id = NEW.board_id
+      AND evidence.lifecycle_status <> 'revoked'
+      AND NEW.spec_version = spec.version + 1
+      AND NOT EXISTS (
+          SELECT 1 FROM code_evidence_spec_links AS link
+          WHERE link.board_id = NEW.board_id
+            AND link.spec_id = NEW.spec_id
+            AND link.evidence_id = NEW.evidence_id
+      )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_disposition_cas_invalid');
+END''',
+    )
+
+    disposition_same = same_columns(
+        "code_evidence_dispositions",
+        except_columns={"spec_version", "active", "cleared_by", "cleared_at"},
+    )
+    disposition_update = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_disposition_u"
+    manifest[disposition_update] = (
+        "code_evidence_dispositions",
+        f'''CREATE TRIGGER "{disposition_update}"
+BEFORE UPDATE ON "code_evidence_dispositions"
+WHEN NOT (
+    OLD.active = true
+    AND NEW.active = false
+    AND NEW.spec_version >= OLD.spec_version
+    AND NEW.cleared_by IS NOT NULL
+    AND NEW.cleared_at IS NOT NULL
+    AND {disposition_same}
+    AND EXISTS (
+        SELECT 1 FROM specs AS spec
+        WHERE spec.id = OLD.spec_id
+          AND spec.board_id = OLD.board_id
+          AND NEW.spec_version IN (spec.version, spec.version + 1)
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_disposition_immutable');
+END''',
+    )
+    add_delete_guard(
+        "code_evidence_dispositions",
+        alias="disposition",
+        message="code_evidence_disposition_delete_forbidden",
+    )
+
+    target_semantic_same = same_columns(
+        "implementation_targets",
+        except_columns={"current_resolution_id", "updated_at"},
+    )
+    target_identity_same = same_columns(
+        "implementation_targets",
+        except_columns={
+            "selector_kind",
+            "relative_path_hint",
+            "language",
+            "symbol_kind",
+            "qualified_symbol",
+            "symbol_signature",
+            "role",
+            "intent",
+            "required",
+            "source_spec_version",
+            "baseline_evidence_id",
+            "lifecycle_status",
+            "revision",
+            "current_resolution_id",
+            "last_change_reason_sha256",
+            "updated_at",
+        },
+    )
+    target_update = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_target_u"
+    manifest[target_update] = (
+        "implementation_targets",
+        f'''CREATE TRIGGER "{target_update}"
+BEFORE UPDATE ON "implementation_targets"
+WHEN NOT (
+    (
+        {target_semantic_same}
+        AND NEW.current_resolution_id IS NOT OLD.current_resolution_id
+        AND NEW.current_resolution_id IS NOT NULL
+        AND EXISTS (
+            SELECT 1 FROM implementation_target_resolutions AS resolution
+            WHERE resolution.id = NEW.current_resolution_id
+              AND resolution.target_id = OLD.id
+              AND resolution.board_id = OLD.board_id
+              AND resolution.target_revision = OLD.revision
+        )
+    )
+    OR (
+        OLD.lifecycle_status = 'active'
+        AND {target_identity_same}
+        AND NEW.revision = OLD.revision + 1
+        AND NEW.current_resolution_id IS NULL
+        AND NEW.last_change_reason_sha256 IS NOT NULL
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'implementation_target_cas_invalid');
+END''',
+    )
+    add_delete_guard(
+        "implementation_targets",
+        alias="target",
+        message="implementation_target_delete_forbidden",
+    )
+
+    resolution_insert = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_resolution_i"
+    manifest[resolution_insert] = (
+        "implementation_target_resolutions",
+        f'''CREATE TRIGGER "{resolution_insert}"
+BEFORE INSERT ON "implementation_target_resolutions"
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM implementation_targets AS target
+    JOIN code_investigation_receipts AS receipt
+      ON receipt.id = NEW.investigation_receipt_id
+    JOIN code_investigation_heads AS head
+      ON head.board_id = receipt.board_id
+     AND head.source_ref = receipt.source_ref
+    WHERE target.id = NEW.target_id
+      AND target.board_id = NEW.board_id
+      AND target.source_ref = NEW.source_ref
+      AND target.revision = NEW.target_revision
+      AND target.lifecycle_status = 'active'
+      AND receipt.board_id = NEW.board_id
+      AND receipt.source_ref = NEW.source_ref
+      AND receipt.subject_type = 'card'
+      AND receipt.subject_id = target.card_id
+      AND receipt.subject_version = NEW.subject_version
+      AND receipt.generation = NEW.receipt_generation
+      AND receipt.declared_revision IS NEW.declared_revision
+      AND receipt.workspace_state_id = NEW.workspace_state_id
+      AND receipt.declared_dirty = NEW.declared_dirty
+      AND head.state = 'current'
+      AND head.current_receipt_id = receipt.id
+      AND NOT EXISTS (
+          SELECT 1 FROM code_investigation_receipt_revocations AS revocation
+          WHERE revocation.board_id = NEW.board_id
+            AND revocation.receipt_id = receipt.id
+      )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'implementation_target_resolution_cas_invalid');
+END''',
+    )
+
+    execution_insert = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_execution_i"
+    manifest[execution_insert] = (
+        "implementation_target_execution_records",
+        f'''CREATE TRIGGER "{execution_insert}"
+BEFORE INSERT ON "implementation_target_execution_records"
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM implementation_targets AS target
+    JOIN code_investigation_receipts AS receipt
+      ON receipt.id = NEW.result_investigation_receipt_id
+    JOIN code_investigation_heads AS head
+      ON head.board_id = receipt.board_id
+     AND head.source_ref = receipt.source_ref
+    WHERE target.id = NEW.target_id
+      AND target.board_id = NEW.board_id
+      AND target.card_id = NEW.card_id
+      AND target.source_ref = NEW.source_ref
+      AND target.revision = NEW.target_revision
+      AND target.lifecycle_status = 'active'
+      AND receipt.board_id = NEW.board_id
+      AND receipt.source_ref = NEW.source_ref
+      AND receipt.subject_type = 'card'
+      AND receipt.subject_id = NEW.card_id
+      AND receipt.declared_revision IS NEW.result_declared_revision
+      AND receipt.workspace_state_id IS NEW.result_workspace_state_id
+      AND head.state = 'current'
+      AND head.current_receipt_id = receipt.id
+      AND NOT EXISTS (
+          SELECT 1 FROM code_investigation_receipt_revocations AS revocation
+          WHERE revocation.board_id = NEW.board_id
+            AND revocation.receipt_id = receipt.id
+      )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'implementation_target_execution_cas_invalid');
+END''',
+    )
+
+    waiver_same = same_columns(
+        "code_traceability_waivers",
+        except_columns={"active", "cleared_by", "cleared_at"},
+    )
+    waiver_update = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_waiver_u"
+    manifest[waiver_update] = (
+        "code_traceability_waivers",
+        f'''CREATE TRIGGER "{waiver_update}"
+BEFORE UPDATE ON "code_traceability_waivers"
+WHEN NOT (
+    OLD.active = true
+    AND NEW.active = false
+    AND NEW.cleared_by IS NOT NULL
+    AND NEW.cleared_at IS NOT NULL
+    AND {waiver_same}
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_traceability_waiver_immutable');
+END''',
+    )
+    add_delete_guard(
+        "code_traceability_waivers",
+        alias="waiver",
+        message="code_traceability_waiver_delete_forbidden",
+    )
+    return manifest
+
+
+def code_traceability_postgresql_ddl(
+) -> tuple[str, dict[str, tuple[str, str, int]]]:
+    """Return PostgreSQL guards equivalent to the SQLite authority manifest."""
+
+    function_name = "pulse_code_traceability_guard_v1"
+    function_sql = f'''CREATE OR REPLACE FUNCTION "{function_name}"()
+RETURNS trigger AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        IF EXISTS (
+            SELECT 1 FROM "kg_board_erasure_permits" AS permit
+            WHERE permit."board_id" = OLD."board_id"
+        ) THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'code_traceability_delete_forbidden';
+    END IF;
+
+    IF TG_TABLE_NAME = 'code_investigation_receipts' THEN
+        IF TG_OP = 'UPDATE' THEN
+            RAISE EXCEPTION 'code_investigation_receipt_immutable';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1
+            FROM code_investigation_requests AS request
+            WHERE request.id = NEW.request_id
+              AND request.board_id = NEW.board_id
+              AND request.subject_type = NEW.subject_type
+              AND request.subject_id = NEW.subject_id
+              AND request.subject_version = NEW.subject_version
+              AND request.issued_to_actor_id = NEW.attestor_actor_id
+              AND request.source_ref = NEW.source_ref
+              AND request.selector_scope_digest = NEW.selector_scope_digest
+              AND request.canonicalization_profile =
+                  NEW.canonicalization_profile
+              AND request.limits_profile = NEW.limits_profile
+              AND request.status = 'open'
+              AND request.expires_at > CURRENT_TIMESTAMP
+              AND NEW.generation = request.expected_head_generation + 1
+              AND NEW.predecessor_receipt_id IS NOT DISTINCT FROM
+                  request.expected_predecessor_receipt_id
+              AND (
+                  (
+                      request.expected_head_generation = 0
+                      AND request.expected_predecessor_receipt_id IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM code_investigation_heads AS head
+                          WHERE head.board_id = request.board_id
+                            AND head.source_ref = request.source_ref
+                      )
+                  )
+                  OR EXISTS (
+                      SELECT 1 FROM code_investigation_heads AS head
+                      WHERE head.board_id = request.board_id
+                        AND head.source_ref = request.source_ref
+                        AND head.generation =
+                            request.expected_head_generation
+                        AND head.latest_receipt_id =
+                            request.expected_predecessor_receipt_id
+                  )
+              )
+        ) THEN
+            RAISE EXCEPTION 'code_investigation_receipt_request_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'code_investigation_requests' THEN
+        IF OLD.status <> 'open'
+           OR NEW.status NOT IN ('consumed', 'expired', 'revoked')
+           OR (to_jsonb(NEW) - 'status' - 'consumed_at')
+              IS DISTINCT FROM
+              (to_jsonb(OLD) - 'status' - 'consumed_at')
+           OR (
+               NEW.status = 'consumed'
+               AND (
+                   NEW.consumed_at IS NULL
+                   OR NOT EXISTS (
+                       SELECT 1 FROM code_investigation_receipts AS receipt
+                       WHERE receipt.request_id = OLD.id
+                   )
+               )
+           )
+           OR (
+               NEW.status IN ('expired', 'revoked')
+               AND NEW.consumed_at IS NOT NULL
+           ) THEN
+            RAISE EXCEPTION 'code_investigation_request_transition_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'code_investigation_heads' THEN
+        IF TG_OP = 'INSERT' THEN
+            IF NEW.generation <> 1
+               OR NEW.revision <> 1
+               OR NOT EXISTS (
+                   SELECT 1 FROM code_investigation_receipts AS receipt
+                   WHERE receipt.id = NEW.latest_receipt_id
+                     AND receipt.board_id = NEW.board_id
+                     AND receipt.source_ref = NEW.source_ref
+                     AND receipt.generation = NEW.generation
+                     AND receipt.predecessor_receipt_id IS NULL
+                     AND receipt.acceptance_status = 'accepted'
+                     AND (
+                         (
+                             receipt.trust_level <> 'conflicted'
+                             AND NEW.state = 'current'
+                             AND NEW.current_receipt_id =
+                                 NEW.latest_receipt_id
+                         )
+                         OR (
+                             receipt.trust_level = 'conflicted'
+                             AND NEW.state = 'conflicted'
+                             AND NEW.current_receipt_id IS NULL
+                         )
+                     )
+               ) THEN
+                RAISE EXCEPTION 'code_investigation_head_insert_invalid';
+            END IF;
+        ELSIF NEW.board_id IS DISTINCT FROM OLD.board_id
+           OR NEW.source_ref IS DISTINCT FROM OLD.source_ref
+           OR NEW.generation <> OLD.generation + 1
+           OR NEW.revision <> OLD.revision + 1
+           OR NOT EXISTS (
+               SELECT 1 FROM code_investigation_receipts AS receipt
+               WHERE receipt.id = NEW.latest_receipt_id
+                 AND receipt.board_id = NEW.board_id
+                 AND receipt.source_ref = NEW.source_ref
+                 AND receipt.generation = NEW.generation
+                 AND receipt.predecessor_receipt_id = OLD.latest_receipt_id
+                 AND receipt.acceptance_status = 'accepted'
+                 AND (
+                     (
+                         receipt.trust_level <> 'conflicted'
+                         AND NEW.state = 'current'
+                         AND NEW.current_receipt_id = NEW.latest_receipt_id
+                     )
+                     OR (
+                         receipt.trust_level = 'conflicted'
+                         AND NEW.state = 'conflicted'
+                         AND NEW.current_receipt_id IS NOT DISTINCT FROM
+                             OLD.current_receipt_id
+                     )
+                 )
+           ) THEN
+            RAISE EXCEPTION 'code_investigation_head_cas_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'code_evidence' THEN
+        IF TG_OP = 'INSERT' THEN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM code_investigation_receipts AS receipt
+                JOIN code_investigation_heads AS head
+                  ON head.board_id = receipt.board_id
+                 AND head.source_ref = receipt.source_ref
+                WHERE receipt.id = NEW.investigation_receipt_id
+                  AND receipt.board_id = NEW.board_id
+                  AND receipt.source_ref = NEW.source_ref
+                  AND receipt.subject_type = NEW.parent_type
+                  AND receipt.subject_id = COALESCE(
+                      NEW.refinement_id, NEW.spec_id, NEW.card_id
+                  )
+                  AND receipt.subject_version = NEW.parent_version
+                  AND receipt.declared_revision IS NOT DISTINCT FROM
+                      NEW.declared_revision
+                  AND receipt.workspace_state_id = NEW.workspace_state_id
+                  AND receipt.declared_dirty = NEW.declared_dirty
+                  AND receipt.reproducibility_claim =
+                      NEW.reproducibility_claim
+                  AND head.state = 'current'
+                  AND head.current_receipt_id = receipt.id
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM code_investigation_receipt_revocations AS revocation
+                      WHERE revocation.board_id = NEW.board_id
+                        AND revocation.receipt_id = receipt.id
+                  )
+            ) THEN
+                RAISE EXCEPTION 'code_evidence_receipt_cas_invalid';
+            END IF;
+            RETURN NEW;
+        END IF;
+        IF OLD.lifecycle_status <> 'active'
+           OR NEW.lifecycle_status NOT IN ('superseded', 'revoked')
+           OR (to_jsonb(NEW) - 'lifecycle_status' - 'revocation_reason')
+              IS DISTINCT FROM
+              (to_jsonb(OLD) - 'lifecycle_status' - 'revocation_reason')
+           OR (
+               NEW.lifecycle_status = 'superseded'
+               AND NOT EXISTS (
+                   SELECT 1 FROM code_evidence AS successor
+                   WHERE successor.supersedes_evidence_id = OLD.id
+                     AND successor.board_id = OLD.board_id
+               )
+           ) THEN
+            RAISE EXCEPTION 'code_evidence_content_immutable';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'implementation_target_resolutions' THEN
+        IF TG_OP <> 'INSERT' THEN
+            RAISE EXCEPTION 'implementation_target_resolution_immutable';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1
+            FROM implementation_targets AS target
+            JOIN code_investigation_receipts AS receipt
+              ON receipt.id = NEW.investigation_receipt_id
+            JOIN code_investigation_heads AS head
+              ON head.board_id = receipt.board_id
+             AND head.source_ref = receipt.source_ref
+            WHERE target.id = NEW.target_id
+              AND target.board_id = NEW.board_id
+              AND target.source_ref = NEW.source_ref
+              AND target.revision = NEW.target_revision
+              AND target.lifecycle_status = 'active'
+              AND receipt.board_id = NEW.board_id
+              AND receipt.source_ref = NEW.source_ref
+              AND receipt.subject_type = 'card'
+              AND receipt.subject_id = target.card_id
+              AND receipt.subject_version = NEW.subject_version
+              AND receipt.generation = NEW.receipt_generation
+              AND receipt.declared_revision IS NOT DISTINCT FROM
+                  NEW.declared_revision
+              AND receipt.workspace_state_id = NEW.workspace_state_id
+              AND receipt.declared_dirty = NEW.declared_dirty
+              AND head.state = 'current'
+              AND head.current_receipt_id = receipt.id
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM code_investigation_receipt_revocations AS revocation
+                  WHERE revocation.board_id = NEW.board_id
+                    AND revocation.receipt_id = receipt.id
+              )
+        ) THEN
+            RAISE EXCEPTION 'implementation_target_resolution_cas_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'implementation_target_execution_records' THEN
+        IF TG_OP <> 'INSERT' THEN
+            RAISE EXCEPTION 'implementation_target_execution_immutable';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1
+            FROM implementation_targets AS target
+            JOIN code_investigation_receipts AS receipt
+              ON receipt.id = NEW.result_investigation_receipt_id
+            JOIN code_investigation_heads AS head
+              ON head.board_id = receipt.board_id
+             AND head.source_ref = receipt.source_ref
+            WHERE target.id = NEW.target_id
+              AND target.board_id = NEW.board_id
+              AND target.card_id = NEW.card_id
+              AND target.source_ref = NEW.source_ref
+              AND target.revision = NEW.target_revision
+              AND target.lifecycle_status = 'active'
+              AND receipt.board_id = NEW.board_id
+              AND receipt.source_ref = NEW.source_ref
+              AND receipt.subject_type = 'card'
+              AND receipt.subject_id = NEW.card_id
+              AND receipt.declared_revision IS NOT DISTINCT FROM
+                  NEW.result_declared_revision
+              AND receipt.workspace_state_id IS NOT DISTINCT FROM
+                  NEW.result_workspace_state_id
+              AND head.state = 'current'
+              AND head.current_receipt_id = receipt.id
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM code_investigation_receipt_revocations AS revocation
+                  WHERE revocation.board_id = NEW.board_id
+                    AND revocation.receipt_id = receipt.id
+              )
+        ) THEN
+            RAISE EXCEPTION 'implementation_target_execution_cas_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'code_evidence_spec_links' THEN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM specs AS spec
+            JOIN code_evidence AS evidence ON evidence.id = NEW.evidence_id
+            WHERE spec.id = NEW.spec_id
+              AND spec.board_id = NEW.board_id
+              AND evidence.board_id = NEW.board_id
+              AND evidence.lifecycle_status = 'active'
+              AND evidence.payload_sha256 = NEW.evidence_content_sha256
+              AND NEW.spec_version = spec.version + 1
+              AND NOT EXISTS (
+                  SELECT 1 FROM code_evidence_dispositions AS disposition
+                  WHERE disposition.board_id = NEW.board_id
+                    AND disposition.spec_id = NEW.spec_id
+                    AND disposition.evidence_id = NEW.evidence_id
+                    AND disposition.active
+              )
+        ) THEN
+            RAISE EXCEPTION 'code_evidence_spec_link_cas_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'code_evidence_dispositions' THEN
+        IF TG_OP = 'INSERT' THEN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM specs AS spec
+                JOIN code_evidence AS evidence
+                  ON evidence.id = NEW.evidence_id
+                WHERE spec.id = NEW.spec_id
+                  AND spec.board_id = NEW.board_id
+                  AND evidence.board_id = NEW.board_id
+                  AND evidence.lifecycle_status <> 'revoked'
+                  AND NEW.spec_version = spec.version + 1
+                  AND NOT EXISTS (
+                      SELECT 1 FROM code_evidence_spec_links AS link
+                      WHERE link.board_id = NEW.board_id
+                        AND link.spec_id = NEW.spec_id
+                        AND link.evidence_id = NEW.evidence_id
+                  )
+            ) THEN
+                RAISE EXCEPTION 'code_evidence_disposition_cas_invalid';
+            END IF;
+            RETURN NEW;
+        END IF;
+        IF NOT OLD.active
+           OR NEW.active
+           OR NEW.spec_version < OLD.spec_version
+           OR NEW.cleared_by IS NULL
+           OR NEW.cleared_at IS NULL
+           OR (to_jsonb(NEW) - 'spec_version' - 'active' - 'cleared_by' - 'cleared_at')
+              IS DISTINCT FROM
+              (to_jsonb(OLD) - 'spec_version' - 'active' - 'cleared_by' - 'cleared_at')
+           OR NOT EXISTS (
+               SELECT 1 FROM specs AS spec
+               WHERE spec.id = OLD.spec_id
+                 AND spec.board_id = OLD.board_id
+                 AND NEW.spec_version IN (spec.version, spec.version + 1)
+           ) THEN
+            RAISE EXCEPTION 'code_evidence_disposition_immutable';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'implementation_targets' THEN
+        IF (
+            (to_jsonb(NEW) - 'current_resolution_id' - 'updated_at') =
+            (to_jsonb(OLD) - 'current_resolution_id' - 'updated_at')
+            AND NEW.current_resolution_id IS DISTINCT FROM
+                OLD.current_resolution_id
+            AND NEW.current_resolution_id IS NOT NULL
+            AND EXISTS (
+                SELECT 1 FROM implementation_target_resolutions AS resolution
+                WHERE resolution.id = NEW.current_resolution_id
+                  AND resolution.target_id = OLD.id
+                  AND resolution.board_id = OLD.board_id
+                  AND resolution.target_revision = OLD.revision
+            )
+        ) THEN
+            RETURN NEW;
+        END IF;
+        IF OLD.lifecycle_status <> 'active'
+           OR NEW.id IS DISTINCT FROM OLD.id
+           OR NEW.board_id IS DISTINCT FROM OLD.board_id
+           OR NEW.card_id IS DISTINCT FROM OLD.card_id
+           OR NEW.source_ref IS DISTINCT FROM OLD.source_ref
+           OR NEW.created_by IS DISTINCT FROM OLD.created_by
+           OR NEW.created_at IS DISTINCT FROM OLD.created_at
+           OR NEW.revision <> OLD.revision + 1
+           OR NEW.current_resolution_id IS NOT NULL
+           OR NEW.last_change_reason_sha256 IS NULL THEN
+            RAISE EXCEPTION 'implementation_target_cas_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'code_traceability_waivers' THEN
+        IF NOT OLD.active
+           OR NEW.active
+           OR NEW.cleared_by IS NULL
+           OR NEW.cleared_at IS NULL
+           OR (to_jsonb(NEW) - 'active' - 'cleared_by' - 'cleared_at')
+              IS DISTINCT FROM
+              (to_jsonb(OLD) - 'active' - 'cleared_by' - 'cleared_at') THEN
+            RAISE EXCEPTION 'code_traceability_waiver_immutable';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    RAISE EXCEPTION 'code_traceability_row_immutable';
+END;
+$$ LANGUAGE plpgsql'''
+    specs = {
+        "trg_ctv1_request_ud": (
+            "code_investigation_requests",
+            "UPDATE OR DELETE",
+            27,
+        ),
+        "trg_ctv1_receipt_iud": (
+            "code_investigation_receipts",
+            "INSERT OR UPDATE OR DELETE",
+            31,
+        ),
+        "trg_ctv1_revocation_ud": (
+            "code_investigation_receipt_revocations",
+            "UPDATE OR DELETE",
+            27,
+        ),
+        "trg_ctv1_head_iud": (
+            "code_investigation_heads",
+            "INSERT OR UPDATE OR DELETE",
+            31,
+        ),
+        "trg_ctv1_evidence_iud": (
+            "code_evidence",
+            "INSERT OR UPDATE OR DELETE",
+            31,
+        ),
+        "trg_ctv1_spec_link_i": (
+            "code_evidence_spec_links",
+            "INSERT",
+            7,
+        ),
+        "trg_ctv1_disposition_iud": (
+            "code_evidence_dispositions",
+            "INSERT OR UPDATE OR DELETE",
+            31,
+        ),
+        "trg_ctv1_target_ud": (
+            "implementation_targets",
+            "UPDATE OR DELETE",
+            27,
+        ),
+        "trg_ctv1_resolution_iud": (
+            "implementation_target_resolutions",
+            "INSERT OR UPDATE OR DELETE",
+            31,
+        ),
+        "trg_ctv1_execution_iud": (
+            "implementation_target_execution_records",
+            "INSERT OR UPDATE OR DELETE",
+            31,
+        ),
+        "trg_ctv1_ack_ud": (
+            "target_overlap_acknowledgements",
+            "UPDATE OR DELETE",
+            27,
+        ),
+        "trg_ctv1_waiver_ud": (
+            "code_traceability_waivers",
+            "UPDATE OR DELETE",
+            27,
+        ),
+    }
+    return function_sql, specs
+
+
 def _quality_c7_sqlite_trigger_manifest() -> dict[str, tuple[str, str]]:
     """Return permit-aware append-only guards installed after create_all."""
 
@@ -18893,6 +19959,266 @@ def audit_research_decision_postgresql_trigger_rows(
     return tuple(missing)
 
 
+async def _migrate_code_traceability_schema() -> str | None:
+    """Converge Code Traceability tables, lineage columns, and DB guards.
+
+    This step owns relational persistence only.  It intentionally installs no
+    source reader, Git/filesystem adapter, provider client, parser, or resolver.
+    """
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+
+    engine = get_engine()
+    changed = False
+
+    def table_names(sync_conn: object) -> set[str]:
+        return set(sa_inspect(sync_conn).get_table_names())
+
+    def column_names(sync_conn: object, table_name: str) -> set[str]:
+        return {
+            str(column["name"])
+            for column in sa_inspect(sync_conn).get_columns(table_name)
+        }
+
+    async with engine.begin() as conn:
+        dialect = conn.dialect.name
+        if dialect not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "Code Traceability migration supports only SQLite and PostgreSQL"
+            )
+        if dialect == "sqlite":
+            await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+            await conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+        existing_tables = await conn.run_sync(table_names)
+        for table_name, additions in (
+            (
+                "refinement_snapshots",
+                (("code_evidence_manifest", "JSON"),),
+            ),
+            (
+                "specs",
+                (
+                    ("source_refinement_snapshot_id", "VARCHAR(36)"),
+                    ("source_refinement_version", "INTEGER"),
+                ),
+            ),
+        ):
+            if table_name not in existing_tables:
+                raise RuntimeError(
+                    "Code Traceability requires existing SDLC table: " + table_name
+                )
+            observed_columns = await conn.run_sync(
+                lambda sync_conn, name=table_name: column_names(sync_conn, name)
+            )
+            for column_name, column_type in additions:
+                if column_name in observed_columns:
+                    continue
+                await conn.execute(
+                    sa_text(
+                        f'ALTER TABLE "{table_name}" '
+                        f'ADD COLUMN "{column_name}" {column_type}'
+                    )
+                )
+                changed = True
+
+        await conn.execute(
+            sa_text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_specs_source_refinement_snapshot_id "
+                "ON specs(source_refinement_snapshot_id)"
+            )
+        )
+        if dialect == "postgresql":
+            await conn.execute(
+                sa_text(
+                    """
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint AS constraint_row
+        JOIN pg_class AS relation
+          ON relation.oid = constraint_row.conrelid
+        JOIN pg_namespace AS namespace_row
+          ON namespace_row.oid = relation.relnamespace
+        WHERE namespace_row.nspname = current_schema()
+          AND relation.relname = 'specs'
+          AND constraint_row.conname =
+              'fk_specs_source_refinement_snapshot_id'
+    ) THEN
+        ALTER TABLE specs
+        ADD CONSTRAINT fk_specs_source_refinement_snapshot_id
+        FOREIGN KEY (source_refinement_snapshot_id)
+        REFERENCES refinement_snapshots(id)
+        ON DELETE RESTRICT
+        ON UPDATE RESTRICT;
+    END IF;
+END $$
+"""
+                )
+            )
+
+        existing_tables = await conn.run_sync(table_names)
+        for table in code_traceability_owned_tables():
+            if table.name not in existing_tables:
+                await conn.run_sync(
+                    lambda sync_conn, owned=table: owned.create(
+                        sync_conn,
+                        checkfirst=True,
+                    )
+                )
+                existing_tables.add(table.name)
+                changed = True
+            contract = await conn.run_sync(
+                (
+                    lambda sync_conn, owned=table: _sqlite_owned_table_contract(
+                        sync_conn, owned
+                    )
+                )
+                if dialect == "sqlite"
+                else (
+                    lambda sync_conn, owned=table: _postgresql_owned_table_contract(
+                        sync_conn, owned
+                    )
+                )
+            )
+            if contract["observed"] != contract["expected"]:
+                raise RuntimeError(
+                    "Code Traceability table has a non-canonical contract: "
+                    + table.name
+                )
+
+        if dialect == "sqlite":
+            manifest = code_traceability_sqlite_trigger_manifest()
+            trigger_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, tbl_name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name LIKE :prefix"
+                        ),
+                        {"prefix": f"{CODE_TRACEABILITY_TRIGGER_PREFIX}%"},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing = {str(row["name"]): row for row in trigger_rows}
+            unexpected = set(existing) - set(manifest)
+            if unexpected:
+                raise RuntimeError(
+                    "Code Traceability has unexpected owned triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for trigger_name, (table_name, trigger_sql) in manifest.items():
+                observed = existing.get(trigger_name)
+                if observed is None:
+                    await conn.execute(sa_text(trigger_sql))
+                    changed = True
+                    continue
+                if (
+                    str(observed["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        observed["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
+                ):
+                    raise RuntimeError(
+                        "Code Traceability owned trigger is corrupt: "
+                        + trigger_name
+                    )
+            foreign_key_violations = list(
+                (await conn.exec_driver_sql("PRAGMA foreign_key_check")).all()
+            )
+            if foreign_key_violations:
+                raise RuntimeError(
+                    "Code Traceability migration left foreign-key violations: "
+                    + repr(foreign_key_violations[:10])
+                )
+        else:
+            function_sql, trigger_specs = code_traceability_postgresql_ddl()
+            await conn.execute(sa_text(function_sql))
+            trigger_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            """
+SELECT trigger.tgname AS trigger_name,
+       relation.relname AS table_name,
+       function.proname AS function_name,
+       trigger.tgtype AS trigger_type,
+       trigger.tgenabled AS trigger_enabled
+FROM pg_trigger AS trigger
+JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+JOIN pg_namespace AS namespace_row
+  ON namespace_row.oid = relation.relnamespace
+JOIN pg_proc AS function ON function.oid = trigger.tgfoid
+WHERE NOT trigger.tgisinternal
+  AND namespace_row.nspname = current_schema()
+  AND trigger.tgname LIKE 'trg_ctv1_%'
+"""
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing = {str(row["trigger_name"]): row for row in trigger_rows}
+            unexpected = set(existing) - set(trigger_specs)
+            if unexpected:
+                raise RuntimeError(
+                    "Code Traceability has unexpected PostgreSQL triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for trigger_name, (
+                table_name,
+                operation_clause,
+                expected_type,
+            ) in trigger_specs.items():
+                observed = existing.get(trigger_name)
+                if observed is None:
+                    await conn.execute(
+                        sa_text(
+                            f'CREATE TRIGGER "{trigger_name}" '
+                            f"BEFORE {operation_clause} "
+                            f'ON "{table_name}" FOR EACH ROW '
+                            'EXECUTE FUNCTION "pulse_code_traceability_guard_v1"()'
+                        )
+                    )
+                    changed = True
+                    continue
+                if (
+                    str(observed["table_name"]) != table_name
+                    or str(observed["function_name"])
+                    != "pulse_code_traceability_guard_v1"
+                    or int(observed["trigger_type"]) != expected_type
+                    or _postgresql_catalog_char(observed["trigger_enabled"]) != "O"
+                ):
+                    raise RuntimeError(
+                        "Code Traceability PostgreSQL trigger is corrupt: "
+                        + trigger_name
+                    )
+
+        final_snapshot_columns = await conn.run_sync(
+            lambda sync_conn: column_names(sync_conn, "refinement_snapshots")
+        )
+        final_spec_columns = await conn.run_sync(
+            lambda sync_conn: column_names(sync_conn, "specs")
+        )
+        if "code_evidence_manifest" not in final_snapshot_columns or not {
+            "source_refinement_snapshot_id",
+            "source_refinement_version",
+        }.issubset(final_spec_columns):
+            raise RuntimeError(
+                "Code Traceability lineage-column convergence is incomplete"
+            )
+    return None if changed else "skipped"
+
+
 async def _migrate_quality_assessment_c7_schema() -> None:
     """Converge additive Q&A fields and permit-aware immutable ledgers."""
 
@@ -19093,5 +20419,6 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
         _migrate_recompute_cognitive_source_fingerprints_v2
     ),
     "_migrate_quality_assessment_c7_schema": _migrate_quality_assessment_c7_schema,
+    "_migrate_code_traceability_schema": _migrate_code_traceability_schema,
     "_migrate_agent_permissions": _migrate_agent_permissions,
 }

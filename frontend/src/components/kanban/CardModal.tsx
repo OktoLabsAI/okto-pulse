@@ -3,7 +3,7 @@
  */
 
 import React, { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { X, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ShieldCheck, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History, Layers, MessageCircleQuestion, MessageSquare, ListChecks } from 'lucide-react';
+import { X, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ShieldCheck, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History, Layers, MessageCircleQuestion, MessageSquare, ListChecks, Target } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { exportCard, downloadMarkdown, markdownFilenameForCard } from '@/lib/exportMarkdown';
 import { useDashboardApi, type ActivityLogEntry } from '@/services/api';
@@ -55,6 +55,10 @@ import type {
   CardModalSubtab,
   CardModalTab,
 } from '@/components/shared/tabRouting';
+import {
+  ImplementationTargetsPanel,
+  useCodeTraceabilityAuthority,
+} from '@/components/code-traceability';
 import { CardResourcesPanel } from './CardResourcesPanel';
 import {
   resolveTaskValidationThresholds,
@@ -405,6 +409,8 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const canReadValidation = perms.has('card.validation.read');
   const canReadPolicyCompliance = perms.has('guidelines.assessments.read');
   const canReadActivity = perms.has('card.activity_read');
+  const { canReadProjection: canReadCodeTraceability } =
+    useCodeTraceabilityAuthority(boardId);
   const canEditCardFields = canMutateCard('card.entity.edit_fields');
   const canEditBugFields = canMutateCard('card.entity.edit_bug_fields');
   const canAssignCard = canMutateCard('card.entity.assign');
@@ -805,6 +811,8 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
       || (activeTab === 'resources' && !hasResources)
       || (activeTab === 'qa' && !canReadQA)
       || (activeTab === 'comments' && !canReadComments)
+      || (activeTab === 'implementation-targets'
+        && (!canReadCodeTraceability || card.card_type !== 'normal'))
       || (activeTab === 'validation' && !hasValidation)
       || (activeTab === 'activity' && !canReadActivity);
 
@@ -850,6 +858,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     canReadArchitecture,
     canReadAttachments,
     canReadComments,
+    canReadCodeTraceability,
     canReadConclusion,
     canReadKnowledge,
     canReadMockups,
@@ -1075,6 +1084,15 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
           label: 'Details',
           icon: <FileText size={14} />,
         },
+        ...(
+          canReadCodeTraceability && card.card_type === 'normal'
+            ? [{
+                id: 'implementation-targets' as const,
+                label: 'Implementation Targets',
+                icon: <Target size={14} />,
+              }]
+            : []
+        ),
         ...(
           canReadTests && ['bug', 'test'].includes(card.card_type || 'normal')
             ? [{
@@ -1549,6 +1567,26 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                   )}
                 </div>
               </AccessibleTabPanel>
+
+              {canReadCodeTraceability && card.card_type === 'normal' && (
+                <AccessibleTabPanel
+                  idBase={`${tabIdBase}-card-${card.id}`}
+                  tabId="implementation-targets"
+                  value={activeTab}
+                  mount="lazy-keep"
+                >
+                  <ImplementationTargetsPanel
+                    boardId={card.board_id}
+                    subjectId={card.id}
+                    subjectVersion={card.subject_version ?? 1}
+                    specVersion={fullSpec?.version}
+                    onCreateDependency={canManageDependencies ? () => {
+                      setActiveTab('references');
+                      setReferencesTab('dependencies');
+                    } : undefined}
+                  />
+                </AccessibleTabPanel>
+              )}
 
               <AccessibleTabPanel
                 idBase={`${tabIdBase}-card-${card.id}`}

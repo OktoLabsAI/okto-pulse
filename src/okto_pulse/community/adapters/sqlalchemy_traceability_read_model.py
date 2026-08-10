@@ -18,13 +18,28 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Story,
     StoryIdeationLink,
 )
+from okto_pulse.community.adapters.sqlalchemy_code_traceability import (
+    CommunitySqlAlchemyCodeTraceabilityStore,
+)
+from okto_pulse.core.domain.code_traceability import (
+    CodeTraceabilityProjectionProfile,
+    CodeTraceabilitySubjectType,
+)
 from okto_pulse.core.models import with_knowledge_governance
-from okto_pulse.core.ports.traceability import TraceabilityReadError
+from okto_pulse.core.ports.code_traceability import CodeTraceabilityProjectionQuery
+from okto_pulse.core.ports.traceability import (
+    TraceabilityReadError,
+    TraceabilityReport,
+)
 from okto_pulse.core.services.analytics_service import spec_coverage_summary
 from okto_pulse.core.domain.knowledge_fingerprint import (
     resolve_knowledge_content_sha256,
 )
 from okto_pulse.core.services.reference_resolution import resolve_task_context_references
+from okto_pulse.core.services.traceability import project_code_traceability_report
+
+
+_CODE_TRACEABILITY_REPORT_CONTEXT_LIMIT = 2_000
 
 
 class _LegacyTraceabilityReadError(Exception):
@@ -317,7 +332,7 @@ async def build_traceability_report(
     ideation_id: str = "",
     spec_id: str = "",
     include_artifacts: bool = True,
-) -> dict[str, Any]:
+) -> TraceabilityReport:
     board = await db.get(Board, board_id)
     if not board:
         raise TraceabilityReadError("board_not_found", "Board not found", status_code=404)
@@ -479,6 +494,53 @@ async def build_traceability_report(
         if spec.id not in attached_spec_ids
     ]
 
+    traceability_entities = [
+        *(
+            (
+                CodeTraceabilitySubjectType.REFINEMENT,
+                refinement.id,
+                int(refinement.version),
+            )
+            for refinement in refinements
+        ),
+        *(
+            (CodeTraceabilitySubjectType.SPEC, spec.id, int(spec.version))
+            for spec in specs
+        ),
+        *(
+            (
+                CodeTraceabilitySubjectType.CARD,
+                card.id,
+                int(card.policy_version),
+            )
+            for spec in specs
+            for card in (spec.cards or ())
+        ),
+    ]
+    # The existing report is an intentionally broad lineage read. Keep the new
+    # aggregate bounded and fail closed rather than silently omitting contexts.
+    if len(traceability_entities) > _CODE_TRACEABILITY_REPORT_CONTEXT_LIMIT:
+        raise TraceabilityReadError(
+            "code_traceability_report_context_limit_exceeded",
+            "Code Traceability report scope exceeds the bounded context limit.",
+            status_code=409,
+        )
+    traceability_reader = CommunitySqlAlchemyCodeTraceabilityStore(db)
+    traceability_contexts = tuple(
+        [
+            await traceability_reader.traceability_projection(
+                CodeTraceabilityProjectionQuery(
+                    board_id=board_id,
+                    subject_type=subject_type,
+                    subject_id=subject_id,
+                    subject_version=subject_version,
+                    profile=CodeTraceabilityProjectionProfile.SUMMARY,
+                )
+            )
+            for subject_type, subject_id, subject_version in traceability_entities
+        ]
+    )
+
     return {
         "board_id": board_id,
         "filters": {
@@ -495,6 +557,9 @@ async def build_traceability_report(
         },
         "ideations": report_ideations,
         "orphan_specs": orphan_specs,
+        "code_traceability": project_code_traceability_report(
+            traceability_contexts
+        ),
     }
 
 

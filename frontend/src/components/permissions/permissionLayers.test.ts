@@ -4,6 +4,7 @@ import {
   applyBoardCeiling,
   applyPermissionDelta,
   boardCeilingDelta,
+  CODE_TRACEABILITY_PERMISSION_INTRODUCTION_V1_LEAVES,
   composePermissionIntroductionManifests,
   INTRODUCED_PERMISSION_HISTORICAL_AUTHORITIES,
   INTRODUCED_PERMISSION_LEAVES,
@@ -324,8 +325,22 @@ describe('permission layers', () => {
     'test_scenario.move.ready_to_automated',
     'test_scenario.interact_in.passed',
     'sprint.tasks.assign',
+    'code_traceability.investigation.read',
+    'code_traceability.investigation.revoke',
+    'code_traceability.evidence.read',
+    'code_traceability.target.read',
+    'code_traceability.overlap.read',
   ])('recognizes post-SK-B introduced leaf %s', (leaf) => {
     expect(isIntroducedPermissionLeaf(leaf)).toBe(true);
+  });
+
+  it('pins Core CODE-TRACEABILITY/v1 and keeps the namespace future fail-closed', () => {
+    expect(CODE_TRACEABILITY_PERMISSION_INTRODUCTION_V1_LEAVES).toHaveLength(22);
+    for (const leaf of CODE_TRACEABILITY_PERMISSION_INTRODUCTION_V1_LEAVES) {
+      expect(isIntroducedPermissionLeaf(leaf)).toBe(true);
+    }
+    expect(isIntroducedPermissionLeaf('code_traceability.future_capability.read'))
+      .toBe(true);
   });
 
   it.each([

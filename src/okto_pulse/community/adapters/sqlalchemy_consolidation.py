@@ -18,11 +18,19 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
     CanonicalDebt,
     Card,
+    CodeEvidenceRow,
+    CodeEvidenceSpecLinkRow,
+    CodeInvestigationHeadRow,
+    CodeInvestigationReceiptRevocationRow,
+    CodeInvestigationReceiptRow,
     ConsolidationDeadLetter,
     ConsolidationQueue,
     Ideation,
     IdeationQAItem,
     KGTakedownStateEvent,
+    ImplementationTargetEvidenceLinkRow,
+    ImplementationTargetResolutionRow,
+    ImplementationTargetRow,
     QualityAssessmentHeadRow,
     QualityAssessmentReceiptRow,
     Refinement,
@@ -236,9 +244,293 @@ def _apply_queue(row: Any, record: ConsolidationQueueRecord) -> None:
 
 
 class CommunitySqlAlchemyConsolidationPersistence:
+    async def _load_code_investigation_receipt(
+        self,
+        context: Any,
+        *,
+        artifact_id: str,
+    ) -> dict[str, Any] | None:
+        row = (
+            await context.execute(
+                select(
+                    CodeInvestigationReceiptRow,
+                    CodeInvestigationReceiptRevocationRow,
+                    CodeInvestigationHeadRow,
+                )
+                .outerjoin(
+                    CodeInvestigationReceiptRevocationRow,
+                    CodeInvestigationReceiptRevocationRow.receipt_id
+                    == CodeInvestigationReceiptRow.id,
+                )
+                .outerjoin(
+                    CodeInvestigationHeadRow,
+                    and_(
+                        CodeInvestigationHeadRow.board_id
+                        == CodeInvestigationReceiptRow.board_id,
+                        CodeInvestigationHeadRow.source_ref
+                        == CodeInvestigationReceiptRow.source_ref,
+                    ),
+                )
+                .where(CodeInvestigationReceiptRow.id == artifact_id)
+            )
+        ).first()
+        if row is None:
+            return None
+        receipt, revocation, head = row
+        status = "accepted"
+        if revocation is not None:
+            status = "revoked"
+        elif receipt.trust_level == "conflicted" or (
+            head is not None
+            and head.latest_receipt_id == receipt.id
+            and head.state == "conflicted"
+        ):
+            status = "conflicted"
+        return {
+            "id": receipt.id,
+            "board_id": receipt.board_id,
+            "status": status,
+            "investigation_source_ref": receipt.source_ref,
+            "attestor_actor_id": receipt.attestor_actor_id,
+            "declared_revision": receipt.declared_revision,
+            "workspace_state_id": receipt.workspace_state_id,
+            "trust_level": receipt.trust_level,
+            "outcome": receipt.outcome,
+            "generation": receipt.generation,
+            "payload_sha256": receipt.payload_sha256,
+            "content_hash": receipt.payload_sha256,
+        }
+
+    async def _load_code_evidence(
+        self,
+        context: Any,
+        *,
+        artifact_id: str,
+    ) -> dict[str, Any] | None:
+        row = (
+            await context.execute(
+                select(CodeEvidenceRow, CodeInvestigationReceiptRow)
+                .join(
+                    CodeInvestigationReceiptRow,
+                    CodeInvestigationReceiptRow.id
+                    == CodeEvidenceRow.investigation_receipt_id,
+                )
+                .where(CodeEvidenceRow.id == artifact_id)
+            )
+        ).first()
+        if row is None:
+            return None
+        evidence, receipt = row
+        if (
+            evidence.board_id != receipt.board_id
+            or evidence.source_ref != receipt.source_ref
+        ):
+            raise RuntimeError("code_evidence_projection_receipt_scope_mismatch")
+        links = tuple(
+            (
+                await context.execute(
+                    select(CodeEvidenceSpecLinkRow)
+                    .where(CodeEvidenceSpecLinkRow.evidence_id == evidence.id)
+                    .order_by(CodeEvidenceSpecLinkRow.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return {
+            "id": evidence.id,
+            "board_id": evidence.board_id,
+            "lifecycle_status": evidence.lifecycle_status,
+            "investigation_receipt_id": evidence.investigation_receipt_id,
+            "investigation_source_ref": evidence.source_ref,
+            "declared_revision": evidence.declared_revision,
+            "workspace_state_id": evidence.workspace_state_id,
+            "relative_path": evidence.relative_path,
+            "qualified_symbol": evidence.qualified_symbol,
+            "symbol_kind": evidence.symbol_kind,
+            "selector_kind": evidence.selector_kind,
+            "snapshot_line_start": evidence.snapshot_line_start,
+            "snapshot_line_end": evidence.snapshot_line_end,
+            "declared_source_content_sha256": (
+                evidence.declared_source_content_sha256
+            ),
+            "evidence_type": evidence.evidence_type,
+            "claim": evidence.claim,
+            "supersedes_evidence_id": evidence.supersedes_evidence_id,
+            "content_hash": evidence.payload_sha256,
+            "spec_links": [
+                {
+                    "id": link.id,
+                    "spec_id": link.spec_id,
+                    "entity_type": link.entity_type,
+                    "entity_id": link.entity_id,
+                    "relation_type": link.relation_type,
+                }
+                for link in links
+            ],
+        }
+
+    async def _load_implementation_target(
+        self,
+        context: Any,
+        *,
+        artifact_id: str,
+    ) -> dict[str, Any] | None:
+        row = (
+            await context.execute(
+                select(
+                    ImplementationTargetRow,
+                    Card,
+                    ImplementationTargetResolutionRow,
+                )
+                .join(Card, Card.id == ImplementationTargetRow.card_id)
+                .outerjoin(
+                    ImplementationTargetResolutionRow,
+                    and_(
+                        ImplementationTargetResolutionRow.id
+                        == ImplementationTargetRow.current_resolution_id,
+                        ImplementationTargetResolutionRow.target_id
+                        == ImplementationTargetRow.id,
+                        ImplementationTargetResolutionRow.board_id
+                        == ImplementationTargetRow.board_id,
+                        ImplementationTargetResolutionRow.target_revision
+                        == ImplementationTargetRow.revision,
+                    ),
+                )
+                .where(ImplementationTargetRow.id == artifact_id)
+            )
+        ).first()
+        if row is None:
+            return None
+        target, card, resolution = row
+        if target.board_id != card.board_id:
+            raise RuntimeError("implementation_target_projection_card_scope_mismatch")
+        if target.current_resolution_id is not None and resolution is None:
+            raise RuntimeError("implementation_target_projection_resolution_dangling")
+        if resolution is not None and resolution.source_ref != target.source_ref:
+            raise RuntimeError("implementation_target_projection_source_mismatch")
+
+        evidence_links = tuple(
+            (
+                await context.execute(
+                    select(ImplementationTargetEvidenceLinkRow)
+                    .where(
+                        ImplementationTargetEvidenceLinkRow.target_id == target.id
+                    )
+                    .order_by(ImplementationTargetEvidenceLinkRow.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        overlap_target_ids: list[str] = []
+        if target.lifecycle_status == "active":
+            from okto_pulse.community.adapters.sqlalchemy_code_traceability import (
+                CommunitySqlAlchemyCodeTraceabilityStore,
+            )
+            from okto_pulse.core.ports.code_traceability import TargetOverlapQuery
+
+            overlaps = await CommunitySqlAlchemyCodeTraceabilityStore(
+                context
+            ).overlap_report(
+                TargetOverlapQuery(
+                    board_id=target.board_id,
+                    card_id=target.card_id,
+                    include_informational=True,
+                )
+            )
+            overlap_target_ids = sorted(
+                {
+                    (
+                        overlap.target_b_id
+                        if overlap.target_a_id == target.id
+                        else overlap.target_a_id
+                    )
+                    for overlap in overlaps
+                    if target.id in {overlap.target_a_id, overlap.target_b_id}
+                }
+            )
+
+        card_type = getattr(card.card_type, "value", card.card_type)
+        payload: dict[str, Any] = {
+            "id": target.id,
+            "board_id": target.board_id,
+            "card_id": target.card_id,
+            "card_node_type": "Bug" if card_type == "bug" else "Entity",
+            "investigation_source_ref": target.source_ref,
+            "selector_kind": target.selector_kind,
+            "relative_path_hint": target.relative_path_hint,
+            "qualified_symbol": target.qualified_symbol,
+            "symbol_kind": target.symbol_kind,
+            "role": target.role,
+            "intent": target.intent,
+            "lifecycle_status": target.lifecycle_status,
+            "revision": target.revision,
+            "baseline_evidence_id": target.baseline_evidence_id,
+            "resolution_state": None,
+            "investigation_receipt_id": None,
+            "declared_revision": None,
+            "workspace_state_id": None,
+            "selector_fingerprint": None,
+            "resolved_relative_path": None,
+            "resolved_qualified_symbol": None,
+            "resolved_symbol_kind": None,
+            "resolved_line_start": None,
+            "resolved_line_end": None,
+            "payload_sha256": None,
+            "content_hash": None,
+            "evidence_links": [
+                {
+                    "id": link.id,
+                    "evidence_id": link.evidence_id,
+                    "relation_type": link.relation_type,
+                }
+                for link in evidence_links
+            ],
+            "overlap_target_ids": overlap_target_ids,
+        }
+        if resolution is not None:
+            payload.update(
+                {
+                    "resolution_state": resolution.state,
+                    "investigation_receipt_id": (
+                        resolution.investigation_receipt_id
+                    ),
+                    "declared_revision": resolution.declared_revision,
+                    "workspace_state_id": resolution.workspace_state_id,
+                    "selector_fingerprint": resolution.selector_fingerprint,
+                    "resolved_relative_path": resolution.resolved_relative_path,
+                    "resolved_qualified_symbol": (
+                        resolution.resolved_qualified_symbol
+                    ),
+                    "resolved_symbol_kind": resolution.resolved_symbol_kind,
+                    "resolved_line_start": resolution.resolved_line_start,
+                    "resolved_line_end": resolution.resolved_line_end,
+                    "payload_sha256": resolution.payload_sha256,
+                    "content_hash": resolution.payload_sha256,
+                }
+            )
+        return payload
+
     async def load_artifact(
         self, context: Any, *, artifact_type: str, artifact_id: str
     ) -> Any | None:
+        if artifact_type == "code_investigation_receipt":
+            return await self._load_code_investigation_receipt(
+                context,
+                artifact_id=artifact_id,
+            )
+        if artifact_type == "code_evidence":
+            return await self._load_code_evidence(
+                context,
+                artifact_id=artifact_id,
+            )
+        if artifact_type == "implementation_target":
+            return await self._load_implementation_target(
+                context,
+                artifact_id=artifact_id,
+            )
         model = _MODELS.get(artifact_type)
         if model is None:
             return None

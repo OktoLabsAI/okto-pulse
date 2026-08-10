@@ -2035,6 +2035,7 @@ export interface RefinementAmbiguityGateSkipReceipt {
 export interface Card {
   id: string;
   board_id: string;
+  subject_version?: number;
   spec_id: string | null;
   sprint_id: string | null;
   title: string;
@@ -2321,6 +2322,349 @@ export interface AgentBoardGrant {
 export type SpecResourceAutoDeriveType = 'knowledge_base' | 'architecture' | 'mockup';
 export type ReviewerSeparationMode = 'off' | 'warn' | 'enforce';
 
+export interface CodeTraceabilitySettings {
+  mode: 'off' | 'advisory' | 'blocking';
+  evidence_attestation: 'none' | 'preferred' | 'required';
+  target_resolution: 'advisory' | 'required' | 'required_current_receipt';
+  accepted_attestor_policy:
+    | 'granular_permission'
+    | 'granular_permission_and_board_allowlist';
+  minimum_trust: 'single_attestation' | 'corroborated';
+  preflight_freshness_seconds: number;
+  overlap_policy: 'off' | 'warn' | 'block_parallel';
+  observed_state_policy:
+    | 'allow_dirty_attestation'
+    | 'require_committed_attestation';
+  receipt_content: 'metadata_only' | 'safe_excerpt';
+}
+
+export type CodeTraceabilitySubjectType = 'refinement' | 'spec' | 'card';
+export type CodeTraceabilityProfile = 'summary' | 'detail' | 'full';
+export type CodeTraceabilityReceiptCurrentness =
+  | 'current'
+  | 'outdated'
+  | 'expired'
+  | 'revoked'
+  | 'conflicted'
+  | 'unknown';
+
+export interface CodeTraceabilityWorkspaceState {
+  workspace_state_id: string;
+  declared_revision: string | null;
+  declared_dirty: boolean;
+  observed_at: string;
+  reproducibility_claim: string;
+  fingerprint_algorithm: string;
+  manifest_digest: string;
+  manifest_entry_count: number;
+}
+
+export interface CodeInvestigationReceipt {
+  id: string;
+  request_id: string;
+  board_id: string;
+  subject_type: CodeTraceabilitySubjectType;
+  subject_id: string;
+  subject_version: number;
+  attestor_actor_id: string;
+  generation: number;
+  predecessor_receipt_id: string | null;
+  trust_level: 'single_attestation' | 'corroborated' | 'conflicted' | string;
+  acceptance_status: 'accepted' | 'rejected' | string;
+  outcome: 'accessible' | 'partial' | 'unavailable';
+  capabilities: string[];
+  source_ref: string;
+  source_identity_digest: string | null;
+  canonicalization_profile: string;
+  limits_profile: string;
+  selector_scope_digest: string;
+  declared_revision: string | null;
+  workspace_state: CodeTraceabilityWorkspaceState | null;
+  omission_manifest: Array<{
+    reason_code: string;
+    affected_scope_digest: string;
+    count: number;
+  }>;
+  omission_digest: string;
+  omission_count: number;
+  tooling: {
+    tool_id?: string;
+    tool_version?: string;
+    method_id?: string;
+    [key: string]: unknown;
+  };
+  observed_at: string;
+  received_at: string;
+  expires_at: string;
+  observation_sha256: string;
+  payload_sha256: string;
+}
+
+export interface CodeInvestigationReceiptReadResult {
+  receipt: CodeInvestigationReceipt;
+  currentness: CodeTraceabilityReceiptCurrentness;
+}
+
+export interface CodeTraceabilityEvidence {
+  id: string;
+  investigation_receipt_id: string;
+  source_ref: string;
+  parent_type: CodeTraceabilitySubjectType;
+  parent_id: string;
+  parent_version: number;
+  evidence_type: string;
+  claim?: string | null;
+  workspace_state?: CodeTraceabilityWorkspaceState | null;
+  selector_kind: string;
+  relative_path: string | null;
+  language: string | null;
+  symbol_kind: string | null;
+  qualified_symbol: string | null;
+  symbol_signature?: string | null;
+  snapshot_line_start?: number | null;
+  snapshot_line_end?: number | null;
+  excerpt?: string | null;
+  excerpt_truncated?: boolean | null;
+  attestation_state: 'agent_attested' | 'agent_attested_worktree' | string;
+  lifecycle_status: 'active' | 'superseded' | 'revoked' | string;
+  supersedes_evidence_id: string | null;
+  revocation_reason?: string | null;
+  submitted_by?: string | null;
+  received_at?: string | null;
+}
+
+export interface CodeEvidenceRevokeRequest {
+  reason: string;
+}
+
+export interface CodeTraceabilityEvidenceLink {
+  id: string;
+  evidence_id: string;
+  spec_id: string;
+  entity_type: string;
+  entity_id: string;
+  relation_type: string;
+  rationale?: string;
+}
+
+export interface CodeTraceabilityDisposition {
+  id: string;
+  evidence_id: string;
+  disposition: string;
+  justification?: string;
+  active: boolean;
+}
+
+export interface ImplementationTargetResolution {
+  id: string;
+  target_id: string;
+  investigation_receipt_id: string;
+  receipt_generation: number;
+  subject_version: number;
+  target_revision: number;
+  state: string;
+  resolved_relative_path: string | null;
+  resolved_qualified_symbol: string | null;
+  resolved_line_start?: number | null;
+  resolved_line_end?: number | null;
+  confidence: number | null;
+  received_at?: string;
+}
+
+export type ImplementationTargetSelectorKind =
+  | 'symbol'
+  | 'file'
+  | 'glob'
+  | 'semantic'
+  | 'new_file';
+
+export type ImplementationTargetRole =
+  | 'read'
+  | 'modify'
+  | 'extend'
+  | 'create'
+  | 'delete'
+  | 'test'
+  | 'validate';
+
+export interface ImplementationTargetCreateRequest {
+  source_ref: string;
+  selector_kind: ImplementationTargetSelectorKind;
+  relative_path_hint: string | null;
+  language: string | null;
+  symbol_kind: string | null;
+  qualified_symbol: string | null;
+  symbol_signature: string | null;
+  role: ImplementationTargetRole;
+  intent: string;
+  required: boolean;
+  expected_spec_version: number;
+  baseline_evidence_id: string | null;
+  spec_links: Array<{ entity_type: string; entity_id: string }>;
+  evidence_links: Array<{ evidence_id: string; relation_type: string }>;
+}
+
+export type TargetOverlapDisposition =
+  | 'ordered_by_dependency'
+  | 'accepted_parallel'
+  | 'merged_targets'
+  | 'false_positive';
+
+export interface TargetOverlapAcknowledgementRequest {
+  target_a_id: string;
+  target_b_id: string;
+  resolution_a_id: string;
+  resolution_b_id: string;
+  disposition: TargetOverlapDisposition;
+  justification: string;
+}
+
+export type CodeTraceabilityWaiverScope =
+  | 'implementation_target'
+  | 'target_resolution'
+  | 'target_overlap';
+
+export type CodeTraceabilityWaiverReason =
+  | 'no_code_change'
+  | 'documentation_only'
+  | 'manual_process'
+  | 'external_source_unavailable'
+  | 'conceptual_board'
+  | 'runtime_only'
+  | 'other';
+
+export interface CodeTraceabilityWaiver {
+  id: string;
+  board_id: string;
+  entity_type: 'refinement' | 'spec' | 'card' | 'spec_entity';
+  entity_id: string;
+  scope: CodeTraceabilityWaiverScope | 'code_evidence' | 'evidence_linkage';
+  reason_code: CodeTraceabilityWaiverReason;
+  justification: string;
+  active: boolean;
+  created_by: string;
+  created_at: string;
+  cleared_by: string | null;
+  cleared_at: string | null;
+}
+
+export interface CodeTraceabilityWaiverCreateRequest {
+  entity_type: 'card';
+  entity_id: string;
+  scope: CodeTraceabilityWaiverScope;
+  reason_code: CodeTraceabilityWaiverReason;
+  justification: string;
+}
+
+export interface ImplementationTargetProjection {
+  id: string;
+  card_id: string;
+  source_ref: string;
+  selector_kind: string;
+  relative_path_hint: string | null;
+  qualified_symbol: string | null;
+  role: 'read' | 'modify' | 'create' | 'delete' | string;
+  intent?: string;
+  required: boolean;
+  lifecycle_status: string;
+  revision: number;
+  current_resolution_id: string | null;
+}
+
+export type ImplementationTargetExecutionDisposition =
+  | 'touched'
+  | 'not_touched'
+  | 'replaced'
+  | 'created'
+  | 'deleted'
+  | 'superseded';
+
+export interface ImplementationTargetExecutionRecordProjection {
+  id: string;
+  board_id?: string;
+  card_id: string;
+  target_id: string;
+  target_revision: number;
+  result_investigation_receipt_id: string;
+  disposition: ImplementationTargetExecutionDisposition;
+  source_ref: string;
+  result_declared_revision?: string | null;
+  result_workspace_state_id?: string | null;
+  actual_relative_path?: string | null;
+  actual_qualified_symbol?: string | null;
+  replacement_target_id?: string | null;
+  justification?: string;
+  submitted_by?: string;
+  received_at?: string;
+  payload_sha256?: string;
+  idempotency_key?: string;
+}
+
+export interface ImplementationOverlapProjection {
+  target_a_id: string;
+  target_b_id: string;
+  resolution_a_id: string;
+  resolution_b_id: string;
+  severity: string;
+  reason_code: string;
+  relative_path: string | null;
+  qualified_symbol: string | null;
+  acknowledgement?: { id: string; disposition: string } | null;
+}
+
+export interface CodeTraceabilityProjection {
+  subject_type: CodeTraceabilitySubjectType;
+  subject_id: string;
+  subject_version: number;
+  profile: CodeTraceabilityProfile;
+  context_scope: 'default' | 'gate';
+  evidence: CodeTraceabilityEvidence[];
+  inherited_evidence_ids: string[];
+  direct_evidence_ids: string[];
+  referenced_evidence_ids: string[];
+  links: CodeTraceabilityEvidenceLink[];
+  dispositions: CodeTraceabilityDisposition[];
+  targets: ImplementationTargetProjection[];
+  resolutions: ImplementationTargetResolution[];
+  executions?: ImplementationTargetExecutionRecordProjection[];
+  overlaps: ImplementationOverlapProjection[];
+  waivers: CodeTraceabilityWaiver[];
+  heads: Array<{
+    source_ref: string;
+    generation: number;
+    current_receipt_id: string | null;
+    state: string;
+  }>;
+  counts: Record<string, number>;
+  coverage: {
+    total: number;
+    linked: number;
+    dispositioned: number;
+    pending: number;
+    pending_ids: string[];
+    coverage_pct: number;
+  };
+  resolution_freshness: Record<string, {
+    state: string;
+    currentness: CodeTraceabilityReceiptCurrentness;
+    resolution_id: string | null;
+    target_revision?: number;
+  }>;
+  gate_readiness: {
+    mode: string;
+    allowed: boolean;
+    passed: boolean;
+    blockers: Array<{ code: string; message: string; blocking: boolean }>;
+    receipt_currentness: Record<string, CodeTraceabilityReceiptCurrentness>;
+    resolution_freshness: Record<string, {
+      state: string;
+      currentness: CodeTraceabilityReceiptCurrentness;
+      resolution_id: string | null;
+      target_revision?: number;
+    }>;
+  };
+}
+
 export interface BoardSettings {
   max_scenarios_per_card: number;
   skip_test_coverage_global: boolean;
@@ -2376,6 +2720,8 @@ export interface BoardSettings {
   // requirements against the union of the declared languages' lexicons;
   // empty/absent = neutral-only signals (numbers, comparators, units).
   lint_languages?: LintLanguageCode[];
+  /** Source-blind policy for observations submitted by authenticated agents. */
+  code_traceability?: CodeTraceabilitySettings | null;
 }
 
 export type LintLanguageCode = 'pt-BR' | 'en-US' | 'es-ES' | 'de-DE' | 'fr-FR';

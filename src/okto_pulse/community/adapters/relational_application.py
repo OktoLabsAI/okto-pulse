@@ -670,6 +670,33 @@ class CommunityRelationalApplicationAdapter:
 
         return CommunitySqlAlchemyResearchDecisionLedger(session)
 
+    def code_investigations(self, session: AsyncSession):
+        """Bind the agent-submitted attestation ledger to this transaction."""
+
+        from okto_pulse.community.adapters.sqlalchemy_code_traceability import (
+            CommunitySqlAlchemyCodeInvestigationStore,
+        )
+
+        return CommunitySqlAlchemyCodeInvestigationStore(session)
+
+    def code_traceability(self, session: AsyncSession):
+        """Bind structured Evidence/Target persistence to this transaction."""
+
+        from okto_pulse.community.adapters.sqlalchemy_code_traceability import (
+            CommunitySqlAlchemyCodeTraceabilityStore,
+        )
+
+        return CommunitySqlAlchemyCodeTraceabilityStore(session)
+
+    def code_traceability_read(self, session: AsyncSession):
+        """Bind relational-only Code Traceability projections."""
+
+        from okto_pulse.community.adapters.sqlalchemy_code_traceability import (
+            CommunitySqlAlchemyCodeTraceabilityStore,
+        )
+
+        return CommunitySqlAlchemyCodeTraceabilityStore(session)
+
     def guideline_policy(self, session: AsyncSession):
         """Bind the SK-B policy authority to the caller-owned transaction."""
 

@@ -39,6 +39,7 @@ function renderPanel(props: Partial<React.ComponentProps<typeof GraphControlsPan
       nodeCount={42}
       nodeLimit={100}
       onNodeLimitChange={onNodeLimitChange}
+      showCodeTraceabilityFacets
       {...props}
     />,
   );
@@ -58,6 +59,8 @@ describe('GraphControlsPanel — edge type chips (S4.4, AC-5)', () => {
     renderPanel();
     expect(screen.getByTestId('kg-edge-chip-originates_from')).toBeInTheDocument();
     expect(screen.getByTestId('kg-edge-chip-covered_by')).toBeInTheDocument();
+    expect(screen.getByTestId('kg-edge-chip-supports')).toBeInTheDocument();
+    expect(screen.getByTestId('kg-edge-chip-overlaps')).toBeInTheDocument();
   });
 
   it('clicking a chip when all edges are visible hides only that type', () => {
@@ -137,6 +140,32 @@ describe('GraphControlsPanel — graph layer selector', () => {
     expect(screen.getByTestId('kg-graph-layer-all')).toHaveAttribute('aria-pressed', 'false');
     fireEvent.click(screen.getByTestId('kg-graph-layer-all'));
     expect((onFiltersChange.mock.calls[0][0] as Filters).graphLayer).toBe('all');
+  });
+});
+
+describe('GraphControlsPanel — Code Traceability facets', () => {
+  it('offers the three semantic KG subtypes without adding physical node types', () => {
+    renderPanel();
+
+    expect(screen.getByTestId('kg-code-traceability-code_investigation_receipt')).toHaveTextContent('Receipts');
+    expect(screen.getByTestId('kg-code-traceability-code_evidence')).toHaveTextContent('Evidence');
+    expect(screen.getByTestId('kg-code-traceability-implementation_target')).toHaveTextContent('Targets');
+  });
+
+  it('hides every traceability facet without explicit projection authority', () => {
+    renderPanel({ showCodeTraceabilityFacets: false });
+
+    expect(screen.queryByTestId('kg-code-traceability-facets')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('kg-code-traceability-code_evidence')).not.toBeInTheDocument();
+  });
+
+  it('selects an accepted traceability facet independently', () => {
+    const { onFiltersChange } = renderPanel();
+    fireEvent.click(screen.getByTestId('kg-code-traceability-code_evidence'));
+
+    expect((onFiltersChange.mock.calls[0][0] as Filters).codeTraceabilityKinds).toEqual([
+      'code_evidence',
+    ]);
   });
 });
 

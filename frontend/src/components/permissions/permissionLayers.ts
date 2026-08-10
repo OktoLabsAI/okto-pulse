@@ -142,6 +142,36 @@ export const SKA_PERMISSION_INTRODUCTION_V1_LEAVES =
 export const SKB_PERMISSION_INTRODUCTION_V1_LEAVES =
   SKB_PERMISSION_INTRODUCTION_V1.leaves;
 
+/**
+ * Exact explicit-grant leaves introduced by Core's CODE-TRACEABILITY/v1
+ * manifest. Unlike SK-A/SK-B migration leaves, these have no historical
+ * fallback authority: absence must remain denied for every preset lineage.
+ */
+export const CODE_TRACEABILITY_PERMISSION_INTRODUCTION_V1_LEAVES = [
+  'code_traceability.investigation.start',
+  'code_traceability.investigation.read',
+  'code_traceability.investigation.receipt_submit',
+  'code_traceability.investigation.revoke',
+  'code_traceability.evidence.read',
+  'code_traceability.evidence.submit',
+  'code_traceability.evidence.supersede',
+  'code_traceability.evidence.revoke',
+  'code_traceability.spec_link.create',
+  'code_traceability.spec_link.delete',
+  'code_traceability.spec_link.set_disposition',
+  'code_traceability.spec_link.rebase',
+  'code_traceability.target.read',
+  'code_traceability.target.suggest',
+  'code_traceability.target.create',
+  'code_traceability.target.edit',
+  'code_traceability.target.resolution_submit',
+  'code_traceability.target.execution_submit',
+  'code_traceability.overlap.read',
+  'code_traceability.overlap.acknowledge',
+  'code_traceability.waiver.create',
+  'code_traceability.waiver.clear',
+] as const;
+
 const COMPOSED_PERMISSION_INTRODUCTIONS =
   composePermissionIntroductionManifests(
     PERMISSION_INTRODUCTION_MANIFESTS,
@@ -173,6 +203,9 @@ const POST_SKB_INTRODUCED_PREFIXES = [
   'ideation.knowledge.',
   'story.mockups.',
   'test_scenario.interact_in.',
+  // Core introduces this namespace through an explicit-grant manifest. Keep
+  // future leaves fail-closed even before the frontend consumes them.
+  'code_traceability.',
 ] as const;
 
 const POST_SKB_INTRODUCED_EXACT_LEAVES = new Set([

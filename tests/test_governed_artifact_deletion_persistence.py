@@ -371,5 +371,5 @@ def test_deletion_tombstone_participates_in_schema_and_revision_manifests():
         GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES
     )
     assert GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION == (
-        "gdsr-trigger-manifest-v5"
+        "gdsr-trigger-manifest-v6"
     )

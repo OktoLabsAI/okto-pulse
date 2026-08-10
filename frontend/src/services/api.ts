@@ -159,6 +159,14 @@ import type {
   QualitySubjectType,
   RecordAmbiguityAssessmentRequest,
   RecordAmbiguityAssessmentResponse,
+  CodeEvidenceRevokeRequest,
+  CodeInvestigationReceiptReadResult,
+  CodeTraceabilityProfile,
+  CodeTraceabilityProjection,
+  CodeTraceabilitySubjectType,
+  CodeTraceabilityWaiverCreateRequest,
+  ImplementationTargetCreateRequest,
+  TargetOverlapAcknowledgementRequest,
 } from '@/types';
 
 export interface BoardColumnsQuery {
@@ -437,6 +445,104 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
           method: 'POST',
           body: JSON.stringify(data),
         },
+      );
+    },
+
+    // ==================== CODE TRACEABILITY ====================
+
+    async getCodeTraceabilityProjection(
+      boardId: string,
+      subjectType: CodeTraceabilitySubjectType,
+      subjectId: string,
+      subjectVersion: number,
+      profile: CodeTraceabilityProfile = 'detail',
+      signal?: AbortSignal,
+    ): Promise<CodeTraceabilityProjection> {
+      const params = new URLSearchParams({
+        subject_type: subjectType,
+        subject_id: subjectId,
+        subject_version: String(subjectVersion),
+        profile,
+        context_scope: 'default',
+      });
+      return apiClient.fetchJson<CodeTraceabilityProjection>(
+        `/boards/${encodeURIComponent(boardId)}/code-traceability-projection?${params.toString()}`,
+        { signal },
+      );
+    },
+
+    async getCodeInvestigationReceipt(
+      boardId: string,
+      receiptId: string,
+      signal?: AbortSignal,
+    ): Promise<CodeInvestigationReceiptReadResult> {
+      return apiClient.fetchJson<CodeInvestigationReceiptReadResult>(
+        `/boards/${encodeURIComponent(boardId)}/code-investigation-receipts/${encodeURIComponent(receiptId)}`,
+        { signal },
+      );
+    },
+
+    async revokeCodeInvestigationReceipt(
+      boardId: string,
+      receiptId: string,
+      payload: { reason_code: string; justification: string },
+    ): Promise<Record<string, unknown>> {
+      return apiClient.fetchJson<Record<string, unknown>>(
+        `/boards/${encodeURIComponent(boardId)}/code-investigation-receipts/${encodeURIComponent(receiptId)}/revoke`,
+        { method: 'POST', body: JSON.stringify(payload) },
+      );
+    },
+
+    async revokeCodeEvidence(
+      boardId: string,
+      evidenceId: string,
+      payload: CodeEvidenceRevokeRequest,
+    ): Promise<Record<string, unknown>> {
+      return apiClient.fetchJson<Record<string, unknown>>(
+        `/boards/${encodeURIComponent(boardId)}/code-evidence/${encodeURIComponent(evidenceId)}/revoke`,
+        { method: 'POST', body: JSON.stringify(payload) },
+      );
+    },
+
+    async createImplementationTarget(
+      boardId: string,
+      cardId: string,
+      payload: ImplementationTargetCreateRequest,
+    ): Promise<Record<string, unknown>> {
+      return apiClient.fetchJson<Record<string, unknown>>(
+        `/boards/${encodeURIComponent(boardId)}/cards/${encodeURIComponent(cardId)}/implementation-targets`,
+        { method: 'POST', body: JSON.stringify(payload) },
+      );
+    },
+
+    async acknowledgeImplementationOverlap(
+      boardId: string,
+      cardId: string,
+      payload: TargetOverlapAcknowledgementRequest,
+    ): Promise<Record<string, unknown>> {
+      return apiClient.fetchJson<Record<string, unknown>>(
+        `/boards/${encodeURIComponent(boardId)}/cards/${encodeURIComponent(cardId)}/implementation-overlaps/acknowledgements`,
+        { method: 'POST', body: JSON.stringify(payload) },
+      );
+    },
+
+    async createCodeTraceabilityWaiver(
+      boardId: string,
+      payload: CodeTraceabilityWaiverCreateRequest,
+    ): Promise<Record<string, unknown>> {
+      return apiClient.fetchJson<Record<string, unknown>>(
+        `/boards/${encodeURIComponent(boardId)}/code-traceability-waivers`,
+        { method: 'POST', body: JSON.stringify(payload) },
+      );
+    },
+
+    async clearCodeTraceabilityWaiver(
+      boardId: string,
+      waiverId: string,
+    ): Promise<Record<string, unknown>> {
+      return apiClient.fetchJson<Record<string, unknown>>(
+        `/boards/${encodeURIComponent(boardId)}/code-traceability-waivers/${encodeURIComponent(waiverId)}`,
+        { method: 'DELETE' },
       );
     },
 

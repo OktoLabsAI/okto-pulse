@@ -33,8 +33,18 @@ import { Sigma } from 'sigma';
 import FA2Layout from 'graphology-layout-forceatlas2/worker';
 import { inferSettings } from 'graphology-layout-forceatlas2';
 import { Loader2, Maximize, MonitorX, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
-import type { KGNode, KGEdge, KGNodeType, KGEdgeType } from '@/types/knowledge-graph';
-import { NODE_TYPE_CONFIG, EDGE_TYPE_CONFIG } from '@/types/knowledge-graph';
+import type {
+  CodeTraceabilityKGKind,
+  KGNode,
+  KGEdge,
+  KGNodeType,
+  KGEdgeType,
+} from '@/types/knowledge-graph';
+import {
+  EDGE_TYPE_CONFIG,
+  kgNodeDisplayType,
+  kgNodeVisualConfig,
+} from '@/types/knowledge-graph';
 import { NodeTooltip } from './NodeTooltip';
 import { NodePreviewPanel } from './NodePreviewPanel';
 import { SigmaMiniMap } from './graph/SigmaMiniMap';
@@ -42,6 +52,7 @@ import { SigmaMiniMap } from './graph/SigmaMiniMap';
 export interface GraphCanvasFilters {
   types: KGNodeType[];
   edgeTypes: KGEdgeType[];
+  codeTraceabilityKinds?: CodeTraceabilityKGKind[];
   /** Minimum relevance_score (0..1) — slider in the controls panel.
    *  Operates on KGNode.relevance_score (the conceptually-correct field
    *  shown in the node detail panel as "Relevance"). */
@@ -214,6 +225,11 @@ export function GraphCanvas({
     if (filters.types.length > 0) {
       result = result.filter((n) => filters.types.includes(n.node_type));
     }
+    if ((filters.codeTraceabilityKinds?.length ?? 0) > 0) {
+      result = result.filter((n) => filters.codeTraceabilityKinds?.includes(
+        n.kind_of as CodeTraceabilityKGKind,
+      ));
+    }
     if (filters.minRelevance > 0) {
       result = result.filter((n) => (n.relevance_score ?? 0) >= filters.minRelevance);
     }
@@ -375,7 +391,10 @@ export function GraphCanvas({
     // here so a dark/light flip only needs a refresh, not a data rebuild.
     renderer.setSetting('nodeReducer', (node, data) => {
       const theme = isDarkRef.current ? THEME.dark : THEME.light;
-      const cfg = NODE_TYPE_CONFIG[data.nodeType as KGNodeType];
+      const cfg = kgNodeVisualConfig({
+        node_type: data.nodeType as KGNodeType,
+        kind_of: data.kindOf as string | null | undefined,
+      });
       const res = { ...data };
       res.color = cfg ? (isDarkRef.current ? cfg.darkColor : cfg.color) : '#6B7280';
       const sel = selectedRef.current;
@@ -502,6 +521,7 @@ export function GraphCanvas({
         size: nodeSize(degrees.get(n.id) ?? 0),
         label: truncateLabel(n.title || n.id),
         nodeType: n.node_type,
+        kindOf: n.kind_of ?? null,
       });
     });
     for (const e of filteredEdges) {
@@ -768,7 +788,7 @@ export function GraphCanvas({
           </div>
           <ul className="flex flex-col gap-1">
             {filteredNodes.map((n) => {
-              const cfg = NODE_TYPE_CONFIG[n.node_type];
+              const cfg = kgNodeVisualConfig(n);
               const isSelected = n.id === selectedId;
               return (
                 <li key={n.id}>
@@ -778,6 +798,7 @@ export function GraphCanvas({
                     onDoubleClick={() => fallbackDoubleClick(n)}
                     data-testid={`kg-node-${n.node_type.toLowerCase()}`}
                     data-node-id={n.id}
+                    data-kind-of={n.kind_of ?? ''}
                     data-selected={isSelected ? 'true' : 'false'}
                     className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs ${
                       isSelected
@@ -791,7 +812,9 @@ export function GraphCanvas({
                       aria-hidden
                     />
                     <span className="truncate text-gray-800 dark:text-gray-200">{n.title}</span>
-                    <span className="ml-auto shrink-0 text-[10px] text-gray-400">{n.node_type}</span>
+                    <span className="ml-auto shrink-0 text-[10px] text-gray-400">
+                      {kgNodeDisplayType(n)}
+                    </span>
                   </button>
                 </li>
               );

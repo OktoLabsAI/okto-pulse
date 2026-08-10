@@ -125,6 +125,39 @@ describe('GraphCanvas — selection wiring (S4.1 / AC-4)', () => {
     expect(container.querySelector('[data-testid="kg-canvas"]')).toBeNull();
   });
 
+  it('filters and styles Code Traceability Entity subtypes by kind_of', () => {
+    const evidence: KGNode = {
+      ...NODE,
+      id: 'evidence-1',
+      title: 'Agent-attested evidence',
+      node_type: 'Entity',
+      kind_of: 'code_evidence',
+    };
+    const target: KGNode = {
+      ...NODE,
+      id: 'target-1',
+      title: 'Semantic target',
+      node_type: 'Entity',
+      kind_of: 'implementation_target',
+    };
+    const { container, getByText, queryByText } = renderCanvas({
+      nodes: [evidence, target],
+      filters: {
+        ...FILTERS,
+        codeTraceabilityKinds: ['code_evidence'],
+      },
+    });
+
+    const button = container.querySelector('[data-node-id="evidence-1"]');
+    expect(button).not.toBeNull();
+    expect(button).toHaveAttribute('data-kind-of', 'code_evidence');
+    expect(button?.querySelector('[aria-hidden="true"]')).toHaveStyle({
+      backgroundColor: '#7C3AED',
+    });
+    expect(getByText('Code Evidence')).toBeInTheDocument();
+    expect(queryByText('Semantic target')).not.toBeInTheDocument();
+  });
+
   it('prop-driven selection can be cleared externally by passing null', () => {
     const { container, rerender } = renderCanvas({ initialSelectedNodeId: 'selected-42' });
     act(() => {

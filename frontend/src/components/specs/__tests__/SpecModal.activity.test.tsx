@@ -206,6 +206,7 @@ describe('SpecModal Activity tab', () => {
       within(tabList).getAllByRole('tab').map((tab) => tab.textContent),
     ).toEqual([
       'Details',
+      'Evidence Matrix',
       'Tests',
       'Rules',
       'Contracts',

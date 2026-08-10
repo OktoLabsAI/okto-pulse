@@ -73,6 +73,13 @@ const structuredSpecFlags: FlagsMap = {
   },
 };
 
+const codeTraceabilityFlags: FlagsMap = {
+  code_traceability: {
+    investigation: { request: true, revoke: false },
+    evidence: { read: true },
+  },
+};
+
 /**
  * Deterministic stand-in for the canonical base registry. Its 397 boolean
  * leaves deliberately live below entity.group.type, so the former two-level
@@ -124,6 +131,16 @@ describe('PermissionFlagsEditor', () => {
     expect(ENTITY_LABELS.topic).toBe('Topics');
     expect(screen.getByRole('button', { name: /Stories/i })).toHaveTextContent('4/5');
     expect(screen.getByRole('button', { name: /Topics/i })).toHaveTextContent('2/4');
+  });
+
+  it('renders Code Traceability as a friendly permission category', () => {
+    render(<PermissionFlagsEditor flags={codeTraceabilityFlags} readOnly />);
+
+    expect(ENTITY_LABELS.code_traceability).toBe('Code Traceability');
+    expect(screen.getByRole('button', {
+      name: 'Edit Code Traceability permissions',
+    })).toHaveTextContent('2/3');
+    expect(screen.queryByText('code_traceability')).not.toBeInTheDocument();
   });
 
   it('renders nested Story flags and toggles them in custom presets', () => {

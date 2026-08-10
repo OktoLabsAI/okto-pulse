@@ -155,7 +155,8 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         f"missing_steps={sorted(migrate_names - ledger_migrate_ids)} "
         f"orphan_steps={sorted(ledger_migrate_ids - migrate_names)}"
     )
-    # 54 = the historical 44 steps plus the SK-A Refinement ambiguity-skip
+    # 63 = the historical ledger plus the Code Traceability schema/guard step,
+    # the SK-A Refinement ambiguity-skip
     # column, SK-A/C7 quality-assessment persistence schema, the curated Spec
     # checklist mode, the human-facing Spec edition counter, and SK-B's
     # immutable guideline-policy authority, its B04 lifecycle substrate, and
@@ -165,10 +166,10 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
     # plus the SK-B3 closure backfill of the 5-column unique authority index
     # on guideline_board_bindings (structural prerequisite of the
     # binding-configuration composite FK on migrated databases).
-    assert len(migrate_names) == 62, (
-        f"expected 62 _migrate_*, found {len(migrate_names)}"
+    assert len(migrate_names) == 63, (
+        f"expected 63 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 62
+    assert len(ledger_migrate_ids) == 63
     ordered_ids = [step.step_id for step in ledger]
     assert ordered_ids.index(
         "_migrate_guideline_policy_lifecycle_substrate"
@@ -489,6 +490,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         "_migrate_drop_retired_guideline_impact_v1_triggers",
         "_migrate_seed_semantic_configurations_for_legacy_bindings",
         "_migrate_recompute_cognitive_source_fingerprints_v2",
+        "_migrate_code_traceability_schema",
     }
 
     # First run: clean databases skip fixture repair and convergence steps

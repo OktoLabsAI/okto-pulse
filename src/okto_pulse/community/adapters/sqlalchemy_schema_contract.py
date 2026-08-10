@@ -110,7 +110,7 @@ LEGACY_CORE_SCHEMA_SHA256 = (
 # Keep the pre-extraction hash above immutable so migration provenance remains
 # independently verifiable.
 CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
-    "8b85622b7a469e814de9326ddf196903d5aaa9c419f3d875d9012b02a977aac5"
+    "d2062dc7dcd2e9af461015b6a773319f93cd0d1aa06cf1edc4c9f929f18d98ed"
 )
 
 # Additive Community-owned tables introduced after the F01 extraction. They
@@ -172,6 +172,9 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "semantic_guideline_waiver_events",
         "semantic_guideline_skips",
         "semantic_guideline_legacy_migrations",
+        "semantic_guideline_assessments_v2",
+        "semantic_guideline_findings_v2",
+        "semantic_guideline_metric_results_v2",
         "quality_assessment_heads",
         "quality_assessment_legacy_import_candidates",
         "quality_assessment_legacy_import_checkpoints",
@@ -199,6 +202,20 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "knowledge_propagation_tombstones",
         "knowledge_mutation_ledger",
         "knowledge_mutation_attempts",
+        "code_investigation_requests",
+        "code_investigation_receipts",
+        "code_investigation_receipt_revocations",
+        "code_investigation_heads",
+        "code_evidence",
+        "code_evidence_spec_links",
+        "code_evidence_dispositions",
+        "implementation_targets",
+        "implementation_target_spec_links",
+        "implementation_target_evidence_links",
+        "implementation_target_resolutions",
+        "implementation_target_execution_records",
+        "target_overlap_acknowledgements",
+        "code_traceability_waivers",
     }
 )
 

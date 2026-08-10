@@ -9,6 +9,7 @@ export {
   applyPermissionDelta,
   boardCeilingDelta,
   composePermissionIntroductionManifests,
+  CODE_TRACEABILITY_PERMISSION_INTRODUCTION_V1_LEAVES,
   INTRODUCED_PERMISSION_HISTORICAL_AUTHORITIES,
   INTRODUCED_PERMISSION_LEAVES,
   isIntroducedPermissionLeaf,

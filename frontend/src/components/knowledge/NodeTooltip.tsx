@@ -12,7 +12,7 @@
  */
 
 import type { KGNode } from '@/types/knowledge-graph';
-import { NODE_TYPE_CONFIG } from '@/types/knowledge-graph';
+import { kgNodeDisplayType, kgNodeVisualConfig } from '@/types/knowledge-graph';
 
 interface Props {
   node: KGNode | null;
@@ -22,7 +22,7 @@ const CONTENT_TRUNCATE = 200;
 
 export function NodeTooltip({ node }: Props) {
   if (!node) return null;
-  const cfg = NODE_TYPE_CONFIG[node.node_type];
+  const cfg = kgNodeVisualConfig(node);
   const preview = node.content && node.content.length > CONTENT_TRUNCATE
     ? `${node.content.slice(0, CONTENT_TRUNCATE)}…`
     : node.content;
@@ -43,7 +43,7 @@ export function NodeTooltip({ node }: Props) {
         <span className="font-medium truncate">{node.title}</span>
       </div>
       <div className="text-gray-300 flex flex-wrap gap-x-3 gap-y-0.5">
-        <span>{node.node_type}</span>
+        <span>{kgNodeDisplayType(node)}</span>
         <span>
           conf {(node.source_confidence * 100).toFixed(0)}%
         </span>

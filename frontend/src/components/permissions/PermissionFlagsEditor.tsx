@@ -22,6 +22,7 @@ const ENTITY_LABELS: Record<string, string> = {
   profile: 'Profile',
   guidelines: 'Guidelines',
   kg: 'Knowledge Graphs',
+  code_traceability: 'Code Traceability',
 };
 
 const ENTITY_COLORS: Record<string, string> = {
@@ -36,6 +37,7 @@ const ENTITY_COLORS: Record<string, string> = {
   profile: 'text-gray-600 dark:text-gray-400',
   guidelines: 'text-pink-600 dark:text-pink-400',
   kg: 'text-indigo-600 dark:text-indigo-400',
+  code_traceability: 'text-cyan-700 dark:text-cyan-300',
 };
 
 type FlagValue = boolean;

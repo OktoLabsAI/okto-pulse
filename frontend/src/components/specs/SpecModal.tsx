@@ -43,6 +43,7 @@ import {
   ShieldCheck,
   Gauge,
   Pencil,
+  Grid3X3,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { exportSpec, downloadMarkdown, markdownFilenameForSpec } from '@/lib/exportMarkdown';
@@ -125,6 +126,10 @@ import {
   AccessibleTabList,
   AccessibleTabPanel,
 } from '@/components/shared/AccessibleTabs';
+import {
+  EvidenceMatrixPanel,
+  useCodeTraceabilityAuthority,
+} from '@/components/code-traceability';
 
 interface SpecModalProps {
   specId: string;
@@ -136,6 +141,7 @@ interface SpecModalProps {
 
 type ModalTab =
   | 'details'
+  | 'evidence-matrix'
   | 'tests'
   | 'rules'
   | 'contracts'
@@ -1417,6 +1423,8 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const canReadPolicyCompliance = perms.has(
     'guidelines.assessments.read',
   );
+  const { canReadProjection: canReadCodeTraceability } =
+    useCodeTraceabilityAuthority(_boardId || currentBoard?.id);
   const [spec, setSpec] = useState<Spec | null>(null);
   const specAnchorTexts = useMemo(() => {
     if (!spec) return undefined;
@@ -1514,6 +1522,12 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
     canReadSpecValidation,
     currentSpecStatus,
   ]);
+
+  useEffect(() => {
+    if (activeTab === 'evidence-matrix' && !canReadCodeTraceability) {
+      setActiveTab('details');
+    }
+  }, [activeTab, canReadCodeTraceability]);
 
   // Build mentionables from board agents + owner
   const mentionables: Mentionable[] = [];
@@ -2000,6 +2014,9 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
     );
   const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
+    ...(canReadCodeTraceability
+      ? [{ id: 'evidence-matrix' as ModalTab, label: 'Evidence Matrix', icon: <Grid3X3 size={14} /> }]
+      : []),
     { id: 'tests', label: 'Tests', icon: <FlaskConical size={14} />, count: spec.test_scenarios?.length || 0 },
     { id: 'rules', label: 'Rules', icon: <Scale size={14} />, count: spec.business_rules?.length || 0 },
     { id: 'contracts', label: 'Contracts', icon: <FileCode size={14} />, count: spec.api_contracts?.length || 0 },
@@ -2437,6 +2454,14 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
                 </button>
               )}
             </div>
+          )}
+
+          {activeTab === 'evidence-matrix' && spec && canReadCodeTraceability && (
+            <EvidenceMatrixPanel
+              boardId={spec.board_id}
+              subjectId={spec.id}
+              subjectVersion={spec.version}
+            />
           )}
 
           {activeTab === 'tests' && spec && (

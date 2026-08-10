@@ -116,7 +116,12 @@ class _Downstream:
             "graph_lock_retries_5m": 0,
         }
 
-    async def queue_drilldown(self, board_id):
+    async def queue_drilldown(
+        self,
+        board_id,
+        *,
+        include_code_traceability=True,
+    ):
         self._events.append(f"queue-drilldown:{board_id}")
         return {"board_id": board_id, "total_active_depth": 0}
 
@@ -571,6 +576,7 @@ def test_canonical_debt_valid_filters_preserve_rest_pagination() -> None:
             "state": "failed",
             "limit": 1,
             "offset": 2,
+            "include_code_traceability": False,
         }
     ]
     assert uow.events == ["board:board-b"]

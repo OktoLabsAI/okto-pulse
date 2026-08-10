@@ -7,7 +7,7 @@
 //   - Global Default passes createActiveTemplateVersion (new template version)
 // Both receive a Partial<BoardSettings> patch from the same controls.
 import { type ReactNode, useEffect, useState } from 'react';
-import { BookOpen, ClipboardCheck, Image, Languages, Network, Palette, Shield, SlidersHorizontal, Users } from 'lucide-react';
+import { BookOpen, ClipboardCheck, Fingerprint, Image, Info, Languages, Network, Palette, Shield, SlidersHorizontal, Users } from 'lucide-react';
 import { normalizeRefinementAmbiguityThreshold } from '@/components/board/refinementAmbiguitySettings';
 import {
   normalizeReviewerSeparationMode,
@@ -15,10 +15,23 @@ import {
 } from '@/components/board/reviewerSeparationSettings';
 import type {
   BoardSettings,
+  CodeTraceabilitySettings,
   LintLanguageCode,
   ReviewerSeparationMode,
   SpecResourceAutoDeriveType,
 } from '@/types';
+
+const DEFAULT_CODE_TRACEABILITY_SETTINGS: CodeTraceabilitySettings = {
+  mode: 'off',
+  evidence_attestation: 'preferred',
+  target_resolution: 'advisory',
+  accepted_attestor_policy: 'granular_permission',
+  minimum_trust: 'single_attestation',
+  preflight_freshness_seconds: 1800,
+  overlap_policy: 'warn',
+  observed_state_policy: 'allow_dirty_attestation',
+  receipt_content: 'safe_excerpt',
+};
 
 interface SettingsToggleProps {
   checked: boolean;
@@ -106,6 +119,29 @@ function SettingRow({
       </div>
       <div className="shrink-0">{children}</div>
     </div>
+  );
+}
+
+function SettingsSelect({
+  ariaLabel,
+  value,
+  onChange,
+  children,
+}: {
+  ariaLabel: string;
+  value: string;
+  onChange: (value: string) => void;
+  children: ReactNode;
+}) {
+  return (
+    <select
+      aria-label={ariaLabel}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      className="max-w-52 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs text-gray-800 shadow-sm outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-200 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:focus:ring-violet-900"
+    >
+      {children}
+    </select>
   );
 }
 
@@ -213,6 +249,21 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
   };
 
   const lintLanguages = settings.lint_languages ?? [];
+  const codeTraceability = {
+    ...DEFAULT_CODE_TRACEABILITY_SETTINGS,
+    ...(settings.code_traceability ?? {}),
+  };
+
+  const updateCodeTraceability = (
+    patch: Partial<CodeTraceabilitySettings>,
+  ) => {
+    onChange({
+      code_traceability: {
+        ...codeTraceability,
+        ...patch,
+      },
+    });
+  };
 
   const toggleLintLanguage = (code: LintLanguageCode) => {
     const next = lintLanguages.includes(code)
@@ -478,6 +529,199 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
         </div>
 
         {contextWarnings}
+      </SettingsSection>
+
+      <SettingsSection
+        title="Agent-mediated Code Traceability"
+        description="Policy for structured observations submitted by authenticated external agents."
+        icon={<Fingerprint size={12} />}
+        className="lg:col-span-2"
+      >
+        <div
+          className="flex items-start gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2.5 text-[11px] leading-4 text-sky-900 dark:border-sky-900/70 dark:bg-sky-950/30 dark:text-sky-200"
+          role="note"
+          data-testid="code-traceability-source-blind-disclosure"
+        >
+          <Info size={14} className="mt-0.5 shrink-0" aria-hidden />
+          <p>
+            Pulse does not access source code. An authenticated external agent
+            checks access and capabilities in its own environment, then submits
+            an <strong>accessible</strong>, <strong>partial</strong>, or{' '}
+            <strong>unavailable</strong> attestation. Pulse Community only
+            accepts, stores, and presents those receipts.
+          </p>
+        </div>
+
+        <div className="grid gap-x-8 gap-y-3 lg:grid-cols-2">
+          <SettingRow
+            label="Enforcement mode"
+            description="Keep existing boards off, show guidance, or block gated transitions."
+          >
+            <SettingsSelect
+              ariaLabel="Code Traceability enforcement mode"
+              value={codeTraceability.mode}
+              onChange={(value) => updateCodeTraceability({
+                mode: value as CodeTraceabilitySettings['mode'],
+              })}
+            >
+              <option value="off">Off</option>
+              <option value="advisory">Advisory</option>
+              <option value="blocking">Blocking</option>
+            </SettingsSelect>
+          </SettingRow>
+
+          <SettingRow
+            label="Accepted attestors"
+            description="Require granular agent permission, with an optional board allowlist."
+          >
+            <SettingsSelect
+              ariaLabel="Accepted attestor policy"
+              value={codeTraceability.accepted_attestor_policy}
+              onChange={(value) => updateCodeTraceability({
+                accepted_attestor_policy:
+                  value as CodeTraceabilitySettings['accepted_attestor_policy'],
+              })}
+            >
+              <option value="granular_permission">Permission</option>
+              <option value="granular_permission_and_board_allowlist">
+                Permission + allowlist
+              </option>
+            </SettingsSelect>
+          </SettingRow>
+
+          <SettingRow
+            label="Evidence receipt requirement"
+            description="Controls whether Code Evidence needs a current accepted agent receipt."
+          >
+            <SettingsSelect
+              ariaLabel="Evidence receipt requirement"
+              value={codeTraceability.evidence_attestation}
+              onChange={(value) => updateCodeTraceability({
+                evidence_attestation:
+                  value as CodeTraceabilitySettings['evidence_attestation'],
+              })}
+            >
+              <option value="none">None</option>
+              <option value="preferred">Preferred</option>
+              <option value="required">Required</option>
+            </SettingsSelect>
+          </SettingRow>
+
+          <SettingRow
+            label="Target resolution receipt"
+            description="Requires agent-attested target resolutions, optionally against the current receipt."
+          >
+            <SettingsSelect
+              ariaLabel="Target resolution receipt requirement"
+              value={codeTraceability.target_resolution}
+              onChange={(value) => updateCodeTraceability({
+                target_resolution:
+                  value as CodeTraceabilitySettings['target_resolution'],
+              })}
+            >
+              <option value="advisory">Advisory</option>
+              <option value="required">Required</option>
+              <option value="required_current_receipt">Required + current</option>
+            </SettingsSelect>
+          </SettingRow>
+
+          <SettingRow
+            label="Receipt freshness"
+            description="Maximum age of an accepted agent check receipt (60 seconds to 24 hours)."
+          >
+            <div className="flex items-center gap-1.5">
+              <input
+                aria-label="Receipt freshness in minutes"
+                type="number"
+                min={1}
+                max={1440}
+                value={Math.round(codeTraceability.preflight_freshness_seconds / 60)}
+                onChange={(event) => {
+                  const minutes = Math.max(
+                    1,
+                    Math.min(1440, Number(event.target.value) || 1),
+                  );
+                  updateCodeTraceability({
+                    preflight_freshness_seconds: minutes * 60,
+                  });
+                }}
+                className="w-20 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-right text-xs text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+              />
+              <span className="text-[10px] text-gray-400">min</span>
+            </div>
+          </SettingRow>
+
+          <SettingRow
+            label="Minimum trust"
+            description="Accept one agent attestation or require corroboration by another agent."
+          >
+            <SettingsSelect
+              ariaLabel="Minimum receipt trust"
+              value={codeTraceability.minimum_trust}
+              onChange={(value) => updateCodeTraceability({
+                minimum_trust: value as CodeTraceabilitySettings['minimum_trust'],
+              })}
+            >
+              <option value="single_attestation">Single attestation</option>
+              <option value="corroborated">Corroborated</option>
+            </SettingsSelect>
+          </SettingRow>
+
+          <SettingRow
+            label="Overlap policy"
+            description="Controls guidance when Tasks target the same agent-attested symbol or file."
+          >
+            <SettingsSelect
+              ariaLabel="Implementation overlap policy"
+              value={codeTraceability.overlap_policy}
+              onChange={(value) => updateCodeTraceability({
+                overlap_policy: value as CodeTraceabilitySettings['overlap_policy'],
+              })}
+            >
+              <option value="off">Off</option>
+              <option value="warn">Warn</option>
+              <option value="block_parallel">Block parallel</option>
+            </SettingsSelect>
+          </SettingRow>
+
+          <SettingRow
+            label="Observed state"
+            description="Allow dirty-state attestations or require the agent to declare a committed state."
+          >
+            <SettingsSelect
+              ariaLabel="Observed source state policy"
+              value={codeTraceability.observed_state_policy}
+              onChange={(value) => updateCodeTraceability({
+                observed_state_policy:
+                  value as CodeTraceabilitySettings['observed_state_policy'],
+              })}
+            >
+              <option value="allow_dirty_attestation">Allow dirty attestation</option>
+              <option value="require_committed_attestation">Require committed</option>
+            </SettingsSelect>
+          </SettingRow>
+
+          <SettingRow
+            label="Receipt content"
+            description="Retain metadata only, or a defensively sanitized excerpt submitted by the agent."
+          >
+            <SettingsSelect
+              ariaLabel="Receipt content retention"
+              value={codeTraceability.receipt_content}
+              onChange={(value) => updateCodeTraceability({
+                receipt_content: value as CodeTraceabilitySettings['receipt_content'],
+              })}
+            >
+              <option value="metadata_only">Metadata only</option>
+              <option value="safe_excerpt">Safe excerpt</option>
+            </SettingsSelect>
+          </SettingRow>
+        </div>
+
+        <p className="border-t border-gray-100 pt-2 text-[10px] leading-4 text-gray-400 dark:border-gray-800 dark:text-gray-500">
+          No repository binding, provider credential, local checkout, filesystem
+          search, or source resolver is configured in Pulse Community.
+        </p>
       </SettingsSection>
 
       <SettingsSection

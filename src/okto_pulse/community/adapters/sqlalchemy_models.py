@@ -63,12 +63,24 @@ GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES: tuple[str, ...] = (
     "boards",
     "canonical_debt",
     "cards",
+    "code_evidence",
+    "code_evidence_dispositions",
+    "code_evidence_spec_links",
+    "code_investigation_heads",
+    "code_investigation_receipt_revocations",
+    "code_investigation_receipts",
+    "code_investigation_requests",
     "consolidation_audit",
     "consolidation_dead_letter",
     "consolidation_queue",
     "global_update_outbox",
     "ideations",
     "ideation_qa_items",
+    "implementation_target_evidence_links",
+    "implementation_target_execution_records",
+    "implementation_target_resolutions",
+    "implementation_target_spec_links",
+    "implementation_targets",
     "kg_cognitive_sources",
     "kg_cognitive_source_revisions",
     "kuzu_node_refs",
@@ -85,7 +97,7 @@ GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES: tuple[str, ...] = (
 )
 GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID = "_global"
 GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION = "gdsr-fence-v2"
-GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v5"
+GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v6"
 GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX = "trg_global_discovery_source_revision"
 
 
@@ -940,6 +952,13 @@ class RefinementSnapshot(Base):
     decisions: Mapped[list | None] = mapped_column(JSON, nullable=True)
     labels: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     qa_snapshot: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Frozen evidence identities/digests inherited by Specs derived from this
+    # exact Refinement version.  This is relational Pulse metadata submitted by
+    # authenticated agents; Community never reads or re-resolves source code.
+    code_evidence_manifest: Mapped[list | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -1110,6 +1129,16 @@ class Spec(Base):
         ForeignKey("refinements.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
+    )
+    source_refinement_snapshot_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("refinement_snapshots.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    source_refinement_version: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
     )
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -10200,3 +10229,1238 @@ class SemanticGuidelineFindingV2Row(Base):
     finding_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+# Code Traceability persists only structured attestations submitted to Pulse by
+# authenticated agents.  None of these rows is a locator for Community-side
+# source access, and no model below implies a Git/filesystem/provider adapter.
+
+
+class CodeInvestigationRequestRow(Base):
+    """Single-use challenge binding for an external agent investigation."""
+
+    __tablename__ = "code_investigation_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "challenge_token_hash",
+            name="uq_code_investigation_request_challenge",
+        ),
+        UniqueConstraint(
+            "board_id",
+            "issued_to_actor_id",
+            "subject_type",
+            "subject_id",
+            "subject_version",
+            "idempotency_key",
+            name="uq_code_investigation_request_idempotency",
+        ),
+        CheckConstraint(
+            "subject_type IN ('refinement', 'spec', 'card')",
+            name="ck_code_investigation_request_subject_type",
+        ),
+        CheckConstraint(
+            "subject_version >= 1 AND expected_head_generation >= 0",
+            name="ck_code_investigation_request_versions",
+        ),
+        CheckConstraint(
+            "status IN ('open', 'consumed', 'expired', 'revoked')",
+            name="ck_code_investigation_request_status",
+        ),
+        CheckConstraint(
+            "length(selector_scope_digest) = 64 "
+            "AND length(challenge_token_hash) = 64 "
+            "AND length(request_payload_sha256) = 64",
+            name="ck_code_investigation_request_digests",
+        ),
+        CheckConstraint(
+            "(status = 'consumed' AND consumed_at IS NOT NULL) OR "
+            "(status <> 'consumed' AND consumed_at IS NULL)",
+            name="ck_code_investigation_request_consumption",
+        ),
+        Index(
+            "ix_code_investigation_request_subject",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "status",
+        ),
+        Index(
+            "ix_code_investigation_request_expiry",
+            "expires_at",
+            "status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    issued_to_actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    required_capabilities: Mapped[list] = mapped_column(JSON, nullable=False)
+    selector_scope_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    expected_head_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Deliberately a logical FK here: SQLite validates board/source lineage in
+    # the same transaction as the head CAS and avoids a circular DDL dependency.
+    expected_predecessor_receipt_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    canonicalization_profile: Mapped[str] = mapped_column(
+        String(128), nullable=False
+    )
+    limits_profile: Mapped[str] = mapped_column(String(128), nullable=False)
+    challenge_key_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    challenge_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    single_use: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="open",
+        server_default=text("'open'"),
+    )
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    request_payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
+class CodeInvestigationReceiptRow(Base):
+    """Immutable accepted observation submitted by an external agent."""
+
+    __tablename__ = "code_investigation_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "request_id",
+            name="uq_code_investigation_receipt_request",
+        ),
+        UniqueConstraint(
+            "request_id",
+            "attestor_actor_id",
+            "idempotency_key",
+            name="uq_code_investigation_receipt_idempotency",
+        ),
+        CheckConstraint(
+            "subject_type IN ('refinement', 'spec', 'card')",
+            name="ck_code_investigation_receipt_subject_type",
+        ),
+        CheckConstraint(
+            "subject_version >= 1 AND generation >= 1",
+            name="ck_code_investigation_receipt_versions",
+        ),
+        CheckConstraint(
+            "trust_level IN "
+            "('single_attestation', 'corroborated', 'conflicted')",
+            name="ck_code_investigation_receipt_trust",
+        ),
+        CheckConstraint(
+            "acceptance_status = 'accepted'",
+            name="ck_code_investigation_receipt_acceptance",
+        ),
+        CheckConstraint(
+            "outcome IN ('accessible', 'partial', 'unavailable')",
+            name="ck_code_investigation_receipt_outcome",
+        ),
+        CheckConstraint(
+            "(workspace_state_id IS NULL AND declared_dirty IS NULL "
+            "AND reproducibility_claim IS NULL "
+            "AND fingerprint_algorithm IS NULL AND manifest_digest IS NULL "
+            "AND manifest_entry_count IS NULL) OR "
+            "(workspace_state_id IS NOT NULL AND declared_dirty IS NOT NULL "
+            "AND reproducibility_claim IS NOT NULL "
+            "AND fingerprint_algorithm IS NOT NULL "
+            "AND manifest_digest IS NOT NULL "
+            "AND manifest_entry_count IS NOT NULL)",
+            name="ck_code_investigation_receipt_workspace",
+        ),
+        CheckConstraint(
+            "reproducibility_claim IS NULL OR reproducibility_claim IN "
+            "('committed', 'worktree_snapshot', 'metadata_only')",
+            name="ck_code_investigation_receipt_reproducibility",
+        ),
+        CheckConstraint(
+            "manifest_entry_count IS NULL OR manifest_entry_count >= 0",
+            name="ck_code_investigation_receipt_manifest_count",
+        ),
+        CheckConstraint(
+            "omission_count >= 0",
+            name="ck_code_investigation_receipt_omission_count",
+        ),
+        CheckConstraint(
+            "length(selector_scope_digest) = 64 "
+            "AND (source_identity_digest IS NULL "
+            "OR length(source_identity_digest) = 64) "
+            "AND (manifest_digest IS NULL OR length(manifest_digest) = 64) "
+            "AND length(omission_digest) = 64 "
+            "AND length(observation_sha256) = 64 "
+            "AND length(payload_sha256) = 64",
+            name="ck_code_investigation_receipt_digests",
+        ),
+        CheckConstraint(
+            "expires_at > received_at",
+            name="ck_code_investigation_receipt_expiry",
+        ),
+        Index(
+            "ix_code_investigation_receipt_lineage",
+            "board_id",
+            "source_ref",
+            "generation",
+        ),
+        Index(
+            "ix_code_investigation_receipt_subject",
+            "board_id",
+            "subject_type",
+            "subject_id",
+            "subject_version",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    request_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "code_investigation_requests.id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    subject_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    attestor_actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    predecessor_receipt_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey(
+            "code_investigation_receipts.id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=True,
+    )
+    trust_level: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="single_attestation",
+        server_default=text("'single_attestation'"),
+    )
+    acceptance_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    capabilities: Mapped[list] = mapped_column(JSON, nullable=False)
+    source_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    source_identity_digest: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    canonicalization_profile: Mapped[str] = mapped_column(
+        String(128), nullable=False
+    )
+    limits_profile: Mapped[str] = mapped_column(String(128), nullable=False)
+    selector_scope_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    declared_revision: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace_state_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    declared_dirty: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    reproducibility_claim: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    fingerprint_algorithm: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+    manifest_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    manifest_entry_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    omission_manifest: Mapped[list] = mapped_column(JSON, nullable=False)
+    omission_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    omission_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    tooling: Mapped[dict] = mapped_column(JSON, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    observation_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
+class CodeInvestigationReceiptRevocationRow(Base):
+    """Append-only revocation without rewriting an accepted receipt."""
+
+    __tablename__ = "code_investigation_receipt_revocations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    receipt_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "code_investigation_receipts.id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+        unique=True,
+    )
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    reason_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    justification: Mapped[str] = mapped_column(Text, nullable=False)
+    revoked_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    revoked_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class CodeInvestigationHeadRow(Base):
+    """CAS-protected accepted receipt lineage for one logical source."""
+
+    __tablename__ = "code_investigation_heads"
+    __table_args__ = (
+        CheckConstraint(
+            "generation >= 1 AND revision >= 1",
+            name="ck_code_investigation_head_versions",
+        ),
+        CheckConstraint(
+            "state IN ('current', 'conflicted')",
+            name="ck_code_investigation_head_state",
+        ),
+        Index(
+            "ix_code_investigation_head_receipt",
+            "board_id",
+            "current_receipt_id",
+        ),
+    )
+
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        primary_key=True,
+    )
+    source_ref: Mapped[str] = mapped_column(String(512), primary_key=True)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    latest_receipt_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "code_investigation_receipts.id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    current_receipt_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey(
+            "code_investigation_receipts.id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=True,
+    )
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class CodeEvidenceRow(Base):
+    """Immutable evidence content anchored to an accepted receipt."""
+
+    __tablename__ = "code_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "supersedes_evidence_id",
+            name="uq_code_evidence_supersedes",
+        ),
+        UniqueConstraint(
+            "investigation_receipt_id",
+            "submitted_by",
+            "idempotency_key",
+            name="uq_code_evidence_idempotency",
+        ),
+        CheckConstraint(
+            "parent_type IN ('refinement', 'spec', 'card')",
+            name="ck_code_evidence_parent_type",
+        ),
+        CheckConstraint(
+            "((CASE WHEN refinement_id IS NOT NULL THEN 1 ELSE 0 END) + "
+            "(CASE WHEN spec_id IS NOT NULL THEN 1 ELSE 0 END) + "
+            "(CASE WHEN card_id IS NOT NULL THEN 1 ELSE 0 END)) = 1",
+            name="ck_code_evidence_exactly_one_parent",
+        ),
+        CheckConstraint(
+            "(parent_type = 'refinement' AND refinement_id IS NOT NULL "
+            "AND parent_version IS NOT NULL) OR "
+            "(parent_type = 'spec' AND spec_id IS NOT NULL) OR "
+            "(parent_type = 'card' AND card_id IS NOT NULL)",
+            name="ck_code_evidence_parent_alignment",
+        ),
+        CheckConstraint(
+            "parent_version IS NULL OR parent_version >= 1",
+            name="ck_code_evidence_parent_version",
+        ),
+        CheckConstraint(
+            "evidence_type IN ('behavior', 'structure', 'contract', 'test', "
+            "'configuration', 'data_model', 'migration', 'dependency', "
+            "'runtime_observation')",
+            name="ck_code_evidence_type",
+        ),
+        CheckConstraint(
+            "reproducibility_claim IN "
+            "('committed', 'worktree_snapshot', 'metadata_only')",
+            name="ck_code_evidence_reproducibility",
+        ),
+        CheckConstraint(
+            "selector_kind IN ('symbol', 'file', 'span', "
+            "'configuration_key', 'schema_object', 'endpoint', 'test_case')",
+            name="ck_code_evidence_selector_kind",
+        ),
+        CheckConstraint(
+            "selector_kind <> 'symbol' OR qualified_symbol IS NOT NULL",
+            name="ck_code_evidence_symbol_selector",
+        ),
+        CheckConstraint(
+            "selector_kind <> 'file' OR relative_path IS NOT NULL",
+            name="ck_code_evidence_file_selector",
+        ),
+        CheckConstraint(
+            "(snapshot_line_start IS NULL AND snapshot_line_end IS NULL) OR "
+            "(snapshot_line_start >= 1 "
+            "AND snapshot_line_end >= snapshot_line_start)",
+            name="ck_code_evidence_line_span",
+        ),
+        CheckConstraint(
+            "attestation_state IN "
+            "('agent_attested', 'agent_attested_worktree')",
+            name="ck_code_evidence_attestation_state",
+        ),
+        CheckConstraint(
+            "attestation_basis = 'authenticated_agent_receipt'",
+            name="ck_code_evidence_attestation_basis",
+        ),
+        CheckConstraint(
+            "lifecycle_status IN ('active', 'superseded', 'revoked')",
+            name="ck_code_evidence_lifecycle",
+        ),
+        CheckConstraint(
+            "(lifecycle_status = 'revoked' AND revocation_reason IS NOT NULL) "
+            "OR (lifecycle_status <> 'revoked' AND revocation_reason IS NULL)",
+            name="ck_code_evidence_revocation",
+        ),
+        CheckConstraint(
+            "(excerpt IS NULL AND excerpt_sha256 IS NULL) OR "
+            "(excerpt IS NOT NULL AND excerpt_sha256 IS NOT NULL)",
+            name="ck_code_evidence_excerpt",
+        ),
+        CheckConstraint(
+            "(excerpt_sha256 IS NULL OR length(excerpt_sha256) = 64) "
+            "AND (declared_file_blob_sha256 IS NULL "
+            "OR length(declared_file_blob_sha256) = 64) "
+            "AND length(declared_source_content_sha256) = 64 "
+            "AND length(payload_sha256) = 64",
+            name="ck_code_evidence_digests",
+        ),
+        Index(
+            "ix_code_evidence_parent",
+            "board_id",
+            "parent_type",
+            "lifecycle_status",
+        ),
+        Index("ix_code_evidence_path", "source_ref", "relative_path"),
+        Index("ix_code_evidence_symbol", "source_ref", "qualified_symbol"),
+        Index("ix_code_evidence_receipt", "investigation_receipt_id"),
+        Index("ix_code_evidence_refinement", "refinement_id", "parent_version"),
+        Index("ix_code_evidence_spec", "spec_id"),
+        Index("ix_code_evidence_card", "card_id"),
+        Index("ix_code_evidence_superseded", "supersedes_evidence_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    investigation_receipt_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "code_investigation_receipts.id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    source_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    parent_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    refinement_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("refinements.id", ondelete="RESTRICT", onupdate="RESTRICT"),
+        nullable=True,
+    )
+    spec_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("specs.id", ondelete="RESTRICT", onupdate="RESTRICT"),
+        nullable=True,
+    )
+    card_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("cards.id", ondelete="RESTRICT", onupdate="RESTRICT"),
+        nullable=True,
+    )
+    parent_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evidence_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    claim: Mapped[str] = mapped_column(Text, nullable=False)
+    declared_revision: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace_state_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    declared_dirty: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    reproducibility_claim: Mapped[str] = mapped_column(String(32), nullable=False)
+    selector_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    relative_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    language: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    symbol_kind: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    qualified_symbol: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    symbol_signature: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    snapshot_line_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    snapshot_line_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    excerpt_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    excerpt_omitted_reason: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+    declared_file_blob_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    declared_source_content_sha256: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )
+    attestation_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    attestation_basis: Mapped[str] = mapped_column(String(64), nullable=False)
+    lifecycle_status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="active",
+        server_default=text("'active'"),
+    )
+    supersedes_evidence_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("code_evidence.id", ondelete="RESTRICT", onupdate="RESTRICT"),
+        nullable=True,
+    )
+    revocation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    submitted_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
+class CodeEvidenceSpecLinkRow(Base):
+    """Canonical link from immutable evidence into a structured Spec entity."""
+
+    __tablename__ = "code_evidence_spec_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "spec_id",
+            "evidence_id",
+            "entity_type",
+            "entity_id",
+            "relation_type",
+            name="uq_code_evidence_spec_link_identity",
+        ),
+        CheckConstraint(
+            "entity_type IN ('spec', 'functional_requirement', "
+            "'technical_requirement', 'acceptance_criterion', "
+            "'business_rule', 'api_contract', 'integration_requirement', "
+            "'observability_requirement', 'decision', 'test_scenario')",
+            name="ck_code_evidence_spec_link_entity_type",
+        ),
+        CheckConstraint(
+            "relation_type IN ('supports', 'constrains', 'motivates', "
+            "'implements', 'tests', 'contradicts')",
+            name="ck_code_evidence_spec_link_relation",
+        ),
+        CheckConstraint(
+            "spec_version >= 1 AND "
+            "(source_refinement_version IS NULL "
+            "OR source_refinement_version >= 1)",
+            name="ck_code_evidence_spec_link_versions",
+        ),
+        CheckConstraint(
+            "length(evidence_content_sha256) = 64",
+            name="ck_code_evidence_spec_link_digest",
+        ),
+        Index("ix_code_evidence_spec_link_evidence", "evidence_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    spec_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("specs.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    evidence_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("code_evidence.id", ondelete="RESTRICT", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    entity_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    relation_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_refinement_version: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class CodeEvidenceDispositionRow(Base):
+    """Monotonic disposition for inherited evidence not used by a Spec."""
+
+    __tablename__ = "code_evidence_dispositions"
+    __table_args__ = (
+        CheckConstraint(
+            "disposition IN ('not_relevant', 'superseded', 'deferred')",
+            name="ck_code_evidence_disposition_value",
+        ),
+        CheckConstraint(
+            "spec_version >= 1",
+            name="ck_code_evidence_disposition_version",
+        ),
+        CheckConstraint(
+            "(active = true AND cleared_by IS NULL AND cleared_at IS NULL) OR "
+            "(active = false AND cleared_by IS NOT NULL "
+            "AND cleared_at IS NOT NULL)",
+            name="ck_code_evidence_disposition_clear",
+        ),
+        Index(
+            "uq_code_evidence_disposition_active",
+            "spec_id",
+            "evidence_id",
+            unique=True,
+            sqlite_where=text("active = true"),
+            postgresql_where=text("active = true"),
+        ),
+        Index("ix_code_evidence_disposition_evidence", "evidence_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    spec_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("specs.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    evidence_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("code_evidence.id", ondelete="RESTRICT", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    disposition: Mapped[str] = mapped_column(String(24), nullable=False)
+    justification: Mapped[str] = mapped_column(Text, nullable=False)
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    cleared_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    cleared_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+
+class ImplementationTargetRow(Base):
+    """Versioned intent describing what an external agent should investigate."""
+
+    __tablename__ = "implementation_targets"
+    __table_args__ = (
+        CheckConstraint(
+            "selector_kind IN ('symbol', 'file', 'glob', 'semantic', 'new_file')",
+            name="ck_implementation_target_selector",
+        ),
+        CheckConstraint(
+            "selector_kind <> 'symbol' OR qualified_symbol IS NOT NULL",
+            name="ck_implementation_target_symbol",
+        ),
+        CheckConstraint(
+            "selector_kind NOT IN ('file', 'new_file') "
+            "OR relative_path_hint IS NOT NULL",
+            name="ck_implementation_target_path",
+        ),
+        CheckConstraint(
+            "role IN ('read', 'modify', 'extend', 'create', 'delete', "
+            "'test', 'validate')",
+            name="ck_implementation_target_role",
+        ),
+        CheckConstraint(
+            "lifecycle_status IN ('active', 'superseded', 'revoked')",
+            name="ck_implementation_target_lifecycle",
+        ),
+        CheckConstraint(
+            "source_spec_version >= 1 AND revision >= 1",
+            name="ck_implementation_target_versions",
+        ),
+        CheckConstraint(
+            "last_change_reason_sha256 IS NULL "
+            "OR length(last_change_reason_sha256) = 64",
+            name="ck_implementation_target_change_digest",
+        ),
+        Index(
+            "ix_implementation_target_card",
+            "board_id",
+            "card_id",
+            "lifecycle_status",
+        ),
+        Index(
+            "ix_implementation_target_path",
+            "source_ref",
+            "relative_path_hint",
+        ),
+        Index(
+            "ix_implementation_target_symbol",
+            "source_ref",
+            "qualified_symbol",
+        ),
+        Index("ix_implementation_target_resolution", "current_resolution_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    card_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("cards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    source_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    selector_kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    relative_path_hint: Mapped[str | None] = mapped_column(
+        String(1024), nullable=True
+    )
+    language: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    symbol_kind: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    qualified_symbol: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    symbol_signature: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    intent: Mapped[str] = mapped_column(Text, nullable=False)
+    required: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+    source_spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    baseline_evidence_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("code_evidence.id", ondelete="RESTRICT", onupdate="RESTRICT"),
+        nullable=True,
+    )
+    lifecycle_status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="active",
+        server_default=text("'active'"),
+    )
+    revision: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default=text("1"),
+    )
+    # Kept logical to avoid the target/resolution circular DDL dependency.  The
+    # store advances this pointer only after inserting the append-only row.
+    current_resolution_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    last_change_reason_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ImplementationTargetSpecLinkRow(Base):
+    """Many-to-many coverage of structured Spec entities by a target."""
+
+    __tablename__ = "implementation_target_spec_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "target_id",
+            "spec_id",
+            "entity_type",
+            "entity_id",
+            name="uq_implementation_target_spec_link",
+        ),
+        Index("ix_implementation_target_spec_link_spec", "spec_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    target_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "implementation_targets.id",
+            ondelete="CASCADE",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    spec_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("specs.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    entity_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ImplementationTargetEvidenceLinkRow(Base):
+    """Explicit derivation/validation link from a target to immutable evidence."""
+
+    __tablename__ = "implementation_target_evidence_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "target_id",
+            "evidence_id",
+            "relation_type",
+            name="uq_implementation_target_evidence_link",
+        ),
+        CheckConstraint(
+            "relation_type IN ('derived_from', 'validates', 'replaces')",
+            name="ck_implementation_target_evidence_relation",
+        ),
+        Index("ix_implementation_target_evidence_link", "evidence_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    target_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "implementation_targets.id",
+            ondelete="CASCADE",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    evidence_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("code_evidence.id", ondelete="RESTRICT", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    relation_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ImplementationTargetResolutionRow(Base):
+    """Append-only target resolution claimed by an external agent."""
+
+    __tablename__ = "implementation_target_resolutions"
+    __table_args__ = (
+        UniqueConstraint(
+            "investigation_receipt_id",
+            "target_id",
+            "target_revision",
+            name="uq_implementation_target_resolution_snapshot",
+        ),
+        UniqueConstraint(
+            "investigation_receipt_id",
+            "target_id",
+            "submitted_by",
+            "idempotency_key",
+            name="uq_implementation_target_resolution_idempotency",
+        ),
+        CheckConstraint(
+            "receipt_generation >= 1 AND subject_version >= 1 "
+            "AND target_revision >= 1",
+            name="ck_implementation_target_resolution_versions",
+        ),
+        CheckConstraint(
+            "state IN ('resolved', 'moved', 'stale', 'ambiguous', "
+            "'missing', 'unavailable')",
+            name="ck_implementation_target_resolution_state",
+        ),
+        CheckConstraint(
+            "(resolved_line_start IS NULL AND resolved_line_end IS NULL) OR "
+            "(resolved_line_start >= 1 "
+            "AND resolved_line_end >= resolved_line_start)",
+            name="ck_implementation_target_resolution_lines",
+        ),
+        CheckConstraint(
+            "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)",
+            name="ck_implementation_target_resolution_confidence",
+        ),
+        CheckConstraint(
+            "candidate_count >= 0 AND candidate_count <= 20",
+            name="ck_implementation_target_resolution_candidates",
+        ),
+        CheckConstraint(
+            "(symbol_fingerprint IS NULL OR length(symbol_fingerprint) = 64) "
+            "AND (declared_file_blob_sha256 IS NULL "
+            "OR length(declared_file_blob_sha256) = 64) "
+            "AND length(selector_fingerprint) = 64 "
+            "AND length(payload_sha256) = 64",
+            name="ck_implementation_target_resolution_digests",
+        ),
+        Index(
+            "ix_implementation_target_resolution_target",
+            "target_id",
+            "received_at",
+        ),
+        Index(
+            "ix_implementation_target_resolution_workspace",
+            "source_ref",
+            "workspace_state_id",
+        ),
+        Index(
+            "ix_implementation_target_resolution_path",
+            "source_ref",
+            "resolved_relative_path",
+        ),
+        Index(
+            "ix_implementation_target_resolution_symbol",
+            "source_ref",
+            "resolved_qualified_symbol",
+        ),
+        Index(
+            "ix_implementation_target_resolution_receipt",
+            "investigation_receipt_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    target_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "implementation_targets.id",
+            ondelete="CASCADE",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    investigation_receipt_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "code_investigation_receipts.id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    source_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    receipt_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    subject_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    declared_revision: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    workspace_state_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    declared_dirty: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    resolved_relative_path: Mapped[str | None] = mapped_column(
+        String(1024), nullable=True
+    )
+    resolved_language: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    resolved_symbol_kind: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+    resolved_qualified_symbol: Mapped[str | None] = mapped_column(
+        String(2048), nullable=True
+    )
+    resolved_symbol_signature: Mapped[str | None] = mapped_column(
+        String(2048), nullable=True
+    )
+    resolved_line_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    resolved_line_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    symbol_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    declared_file_blob_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    selector_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reason_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    candidates: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    declared_tool_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    declared_tool_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    submitted_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    agent_observed_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
+class ImplementationTargetExecutionRecordRow(Base):
+    """Append-only post-execution disposition anchored to a result receipt."""
+
+    __tablename__ = "implementation_target_execution_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "result_investigation_receipt_id",
+            "target_id",
+            "target_revision",
+            name="uq_implementation_target_execution_snapshot",
+        ),
+        UniqueConstraint(
+            "result_investigation_receipt_id",
+            "target_id",
+            "submitted_by",
+            "idempotency_key",
+            name="uq_implementation_target_execution_idempotency",
+        ),
+        CheckConstraint(
+            "target_revision >= 1",
+            name="ck_implementation_target_execution_revision",
+        ),
+        CheckConstraint(
+            "disposition IN ('touched', 'not_touched', 'replaced', "
+            "'created', 'deleted', 'superseded')",
+            name="ck_implementation_target_execution_disposition",
+        ),
+        CheckConstraint(
+            "disposition <> 'replaced' OR replacement_target_id IS NOT NULL",
+            name="ck_implementation_target_execution_replacement",
+        ),
+        CheckConstraint(
+            "length(payload_sha256) = 64",
+            name="ck_implementation_target_execution_digest",
+        ),
+        Index(
+            "ix_implementation_target_execution_card",
+            "board_id",
+            "card_id",
+            "received_at",
+        ),
+        Index(
+            "ix_implementation_target_execution_target",
+            "target_id",
+            "received_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    card_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("cards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    target_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "implementation_targets.id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    target_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    result_investigation_receipt_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "code_investigation_receipts.id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    source_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    disposition: Mapped[str] = mapped_column(String(24), nullable=False)
+    result_declared_revision: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    result_workspace_state_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    actual_relative_path: Mapped[str | None] = mapped_column(
+        String(1024), nullable=True
+    )
+    actual_qualified_symbol: Mapped[str | None] = mapped_column(
+        String(2048), nullable=True
+    )
+    replacement_target_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey(
+            "implementation_targets.id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=True,
+    )
+    justification: Mapped[str] = mapped_column(Text, nullable=False)
+    submitted_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
+class TargetOverlapAcknowledgementRow(Base):
+    """Immutable acknowledgement for one exact pair of target resolutions."""
+
+    __tablename__ = "target_overlap_acknowledgements"
+    __table_args__ = (
+        CheckConstraint(
+            "target_a_id <> target_b_id AND resolution_a_id <> resolution_b_id",
+            name="ck_target_overlap_ack_distinct",
+        ),
+        CheckConstraint(
+            "disposition IN ('ordered_by_dependency', 'accepted_parallel', "
+            "'merged_targets', 'false_positive')",
+            name="ck_target_overlap_ack_disposition",
+        ),
+        Index(
+            "ix_target_overlap_ack_targets",
+            "board_id",
+            "target_a_id",
+            "target_b_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    target_a_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "implementation_targets.id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    target_b_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "implementation_targets.id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    resolution_a_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "implementation_target_resolutions.id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    resolution_b_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "implementation_target_resolutions.id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    disposition: Mapped[str] = mapped_column(String(32), nullable=False)
+    justification: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class CodeTraceabilityWaiverRow(Base):
+    """Monotonic, scoped Code Traceability waiver."""
+
+    __tablename__ = "code_traceability_waivers"
+    __table_args__ = (
+        CheckConstraint(
+            "entity_type IN ('refinement', 'spec', 'card', 'spec_entity')",
+            name="ck_code_traceability_waiver_entity_type",
+        ),
+        CheckConstraint(
+            "scope IN ('code_evidence', 'evidence_linkage', "
+            "'implementation_target', 'target_resolution', 'target_overlap')",
+            name="ck_code_traceability_waiver_scope",
+        ),
+        CheckConstraint(
+            "reason_code IN ('no_code_change', 'documentation_only', "
+            "'manual_process', 'external_source_unavailable', "
+            "'conceptual_board', 'runtime_only', 'other')",
+            name="ck_code_traceability_waiver_reason",
+        ),
+        CheckConstraint(
+            "(active = true AND cleared_by IS NULL AND cleared_at IS NULL) OR "
+            "(active = false AND cleared_by IS NOT NULL "
+            "AND cleared_at IS NOT NULL)",
+            name="ck_code_traceability_waiver_clear",
+        ),
+        Index(
+            "uq_code_traceability_waiver_active",
+            "board_id",
+            "entity_type",
+            "entity_id",
+            "scope",
+            unique=True,
+            sqlite_where=text("active = true"),
+            postgresql_where=text("active = true"),
+        ),
+        Index(
+            "ix_code_traceability_waiver_entity",
+            "board_id",
+            "entity_type",
+            "entity_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    entity_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    justification: Mapped[str] = mapped_column(Text, nullable=False)
+    active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+    created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    cleared_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    cleared_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)

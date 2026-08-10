@@ -18,6 +18,14 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     BoardErasureJob,
     BoardErasurePermit,
     Card,
+    CodeEvidenceDispositionRow,
+    CodeEvidenceRow,
+    CodeEvidenceSpecLinkRow,
+    CodeInvestigationHeadRow,
+    CodeInvestigationReceiptRevocationRow,
+    CodeInvestigationReceiptRow,
+    CodeInvestigationRequestRow,
+    CodeTraceabilityWaiverRow,
     ConsolidationAudit,
     ConsolidationQueue,
     DesignSystemGateAudit,
@@ -34,6 +42,11 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     GuidelineRetirementRow,
     GuidelineRevisionRow,
     Ideation,
+    ImplementationTargetEvidenceLinkRow,
+    ImplementationTargetExecutionRecordRow,
+    ImplementationTargetResolutionRow,
+    ImplementationTargetRow,
+    ImplementationTargetSpecLinkRow,
     KGCognitiveSource,
     KGCognitiveSourceRevision,
     KGCurationProposal,
@@ -65,6 +78,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Spec,
     Sprint,
     Story,
+    TargetOverlapAcknowledgementRow,
 )
 from okto_pulse.core.domain.enums import SpecStatus, SprintStatus
 from okto_pulse.core.ports.kg_events import HISTORICAL_PROGRESS_SETTINGS_KEY
@@ -444,6 +458,16 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 )
             ).scalars()
         )
+        code_traceability_target_ids = tuple(
+            str(value)
+            for value in (
+                await context.execute(
+                    select(ImplementationTargetRow.id).where(
+                        ImplementationTargetRow.board_id == board_id
+                    )
+                )
+            ).scalars()
+        )
 
         try:
             quality_postcondition = await CommunitySqlAlchemyQualityAssessmentLifecycle(
@@ -452,6 +476,83 @@ class CommunitySqlAlchemyKGGovernanceStore:
             quality_lifecycle.validate_purge_postcondition(
                 plan=quality_purge_plan,
                 postcondition=quality_postcondition,
+            )
+
+            # Code Traceability attestations are physically immutable during
+            # ordinary operation.  Delete the complete graph in FK order while
+            # the board-scoped permit is visible to every immutable trigger.
+            await context.execute(
+                delete(TargetOverlapAcknowledgementRow).where(
+                    TargetOverlapAcknowledgementRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(ImplementationTargetExecutionRecordRow).where(
+                    ImplementationTargetExecutionRecordRow.board_id == board_id
+                )
+            )
+            if code_traceability_target_ids:
+                await context.execute(
+                    delete(ImplementationTargetSpecLinkRow).where(
+                        ImplementationTargetSpecLinkRow.target_id.in_(
+                            code_traceability_target_ids
+                        )
+                    )
+                )
+                await context.execute(
+                    delete(ImplementationTargetEvidenceLinkRow).where(
+                        ImplementationTargetEvidenceLinkRow.target_id.in_(
+                            code_traceability_target_ids
+                        )
+                    )
+                )
+            await context.execute(
+                delete(ImplementationTargetResolutionRow).where(
+                    ImplementationTargetResolutionRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(ImplementationTargetRow).where(
+                    ImplementationTargetRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(CodeEvidenceDispositionRow).where(
+                    CodeEvidenceDispositionRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(CodeEvidenceSpecLinkRow).where(
+                    CodeEvidenceSpecLinkRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(CodeEvidenceRow).where(CodeEvidenceRow.board_id == board_id)
+            )
+            await context.execute(
+                delete(CodeInvestigationHeadRow).where(
+                    CodeInvestigationHeadRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(CodeInvestigationReceiptRevocationRow).where(
+                    CodeInvestigationReceiptRevocationRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(CodeInvestigationReceiptRow).where(
+                    CodeInvestigationReceiptRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(CodeInvestigationRequestRow).where(
+                    CodeInvestigationRequestRow.board_id == board_id
+                )
+            )
+            await context.execute(
+                delete(CodeTraceabilityWaiverRow).where(
+                    CodeTraceabilityWaiverRow.board_id == board_id
+                )
             )
 
             # SK-B3 semantic governance is independently append-only and must
@@ -768,6 +869,18 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 SemanticGuidelineWaiverRow,
                 SemanticSubjectVersionEventRow,
                 SemanticSubjectVersionRow,
+                CodeInvestigationRequestRow,
+                CodeInvestigationReceiptRow,
+                CodeInvestigationReceiptRevocationRow,
+                CodeInvestigationHeadRow,
+                CodeEvidenceRow,
+                CodeEvidenceSpecLinkRow,
+                CodeEvidenceDispositionRow,
+                ImplementationTargetRow,
+                ImplementationTargetResolutionRow,
+                ImplementationTargetExecutionRecordRow,
+                TargetOverlapAcknowledgementRow,
+                CodeTraceabilityWaiverRow,
             )
             residuals = {
                 model.__tablename__: await _count_where(
@@ -827,6 +940,17 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 PolicyComplianceFindingRow,
                 PolicyComplianceFindingRow.board_id == board_id,
             )
+            for model in (
+                ImplementationTargetSpecLinkRow,
+                ImplementationTargetEvidenceLinkRow,
+            ):
+                residuals[model.__tablename__] = 0
+                if code_traceability_target_ids:
+                    residuals[model.__tablename__] = await _count_where(
+                        context,
+                        model,
+                        model.target_id.in_(code_traceability_target_ids),
+                    )
             residuals[PolicyComplianceAdoptedRevisionRow.__tablename__] = 0
             if receipt_ids:
                 residuals[

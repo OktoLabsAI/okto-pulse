@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from okto_pulse.core.kg import cypher_templates as tpl
 from okto_pulse.core.kg.kg_service import (
     KGToolError,
     get_kg_service,
@@ -47,6 +48,10 @@ from okto_pulse.core.application.use_cases.board_access import load_accessible_b
 from okto_pulse.core.application.use_cases.authorize_operation import (
     AuthorizeOperationCommand,
     AuthorizeOperationUseCase,
+)
+from okto_pulse.core.application.use_cases.code_traceability_kg_access import (
+    EvaluateCodeTraceabilityKGReadAccessUseCase,
+    require_code_traceability_safe_arbitrary_query,
 )
 from okto_pulse.core.kg.cursor_codec import decode_cursor, encode_cursor
 from okto_pulse.community.api.auth_deps import get_current_user, get_realm_id, require_user
@@ -149,6 +154,19 @@ async def _require_kg_operation(
         )
     except PermissionDeniedError as exc:
         raise RESTAdapterContract.http_error(exc) from exc
+
+
+async def _code_traceability_kg_read_access(
+    *,
+    actor: ActorContext,
+    board_id: str,
+    uow: PulseUnitOfWork,
+):
+    return await EvaluateCodeTraceabilityKGReadAccessUseCase().execute(
+        actor=actor,
+        board_id=board_id,
+        uow=uow,
+    )
 
 
 async def require_kg_actor(
@@ -304,9 +322,18 @@ async def list_nodes(
     limit: int = Query(50, ge=1, le=200),
     cursor: str = "",
     graph_layer: str = "canonical",
-    _actor: ActorContext = Depends(require_kg_board_actor),
+    actor: ActorContext = Depends(require_kg_board_actor),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """List KG nodes with filters and cursor pagination."""
+    ct_access = await _code_traceability_kg_read_access(
+        actor=actor,
+        board_id=board_id,
+        uow=uow,
+    )
+    ct_visibility_kwargs = (
+        {} if ct_access.allowed else {"include_code_traceability": False}
+    )
     svc = get_kg_service()
     try:
         layer = normalize_graph_layer(graph_layer)
@@ -318,6 +345,7 @@ async def list_nodes(
             cursor=cursor or None,
             node_type=type or None,
             graph_layer=layer,
+            **ct_visibility_kwargs,
         )
         total_hint = svc.count_all_nodes(
             board_id,
@@ -325,6 +353,7 @@ async def list_nodes(
             min_relevance=min_relevance,
             node_type=type or None,
             graph_layer=layer,
+            **ct_visibility_kwargs,
         )
         return {
             "nodes": rows,
@@ -348,12 +377,25 @@ async def list_nodes(
 async def get_node_detail(
     board_id: str,
     node_id: str,
-    _actor: ActorContext = Depends(require_kg_board_actor),
+    actor: ActorContext = Depends(require_kg_board_actor),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Get node detail across any node type in the board graph."""
+    ct_access = await _code_traceability_kg_read_access(
+        actor=actor,
+        board_id=board_id,
+        uow=uow,
+    )
+    ct_visibility_kwargs = (
+        {} if ct_access.allowed else {"include_code_traceability": False}
+    )
     svc = get_kg_service()
     try:
-        result = svc.get_node_detail(board_id, node_id)
+        result = svc.get_node_detail(
+            board_id,
+            node_id,
+            **ct_visibility_kwargs,
+        )
         if result is None:
             return _problem(404, "Not Found", f"Node {node_id} not found")
         return result
@@ -410,12 +452,24 @@ async def get_subgraph(
 
     svc = get_kg_service()
     try:
+        ct_access = await _code_traceability_kg_read_access(
+            actor=actor,
+            board_id=board_id,
+            uow=uow,
+        )
+        ct_visibility_kwargs = (
+            {} if ct_access.allowed else {"include_code_traceability": False}
+        )
         layer = normalize_graph_layer(graph_layer)
         if center:
             # Spec 849d6292 (FR6/AC5): the centered branch MUST scope to the
             # requested layer too — default canonical never leaks working.
             rows = svc.get_related_context(
-                board_id, center, max_rows=limit, graph_layer=layer,
+                board_id,
+                center,
+                max_rows=limit,
+                graph_layer=layer,
+                **ct_visibility_kwargs,
             )
             next_cursor: str | None = None
         else:
@@ -428,6 +482,7 @@ async def get_subgraph(
                     cursor=cursor or None,
                     node_type=type or None,
                     graph_layer=layer,
+                    **ct_visibility_kwargs,
                 )
             except ValueError as exc:
                 return _problem(
@@ -439,7 +494,11 @@ async def get_subgraph(
             next_cursor = _next_cursor_for(rows, limit)
 
         node_ids = {_node_id(r) for r in rows if _node_id(r)}
-        edges, edge_metadata = _fetch_edges_for_nodes(board_id, node_ids)
+        edges, edge_metadata = _fetch_edges_for_nodes(
+            board_id,
+            node_ids,
+            **ct_visibility_kwargs,
+        )
 
         return {
             "nodes": rows,
@@ -484,7 +543,10 @@ def _next_cursor_for(rows: list[dict], limit: int) -> str | None:
 
 
 def _fetch_edges_for_nodes(
-    board_id: str, node_ids: set[str],
+    board_id: str,
+    node_ids: set[str],
+    *,
+    include_code_traceability: bool = True,
 ) -> tuple[list[dict], dict[str, Any]]:
     """Fetch all edges between the given node IDs from the board graph.
 
@@ -513,8 +575,11 @@ def _fetch_edges_for_nodes(
                 result = cypher_executor.execute_read_only(
                     board_id,
                     f"MATCH (a:{from_type})-[r:{rel_name}]->(b:{to_type}) "
+                    f"WHERE {tpl.code_traceability_visibility_clause('a')} "
+                    f"AND {tpl.code_traceability_visibility_clause('b')} "
                     f"RETURN a.id, b.id, r.confidence "
                     f"LIMIT 5000",
+                    {"include_code_traceability": include_code_traceability},
                     max_rows=5000,
                 )
                 for row in result.get("rows", []):
@@ -575,7 +640,11 @@ def _relation_pairs(
     return rel_pairs
 
 
-def _count_edges_by_type(board_id: str) -> tuple[dict[str, int], dict[str, Any]]:
+def _count_edges_by_type(
+    board_id: str,
+    *,
+    include_code_traceability: bool = True,
+) -> tuple[dict[str, int], dict[str, Any]]:
     diagnostics: dict[str, Any] = {
         "edge_count_status": "ok",
         "edge_count_tables_scanned": 0,
@@ -593,10 +662,31 @@ def _count_edges_by_type(board_id: str) -> tuple[dict[str, int], dict[str, Any]]
         for rel_name in rel_names:
             diagnostics["edge_count_tables_scanned"] += 1
             try:
-                result = cypher_executor.execute_read_only(
-                    board_id,
-                    f"MATCH ()-[r:{rel_name}]->() RETURN count(r) AS c",
-                    max_rows=1,
+                visibility = ""
+                params: dict[str, Any] | None = None
+                if not include_code_traceability:
+                    visibility = (
+                        f" WHERE {tpl.code_traceability_visibility_clause('a')}"
+                        f" AND {tpl.code_traceability_visibility_clause('b')}"
+                    )
+                    params = {"include_code_traceability": False}
+                edge_count_query = (
+                    f"MATCH (a)-[r:{rel_name}]->(b){visibility} "
+                    "RETURN count(r) AS c"
+                )
+                result = (
+                    cypher_executor.execute_read_only(
+                        board_id,
+                        edge_count_query,
+                        max_rows=1,
+                    )
+                    if params is None
+                    else cypher_executor.execute_read_only(
+                        board_id,
+                        edge_count_query,
+                        params,
+                        max_rows=1,
+                    )
                 )
                 rows = result.get("rows", [])
                 count = int(rows[0][0]) if rows else 0
@@ -711,9 +801,18 @@ async def get_stats(
     board_id: str,
     min_relevance: float = Query(0.0, ge=0.0),
     graph_layer: str = "canonical",
-    _actor: ActorContext = Depends(require_kg_board_actor),
+    actor: ActorContext = Depends(require_kg_board_actor),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Board KG stats: counts, confidence, pending."""
+    ct_access = await _code_traceability_kg_read_access(
+        actor=actor,
+        board_id=board_id,
+        uow=uow,
+    )
+    ct_visibility_kwargs = (
+        {} if ct_access.allowed else {"include_code_traceability": False}
+    )
     svc = get_kg_service()
     try:
         layer = normalize_graph_layer(graph_layer)
@@ -724,6 +823,7 @@ async def get_stats(
             min_relevance=min_relevance,
             max_rows=1000,
             graph_layer=layer,
+            **ct_visibility_kwargs,
         )
         from okto_pulse.core.kg.schema_contract import NODE_TYPES
 
@@ -734,6 +834,7 @@ async def get_stats(
                 min_relevance=min_relevance,
                 node_type=node_type,
                 graph_layer=layer,
+                **ct_visibility_kwargs,
             )
             for node_type in NODE_TYPES
         }
@@ -742,7 +843,10 @@ async def get_stats(
         for n in all_nodes:
             total_conf += float(n.get("source_confidence") or 0.0)
             total_relevance += float(n.get("relevance_score") or 0.0)
-        edge_counts, edge_metadata = _count_edges_by_type(board_id)
+        edge_counts, edge_metadata = _count_edges_by_type(
+            board_id,
+            **ct_visibility_kwargs,
+        )
         return {
             "schema_version": ver,
             "graph_schema_version": ver,
@@ -765,7 +869,8 @@ async def get_stats(
 @router.get("/boards/{board_id}/metrics")
 async def get_kg_metrics(
     board_id: str,
-    _actor: ActorContext = Depends(require_kg_board_actor),
+    actor: ActorContext = Depends(require_kg_board_actor),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Provenance metrics for the KG v0.2.0 pipeline — grouped by `layer`.
 
@@ -781,6 +886,12 @@ async def get_kg_metrics(
     - cognitive_edge_ratio 0.15 – 0.30 in mature boards
     """
     from okto_pulse.core.kg.schema_contract import MULTI_REL_TYPES, REL_TYPES
+
+    ct_access = await _code_traceability_kg_read_access(
+        actor=actor,
+        board_id=board_id,
+        uow=uow,
+    )
 
     if not snapshot_kg_runtime(board_id=board_id).graph_initialized:
         return {
@@ -806,7 +917,12 @@ async def get_kg_metrics(
     # (MULTI_REL_TYPES, e.g. `belongs_to` hierarchy backbone). Without the
     # MULTI_REL_TYPES pass, the metrics page silently under-counts ~80% of
     # the deterministic edges Layer 1 produces.
-    all_rel_names = [r[0] for r in REL_TYPES] + [m[0] for m in MULTI_REL_TYPES]
+    all_rel_names = list(
+        dict.fromkeys(
+            [rel[0] for rel in REL_TYPES]
+            + [multi_rel[0] for multi_rel in MULTI_REL_TYPES]
+        )
+    )
     # R05-C: read through the #06 GraphTransaction port (scope.execute) instead
     # of the direct board-connection tuple — the DB handle was unused and every
     # statement is a plain scope.execute, so the swap is behaviour-identical.
@@ -818,9 +934,22 @@ async def get_kg_metrics(
                 # raw rows and aggregating in Python keeps the code portable
                 # across Kùzu versions (GROUP BY syntax shifted between 0.6
                 # and 0.11).
-                result = scope.execute(
-                    f"MATCH ()-[r:{rel_name}]->() "
-                    f"RETURN r.layer, r.rule_id"
+                edge_visibility = ""
+                edge_params: dict[str, Any] | None = None
+                if not ct_access.allowed:
+                    edge_visibility = (
+                        f" WHERE {tpl.code_traceability_visibility_clause('a')}"
+                        f" AND {tpl.code_traceability_visibility_clause('b')}"
+                    )
+                    edge_params = {"include_code_traceability": False}
+                edge_query = (
+                    f"MATCH (a)-[r:{rel_name}]->(b){edge_visibility} "
+                    "RETURN r.layer, r.rule_id"
+                )
+                result = (
+                    scope.execute(edge_query)
+                    if edge_params is None
+                    else scope.execute(edge_query, edge_params)
                 )
             except Exception:
                 continue
@@ -835,8 +964,20 @@ async def get_kg_metrics(
         from okto_pulse.core.kg.schema_contract import NODE_TYPES
         for nt in NODE_TYPES:
             try:
-                result = scope.execute(
-                    f"MATCH (n:{nt}) RETURN count(n) AS c"
+                node_visibility = ""
+                node_params: dict[str, Any] | None = None
+                if not ct_access.allowed:
+                    node_visibility = (
+                        f" WHERE {tpl.code_traceability_visibility_clause('n')}"
+                    )
+                    node_params = {"include_code_traceability": False}
+                node_query = (
+                    f"MATCH (n:{nt}){node_visibility} RETURN count(n) AS c"
+                )
+                result = (
+                    scope.execute(node_query)
+                    if node_params is None
+                    else scope.execute(node_query, node_params)
                 )
                 if result.rows:
                     c = int(result.rows[0][0])
@@ -914,14 +1055,42 @@ async def undo_session(
 async def export_audit(
     board_id: str,
     format: str = Query("json", pattern="^(json|csv)$"),
-    _actor: ActorContext = Depends(require_kg_board_actor),
+    actor: ActorContext = Depends(require_kg_board_actor),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Streaming audit export as JSONL or CSV."""
+    try:
+        result = await ListAuditUseCase().execute(
+            ListAuditCommand(board_id, limit=200),
+            actor=actor,
+            uow=uow,
+        )
+    except (PermissionDeniedError, EntityNotFoundError) as exc:
+        raise RESTAdapterContract.http_error(
+            exc,
+            not_found_detail="Board not found",
+        )
+
     async def _stream():
+        import csv
+        import io
+        import json
+
         if format == "json":
-            yield '{"entries": []}\n'
+            for entry in result.entries:
+                yield json.dumps(entry, default=str, sort_keys=True) + "\n"
         else:
-            yield "session_id,board_id,committed_at\n"
+            buffer = io.StringIO()
+            writer = csv.DictWriter(
+                buffer,
+                fieldnames=("session_id", "board_id", "committed_at"),
+                extrasaction="ignore",
+                lineterminator="\n",
+            )
+            writer.writeheader()
+            for entry in result.entries:
+                writer.writerow(entry)
+            yield buffer.getvalue()
 
     content_type = "application/jsonl" if format == "json" else "text/csv"
     return StreamingResponse(
@@ -1155,6 +1324,16 @@ async def cypher_query(
         board_id=board_id,
         require_board_read=True,
     )
+    ct_access = await _code_traceability_kg_read_access(
+        actor=actor,
+        board_id=board_id,
+        uow=uow,
+    )
+    if not ct_access.allowed:
+        try:
+            require_code_traceability_safe_arbitrary_query(ct_access)
+        except PermissionDeniedError as exc:
+            raise RESTAdapterContract.http_error(exc) from exc
     try:
         result = execute_cypher_read_only(
             board_id,
@@ -1281,6 +1460,7 @@ async def poll_kg_events(
     ),
     limit: int = Query(500, ge=1, le=500),
     _actor: ActorContext = Depends(require_kg_stream_board_actor),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Return one finite, authenticated read of KG events and queue state.
 
@@ -1310,12 +1490,31 @@ async def poll_kg_events(
             after = after.astimezone(timezone.utc)
         include_events = True
 
-    result = await poll_community_kg_events(
-        board_id=board_id,
-        after=after,
-        after_event_id=after_event_id,
-        limit=limit,
-    )
+    # HTTP composition guarantees ActorContext. The isinstance branch only
+    # preserves direct adapter-contract calls that predate the authenticated
+    # dependency; production never treats unresolved authority as a grant.
+    include_code_traceability = True
+    if isinstance(_actor, ActorContext):
+        include_code_traceability = (
+            await _code_traceability_kg_read_access(
+                actor=_actor,
+                board_id=board_id,
+                uow=uow,
+            )
+        ).allowed
+    poll_kwargs = {
+        "board_id": board_id,
+        "after": after,
+        "after_event_id": after_event_id,
+        "limit": limit,
+    }
+    if include_code_traceability:
+        result = await poll_community_kg_events(**poll_kwargs)
+    else:
+        result = await poll_community_kg_events(
+            **poll_kwargs,
+            include_code_traceability=False,
+        )
     events = []
     cursor = after
     cursor_event_id = after_event_id
@@ -1362,6 +1561,7 @@ async def stream_kg_events(
         description="Stable event-id tie breaker for events sharing `since`",
     ),
     _actor: ActorContext = Depends(require_kg_stream_board_actor),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Server-Sent Events stream of `kg.session.committed` /
     `kg.board.cleared` events for the given board.
@@ -1422,9 +1622,25 @@ async def stream_kg_events(
         return value if value.tzinfo is not None else value.replace(tzinfo=_tz.utc)
 
     hub = get_kg_events_hub()
+    include_code_traceability = True
+    if isinstance(_actor, ActorContext):
+        include_code_traceability = (
+            await _code_traceability_kg_read_access(
+                actor=_actor,
+                board_id=board_id,
+                uow=uow,
+            )
+        ).allowed
 
     async def _iter():
-        subscription = hub.subscribe(board_id)
+        subscription = (
+            hub.subscribe(board_id)
+            if include_code_traceability
+            else hub.subscribe(
+                board_id,
+                include_code_traceability=False,
+            )
+        )
         try:
             # Initial heartbeat so the client knows the connection is alive.
             yield "event: hello\ndata: {}\n\n"
@@ -1442,12 +1658,19 @@ async def stream_kg_events(
                         subscription.cursor_event_id or "",
                     )
                     while True:
-                        backlog = await hub.replay(
-                            board_id=board_id,
-                            after=replay_cursor,
-                            after_event_id=replay_event_id,
-                            limit=replay_limit,
-                        )
+                        replay_kwargs = {
+                            "board_id": board_id,
+                            "after": replay_cursor,
+                            "after_event_id": replay_event_id,
+                            "limit": replay_limit,
+                        }
+                        if include_code_traceability:
+                            backlog = await hub.replay(**replay_kwargs)
+                        else:
+                            backlog = await hub.replay(
+                                **replay_kwargs,
+                                include_code_traceability=False,
+                            )
                         if not backlog:
                             break
 

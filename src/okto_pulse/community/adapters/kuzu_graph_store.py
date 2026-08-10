@@ -447,6 +447,7 @@ class CommunityKuzuGraphStore:
         filters: QueryFilters,
         *,
         graph_layer: str = "all",
+        include_code_traceability: bool = True,
     ) -> list[list]:
         return self._exec(
             board_id,
@@ -456,6 +457,7 @@ class CommunityKuzuGraphStore:
                 "min_confidence": filters.min_confidence,
                 "max_rows": filters.max_rows,
                 "graph_layer": graph_layer,
+                "include_code_traceability": include_code_traceability,
                 "include_superseded": bool(
                     getattr(filters, "include_superseded", False)
                 ),
@@ -472,6 +474,7 @@ class CommunityKuzuGraphStore:
         direction: str = "both",
         max_depth: int = 2,
         graph_layer: str = "all",
+        include_code_traceability: bool = True,
     ) -> list[list]:
         """Impact-analysis variant of ``find_by_artifact`` with rel-type and
         direction filters. Builds the Cypher pattern dynamically so the
@@ -496,6 +499,7 @@ class CommunityKuzuGraphStore:
             "min_confidence": filters.min_confidence,
             "max_rows": filters.max_rows,
             "graph_layer": graph_layer,
+            "include_code_traceability": include_code_traceability,
             "include_superseded": bool(getattr(filters, "include_superseded", False)),
         }
         # Layer scoping clauses (spec 849d6292). The center is the explicitly
@@ -509,12 +513,14 @@ class CommunityKuzuGraphStore:
         hop1_layer = (
             f"{tpl.layer_filter_clause('hop1')} "
             f"AND {tpl.superseded_filter_clause('hop1')} "
-            f"AND {tpl.active_read_filter_clause('hop1')}"
+            f"AND {tpl.active_read_filter_clause('hop1')} "
+            f"AND {tpl.code_traceability_visibility_clause('hop1')}"
         )
         hop2_layer = (
             f"(hop2 IS NULL OR ({tpl.layer_filter_clause('hop2')} "
             f"AND {tpl.superseded_filter_clause('hop2')} "
-            f"AND {tpl.active_read_filter_clause('hop2')}))"
+            f"AND {tpl.active_read_filter_clause('hop2')} "
+            f"AND {tpl.code_traceability_visibility_clause('hop2')}))"
         )
         if rel_types:
             # Kùzu doesn't expose `label(r)` as a parameter-safe filter, so we
@@ -538,6 +544,7 @@ class CommunityKuzuGraphStore:
                 "WHERE center.source_artifact_ref = $artifact_id "
                 "  AND center.source_confidence >= $min_confidence "
                 f"  AND {tpl.active_read_filter_clause('center')} "
+                f"  AND {tpl.code_traceability_visibility_clause('center')} "
                 f"  AND {hop1_layer} "
                 "RETURN center.id AS center_id, center.title AS center_title, "
                 "       hop1.id AS hop1_id, hop1.title AS hop1_title, "
@@ -551,6 +558,7 @@ class CommunityKuzuGraphStore:
                 "WHERE center.source_artifact_ref = $artifact_id "
                 "  AND center.source_confidence >= $min_confidence "
                 f"  AND {tpl.active_read_filter_clause('center')} "
+                f"  AND {tpl.code_traceability_visibility_clause('center')} "
                 f"  AND {hop1_layer} "
                 "OPTIONAL MATCH (hop1)-[r2]-(hop2) "
                 f"WHERE {hop2_layer} "
@@ -636,7 +644,7 @@ class CommunityKuzuGraphStore:
                     "RETURN node.id, node.title, node.source_artifact_ref, "
                     "distance, node.superseded_by, node.graph_layer, "
                     "node.content, node.context, node.justification, "
-                    "node.revocation_reason",
+                    "node.revocation_reason, node.kind_of",
                     {"vec": query_vec, "k": fetch_k},
                 )
                 indexed_rows = _materialize_native_rows(result)
@@ -673,6 +681,7 @@ class CommunityKuzuGraphStore:
                     "content": row[6] if len(row) > 6 else None,
                     "context": row[7] if len(row) > 7 else None,
                     "justification": row[8] if len(row) > 8 else None,
+                    "kind_of": row[10] if len(row) > 10 else None,
                     "similarity": similarity,
                 }
             )
@@ -694,7 +703,7 @@ class CommunityKuzuGraphStore:
                     f"AND {tpl.active_read_filter_clause('n')} "
                     "RETURN n.id, n.title, n.source_artifact_ref, n.embedding, "
                     "n.superseded_by, n.graph_layer, n.content, n.context, "
-                    "n.justification, n.revocation_reason LIMIT 500"
+                    "n.justification, n.revocation_reason, n.kind_of LIMIT 500"
                 )
                 fallback_rows = _materialize_native_rows(result)
         except Exception as exc:
@@ -735,6 +744,7 @@ class CommunityKuzuGraphStore:
                         "content": row[6] if len(row) > 6 else None,
                         "context": row[7] if len(row) > 7 else None,
                         "justification": row[8] if len(row) > 8 else None,
+                        "kind_of": row[10] if len(row) > 10 else None,
                         "similarity": similarity,
                     }
                 )

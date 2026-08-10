@@ -11,7 +11,7 @@
 import { useEffect, useRef, type MutableRefObject } from 'react';
 import type { Sigma } from 'sigma';
 import type { KGNodeType } from '@/types/knowledge-graph';
-import { NODE_TYPE_CONFIG } from '@/types/knowledge-graph';
+import { kgNodeVisualConfig } from '@/types/knowledge-graph';
 
 const WIDTH = 160;
 const HEIGHT = 100;
@@ -95,7 +95,10 @@ export function SigmaMiniMap({ sigmaRef, isDark, epoch }: Props) {
       const graph = sigma.getGraph();
       graph.forEachNode((_id, attr) => {
         const { mx, my } = toMini(bounds, attr.x as number, attr.y as number);
-        const cfg = NODE_TYPE_CONFIG[attr.nodeType as KGNodeType];
+        const cfg = kgNodeVisualConfig({
+          node_type: attr.nodeType as KGNodeType,
+          kind_of: attr.kindOf as string | null | undefined,
+        });
         ctx.fillStyle = cfg ? (dark ? cfg.darkColor : cfg.color) : '#6B7280';
         ctx.beginPath();
         ctx.arc(mx, my, 1.6, 0, Math.PI * 2);
