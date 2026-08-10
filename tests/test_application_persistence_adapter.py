@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
@@ -18,6 +19,125 @@ from okto_pulse.core.ports.application_persistence import (
     ApplicationRecord,
 )
 from okto_pulse.core.domain.realm import RealmScope
+
+
+@pytest.mark.asyncio
+async def test_card_gate_projection_keeps_history_bodies_inside_sqlite(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'gate-history.db'}")
+    factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
+        expire_on_commit=False,
+        info={"realm_scope": RealmScope.local()},
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    adapter = CommunitySqlAlchemyApplicationPersistence()
+    board_id = str(uuid.uuid4())
+    card_id = str(uuid.uuid4())
+    async with factory() as session:
+        await adapter.add(
+            session,
+            ApplicationRecord(
+                entity="board",
+                values={
+                    "id": board_id,
+                    "name": "Bounded gate history",
+                    "owner_id": "owner-1",
+                },
+            ),
+        )
+        await adapter.add(
+            session,
+            ApplicationRecord(
+                entity="card",
+                values={
+                    "id": card_id,
+                    "board_id": board_id,
+                    "title": "Bounded card",
+                    "created_by": "owner-1",
+                    "validations": [
+                        {
+                            "id": f"validation-{index}",
+                            "verdict": "pass" if index == 9 else "fail",
+                            "private_body": "V" * 20_000,
+                        }
+                        for index in range(10)
+                    ],
+                    "conclusions": [
+                        {
+                            "author_id": "reviewer-1",
+                            "private_body": "C" * 20_000,
+                        }
+                    ],
+                },
+            ),
+        )
+        await adapter.commit(session)
+
+    statements: list[str] = []
+
+    def capture(
+        _conn: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        statements.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        async with factory() as session:
+            fields = (
+                "id",
+                "validations_count",
+                "recent_validation_1",
+                "recent_validation_2",
+                "recent_validation_3",
+                "recent_validation_4",
+                "recent_validation_5",
+            )
+            projected = await adapter.list(
+                session,
+                ApplicationQuery(
+                    entity="card",
+                    filters=(ApplicationFilter("id", "eq", card_id),),
+                    select_fields=fields,
+                    limit=1,
+                ),
+            )
+            authored = await adapter.list(
+                session,
+                ApplicationQuery(
+                    entity="card",
+                    filters=(
+                        ApplicationFilter("id", "eq", card_id),
+                        ApplicationFilter(
+                            "conclusion_actor_id", "eq", "reviewer-1"
+                        ),
+                    ),
+                    select_fields=("id",),
+                    limit=1,
+                ),
+            )
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", capture)
+        await engine.dispose()
+
+    assert len(projected) == 1
+    assert set(projected[0].values) == set(fields)
+    assert projected[0].validations_count == 10
+    assert "validation-9" in projected[0].recent_validation_1
+    assert "validation-5" in projected[0].recent_validation_5
+    assert "validation-4" not in repr(projected[0].values)
+    assert [row.id for row in authored] == [card_id]
+    sql = "\n".join(statements).lower()
+    assert "cards.validations as validations" not in sql
+    assert "cards.conclusions as conclusions" not in sql
 
 
 @pytest.mark.asyncio

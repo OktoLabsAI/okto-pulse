@@ -1102,9 +1102,13 @@ def create_community_app():
     from okto_pulse.community.adapters.coordination import (
         register_community_coordination_providers,
     )
-    from okto_pulse.community.adapters.mcp_host import register_community_mcp_host
+    from okto_pulse.community.adapters.mcp_host import (
+        configure_community_mcp_admission,
+        register_community_mcp_host,
+    )
 
     register_community_coordination_providers()
+    configure_community_mcp_admission(settings)
     register_community_mcp_host()
     database_runtime = configure_community_database(
         settings.database_url,

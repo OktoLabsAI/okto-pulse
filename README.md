@@ -318,6 +318,17 @@ docker compose up -d
 | `HF_HOME` | `~/.cache/huggingface` | Sentence-transformers model cache. |
 | `MCP_TRACE_ENABLED` | unset | Set to `1` to record MCP calls for replay testing. |
 | `MCP_TRACE_DIR` | `${KG_BASE_DIR}/mcp_traces` | Trace output directory when tracing is enabled; falls back to `./mcp_traces` when `KG_BASE_DIR` is unset. |
+| `MCP_ADMISSION_MAX_ACTIVE` | `4` | Maximum concurrent MCP tool calls. REST/UI and MCP session/stream transport stay outside this gate. |
+| `MCP_ADMISSION_MAX_ACTIVE_PER_SESSION` | `2` | Maximum concurrent MCP tool calls owned by one session. |
+| `MCP_ADMISSION_MAX_ACTIVE_WRITERS` | `1` | Fixed single-writer lane; values other than `1` are rejected to preserve embedded persistence ownership. |
+| `MCP_ADMISSION_MAX_QUEUED` | `16` | Maximum short-wait MCP tool calls across all sessions. |
+| `MCP_ADMISSION_MAX_QUEUED_PER_SESSION` | `4` | Maximum queued MCP tool calls owned by one session. |
+| `MCP_ADMISSION_WAIT_TIMEOUT_MS` | `250` | Maximum queue wait before a fail-fast saturation result. Set to `0` to reject instead of waiting. |
+| `MCP_ADMISSION_RETRY_AFTER_MS` | `500` | Retry delay advertised by a retryable `mcp_admission_saturated` result. |
+
+MCP admission is intentionally scoped to tool execution. Saturated calls receive
+a bounded, retryable outcome with `next_action.rel=retry_after`; initialization,
+streaming, resources, prompts, and the API/UI listener do not enter this queue.
 
 ## Data Storage
 

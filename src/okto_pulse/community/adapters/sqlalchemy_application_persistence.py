@@ -196,6 +196,26 @@ def _realm_predicate(entity: str, scope: RealmScope):
 def _predicate(model: Any, item: ApplicationFilter):
     # Relational predicates (FR2): virtual fields resolved SERVER-SIDE as
     # correlated EXISTS — never loaded collections filtered post-fetch.
+    if model is models.Card and item.field == "conclusion_actor_id":
+        if item.operator != "eq" or not str(item.value or "").strip():
+            raise ValueError(f"unsupported_application_operator:{item.operator}")
+        entries = func.json_each(
+            func.coalesce(models.Card.conclusions, "[]")
+        ).table_valued("key", "value", joins_implicitly=True)
+        actor_id = func.coalesce(
+            func.json_extract(entries.c.value, "$.author_id"),
+            func.json_extract(entries.c.value, "$.actor_id"),
+            func.json_extract(entries.c.value, "$.author_agent_id"),
+            func.json_extract(entries.c.value, "$.author"),
+            func.json_extract(entries.c.value, "$.created_by"),
+        )
+        return (
+            select(1)
+            .select_from(entries)
+            .where(actor_id == str(item.value))
+            .correlate(models.Card)
+            .exists()
+        )
     if model is models.Spec and item.field in {
         "linked_to_cards",
         "linked_to_active_cards",
@@ -434,6 +454,14 @@ def _projection_expression(model: Any, field_name: str) -> Any:
             else models.Card.conclusions
         )
         return func.json_array_length(func.coalesce(source, "[]")).label(field_name)
+    if model is models.Card and field_name.startswith("recent_validation_"):
+        raw_index = field_name.removeprefix("recent_validation_")
+        if raw_index not in {"1", "2", "3", "4", "5"}:
+            raise ValueError(f"unsupported_application_projection:{field_name}")
+        return func.json_extract(
+            func.coalesce(models.Card.validations, "[]"),
+            f"$[#-{raw_index}]",
+        ).label(field_name)
     if model is models.Card and field_name in {
         "validations_fail_count",
         "validations_has_pass",

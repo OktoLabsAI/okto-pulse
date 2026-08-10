@@ -13,6 +13,9 @@ import functools
 import inspect
 import json
 import logging
+import time
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
 
 from fastmcp import FastMCP
@@ -52,6 +55,12 @@ from okto_pulse.community.inbound.physical_identity import (
 )
 
 from .mcp_trace_middleware import install_trace_sink
+from .mcp_admission import (
+    McpAdmissionController,
+    McpAdmissionPolicy,
+    McpAdmissionRejected,
+    classify_mcp_tool,
+)
 
 
 _DEFAULT_RESOURCE_PAGE_SIZE = 100
@@ -332,6 +341,30 @@ def _legacy_profile_requested(
     return bound.arguments.get("profile") == "legacy"
 
 
+def _project_transport_tool_result(
+    result: Any,
+    *,
+    tool_name: str,
+    legacy_profile: bool,
+) -> _OutcomeToolResult:
+    """Perform JSON parsing/projection outside the shared API/MCP event loop."""
+
+    outcome = coerce_mcp_tool_outcome(result, tool_name=tool_name)
+    if legacy_profile:
+        return _OutcomeToolResult(
+            content=[TextContent(type="text", text=outcome.legacy_content())],
+            is_error=outcome.is_error,
+        )
+
+    structured = outcome.structured_content(tool_name=tool_name)
+    text = json.dumps(structured, default=str, separators=(",", ":"))
+    return _OutcomeToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content=structured,
+        is_error=outcome.is_error,
+    )
+
+
 def _transport_tool(fn: Any, *, tool_name: str):
     """Adapt a Core semantic outcome to a concrete MCP ``CallToolResult``.
 
@@ -346,20 +379,11 @@ def _transport_tool(fn: Any, *, tool_name: str):
         result = fn(*args, **kwargs)
         if inspect.isawaitable(result):
             result = await result
-        outcome = coerce_mcp_tool_outcome(result, tool_name=tool_name)
-
-        if _legacy_profile_requested(fn, args, kwargs):
-            return _OutcomeToolResult(
-                content=[TextContent(type="text", text=outcome.legacy_content())],
-                is_error=outcome.is_error,
-            )
-
-        structured = outcome.structured_content(tool_name=tool_name)
-        text = json.dumps(structured, default=str, separators=(",", ":"))
-        return _OutcomeToolResult(
-            content=[TextContent(type="text", text=text)],
-            structured_content=structured,
-            is_error=outcome.is_error,
+        return await asyncio.to_thread(
+            _project_transport_tool_result,
+            result,
+            tool_name=tool_name,
+            legacy_profile=_legacy_profile_requested(fn, args, kwargs),
         )
 
     return invoke
@@ -458,6 +482,171 @@ class _OutcomeValidationMiddleware(Middleware):
             )
 
 
+class CommunityMcpAdmissionMiddleware(Middleware):
+    """Apply bounded QoS to tool execution without gating MCP transport."""
+
+    def __init__(
+        self,
+        controller: McpAdmissionController,
+        *,
+        admission_classes: Mapping[str, object] | None = None,
+    ) -> None:
+        self.controller = controller
+        self.admission_classes = MappingProxyType(
+            {
+                str(tool_name): admission_class
+                for tool_name, admission_class in (admission_classes or {}).items()
+            }
+        )
+
+    @staticmethod
+    def _session_id_from(context: MiddlewareContext) -> str:
+        fastmcp_context = getattr(context, "fastmcp_context", None)
+        for attr in ("session_id", "client_id", "request_id"):
+            value = (
+                getattr(fastmcp_context, attr, None)
+                if fastmcp_context is not None
+                else None
+            )
+            if value:
+                return str(value)
+        return "anon"
+
+    @staticmethod
+    def _busy_result(
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+        rejected: McpAdmissionRejected,
+    ) -> _OutcomeToolResult:
+        capacity = {
+            key: rejected.snapshot[key]
+            for key in (
+                "active",
+                "active_writers",
+                "queued",
+                "queued_writers",
+                "max_active",
+                "max_active_writers",
+                "max_queued",
+            )
+        }
+        outcome = McpToolOutcome.error(
+            code="mcp_admission_saturated",
+            message="MCP tool capacity is busy; retry after the advertised delay.",
+            retryable=True,
+            next_action={
+                "rel": "retry_after",
+                "retry_after_ms": rejected.retry_after_ms,
+            },
+            details={
+                "reason": rejected.reason,
+                "retry_after_ms": rejected.retry_after_ms,
+                **capacity,
+            },
+        )
+        if arguments.get("profile") == "legacy":
+            return _OutcomeToolResult(
+                content=[TextContent(type="text", text=outcome.legacy_content())],
+                is_error=True,
+            )
+        structured = outcome.structured_content(tool_name=tool_name)
+        return _OutcomeToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=json.dumps(structured, separators=(",", ":")),
+                )
+            ],
+            structured_content=structured,
+            is_error=True,
+        )
+
+    async def on_call_tool(
+        self,
+        context: MiddlewareContext,
+        call_next: CallNext,
+    ) -> ToolResult:
+        message = context.message
+        tool_name = getattr(message, "name", None) or "<unknown>"
+        arguments = getattr(message, "arguments", None) or {}
+        work_class = classify_mcp_tool(tool_name, self.admission_classes)
+        try:
+            lease = await self.controller.acquire(
+                self._session_id_from(context),
+                work_class=work_class,
+            )
+        except McpAdmissionRejected as rejected:
+            snapshot = rejected.snapshot
+            logger.warning(
+                "mcp.admission.rejected tool=%s class=%s reason=%s "
+                "active=%s queued=%s",
+                tool_name,
+                work_class.value,
+                rejected.reason,
+                snapshot["active"],
+                snapshot["queued"],
+                extra={
+                    "event": "mcp.admission.rejected",
+                    "tool": tool_name,
+                    "work_class": work_class.value,
+                    "reason": rejected.reason,
+                    "retry_after_ms": rejected.retry_after_ms,
+                    "active": snapshot["active"],
+                    "active_writers": snapshot["active_writers"],
+                    "queued": snapshot["queued"],
+                    "queued_writers": snapshot["queued_writers"],
+                    "max_active": snapshot["max_active"],
+                    "max_active_writers": snapshot["max_active_writers"],
+                    "max_queued": snapshot["max_queued"],
+                },
+            )
+            return self._busy_result(
+                tool_name=tool_name,
+                arguments=arguments,
+                rejected=rejected,
+            )
+
+        if lease.waited_ms > 0:
+            logger.info(
+                "mcp.admission.admitted tool=%s wait_ms=%.3f",
+                tool_name,
+                lease.waited_ms,
+                extra={
+                    "event": "mcp.admission.admitted",
+                    "tool": tool_name,
+                    "work_class": work_class.value,
+                    "wait_ms": round(lease.waited_ms, 3),
+                },
+            )
+
+        cancelled = False
+        started_at = time.perf_counter()
+        try:
+            # Even an immediately available slot yields once so a burst cannot
+            # monopolize scheduling ahead of an already-runnable API/UI task.
+            await asyncio.sleep(0)
+            lease.mark_handler_started()
+            return await call_next(context)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        finally:
+            await lease.release_cancel_safe(cancelled=cancelled)
+            duration_ms = (time.perf_counter() - started_at) * 1000
+            if duration_ms >= 1_000:
+                logger.info(
+                    "mcp.admission.long_running tool=%s duration_ms=%.3f",
+                    tool_name,
+                    duration_ms,
+                    extra={
+                        "event": "mcp.admission.long_running",
+                        "tool": tool_name,
+                        "duration_ms": round(duration_ms, 3),
+                    },
+                )
+
+
 class CommunityApiKeySessionMiddleware:
     """Attach the Community HTTP credential to each MCP ASGI scope."""
 
@@ -502,6 +691,7 @@ class CommunityMcpHostProvider:
         self,
         *,
         resource_page_size: int = _DEFAULT_RESOURCE_PAGE_SIZE,
+        admission_policy: McpAdmissionPolicy | None = None,
     ) -> None:
         if (
             isinstance(resource_page_size, bool)
@@ -510,6 +700,21 @@ class CommunityMcpHostProvider:
         ):
             raise ValueError("resource_page_size must be a positive integer")
         self._resource_page_size = resource_page_size
+        self._admission_policy = admission_policy or McpAdmissionPolicy()
+
+    def configure_admission(
+        self,
+        policy_or_settings: McpAdmissionPolicy | Any,
+    ) -> McpAdmissionPolicy:
+        """Configure future host materializations during composition startup."""
+
+        policy = (
+            policy_or_settings
+            if isinstance(policy_or_settings, McpAdmissionPolicy)
+            else McpAdmissionPolicy.from_settings(policy_or_settings)
+        )
+        self._admission_policy = policy
+        return policy
 
     def active_credential(self) -> Any | None:
         """Read the current FastMCP request through the Community transport."""
@@ -552,6 +757,17 @@ class CommunityMcpHostProvider:
         host.add_middleware(
             _OutcomeValidationMiddleware(
                 board_id_bounded_tools=board_id_bounded_tools,
+            )
+        )
+        admission_controller = McpAdmissionController(self._admission_policy)
+        admission_classes = {
+            tool.name: getattr(tool, "admission_class", None)
+            for tool in catalog_tools
+        }
+        host.add_middleware(
+            CommunityMcpAdmissionMiddleware(
+                admission_controller,
+                admission_classes=admission_classes,
             )
         )
         for tool in catalog_tools:
@@ -598,6 +814,7 @@ class CommunityMcpHostProvider:
             page_size=self._resource_page_size,
         )
         setattr(host, "_okto_pulse_resource_projection_identity", projection_identity)
+        setattr(host, "_okto_pulse_admission_controller", admission_controller)
         return host
 
     def build_asgi_app(
@@ -643,6 +860,14 @@ class CommunityMcpHostProvider:
 _provider = CommunityMcpHostProvider()
 
 
+def configure_community_mcp_admission(
+    policy_or_settings: McpAdmissionPolicy | Any,
+) -> McpAdmissionPolicy:
+    """Apply Community settings before the FastMCP host is materialized."""
+
+    return _provider.configure_admission(policy_or_settings)
+
+
 def register_community_mcp_host() -> CommunityMcpHostProvider:
     """Register the Local First FastMCP host through the public Core port."""
 
@@ -682,8 +907,10 @@ def build_community_mcp_asgi_app(
 
 __all__ = [
     "CommunityApiKeySessionMiddleware",
+    "CommunityMcpAdmissionMiddleware",
     "CommunityMcpHostProvider",
     "CommunityMcpRuntimeCompositionMiddleware",
     "build_community_mcp_asgi_app",
+    "configure_community_mcp_admission",
     "register_community_mcp_host",
 ]

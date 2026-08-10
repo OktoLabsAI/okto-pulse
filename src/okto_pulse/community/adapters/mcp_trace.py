@@ -64,9 +64,11 @@ class JsonlMcpTraceSink:
         return path
 
     def write_trace(self, session_id: str, record: Mapping[str, Any]) -> None:
-        path = self._file_for(session_id)
         line = json.dumps(dict(record), ensure_ascii=False, default=str)
         with self._lock:
+            # The middleware offloads synchronous sinks to worker threads.
+            # Protect both the per-session path cache and append operation.
+            path = self._file_for(session_id)
             with path.open("a", encoding="utf-8") as f:
                 f.write(line + "\n")
 
