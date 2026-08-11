@@ -3,6 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PresetListModal } from './PresetListModal';
 import type { PermissionPreset } from '@/types';
+import {
+  ENTITY_LABELS,
+  getEntityChipClasses,
+} from './permissionLabels';
 
 const apiMock = vi.hoisted(() => ({
   clonePreset: vi.fn(),
@@ -113,5 +117,24 @@ describe('PresetListModal ADMIN-CATALOG permissions', () => {
     expect(apiMock.updatePreset).not.toHaveBeenCalled();
     expect(apiMock.deletePreset).not.toHaveBeenCalled();
     expect(importExportMock.exportPreset).not.toHaveBeenCalled();
+  });
+
+  it('renders every policy summary chip with the shared dark-mode palette', async () => {
+    grant('permission_preset.entity.read');
+    apiMock.listPresets.mockResolvedValue([{
+      ...customPreset,
+      flags: Object.fromEntries(
+        Object.keys(ENTITY_LABELS).map((entity) => [entity, { read: true }]),
+      ),
+    }]);
+
+    render(<PresetListModal boardId="b1" onClose={() => {}} />);
+    await screen.findByText('Custom');
+
+    for (const [entity, label] of Object.entries(ENTITY_LABELS)) {
+      expect(screen.getByText(`${label} 1/1`, { exact: true })).toHaveClass(
+        ...getEntityChipClasses(entity).split(' '),
+      );
+    }
   });
 });
