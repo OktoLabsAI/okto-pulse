@@ -2915,8 +2915,9 @@ def _enforce_embedding_guard(board_id: str) -> None:
         )
     if verdict == VERDICT_INDETERMINATE:
         logger.warning(
-            "kg.embedding_guard.indeterminate board=%s (provider sem "
-            "metadata válida/stub — guarda não aplicada)",
+            "kg.embedding_guard.indeterminate board=%s (provider metadata is "
+            "missing or invalid, or the provider is a stub; compatibility "
+            "guard was not applied)",
             board_id,
             extra={
                 "event": "kg.embedding_guard.indeterminate",
@@ -4188,8 +4189,9 @@ def bootstrap_board_graph(board_id: str) -> BoardGraphHandle:
     if not path.exists():
         logger.warning(
             "kg.bootstrap.fresh_graph_created board=%s path=%s "
-            "(se um grafo anterior existia e foi removido manualmente, "
-            "re-materialize via historical consolidation/rebuild)",
+            "(if a previous graph existed and was manually removed, "
+            "rematerialize it through historical consolidation or an explicit "
+            "rebuild)",
             board_id,
             path,
             extra={
