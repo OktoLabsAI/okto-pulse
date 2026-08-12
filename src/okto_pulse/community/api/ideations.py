@@ -81,6 +81,10 @@ from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.domain.guideline_policy_transition import (
     PolicyTransitionRejected,
 )
+from okto_pulse.core.domain.human_validation_cycle import (
+    LifecycleTransitionConflictError,
+    SubjectEditRequiresDraftError,
+)
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.models.schemas import (
     IdeationAmbiguityGateSkipUpdate,
@@ -223,6 +227,7 @@ async def list_ideations(
                         "problem_statement",
                         "complexity",
                         "status",
+                        "edition",
                         "version",
                         "assignee_id",
                         "created_by",
@@ -333,6 +338,8 @@ async def update_ideation(
         )
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found")
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     return result.ideation
 
 
@@ -357,6 +364,8 @@ async def move_ideation(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict()) from e
     except PolicyTransitionRejected as e:
         raise RESTAdapterContract.http_error(e) from e
+    except LifecycleTransitionConflictError as e:
+        raise RESTAdapterContract.http_error(e) from e
     except (AmbiguityGateError, EntityNotFoundError) as e:
         raise RESTAdapterContract.http_error(e, not_found_detail="Ideation not found") from e
     return result.ideation
@@ -377,12 +386,34 @@ async def set_ideation_ambiguity_gate_skip(
     """
     try:
         result = await SetIdeationAmbiguityGateSkipUseCase().execute(
-            SetIdeationAmbiguityGateSkipCommand(ideation_id, data.skip_ambiguity_gate),
+            SetIdeationAmbiguityGateSkipCommand(
+                ideation_id,
+                data.skip_ambiguity_gate,
+                reason=data.reason,
+                expected_ideation_version=data.expected_ideation_version,
+                expected_ideation_edition=data.expected_ideation_edition,
+            ),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+        error_code = str(e)
+        if error_code in {
+            "version_conflict",
+            "assessment_subject_edition_conflict",
+            "ideation_ambiguity_skip_status_conflict",
+        }:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error_code": error_code,
+                    "retryable": error_code != "ideation_ambiguity_skip_status_conflict",
+                },
+            ) from e
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error_code": error_code, "retryable": False},
+        ) from e
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found")
     return result.ideation
@@ -574,6 +605,8 @@ async def create_ideation_knowledge(
         )
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found")
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except KnowledgeGovernanceInvalidMetadata as exc:
         return knowledge_governance_error_response(exc)
     return result.knowledge
@@ -595,6 +628,8 @@ async def delete_ideation_knowledge(
         )
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge base item not found")
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
 
 
 # ==================== IDEATION Q&A ====================
@@ -636,6 +671,8 @@ async def create_ideation_question(
         )
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found")
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     return result.qa
 
 
@@ -666,6 +703,8 @@ async def answer_ideation_question(
         ) from exc
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Q&A item not found")
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     return result.qa
 
 
@@ -685,3 +724,5 @@ async def delete_ideation_question(
         )
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Q&A item not found")
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc

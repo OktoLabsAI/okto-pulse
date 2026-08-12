@@ -18,6 +18,9 @@ FORBIDDEN_SERVER_DATABASE_TOKENS: tuple[str, ...] = (
 GOVERNED_PORTABLE_RELATIONAL_FILES: frozenset[str] = frozenset(
     {
         "src/okto_pulse/community/adapters/relational_schema_steps.py",
+        "src/okto_pulse/community/adapters/relational_schema_migrator.py",
+        "src/okto_pulse/community/adapters/semantic_assessment_v2_capabilities.py",
+        "src/okto_pulse/community/adapters/sqlalchemy_code_traceability.py",
         "src/okto_pulse/community/adapters/sqlalchemy_guideline_policy.py",
         "src/okto_pulse/community/adapters/sqlalchemy_models.py",
         "src/okto_pulse/community/adapters/sqlalchemy_policy_subject_versioning.py",

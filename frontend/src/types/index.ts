@@ -2,7 +2,10 @@
  * Type definitions for the Dashboard application
  */
 
-import type { PolicyComplianceTransitionDecision } from './policy-governance';
+import type {
+  PolicyComplianceTransitionDecision,
+  RedactedPolicyComplianceTransitionDecision,
+} from './policy-governance';
 
 // Card status enum matching backend
 export type CardStatus =
@@ -143,7 +146,10 @@ export interface AllowedTransition {
   effects: string[];
   reason_codes: string[];
   policy_compliance: boolean;
-  policy_compliance_decision: PolicyComplianceTransitionDecision | null;
+  policy_compliance_decision:
+    | PolicyComplianceTransitionDecision
+    | RedactedPolicyComplianceTransitionDecision
+    | null;
 }
 
 export interface AllowedTransitionsResponse {
@@ -620,6 +626,8 @@ export type QualityAssessmentKind =
   | 'spec_validation'
   | 'requirement_lint';
 export type QualityCurrentness = 'current' | 'stale';
+/** Human lifecycle projection; does not expose technical staleness semantics. */
+export type QualityLifecycleState = 'current' | 'previous';
 export type QualityAssessmentStaleReason =
   | 'content_changed'
   | 'clarification_changed'
@@ -629,6 +637,9 @@ export type QualityAssessmentStaleReason =
   | 'subject_version_changed';
 export type QualityAssessmentReceiptState =
   | 'current'
+  | 'previous'
+  | 'history_only'
+  // Legacy technical values remain parseable outside lifecycle-edition mode.
   | 'stale'
   | 'superseded';
 export type QualityFindingSeverity =
@@ -657,18 +668,24 @@ export interface QualityScaleSummary {
 }
 
 export interface QualityAssessmentSummary {
-  receipt_id: string;
-  subject_version: number;
-  currentness: QualityCurrentness;
-  score: number;
-  scale: QualityScaleSummary;
-  head_revision: number;
+  /** Human validation edition. Null means legacy, history-only evidence. */
+  edition?: number | null;
+  /** Human projection for the live edition. */
+  state?: 'current' | 'previous' | 'not_started';
+  previous_count?: number;
+  /** Null when this edition has not been assessed. */
+  current_result?: {
+    score: number;
+    scale: QualityScaleSummary;
+  } | null;
 }
 
 /**
  * Optional on list entities by design:
  * - omitted: the actor cannot read Quality (or the projection was not asked);
- * - {}: the actor may read Quality, but no current heads exist.
+ * - {}: the actor may read Quality, but the projection returned no assessment
+ *   kinds. Returned lifecycle kinds represent an empty current slot explicitly
+ *   with `state: 'not_started'` and `current_result: null`.
  */
 export type QualitySummaryMap = Partial<
   Record<QualityAssessmentKind, QualityAssessmentSummary>
@@ -704,6 +721,8 @@ export interface QualityAssessmentReceipt {
   subject_type: QualitySubjectType;
   subject_id: string;
   subject_version: number;
+  /** Null is reserved for evidence created before lifecycle editions. */
+  subject_edition?: number | null;
   assessment_kind: QualityAssessmentKind;
   origin:
     | 'human_or_agent'
@@ -730,7 +749,7 @@ export interface QualityAssessmentReceipt {
 
 export interface QualityReceiptCurrentness {
   current: boolean;
-  state: QualityCurrentness;
+  state: QualityLifecycleState;
   stale_reasons: QualityAssessmentStaleReason[];
 }
 
@@ -761,15 +780,17 @@ export interface QualityGatePreview {
 
 export interface CurrentQualityAssessment {
   receipt: QualityAssessmentReceipt;
+  edition?: number | null;
+  lifecycle_state?: QualityLifecycleState;
   head_revision: number;
-  currentness: QualityCurrentness;
+  currentness: QualityLifecycleState;
   stale_reasons: QualityAssessmentStaleReason[];
   gate_preview: QualityGatePreview;
 }
 
 export interface QualityAssessmentReceiptDetail {
   receipt: QualityAssessmentReceipt;
-  currentness: QualityCurrentness;
+  currentness: QualityLifecycleState;
   stale_reasons: QualityAssessmentStaleReason[];
 }
 
@@ -843,6 +864,7 @@ export interface QualityProposedQuestionInput {
 export interface RecordAmbiguityAssessmentRequest {
   idempotency_key: string;
   expected_subject_version: number;
+  expected_subject_edition: number;
   expected_head_revision: number;
   score: number;
   findings: QualityFindingInput[];
@@ -854,7 +876,145 @@ export interface RecordAmbiguityAssessmentResponse {
   replayed: boolean;
   receipt_id: string;
   head_revision: number;
+  subject_edition?: number | null;
   qa_id_map: Record<string, string>;
+}
+
+export type ValidationCycleState =
+  | 'not_started'
+  | 'pending'
+  | 'in_progress'
+  | 'completed';
+
+export type ValidationCycleResultType =
+  | 'ambiguity_assessment'
+  | 'spec_validation'
+  | 'requirement_lint'
+  | 'curated_checklist'
+  | 'policy_compliance';
+
+export interface ValidationSubmissionFence {
+  expected_validation_edition: number;
+  expected_subject_version: number;
+  expected_head_revision: number;
+}
+
+export interface ValidationCycleResultSummary {
+  result_id: string;
+  result_type: ValidationCycleResultType;
+  /** Null identifies evidence created before lifecycle editions. */
+  subject_edition: number | null;
+  status: string;
+  summary: Record<string, unknown>;
+}
+
+export interface ValidationCycleCheckSummary {
+  result_type:
+    | 'requirement_lint'
+    | 'curated_checklist'
+    | 'policy_compliance';
+  status: string;
+  summary: string;
+}
+
+export type ValidationCycleVisibleSection =
+  | 'ambiguity_assessment'
+  | 'spec_validation'
+  | 'requirement_lint'
+  | 'curated_checklist'
+  | 'policy_compliance';
+
+interface ValidationCycleSummaryIdentity {
+  subject_id: string;
+  edition: number;
+  subject_status: string;
+  visible_sections: ValidationCycleVisibleSection[];
+}
+
+interface ValidationCycleSummaryBase extends ValidationCycleSummaryIdentity {
+  cycle_state: ValidationCycleState;
+  current_result: ValidationCycleResultSummary | null;
+  previous_result_count: number;
+  previous_results: ValidationCycleResultSummary[];
+  submission_fence: ValidationSubmissionFence;
+}
+
+export interface QualityValidationCycleSummary
+  extends ValidationCycleSummaryBase {
+  subject_type: 'ideation' | 'refinement';
+}
+
+export interface SpecValidationCycleSummary
+  extends ValidationCycleSummaryIdentity {
+  subject_type: 'spec';
+  /** Present only when the actor can read Spec Validation results. */
+  cycle_state?: ValidationCycleState;
+  /** Present only when the actor can read Spec Validation results. */
+  current_result?: ValidationCycleResultSummary | null;
+  /** Present only when the actor can read Spec Validation results. */
+  previous_result_count?: number;
+  /** Present only when the actor can read Spec Validation results. */
+  previous_results?: ValidationCycleResultSummary[];
+  /** Present only when the actor can read Spec Validation results. */
+  submission_fence?: ValidationSubmissionFence;
+  checks: ValidationCycleCheckSummary[];
+  remaining_actions: string[];
+}
+
+export type ValidationCycleSummary =
+  | QualityValidationCycleSummary
+  | SpecValidationCycleSummary;
+
+export interface ValidationTechnicalAudit {
+  subject_type: QualitySubjectType;
+  subject_id: string;
+  result_id: string;
+  result_type:
+    | 'ambiguity_assessment'
+    | 'spec_validation'
+    | 'requirement_lint';
+  /** Null identifies technical evidence attached to a legacy result. */
+  subject_edition: number | null;
+  technical_audit: {
+    receipt_id: string;
+    subject_version: number;
+    head_revision: number;
+    digests: Record<string, string>;
+    visible_exception_types: Array<
+      'ambiguity_gate_skip' | 'policy_skip' | 'policy_waiver'
+    >;
+    exceptions: Array<{
+      exception_id: string;
+      exception_type:
+        | 'ambiguity_gate_skip'
+        | 'policy_skip'
+        | 'policy_waiver';
+      subject_edition: number;
+      status: string;
+      reason: string;
+      actor_id: string;
+      recorded_at: string;
+    }>;
+  };
+}
+
+export interface RequirementLintSubmissionFence {
+  expected_subject_edition: number;
+  expected_subject_version: number;
+  expected_head_revision: number;
+}
+
+export interface RequirementLintPreflight {
+  assessment_kind: 'requirement_lint';
+  subject_edition: number;
+  subject_status: 'approved';
+  ruleset_digest: string;
+  requirement_anchors: Array<{
+    anchor_type: string;
+    anchor_ref: string | null;
+    excerpt_hash: string | null;
+  }>;
+  submission_fence: RequirementLintSubmissionFence;
 }
 
 // Ideation Q&A (same structure as Spec Q&A)
@@ -1062,6 +1222,8 @@ export interface RefinementSummary {
   title: string;
   description: string | null;
   status: RefinementStatus;
+  /** Human-facing review cycle; advances only when returning to Draft. */
+  edition?: number;
   version: number;
   assignee_id: string | null;
   created_by: string;
@@ -1070,6 +1232,7 @@ export interface RefinementSummary {
   labels: string[] | null;
   archived?: boolean;
   skip_ambiguity_gate?: boolean;
+  skip_ambiguity_gate_edition?: number | null;
   quality_summaries?: QualitySummaryMap;
 }
 
@@ -1936,6 +2099,8 @@ export interface Ideation {
   screen_mockups: ScreenMockup[] | null;
   architecture_designs?: ArchitectureDesignSummary[];
   status: IdeationStatus;
+  /** Human-facing review cycle; advances only when returning to Draft. */
+  edition?: number;
   version: number;
   assignee_id: string | null;
   created_by: string;
@@ -1946,6 +2111,7 @@ export interface Ideation {
   pre_archive_status?: string | null;
   // Per-ideation opt-out of the board Max ambiguity gate (spec 2485780b).
   skip_ambiguity_gate?: boolean;
+  skip_ambiguity_gate_edition?: number | null;
   // Cancellation justification (set only while status === 'cancelled')
   cancellation_reason?: string | null;
   cancelled_at?: string | null;
@@ -1974,6 +2140,8 @@ export interface IdeationSummary {
   problem_statement: string | null;
   complexity: IdeationComplexity | null;
   status: IdeationStatus;
+  /** Human-facing review cycle; advances only when returning to Draft. */
+  edition?: number;
   version: number;
   assignee_id: string | null;
   created_by: string;
@@ -1999,6 +2167,8 @@ export interface Refinement {
   screen_mockups: ScreenMockup[] | null;
   architecture_designs?: ArchitectureDesignSummary[];
   status: RefinementStatus;
+  /** Human-facing review cycle; advances only when returning to Draft. */
+  edition?: number;
   version: number;
   assignee_id: string | null;
   created_by: string;
@@ -2009,6 +2179,7 @@ export interface Refinement {
   pre_archive_status?: string | null;
   // Human-authorized opt-out of the board refinement ambiguity gate.
   skip_ambiguity_gate?: boolean;
+  skip_ambiguity_gate_edition?: number | null;
   // Cancellation justification (set only while status === 'cancelled')
   cancellation_reason?: string | null;
   cancelled_at?: string | null;
@@ -2023,12 +2194,14 @@ export interface RefinementAmbiguityGateSkipRequest {
   skip_ambiguity_gate: boolean;
   reason: string;
   expected_refinement_version: number;
+  expected_refinement_edition: number;
 }
 
 export interface RefinementAmbiguityGateSkipReceipt {
   skipped: boolean;
   activity_id: string;
   version: number;
+  edition?: number;
 }
 
 // Card
@@ -2716,9 +2889,10 @@ export interface BoardSettings {
   // recorded in the activity log; require = gated moves reject a conclusion
   // without a minimally populated block.
   impact_evidence_mode?: 'off' | 'advisory' | 'require';
-  // Requirement lint language profile. The deterministic lint analyzes
-  // requirements against the union of the declared languages' lexicons;
-  // empty/absent = neutral-only signals (numbers, comparators, units).
+  // Requirement-lint language profiles exposed during preflight to an
+  // external evaluating agent. Community persists the configuration and the
+  // returned evidence; it does not perform the analysis. Empty/absent means
+  // the agent receives only neutral signals (numbers, comparators and units).
   lint_languages?: LintLanguageCode[];
   /** Source-blind policy for observations submitted by authenticated agents. */
   code_traceability?: CodeTraceabilitySettings | null;
@@ -2729,20 +2903,27 @@ export type LintLanguageCode = 'pt-BR' | 'en-US' | 'es-ES' | 'de-DE' | 'fr-FR';
 // Spec Validation Gate
 export interface SpecValidation {
   id: string;
+  validation_id?: string;
+  validation_edition?: number;
+  is_current?: boolean;
   spec_id: string;
   board_id: string;
   reviewer_id: string;
   reviewer_name?: string | null;
-  completeness: number;
-  completeness_justification: string;
-  assertiveness: number;
-  assertiveness_justification: string;
-  ambiguity: number;
-  ambiguity_justification: string;
-  general_justification: string;
-  recommendation: 'approve' | 'reject';
-  outcome: 'success' | 'failed';
-  threshold_violations: string[];
+  /** Canonical human validation fields. */
+  score?: number | null;
+  summary?: string | null;
+  /** Legacy dimension fields remain readable in immutable history. */
+  completeness?: number | null;
+  completeness_justification?: string | null;
+  assertiveness?: number | null;
+  assertiveness_justification?: string | null;
+  ambiguity?: number | null;
+  ambiguity_justification?: string | null;
+  general_justification?: string | null;
+  recommendation?: 'approve' | 'reject' | null;
+  outcome?: 'success' | 'failed' | null;
+  threshold_violations?: string[] | null;
   resolved_thresholds?: {
     min_spec_completeness: number;
     min_spec_assertiveness: number;
@@ -2751,23 +2932,45 @@ export interface SpecValidation {
   created_at: string;
   spec_status?: string | null;
   active?: boolean | null;
+  /** Null marks legacy evidence that is available only in previous results. */
+  edition?: number | null;
+  lifecycle_state?: 'current' | 'previous' | 'history_only' | null;
 }
 
 export interface SpecValidationSubmitPayload {
-  completeness: number;
-  completeness_justification: string;
-  assertiveness: number;
-  assertiveness_justification: string;
-  ambiguity: number;
-  ambiguity_justification: string;
-  general_justification: string;
-  recommendation: 'approve' | 'reject';
+  expected_validation_edition: number;
+  expected_spec_version: number;
+  expected_head_revision: number;
+  score: number;
+  summary: string;
+}
+
+export interface SpecValidationSubmitResponse {
+  validation_id: string;
+  validation_edition: number;
+  is_current: boolean;
+  spec_status?: string | null;
+  outcome?: 'success' | 'failed' | null;
+  threshold_violations?: string[] | null;
 }
 
 export interface SpecValidationList {
   spec_id: string;
   current_validation_id: string | null;
   validations: SpecValidation[];
+  total?: number;
+  limit?: number;
+  offset?: number;
+  has_more?: boolean;
+}
+
+/** Bounded human projection for the current Spec validation edition. */
+export interface SpecValidationCurrentSummary {
+  spec_id: string;
+  edition: number;
+  lifecycle_state: 'pending' | 'current';
+  current_validation: SpecValidation | null;
+  previous_count: number;
 }
 
 // Curated Spec checklist (/specify/v1)
@@ -2826,6 +3029,7 @@ export interface ChecklistReceipt {
   board_id: string;
   spec_id: string;
   spec_version: number;
+  spec_edition?: number | null;
   content_digest: string;
   input_digest: string;
   template_version_id: '/specify/v1';
@@ -2862,6 +3066,7 @@ export interface ChecklistSpecState {
     board_id: string;
     spec_id: string;
     spec_version: number;
+    spec_edition?: number;
     content_digest: string;
     input_digest: string;
     status: string;
@@ -2878,6 +3083,20 @@ export interface ChecklistExecutionStartResult {
   items: ChecklistTemplateItem[];
   subject_digest: string;
   template_digest: string;
+  spec_edition?: number;
+}
+
+export interface ChecklistExecutionStartRequest {
+  spec_edition: number;
+  expected_spec_version: number;
+  binding_version: number;
+}
+
+export interface ChecklistExecutionSubmitRequest {
+  spec_edition: number;
+  expected_spec_version: number;
+  execution_id: string;
+  item_results: ChecklistItemResult[];
 }
 
 export interface ChecklistExecutionSubmitResult {

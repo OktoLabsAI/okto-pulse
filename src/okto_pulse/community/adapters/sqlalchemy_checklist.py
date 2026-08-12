@@ -9,13 +9,14 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import and_, exists, func, or_, select, update
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ChecklistBindingHeadRow,
     ChecklistBindingRow,
+    ChecklistValidationBindingSnapshotRow,
     ChecklistExecutionHeadRow,
     ChecklistExecutionRow,
     ChecklistItemResultRow,
@@ -42,6 +43,7 @@ from okto_pulse.core.domain.checklist import (
     ChecklistPhase,
     ChecklistPreflight,
     ChecklistReceipt,
+    ChecklistReceiptState,
     ChecklistReceiptSource,
     ChecklistSpecSnapshot,
     ChecklistSubmission,
@@ -64,6 +66,7 @@ from okto_pulse.core.ports.checklist import (
     ChecklistListQuery,
     ChecklistPersistenceError,
     ChecklistSpecLifecycleConflict,
+    ChecklistSpecEditionConflict,
     ChecklistSpecVersionConflict,
     ChecklistTemplateConflict,
     ChecklistExecutionRevisionConflict,
@@ -147,14 +150,46 @@ class CommunitySqlAlchemyChecklist:
         *,
         board_id: str,
         spec_id: str,
+        for_update: bool = False,
     ) -> ChecklistSpecSnapshot | None:
+        statement = select(Spec).where(
+            Spec.id == spec_id,
+            Spec.board_id == board_id,
+        ).execution_options(populate_existing=True)
+        if for_update:
+            bind = self._session.get_bind()
+            dialect_name = str(getattr(getattr(bind, "dialect", None), "name", ""))
+            if dialect_name == "sqlite":
+                # SQLite ignores SELECT FOR UPDATE.  A bounded no-op UPDATE is
+                # the shared serialization point with the lifecycle fence.
+                fence_values = {
+                    column.key: getattr(Spec, column.key)
+                    for column in Spec.__table__.columns
+                    if column.primary_key or column.onupdate is not None
+                }
+                try:
+                    fence_result = await self._session.execute(
+                        update(Spec)
+                        .where(
+                            Spec.id == spec_id,
+                            Spec.board_id == board_id,
+                        )
+                        .values(**fence_values)
+                        .execution_options(synchronize_session=False)
+                    )
+                except OperationalError as exc:
+                    reason = str(exc).lower()
+                    if "locked" in reason or "busy" in reason:
+                        raise ChecklistSpecLifecycleConflict(
+                            "checklist_spec_write_fence_conflict"
+                        ) from exc
+                    raise
+                if int(fence_result.rowcount or 0) != 1:
+                    return None
+            else:
+                statement = statement.with_for_update()
         row = (
-            await self._session.execute(
-                select(Spec).where(
-                    Spec.id == spec_id,
-                    Spec.board_id == board_id,
-                )
-            )
+            await self._session.execute(statement)
         ).scalar_one_or_none()
         if row is None:
             return None
@@ -197,6 +232,7 @@ class CommunitySqlAlchemyChecklist:
             input_digest=input_digest,
             status=_enum_value(row.status),
             archived=bool(row.archived),
+            spec_edition=int(row.edition),
         )
 
     async def get_binding(
@@ -243,6 +279,134 @@ class CommunitySqlAlchemyChecklist:
         except (TypeError, ValueError) as exc:
             raise ChecklistPersistenceError("checklist_binding_row_corrupt") from exc
 
+    async def get_validation_binding(
+        self,
+        *,
+        board_id: str,
+        spec_id: str,
+        spec_edition: int,
+        target_type: ChecklistTargetType,
+        phase: ChecklistPhase,
+    ) -> ChecklistBinding:
+        """Resolve or atomically pin checklist governance for one edition."""
+
+        identity = (
+            board_id,
+            spec_id,
+            spec_edition,
+            target_type.value,
+            phase.value,
+        )
+        snapshot = await self._session.get(
+            ChecklistValidationBindingSnapshotRow,
+            identity,
+        )
+        if snapshot is not None:
+            try:
+                return ChecklistBinding(
+                    board_id=snapshot.board_id,
+                    target_type=ChecklistTargetType(snapshot.target_type),
+                    phase=ChecklistPhase(snapshot.phase),
+                    template_version=snapshot.template_version,
+                    mode=ChecklistMode(snapshot.mode),
+                    version=snapshot.binding_version,
+                    revision=snapshot.binding_revision,
+                    digest=snapshot.binding_digest,
+                )
+            except (TypeError, ValueError) as exc:
+                raise ChecklistPersistenceError(
+                    "checklist_validation_binding_snapshot_corrupt"
+                ) from exc
+
+        # A missing historical pin must never be synthesized from today's
+        # governance. Only the live Spec edition is eligible for the migration
+        # fallback.
+        spec = (
+            await self._session.execute(
+                select(Spec)
+                .where(
+                    Spec.id == spec_id,
+                    Spec.board_id == board_id,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if spec is None:
+            raise ChecklistSpecVersionConflict("checklist_spec_missing")
+        if int(spec.edition) != spec_edition:
+            raise ChecklistSpecEditionConflict(
+                "checklist_spec_edition_mismatch",
+                details={"expected": spec_edition, "current": int(spec.edition)},
+            )
+
+        head = (
+            await self._session.execute(
+                select(ChecklistBindingHeadRow)
+                .where(
+                    ChecklistBindingHeadRow.board_id == board_id,
+                    ChecklistBindingHeadRow.target_type == target_type.value,
+                    ChecklistBindingHeadRow.phase == phase.value,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if head is None:
+            binding = ChecklistBinding.synthetic_off(board_id=board_id)
+        else:
+            row = (
+                await self._session.execute(
+                    select(ChecklistBindingRow).where(
+                        ChecklistBindingRow.board_id == board_id,
+                        ChecklistBindingRow.target_type
+                        == target_type.value,
+                        ChecklistBindingRow.phase == phase.value,
+                        ChecklistBindingRow.version == head.version,
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None or row.digest != head.digest:
+                raise ChecklistPersistenceError(
+                    "checklist_binding_head_corrupt"
+                )
+            try:
+                binding = ChecklistBinding(
+                    board_id=row.board_id,
+                    target_type=ChecklistTargetType(row.target_type),
+                    phase=ChecklistPhase(row.phase),
+                    template_version=row.template_version,
+                    mode=ChecklistMode(row.mode),
+                    version=row.version,
+                    revision=head.version,
+                    digest=row.digest,
+                )
+            except (TypeError, ValueError) as exc:
+                raise ChecklistPersistenceError(
+                    "checklist_binding_row_corrupt"
+                ) from exc
+
+        self._session.add(
+            ChecklistValidationBindingSnapshotRow(
+                board_id=board_id,
+                spec_id=spec_id,
+                spec_edition=spec_edition,
+                target_type=target_type.value,
+                phase=phase.value,
+                template_version=binding.template_version,
+                mode=binding.mode.value,
+                binding_version=binding.version,
+                binding_revision=int(binding.revision),
+                binding_digest=binding.digest,
+                captured_at=_now(),
+            )
+        )
+        try:
+            await self._session.flush()
+        except IntegrityError as exc:
+            raise ChecklistBindingConflict(
+                "checklist_validation_binding_snapshot_conflict"
+            ) from exc
+        return binding
+
     async def apply_binding_cas(
         self,
         binding: ChecklistBinding,
@@ -257,12 +421,14 @@ class CommunitySqlAlchemyChecklist:
             )
         head = (
             await self._session.execute(
-                select(ChecklistBindingHeadRow).where(
+                select(ChecklistBindingHeadRow)
+                .where(
                     ChecklistBindingHeadRow.board_id == binding.board_id,
                     ChecklistBindingHeadRow.target_type
                     == binding.target_type.value,
                     ChecklistBindingHeadRow.phase == binding.phase.value,
                 )
+                .with_for_update()
             )
         ).scalar_one_or_none()
         if expected_version == 0:
@@ -352,6 +518,7 @@ class CommunitySqlAlchemyChecklist:
                 board_id=execution.board_id,
                 spec_id=execution.spec_id,
                 spec_version=execution.spec_version,
+                spec_edition=execution.spec_edition,
                 content_digest=execution.content_digest,
                 input_digest=execution.input_digest,
                 template_version=execution.template_version,
@@ -383,11 +550,24 @@ class CommunitySqlAlchemyChecklist:
         snapshot = await self.get_spec_snapshot(
             board_id=execution.board_id,
             spec_id=execution.spec_id,
+            for_update=True,
         )
         if snapshot is None:
             raise ChecklistSpecVersionConflict("checklist_spec_missing")
         if snapshot.archived:
             raise ChecklistSpecLifecycleConflict("checklist_spec_archived")
+        if snapshot.status != "approved":
+            raise ChecklistSpecLifecycleConflict(
+                "checklist_spec_validation_admission_required"
+            )
+        if snapshot.spec_edition != execution.spec_edition:
+            raise ChecklistSpecEditionConflict(
+                "checklist_spec_edition_mismatch",
+                details={
+                    "expected": execution.spec_edition,
+                    "current": snapshot.spec_edition,
+                },
+            )
         if snapshot.spec_version != execution.spec_version:
             raise ChecklistSpecVersionConflict("checklist_spec_version_mismatch")
         if snapshot.content_digest != execution.content_digest:
@@ -396,16 +576,16 @@ class CommunitySqlAlchemyChecklist:
             )
         if snapshot.input_digest != execution.input_digest:
             raise ChecklistInputDigestConflict("checklist_input_digest_mismatch")
-        binding = await self.get_binding(
+        binding = await self.get_validation_binding(
             board_id=execution.board_id,
+            spec_id=execution.spec_id,
+            spec_edition=execution.spec_edition,
             target_type=ChecklistTargetType.SPEC,
             phase=ChecklistPhase.SPEC_VALIDATION,
         )
-        # Mode/version are governance observations recorded on the execution,
-        # not semantic fences.  A current OFF mode still closes admission.
+        # Mode/version are frozen governance observations for this edition.
         if (
-            binding is None
-            or binding.mode is ChecklistMode.OFF
+            binding.mode is ChecklistMode.OFF
             or binding.digest != execution.binding_digest
             or binding.template_version != execution.template_version
             or execution.template_digest != SPECIFY_CHECKLIST_TEMPLATE_V1.digest
@@ -419,6 +599,7 @@ class CommunitySqlAlchemyChecklist:
                 board_id=row.board_id,
                 spec_id=row.spec_id,
                 spec_version=row.spec_version,
+                spec_edition=row.spec_edition,
                 content_digest=row.content_digest,
                 input_digest=row.input_digest,
                 template_version=row.template_version,
@@ -561,6 +742,7 @@ class CommunitySqlAlchemyChecklist:
                 spec_id=receipt.spec_id,
                 execution_id=execution_id,
                 spec_version=receipt.spec_version,
+                spec_edition=receipt.spec_edition,
                 content_digest=receipt.content_digest,
                 input_digest=receipt.input_digest,
                 template_version=receipt.template_version,
@@ -607,6 +789,7 @@ class CommunitySqlAlchemyChecklist:
             board_id=receipt.board_id,
             spec_id=receipt.spec_id,
             spec_version=receipt.spec_version,
+            spec_edition=receipt.spec_edition,
             receipt_id=receipt.id,
             request_digest=receipt.request_digest,
             head_revision=receipt.head_revision,
@@ -620,6 +803,7 @@ class CommunitySqlAlchemyChecklist:
         snapshot = await self.get_spec_snapshot(
             board_id=receipt.board_id,
             spec_id=receipt.spec_id,
+            for_update=True,
         )
         if snapshot is None:
             raise ChecklistSpecVersionConflict("checklist_spec_missing")
@@ -629,6 +813,21 @@ class CommunitySqlAlchemyChecklist:
         ):
             raise ChecklistSpecLifecycleConflict(
                 "checklist_spec_lifecycle_mismatch"
+            )
+        if snapshot.status != "approved":
+            raise ChecklistSpecLifecycleConflict(
+                "checklist_spec_validation_admission_required"
+            )
+        if (
+            snapshot.spec_edition != bundle.expected_spec_edition
+            or receipt.spec_edition != bundle.expected_spec_edition
+        ):
+            raise ChecklistSpecEditionConflict(
+                "checklist_spec_edition_mismatch",
+                details={
+                    "expected": bundle.expected_spec_edition,
+                    "current": snapshot.spec_edition,
+                },
             )
         if snapshot.spec_version != bundle.expected_spec_version:
             raise ChecklistSpecVersionConflict("checklist_spec_version_mismatch")
@@ -646,17 +845,17 @@ class CommunitySqlAlchemyChecklist:
         ):
             raise ChecklistTemplateConflict("checklist_template_fence_mismatch")
         await self._ensure_template()
-        binding = await self.get_binding(
+        binding = await self.get_validation_binding(
             board_id=receipt.board_id,
+            spec_id=receipt.spec_id,
+            spec_edition=bundle.expected_spec_edition,
             target_type=ChecklistTargetType.SPEC,
             phase=ChecklistPhase.SPEC_VALIDATION,
         )
-        # The immutable receipt keeps the preflight mode/version for audit.
-        # Only executable identity (digest) and a current non-OFF policy fence
-        # admission against a concurrent governance revision.
+        # The immutable receipt and the edition pin keep governance stable;
+        # later board binding changes apply only to the next edition.
         if (
-            binding is None
-            or binding.mode is ChecklistMode.OFF
+            binding.mode is ChecklistMode.OFF
             or binding.digest != bundle.expected_binding_digest
         ):
             raise ChecklistBindingConflict("checklist_binding_fence_mismatch")
@@ -667,7 +866,7 @@ class CommunitySqlAlchemyChecklist:
                     ChecklistExecutionHeadRow.spec_id == receipt.spec_id,
                     ChecklistExecutionHeadRow.phase
                     == ChecklistPhase.SPEC_VALIDATION.value,
-                )
+                ).execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
         if bundle.expected_head_revision == 0:
@@ -694,7 +893,7 @@ class CommunitySqlAlchemyChecklist:
                     ChecklistExecutionHeadRow.board_id == next_head.board_id,
                     ChecklistExecutionHeadRow.spec_id == next_head.spec_id,
                     ChecklistExecutionHeadRow.phase == next_head.phase.value,
-                )
+                ).execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
         if head is None:
@@ -734,6 +933,7 @@ class CommunitySqlAlchemyChecklist:
         board_id: str,
         spec_id: str,
         phase: ChecklistPhase,
+        spec_edition: int | None = None,
     ) -> tuple[ChecklistReceipt, ChecklistExecutionHead] | None:
         row = (
             await self._session.execute(
@@ -741,7 +941,7 @@ class CommunitySqlAlchemyChecklist:
                     ChecklistExecutionHeadRow.board_id == board_id,
                     ChecklistExecutionHeadRow.spec_id == spec_id,
                     ChecklistExecutionHeadRow.phase == phase.value,
-                )
+                ).execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
         if row is None:
@@ -752,6 +952,8 @@ class CommunitySqlAlchemyChecklist:
         )
         if receipt is None:
             raise ChecklistPersistenceError("checklist_head_receipt_missing")
+        if spec_edition is not None and receipt.spec_edition != spec_edition:
+            return None
         return (
             receipt,
             ChecklistExecutionHead(
@@ -792,6 +994,7 @@ class CommunitySqlAlchemyChecklist:
                 board_id=row.board_id,
                 spec_id=row.spec_id,
                 spec_version=row.spec_version,
+                spec_edition=row.spec_edition,
                 content_digest=row.content_digest,
                 input_digest=row.input_digest,
                 template_version=row.template_version,
@@ -867,19 +1070,22 @@ class CommunitySqlAlchemyChecklist:
         )
         if snapshot is None:
             raise ChecklistSpecVersionConflict("checklist_spec_missing")
-        binding = await self.get_binding(
+        binding = await self.get_validation_binding(
             board_id=submission.board_id,
+            spec_id=submission.spec_id,
+            spec_edition=snapshot.spec_edition,
             target_type=ChecklistTargetType.SPEC,
             phase=ChecklistPhase.SPEC_VALIDATION,
         )
-        if binding is None:
-            binding = ChecklistBinding.synthetic_off(
-                board_id=submission.board_id,
-            )
+        # The mutable head belongs to the live lifecycle edition.  A successful
+        # non-Draft -> Draft transition removes it transactionally, so the next
+        # edition starts from revision zero while immutable prior receipts stay
+        # available as Previous.
         current = await self.get_current(
             board_id=submission.board_id,
             spec_id=submission.spec_id,
             phase=ChecklistPhase.SPEC_VALIDATION,
+            spec_edition=snapshot.spec_edition,
         )
         return ChecklistPreflight(
             subject=snapshot,
@@ -899,10 +1105,54 @@ class CommunitySqlAlchemyChecklist:
         self,
         query: ChecklistListQuery,
     ) -> ChecklistPage[ChecklistReceipt]:
-        where = (
+        where: tuple[object, ...] = (
             ChecklistReceiptRow.board_id == query.board_id,
             ChecklistReceiptRow.spec_id == query.spec_id,
         )
+        if query.state is ChecklistReceiptState.HISTORY_ONLY:
+            where += (ChecklistReceiptRow.spec_edition.is_(None),)
+        elif query.state is not None:
+            if query.current_spec_edition is None:
+                # No lifecycle edition can ever make an evidence row current.
+                where += (
+                    ChecklistReceiptRow.id.is_(None)
+                    if query.state is ChecklistReceiptState.CURRENT
+                    # ``previous`` is the human-facing complete history and
+                    # therefore deliberately includes legacy NULL editions.
+                    else ChecklistReceiptRow.id.is_not(None),
+                )
+            else:
+                is_current_head = exists(
+                    select(ChecklistExecutionHeadRow.receipt_id).where(
+                        ChecklistExecutionHeadRow.board_id
+                        == ChecklistReceiptRow.board_id,
+                        ChecklistExecutionHeadRow.spec_id
+                        == ChecklistReceiptRow.spec_id,
+                        ChecklistExecutionHeadRow.phase
+                        == ChecklistPhase.SPEC_VALIDATION.value,
+                        ChecklistExecutionHeadRow.receipt_id
+                        == ChecklistReceiptRow.id,
+                    )
+                )
+                if query.state is ChecklistReceiptState.CURRENT:
+                    where += (
+                        ChecklistReceiptRow.spec_edition
+                        == query.current_spec_edition,
+                        is_current_head,
+                    )
+                elif query.state is ChecklistReceiptState.PREVIOUS:
+                    where += (
+                        or_(
+                            ChecklistReceiptRow.spec_edition.is_(None),
+                            ChecklistReceiptRow.spec_edition
+                            != query.current_spec_edition,
+                            and_(
+                                ChecklistReceiptRow.spec_edition
+                                == query.current_spec_edition,
+                                ~is_current_head,
+                            ),
+                        ),
+                    )
         total = int(
             (
                 await self._session.execute(
@@ -972,6 +1222,7 @@ class CommunitySqlAlchemyChecklist:
             board_id=row.board_id,
             spec_id=row.spec_id,
             spec_version=row.spec_version,
+            spec_edition=row.spec_edition,
             receipt_id=row.id,
             request_digest=row.request_digest,
             head_revision=row.head_revision,

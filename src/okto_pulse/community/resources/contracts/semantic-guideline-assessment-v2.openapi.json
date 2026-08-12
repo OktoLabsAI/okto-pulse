@@ -152,6 +152,19 @@
             "title": "Expected Binding Revision",
             "type": "integer"
           },
+          "expected_subject_edition": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Subject Edition"
+          },
           "expected_subject_version": {
             "maximum": 2147483647.0,
             "minimum": 1.0,
@@ -250,6 +263,17 @@
             "pattern": "^[0-9a-f]{64}$",
             "title": "Request Digest",
             "type": "string"
+          },
+          "validation_edition": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validation Edition"
           }
         },
         "required": [
@@ -258,6 +282,7 @@
           "request_digest",
           "receipt_digest",
           "currentness",
+          "validation_edition",
           "metrics"
         ],
         "title": "RecordedSemanticAssessmentV2Response",

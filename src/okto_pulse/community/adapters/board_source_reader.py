@@ -233,6 +233,11 @@ _REQUIRED_SOURCE_COLUMNS: dict[str, frozenset[str]] = {
                 "board_id",
                 "created_at",
                 status_col,
+                *(
+                    ("edition",)
+                    if table in {"ideations", "refinements", "specs"}
+                    else ()
+                ),
                 *content_cols,
             }
         )
@@ -275,6 +280,7 @@ _REQUIRED_SOURCE_COLUMNS: dict[str, frozenset[str]] = {
             "subject_type",
             "subject_id",
             "subject_version",
+            "subject_edition",
             "assessment_kind",
             "origin",
             "source",
@@ -471,6 +477,7 @@ def _quality_projection_contexts(
             payload: dict[str, object] = {
                 "id": subject_id,
                 "version": int(row["version"]),
+                "edition": int(row["edition"]),
             }
             for field_name in SEMANTIC_FIELD_MANIFEST_V1[subject_type]:
                 raw_value = row[field_name]
@@ -570,6 +577,7 @@ def _current_quality_head_fingerprints(
         "head.revision AS current_head_revision, "
         "head.updated_at AS current_head_updated_at, "
         "receipt.id AS bound_receipt_id, receipt.subject_version, "
+        "receipt.subject_edition, "
         "receipt.origin, receipt.source, receipt.channel, receipt.outcome, "
         "receipt.scale_kind, receipt.scale_minimum, receipt.scale_maximum, "
         "receipt.scale_direction, receipt.score, receipt.justification, "
@@ -642,6 +650,11 @@ def _current_quality_head_fingerprints(
                 subject_type=key[1],
                 subject_id=key[2],
                 assessed_subject_version=int(row["subject_version"]),
+                assessed_subject_edition=(
+                    int(row["subject_edition"])
+                    if row["subject_edition"] is not None
+                    else None
+                ),
                 assessed_digests=assessed_digests,
                 assessment_kind=str(row["assessment_kind"]),
                 origin=str(row["origin"]),
@@ -663,6 +676,11 @@ def _current_quality_head_fingerprints(
                     "subject_type": key[1],
                     "subject_id": key[2],
                     "subject_version": int(row["subject_version"]),
+                    "subject_edition": (
+                        int(row["subject_edition"])
+                        if row["subject_edition"] is not None
+                        else None
+                    ),
                     "assessment_kind": str(row["assessment_kind"]),
                     "receipt_id": str(row["bound_receipt_id"]),
                     "head_revision": int(row["current_head_revision"]),

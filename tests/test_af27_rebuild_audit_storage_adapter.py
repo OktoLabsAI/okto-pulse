@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import os
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -20,11 +22,71 @@ from okto_pulse.core.ports.global_discovery_recovery_control import (
 from okto_pulse.core.kg.rebuild_generation import (
     RebuildAuditKGGenerationRepository,
 )
+from repo_layout import resolve_core_repo
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _configured_checkout_sources() -> tuple[Path, Path]:
+    community_src = (ROOT / "src").resolve()
+    core_src = (resolve_core_repo(ROOT) / "src").resolve()
+    return community_src, core_src
+
+
+def _is_checkout_source_path(raw: str, selected: frozenset[Path]) -> bool:
+    try:
+        resolved = Path(raw or os.curdir).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if resolved in selected:
+        return True
+    return resolved.name.casefold() == "src" and any(
+        (resolved / "okto_pulse" / edition).is_dir()
+        for edition in ("core", "community")
+    )
+
+
+@pytest.fixture
+def hermetic_spawn_imports(monkeypatch):
+    """Give Windows spawn children one explicit paired-checkout import path."""
+
+    community_src, core_src = _configured_checkout_sources()
+    selected = frozenset((community_src, core_src))
+    retained = [
+        raw for raw in sys.path if not _is_checkout_source_path(raw, selected)
+    ]
+    monkeypatch.setattr(
+        sys,
+        "path",
+        [str(community_src), str(core_src), *retained],
+    )
+    monkeypatch.setenv("OKTO_PULSE_COMMUNITY_REPO", str(ROOT.resolve()))
+    monkeypatch.setenv("OKTO_PULSE_CORE_REPO", str(core_src.parent))
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join((str(community_src), str(core_src))),
+    )
+
+
+def _assert_spawned_from_configured_checkouts() -> None:
+    community_src, core_src = _configured_checkout_sources()
+    modules = (
+        (CommunityFileSystemRebuildAuditArtifactStore.__module__, community_src),
+        (RebuildAuditKey.__module__, core_src),
+    )
+    for module_name, expected_src in modules:
+        module_file = Path(sys.modules[module_name].__file__).resolve()
+        try:
+            module_file.relative_to(expected_src)
+        except ValueError as exc:
+            raise AssertionError(
+                f"spawn imported {module_name} from {module_file}, "
+                f"expected checkout {expected_src}"
+            ) from exc
+
+
 def _append_from_process(base_dir: str, index: int, start) -> None:
+    _assert_spawned_from_configured_checkouts()
     store = CommunityFileSystemRebuildAuditArtifactStore(Path(base_dir))
     key = RebuildAuditKey(
         namespace="global_discovery_recovery",
@@ -42,6 +104,7 @@ def _append_from_process(base_dir: str, index: int, start) -> None:
 
 
 def _consume_from_process(base_dir: str, start, outcomes) -> None:
+    _assert_spawned_from_configured_checkouts()
     store = CommunityFileSystemRebuildAuditArtifactStore(Path(base_dir))
     token_key = RebuildAuditKey(
         namespace="confirmation_token",
@@ -288,7 +351,10 @@ def test_rebuild_store_survives_restart_at_same_typed_kg_root(tmp_path):
     assert str(restarted._base_dir).startswith(str(root))  # noqa: SLF001
 
 
-def test_replace_json_is_serialized_across_spawned_processes(tmp_path):
+def test_replace_json_is_serialized_across_spawned_processes(
+    tmp_path,
+    hermetic_spawn_imports,
+):
     context = multiprocessing.get_context("spawn")
     start = context.Event()
     processes = [
@@ -350,7 +416,10 @@ def test_confirmation_receipt_consume_is_cross_instance_exactly_once(tmp_path):
     assert second.read_json(receipt_key) == receipt
 
 
-def test_confirmation_receipt_consume_is_exactly_once_across_processes(tmp_path):
+def test_confirmation_receipt_consume_is_exactly_once_across_processes(
+    tmp_path,
+    hermetic_spawn_imports,
+):
     store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
     token_key = RebuildAuditKey(
         namespace="confirmation_token",

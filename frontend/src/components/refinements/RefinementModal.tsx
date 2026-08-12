@@ -990,7 +990,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
       });
       toast.error(
         rejection
-          ? policyTransitionRejectionMessage(rejection)
+          ? policyTransitionRejectionMessage(rejection, 'lifecycle-edition')
           : getErrorMessage(err),
       );
       await loadAllowedTransitions(refinement);
@@ -1018,10 +1018,15 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
           ? 'Max ambiguity gate skipped from the refinement UI.'
           : 'Max ambiguity gate re-enabled from the refinement UI.',
         expected_refinement_version: refinement.version,
+        expected_refinement_edition: refinement.edition ?? 1,
       });
       const updated: Refinement = {
         ...refinement,
         skip_ambiguity_gate: receipt.skipped,
+        skip_ambiguity_gate_edition: receipt.skipped
+          ? receipt.edition
+          : null,
+        edition: receipt.edition,
         version: receipt.version,
       };
       setRefinement(updated);
@@ -1207,7 +1212,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
             </span>
             <DerivationPendingBadge label={getRefinementPendingDerivationLabel(refinement)} />
             <h2 className="text-lg font-semibold text-gray-900 dark:text-white truncate">{refinement.title}</h2>
-            <span className="text-xs text-gray-400 shrink-0">v{refinement.version}</span>
+            <span className="text-xs text-gray-400 shrink-0">Edition {refinement.edition ?? 1}</span>
           </div>
           <div className="flex items-center gap-1">
             <button
@@ -1515,6 +1520,8 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                             subjectType="refinement"
                             subjectId={refinementId}
                             subjectVersion={refinement.version}
+                            subjectEdition={refinement.edition ?? 1}
+                            presentationMode="lifecycle-edition"
                             subjectStatus={refinement.status}
                             subjectArchived={refinement.archived ?? false}
                             canRead={canReadQuality}
@@ -1530,7 +1537,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                             className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300"
                             data-testid="refinement-ambiguity-currentness-note"
                           >
-                            The assessment and server gate preview are omitted because Quality read permission is not available.
+                            The current assessment is omitted because Quality read permission is not available.
                           </p>
                         )}
                         <AmbiguityGateSkipToggle
@@ -1547,6 +1554,8 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                         subjectType="refinement"
                         subjectId={refinementId}
                         subjectVersion={refinement.version}
+                        subjectEdition={refinement.edition ?? 1}
+                        presentationMode="lifecycle-edition"
                         subjectStatus={refinement.status}
                         subjectArchived={refinement.archived ?? false}
                         canRead={canReadQuality}
@@ -1572,12 +1581,15 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                     <PolicyComplianceTransitionPreview
                       preview={policyTransitionPreview}
                       rejection={policyTransitionRejection}
+                      presentationMode="lifecycle-edition"
                     />
                     <PolicyCompliancePanel
                       boardId={refinement.board_id || _boardId}
                       entityType="refinement"
                       subjectId={refinement.id}
                       subjectVersion={refinement.version}
+                      subjectEdition={refinement.edition ?? 1}
+                      presentationMode="lifecycle-edition"
                       transitionPreview={policyTransitionPreview}
                       refreshKey={refinement.version}
                       onEvaluated={() => {

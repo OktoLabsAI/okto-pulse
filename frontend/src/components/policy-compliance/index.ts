@@ -32,12 +32,14 @@ export type {
 export type {
   PolicyTransitionRejection,
   PolicyTransitionRejectionExpectation,
+  PolicyTransitionPresentationMode,
   PolicyTransitionPreviewLoadState,
 } from './policyTransitionPreviewModel';
 export {
   isAllowedTransitionActionable,
   parsePolicyTransitionRejection,
   policyTransitionRejectionMessage,
+  projectPolicyTransitions,
   readPolicyTransitionRejection,
   requirePolicyTransitionEnvelope,
 } from './policyTransitionPreviewModel';

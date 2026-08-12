@@ -217,7 +217,7 @@ def test_real_ladybug_canonical_excludes_demoted_and_all_preserves_it(
         "id STRING PRIMARY KEY, title STRING, source_artifact_ref STRING, "
         "content STRING, context STRING, justification STRING, "
         "embedding DOUBLE[3], superseded_by STRING, graph_layer STRING, "
-        "maturity_status STRING, revocation_reason STRING, "
+        "maturity_status STRING, revocation_reason STRING, kind_of STRING, "
         "relevance_score DOUBLE, generation INT64)"
     )
     ddl.close()
@@ -262,7 +262,7 @@ def test_real_ladybug_canonical_excludes_demoted_and_all_preserves_it(
             "justification: $justification, "
             "embedding: $embedding, superseded_by: $superseded_by, "
             "graph_layer: $graph_layer, maturity_status: $maturity_status, "
-            "revocation_reason: $revocation_reason, "
+            "revocation_reason: $revocation_reason, kind_of: $kind_of, "
             "relevance_score: $relevance_score, generation: $generation})",
             {
                 "id": node_id,
@@ -276,6 +276,7 @@ def test_real_ladybug_canonical_excludes_demoted_and_all_preserves_it(
                 "graph_layer": layer,
                 "maturity_status": maturity,
                 "revocation_reason": reason,
+                "kind_of": None,
                 "relevance_score": relevance,
                 "generation": 0,
             },

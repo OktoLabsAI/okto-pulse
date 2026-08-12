@@ -31,7 +31,14 @@ from okto_pulse.core.services.ska_observability import (
 
 
 @pytest.mark.parametrize(
-    ("subject_type", "settings", "skipped", "expected"),
+    (
+        "subject_type",
+        "settings",
+        "skipped",
+        "skip_edition",
+        "subject_edition",
+        "expected",
+    ),
     [
         (
             AssessmentSubjectType.IDEATION,
@@ -40,6 +47,8 @@ from okto_pulse.core.services.ska_observability import (
                 "max_ideation_ambiguity": 2,
             },
             False,
+            None,
+            2,
             (True, 2, False),
         ),
         (
@@ -49,6 +58,8 @@ from okto_pulse.core.services.ska_observability import (
                 "max_refinement_ambiguity": 4,
             },
             True,
+            3,
+            3,
             (False, 4, True),
         ),
     ],
@@ -57,11 +68,17 @@ def test_quality_read_context_projects_real_ambiguity_gate_inputs(
     subject_type: AssessmentSubjectType,
     settings: dict[str, object],
     skipped: bool,
+    skip_edition: int | None,
+    subject_edition: int,
     expected: tuple[bool, int, bool],
 ) -> None:
     context = _QualitySubjectContext(
         board=SimpleNamespace(settings=settings),
-        subject=SimpleNamespace(skip_ambiguity_gate=skipped),
+        subject=SimpleNamespace(
+            skip_ambiguity_gate=skipped,
+            skip_ambiguity_gate_edition=skip_edition,
+            edition=subject_edition,
+        ),
         qa_items=(),
         head=None,
     )
@@ -73,6 +90,33 @@ def test_quality_read_context_projects_real_ambiguity_gate_inputs(
 
     assert (gate.enabled, gate.threshold, gate.skipped) == expected
     assert gate.applicable is True
+
+
+def test_quality_read_context_keeps_legacy_null_skip_history_only() -> None:
+    context = _QualitySubjectContext(
+        board=SimpleNamespace(
+            settings={
+                "require_ideation_ambiguity_gate": True,
+                "max_ideation_ambiguity": 2,
+            }
+        ),
+        subject=SimpleNamespace(
+            skip_ambiguity_gate=True,
+            skip_ambiguity_gate_edition=None,
+            edition=4,
+        ),
+        qa_items=(),
+        head=None,
+    )
+
+    gate = _gate_inputs_for(
+        context=context,
+        subject_type=AssessmentSubjectType.IDEATION,
+    )[0]
+
+    assert gate.enabled is True
+    assert gate.threshold == 2
+    assert gate.skipped is False
 
 
 def test_quality_read_context_keeps_spec_gate_advisory() -> None:

@@ -98,7 +98,6 @@ import {
   type PolicyTransitionRejection,
   type PolicyTransitionPreviewLoadState,
 } from '@/components/policy-compliance';
-import { isSpecValidationAvailable } from './specValidationAvailability';
 import { ValidationErrorDisplay } from './ValidationErrorDisplay';
 import { SprintSuggestionModal } from '@/components/sprints/SprintSuggestionModal';
 import { SPEC_STATUSES, SPEC_STATUS_LABELS } from '@/types';
@@ -1490,7 +1489,6 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [validationHistoryRefreshKey, setValidationHistoryRefreshKey] =
     useState(0);
-  const currentSpecStatus = spec?.status;
 
   useEscapeToClose(onEscape ?? onClose);
   useEscapeToClose(() => setShowValidateModal(false), {
@@ -1501,13 +1499,10 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
 
   useEffect(() => {
     const validationAvailable =
-      canReadQuality ||
-      canReadPolicyCompliance ||
-      Boolean(
-        currentSpecStatus &&
-        isSpecValidationAvailable(currentSpecStatus) &&
-        (canReadChecklist || canReadSpecValidation),
-      );
+      canReadQuality
+      || canReadPolicyCompliance
+      || canReadChecklist
+      || canReadSpecValidation;
     if (
       activeTab === 'validation' &&
       !validationAvailable
@@ -1520,7 +1515,6 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
     canReadPolicyCompliance,
     canReadQuality,
     canReadSpecValidation,
-    currentSpecStatus,
   ]);
 
   useEffect(() => {
@@ -1965,7 +1959,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
       });
       toast.error(
         rejection
-          ? policyTransitionRejectionMessage(rejection)
+          ? policyTransitionRejectionMessage(rejection, 'lifecycle-edition')
           : getErrorMessage(err),
       );
       await loadAllowedTransitions(spec);
@@ -2006,12 +2000,10 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
 
   const unansweredQA = spec.qa_items?.filter((q) => !q.answered_at).length || 0;
   const showValidationTab =
-    canReadQuality ||
-    canReadPolicyCompliance ||
-    (
-      isSpecValidationAvailable(spec.status) &&
-      (canReadChecklist || canReadSpecValidation)
-    );
+    canReadQuality
+    || canReadPolicyCompliance
+    || canReadChecklist
+    || canReadSpecValidation;
   const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
     ...(canReadCodeTraceability
@@ -2781,6 +2773,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
               boardId={spec.board_id}
               specId={specId}
               specVersion={spec.version}
+              specEdition={spec.edition}
               specStatus={spec.status}
               canReadChecklist={canReadChecklist}
               canExecuteChecklist={canExecuteChecklist}
@@ -2799,6 +2792,13 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
               }}
               onOpenRequirementLintHelp={() =>
                 openContextualHelp('requirement-lint')}
+              canSubmitValidation={
+                spec.status === 'approved'
+                && canSubmitValidation
+                && perms.has('spec.validation.submit')
+              }
+              onSubmitValidation={() =>
+                void handleMoveSpec('validated' as SpecStatus)}
             />
           )}
           {activeTab === 'kg' && spec && (
@@ -3064,6 +3064,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
           specTitle={spec.title}
           boardId={spec.board_id}
           specVersion={spec.version}
+          specEdition={spec.edition}
           settings={boardSettings}
           canReadChecklist={canReadChecklist}
           canExecuteChecklist={canExecuteChecklist}

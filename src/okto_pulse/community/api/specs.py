@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.community.api.deps import get_unit_of_work
@@ -39,6 +39,9 @@ from okto_pulse.community.api.quality_summary_projection import (
     load_quality_summaries_for_page,
     quality_summary_field,
 )
+from okto_pulse.community.api.validation_observability import (
+    observe_external_validation_write,
+)
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     PageRequest,
@@ -48,6 +51,13 @@ from okto_pulse.core.ports.knowledge_propagation import (
 )
 from okto_pulse.core.domain.guideline_policy_transition import (
     PolicyTransitionRejected,
+)
+from okto_pulse.core.domain.spec_validation import (
+    SpecValidationConflictError,
+)
+from okto_pulse.core.domain.human_validation_cycle import (
+    LifecycleTransitionConflictError,
+    SubjectEditRequiresDraftError,
 )
 from okto_pulse.core.application.use_cases import (
     AnswerSpecQuestionCommand,
@@ -127,9 +137,15 @@ from okto_pulse.core.models.schemas import (
     SpecResponse,
     SpecSummary,
     SpecUpdate,
+    SpecValidationSubmit,
     TestScenarioEvidence,
 )
-from okto_pulse.core.models.schemas import SpecHistoryResponse, SpecQAAnswer, SpecQACreate, SpecQAResponse
+from okto_pulse.core.models.schemas import (
+    SpecHistoryResponse,
+    SpecQAAnswer,
+    SpecQACreate,
+    SpecQAResponse,
+)
 from okto_pulse.core.application.errors import (
     CancellationReasonRequiredError,
     CardOperationError,
@@ -197,8 +213,7 @@ class _PrevalidatedSpecWriteRoute(APIRoute):
                         content=scenario_type_error,
                     )
                 errors = [
-                    {**error, "loc": ("body", *error["loc"])}
-                    for error in exc.errors()
+                    {**error, "loc": ("body", *error["loc"])} for error in exc.errors()
                 ]
                 raise RequestValidationError(errors, body=raw_body) from exc
             return await route_handler(request)
@@ -232,6 +247,7 @@ class ScenarioEvidenceExecutionRequest(BaseModel):
 
     status: Literal["automated", "passed", "failed"]
     manifest_ref: str = Field(..., min_length=1)
+
 
 STRUCTURED_SPEC_ENTITY_DEPRECATION_WARNING = (
     "Spec child entity edits should use /api/v1/specs/{spec_id}/structured-entities/"
@@ -267,7 +283,11 @@ def _prepare_spec_update_evidence(data: SpecUpdate) -> SpecUpdate:
                 scenario_id=str(scenario.get("id") or ""),
                 status=str(scenario.get("status") or "draft"),
             )
-            target = "evidence" if scenario.get("evidence") is not None else "latest_evidence"
+            target = (
+                "evidence"
+                if scenario.get("evidence") is not None
+                else "latest_evidence"
+            )
             scenario[target] = evidence
         scenarios.append(scenario)
     payload["test_scenarios"] = scenarios
@@ -375,7 +395,11 @@ async def _run_structured_spec_entity_command(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found"
+        )
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     structured = result.structured_result
     body = structured.as_dict()
     if not structured.success:
@@ -464,9 +488,7 @@ async def list_specs(
                     filters=filters,
                     any_groups=search_groups(search, ("title", "description")),
                 ),
-                preflight=lambda: use_case.preflight(
-                    command, actor=actor, uow=uow
-                ),
+                preflight=lambda: use_case.preflight(command, actor=actor, uow=uow),
             )
         except EntityNotFoundError:
             raise HTTPException(
@@ -477,9 +499,7 @@ async def list_specs(
             user_id=user_id,
             board_id=board_id,
             subject_type="spec",
-            subject_ids=tuple(
-                str(record.values["id"]) for record in page.items
-            ),
+            subject_ids=tuple(str(record.values["id"]) for record in page.items),
         )
         return project_page(
             page,
@@ -519,7 +539,9 @@ async def list_specs(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
     return result.specs
 
 
@@ -586,7 +608,9 @@ async def get_spec(
             GetSpecCommand(spec_id), actor=RESTAdapterContract.actor(user_id), uow=uow
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found"
+        )
     except (
         KnowledgePropagationPortError,
         KnowledgePropagationServiceError,
@@ -626,15 +650,22 @@ async def update_spec(
     except PermissionDeniedError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.message)
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found"
+        )
     except SpecLineagePreflightError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=exc.to_error_dict(),
         ) from exc
+    except SubjectEditRequiresDraftError as e:
+        raise RESTAdapterContract.http_error(e) from e
+    except LifecycleTransitionConflictError as e:
+        raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e),
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(e),
         )
     except (
         KnowledgePropagationPortError,
@@ -719,7 +750,9 @@ async def operate_structured_spec_entity(
     )
 
 
-@router.post("/specs/{spec_id}/structured-entities/{entity_type}/{entity_id}/impact-preview")
+@router.post(
+    "/specs/{spec_id}/structured-entities/{entity_type}/{entity_id}/impact-preview"
+)
 async def preview_structured_spec_entity_impact(
     spec_id: str,
     entity_type: str,
@@ -776,10 +809,16 @@ async def move_spec(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except PolicyTransitionRejected as e:
         raise RESTAdapterContract.http_error(e) from e
+    except SubjectEditRequiresDraftError as e:
+        raise RESTAdapterContract.http_error(e) from e
+    except LifecycleTransitionConflictError as e:
+        raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found"
+        )
     except (
         KnowledgePropagationPortError,
         KnowledgePropagationServiceError,
@@ -797,10 +836,14 @@ async def delete_spec(
     """Delete a spec. Unlinks derived cards but doesn't delete them."""
     try:
         await DeleteSpecUseCase().execute(
-            DeleteSpecCommand(spec_id), actor=RESTAdapterContract.actor(user_id), uow=uow
+            DeleteSpecCommand(spec_id),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found"
+        )
 
 
 @router.get("/specs/{spec_id}/history", response_model=list[SpecHistoryResponse])
@@ -818,7 +861,9 @@ async def list_spec_history(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found"
+        )
     return result.history
 
 
@@ -869,7 +914,10 @@ async def unlink_card_from_spec(
 # ==================== LINK TASK TO SCENARIO ====================
 
 
-@router.post("/specs/{spec_id}/scenarios/{scenario_id}/link-task/{card_id}", status_code=status.HTTP_200_OK)
+@router.post(
+    "/specs/{spec_id}/scenarios/{scenario_id}/link-task/{card_id}",
+    status_code=status.HTTP_200_OK,
+)
 async def link_task_to_scenario(
     spec_id: str,
     scenario_id: str,
@@ -897,14 +945,25 @@ async def link_task_to_scenario(
             status_code=status.HTTP_409_CONFLICT,
             detail=exc.to_dict(),
         ) from exc
+    except SubjectEditRequiresDraftError as e:
+        raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e),
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(e),
         )
-    return {"success": True, "spec_id": spec_id, "scenario_id": scenario_id, "card_id": card_id}
+    return {
+        "success": True,
+        "spec_id": spec_id,
+        "scenario_id": scenario_id,
+        "card_id": card_id,
+    }
 
 
-@router.post("/specs/{spec_id}/scenarios/{scenario_id}/unlink-task/{card_id}", status_code=status.HTTP_200_OK)
+@router.post(
+    "/specs/{spec_id}/scenarios/{scenario_id}/unlink-task/{card_id}",
+    status_code=status.HTTP_200_OK,
+)
 async def unlink_task_from_scenario(
     spec_id: str,
     scenario_id: str,
@@ -922,7 +981,12 @@ async def unlink_task_from_scenario(
     except EntityNotFoundError as exc:
         detail = "Spec not found" if exc.entity_type == "spec" else "Scenario not found"
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
-    return {"success": True, "spec_id": spec_id, "scenario_id": scenario_id, "card_id": card_id}
+    return {
+        "success": True,
+        "spec_id": spec_id,
+        "scenario_id": scenario_id,
+        "card_id": card_id,
+    }
 
 
 @router.post(
@@ -955,6 +1019,8 @@ async def execute_test_scenario_evidence(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=detail,
         ) from exc
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -1005,6 +1071,8 @@ async def update_test_scenario_status(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     except PolicyTransitionRejected as exc:
         raise RESTAdapterContract.http_error(exc) from exc
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except ValueError as exc:
         msg = str(exc)
         if msg.startswith("scenario_not_found"):
@@ -1045,9 +1113,12 @@ async def link_task_to_integration_requirement(
         )
     except PermissionDeniedError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.message)
+    except SubjectEditRequiresDraftError as e:
+        raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e),
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(e),
         )
     return {
         "success": True,
@@ -1082,9 +1153,12 @@ async def link_task_to_observability_requirement(
         )
     except PermissionDeniedError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.message)
+    except SubjectEditRequiresDraftError as e:
+        raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e),
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(e),
         )
     return {
         "success": True,
@@ -1111,7 +1185,9 @@ async def list_spec_knowledge(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found"
+        )
     except (
         KnowledgePropagationPortError,
         KnowledgePropagationServiceError,
@@ -1120,7 +1196,9 @@ async def list_spec_knowledge(
     return result.items
 
 
-@router.get("/specs/{spec_id}/knowledge/{knowledge_id}", response_model=SpecKnowledgeResponse)
+@router.get(
+    "/specs/{spec_id}/knowledge/{knowledge_id}", response_model=SpecKnowledgeResponse
+)
 async def get_spec_knowledge(
     spec_id: str,
     knowledge_id: str,
@@ -1135,7 +1213,10 @@ async def get_spec_knowledge(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge base item not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Knowledge base item not found",
+        )
     except (
         KnowledgePropagationPortError,
         KnowledgePropagationServiceError,
@@ -1144,7 +1225,11 @@ async def get_spec_knowledge(
     return result.knowledge
 
 
-@router.post("/specs/{spec_id}/knowledge", response_model=SpecKnowledgeResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/specs/{spec_id}/knowledge",
+    response_model=SpecKnowledgeResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_spec_knowledge(
     spec_id: str,
     data: SpecKnowledgeCreate,
@@ -1159,13 +1244,19 @@ async def create_spec_knowledge(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found"
+        )
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except KnowledgeGovernanceInvalidMetadata as exc:
         return knowledge_governance_error_response(exc)
     return result.knowledge
 
 
-@router.delete("/specs/{spec_id}/knowledge/{knowledge_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/specs/{spec_id}/knowledge/{knowledge_id}", status_code=status.HTTP_204_NO_CONTENT
+)
 async def delete_spec_knowledge(
     spec_id: str,
     knowledge_id: str,
@@ -1180,7 +1271,12 @@ async def delete_spec_knowledge(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge base item not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Knowledge base item not found",
+        )
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
 
 
 # ==================== SPEC Q&A ====================
@@ -1200,11 +1296,17 @@ async def list_spec_qa(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found"
+        )
     return result.items
 
 
-@router.post("/specs/{spec_id}/qa", response_model=SpecQAResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/specs/{spec_id}/qa",
+    response_model=SpecQAResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_spec_question(
     spec_id: str,
     data: SpecQACreate,
@@ -1219,7 +1321,11 @@ async def create_spec_question(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found"
+        )
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     return result.qa
 
 
@@ -1249,7 +1355,11 @@ async def answer_spec_question(
             detail=exc.to_error_dict(),
         ) from exc
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Q&A item not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Q&A item not found"
+        )
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     return result.qa
 
 
@@ -1268,16 +1378,34 @@ async def delete_spec_question(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Q&A item not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Q&A item not found"
+        )
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
 
 
 # ---- Spec Validation Gate Endpoints ----
 
 
-@router.post("/specs/{spec_id}/validation", status_code=status.HTTP_201_CREATED)
+class SpecValidationAcceptedResponse(BaseModel):
+    """Minimal human-facing acknowledgement; audit data lives elsewhere."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    validation_id: str
+    validation_edition: int
+    is_current: bool
+
+
+@router.post(
+    "/specs/{spec_id}/validation",
+    response_model=SpecValidationAcceptedResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def submit_spec_validation(
     spec_id: str,
-    data: dict,
+    data: SpecValidationSubmit,
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
@@ -1296,11 +1424,18 @@ async def submit_spec_validation(
     # the hybrid wiring: the gate now flows through the PulseUnitOfWork instead of
     # a raw AsyncSession passed as the uow.
     try:
-        result = await SubmitSpecValidationUseCase().execute(
-            SubmitSpecValidationCommand(spec_id, data),
-            actor=RESTAdapterContract.actor(user_id),
-            uow=uow,
-        )
+        with observe_external_validation_write(
+            assessment_kind="spec_validation",
+            subject_type="spec",
+        ):
+            result = await SubmitSpecValidationUseCase().execute(
+                SubmitSpecValidationCommand(
+                    spec_id,
+                    data.model_dump(exclude_none=True),
+                ),
+                actor=RESTAdapterContract.actor(user_id),
+                uow=uow,
+            )
     except GateContractError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -1308,19 +1443,31 @@ async def submit_spec_validation(
         ) from e
     except PolicyTransitionRejected as e:
         raise RESTAdapterContract.http_error(e) from e
+    except SpecValidationConflictError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=e.to_error_dict(),
+        ) from e
     except (
         CommandValidationError,
         EntityNotFoundError,
         ResourceGateError,
         ValueError,
     ) as e:
-        raise RESTAdapterContract.http_error(e, not_found_detail="Spec not found") from e
+        raise RESTAdapterContract.http_error(
+            e, not_found_detail="Spec not found"
+        ) from e
     return result.payload
 
 
 @router.get("/specs/{spec_id}/validations")
 async def list_spec_validations(
     spec_id: str,
+    lifecycle_state: Literal["all", "current", "previous", "history_only"] = Query(
+        default="all"
+    ),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
@@ -1331,13 +1478,56 @@ async def list_spec_validations(
     """
     try:
         result = await ListSpecValidationsUseCase().execute(
-            ListSpecValidationsCommand(spec_id),
+            ListSpecValidationsCommand(
+                spec_id,
+                limit=limit,
+                offset=offset,
+                lifecycle_state=lifecycle_state,
+            ),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     return {"spec_id": spec_id, **result.data}
+
+
+@router.get("/specs/{spec_id}/validations/current")
+async def get_current_spec_validation(
+    spec_id: str,
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Return only the validation for the current human Spec edition."""
+
+    try:
+        result = await ListSpecValidationsUseCase().execute(
+            ListSpecValidationsCommand(
+                spec_id,
+                limit=1,
+                offset=0,
+                lifecycle_state="current",
+            ),
+            actor=RESTAdapterContract.actor(user_id),
+            uow=uow,
+        )
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    current_validation = result.data.get("current_validation")
+    return {
+        "spec_id": spec_id,
+        "edition": result.data.get("current_edition"),
+        "lifecycle_state": ("current" if current_validation is not None else "pending"),
+        "current_validation": current_validation,
+        "previous_count": result.data.get("previous_count", 0),
+    }
 
 
 class SpecEvaluationSubmit(BaseModel):
@@ -1379,7 +1569,9 @@ async def submit_spec_evaluation(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found"
+        )
     except GateContractError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except ValueError as e:

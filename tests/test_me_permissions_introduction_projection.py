@@ -10,6 +10,9 @@ from okto_pulse.community.api.me import get_my_permissions
 from okto_pulse.core.application.use_cases.permission_presets import (
     GetMyPermissionsUseCase,
 )
+from okto_pulse.core.ports.permission_policy import (
+    permission_introduction_manifests,
+)
 
 
 @pytest.mark.asyncio
@@ -46,4 +49,9 @@ async def test_me_permissions_projects_every_current_core_introduction(
         == "ideation.entity.read"
     )
     assert "story.move.draft_to_ready" not in authorities
-    assert len(authorities) == 200
+    expected_authorities = {
+        leaf: authority
+        for manifest in permission_introduction_manifests()
+        for leaf, authority in manifest.historical_authorities
+    }
+    assert authorities == expected_authorities

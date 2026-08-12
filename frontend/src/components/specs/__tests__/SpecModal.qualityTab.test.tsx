@@ -9,6 +9,7 @@ type QualityPanelProps = {
   subjectType: string;
   subjectId: string;
   subjectVersion: number;
+  subjectEdition: number;
   subjectStatus: string;
   subjectArchived: boolean;
   canRead: boolean;
@@ -20,6 +21,8 @@ type QualityPanelProps = {
 const apiMock = vi.hoisted(() => ({
   getSpec: vi.fn(),
   getAllowedTransitions: vi.fn(),
+  getValidationCycle: vi.fn(),
+  getValidationTechnicalAudit: vi.fn(),
   listSprints: vi.fn(),
 }));
 const permissionMock = vi.hoisted(() => ({
@@ -150,28 +153,52 @@ describe('SpecModal Requirement lint in Validation', () => {
     apiMock.getAllowedTransitions.mockResolvedValue({
       allowed_transitions: [],
     });
+    apiMock.getValidationCycle.mockResolvedValue({
+      subject_type: 'spec',
+      subject_id: baseSpec.id,
+      edition: 1,
+      subject_status: 'review',
+      visible_sections: ['spec_validation', 'requirement_lint'],
+      cycle_state: 'pending',
+      current_result: null,
+      previous_result_count: 0,
+      previous_results: [],
+      submission_fence: {
+        expected_validation_edition: 1,
+        expected_subject_version: 9,
+        expected_head_revision: 0,
+      },
+      checks: [
+        { result_type: 'requirement_lint', status: 'not_started', summary: 'Not started' },
+      ],
+      remaining_actions: [],
+    });
+    apiMock.getValidationTechnicalAudit.mockResolvedValue(null);
     apiMock.listSprints.mockResolvedValue([]);
   });
 
   it.each([
     {
       permissions: [] as string[],
-      visible: false,
+      validationVisible: false,
+      lintVisible: false,
       caseName: 'without quality read permission',
     },
     {
       permissions: ['spec.validation.read'],
-      visible: false,
+      validationVisible: true,
+      lintVisible: false,
       caseName: 'with only the neighboring validation permission',
     },
     {
       permissions: ['spec.quality.read'],
-      visible: true,
+      validationVisible: true,
+      lintVisible: true,
       caseName: 'with quality read permission',
     },
   ])(
     'controls visibility $caseName',
-    async ({ permissions, visible }) => {
+    async ({ permissions, validationVisible, lintVisible }) => {
       permissionMock.allowed = new Set(permissions);
       renderSpec();
 
@@ -183,7 +210,7 @@ describe('SpecModal Requirement lint in Validation', () => {
         name: 'Validation',
       });
 
-      if (!visible) {
+      if (!validationVisible) {
         expect(validationTab).not.toBeInTheDocument();
         expect(
           screen.queryByTestId('spec-quality-panel'),
@@ -193,6 +220,18 @@ describe('SpecModal Requirement lint in Validation', () => {
 
       expect(validationTab).toBeInTheDocument();
       fireEvent.click(validationTab!);
+      if (!lintVisible) {
+        expect(
+          screen.queryByRole('button', { name: /Requirement lint/ }),
+        ).not.toBeInTheDocument();
+        expect(
+          screen.queryByTestId('spec-quality-panel'),
+        ).not.toBeInTheDocument();
+        return;
+      }
+      fireEvent.click(
+        screen.getByRole('button', { name: /Requirement lint/ }),
+      );
       expect(
         screen.getByTestId('spec-quality-panel'),
       ).toBeInTheDocument();
@@ -227,7 +266,7 @@ describe('SpecModal Requirement lint in Validation', () => {
         screen.getByRole('tab', { name: 'Validation' }),
       );
       fireEvent.click(
-        screen.getByRole('tab', { name: /Requirement lint/ }),
+        screen.getByRole('button', { name: /Requirement lint/ }),
       );
 
       const props = qualityPanelSpy.mock.calls.at(-1)?.[0] as
@@ -237,13 +276,13 @@ describe('SpecModal Requirement lint in Validation', () => {
         subjectType: 'spec',
         subjectId: spec.id,
         subjectVersion: version,
+        subjectEdition: 1,
         subjectStatus: status,
         subjectArchived: expectedArchived,
         canRead: true,
         canAssess: false,
         canProposeQuestions: false,
       });
-      expect(props?.onAssessmentRecorded).toBe(onChanged);
 
       fireEvent.click(screen.getByTestId('spec-quality-panel'));
       expect(onChanged).toHaveBeenCalledTimes(1);

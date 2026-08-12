@@ -155,7 +155,7 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         f"missing_steps={sorted(migrate_names - ledger_migrate_ids)} "
         f"orphan_steps={sorted(ledger_migrate_ids - migrate_names)}"
     )
-    # 63 = the historical ledger plus the Code Traceability schema/guard step,
+    # 61 = the historical ledger plus the Code Traceability schema/guard step,
     # the SK-A Refinement ambiguity-skip
     # column, SK-A/C7 quality-assessment persistence schema, the curated Spec
     # checklist mode, the human-facing Spec edition counter, and SK-B's
@@ -166,10 +166,10 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
     # plus the SK-B3 closure backfill of the 5-column unique authority index
     # on guideline_board_bindings (structural prerequisite of the
     # binding-configuration composite FK on migrated databases).
-    assert len(migrate_names) == 63, (
-        f"expected 63 _migrate_*, found {len(migrate_names)}"
+    assert len(migrate_names) == 65, (
+        f"expected 65 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 63
+    assert len(ledger_migrate_ids) == 65
     ordered_ids = [step.step_id for step in ledger]
     assert ordered_ids.index(
         "_migrate_guideline_policy_lifecycle_substrate"
@@ -354,6 +354,293 @@ def test_legacy_specs_gain_backfilled_non_null_edition(
     assert defaulted_edition == 1
 
 
+def test_lifecycle_edition_migration_converges_nullable_sqlite_schema(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A partially deployed schema converges without fabricating evidence."""
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    async def drive():
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'lifecycle-editions.db'}"
+        )
+        monkeypatch.setattr(_steps_mod, "get_engine", lambda: engine)
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "CREATE TABLE ideations ("
+                    "id TEXT PRIMARY KEY, title TEXT NOT NULL, edition INTEGER)"
+                )
+            )
+            await connection.execute(
+                text(
+                    "CREATE TABLE refinements ("
+                    "id TEXT PRIMARY KEY, title TEXT NOT NULL, edition INTEGER, "
+                    "skip_ambiguity_gate_edition INTEGER)"
+                )
+            )
+            await connection.execute(
+                text(
+                    "CREATE TABLE specs ("
+                    "id TEXT PRIMARY KEY, title TEXT NOT NULL, edition INTEGER)"
+                )
+            )
+            await connection.execute(
+                text(
+                    "CREATE TABLE quality_assessment_receipts ("
+                    "id TEXT PRIMARY KEY, subject_edition INTEGER)"
+                )
+            )
+            await connection.execute(
+                text("CREATE INDEX ix_ideations_title ON ideations(title)")
+            )
+            await connection.execute(
+                text(
+                    "CREATE TRIGGER trg_ideations_title_guard "
+                    "BEFORE UPDATE OF title ON ideations "
+                    "WHEN NEW.title = '' BEGIN "
+                    "SELECT RAISE(ABORT, 'title_required'); END"
+                )
+            )
+            await connection.execute(
+                text("INSERT INTO ideations VALUES ('i-1', 'Idea', NULL)")
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO refinements VALUES "
+                    "('r-1', 'Refinement', NULL, NULL)"
+                )
+            )
+            await connection.execute(
+                text("INSERT INTO specs VALUES ('s-1', 'Spec', 3)")
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO quality_assessment_receipts "
+                    "VALUES ('legacy-evidence', NULL)"
+                )
+            )
+
+        first = await _steps_mod._migrate_add_human_lifecycle_editions()
+        second = await _steps_mod._migrate_add_human_lifecycle_editions()
+        async with engine.connect() as connection:
+            contracts = {}
+            for table_name in ("ideations", "refinements", "specs"):
+                rows = (
+                    await connection.exec_driver_sql(
+                        f'PRAGMA table_info("{table_name}")'
+                    )
+                ).mappings().all()
+                contracts[table_name] = next(
+                    row for row in rows if row["name"] == "edition"
+                )
+            editions = {
+                table_name: await connection.scalar(
+                    text(f'SELECT edition FROM "{table_name}" LIMIT 1')
+                )
+                for table_name in ("ideations", "refinements", "specs")
+            }
+            legacy_evidence_edition = await connection.scalar(
+                text(
+                    "SELECT subject_edition FROM quality_assessment_receipts "
+                    "WHERE id = 'legacy-evidence'"
+                )
+            )
+            owned_objects = set(
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT name FROM sqlite_master "
+                            "WHERE tbl_name = 'ideations' "
+                            "AND type IN ('index', 'trigger')"
+                        )
+                    )
+                ).scalars()
+            )
+        await engine.dispose()
+        return (
+            first,
+            second,
+            contracts,
+            editions,
+            legacy_evidence_edition,
+            owned_objects,
+        )
+
+    (
+        first,
+        second,
+        contracts,
+        editions,
+        legacy_evidence_edition,
+        owned_objects,
+    ) = asyncio.run(drive())
+
+    assert first is None
+    assert second == "skipped"
+    assert editions == {"ideations": 1, "refinements": 1, "specs": 3}
+    assert all(contract["notnull"] == 1 for contract in contracts.values())
+    assert all(str(contract["dflt_value"]).strip("'\"") == "1" for contract in contracts.values())
+    assert legacy_evidence_edition is None
+    assert "ix_ideations_title" in owned_objects
+    assert "trg_ideations_title_guard" in owned_objects
+    assert "trg_ideations_lifecycle_edition_insert" in owned_objects
+    assert "trg_ideations_lifecycle_edition_update" in owned_objects
+
+
+def test_fresh_create_all_installs_canonical_lifecycle_edition_guards(
+    tmp_path,
+) -> None:
+    """The ORM creation path must emit every legacy-compatible SQLite guard."""
+
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        Base,
+        HUMAN_LIFECYCLE_EDITION_SUBJECT_TABLES,
+        Ideation,
+        Refinement,
+        Spec,
+        human_lifecycle_edition_sqlite_trigger_manifest,
+    )
+
+    async def drive():
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'fresh-lifecycle-guards.db'}"
+        )
+        async with engine.begin() as connection:
+            await connection.run_sync(
+                lambda sync_connection: Base.metadata.create_all(
+                    sync_connection,
+                    tables=(
+                        Ideation.__table__,
+                        Refinement.__table__,
+                        Spec.__table__,
+                    ),
+                )
+            )
+            rows = (
+                await connection.execute(
+                    text(
+                        "SELECT name, tbl_name, sql FROM sqlite_master "
+                        "WHERE type = 'trigger' "
+                        "AND name LIKE 'trg_%_lifecycle_edition_%' "
+                        "ORDER BY name"
+                    )
+                )
+            ).all()
+            await connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            await connection.execute(
+                text(
+                    "INSERT INTO ideations "
+                    "(id, board_id, title, status, edition, version, created_by) "
+                    "VALUES ('i-1', 'b-1', 'Idea', 'draft', 1, 1, 'tester')"
+                )
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO refinements "
+                    "(id, ideation_id, board_id, title, status, edition, "
+                    "version, created_by) VALUES "
+                    "('r-1', 'i-1', 'b-1', 'Refinement', 'draft', 1, 1, "
+                    "'tester')"
+                )
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO specs "
+                    "(id, board_id, title, status, edition, version, created_by) "
+                    "VALUES ('s-1', 'b-1', 'Spec', 'draft', 1, 1, 'tester')"
+                )
+            )
+
+        manifest = human_lifecycle_edition_sqlite_trigger_manifest()
+        observed = {str(row.name): (str(row.tbl_name), str(row.sql)) for row in rows}
+        for table_name in HUMAN_LIFECYCLE_EDITION_SUBJECT_TABLES:
+            for operation in ("insert", "update"):
+                trigger_name = f"trg_{table_name}_lifecycle_edition_{operation}"
+                expected_table, expected_sql = manifest[trigger_name]
+                observed_table, observed_sql = observed[trigger_name]
+                assert observed_table == expected_table
+                # SQLite omits IF NOT EXISTS when persisting CREATE statements.
+                assert " ".join(observed_sql.split()) == " ".join(
+                    expected_sql.replace(" IF NOT EXISTS", "").split()
+                )
+
+        for table_name in HUMAN_LIFECYCLE_EDITION_SUBJECT_TABLES:
+            async with engine.begin() as connection:
+                with pytest.raises(DBAPIError, match="lifecycle_edition_invalid"):
+                    await connection.execute(
+                        text(f'UPDATE "{table_name}" SET edition = 0')
+                    )
+        await engine.dispose()
+
+    asyncio.run(drive())
+
+
+def test_first_init_is_schema_complete_and_second_init_has_no_object_drift(
+    tmp_path,
+    _isolate_engine,
+) -> None:
+    """Catch release-gate drift across every user-owned SQLite schema object."""
+
+    from sqlalchemy import text
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        human_lifecycle_edition_sqlite_trigger_manifest,
+    )
+
+    async def drive():
+        _db_mod.create_database(
+            f"sqlite+aiosqlite:///{tmp_path / 'first-init-idempotence.db'}"
+        )
+        register_community_relational_schema_lifecycle()
+
+        async def snapshot():
+            async with _db_mod.get_engine().connect() as connection:
+                rows = (
+                    await connection.execute(
+                        text(
+                            "SELECT type, name, tbl_name, sql "
+                            "FROM sqlite_master "
+                            "WHERE name NOT LIKE 'sqlite_%' "
+                            "ORDER BY type, name"
+                        )
+                    )
+                ).all()
+            return tuple(
+                (
+                    str(row.type),
+                    str(row.name),
+                    str(row.tbl_name),
+                    " ".join(str(row.sql or "").split()),
+                )
+                for row in rows
+            )
+
+        await _db_mod.init_db()
+        first = await snapshot()
+        await _db_mod.init_db()
+        second = await snapshot()
+        await _db_mod.get_engine().dispose()
+        return first, second
+
+    first, second = asyncio.run(drive())
+    expected_triggers = set(human_lifecycle_edition_sqlite_trigger_manifest())
+    first_triggers = {
+        name
+        for object_type, name, _table_name, _sql in first
+        if object_type == "trigger"
+    }
+    assert expected_triggers <= first_triggers
+    assert second == first
+
+
 def test_ts_7aacc71a_destructive_steps_are_explicitly_allowlisted():
     ledger = build_community_migration_ledger()
     destructive = {s.step_id for s in ledger if s.destructive}
@@ -453,11 +740,16 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
     governed_queue_convergence_step = "_migrate_add_consolidation_work_kinds"
     delivery_convergence_step = "_migrate_global_discovery_delivery_contract"
     kb_governance_convergence_step = "_migrate_add_kb_governance_metadata"
+    human_lifecycle_convergence_step = (
+        "_migrate_add_human_lifecycle_editions"
+    )
+    validation_cycle_convergence_step = "_migrate_validation_cycle_editions"
     first_run_skip_steps = {
         repair_step,
         governed_queue_convergence_step,
         delivery_convergence_step,
         kb_governance_convergence_step,
+        human_lifecycle_convergence_step,
         "_migrate_guideline_impact_substrate",
         # Fresh create_all already emits the canonical semantic shape, so the
         # legacy rebuilds have nothing to do on a clean DB.
@@ -482,15 +774,17 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         "_migrate_policy_compliance_v1_schema",
         "_migrate_policy_waiver_v1_schema",
         "_migrate_semantic_guideline_governance_schema",
-        "_migrate_semantic_pinpoint_v2_schema",
         kb_governance_convergence_step,
+        human_lifecycle_convergence_step,
+        validation_cycle_convergence_step,
+        "_migrate_code_traceability_schema",
+        "_migrate_semantic_pinpoint_v2_schema",
         "_migrate_knowledge_propagation_v2_schema",
         "_migrate_rebuild_guideline_import_candidates_semantic_shape",
         "_migrate_rebuild_guideline_policy_v1_semantic_alignment",
         "_migrate_drop_retired_guideline_impact_v1_triggers",
         "_migrate_seed_semantic_configurations_for_legacy_bindings",
         "_migrate_recompute_cognitive_source_fingerprints_v2",
-        "_migrate_code_traceability_schema",
     }
 
     # First run: clean databases skip fixture repair and convergence steps
@@ -507,8 +801,8 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
 
     # Fresh instance: real migrations re-execute idempotently -> no drift.
     assert r3.is_success
-    assert len(r3.applied_steps) == total - len(replay_skip_steps)
     assert {step.step_id for step in r3.skipped_steps} == replay_skip_steps
+    assert len(r3.applied_steps) == total - len(replay_skip_steps)
     assert s3 == s1
 
 

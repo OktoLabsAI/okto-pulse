@@ -85,6 +85,7 @@ function transition(
     policy_compliance: policyCompliance,
     policy_compliance_decision: policyCompliance
       ? {
+        projection: 'full',
         state: 'policy_compliance_ready',
         allowed: true,
         policy_compliance_required: true,

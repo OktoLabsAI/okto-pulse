@@ -181,6 +181,7 @@ function transition(
 
 function policyDecision(allowed: boolean) {
   return {
+    projection: 'full',
     state: allowed
       ? 'policy_compliance_ready'
       : 'policy_compliance_blocked',

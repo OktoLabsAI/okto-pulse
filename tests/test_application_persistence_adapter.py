@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
@@ -13,12 +14,27 @@ from okto_pulse.community.adapters.sqlalchemy_base import Base
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     CommunitySemanticSession,
 )
+from okto_pulse.community.adapters.sqlalchemy_domain_event_delivery import (
+    CommunitySqlAlchemyDomainEventFactReader,
+)
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     ApplicationQuery,
     ApplicationRecord,
+    get_application_persistence_port,
+    register_application_persistence_port,
+    reset_application_persistence_port_for_tests,
 )
 from okto_pulse.core.domain.realm import RealmScope
+from okto_pulse.core.ports.domain_event_delivery import (
+    get_domain_event_fact_reader,
+    get_domain_event_publisher,
+    register_domain_event_fact_reader,
+    register_domain_event_publisher,
+    reset_domain_event_publisher_for_tests,
+)
+from okto_pulse.core.services import main as main_service
+from okto_pulse.core.services.critical_context_guard import CriticalAction
 
 
 @pytest.mark.asyncio
@@ -255,6 +271,221 @@ async def test_application_persistence_synchronizes_legacy_direct_commit(tmp_pat
         assert reloaded.name == "After direct commit"
 
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_spec_lifecycle_fence_serializes_concurrent_validation_heads(tmp_path):
+    """Only one writer may retain a stale Spec lifecycle/head authority."""
+
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'spec-lifecycle-fence.db'}"
+    )
+    factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
+        expire_on_commit=False,
+        info={"realm_scope": RealmScope.local()},
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    adapter = CommunitySqlAlchemyApplicationPersistence()
+    board_id = str(uuid.uuid4())
+    spec_id = str(uuid.uuid4())
+    async with factory() as session:
+        await adapter.add(
+            session,
+            ApplicationRecord(
+                entity="board",
+                values={
+                    "id": board_id,
+                    "name": "Concurrent lifecycle fence",
+                    "owner_id": "owner-1",
+                },
+            ),
+        )
+        await adapter.add(
+            session,
+            ApplicationRecord(
+                entity="spec",
+                values={
+                    "id": spec_id,
+                    "board_id": board_id,
+                    "title": "Concurrent validation",
+                    "status": "approved",
+                    "edition": 3,
+                    "version": 8,
+                    "validations": [],
+                    "current_validation_id": None,
+                    "created_by": "owner-1",
+                },
+            ),
+        )
+        await adapter.commit(session)
+
+    async with factory() as first_session, factory() as stale_session:
+        first = await adapter.get(first_session, entity="spec", record_id=spec_id)
+        stale = await adapter.get(stale_session, entity="spec", record_id=spec_id)
+        assert first is not None and stale is not None
+        expected = {
+            "status": first.status,
+            "edition": first.edition,
+            "version": first.version,
+            "archived": first.archived,
+            "current_validation_id": first.current_validation_id,
+        }
+        assert await adapter.fence(
+            first_session,
+            entity="spec",
+            record_id=spec_id,
+            expected_values=expected,
+        )
+
+        stale_writer = asyncio.create_task(
+            adapter.fence(
+                stale_session,
+                entity="spec",
+                record_id=spec_id,
+                expected_values={
+                    "status": stale.status,
+                    "edition": stale.edition,
+                    "version": stale.version,
+                    "archived": stale.archived,
+                    "current_validation_id": stale.current_validation_id,
+                },
+            )
+        )
+        first.current_validation_id = "val-winner"
+        first.status = "validated"
+        await adapter.commit(first_session)
+
+        assert await asyncio.wait_for(stale_writer, timeout=5) is False
+        await adapter.rollback(stale_session)
+
+    async with factory() as session:
+        stored = await adapter.get(session, entity="spec", record_id=spec_id)
+        assert stored is not None
+        assert stored.current_validation_id == "val-winner"
+        assert stored.status.value == "validated"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_deferred_allow_audit_does_not_lock_sqlite_during_read_phase(
+    tmp_path,
+):
+    """Successful authorization stays read-only until the lifecycle fence."""
+
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'deferred-critical-audit.db'}"
+    )
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _sqlite_concurrency(dbapi_connection, _record) -> None:
+        dbapi_connection.execute("PRAGMA journal_mode=WAL")
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+    factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
+        expire_on_commit=False,
+        info={"realm_scope": RealmScope.local()},
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    adapter = CommunitySqlAlchemyApplicationPersistence()
+    board_id = str(uuid.uuid4())
+    spec_id = str(uuid.uuid4())
+    async with factory() as seed:
+        await adapter.add(
+            seed,
+            ApplicationRecord(
+                entity="board",
+                values={
+                    "id": board_id,
+                    "name": "Deferred critical audit",
+                    "owner_id": "owner-1",
+                    "settings": {
+                        "require_full_context_for_critical_actions": False
+                    },
+                },
+            ),
+        )
+        await adapter.add(
+            seed,
+            ApplicationRecord(
+                entity="spec",
+                values={
+                    "id": spec_id,
+                    "board_id": board_id,
+                    "title": "Read-only authorization phase",
+                    "status": "review",
+                    "created_by": "owner-1",
+                },
+            ),
+        )
+        await adapter.commit(seed)
+
+    try:
+        previous = get_application_persistence_port()
+    except RuntimeError:
+        previous = None
+    try:
+        previous_fact_reader = get_domain_event_fact_reader()
+    except RuntimeError:
+        previous_fact_reader = None
+    try:
+        previous_publisher = get_domain_event_publisher()
+    except RuntimeError:
+        previous_publisher = None
+    register_application_persistence_port(adapter)
+    register_domain_event_fact_reader(CommunitySqlAlchemyDomainEventFactReader())
+    try:
+        async with factory() as authorization_session, factory() as writer_session:
+            decision = await main_service._authorize_critical_context_or_raise(
+                authorization_session,
+                board_id=board_id,
+                actor_id="owner-1",
+                entity_type="spec",
+                entity_id=spec_id,
+                critical_action=CriticalAction.SPEC_MOVE_STATUS,
+                defer_success_audit=True,
+            )
+            assert decision.outcome == "allow"
+
+            # This independent write/commit would wait on the database-wide
+            # SQLite writer lock if authorization had inserted its audit row.
+            await asyncio.wait_for(
+                adapter.add(
+                    writer_session,
+                    ApplicationRecord(
+                        entity="board",
+                        values={
+                            "id": str(uuid.uuid4()),
+                            "name": "Concurrent UI write",
+                            "owner_id": "owner-2",
+                        },
+                    ),
+                ),
+                timeout=2,
+            )
+            await asyncio.wait_for(adapter.commit(writer_session), timeout=2)
+            await adapter.rollback(authorization_session)
+    finally:
+        if previous is None:
+            reset_application_persistence_port_for_tests()
+        else:
+            register_application_persistence_port(previous)
+        reset_domain_event_publisher_for_tests()
+        if previous_publisher is not None:
+            register_domain_event_publisher(previous_publisher)
+        if previous_fact_reader is not None:
+            register_domain_event_fact_reader(previous_fact_reader)
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

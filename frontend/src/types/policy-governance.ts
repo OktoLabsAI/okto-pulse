@@ -77,6 +77,7 @@ export interface PolicyComplianceBindingDecision {
 }
 
 export interface PolicyComplianceTransitionDecision {
+  projection: 'full';
   state: PolicyTransitionReasonCode;
   allowed: boolean | null;
   policy_compliance_required: boolean;
@@ -95,6 +96,13 @@ export interface PolicyComplianceTransitionDecision {
   skipped_binding_count: number | null;
   diagnostic_codes: PolicyTransitionDiagnosticCode[];
   binding_decisions: PolicyComplianceBindingDecision[];
+}
+
+export interface RedactedPolicyComplianceTransitionDecision {
+  projection: 'redacted';
+  state: 'policy_compliance_redacted' | 'policy_subject_required';
+  allowed: boolean | null;
+  policy_compliance_required: boolean;
 }
 
 export type PolicyWaiverStatus =
@@ -206,6 +214,8 @@ interface SemanticAssessmentBase {
   entity_type: PolicyEntityType;
   subject_id: string;
   subject_version: number;
+  /** Spec validation edition; null is legacy history-only evidence. */
+  validation_edition?: number | null;
   binding_id: string;
   guideline_id: string;
   guideline_revision_id: string;
@@ -518,6 +528,8 @@ export interface SemanticAssessmentCurrentV2 {
   subject_type: PolicyEntityType;
   subject_id: string;
   subject_version: number;
+  /** Spec validation edition; null is legacy history-only evidence. */
+  validation_edition?: number | null;
   binding_id: string;
   guideline_id: string;
   guideline_revision_id: string;
@@ -990,6 +1002,7 @@ export interface SemanticAssessmentPageOptions extends PolicyPageOptions {
   bindingId?: string;
   outcome?: SemanticAssessmentOutcome;
   currentness?: PolicyCurrentness;
+  validationEdition?: number;
 }
 
 export interface SemanticFindingPageOptions extends PolicyPageOptions {

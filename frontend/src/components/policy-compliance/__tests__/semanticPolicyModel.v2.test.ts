@@ -72,7 +72,7 @@ function metric(
   };
 }
 
-function response(metrics: unknown[]) {
+function response(metrics: unknown[], validationEdition: number | null = null) {
   return {
     contract_version: 'v2',
     assessment: {
@@ -83,6 +83,7 @@ function response(metrics: unknown[]) {
       subject_type: 'spec',
       subject_id: 'spec-1',
       subject_version: 7,
+      validation_edition: validationEdition,
       binding_id: 'binding-1',
       guideline_id: 'guideline-1',
       guideline_revision_id: 'revision-1',
@@ -103,6 +104,7 @@ function legacyResponse(currentness: 'current' | 'stale' = 'current') {
       entity_type: 'spec',
       subject_id: 'spec-1',
       subject_version: 7,
+      validation_edition: null,
       binding_id: 'binding-1',
       guideline_id: 'guideline-1',
       guideline_revision_id: 'revision-1',
@@ -181,6 +183,29 @@ describe('semanticPolicyModel v2 dual-read resolver', () => {
       nestedUnknown,
       expected,
     )).toThrow(/unknown or missing field/u);
+  });
+
+  it('rejects null or mismatched v2 current evidence for a lifecycle edition', () => {
+    const metrics = [metric('Architecture', [
+      pinpoint('whole', anchor('whole_artifact', null)),
+    ])];
+    const lifecycleExpectation = { ...expected, validationEdition: 2 };
+
+    expect(() => parseCurrentSemanticAssessmentResponse(
+      response(metrics, null),
+      lifecycleExpectation,
+    )).toThrow('active validation edition');
+    expect(() => parseCurrentSemanticAssessmentResponse(
+      response(metrics, 1),
+      lifecycleExpectation,
+    )).toThrow('active validation edition');
+    expect(parseCurrentSemanticAssessmentResponse(
+      response(metrics, 2),
+      lifecycleExpectation,
+    )).toMatchObject({
+      contract_version: 'v2',
+      assessment: { validation_edition: 2 },
+    });
   });
 
   it('resolves all anchor types with sealed explanation and live navigation only', () => {

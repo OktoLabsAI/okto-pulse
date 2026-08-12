@@ -17,6 +17,7 @@ routes in registration order.
 from __future__ import annotations
 
 from dataclasses import MISSING, fields, is_dataclass
+from contextlib import nullcontext
 from datetime import datetime
 from enum import Enum
 from functools import reduce
@@ -92,6 +93,9 @@ from okto_pulse.core.domain.guideline_semantic_projection import (
 from okto_pulse.core.domain.guideline_semantic_exceptions import (
     SemanticMetricWaiverEvent as CoreSemanticMetricWaiverEvent,
 )
+from okto_pulse.community.api.validation_observability import (
+    observe_external_validation_write,
+)
 from okto_pulse.core.domain.guideline_semantic_v2 import (
     SEMANTIC_PINPOINT_DETAIL_MAX_LENGTH,
     SEMANTIC_PINPOINT_KEY_MAX_LENGTH,
@@ -132,8 +136,13 @@ class PolicyGovernanceRoute(APIRoute):
 
     def get_route_handler(self):
         original = super().get_route_handler()
-        preflight_import_envelope = (
-            self.path == "/boards/{board_id}/guidelines/import"
+        # ``include_router(prefix=...)`` may rebuild this route with the
+        # application prefix included in ``self.path`` (FastAPI <= 0.136),
+        # while newer releases retain the router-local path here.  Match the
+        # invariant route suffix so malformed import envelopes are rejected
+        # before the database UoW is acquired on every supported runtime.
+        preflight_import_envelope = self.path.endswith(
+            "/boards/{board_id}/guidelines/import"
         )
 
         async def governed_route_handler(request: Request):
@@ -335,7 +344,11 @@ WaiverId = Annotated[
 
 
 class _ClosedModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", from_attributes=True)
+    model_config = ConfigDict(
+        extra="forbid",
+        from_attributes=True,
+        populate_by_name=True,
+    )
 
 
 _CLOSED_DATACLASS_MODELS: dict[type, type[_ClosedModel]] = {}
@@ -409,12 +422,22 @@ def _closed_dataclass_response_model(domain_type: type) -> type[_ClosedModel]:
                     ),
                     ...,
                 ]
+        semantic_subject_edition = (
+            dataclass_field.name == "subject_edition"
+            and domain_type.__module__.endswith(
+                "guideline_semantic_projection"
+            )
+        )
         if dataclass_field.default is not MISSING:
             default: object = dataclass_field.default
         elif dataclass_field.default_factory is not MISSING:
             default = Field(default_factory=dataclass_field.default_factory)
         else:
             default = ...
+        if semantic_subject_edition:
+            # Keep Core's ubiquitous subject terminology while exposing the
+            # human-facing lifecycle name used by the public REST contract.
+            default = Field(default=default, alias="validation_edition")
         definitions[dataclass_field.name] = (annotation, default)
     model = create_model(
         f"Closed{domain_type.__name__}",
@@ -443,6 +466,27 @@ class PolicyEntityType(str, Enum):
     SPRINT = "sprint"
     CARD = "card"
     TEST_SCENARIO = "test_scenario"
+
+
+_EDITION_FENCED_POLICY_ENTITY_TYPES = frozenset(
+    {
+        PolicyEntityType.IDEATION,
+        PolicyEntityType.REFINEMENT,
+        PolicyEntityType.SPEC,
+    }
+)
+
+
+def _require_policy_subject_edition(
+    *,
+    subject_type: PolicyEntityType,
+    expected_subject_edition: int | None,
+) -> None:
+    if (
+        subject_type in _EDITION_FENCED_POLICY_ENTITY_TYPES
+        and expected_subject_edition is None
+    ):
+        raise ValueError("expected_subject_edition_required")
 
 
 class GuidelineEnforcement(str, Enum):
@@ -778,6 +822,11 @@ class RecordSemanticGuidelineAssessmentV2Request(_ClosedModel):
     subject_type: PolicyEntityType
     subject_id: str = Field(min_length=1, max_length=POLICY_SUBJECT_ID_MAX_LENGTH)
     expected_subject_version: int = Field(ge=1, le=POLICY_SQL_INTEGER_MAX)
+    expected_subject_edition: int | None = Field(
+        default=None,
+        ge=1,
+        le=POLICY_SQL_INTEGER_MAX,
+    )
     binding_id: str = Field(min_length=1, max_length=GUIDELINE_BINDING_ID_MAX_LENGTH)
     expected_binding_revision: int = Field(ge=1, le=POLICY_SQL_INTEGER_MAX)
     guideline_revision_id: str = Field(
@@ -795,6 +844,16 @@ class RecordSemanticGuidelineAssessmentV2Request(_ClosedModel):
         max_length=200,
     )
 
+    @model_validator(mode="after")
+    def require_edition_fence(
+        self,
+    ) -> "RecordSemanticGuidelineAssessmentV2Request":
+        _require_policy_subject_edition(
+            subject_type=self.subject_type,
+            expected_subject_edition=self.expected_subject_edition,
+        )
+        return self
+
 
 class SemanticAssessmentAssessorRequest(_ClosedModel):
     agent_id: str = Field(
@@ -811,6 +870,11 @@ class RecordSemanticGuidelineAssessmentRequest(_ClosedModel):
         max_length=POLICY_SUBJECT_ID_MAX_LENGTH,
     )
     expected_subject_version: int = Field(
+        ge=1,
+        le=POLICY_SQL_INTEGER_MAX,
+    )
+    expected_subject_edition: int | None = Field(
+        default=None,
         ge=1,
         le=POLICY_SQL_INTEGER_MAX,
     )
@@ -835,6 +899,16 @@ class RecordSemanticGuidelineAssessmentRequest(_ClosedModel):
     metric_results: list[SemanticMetricAssessmentRequest] = Field(
         min_length=1
     )
+
+    @model_validator(mode="after")
+    def require_edition_fence(
+        self,
+    ) -> "RecordSemanticGuidelineAssessmentRequest":
+        _require_policy_subject_edition(
+            subject_type=self.subject_type,
+            expected_subject_edition=self.expected_subject_edition,
+        )
+        return self
 
 
 class RequestSemanticWaiverRequest(_ClosedModel):
@@ -1272,6 +1346,7 @@ class SemanticAssessmentCurrentV2Response(_ClosedModel):
     subject_type: PolicyEntityType
     subject_id: str
     subject_version: int = Field(ge=1)
+    validation_edition: int | None
     binding_id: str
     guideline_id: str
     guideline_revision_id: str
@@ -1286,6 +1361,7 @@ class RecordedSemanticAssessmentV2Response(_ClosedModel):
     request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     currentness: Literal["current"]
+    validation_edition: int | None
     metrics: list[SemanticMetricResultV2Response]
 
 
@@ -1655,6 +1731,7 @@ def _adapt_semantic_values(
             entity_type=adapted.pop("entity_type"),
             subject_id=adapted.pop("subject_id"),
             subject_version=adapted.pop("expected_subject_version"),
+            subject_edition=adapted.pop("expected_subject_edition", None),
         )
         assessor_payload = adapted.pop("assessor")
         submission = assessment.SemanticGuidelineAssessmentSubmission(
@@ -1725,6 +1802,7 @@ def _adapt_semantic_values(
             entity_type=adapted.pop("entity_type"),
             subject_id=adapted.pop("subject_id"),
             subject_version=adapted.pop("expected_subject_version"),
+            subject_edition=adapted.pop("expected_subject_edition", None),
         )
         model_id = adapted.pop("model_id", None)
         draft = semantic_v2.SemanticAssessmentDraftV2(
@@ -2109,12 +2187,25 @@ async def _execute(
         "record_semantic_assessment_v2": "v2",
     }.get(operation)
     try:
-        result = await facade.execute(
-            operation,
-            values,
-            actor=_actor(principal, board_id=board_id),
-            uow=uow,
+        raw_subject_type = values.get("subject_type")
+        resolved_subject_type = str(
+            getattr(raw_subject_type, "value", raw_subject_type) or "spec"
         )
+        observation = (
+            observe_external_validation_write(
+                assessment_kind="policy_compliance",
+                subject_type=resolved_subject_type,
+            )
+            if semantic_contract_version is not None
+            else nullcontext()
+        )
+        with observation:
+            result = await facade.execute(
+                operation,
+                values,
+                actor=_actor(principal, board_id=board_id),
+                uow=uow,
+            )
     except Exception as exc:
         http_error = _temporary_http_error(exc)
         if semantic_contract_version is not None:

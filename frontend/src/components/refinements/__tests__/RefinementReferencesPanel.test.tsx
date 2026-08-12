@@ -64,9 +64,9 @@ describe('RefinementToSummary', () => {
       name: 'Open spec Validated spec',
     });
     expect(validated).toHaveTextContent('Validated');
-    expect(validated).toHaveTextContent('v2');
+    expect(validated).toHaveTextContent('Edition 2');
     expect(
-      screen.getByLabelText('Edition v2; technical revision r8'),
+      screen.getByLabelText('Edition 2'),
     ).toBeInTheDocument();
     expect(screen.getByText('Validated')).toHaveClass('bg-purple-100');
     fireEvent.click(validated);

@@ -1,131 +1,163 @@
-/**
- * SubmitSpecValidationModal — Spec Validation Gate submission form.
- *
- * Collects 3 scores (completeness, assertiveness, ambiguity), per-dimension
- * justifications (min 10 chars), overall justification (min 20 chars), and
- * a recommendation (approve/reject). Shows real-time outcome preview based
- * on the board's thresholds.
- *
- * Coverage gates MUST have passed server-side before this modal opens.
- * The backend will still run them as a pre-requisite and reject with a
- * contextual error if anything fails.
- */
-
-import { useMemo, useState } from 'react';
-import { X, Check, AlertCircle, Shield } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Check, RefreshCw, Shield, X } from 'lucide-react';
 import toast from 'react-hot-toast';
+
+import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { useDashboardApi } from '@/services/api';
 import type {
   BoardSettings,
   ChecklistSpecState,
   SpecValidationSubmitPayload,
+  SpecValidationSubmitResponse,
+  ValidationSubmissionFence,
 } from '@/types';
 import { ValidationErrorDisplay } from './ValidationErrorDisplay';
-import { SpecChecklistPanel } from './SpecChecklistPanel';
-import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 interface SubmitSpecValidationModalProps {
   specId: string;
   specTitle: string;
   boardId: string;
   specVersion: number;
+  specEdition?: number;
+  /** Retained as a compatibility prop while thresholds leave the human form. */
   settings: BoardSettings;
   canReadChecklist: boolean;
   canExecuteChecklist: boolean;
   onClose: () => void;
-  onSubmitted: (result: { outcome: 'success' | 'failed'; spec_status?: string | null }) => void;
+  onSubmitted: (result: SpecValidationSubmitResponse) => void;
 }
-
-const MIN_JUSTIFICATION_PER_DIM = 10;
-const MIN_GENERAL_JUSTIFICATION = 20;
 
 export function SubmitSpecValidationModal({
   specId,
   specTitle,
   boardId,
   specVersion,
-  settings,
+  specEdition,
   canReadChecklist,
   canExecuteChecklist,
   onClose,
   onSubmitted,
 }: SubmitSpecValidationModalProps) {
+  const currentSpecEdition = specEdition ?? 1;
   const api = useDashboardApi();
-  const [completeness, setCompleteness] = useState(80);
-  const [assertiveness, setAssertiveness] = useState(80);
-  const [ambiguity, setAmbiguity] = useState(30);
-  const [completenessJustification, setCompletenessJustification] = useState('');
-  const [assertivenessJustification, setAssertivenessJustification] = useState('');
-  const [ambiguityJustification, setAmbiguityJustification] = useState('');
-  const [generalJustification, setGeneralJustification] = useState('');
-  const [recommendation, setRecommendation] = useState<'approve' | 'reject' | null>(null);
+  const [score, setScore] = useState(80);
+  const [summary, setSummary] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
   const [checklistState, setChecklistState] =
     useState<ChecklistSpecState | null>(null);
+  const [submissionFence, setSubmissionFence] =
+    useState<ValidationSubmissionFence | null>(null);
+  const [readinessLoading, setReadinessLoading] = useState(true);
+  const [readinessRefreshKey, setReadinessRefreshKey] = useState(0);
 
   useEscapeToClose(onClose, { canClose: !submitting, priority: 10 });
 
-  const minCompleteness = settings.min_spec_completeness ?? 80;
-  const minAssertiveness = settings.min_spec_assertiveness ?? 80;
-  const maxAmbiguity = settings.max_spec_ambiguity ?? 30;
-
-  // Compute threshold violations in real time
-  const violations = useMemo(() => {
-    const v: string[] = [];
-    if (completeness < minCompleteness) v.push(`completeness ${completeness} < min ${minCompleteness}`);
-    if (assertiveness < minAssertiveness) v.push(`assertiveness ${assertiveness} < min ${minAssertiveness}`);
-    if (ambiguity > maxAmbiguity) v.push(`ambiguity ${ambiguity} > max ${maxAmbiguity}`);
-    return v;
-  }, [completeness, assertiveness, ambiguity, minCompleteness, minAssertiveness, maxAmbiguity]);
-
-  // Outcome preview mirrors backend rule exactly
-  const outcomePreview: 'success' | 'failed' =
-    violations.length === 0 && recommendation === 'approve' ? 'success' : 'failed';
-
-  const justificationsValid =
-    completenessJustification.trim().length >= MIN_JUSTIFICATION_PER_DIM &&
-    assertivenessJustification.trim().length >= MIN_JUSTIFICATION_PER_DIM &&
-    ambiguityJustification.trim().length >= MIN_JUSTIFICATION_PER_DIM &&
-    generalJustification.trim().length >= MIN_GENERAL_JUSTIFICATION;
+  useEffect(() => {
+    let cancelled = false;
+    if (!canReadChecklist) {
+      setChecklistState(null);
+      setSubmissionFence(null);
+      setReadinessLoading(false);
+      setSubmissionError(
+        'Validation readiness cannot be verified with the current permissions.',
+      );
+      return () => { cancelled = true; };
+    }
+    setReadinessLoading(true);
+    setSubmissionError(null);
+    Promise.all([
+      api.getSpecChecklistState(boardId, specId),
+      api.getValidationCycle('spec', specId, { includePrevious: false }),
+    ])
+      .then(([resolvedChecklist, cycle]) => {
+        if (cancelled) return;
+        const fence = cycle.subject_type === 'spec'
+          ? cycle.submission_fence
+          : undefined;
+        if (
+          cycle.subject_type !== 'spec'
+          || cycle.subject_id !== specId
+          || cycle.edition !== currentSpecEdition
+          || !cycle.visible_sections.includes('spec_validation')
+          || !fence
+          || fence.expected_validation_edition
+            !== currentSpecEdition
+          || fence.expected_subject_version !== specVersion
+        ) {
+          throw new Error(
+            'The validation cycle changed. Refresh the Spec before submitting.',
+          );
+        }
+        setChecklistState(resolvedChecklist);
+        setSubmissionFence(fence);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setChecklistState(null);
+        setSubmissionFence(null);
+        setSubmissionError(
+          error instanceof Error
+            ? error.message
+            : 'Validation readiness could not be verified.',
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setReadinessLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [
+    api,
+    boardId,
+    canReadChecklist,
+    currentSpecEdition,
+    readinessRefreshKey,
+    specId,
+    specVersion,
+  ]);
 
   const checklistReady =
     checklistState !== null
     && (
       checklistState.binding.mode !== 'blocking'
-      || checklistState.gate.allowed
+      || (
+        checklistState.subject.spec_edition === currentSpecEdition
+        && checklistState.current_receipt?.spec_edition === currentSpecEdition
+        && checklistState.gate.allowed
+      )
     );
+  const fenceReady = submissionFence !== null;
   const canSubmit =
-    justificationsValid
-    && recommendation !== null
+    summary.trim().length > 0
     && checklistReady
+    && fenceReady
+    && !readinessLoading
     && !submitting;
 
   const handleSubmit = async () => {
-    if (!canSubmit) return;
+    if (!canSubmit || !submissionFence) return;
     setSubmitting(true);
     setSubmissionError(null);
     const payload: SpecValidationSubmitPayload = {
-      completeness,
-      completeness_justification: completenessJustification.trim(),
-      assertiveness,
-      assertiveness_justification: assertivenessJustification.trim(),
-      ambiguity,
-      ambiguity_justification: ambiguityJustification.trim(),
-      general_justification: generalJustification.trim(),
-      recommendation: recommendation!,
+      expected_validation_edition:
+        submissionFence.expected_validation_edition,
+      expected_spec_version: submissionFence.expected_subject_version,
+      expected_head_revision: submissionFence.expected_head_revision,
+      score,
+      summary: summary.trim(),
     };
     try {
       const result = await api.submitSpecValidation(specId, payload);
-      if (result?.outcome === 'success') {
-        toast.success('Spec validated and promoted!');
-      } else {
-        toast.error(`Validation failed: ${result?.threshold_violations?.join(', ') || 'rejected by reviewer'}`);
+      if (!result.is_current || result.validation_edition !== currentSpecEdition) {
+        throw new Error(
+          'The submitted validation was not accepted as the current edition result.',
+        );
       }
+      toast.success('Spec validation recorded');
       onSubmitted(result);
       onClose();
-    } catch (e: any) {
-      const message = e?.message || 'Submission failed';
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Submission failed';
       setSubmissionError(message);
       toast.error('Validation blocked');
     } finally {
@@ -134,225 +166,149 @@ export function SubmitSpecValidationModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-      <div className="bg-white dark:bg-gray-900 rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-        <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-white shadow-2xl dark:bg-gray-900">
+        <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4 dark:border-gray-700">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-              <Shield size={16} /> Validate Spec
+            <h2 className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-white">
+              <Shield size={16} aria-hidden="true" />
+              Validate Spec
             </h2>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate max-w-md">{specTitle}</p>
+            <p className="mt-0.5 max-w-md truncate text-xs text-gray-500 dark:text-gray-400">
+              {specTitle} · Edition {currentSpecEdition}
+            </p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
-            <X size={18} />
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            aria-label="Close validation form"
+            className="rounded p-1 text-gray-400 hover:text-gray-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 disabled:opacity-50 dark:hover:text-gray-300"
+          >
+            <X size={18} aria-hidden="true" />
           </button>
         </div>
 
-        <div className="px-6 py-5 space-y-5">
-          <SpecChecklistPanel
-            boardId={boardId}
-            specId={specId}
-            expectedSpecVersion={specVersion}
-            canRead={canReadChecklist}
-            canExecute={canExecuteChecklist}
-            onStateChange={setChecklistState}
-          />
+        <div className="space-y-5 px-6 py-5">
+          <section
+            className={`rounded-lg border p-3 text-xs ${
+              readinessLoading
+                ? 'border-surface-200 bg-surface-50 text-surface-500 dark:border-surface-700 dark:bg-surface-900/40 dark:text-surface-400'
+                : checklistReady && fenceReady
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/25 dark:text-emerald-200'
+                  : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-950/25 dark:text-amber-200'
+            }`}
+            data-testid="spec-validation-checklist-readiness"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-semibold">
+                  {readinessLoading
+                    ? 'Checking validation readiness…'
+                    : checklistReady && fenceReady
+                      ? canExecuteChecklist
+                        ? 'Current edition is ready'
+                        : 'Current edition result is ready'
+                      : 'Current edition needs attention'}
+                </p>
+                {!readinessLoading && checklistState && (
+                  <p className="mt-0.5 text-[11px] opacity-80">
+                    {checklistState.binding.mode === 'blocking'
+                      ? checklistReady
+                        ? 'The required checklist result is available for this edition.'
+                        : 'No passing checklist result is available for this edition.'
+                      : 'The checklist is advisory for this board.'}
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                aria-label="Refresh validation readiness"
+                onClick={() => setReadinessRefreshKey((value) => value + 1)}
+                disabled={readinessLoading || submitting}
+                className="rounded p-1 opacity-70 hover:bg-black/5 hover:opacity-100 disabled:opacity-40 dark:hover:bg-white/10"
+              >
+                <RefreshCw
+                  size={13}
+                  className={readinessLoading ? 'animate-spin' : ''}
+                  aria-hidden="true"
+                />
+              </button>
+            </div>
+          </section>
 
-          <DimensionSlider
-            label="Completeness"
-            value={completeness}
-            onChange={setCompleteness}
-            threshold={minCompleteness}
-            direction="min"
-            justification={completenessJustification}
-            onJustificationChange={setCompletenessJustification}
-          />
-          <DimensionSlider
-            label="Assertiveness"
-            value={assertiveness}
-            onChange={setAssertiveness}
-            threshold={minAssertiveness}
-            direction="min"
-            justification={assertivenessJustification}
-            onJustificationChange={setAssertivenessJustification}
-          />
-          <DimensionSlider
-            label="Ambiguity"
-            hint="lower is better"
-            value={ambiguity}
-            onChange={setAmbiguity}
-            threshold={maxAmbiguity}
-            direction="max"
-            justification={ambiguityJustification}
-            onJustificationChange={setAmbiguityJustification}
-          />
-
-          <div className="border-t border-gray-200 dark:border-gray-700 pt-4 space-y-2">
-            <label className="text-sm font-medium text-gray-900 dark:text-white">
-              Overall justification
-              <span className="text-[10px] text-gray-400 ml-2">
-                {generalJustification.trim().length}/{MIN_GENERAL_JUSTIFICATION} min
+          <section className="space-y-3" aria-labelledby="spec-validation-score-label">
+            <div className="flex items-center justify-between gap-3">
+              <label
+                id="spec-validation-score-label"
+                htmlFor="spec-validation-score"
+                className="text-sm font-medium text-gray-900 dark:text-white"
+              >
+                Validation score
+              </label>
+              <span className="font-mono text-sm font-semibold text-gray-900 dark:text-white">
+                {score}/100
               </span>
-            </label>
-            <textarea
-              value={generalJustification}
-              onChange={(e) => setGeneralJustification(e.target.value)}
-              placeholder="Provide context for your overall judgment (min 20 chars)"
-              rows={3}
-              className="w-full text-xs p-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
+            </div>
+            <input
+              id="spec-validation-score"
+              type="range"
+              min={0}
+              max={100}
+              value={score}
+              onChange={(event) => setScore(Number(event.target.value))}
+              className="w-full accent-violet-500"
             />
-          </div>
+          </section>
 
           <div className="space-y-2">
-            <label className="text-sm font-medium text-gray-900 dark:text-white">Recommendation</label>
-            <div className="flex gap-3">
-              <button
-                type="button"
-                onClick={() => setRecommendation('approve')}
-                className={`flex-1 flex items-center gap-2 px-3 py-2 rounded border-2 transition-colors ${
-                  recommendation === 'approve'
-                    ? 'border-green-500 bg-green-50 dark:bg-green-900/20'
-                    : 'border-gray-300 dark:border-gray-600'
-                }`}
-              >
-                <Check size={14} className={recommendation === 'approve' ? 'text-green-600' : 'text-gray-400'} />
-                <span className={`text-sm font-medium ${recommendation === 'approve' ? 'text-green-700 dark:text-green-300' : 'text-gray-600 dark:text-gray-300'}`}>
-                  Approve
-                </span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setRecommendation('reject')}
-                className={`flex-1 flex items-center gap-2 px-3 py-2 rounded border-2 transition-colors ${
-                  recommendation === 'reject'
-                    ? 'border-red-500 bg-red-50 dark:bg-red-900/20'
-                    : 'border-gray-300 dark:border-gray-600'
-                }`}
-              >
-                <X size={14} className={recommendation === 'reject' ? 'text-red-600' : 'text-gray-400'} />
-                <span className={`text-sm font-medium ${recommendation === 'reject' ? 'text-red-700 dark:text-red-300' : 'text-gray-600 dark:text-gray-300'}`}>
-                  Reject
-                </span>
-              </button>
-            </div>
+            <label
+              htmlFor="spec-validation-summary"
+              className="text-sm font-medium text-gray-900 dark:text-white"
+            >
+              Validation summary
+            </label>
+            <textarea
+              id="spec-validation-summary"
+              value={summary}
+              onChange={(event) => setSummary(event.target.value)}
+              placeholder="Summarize the human validation result for this edition"
+              rows={5}
+              className="w-full rounded border border-gray-300 bg-white p-2 text-xs text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+            />
+            <p className="text-[11px] text-gray-500 dark:text-gray-400">
+              This becomes the current result for Edition {currentSpecEdition}.
+              Earlier results remain available under Previous validations.
+            </p>
           </div>
 
-          {/* Outcome preview */}
-          <div
-            className={`rounded p-3 border ${
-              outcomePreview === 'success'
-                ? 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'
-                : 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800'
-            }`}
-          >
-            <div className={`text-xs font-semibold mb-1 ${outcomePreview === 'success' ? 'text-green-700 dark:text-green-300' : 'text-red-700 dark:text-red-300'}`}>
-              Current outcome preview: {outcomePreview.toUpperCase()}
-            </div>
-            {violations.length > 0 && (
-              <ul className="text-[11px] text-red-600 dark:text-red-400 space-y-0.5 list-disc list-inside">
-                {violations.map((v) => (
-                  <li key={v}>{v}</li>
-                ))}
-              </ul>
-            )}
-            {recommendation === 'reject' && (
-              <div className="text-[11px] text-red-600 dark:text-red-400 italic mt-1">
-                Reviewer recommendation is reject — outcome will be failed regardless of scores.
-              </div>
-            )}
-            {outcomePreview === 'success' && (
-              <div className="text-[11px] text-green-600 dark:text-green-400 italic mt-1">
-                Spec will be atomically promoted to validated and enter content lock.
-              </div>
-            )}
-          </div>
-
-          {submissionError && (
-            <ValidationErrorDisplay error={submissionError} />
-          )}
-          {!checklistReady && (
-            <div className="rounded border border-amber-200 bg-amber-50 p-2 font-mono text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
-              {checklistState?.gate.reason ?? 'checklist_state_unavailable'}
+          {submissionError && <ValidationErrorDisplay error={submissionError} />}
+          {!checklistReady && !readinessLoading && (
+            <div className="rounded border border-amber-200 bg-amber-50 p-2 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+              Complete the blocking checklist for this edition before submitting validation.
             </div>
           )}
         </div>
 
-        <div className="px-6 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2 bg-gray-50 dark:bg-gray-800">
+        <div className="flex justify-end gap-2 border-t border-gray-200 bg-gray-50 px-6 py-3 dark:border-gray-700 dark:bg-gray-800">
           <button
+            type="button"
             onClick={onClose}
-            className="px-4 py-1.5 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 rounded"
+            className="rounded px-4 py-1.5 text-sm text-gray-700 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-700"
             disabled={submitting}
           >
             Cancel
           </button>
           <button
-            onClick={handleSubmit}
+            type="button"
+            onClick={() => void handleSubmit()}
             disabled={!canSubmit}
-            className="px-4 py-1.5 text-sm bg-violet-600 text-white rounded hover:bg-violet-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+            className="inline-flex items-center gap-1.5 rounded bg-violet-600 px-4 py-1.5 text-sm text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-gray-400"
           >
+            <Check size={14} aria-hidden="true" />
             {submitting ? 'Submitting…' : 'Submit Validation'}
           </button>
         </div>
-      </div>
-    </div>
-  );
-}
-
-interface DimensionSliderProps {
-  label: string;
-  hint?: string;
-  value: number;
-  onChange: (v: number) => void;
-  threshold: number;
-  direction: 'min' | 'max';
-  justification: string;
-  onJustificationChange: (v: string) => void;
-}
-
-function DimensionSlider({
-  label, hint, value, onChange, threshold, direction, justification, onJustificationChange,
-}: DimensionSliderProps) {
-  const passes = direction === 'min' ? value >= threshold : value <= threshold;
-  const counterNeeded = MIN_JUSTIFICATION_PER_DIM - justification.trim().length;
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <label className="text-sm font-medium text-gray-900 dark:text-white">
-          {label}
-          {hint && <span className="text-[10px] text-gray-400 ml-2">({hint})</span>}
-        </label>
-        <div className="flex items-center gap-2 text-xs">
-          <span className="font-mono text-gray-900 dark:text-white">{value}</span>
-          <span className="text-gray-400">/100</span>
-          {passes ? (
-            <span className="flex items-center gap-1 text-green-600 dark:text-green-400">
-              <Check size={10} /> {direction === 'min' ? 'min' : 'max'} {threshold}
-            </span>
-          ) : (
-            <span className="flex items-center gap-1 text-red-600 dark:text-red-400">
-              <AlertCircle size={10} /> {direction === 'min' ? 'min' : 'max'} {threshold}
-            </span>
-          )}
-        </div>
-      </div>
-      <input
-        type="range"
-        min={0}
-        max={100}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full accent-violet-500"
-      />
-      <textarea
-        value={justification}
-        onChange={(e) => onJustificationChange(e.target.value)}
-        placeholder={`Why ${value}? (min ${MIN_JUSTIFICATION_PER_DIM} chars)`}
-        rows={2}
-        className="w-full text-xs p-2 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100"
-      />
-      <div className="text-[10px] text-gray-400 text-right">
-        {counterNeeded > 0 ? `${counterNeeded} more chars needed` : `${justification.trim().length} chars`}
       </div>
     </div>
   );

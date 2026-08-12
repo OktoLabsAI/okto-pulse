@@ -307,6 +307,7 @@ export interface PolicyGovernanceApi {
     bindingId: string,
     projection?: Policy.PolicyProjection,
     signal?: AbortSignal,
+    validationEdition?: number,
   ): Promise<Policy.SemanticCurrentAssessmentResponse>;
   getSemanticGuidelineAssessment(
     boardId: string,
@@ -515,6 +516,7 @@ export function createPolicyGovernanceApi(
       setIfDefined(params, 'binding_id', options.bindingId);
       setIfDefined(params, 'outcome', options.outcome);
       setIfDefined(params, 'currentness', options.currentness);
+      setIfDefined(params, 'validation_edition', options.validationEdition);
       return requestJson<
         Policy.SemanticCursorPage<Policy.SemanticAssessmentListItem>
       >(
@@ -531,6 +533,7 @@ export function createPolicyGovernanceApi(
       bindingId,
       projection = 'full',
       signal,
+      validationEdition,
     ) {
       const params = new URLSearchParams({
         subject_type: entityType,
@@ -538,6 +541,9 @@ export function createPolicyGovernanceApi(
         binding_id: bindingId,
         projection,
       });
+      if (validationEdition !== undefined) {
+        params.set('validation_edition', String(validationEdition));
+      }
       return requestJson<Policy.SemanticCurrentAssessmentResponse>(
         transport,
         `${boardRoot(boardId)}/semantic-guideline-assessments/current?${params.toString()}`,

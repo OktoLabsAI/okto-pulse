@@ -198,6 +198,18 @@ async def _build_engine(path: Path) -> AsyncEngine:
         )
         await conn.execute(
             text(
+                "UPDATE ideations SET edition = 4, version = 41 "
+                "WHERE id = 'i00'"
+            )
+        )
+        await conn.execute(
+            text(
+                "UPDATE refinements SET edition = 5, version = 43 "
+                "WHERE id = 'r00'"
+            )
+        )
+        await conn.execute(
+            text(
                 "UPDATE specs SET edition = 3, version = 42 "
                 "WHERE id = 'p00'"
             )
@@ -443,9 +455,9 @@ def test_consumer_search_is_applied_before_the_window(
     assert body["total_filtered"] == 1
     assert body["total_overall"] == 25
     if expected_id[0] in {"i", "p"}:
-        # Ideation and Spec pages include the two fixed API10 Quality summary
-        # reads after applying the consumer search in SQL.
-        assert len(statements) == 7, statements
+        # Ideation and Spec pages include one fixed lifecycle-summary batch
+        # read after applying the consumer search in SQL.
+        assert len(statements) == 6, statements
     else:
         assert 3 <= len(statements) <= 6, statements
 
@@ -462,6 +474,40 @@ def test_spec_page_projects_human_edition_and_technical_revision(
     assert item["id"] == "p00"
     assert item["edition"] == 3
     assert item["version"] == 42
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_id", "edition", "version"),
+    (
+        (
+            "/api/v1/boards/b1/ideations?offset=0&limit=25&search=ideation%200",
+            "i00",
+            4,
+            41,
+        ),
+        (
+            "/api/v1/ideations/i00/refinements?offset=0&limit=25",
+            "r00",
+            5,
+            43,
+        ),
+    ),
+)
+def test_ideation_and_refinement_pages_project_lifecycle_edition(
+    client: TestClient,
+    path: str,
+    expected_id: str,
+    edition: int,
+    version: int,
+) -> None:
+    response = client.get(path)
+
+    assert response.status_code == 200, response.text
+    item = next(
+        item for item in response.json()["items"] if item["id"] == expected_id
+    )
+    assert item["edition"] == edition
+    assert item["version"] == version
 
 
 def test_ideation_derivation_pending_is_server_side_and_null_safe(
@@ -724,11 +770,10 @@ def test_each_paginated_route_stays_within_bounded_statements(
     response = client.get(f"{path}?offset=0&limit=25")
     assert response.status_code == 200, response.text
     if path == "/api/v1/ideations/i00/refinements":
-        # API10 adds one leaf-resolution statement plus the two fixed Quality
-        # batch reads after the pre-existing nested preflight/page baseline.
-        # This is exactly seven for the direct-permission fixture and remains
-        # capped at eight when preset lineage needs one extra read.
-        assert len(statements) == 7, statements
+        # The lifecycle projection uses one batch read after the pre-existing
+        # nested preflight/page baseline. This is exactly six for the direct
+        # permission fixture and seven when preset lineage needs one extra read.
+        assert len(statements) == 6, statements
     else:
         assert 3 <= len(statements) <= 6, statements
 
@@ -756,13 +801,13 @@ def test_shared_reader_is_authorized_within_the_bounded_statement_cap(
         client.app.dependency_overrides[require_user] = lambda: "u"
     assert response.status_code == 200, response.text
     quality_projection_counts = {
-        "/api/v1/boards/b1/ideations?offset=0&limit=25": 7,
-        "/api/v1/ideations/i00/refinements?offset=0&limit=25": 8,
-        "/api/v1/boards/b1/specs?offset=0&limit=25": 7,
+        "/api/v1/boards/b1/ideations?offset=0&limit=25": 6,
+        "/api/v1/ideations/i00/refinements?offset=0&limit=25": 7,
+        "/api/v1/boards/b1/specs?offset=0&limit=25": 6,
     }
     if path in quality_projection_counts:
         # The shared-reader fixture resolves its custom preset lineage before
-        # the two fixed API10 Quality projection reads. Nested refinements keep
+        # the single lifecycle-summary batch read. Nested refinements keep
         # one additional leaf-resolution statement; both paths remain bounded.
         assert len(statements) == quality_projection_counts[path], statements
     else:
@@ -777,7 +822,7 @@ def test_shared_reader_is_authorized_within_the_bounded_statement_cap(
         "/api/v1/boards/b1/specs?offset=0&limit=25&search=spec%207",
     ),
 )
-def test_shared_reader_quality_search_stays_within_eight_statements(
+def test_shared_reader_quality_search_stays_within_seven_statements(
     client: TestClient, path: str
 ) -> None:
     client.app.dependency_overrides[require_user] = lambda: "v"
@@ -788,7 +833,7 @@ def test_shared_reader_quality_search_stays_within_eight_statements(
     finally:
         client.app.dependency_overrides[require_user] = lambda: "u"
     assert response.status_code == 200, response.text
-    assert len(statements) == 8, statements
+    assert len(statements) == 7, statements
 
 
 def test_compact_permission_preflight_preserves_story_denial(

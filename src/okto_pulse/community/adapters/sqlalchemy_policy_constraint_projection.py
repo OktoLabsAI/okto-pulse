@@ -513,6 +513,41 @@ def _legacy_rule_nodes(scope: Any) -> tuple[_LegacyRuleNode, ...]:
     return tuple(nodes)
 
 
+def _prefetch_semantic_edges(
+    scope: Any,
+    *,
+    edge_type: str,
+    planned_pairs: set[tuple[str, str]],
+) -> set[tuple[str, str]]:
+    """Load the relevant semantic edges with one bounded graph read.
+
+    Reconciliation previously called ``edge_exists`` once per desired edge.
+    Large policy histories therefore held the embedded single-writer lease
+    while issuing hundreds of tiny reads.  The planned endpoints are already
+    detached and bounded by the desired board projection, so one read per
+    relationship type is sufficient and retains the same endpoint-level
+    idempotency semantics.
+    """
+
+    if not planned_pairs:
+        return set()
+    if edge_type not in {"belongs_to", "supersedes"}:
+        raise PolicyConstraintProjectionConflict("semantic_guideline_edge_type_invalid")
+    source_ids = sorted({source_id for source_id, _ in planned_pairs})
+    target_ids = sorted({target_id for _, target_id in planned_pairs})
+    result = scope.execute(
+        f"MATCH (source:Entity)-[r:{edge_type}]->(target:Entity) "
+        "WHERE source.id IN $source_ids AND target.id IN $target_ids "
+        "RETURN source.id, target.id",
+        {"source_ids": source_ids, "target_ids": target_ids},
+    )
+    return {
+        (str(row[0]), str(row[1]))
+        for row in result.rows
+        if len(row) >= 2 and (str(row[0]), str(row[1])) in planned_pairs
+    }
+
+
 def _semantic_node_matches(
     current: _SemanticGraphNode,
     desired: _SemanticDesiredNode,
@@ -1368,15 +1403,33 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                     if desired
                     else None
                 )
+                belongs_to_pairs = {
+                    (node.node_id, root_id) for node in desired if root_id is not None
+                }
+                belongs_to_pairs.update(
+                    (node.node_id, target_id)
+                    for node in desired
+                    for target_id in node.lineage_ids
+                )
+                supersedes_pairs = {
+                    (node.successor_id, node.node_id)
+                    for node in desired
+                    if node.successor_id is not None
+                }
+                existing_belongs_to = _prefetch_semantic_edges(
+                    scope,
+                    edge_type="belongs_to",
+                    planned_pairs=belongs_to_pairs,
+                )
+                existing_supersedes = _prefetch_semantic_edges(
+                    scope,
+                    edge_type="supersedes",
+                    planned_pairs=supersedes_pairs,
+                )
                 if root_id is not None:
                     for node in desired:
-                        if not scope.edge_exists(
-                            "belongs_to",
-                            "Entity",
-                            "Entity",
-                            node.node_id,
-                            root_id,
-                        ):
+                        edge_pair = (node.node_id, root_id)
+                        if edge_pair not in existing_belongs_to:
                             scope.create_edge(
                                 "belongs_to",
                                 "Entity",
@@ -1390,16 +1443,15 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                                     "rule_id": SEMANTIC_GUIDELINE_KG_ROOT_RULE,
                                 },
                             )
+                            existing_belongs_to.add(edge_pair)
                 for node in desired:
                     if node.successor_id is None:
                         pass
-                    elif not scope.edge_exists(
-                        "supersedes",
-                        "Entity",
-                        "Entity",
+                    elif (
                         node.successor_id,
                         node.node_id,
-                    ):
+                    ) not in existing_supersedes:
+                        edge_pair = (node.successor_id, node.node_id)
                         scope.create_edge(
                             "supersedes",
                             "Entity",
@@ -1413,18 +1465,14 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                                 "rule_id": SEMANTIC_GUIDELINE_KG_LINEAGE_RULE,
                             },
                         )
+                        existing_supersedes.add(edge_pair)
                     for target_id in node.lineage_ids:
                         if target_id not in desired_by_id:
                             raise PolicyConstraintProjectionConflict(
                                 "semantic_guideline_lineage_target_missing"
                             )
-                        if scope.edge_exists(
-                            "belongs_to",
-                            "Entity",
-                            "Entity",
-                            node.node_id,
-                            target_id,
-                        ):
+                        edge_pair = (node.node_id, target_id)
+                        if edge_pair in existing_belongs_to:
                             continue
                         scope.create_edge(
                             "belongs_to",
@@ -1442,6 +1490,7 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                                 ),
                             },
                         )
+                        existing_belongs_to.add(edge_pair)
 
                 verified = _semantic_graph_nodes(scope)
                 active_ids = tuple(

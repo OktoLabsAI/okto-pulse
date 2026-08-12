@@ -6,6 +6,7 @@ import { SpecValidationHistoryPanel } from '../SpecValidationHistoryPanel';
 
 const apiMock = vi.hoisted(() => ({
   listSpecValidations: vi.fn(),
+  getCurrentSpecValidation: vi.fn(),
 }));
 
 vi.mock('@/services/api', () => ({
@@ -51,14 +52,23 @@ describe('SpecValidationHistoryPanel score presentation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     apiMock.listSpecValidations.mockResolvedValue(validationHistory);
+    apiMock.getCurrentSpecValidation.mockResolvedValue({
+      spec_id: 'spec-1',
+      edition: 1,
+      lifecycle_state: 'current',
+      current_validation: {
+        ...validationHistory.validations[0],
+        edition: 1,
+        lifecycle_state: 'current',
+      },
+      previous_count: 0,
+    });
   });
 
   it('renders every validation dimension as a circular score out of 100', async () => {
     render(<SpecValidationHistoryPanel specId="spec-1" />);
 
-    await screen.findByText('Validation History');
-
-    const completeness = screen.getByTestId(
+    const completeness = await screen.findByTestId(
       'spec-validation-score-completeness',
     );
     const assertiveness = screen.getByTestId(
@@ -67,7 +77,7 @@ describe('SpecValidationHistoryPanel score presentation', () => {
     const ambiguity = screen.getByTestId('spec-validation-score-ambiguity');
 
     expect(completeness).toHaveAccessibleName(
-      'Completeness score 92 out of 100, Minimum 80, threshold met',
+      'Completeness score 92 out of 100, Minimum 80',
     );
     expect(completeness).toHaveClass(
       'h-20',
@@ -77,11 +87,11 @@ describe('SpecValidationHistoryPanel score presentation', () => {
       'border-emerald-400',
     );
     expect(assertiveness).toHaveAccessibleName(
-      'Assertiveness score 76 out of 100, Minimum 80, threshold not met',
+      'Assertiveness score 76 out of 100, Minimum 80',
     );
     expect(assertiveness).toHaveClass('border-red-400');
     expect(ambiguity).toHaveAccessibleName(
-      'Ambiguity score 18 out of 100, Maximum 30, threshold met',
+      'Ambiguity score 18 out of 100, Maximum 30',
     );
     expect(ambiguity).toHaveClass('border-emerald-400');
 
@@ -95,7 +105,7 @@ describe('SpecValidationHistoryPanel score presentation', () => {
 
     fireEvent.click(
       await screen.findByRole('button', {
-        name: 'Show per-dimension justifications',
+        name: 'View dimension details',
       }),
     );
 
@@ -108,5 +118,143 @@ describe('SpecValidationHistoryPanel score presentation', () => {
     expect(
       screen.getByText('Residual ambiguity is sufficiently low.'),
     ).toBeInTheDocument();
+  });
+
+  it('loads only the current summary when the current detail is opened', async () => {
+    render(
+      <SpecValidationHistoryPanel
+        specId="spec-1"
+        currentEdition={1}
+        view="current"
+      />,
+    );
+
+    expect(await screen.findByText('Edition 1')).toBeInTheDocument();
+    expect(apiMock.getCurrentSpecValidation).toHaveBeenCalledTimes(1);
+    expect(apiMock.listSpecValidations).not.toHaveBeenCalled();
+  });
+
+  it('renders the canonical score and summary without legacy dimension noise', async () => {
+    apiMock.getCurrentSpecValidation.mockResolvedValue({
+      spec_id: 'spec-1',
+      edition: 2,
+      lifecycle_state: 'current',
+      current_validation: {
+        id: 'validation-formal-2',
+        validation_id: 'validation-formal-2',
+        validation_edition: 2,
+        is_current: true,
+        spec_id: 'spec-1',
+        board_id: 'board-1',
+        reviewer_id: 'reviewer-2',
+        reviewer_name: 'Independent reviewer',
+        score: 88,
+        summary: 'The current edition is clear and ready to proceed.',
+        outcome: 'success',
+        threshold_violations: [],
+        created_at: '2026-08-11T12:00:00Z',
+        edition: 2,
+        lifecycle_state: 'current',
+        active: true,
+      },
+      previous_count: 1,
+    });
+
+    render(
+      <SpecValidationHistoryPanel
+        specId="spec-1"
+        currentEdition={2}
+        view="current"
+      />,
+    );
+
+    const score = await screen.findByTestId('spec-validation-score-overall');
+    expect(score).toHaveAccessibleName(
+      'Validation score 88 out of 100, No board threshold',
+    );
+    expect(screen.getByText(
+      'The current edition is clear and ready to proceed.',
+    )).toBeInTheDocument();
+    expect(screen.queryByTestId('spec-validation-score-completeness'))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'View dimension details' }))
+      .not.toBeInTheDocument();
+  });
+
+  it('keeps a null-edition legacy validation in Previous and never promotes it to Current', async () => {
+    const legacyValidation = {
+      ...validationHistory.validations[0],
+      id: 'legacy-validation',
+      edition: null,
+      lifecycle_state: 'current' as const,
+      active: true,
+    };
+    apiMock.listSpecValidations.mockResolvedValue({
+      ...validationHistory,
+      current_validation_id: 'legacy-validation',
+      validations: [legacyValidation],
+    });
+
+    const previousRender = render(
+      <SpecValidationHistoryPanel
+        specId="spec-1"
+        currentEdition={2}
+        view="previous"
+      />,
+    );
+
+    expect(await screen.findByText('Legacy')).toBeInTheDocument();
+    expect(screen.queryByText('Edition 1')).not.toBeInTheDocument();
+    previousRender.unmount();
+
+    render(
+      <SpecValidationHistoryPanel
+        specId="spec-1"
+        currentEdition={2}
+        view="current"
+        currentValidation={legacyValidation}
+      />,
+    );
+
+    expect(await screen.findByText(
+      'No current validation result for Edition 2.',
+    )).toBeInTheDocument();
+    expect(screen.queryByText('Legacy')).not.toBeInTheDocument();
+  });
+
+  it('refetches the bounded Current result when the edition changes on the same Spec', async () => {
+    const { rerender } = render(
+      <SpecValidationHistoryPanel
+        specId="spec-1"
+        currentEdition={1}
+        view="current"
+      />,
+    );
+
+    expect(await screen.findByText('Edition 1')).toBeInTheDocument();
+    expect(apiMock.getCurrentSpecValidation).toHaveBeenCalledTimes(1);
+
+    apiMock.getCurrentSpecValidation.mockResolvedValue({
+      spec_id: 'spec-1',
+      edition: 2,
+      lifecycle_state: 'current',
+      current_validation: {
+        ...validationHistory.validations[0],
+        id: 'validation-2',
+        edition: 2,
+        lifecycle_state: 'current',
+      },
+      previous_count: 1,
+    });
+    rerender(
+      <SpecValidationHistoryPanel
+        specId="spec-1"
+        currentEdition={2}
+        view="current"
+      />,
+    );
+
+    expect(await screen.findByText('Edition 2')).toBeInTheDocument();
+    expect(apiMock.getCurrentSpecValidation).toHaveBeenCalledTimes(2);
   });
 });

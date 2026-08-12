@@ -369,13 +369,6 @@ def _configure_community_relational_runtime(settings, *, echo: bool = False) -> 
     from okto_pulse.community.adapters.relational_effects import (
         register_community_relational_effects,
     )
-    from okto_pulse.community.adapters.requirement_lint_writer import (
-        CommunityRequirementLintWriterHook,
-    )
-    from okto_pulse.core.ports.requirement_lint import (
-        register_requirement_lint_writer_hook,
-    )
-
     # CLI commands run outside the FastAPI composition root.  Register the
     # same relational ports required by seeds, health reads and governed
     # writes so `init` and offline maintenance fail closed only for genuine
@@ -384,7 +377,6 @@ def _configure_community_relational_runtime(settings, *, echo: bool = False) -> 
         settings=settings,
         api_base_url=f"http://127.0.0.1:{settings.port}",
     )
-    register_requirement_lint_writer_hook(CommunityRequirementLintWriterHook())
 
 
 def _fail_fast_if_server_running(operation: str) -> None:

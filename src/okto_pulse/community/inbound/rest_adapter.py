@@ -33,6 +33,13 @@ from okto_pulse.core.inbound.policy_transition_error import (
     project_policy_transition_rejection,
 )
 from okto_pulse.core.services.resource_gate import ResourceGateError
+from okto_pulse.core.domain.human_validation_cycle import (
+    LifecycleTransitionConflictError,
+    SubjectEditRequiresDraftError,
+)
+from okto_pulse.core.inbound.human_validation_cycle_error import (
+    project_subject_edit_requires_draft_error,
+)
 
 
 class RESTAdapterContract:
@@ -107,6 +114,16 @@ class RESTAdapterContract:
             return HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=project_policy_transition_rejection(exc),
+            )
+        if isinstance(exc, SubjectEditRequiresDraftError):
+            return HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=project_subject_edit_requires_draft_error(exc),
+            )
+        if isinstance(exc, LifecycleTransitionConflictError):
+            return HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=exc.to_error_dict(),
             )
         if isinstance(exc, ValueError):
             return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))

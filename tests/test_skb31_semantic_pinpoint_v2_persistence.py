@@ -22,9 +22,12 @@ from okto_pulse.community.adapters.relational_schema_steps import (
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Base,
+    Ideation,
+    Refinement,
     SemanticGuidelineAssessmentV2Row,
     SemanticGuidelineFindingV2Row,
     SemanticGuidelineMetricResultV2Row,
+    Spec,
 )
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     CommunitySemanticSession,
@@ -38,7 +41,10 @@ from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_v2 import (
 from okto_pulse.community.adapters.sqlalchemy_semantic_subject_projection import (
     CommunitySqlAlchemySemanticSubjectProjection,
 )
-from okto_pulse.core.domain.guideline_policy import PolicySubjectRef
+from okto_pulse.core.domain.guideline_policy import (
+    PolicyEntityType,
+    PolicySubjectRef,
+)
 from okto_pulse.core.domain.guideline_semantic_assessment import (
     SemanticAssessmentAssessor,
 )
@@ -59,6 +65,7 @@ from okto_pulse.core.domain.quality_assessment import (
 from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
 from okto_pulse.core.infra.config import configure_settings, get_settings
 from okto_pulse.core.ports.guideline_policy import (
+    GuidelinePolicyEditionConflict,
     GuidelinePolicyIdempotencyConflict,
 )
 from okto_pulse.core.ports.semantic_subject_projection import (
@@ -87,7 +94,12 @@ def _engine(path):
     return engine
 
 
-def _pinpoint(*, key: str, issue: bool) -> SemanticPinpointV2:
+def _pinpoint(
+    *,
+    key: str,
+    issue: bool,
+    entity_type: PolicyEntityType = PolicyEntityType.IDEATION,
+) -> SemanticPinpointV2:
     excerpt = "Coupling makes change expensive."
     return SemanticPinpointV2(
         pinpoint_key=key,
@@ -108,25 +120,34 @@ def _pinpoint(*, key: str, issue: bool) -> SemanticPinpointV2:
         anchor_snapshot=AnchorSnapshot(
             label="Problem statement",
             excerpt=excerpt,
-            source_version="ideation:1",
+            source_version=f"{entity_type.value}:1",
             availability_at_seal=SemanticAnchorAvailability.AVAILABLE,
         ),
     )
 
 
-def _request(board_id, ideation_id, revision, binding, *, key="v2-request"):
+def _request(
+    board_id,
+    subject_id,
+    revision,
+    binding,
+    *,
+    key="v2-request",
+    entity_type: PolicyEntityType = PolicyEntityType.IDEATION,
+):
     evidence = EvidenceRef(
-        source_type="ideation",
-        source_id=ideation_id,
+        source_type=entity_type.value,
+        source_id=subject_id,
         source_version=1,
-        content_hash=canonical_sha256({"subject": ideation_id}),
+        content_hash=canonical_sha256({"subject": subject_id}),
     )
     return SemanticAssessmentRequestV2(
         subject=PolicySubjectRef(
             board_id=board_id,
-            entity_type=revision.metrics[0].target_entity_types[0],
-            subject_id=ideation_id,
+            entity_type=entity_type,
+            subject_id=subject_id,
             subject_version=1,
+            subject_edition=1,
         ),
         binding_id=binding.binding_id,
         expected_binding_revision=binding.binding_revision,
@@ -143,14 +164,26 @@ def _request(board_id, ideation_id, revision, binding, *, key="v2-request"):
                 score=90,
                 rationale="The boundary is explicit and independently verifiable.",
                 evidence_refs=(evidence,),
-                pinpoints=(_pinpoint(key="evidence-boundary", issue=False),),
+                pinpoints=(
+                    _pinpoint(
+                        key="evidence-boundary",
+                        issue=False,
+                        entity_type=entity_type,
+                    ),
+                ),
             ),
             SemanticMetricAssessmentV2(
                 metric_id=revision.metrics[1].metric_id,
                 score=60,
                 rationale="Persistence ownership remains implicit.",
                 evidence_refs=(evidence,),
-                pinpoints=(_pinpoint(key="issue-persistence", issue=True),),
+                pinpoints=(
+                    _pinpoint(
+                        key="issue-persistence",
+                        issue=True,
+                        entity_type=entity_type,
+                    ),
+                ),
             ),
         ),
     )
@@ -451,3 +484,92 @@ async def test_v2_round_trip_findings_idempotency_and_immutability(tmp_path):
         )
     assert "contract_version" not in legacy_columns
     await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("entity_type", "model"),
+    (
+        (PolicyEntityType.IDEATION, Ideation),
+        (PolicyEntityType.REFINEMENT, Refinement),
+        (PolicyEntityType.SPEC, Spec),
+    ),
+)
+@pytest.mark.asyncio
+async def test_v2_persistence_records_and_fences_validation_edition(
+    tmp_path,
+    entity_type: PolicyEntityType,
+    model,
+):
+    engine = _engine(
+        tmp_path / f"semantic-v2-{entity_type.value}-edition-fence.db"
+    )
+    factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
+        expire_on_commit=False,
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+        for _name, (_table, ddl) in (
+            semantic_pinpoint_v2_sqlite_trigger_manifest().items()
+        ):
+            await connection.execute(text(ddl))
+
+    try:
+        async with factory() as session, session.begin():
+            board_id, subject_id, revision, binding = (
+                await _seed_semantic_authority(
+                    session,
+                    metric_count=2,
+                    entity_type=entity_type,
+                )
+            )
+            adapter = CommunitySqlAlchemySemanticGuidelineAssessmentV2(session)
+            request = _request(
+                board_id,
+                subject_id,
+                revision,
+                binding,
+                key=f"v2-{entity_type.value}-edition-1",
+                entity_type=entity_type,
+            )
+
+            created = await adapter.save_semantic_assessment_v2(request)
+            stored = await session.get(
+                SemanticGuidelineAssessmentV2Row,
+                created.receipt_id,
+            )
+            assert stored is not None
+            assert stored.validation_edition == 1
+
+            subject = await session.get(model, subject_id)
+            assert subject is not None
+            subject.edition = 2
+            await session.flush((subject,))
+
+            with pytest.raises(
+                GuidelinePolicyEditionConflict,
+                match="guideline_policy_edition_conflict",
+            ):
+                await adapter.save_semantic_assessment_v2(
+                    replace(
+                        request,
+                        idempotency_key=(
+                            f"v2-{entity_type.value}-stale-edition"
+                        ),
+                    )
+                )
+
+            receipt_ids = tuple(
+                (
+                    await session.execute(
+                        select(SemanticGuidelineAssessmentV2Row.receipt_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert receipt_ids == (created.receipt_id,)
+    finally:
+        await engine.dispose()

@@ -106,19 +106,6 @@ def run_preservation_smoke() -> dict[str, object]:
             "offline smoke must run the stub embedding"
         )
         _config.configure_settings(settings)
-        from okto_pulse.community.adapters.requirement_lint_writer import (
-            CommunityRequirementLintWriterHook,
-        )
-        from okto_pulse.core.ports.requirement_lint import (
-            register_requirement_lint_writer_hook,
-        )
-
-        # The smoke resets the process registry above, so compose the same
-        # Community-owned writer used by the production app before the seed
-        # creates its demo spec and stages deterministic requirement lint.
-        register_requirement_lint_writer_hook(
-            CommunityRequirementLintWriterHook()
-        )
         _reg.reset_registry_for_tests()
 
         async def _init_db() -> None:

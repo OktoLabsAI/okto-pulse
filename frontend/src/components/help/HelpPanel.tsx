@@ -1037,10 +1037,10 @@ assessment has been recorded:
 | **Ready with waivers** | Blocking findings are covered by effective waivers |
 | **Not applicable** | No adopted semantic metric targets this subject |
 
-A receipt is current only while the subject version, adopted policy set,
-metric contract and binding head still match. Stale history remains
-auditable but never authorizes a transition. Fix the subject or guideline and
-evaluate again.
+One **Current** policy result belongs to the entity's active validation edition.
+When the entity returns to Draft, that result moves to **Previous**. A new
+evaluation is required when the entity enters Validation again; earlier results
+remain available for review and never authorize the new edition.
 
 Advisory findings never block. Blocking bindings compose with the existing
 entity gate at supported completion transitions; they do not create another
@@ -1063,7 +1063,7 @@ Expiry, revocation or source drift removes its effect.
 Policy lists use opaque keyset cursors. Keep filters and projection unchanged
 between pages, pass the cursor back without decoding it, and keep the same
 waiver snapshot time. **Summary** is for browsing; load **Full** for the
-bounded score, rationale, evidence and pinpoint set you need. Receipt and
+bounded score, rationale, evidence and pinpoint set you need. Result and
 waiver-event history is append-only.
 
 ### Capabilities and fail-closed UI
@@ -1564,27 +1564,27 @@ Individual specs can override board-level settings. Toggle the skip flags direct
       title: 'Requirement lint',
       icon: <BarChart3 size={16} />,
       content: `
-## Requirement lint — deterministic advisory analysis
+## Requirement lint — Edition-based advisory findings
 
-Requirement lint checks a Spec's governed semantic content after relevant changes. It is available in **Spec → Validation → Requirement lint** and is read-only in the UI: the server creates a new immutable receipt automatically.
+Requirement lint is evaluated when a Spec enters Validation. It is available in **Spec → Validation → Requirement lint** and is read-only in the UI: an external agent evaluates the current edition and submits the result to Pulse. Pulse stores and verifies the submitted evidence; Community does not perform repository investigation or run cognition on the user's machine.
 
 ### Reading the result
 
 The headline is a **finding count**, not a percentage or approval score:
 
-- **Findings** — issues detected by the deterministic ruleset.
+- **Findings** — issues reported by the configured ruleset.
 - **Evaluated rules** — rules that applied to the current Spec input.
 - **Lower is better** — zero means the ruleset found no issue in that run.
 
-Findings carry severity, category, a precise anchor and suggested remediation. Expand **Pinpoint findings** to locate the affected field or structured child. Expand **Receipt history** to audit earlier runs.
+Findings carry severity, category, a precise anchor and suggested remediation. Expand **Pinpoint findings** to locate the affected field or structured child. Expand **Previous results** to review earlier evaluations.
 
-### Current and stale receipts
+### Current and Previous
 
-A receipt is **current** only while its Spec content, ruleset, taxonomy and policy inputs still match the evaluated revision. A semantic edit can make the previous receipt stale and trigger a replacement. Historical receipts remain traceable and are never rewritten.
+The result submitted for the active validation edition appears as **Current**. When the Spec returns to Draft, Current clears and that result moves to **Previous**. The next entry into Validation requires a new result. Editing technical fields within an edition does not change that Current/Previous placement.
 
 ### Advisory authority
 
-Requirement lint never changes Spec transition eligibility. **Zero findings does not authorize a transition**, and one or more findings do not block it. When available, **Checklist** and **Spec Validation** are the authoritative controls shown in the neighboring Validation sub-tabs.
+An accepted requirement-lint result for the current edition is required to continue. The finding count and severity remain advisory: **zero findings does not authorize a transition**, and one or more findings do not block by count or severity. **Checklist**, **Policy compliance**, and **Spec Validation** remain independent controls shown in the neighboring Validation workspace.
 
 Use lint findings to improve the Spec before formal validation; use the authoritative controls to determine whether the Spec may advance.
 `,
@@ -1606,7 +1606,7 @@ Configure the policy for the current board in **Menu → Board → Board Config*
 |------|---------------------|-------------------|
 | **Off** | Disabled | Never blocks validation |
 | **Advisory** | Enabled and stored as traceable evidence | Never blocks validation |
-| **Blocking** | Required | Requires a current passing receipt before the Spec can be validated |
+| **Blocking** | Required | Requires a passing result for the current validation edition |
 
 **Advisory** is the recommended adoption mode while a team calibrates evidence and anchors. Promote the policy to **Blocking** once checklist runs are consistent. Use **Off** only for an intentional opt-out or legacy compatibility.
 
@@ -1625,19 +1625,19 @@ Configure the policy for the current board in **Menu → Board → Board Config*
 
 Every result requires a concrete **anchor** to evidence in the Spec. Items 5, 6, 8 and 10 may be marked **Not applicable**, with a required rationale. All ten ordered results are submitted together.
 
-### Receipts and currentness
+### Current and Previous results
 
-A completed run produces an immutable, auditable receipt. The Spec modal shows its result, counts, currentness and paginated receipt history.
+A completed run produces an immutable, auditable result. The Spec modal shows one **Current** result for the active validation edition and keeps earlier evaluations under **Previous**.
 
-A receipt becomes **stale** when the evaluated Spec technical revision, content, inputs, or executable checklist identity changes. Changing only the policy from Advisory to Blocking does not make an otherwise current receipt stale; an existing native receipt with no failed items can immediately satisfy Blocking.
+When the Spec returns to Draft, its Current checklist result moves to Previous. The next entry into Validation starts a new edition and requires a new result. Changing only the policy from Advisory to Blocking does not create a new edition; an existing passing Current result can immediately satisfy Blocking.
 
 The visible states are:
 
-- \`off\` — policy disabled
-- \`not_started\` — no receipt exists
-- \`current\` — receipt still matches the Spec
-- \`stale\` — the Spec or executable inputs changed
-- \`failed\` — at least one checklist item failed
+- **Off** — the policy is disabled
+- **Not started** — the current edition has no submitted result
+- **In progress** — the checklist is being completed
+- **Passed** — every required item passed for the current edition
+- **Failed** — at least one required item failed
 
 ### Relationship with Spec Validation
 

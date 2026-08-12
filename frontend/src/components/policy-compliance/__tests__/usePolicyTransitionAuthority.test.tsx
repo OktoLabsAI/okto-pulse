@@ -84,6 +84,7 @@ function semanticDecision(
     diagnostic_codes: [],
     binding_decisions: [semanticBinding()],
     ...overrides,
+    projection: overrides.projection ?? 'full',
   };
 }
 
@@ -172,6 +173,31 @@ describe('usePolicyTransitionAuthority', () => {
 
     await waitFor(() => expect(result.current.preview.status).toBe('ready'));
     expect(result.current.transitions).toHaveLength(2);
+    expect(result.current.actionableTransitions.map((item) => item.to_status))
+      .toEqual(['done']);
+  });
+
+  it('preserves coarse lifecycle admission when policy details are redacted', async () => {
+    apiMock.getAllowedTransitions.mockResolvedValue(envelope('card-1', [
+      transition({
+        policy_compliance: true,
+        policy_compliance_decision: {
+          projection: 'redacted',
+          state: 'policy_compliance_redacted',
+          allowed: true,
+          policy_compliance_required: true,
+        },
+      }),
+    ]));
+
+    const { result } = renderHook(() => usePolicyTransitionAuthority({
+      boardId: 'board-1',
+      entityType: 'card',
+      subjectId: 'card-1',
+      currentStatus: 'in_progress',
+    }));
+
+    await waitFor(() => expect(result.current.preview.status).toBe('ready'));
     expect(result.current.actionableTransitions.map((item) => item.to_status))
       .toEqual(['done']);
   });

@@ -358,6 +358,7 @@ function policyDecision(
 ): PolicyComplianceTransitionDecision {
   const blocked = state === 'policy_compliance_blocked';
   return {
+    projection: 'full',
     state,
     allowed: !blocked,
     policy_compliance_required: true,
@@ -663,9 +664,16 @@ describe('CardModal', () => {
     expect(
       screen.getByText('The implementation was superseded by a safer approach.'),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/Cancelling a card can return a validated parent spec/i),
-    ).toBeInTheDocument();
+    const lifecycleNotice = screen.getByText(
+      /Cancelling a card can return a validated parent spec/i,
+    );
+    expect(lifecycleNotice).toHaveTextContent(
+      'earlier evaluation results remain under Previous',
+    );
+    expect(lifecycleNotice).toHaveTextContent(
+      'new Current result is required',
+    );
+    expect(lifecycleNotice).not.toHaveTextContent(/stale/i);
   });
 
   it('shows only the current and canonically allowed lifecycle statuses', async () => {

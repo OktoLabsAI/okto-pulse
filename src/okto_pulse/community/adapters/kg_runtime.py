@@ -1038,6 +1038,16 @@ class BoardConnection:
         self._board_id = board_id
         self._closed = False
         self._load_vector_extension = load_vector_extension
+        # A proven-hot, non-vector read only needs a fresh Connection over the
+        # already-open Database.  It must not queue behind an unrelated native
+        # writer: no bootstrap/schema work remains and, unlike LOAD VECTOR, a
+        # plain Connection + MATCH does not append to Ladybug's WAL.  Admission
+        # is deliberately fail-closed.  The optimistic cache check is repeated
+        # after entering the board close guard, so an eviction or governed
+        # storage mutation that wins the race sends us through the serialized
+        # cold/vector path below.
+        if self._try_initialize_cached_read_only(board_id):
+            return
         # Ladybug permits one process-wide writer, including extension
         # initialization and writes to different Database instances.  Opening
         # a connection can bootstrap schema and LOAD VECTOR, so it participates
@@ -1053,6 +1063,54 @@ class BoardConnection:
             phase="connection_open",
         ):
             self._initialize(board_id)
+
+    def _try_initialize_cached_read_only(self, board_id: str) -> bool:
+        """Open one proven-hot non-vector reader without the writer lease.
+
+        The fast path is admitted only when both process-local proofs agree:
+        schema bootstrap completed and the board Database is resident.  The
+        close guard is then entered and both proofs are checked again before
+        the native Connection is created.  A miss returns ``False`` so the
+        caller retains the existing writer-serialized initialization path.
+        """
+
+        if self._load_vector_extension or board_id not in _BOOTSTRAPPED_BOARDS:
+            return False
+
+        key = str(board_kuzu_path(board_id))
+        with _board_db_cache_lock:
+            if key not in _board_db_cache:
+                return False
+
+        close_guard = _get_close_guard(board_id)
+        close_guard.reader_enter()
+        initialized = False
+        try:
+            # Revalidate under the reader registration.  Any close/eviction
+            # that won before reader_enter may have invalidated either proof;
+            # once this check succeeds the close guard pins the Database until
+            # BoardConnection.close() releases the reader.
+            if board_id not in _BOOTSTRAPPED_BOARDS:
+                return False
+            with _board_db_cache_lock:
+                db = _board_db_cache.get(key)
+                if db is None:
+                    return False
+                _board_db_cache.move_to_end(key)
+
+            self._close_guard = close_guard
+            self.db = db
+            self.conn = kuzu.Connection(db)
+            initialized = True
+            logger.debug(
+                "[KG] cached non-vector reader opened without writer lease "
+                "board_id=%s",
+                board_id,
+            )
+            return True
+        finally:
+            if not initialized:
+                close_guard.reader_exit()
 
     def _initialize(self, board_id: str) -> None:
         # Defensive: self-heal missing or partial graphs before we open our

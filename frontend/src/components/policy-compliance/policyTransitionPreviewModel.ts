@@ -5,6 +5,7 @@ import type {
   AllowedTransitionsResponse,
   PolicyComplianceBindingDecision,
   PolicyComplianceTransitionDecision,
+  RedactedPolicyComplianceTransitionDecision,
   PolicyCurrentness,
   PolicyTransitionDiagnosticCode,
   PolicyTransitionReasonCode,
@@ -28,6 +29,10 @@ export type PolicyTransitionPreviewLoadState =
       transitions: [];
       error: string;
     };
+
+export type PolicyTransitionPresentationMode =
+  | 'legacy'
+  | 'lifecycle-edition';
 
 export interface GovernedPolicyTransition {
   toStatus: string;
@@ -124,6 +129,7 @@ const REJECTED_STATES = new Set<PolicyTransitionReasonCode>([
 ]);
 
 const DECISION_FIELDS = [
+  'projection',
   'state',
   'allowed',
   'policy_compliance_required',
@@ -142,6 +148,13 @@ const DECISION_FIELDS = [
   'skipped_binding_count',
   'diagnostic_codes',
   'binding_decisions',
+] as const;
+
+const REDACTED_DECISION_FIELDS = [
+  'projection',
+  'state',
+  'allowed',
+  'policy_compliance_required',
 ] as const;
 
 const BINDING_DECISION_FIELDS = [
@@ -929,6 +942,11 @@ export function parsePolicyComplianceTransitionDecision(
     );
   }
   exactFields(value, DECISION_FIELDS, 'decision');
+  if (value.projection !== 'full') {
+    throw new Error(
+      'Policy Compliance gate preview has invalid full projection authority.',
+    );
+  }
   if (
     typeof value.state !== 'string'
     || !TRANSITION_REASON_CODES.has(value.state as PolicyTransitionReasonCode)
@@ -995,6 +1013,7 @@ export function parsePolicyComplianceTransitionDecision(
     );
   }
   const decision: PolicyComplianceTransitionDecision = {
+    projection: 'full',
     state,
     allowed: value.allowed,
     policy_compliance_required: value.policy_compliance_required,
@@ -1043,6 +1062,54 @@ export function parsePolicyComplianceTransitionDecision(
   return decision;
 }
 
+function parseProjectedPolicyComplianceDecision(
+  value: unknown,
+): PolicyComplianceTransitionDecision | RedactedPolicyComplianceTransitionDecision {
+  if (!isRecord(value)) {
+    throw new Error(
+      'Policy Compliance gate preview is missing its authoritative decision.',
+    );
+  }
+  if (value.projection === 'full') {
+    return parsePolicyComplianceTransitionDecision(value);
+  }
+  if (value.projection !== 'redacted') {
+    throw new Error(
+      'Policy Compliance gate preview has an unknown projection authority.',
+    );
+  }
+  exactFields(value, REDACTED_DECISION_FIELDS, 'redacted decision');
+  if (
+    value.state !== 'policy_compliance_redacted'
+    && value.state !== 'policy_subject_required'
+  ) {
+    throw new Error('Policy Compliance gate preview has invalid redacted state.');
+  }
+  if (value.allowed !== null && typeof value.allowed !== 'boolean') {
+    throw new Error('Policy Compliance gate preview has invalid admission.');
+  }
+  if (value.policy_compliance_required !== true) {
+    throw new Error(
+      'A redacted governed transition lost its Policy Compliance authority.',
+    );
+  }
+  if (
+    (value.state === 'policy_subject_required' && value.allowed !== null)
+    || (value.state === 'policy_compliance_redacted'
+      && typeof value.allowed !== 'boolean')
+  ) {
+    throw new Error(
+      'Policy Compliance gate preview has inconsistent redacted admission.',
+    );
+  }
+  return {
+    projection: 'redacted',
+    state: value.state,
+    allowed: value.allowed,
+    policy_compliance_required: true,
+  };
+}
+
 function parseTransition(value: unknown): AllowedTransition {
   if (!isRecord(value)) {
     throw new Error('Policy Compliance gate preview has an invalid row.');
@@ -1060,9 +1127,12 @@ function parseTransition(value: unknown): AllowedTransition {
   uniqueTextValues(value.capabilities, 'capabilities');
   uniqueTextValues(value.effects, 'effects');
   uniqueTextValues(value.reason_codes, 'transition reason codes');
-  let policyDecision: PolicyComplianceTransitionDecision | null = null;
+  let policyDecision:
+    | PolicyComplianceTransitionDecision
+    | RedactedPolicyComplianceTransitionDecision
+    | null = null;
   if (value.policy_compliance) {
-    policyDecision = parsePolicyComplianceTransitionDecision(
+    policyDecision = parseProjectedPolicyComplianceDecision(
       value.policy_compliance_decision,
     );
     if (policyDecision.policy_compliance_required !== true) {
@@ -1089,15 +1159,14 @@ function parseTransition(value: unknown): AllowedTransition {
   };
 }
 
-export function projectPolicyTransitions(
-  transitions: AllowedTransition[],
-): PolicyTransitionProjection {
+function parseUniquePolicyTransitions(
+  transitions: unknown,
+): AllowedTransition[] {
   if (!Array.isArray(transitions)) {
     throw new Error('Policy Compliance gate preview is not a transition list.');
   }
-  const governed: GovernedPolicyTransition[] = [];
-  const ungoverned: UngovernedPolicyTransition[] = [];
   const seen = new Set<string>();
+  const parsedTransitions: AllowedTransition[] = [];
   for (const rawTransition of transitions) {
     const transition = parseTransition(rawTransition);
     if (seen.has(transition.to_status)) {
@@ -1106,15 +1175,32 @@ export function projectPolicyTransitions(
       );
     }
     seen.add(transition.to_status);
+    parsedTransitions.push(transition);
+  }
+  return parsedTransitions;
+}
+
+export function projectPolicyTransitions(
+  transitions: AllowedTransition[],
+): PolicyTransitionProjection {
+  const governed: GovernedPolicyTransition[] = [];
+  const ungoverned: UngovernedPolicyTransition[] = [];
+  for (const transition of parseUniquePolicyTransitions(transitions)) {
     if (transition.policy_compliance) {
+      const decision = parseProjectedPolicyComplianceDecision(
+        transition.policy_compliance_decision,
+      );
+      if (decision.projection !== 'full') {
+        throw new Error(
+          'Policy Compliance details are not available for this viewer.',
+        );
+      }
       governed.push({
         toStatus: transition.to_status,
         label: transition.label,
         gate: transition.gate,
         blockedReason: transition.blocked_reason,
-        decision: parsePolicyComplianceTransitionDecision(
-          transition.policy_compliance_decision,
-        ),
+        decision,
       });
     } else {
       ungoverned.push({
@@ -1153,13 +1239,16 @@ export function requirePolicyTransitionEnvelope(
       'Policy Compliance transition authority omitted its transition list.',
     );
   }
-  const projection = projectPolicyTransitions(response.allowed_transitions);
-  if (projection.governed.some((item) => item.decision.allowed === null)) {
+  const transitions = parseUniquePolicyTransitions(response.allowed_transitions);
+  if (transitions.some((transition) => (
+    transition.policy_compliance
+    && transition.policy_compliance_decision?.allowed === null
+  ))) {
     throw new Error(
       'Policy Compliance transition authority returned an unscoped governed decision for the active subject.',
     );
   }
-  return response.allowed_transitions;
+  return transitions;
 }
 
 export function parsePolicyTransitionRejection(
@@ -1216,6 +1305,7 @@ export function parsePolicyTransitionRejection(
     );
   }
   const decision = parsePolicyComplianceTransitionDecision({
+    projection: 'full',
     state: code,
     allowed: false,
     policy_compliance_required: details.policy_compliance_required,
@@ -1259,8 +1349,21 @@ export function readPolicyTransitionRejection(
 
 export function policyTransitionRejectionMessage(
   rejection: PolicyTransitionRejection,
+  presentationMode: PolicyTransitionPresentationMode = 'legacy',
 ): string {
   const blocking = rejection.decision.blocking_metric_count ?? 0;
+  if (presentationMode === 'lifecycle-edition') {
+    const result = rejection.decision.currentness === 'current'
+      ? 'current edition result'
+      : rejection.decision.currentness === null
+        ? 'no current result'
+        : 'previous edition result';
+    return [
+      `Policy Compliance needs attention for ${rejection.fromStatus} → ${rejection.toStatus}`,
+      `${blocking} blocking policy ${blocking === 1 ? 'issue' : 'issues'}`,
+      result,
+    ].join(' · ');
+  }
   const receipts = rejection.decision.receipt_ids.length > 0
     ? rejection.decision.receipt_ids.join(', ')
     : 'none';
@@ -1281,7 +1384,7 @@ export function isAllowedTransitionActionable(
     const parsed = parseTransition(transition);
     if (parsed.blocked_reason !== null) return false;
     if (!parsed.policy_compliance) return true;
-    return parsePolicyComplianceTransitionDecision(
+    return parseProjectedPolicyComplianceDecision(
       parsed.policy_compliance_decision,
     ).allowed === true;
   } catch {

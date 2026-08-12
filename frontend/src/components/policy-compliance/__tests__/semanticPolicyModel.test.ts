@@ -45,6 +45,7 @@ function assessment(overrides: Record<string, unknown> = {}) {
     entity_type: 'spec',
     subject_id: 'spec-1',
     subject_version: 7,
+    validation_edition: null,
     binding_id: 'binding-1',
     guideline_id: 'guideline-1',
     guideline_revision_id: 'revision-1',
@@ -178,6 +179,23 @@ describe('semanticPolicyModel', () => {
     expect(parsed.metric_results[0].metric_code).toBe('Title.Clarity:v2');
     expect(semanticMetricDirection('minimum')).toBe('higher-is-better');
     expect(semanticMetricDirection('maximum')).toBe('lower-is-better');
+  });
+
+  it('requires the exact validation edition for lifecycle current evidence', () => {
+    const lifecycleExpectation = { ...expected, validationEdition: 2 };
+
+    expect(() => parseSemanticAssessmentDetail(
+      assessment({ validation_edition: null }),
+      lifecycleExpectation,
+    )).toThrow('active validation edition');
+    expect(() => parseSemanticAssessmentDetail(
+      assessment({ validation_edition: 1 }),
+      lifecycleExpectation,
+    )).toThrow('active validation edition');
+    expect(parseSemanticAssessmentDetail(
+      assessment({ validation_edition: 2 }),
+      lifecycleExpectation,
+    ).validation_edition).toBe(2);
   });
 
   it.each([

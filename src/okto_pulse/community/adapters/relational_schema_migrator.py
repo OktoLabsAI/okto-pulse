@@ -130,6 +130,13 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "Add and backfill the human-facing Spec edition counter.",
     ),
     (
+        "_migrate_add_human_lifecycle_editions",
+        "pre_create_all",
+        False,
+        "Add and backfill Ideation/Refinement lifecycle editions while "
+        "leaving legacy ambiguity skips unscoped.",
+    ),
+    (
         "_migrate_add_spec_validation_columns",
         "pre_create_all",
         False,
@@ -191,6 +198,13 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "Base.metadata.create_all — the table-create boundary.",
     ),
     # --- post_create_all: schema ALTERs applied AFTER create_all ---
+    (
+        "_migrate_validation_cycle_editions",
+        "post_create_all",
+        False,
+        "Add nullable lifecycle editions to active validation evidence and "
+        "discard only legacy mutable current-head projections.",
+    ),
     (
         "_migrate_add_consolidation_work_kinds",
         "post_create_all",

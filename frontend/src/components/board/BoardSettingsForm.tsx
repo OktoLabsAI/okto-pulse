@@ -324,7 +324,7 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
 
       <SettingsSection
         title="Requirement Lint Languages"
-        description="Languages the deterministic requirement lint analyzes with native lexicons. Requirements are checked against the union of the selected languages; with none selected, only language-neutral signals (numbers, comparators, units) are detected."
+        description="Language profiles exposed during preflight for an external agent to evaluate requirement lint. Pulse Community stores this configuration and the evidence returned by the agent; it does not run the analysis. With no language selected, the agent receives only the language-neutral profile (numbers, comparators and units)."
         icon={<Languages size={12} />}
       >
         <div className="grid grid-cols-5 gap-2" aria-label="Requirement lint languages" data-testid="lint-languages">

@@ -49,6 +49,7 @@ function semanticDecision(
       diagnostic_codes: [],
     }],
     ...overrides,
+    projection: overrides.projection ?? 'full',
   };
 }
 
@@ -238,6 +239,94 @@ describe('PolicyComplianceTransitionPreview', () => {
       .toHaveTextContent('receipt-authoritative');
   });
 
+  it('projects lifecycle-edition readiness without technical record or stale noise', () => {
+    const previousEditionDecision = semanticDecision({
+      state: 'policy_compliance_receipt_stale',
+      allowed: false,
+      reason_codes: ['policy_compliance_receipt_stale'],
+      currentness: 'stale',
+      currentness_reasons: ['subject_version_changed'],
+      diagnostic_codes: ['policy_compliance_receipt_stale'],
+      binding_decisions: [{
+        ...semanticDecision().binding_decisions[0],
+        allowed: false,
+        currentness: 'stale',
+        currentness_reasons: ['subject_version_changed'],
+        diagnostic_codes: ['policy_compliance_receipt_stale'],
+      }],
+    });
+    const { container } = render(
+      <PolicyComplianceTransitionPreview
+        presentationMode="lifecycle-edition"
+        preview={{
+          status: 'ready',
+          error: null,
+          transitions: [{
+            ...governed(),
+            policy_compliance_decision: previousEditionDecision,
+          }],
+        }}
+        rejection={{
+          code: 'policy_compliance_receipt_stale',
+          message: 'policy_compliance_receipt_stale',
+          entityType: 'ideation',
+          subjectId: 'ideation-1',
+          fromStatus: 'evaluating',
+          toStatus: 'done',
+          decision: previousEditionDecision,
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId('policy-transition-rejection'))
+      .toHaveTextContent('The last transition attempt needs attention.');
+    expect(screen.getByTestId('policy-transition-done'))
+      .toHaveTextContent('Result: Previous edition');
+    expect(screen.getByTestId('policy-transition-done'))
+      .toHaveTextContent('Needs attention');
+    expect(container).not.toHaveTextContent(/receipt|currentness|stale|digest/i);
+    expect(container).not.toHaveTextContent(/policy_compliance_/i);
+  });
+
+  it('redacts technical transport and contract details in lifecycle-edition errors', () => {
+    const { rerender } = render(
+      <PolicyComplianceTransitionPreview
+        presentationMode="lifecycle-edition"
+        preview={{
+          status: 'error',
+          transitions: [],
+          error: 'stale receipt digest mismatch',
+        }}
+      />,
+    );
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Lifecycle readiness could not be loaded. Try again.',
+    );
+    expect(screen.getByRole('alert'))
+      .not.toHaveTextContent(/receipt|stale|digest/i);
+
+    rerender(
+      <PolicyComplianceTransitionPreview
+        presentationMode="lifecycle-edition"
+        preview={{
+          status: 'ready',
+          error: null,
+          transitions: [{
+            to_status: 'done',
+            label: 'Done',
+            gate: 'approved_to_done',
+          } as unknown as AllowedTransition],
+        }}
+      />,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Lifecycle readiness could not be verified.',
+    );
+    expect(screen.getByRole('alert'))
+      .not.toHaveTextContent(/receipt|currentness|decision field|transition field/i);
+  });
+
   it('renders every semantic gate outcome as a distinct accessible theme-aware state', () => {
     const transition = (
       decision: PolicyComplianceTransitionDecision,
@@ -291,7 +380,10 @@ describe('PolicyComplianceTransitionPreview', () => {
         diagnostic_codes: ['policy_metric_threshold_failed'],
       }],
     });
-    const waivedFailure = governed().policy_compliance_decision!;
+    const waivedFailure = governed().policy_compliance_decision;
+    if (!waivedFailure || waivedFailure.projection !== 'full') {
+      throw new Error('Expected a full Policy Compliance fixture.');
+    }
     const skippedBinding = semanticDecision({
       state: 'policy_compliance_ready_with_waivers',
       reason_codes: ['policy_compliance_ready_with_waivers'],

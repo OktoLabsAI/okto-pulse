@@ -63,6 +63,7 @@ function decision(
     diagnostic_codes: [],
     binding_decisions: [binding()],
     ...overrides,
+    projection: overrides.projection ?? 'full',
   };
 }
 
@@ -688,6 +689,61 @@ describe('policyTransitionPreviewModel', () => {
     } as unknown as AllowedTransition)).toBe(false);
   });
 
+  it('accepts only the closed redacted projection for coarse lifecycle admission', () => {
+    const redactedReady = governed({
+      policy_compliance_decision: {
+        projection: 'redacted',
+        state: 'policy_compliance_redacted',
+        allowed: true,
+        policy_compliance_required: true,
+      },
+    });
+    const redactedBlocked = governed({
+      blocked_reason: 'Policy Compliance blocks this transition.',
+      policy_compliance_decision: {
+        projection: 'redacted',
+        state: 'policy_compliance_redacted',
+        allowed: false,
+        policy_compliance_required: true,
+      },
+    });
+
+    expect(isAllowedTransitionActionable(redactedReady)).toBe(true);
+    expect(isAllowedTransitionActionable(redactedBlocked)).toBe(false);
+    expect(() => projectPolicyTransitions([redactedReady])).toThrow(
+      /details are not available/i,
+    );
+    expect(isAllowedTransitionActionable({
+      ...redactedReady,
+      policy_compliance_decision: {
+        ...redactedReady.policy_compliance_decision,
+        decision_digest: 'a'.repeat(64),
+      },
+    } as unknown as AllowedTransition)).toBe(false);
+    expect(isAllowedTransitionActionable({
+      ...redactedReady,
+      policy_compliance_decision: {
+        ...decision(),
+        projection: 'redacted',
+      },
+    } as unknown as AllowedTransition)).toBe(false);
+
+    const response = {
+      board_id: 'board-1',
+      entity_type: 'spec' as const,
+      entity_id: 'spec-1',
+      current_status: 'approved',
+      source: 'core_sdlc_registry_v1' as const,
+      allowed_transitions: [redactedReady],
+    };
+    expect(requirePolicyTransitionEnvelope(response, {
+      boardId: 'board-1',
+      entityType: 'spec',
+      subjectId: 'spec-1',
+      currentStatus: 'approved',
+    })).toEqual(response.allowed_transitions);
+  });
+
   it('binds the exact transition envelope to the active subject and authority', () => {
     const response = {
       board_id: 'board-1',
@@ -790,6 +846,13 @@ describe('policyTransitionPreviewModel', () => {
     expect(policyTransitionRejectionMessage(rejection)).toContain(
       'receipts receipt-1 (current)',
     );
+    const lifecycleMessage = policyTransitionRejectionMessage(
+      rejection,
+      'lifecycle-edition',
+    );
+    expect(lifecycleMessage).toContain('current edition result');
+    expect(lifecycleMessage).not.toMatch(/receipt|currentness|stale|digest/i);
+    expect(lifecycleMessage).not.toContain(rejection.code);
     expect(() => parsePolicyTransitionRejection(error, {
       ...expected,
       subjectId: 'spec-other',

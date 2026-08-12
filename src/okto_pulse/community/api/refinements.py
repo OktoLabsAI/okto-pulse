@@ -111,6 +111,10 @@ from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.domain.guideline_policy_transition import (
     PolicyTransitionRejected,
 )
+from okto_pulse.core.domain.human_validation_cycle import (
+    LifecycleTransitionConflictError,
+    SubjectEditRequiresDraftError,
+)
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.models.schemas import (
     BoardRefinementPageItem,
@@ -298,6 +302,7 @@ async def list_refinements(
                         "title",
                         "description",
                         "status",
+                        "edition",
                         "version",
                         "assignee_id",
                         "created_by",
@@ -438,6 +443,8 @@ async def update_refinement(
         )
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     return result.refinement
 
 
@@ -460,6 +467,7 @@ async def set_refinement_ambiguity_gate_skip(
                 skip=data.skip_ambiguity_gate,
                 reason=data.reason,
                 expected_refinement_version=data.expected_refinement_version,
+                expected_refinement_edition=data.expected_refinement_edition,
             ),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
@@ -494,6 +502,7 @@ async def set_refinement_ambiguity_gate_skip(
         skipped=result.skipped,
         activity_id=result.activity_id,
         version=result.version,
+        edition=result.edition,
     )
 
 
@@ -514,6 +523,8 @@ async def move_refinement(
     except CancellationReasonRequiredError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict())
     except PolicyTransitionRejected as e:
+        raise RESTAdapterContract.http_error(e) from e
+    except LifecycleTransitionConflictError as e:
         raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -870,6 +881,8 @@ async def create_refinement_question(
         )
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     return result.qa
 
 
@@ -900,6 +913,8 @@ async def answer_refinement_question(
         ) from exc
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     return result.qa
 
 
@@ -919,6 +934,8 @@ async def delete_refinement_question(
         )
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
 
 
 # ==================== REFINEMENT SNAPSHOTS ====================
@@ -1027,6 +1044,8 @@ async def create_refinement_knowledge(
         )
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except KnowledgeGovernanceInvalidMetadata as exc:
         return knowledge_governance_error_response(exc)
     return result.knowledge
@@ -1048,3 +1067,5 @@ async def delete_refinement_knowledge(
         )
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc

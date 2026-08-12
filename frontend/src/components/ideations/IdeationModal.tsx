@@ -1120,7 +1120,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
       });
       toast.error(
         rejection
-          ? policyTransitionRejectionMessage(rejection)
+          ? policyTransitionRejectionMessage(rejection, 'lifecycle-edition')
           : getErrorMessage(err),
       );
       await loadAllowedTransitions(ideation);
@@ -1145,7 +1145,14 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
     if (!ideation) return;
     setSavingSkip(true);
     try {
-      const updated = await api.setIdeationAmbiguityGateSkip(ideationId, next);
+      const updated = await api.setIdeationAmbiguityGateSkip(ideationId, {
+        skip_ambiguity_gate: next,
+        reason: next
+          ? 'Max ambiguity gate skipped from the ideation UI.'
+          : 'Max ambiguity gate re-enabled from the ideation UI.',
+        expected_ideation_version: ideation.version,
+        expected_ideation_edition: ideation.edition ?? 1,
+      });
       setIdeation(updated);
       await loadAllowedTransitions(updated);
       onChanged();
@@ -1280,7 +1287,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
             </span>
             <DerivationPendingBadge label={getIdeationPendingDerivationLabel(ideation)} />
             <h2 className="text-lg font-semibold text-gray-900 dark:text-white truncate">{ideation.title}</h2>
-            <span className="text-xs text-gray-400 shrink-0">v{ideation.version}</span>
+            <span className="text-xs text-gray-400 shrink-0">Edition {ideation.edition ?? 1}</span>
           </div>
           <div className="flex items-center gap-1">
             <button
@@ -1651,6 +1658,8 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
                           subjectType="ideation"
                           subjectId={ideationId}
                           subjectVersion={ideation.version}
+                          subjectEdition={ideation.edition ?? 1}
+                          presentationMode="lifecycle-edition"
                           subjectStatus={ideation.status}
                           subjectArchived={ideation.archived ?? false}
                           canRead={canReadQuality}
@@ -1663,7 +1672,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
                         />
                       ) : (
                         <p className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300">
-                          The assessment and server gate preview are omitted because Quality read permission is not available.
+                          The current assessment is omitted because Quality read permission is not available.
                         </p>
                       )}
                       <AmbiguityGateSkipToggle
@@ -1680,6 +1689,8 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
                       subjectType="ideation"
                       subjectId={ideationId}
                       subjectVersion={ideation.version}
+                      subjectEdition={ideation.edition ?? 1}
+                      presentationMode="lifecycle-edition"
                       subjectStatus={ideation.status}
                       subjectArchived={ideation.archived ?? false}
                       canRead={canReadQuality}
@@ -1705,12 +1716,15 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
                   <PolicyComplianceTransitionPreview
                     preview={policyTransitionPreview}
                     rejection={policyTransitionRejection}
+                    presentationMode="lifecycle-edition"
                   />
                   <PolicyCompliancePanel
                     boardId={ideation.board_id || _boardId}
                     entityType="ideation"
                     subjectId={ideation.id}
                     subjectVersion={ideation.version}
+                    subjectEdition={ideation.edition ?? 1}
+                    presentationMode="lifecycle-edition"
                     transitionPreview={policyTransitionPreview}
                     refreshKey={ideation.version}
                     onEvaluated={() => {

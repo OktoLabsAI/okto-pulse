@@ -13,6 +13,7 @@ from okto_pulse.community.api.auth_deps import require_principal
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.community.api.policy_governance import (
     RecordSemanticGuidelineAssessmentV2Request,
+    _adapt_semantic_values,
     get_policy_governance_facade,
     router,
 )
@@ -41,6 +42,7 @@ def _payload() -> dict:
         "subject_type": "spec",
         "subject_id": "spec-v2",
         "expected_subject_version": 3,
+        "expected_subject_edition": 1,
         "binding_id": "binding-v2",
         "expected_binding_revision": 2,
         "guideline_revision_id": "revision-v2",
@@ -96,6 +98,7 @@ def test_rest_and_mcp_nested_metric_contracts_are_field_identical() -> None:
         "subject_type",
         "subject_id",
         "expected_subject_version",
+        "expected_subject_edition",
         "binding_id",
         "expected_binding_revision",
         "guideline_revision_id",
@@ -104,6 +107,44 @@ def test_rest_and_mcp_nested_metric_contracts_are_field_identical() -> None:
         "model_id",
         "metric_results",
     }
+
+
+@pytest.mark.parametrize("subject_type", ("ideation", "refinement", "spec"))
+def test_v2_rest_contract_requires_edition_for_lifecycle_subjects(
+    subject_type: str,
+) -> None:
+    payload = _payload()
+    payload["subject_type"] = subject_type
+    payload.pop("expected_subject_edition")
+
+    with pytest.raises(ValidationError, match="expected_subject_edition_required"):
+        RecordSemanticGuidelineAssessmentV2Request.model_validate(payload)
+
+
+@pytest.mark.parametrize("subject_type", ("sprint", "card", "test_scenario"))
+def test_v2_rest_contract_preserves_non_edition_subject_compatibility(
+    subject_type: str,
+) -> None:
+    payload = _payload()
+    payload["subject_type"] = subject_type
+    payload.pop("expected_subject_edition")
+
+    request = RecordSemanticGuidelineAssessmentV2Request.model_validate(payload)
+
+    assert request.expected_subject_edition is None
+
+
+def test_v2_rest_adapter_carries_edition_into_core_draft() -> None:
+    request = RecordSemanticGuidelineAssessmentV2Request.model_validate(_payload())
+
+    adapted = _adapt_semantic_values(
+        "record_semantic_assessment_v2",
+        {"board_id": BOARD_ID, **request.model_dump(mode="python")},
+        codec=None,
+        actor=SimpleNamespace(actor_id="agent-v2"),
+    )
+
+    assert adapted["draft"].subject.subject_edition == 1
 
 
 @pytest.mark.parametrize(
@@ -139,6 +180,7 @@ def test_v2_rest_route_dispatches_the_explicit_contract() -> None:
                 "request_digest": "b" * 64,
                 "receipt_digest": "c" * 64,
                 "currentness": "current",
+                "validation_edition": 1,
                 "metrics": [],
             }
 
@@ -245,6 +287,7 @@ def test_current_route_accepts_explicit_dual_read_v2_projection() -> None:
                     "subject_type": "spec",
                     "subject_id": "spec-v2",
                     "subject_version": 3,
+                    "validation_edition": 1,
                     "binding_id": "binding-v2",
                     "guideline_id": "guideline-v2",
                     "guideline_revision_id": "revision-v2",

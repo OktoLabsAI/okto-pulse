@@ -14,6 +14,9 @@ from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.knowledge_workspace import (
     KnowledgeWorkspaceProjectionError,
 )
+from okto_pulse.core.domain.human_validation_cycle import (
+    SubjectEditRequiresDraftError,
+)
 from okto_pulse.core.application.use_cases.operational_rest import (
     BoardNotFoundError,
     ClearResourceNotApplicableCommand,
@@ -247,6 +250,8 @@ async def mark_resource_not_applicable(
         return result.data
     except BoardNotFoundError as exc:
         raise _board_not_found(exc) from exc
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except ResourceGateError as exc:
         raise _resource_gate_exception(exc) from exc
 
@@ -283,6 +288,8 @@ async def clear_resource_not_applicable(
         return result.data
     except BoardNotFoundError as exc:
         raise _board_not_found(exc) from exc
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except ResourceGateError as exc:
         raise _resource_gate_exception(exc) from exc
 

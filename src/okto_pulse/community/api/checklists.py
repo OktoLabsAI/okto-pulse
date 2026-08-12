@@ -10,6 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from okto_pulse.community.api.auth_deps import get_realm_id, require_user
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.validation_observability import (
+    observe_external_validation_write,
+)
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.application.use_cases.base import (
     EntityNotFoundError,
@@ -36,7 +39,6 @@ from okto_pulse.core.application.use_cases.checklist import (
     ChecklistSpecState,
 )
 from okto_pulse.core.domain.checklist import (
-    SPECIFY_CHECKLIST_TEMPLATE_V1,
     SPECIFY_CHECKLIST_TEMPLATE_VERSION,
     ChecklistBinding,
     ChecklistContractError,
@@ -45,6 +47,7 @@ from okto_pulse.core.domain.checklist import (
     ChecklistItemResult,
     ChecklistMode,
     ChecklistReceipt,
+    ChecklistReceiptState,
     ChecklistReceiptView,
     ChecklistTemplate,
 )
@@ -71,9 +74,9 @@ class ChecklistBindingUpdateRequest(BaseModel):
 class ChecklistExecutionStartRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    binding_id: str = Field(min_length=64, max_length=64)
+    spec_edition: int = Field(ge=1)
     expected_spec_version: int = Field(ge=1)
-    idempotency_key: str = Field(min_length=1, max_length=255)
+    binding_version: int = Field(ge=1)
 
 
 class ChecklistItemResultRequest(BaseModel):
@@ -88,9 +91,29 @@ class ChecklistItemResultRequest(BaseModel):
 class ChecklistExecutionSubmitRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    expected_execution_revision: int = Field(ge=1)
-    results: list[ChecklistItemResultRequest] = Field(min_length=10, max_length=10)
-    idempotency_key: str = Field(min_length=1, max_length=255)
+    spec_edition: int = Field(ge=1)
+    expected_spec_version: int = Field(ge=1)
+    execution_id: str = Field(min_length=1, max_length=255)
+    item_results: list[ChecklistItemResultRequest] = Field(
+        min_length=10,
+        max_length=10,
+    )
+
+
+class ChecklistExecutionStartResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    execution_id: str
+    spec_edition: int
+    status: Literal["started"]
+
+
+class ChecklistExecutionSubmitResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    result_id: str
+    spec_edition: int
+    status: Literal["passed", "failed"]
 
 
 def _checklist_error_response(exc: ChecklistError | ChecklistContractError):
@@ -200,7 +223,15 @@ def _api07_error_response(
         code=code,
         http_status=(
             status.HTTP_409_CONFLICT
-            if code in {"version_conflict", "checklist_binding_off"}
+            if code
+            in {
+                "version_conflict",
+                "checklist_binding_off",
+                "checklist_spec_status_conflict",
+                "checklist_execution_conflict",
+                "checklist_spec_edition_conflict",
+                "checklist_binding_conflict",
+            }
             else status.HTTP_422_UNPROCESSABLE_CONTENT
         ),
         retryable=retryable,
@@ -220,7 +251,15 @@ def _api08_error_response(
         code=code,
         http_status=(
             status.HTTP_409_CONFLICT
-            if code in {"version_conflict", "checklist_binding_off"}
+            if code
+            in {
+                "version_conflict",
+                "checklist_binding_off",
+                "checklist_spec_status_conflict",
+                "checklist_execution_conflict",
+                "checklist_spec_edition_conflict",
+                "checklist_binding_conflict",
+            }
             else status.HTTP_422_UNPROCESSABLE_CONTENT
         ),
         retryable=retryable,
@@ -240,7 +279,15 @@ def _api09_error_response(
         code=code,
         http_status=(
             status.HTTP_409_CONFLICT
-            if code in {"version_conflict", "checklist_binding_off"}
+            if code
+            in {
+                "version_conflict",
+                "checklist_binding_off",
+                "checklist_spec_edition_conflict",
+                "checklist_spec_status_conflict",
+                "checklist_execution_conflict",
+                "checklist_binding_conflict",
+            }
             else status.HTTP_422_UNPROCESSABLE_CONTENT
         ),
         retryable=retryable,
@@ -309,6 +356,7 @@ def _execution_payload(
         "board_id": execution.board_id,
         "spec_id": execution.spec_id,
         "spec_version": execution.spec_version,
+        "spec_edition": execution.spec_edition,
         "content_digest": execution.content_digest,
         "input_digest": execution.input_digest,
         "template_version_id": execution.template_version,
@@ -331,6 +379,7 @@ def _receipt_payload(receipt: ChecklistReceipt) -> dict[str, object]:
         "board_id": receipt.board_id,
         "spec_id": receipt.spec_id,
         "spec_version": receipt.spec_version,
+        "spec_edition": receipt.spec_edition,
         "content_digest": receipt.content_digest,
         "input_digest": receipt.input_digest,
         "template_version_id": receipt.template_version,
@@ -382,8 +431,6 @@ def _checklist_state_status(state: ChecklistSpecState) -> str:
         return "off"
     if receipt is None:
         return "not_started"
-    if state.currentness is not None and not state.currentness.current:
-        return "stale"
     if not receipt.blocking_satisfied:
         return "failed"
     return "current"
@@ -393,10 +440,14 @@ def _state_payload(state: ChecklistSpecState) -> dict[str, object]:
     receipt = state.current_receipt
     return {
         "status": _checklist_state_status(state),
+        "lifecycle_state": (
+            "current" if receipt is not None else "pending"
+        ),
         "subject": {
             "board_id": state.subject.board_id,
             "spec_id": state.subject.spec_id,
             "spec_version": state.subject.spec_version,
+            "spec_edition": state.subject.spec_edition,
             "content_digest": state.subject.content_digest,
             "input_digest": state.subject.input_digest,
             "status": state.subject.status,
@@ -414,6 +465,7 @@ def _state_payload(state: ChecklistSpecState) -> dict[str, object]:
 def _receipt_view_payload(view: ChecklistReceiptView) -> dict[str, object]:
     return {
         "receipt": _receipt_payload(view.receipt),
+        "state": view.state.value,
         "is_head": view.is_head,
         "currentness": _currentness_payload(view.currentness),
         "gate": _gate_payload(view.gate),
@@ -562,6 +614,7 @@ async def get_checklist_spec_state(
 @router.post(
     "/boards/{board_id}/specs/{spec_id}/checklist-executions",
     status_code=status.HTTP_201_CREATED,
+    response_model=ChecklistExecutionStartResponse,
 )
 async def start_checklist_execution(
     board_id: str,
@@ -572,17 +625,21 @@ async def start_checklist_execution(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     try:
-        result = await StartChecklistExecutionUseCase().execute(
-            StartChecklistExecutionCommand(
-                board_id=board_id,
-                spec_id=spec_id,
-                expected_spec_version=data.expected_spec_version,
-                binding_digest=data.binding_id,
-                idempotency_key=data.idempotency_key,
-            ),
-            actor=RESTAdapterContract.actor(user_id, realm_id=realm_id),
-            uow=uow,
-        )
+        with observe_external_validation_write(
+            assessment_kind="curated_checklist",
+            subject_type="spec",
+        ):
+            result = await StartChecklistExecutionUseCase().execute(
+                StartChecklistExecutionCommand(
+                    board_id=board_id,
+                    spec_id=spec_id,
+                    expected_spec_version=data.expected_spec_version,
+                    spec_edition=data.spec_edition,
+                    binding_version=data.binding_version,
+                ),
+                actor=RESTAdapterContract.actor(user_id, realm_id=realm_id),
+                uow=uow,
+            )
     except (ChecklistError, ChecklistContractError) as exc:
         return _api08_error_response(exc)
     except EntityNotFoundError as exc:
@@ -595,11 +652,8 @@ async def start_checklist_execution(
     execution = result.execution
     return {
         "execution_id": execution.id,
-        "items": _template_payload(SPECIFY_CHECKLIST_TEMPLATE_V1)["items"],
-        # The input digest includes both semantic content and clarification
-        # identity, so it is the complete frozen subject identity.
-        "subject_digest": execution.input_digest,
-        "template_digest": execution.template_digest,
+        "spec_edition": execution.spec_edition,
+        "status": "started",
     }
 
 
@@ -609,6 +663,7 @@ async def list_checklist_executions(
     spec_id: str,
     offset: str = Query(default="0"),
     limit: str = Query(default="25"),
+    lifecycle_state: ChecklistReceiptState | None = Query(default=None),
     user_id: str = Depends(require_user),
     realm_id: str | None = Depends(get_realm_id),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
@@ -621,6 +676,7 @@ async def list_checklist_executions(
                 spec_id=spec_id,
                 offset=resolved_offset,
                 limit=resolved_limit,
+                state=lifecycle_state,
             ),
             actor=RESTAdapterContract.actor(user_id, realm_id=realm_id),
             uow=uow,
@@ -643,12 +699,14 @@ async def list_checklist_executions(
         "total_overall": page.total,
         "offset": page.offset,
         "limit": page.limit,
+        "has_more": page.offset + len(page.items) < page.total,
     }
 
 
 @router.post(
     "/boards/{board_id}/specs/{spec_id}/checklist-executions/"
     "{execution_id}/submit",
+    response_model=ChecklistExecutionSubmitResponse,
 )
 async def submit_checklist_execution(
     board_id: str,
@@ -659,27 +717,39 @@ async def submit_checklist_execution(
     realm_id: str | None = Depends(get_realm_id),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    try:
-        result = await SubmitChecklistExecutionUseCase().execute(
-            SubmitChecklistExecutionCommand(
-                board_id=board_id,
-                spec_id=spec_id,
-                execution_id=execution_id,
-                expected_execution_revision=data.expected_execution_revision,
-                items=tuple(
-                    ChecklistItemResult(
-                        item_id=item.item_id,
-                        outcome=item.outcome,
-                        anchor=item.anchor,
-                        rationale=item.rationale,
-                    )
-                    for item in data.results
-                ),
-                idempotency_key=data.idempotency_key,
-            ),
-            actor=RESTAdapterContract.actor(user_id, realm_id=realm_id),
-            uow=uow,
+    if data.execution_id != execution_id:
+        return _frozen_contract_error_response(
+            code="checklist_execution_conflict",
+            http_status=status.HTTP_409_CONFLICT,
+            retryable=True,
+            source_code="checklist_execution_id_conflict",
+            message="checklist_execution_id_conflict",
         )
+    try:
+        with observe_external_validation_write(
+            assessment_kind="curated_checklist",
+            subject_type="spec",
+        ):
+            result = await SubmitChecklistExecutionUseCase().execute(
+                SubmitChecklistExecutionCommand(
+                    board_id=board_id,
+                    spec_id=spec_id,
+                    execution_id=execution_id,
+                    spec_edition=data.spec_edition,
+                    expected_spec_version=data.expected_spec_version,
+                    item_results=tuple(
+                        ChecklistItemResult(
+                            item_id=item.item_id,
+                            outcome=item.outcome,
+                            anchor=item.anchor,
+                            rationale=item.rationale,
+                        )
+                        for item in data.item_results
+                    )
+                ),
+                actor=RESTAdapterContract.actor(user_id, realm_id=realm_id),
+                uow=uow,
+            )
     except (ChecklistError, ChecklistContractError) as exc:
         return _api09_error_response(exc)
     except EntityNotFoundError as exc:
@@ -689,17 +759,18 @@ async def submit_checklist_execution(
         ) from exc
     except PermissionDeniedError as exc:
         return _forbidden_response(exc)
+    result_status = (
+        "failed"
+        if any(
+            item.outcome is ChecklistItemOutcome.FAIL
+            for item in data.item_results
+        )
+        else "passed"
+    )
     return {
-        "receipt_id": result.receipt_id,
-        "outcome": (
-            "fail"
-            if any(
-                item.outcome is ChecklistItemOutcome.FAIL
-                for item in data.results
-            )
-            else "pass"
-        ),
-        "head_revision": result.head_revision,
+        "result_id": result.receipt_id,
+        "spec_edition": result.spec_edition,
+        "status": result_status,
     }
 
 

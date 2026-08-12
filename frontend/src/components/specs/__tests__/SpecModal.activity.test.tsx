@@ -138,7 +138,7 @@ describe('SpecModal Activity tab', () => {
 
     await screen.findByText(spec.title);
     expect(
-      screen.getByLabelText('Edition v2; technical revision r3'),
+      screen.getByLabelText('Edition 2'),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: 'Activity' }));
 

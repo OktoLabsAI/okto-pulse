@@ -48,6 +48,7 @@ from okto_pulse.core.domain.quality_assessment import (
 from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
 from okto_pulse.core.ports.guideline_policy import (
     GuidelinePolicyDigestConflict,
+    GuidelinePolicyEditionConflict,
     GuidelinePolicyIdempotencyConflict,
     GuidelinePolicySubjectConflict,
 )
@@ -76,12 +77,15 @@ FINDING_CONTRACT_V2 = "semantic-metric-finding/v2"
 
 
 def _subject_payload(subject: PolicySubjectRef) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "board_id": subject.board_id,
         "subject_type": subject.entity_type.value,
         "subject_id": subject.subject_id,
         "subject_version": subject.subject_version,
     }
+    if subject.subject_edition is not None:
+        payload["subject_edition"] = subject.subject_edition
+    return payload
 
 
 def _subject_from_payload(payload: object) -> PolicySubjectRef:
@@ -93,6 +97,7 @@ def _subject_from_payload(payload: object) -> PolicySubjectRef:
             entity_type=PolicyEntityType(payload["subject_type"]),
             subject_id=payload["subject_id"],
             subject_version=payload["subject_version"],
+            subject_edition=payload.get("subject_edition"),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise GuidelinePolicyDigestConflict(
@@ -355,10 +360,21 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
             subject_id=request.subject.subject_id,
             lock=True,
         )
+        if (
+            snapshot is not None
+            and snapshot.subject.subject_edition
+            != request.subject.subject_edition
+        ):
+            raise GuidelinePolicyEditionConflict(
+                "guideline_policy_edition_conflict"
+            )
         if snapshot is None or snapshot.subject != request.subject:
             raise GuidelinePolicySubjectConflict("semantic_assessment_subject_stale")
-        bindings, revisions = await self._v1._authority_bundle(
+        bindings, revisions = await self._v1._authority_bundle_for_subject(
             board_id=request.subject.board_id,
+            entity_type=request.subject.entity_type,
+            subject_id=request.subject.subject_id,
+            subject_edition=request.subject.subject_edition,
             lock=True,
         )
         binding = next(
@@ -517,6 +533,7 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
             subject_type=request.subject.entity_type.value,
             subject_id=request.subject.subject_id,
             subject_version=request.subject.subject_version,
+            validation_edition=request.subject.subject_edition,
             subject_content_digest=snapshot.content_digest,
             binding_id=binding.binding_id,
             binding_revision=binding.binding_revision,
@@ -655,6 +672,7 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
                 entity_type=PolicyEntityType(row.subject_type),
                 subject_id=row.subject_id,
                 subject_version=row.subject_version,
+                subject_edition=row.validation_edition,
             ),
             subject_content_digest=row.subject_content_digest,
             guideline_id=row.guideline_id,
@@ -683,16 +701,31 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
             raise GuidelinePolicyDigestConflict(
                 "semantic_assessment_subject_type_invalid"
             ) from exc
+        subject = await self._v1.resolve_policy_subject_snapshot(
+            board_id=board_id,
+            entity_type=subject_type,
+            subject_id=subject_id,
+        )
+        if subject is None:
+            return None
+        statement = (
+            select(SemanticGuidelineAssessmentV2Row)
+            .where(
+                SemanticGuidelineAssessmentV2Row.board_id == board_id,
+                SemanticGuidelineAssessmentV2Row.subject_type
+                == subject_type.value,
+                SemanticGuidelineAssessmentV2Row.subject_id == subject_id,
+                SemanticGuidelineAssessmentV2Row.binding_id == binding_id,
+            )
+        )
+        if subject.subject.subject_edition is not None:
+            statement = statement.where(
+                SemanticGuidelineAssessmentV2Row.validation_edition
+                == subject.subject.subject_edition
+            )
         row = (
             await self._session.execute(
-                select(SemanticGuidelineAssessmentV2Row)
-                .where(
-                    SemanticGuidelineAssessmentV2Row.board_id == board_id,
-                    SemanticGuidelineAssessmentV2Row.subject_type
-                    == subject_type.value,
-                    SemanticGuidelineAssessmentV2Row.subject_id == subject_id,
-                    SemanticGuidelineAssessmentV2Row.binding_id == binding_id,
-                )
+                statement
                 .order_by(
                     SemanticGuidelineAssessmentV2Row.recorded_at.desc(),
                     SemanticGuidelineAssessmentV2Row.receipt_id.desc(),
@@ -702,14 +735,15 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
         ).scalar_one_or_none()
         if row is None:
             return None
-        subject = await self._v1.resolve_policy_subject_snapshot(
-            board_id=board_id,
-            entity_type=subject_type,
-            subject_id=subject_id,
-        )
+        # Edition-aware human evidence remains current for the lifecycle
+        # edition; technical digest drift stays available as audit metadata.
+        if subject.subject.subject_edition is not None:
+            return await self.get_semantic_assessment_v2(
+                board_id=board_id,
+                receipt_id=row.receipt_id,
+            )
         if (
-            subject is None
-            or subject.subject.subject_version != row.subject_version
+            subject.subject.subject_version != row.subject_version
             or subject.content_digest != row.subject_content_digest
         ):
             return None

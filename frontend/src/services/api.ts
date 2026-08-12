@@ -12,8 +12,9 @@ import type {
   ChecklistBinding,
   ChecklistBindingUpdateResult,
   ChecklistExecutionStartResult,
+  ChecklistExecutionStartRequest,
+  ChecklistExecutionSubmitRequest,
   ChecklistExecutionSubmitResult,
-  ChecklistItemResult,
   ChecklistReceipt,
   ChecklistReceiptPage,
   ChecklistSpecState,
@@ -73,6 +74,10 @@ import type {
   SpecStructuredEntityOperation,
   SpecStructuredEntityType,
   SpecSummary,
+  SpecValidationCurrentSummary,
+  SpecValidationList,
+  SpecValidationSubmitPayload,
+  SpecValidationSubmitResponse,
   CreateSpecRequest,
   UpdateSpecRequest,
   UpdateSprintRequest,
@@ -159,6 +164,8 @@ import type {
   QualitySubjectType,
   RecordAmbiguityAssessmentRequest,
   RecordAmbiguityAssessmentResponse,
+  ValidationCycleSummary,
+  ValidationTechnicalAudit,
   CodeEvidenceRevokeRequest,
   CodeInvestigationReceiptReadResult,
   CodeTraceabilityProfile,
@@ -197,6 +204,7 @@ export interface PageWindow {
 export interface QualityAssessmentPageWindow extends PageWindow {
   assessmentKind?: QualityAssessmentKind;
   state?: QualityAssessmentReceiptState;
+  subjectEdition?: number;
 }
 
 export interface QualityFindingPageWindow extends PageWindow {
@@ -204,6 +212,7 @@ export interface QualityFindingPageWindow extends PageWindow {
   assessmentKind?: QualityAssessmentKind;
   categoryCode?: string;
   severity?: QualityFindingSeverity;
+  subjectEdition?: number;
 }
 
 export type StoryPageItem = Omit<
@@ -339,8 +348,12 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       subjectId: string,
       assessmentKind: QualityAssessmentKind,
       signal?: AbortSignal,
+      subjectEdition?: number,
     ): Promise<CurrentQualityAssessment | null> {
       const params = new URLSearchParams({ assessment_kind: assessmentKind });
+      if (subjectEdition !== undefined) {
+        params.set('subject_edition', String(subjectEdition));
+      }
       try {
         return await apiClient.fetchJson<CurrentQualityAssessment>(
           `${qualitySubjectPath(subjectType, subjectId)}/quality-assessments/current?${params.toString()}`,
@@ -380,6 +393,9 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
         params.set('assessment_kind', options.assessmentKind);
       }
       if (options.state) params.set('state', options.state);
+      if (options.subjectEdition !== undefined) {
+        params.set('subject_edition', String(options.subjectEdition));
+      }
       return apiClient.fetchJson<PageEnvelope<QualityAssessmentListItem>>(
         `${qualitySubjectPath(subjectType, subjectId)}/quality-assessments?${params.toString()}`,
         { signal: options.signal },
@@ -400,6 +416,9 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
         params.set('category_code', options.categoryCode.trim());
       }
       if (options.severity) params.set('severity', options.severity);
+      if (options.subjectEdition !== undefined) {
+        params.set('subject_edition', String(options.subjectEdition));
+      }
       return apiClient.fetchJson<PageEnvelope<QualityFinding>>(
         `${qualitySubjectPath(subjectType, subjectId)}/quality-findings?${params.toString()}`,
         { signal: options.signal },
@@ -467,6 +486,41 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       });
       return apiClient.fetchJson<CodeTraceabilityProjection>(
         `/boards/${encodeURIComponent(boardId)}/code-traceability-projection?${params.toString()}`,
+        { signal },
+      );
+    },
+
+    async getValidationCycle(
+      subjectType: QualitySubjectType,
+      subjectId: string,
+      options: {
+        includePrevious?: boolean;
+        offset?: number;
+        limit?: number;
+        signal?: AbortSignal;
+      } = {},
+    ): Promise<ValidationCycleSummary> {
+      const params = new URLSearchParams({
+        include_previous: String(options.includePrevious ?? false),
+        offset: String(options.offset ?? 0),
+        limit: String(options.limit ?? 25),
+      });
+      return apiClient.fetchJson<ValidationCycleSummary>(
+        `${qualitySubjectPath(subjectType, subjectId)}/validation-cycle?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
+    async getValidationTechnicalAudit(
+      subjectType: QualitySubjectType,
+      subjectId: string,
+      resultId: string,
+      resultType: 'ambiguity_assessment' | 'spec_validation' | 'requirement_lint',
+      signal?: AbortSignal,
+    ): Promise<ValidationTechnicalAudit> {
+      const params = new URLSearchParams({ result_type: resultType });
+      return apiClient.fetchJson<ValidationTechnicalAudit>(
+        `${qualitySubjectPath(subjectType, subjectId)}/validation-cycle/results/${encodeURIComponent(resultId)}/technical-audit?${params.toString()}`,
         { signal },
       );
     },
@@ -1600,10 +1654,18 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     // Dedicated per-ideation Max ambiguity gate skip write path (spec 2485780b).
     // Works while the ideation is in evaluating status; does not touch other fields.
-    async setIdeationAmbiguityGateSkip(ideationId: string, skip: boolean): Promise<Ideation> {
+    async setIdeationAmbiguityGateSkip(
+      ideationId: string,
+      data: {
+        skip_ambiguity_gate: boolean;
+        reason: string;
+        expected_ideation_version: number;
+        expected_ideation_edition: number;
+      },
+    ): Promise<Ideation> {
       return apiClient.fetchJson<Ideation>(`/ideations/${ideationId}/ambiguity-gate-skip`, {
         method: 'PATCH',
-        body: JSON.stringify({ skip_ambiguity_gate: skip }),
+        body: JSON.stringify(data),
       });
     },
 
@@ -2406,15 +2468,50 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     // ==================== SPEC VALIDATION GATE ====================
 
-    async submitSpecValidation(specId: string, data: any): Promise<any> {
-      return apiClient.fetchJson(`/specs/${specId}/validation`, {
+    async submitSpecValidation(
+      specId: string,
+      data: SpecValidationSubmitPayload,
+    ): Promise<SpecValidationSubmitResponse> {
+      return apiClient.fetchJson<SpecValidationSubmitResponse>(`/specs/${specId}/validation`, {
         method: 'POST',
         body: JSON.stringify(data),
       });
     },
 
-    async listSpecValidations(specId: string): Promise<any> {
-      return apiClient.fetchJson(`/specs/${specId}/validations`);
+    async listSpecValidations(
+      specId: string,
+      options?: {
+        lifecycleState?: 'previous';
+        offset?: number;
+        limit?: 25;
+        signal?: AbortSignal;
+      },
+    ): Promise<SpecValidationList> {
+      const params = new URLSearchParams();
+      if (options?.lifecycleState) {
+        params.set('lifecycle_state', options.lifecycleState);
+      }
+      if (options?.offset !== undefined) {
+        params.set('offset', String(options.offset));
+      }
+      if (options?.limit !== undefined) {
+        params.set('limit', String(options.limit));
+      }
+      const query = params.size > 0 ? `?${params.toString()}` : '';
+      return apiClient.fetchJson<SpecValidationList>(
+        `/specs/${specId}/validations${query}`,
+        { signal: options?.signal },
+      );
+    },
+
+    async getCurrentSpecValidation(
+      specId: string,
+      signal?: AbortSignal,
+    ): Promise<SpecValidationCurrentSummary> {
+      return apiClient.fetchJson<SpecValidationCurrentSummary>(
+        `/specs/${specId}/validations/current`,
+        { signal },
+      );
     },
 
     // ==================== CURATED SPEC CHECKLIST ====================
@@ -2466,11 +2563,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     async startChecklistExecution(
       boardId: string,
       specId: string,
-      data: {
-        binding_id: string;
-        expected_spec_version: number;
-        idempotency_key: string;
-      },
+      data: ChecklistExecutionStartRequest,
     ): Promise<ChecklistExecutionStartResult> {
       return apiClient.fetchJson(
         `/boards/${boardId}/specs/${specId}/checklist-executions`,
@@ -2481,15 +2574,10 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     async submitChecklistExecution(
       boardId: string,
       specId: string,
-      executionId: string,
-      data: {
-        expected_execution_revision: number;
-        results: ChecklistItemResult[];
-        idempotency_key: string;
-      },
+      data: ChecklistExecutionSubmitRequest,
     ): Promise<ChecklistExecutionSubmitResult> {
       return apiClient.fetchJson(
-        `/boards/${boardId}/specs/${specId}/checklist-executions/${executionId}/submit`,
+        `/boards/${boardId}/specs/${specId}/checklist-executions/${data.execution_id}/submit`,
         { method: 'POST', body: JSON.stringify(data) },
       );
     },

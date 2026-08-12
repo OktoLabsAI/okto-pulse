@@ -312,7 +312,7 @@ export function RefinementsPanel({ boardId }: RefinementsPanelProps) {
                           <DerivationPendingBadge
                             label={showWithoutDerivation ? REFINEMENT_PENDING_SPEC_LABEL : null}
                           />
-                          <span className="text-xs text-gray-400">v{refinement.version}</span>
+                          <span className="text-xs text-gray-400">Edition {refinement.edition ?? 1}</span>
                           <CognitivePendingBadge
                             badge={cognitiveBadges[`refinement:${refinement.id}`]}
                           />

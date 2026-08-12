@@ -18,6 +18,10 @@ import { ContextualHelpLink } from '@/components/help';
 import { CollapsibleEvidenceSection } from '@/components/shared/CollapsibleEvidenceSection';
 import { CursorCollectionControls } from '@/components/shared/CursorCollectionControls';
 import { MetricScoreRing } from '@/components/shared/MetricScoreRing';
+import {
+  PreviousResultsSection,
+  ValidationCycleStatusBadge,
+} from '@/components/validation-cycle/ValidationCyclePrimitives';
 import { useOpaqueCursorCollection } from '@/hooks/useOpaqueCursorCollection';
 import { useDialogFocusTrap } from '@/hooks/useDialogFocusTrap';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
@@ -79,6 +83,12 @@ export interface PolicyCompliancePanelProps {
    * Required for transition-decision skip creation when no receipt exists.
    */
   subjectVersion?: number;
+  /** Human validation edition used only by the opt-in Spec lifecycle view. */
+  subjectEdition?: number;
+  /** Preserve the established technical UI unless a Spec explicitly opts in. */
+  presentationMode?: 'legacy' | 'lifecycle-edition';
+  /** Suppresses the repeated title inside the unified Spec workspace. */
+  embedded?: boolean;
   /**
    * Exact, already envelope-validated lifecycle authority for this subject.
    * Binding decisions allow a human skip before an admissible receipt exists.
@@ -1155,6 +1165,9 @@ export function PolicyCompliancePanel({
   entityType,
   subjectId,
   subjectVersion,
+  subjectEdition,
+  presentationMode = 'legacy',
+  embedded = false,
   transitionPreview,
   evaluationEnabled = true,
   evaluationUnavailableReason,
@@ -1165,12 +1178,14 @@ export function PolicyCompliancePanel({
   onNavigateSemanticAnchor,
   onOpenReassessmentGuidance,
 }: PolicyCompliancePanelProps) {
+  const lifecycleMode = presentationMode === 'lifecycle-edition';
   const api = usePolicyGovernanceApi();
   const permissions = usePermissions(boardId);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [findingsExpanded, setFindingsExpanded] = useState(false);
   const [waiversExpanded, setWaiversExpanded] = useState(false);
   const [skipsExpanded, setSkipsExpanded] = useState(false);
+  const [advancedExpanded, setAdvancedExpanded] = useState(false);
   const [localRefresh, setLocalRefresh] = useState(0);
   const [guidanceVisible, setGuidanceVisible] = useState(false);
   const advancedDetailsRef = useRef<HTMLDetailsElement | null>(null);
@@ -1208,9 +1223,18 @@ export function PolicyCompliancePanel({
     [transitionBindings.items],
   );
 
-  const expectation = useMemo<SemanticSubjectExpectation>(
+  const subjectExpectation = useMemo<SemanticSubjectExpectation>(
     () => ({ boardId, entityType, subjectId }),
     [boardId, entityType, subjectId],
+  );
+  const currentExpectation = useMemo<SemanticSubjectExpectation>(
+    () => ({
+      boardId,
+      entityType,
+      subjectId,
+      validationEdition: lifecycleMode ? subjectEdition : undefined,
+    }),
+    [boardId, entityType, lifecycleMode, subjectEdition, subjectId],
   );
   const resetScope = JSON.stringify([
     boardId,
@@ -1218,6 +1242,8 @@ export function PolicyCompliancePanel({
     subjectId,
     refreshKey,
     localRefresh,
+    lifecycleMode,
+    subjectEdition,
   ]);
   const evaluatedAt = useMemo(
     () => new Date().toISOString(),
@@ -1227,7 +1253,13 @@ export function PolicyCompliancePanel({
   const dashboardApi = useDashboardApi();
   const [complianceAuthority, setComplianceAuthority] =
     useState<ComplianceAuthorityState>({ status: 'loading', items: [] });
-  const semanticScope = JSON.stringify([boardId, entityType, subjectId]);
+  const semanticScope = JSON.stringify([
+    boardId,
+    entityType,
+    subjectId,
+    lifecycleMode,
+    lifecycleMode ? subjectEdition : null,
+  ]);
   const [currentSemantic, setCurrentSemantic] =
     useState<CurrentSemanticAssessmentState>({
       scope: semanticScope,
@@ -1341,9 +1373,20 @@ export function PolicyCompliancePanel({
             binding.bindingId,
             'detail',
             controller.signal,
+            lifecycleMode ? subjectEdition : undefined,
           );
-          responses[binding.bindingId] =
-            parseCurrentSemanticAssessmentResponse(response, expectation);
+          const parsed = parseCurrentSemanticAssessmentResponse(
+            response,
+            currentExpectation,
+          );
+          // In the human lifecycle projection, stale evidence belongs only to
+          // Previous results. A current-edition slot with no current evidence
+          // is presented as Not assessed instead of leaking version drift.
+          if (lifecycleMode && parsed.assessment.currentness !== 'current') {
+            missingBindingIds.push(binding.bindingId);
+            return;
+          }
+          responses[binding.bindingId] = parsed;
         } catch (caught) {
           if (
             caught instanceof PolicyGovernanceApiError
@@ -1377,17 +1420,18 @@ export function PolicyCompliancePanel({
     // then issue a second request when the refreshed authority arrives.
     // The api hook identity stays excluded for request-loop protection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canRead, complianceAuthority, semanticScope]);
+  }, [canRead, complianceAuthority, currentExpectation, lifecycleMode, semanticScope, subjectEdition]);
 
   useEffect(() => {
     setHistoryExpanded(false);
     setFindingsExpanded(false);
     setWaiversExpanded(false);
     setSkipsExpanded(false);
+    setAdvancedExpanded(false);
     setGuidanceVisible(false);
     setWaiverFinding(null);
     setSkipDialog(null);
-  }, [boardId, entityType, subjectId]);
+  }, [semanticScope]);
 
   const loadAssessmentPage = useCallback(async (
     cursor: string | undefined,
@@ -1401,12 +1445,12 @@ export function PolicyCompliancePanel({
       subjectId,
       signal,
     }),
-    (item) => parseSemanticAssessmentDetail(item, expectation),
+    (item) => parseSemanticAssessmentDetail(item, subjectExpectation),
     PAGE_SIZE,
-  ), [api, boardId, entityType, expectation, subjectId]);
+  ), [api, boardId, entityType, subjectExpectation, subjectId]);
 
   const assessments = useOpaqueCursorCollection({
-    enabled: canRead,
+    enabled: canRead && (!lifecycleMode || historyExpanded || advancedExpanded),
     resetKey: `${resetScope}:assessments`,
     loadPage: loadAssessmentPage,
     getItemKey: (item: SemanticAssessmentDetail) => item.receipt_id,
@@ -1429,9 +1473,9 @@ export function PolicyCompliancePanel({
       subjectId,
       signal,
     }),
-    (item) => parseSemanticFindingDetail(item, expectation),
+    (item) => parseSemanticFindingDetail(item, subjectExpectation),
     PAGE_SIZE,
-  ), [api, boardId, entityType, expectation, subjectId]);
+  ), [api, boardId, entityType, subjectExpectation, subjectId]);
 
   const findings = useOpaqueCursorCollection({
     enabled: canRead && findingsExpanded,
@@ -1454,19 +1498,19 @@ export function PolicyCompliancePanel({
       subjectId,
       signal,
     }),
-    (item) => parseSemanticWaiverDetail(item, expectation),
+    (item) => parseSemanticWaiverDetail(item, subjectExpectation),
     PAGE_SIZE,
   ), [
     api,
     boardId,
     entityType,
     evaluatedAt,
-    expectation,
+    subjectExpectation,
     subjectId,
   ]);
 
   const waivers = useOpaqueCursorCollection({
-    enabled: canReadWaivers,
+    enabled: canReadWaivers && (!lifecycleMode || advancedExpanded),
     resetKey: `${resetScope}:waivers:${evaluatedAt}`,
     loadPage: loadWaiverPage,
     getItemKey: (item: SemanticWaiverDetail) => item.waiver_id,
@@ -1491,7 +1535,7 @@ export function PolicyCompliancePanel({
       try {
         views.set(bindingId, resolveSemanticPolicyViewModel(response, {
           resolveAnchor: resolveSemanticAnchor,
-          canViewTechnicalDetails: true,
+          canViewTechnicalDetails: !lifecycleMode,
           waivedMetricCodes: waivedByBinding.get(bindingId),
         }));
       } catch (caught) {
@@ -1499,7 +1543,7 @@ export function PolicyCompliancePanel({
       }
     }
     return { views, error };
-  }, [currentSemantic.responses, resolveSemanticAnchor, waivers.items]);
+  }, [currentSemantic.responses, lifecycleMode, resolveSemanticAnchor, waivers.items]);
 
   useEffect(() => {
     if (currentSemantic.status === 'loading') {
@@ -1540,12 +1584,12 @@ export function PolicyCompliancePanel({
       subjectId,
       signal,
     }),
-    (item) => parseSemanticSkipDetail(item, expectation),
+    (item) => parseSemanticSkipDetail(item, subjectExpectation),
     PAGE_SIZE,
-  ), [api, boardId, entityType, expectation, subjectId]);
+  ), [api, boardId, entityType, subjectExpectation, subjectId]);
 
   const skips = useOpaqueCursorCollection({
-    enabled: canReadSkips,
+    enabled: canReadSkips && (!lifecycleMode || advancedExpanded),
     resetKey: `${resetScope}:skips`,
     loadPage: loadSkipPage,
     getItemKey: (item: SemanticSkipDetail) => item.skip_id,
@@ -1663,10 +1707,27 @@ export function PolicyCompliancePanel({
         && assessment.confidence_admissible
         && assessment.assessor_independent,
     );
+  const currentLifecycleReceiptIds = new Set(
+    Object.values(currentSemantic.responses).map(
+      (response) => response.assessment.receipt_id,
+    ),
+  );
+  const previousLifecycleAssessments = lifecycleMode
+    ? assessments.items.filter(
+        (assessment) => !currentLifecycleReceiptIds.has(assessment.receipt_id),
+      )
+    : [];
+  const guidelineTitleByBinding = new Map(
+    complianceAuthority.items.map((binding) => [
+      binding.bindingId,
+      binding.guidelineTitle,
+    ]),
+  );
 
   return (
     <>
       <div className="space-y-5" data-testid="policy-compliance-panel">
+        {!(lifecycleMode && embedded) && (
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h3 className="flex items-center gap-2 text-base font-semibold text-surface-900 dark:text-white">
@@ -1675,11 +1736,12 @@ export function PolicyCompliancePanel({
                 className="text-violet-600 dark:text-violet-300"
                 aria-hidden="true"
               />
-              Semantic guideline assessments
+              {lifecycleMode ? 'Policy compliance' : 'Semantic guideline assessments'}
             </h3>
             <p className="mt-1 max-w-3xl text-xs text-surface-500 dark:text-surface-400">
-              Metric scores are recorded by agents against the adopted
-              guideline revisions; Pulse verifies and seals them.
+              {lifecycleMode
+                ? `An external agent evaluates adopted guidelines for ${subjectEdition == null ? 'the current edition' : `Edition ${subjectEdition}`}; Pulse verifies the submitted result.`
+                : 'Metric scores are recorded by agents against the adopted guideline revisions; Pulse verifies and seals them.'}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -1708,6 +1770,7 @@ export function PolicyCompliancePanel({
             </button>
           </div>
         </header>
+        )}
 
         <section
           className="space-y-3"
@@ -1782,9 +1845,15 @@ export function PolicyCompliancePanel({
                     </span>
                     <EnforcementBadge enforcement={binding.enforcement} />
                     {state
-                      ? <SemanticStateChip state={state} />
+                      ? lifecycleMode && state === 'stale'
+                        ? (
+                            <span className="rounded-full bg-surface-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-surface-600 dark:bg-surface-800 dark:text-surface-300">
+                              Previous result
+                            </span>
+                          )
+                        : <SemanticStateChip state={state} />
                       : <ComplianceStateChip assessment={null} />}
-                    {view && (
+                    {view && !lifecycleMode && (
                       <span className="rounded-full bg-surface-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-surface-600 dark:bg-surface-800 dark:text-surface-300">
                         {view.contractVersion}
                       </span>
@@ -1799,7 +1868,7 @@ export function PolicyCompliancePanel({
                   {noAssessment && (
                     <div className="rounded-lg border border-dashed border-surface-300 p-3 text-xs text-surface-600 dark:border-surface-700 dark:text-surface-300" data-testid="policy-compliance-no-assessment">
                       <p className="font-semibold">No assessment recorded</p>
-                      <p className="mt-1">Ask an independent agent to assess the current version. Scores cannot be entered here.</p>
+                      <p className="mt-1">Ask an independent agent to assess the current {lifecycleMode ? 'edition' : 'version'}. Scores cannot be entered here.</p>
                     </div>
                   )}
                   <div className="flex flex-wrap items-start justify-start gap-x-6 gap-y-3 pt-1">
@@ -1886,7 +1955,7 @@ export function PolicyCompliancePanel({
                   )}
                   {view && (
                     <p className="flex flex-wrap items-center gap-2 text-[11px] text-surface-500 dark:text-surface-400">
-                      <CurrentnessBadge currentness={view.currentness} />
+                      {!lifecycleMode && <CurrentnessBadge currentness={view.currentness} />}
                       <span>
                         Confidence {view.confidence}
                         {binding.minimumConfidence !== null
@@ -1898,7 +1967,7 @@ export function PolicyCompliancePanel({
                   )}
                   <PolicyComplianceReadOnlyActions
                     onViewHistory={() => {
-                      if (advancedDetailsRef.current) {
+                      if (!lifecycleMode && advancedDetailsRef.current) {
                         advancedDetailsRef.current.open = true;
                       }
                       setHistoryExpanded(true);
@@ -1914,7 +1983,7 @@ export function PolicyCompliancePanel({
                   />
                   {guidanceVisible && (state === 'stale' || noAssessment) && (
                     <p role="status" aria-live="polite" className="rounded-lg bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
-                      Reassessment is performed by an independent agent against the current subject and binding fences; this browser never accepts a manual score or executes cognition.
+                      Reassessment is performed by an independent agent for the current {lifecycleMode ? 'edition' : 'subject and binding fences'}; this browser never accepts a manual score or executes cognition.
                     </p>
                   )}
                 </article>
@@ -1924,13 +1993,77 @@ export function PolicyCompliancePanel({
           )}
         </section>
 
+        {lifecycleMode && (
+          <PreviousResultsSection
+            expanded={historyExpanded}
+            onToggle={() => setHistoryExpanded((value) => !value)}
+            count={assessments.loaded && !assessments.hasMore
+              ? previousLifecycleAssessments.length
+              : undefined}
+            description="Earlier policy evaluations from this and prior editions."
+            testId="policy-compliance-previous-results"
+          >
+            {assessments.loading && !assessments.loaded ? (
+              <p role="status" className="text-xs text-surface-500 dark:text-surface-400">
+                Loading previous results…
+              </p>
+            ) : previousLifecycleAssessments.length === 0 ? (
+              <p className="text-xs text-surface-500 dark:text-surface-400">
+                No previous policy results are available.
+              </p>
+            ) : (
+              <ol className="space-y-2">
+                {previousLifecycleAssessments.map((assessment) => (
+                  <li
+                    key={assessment.receipt_id}
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-surface-200 bg-surface-50/70 p-3 text-xs dark:border-surface-700 dark:bg-surface-800/40"
+                  >
+                    <span>
+                      <span className="font-semibold text-surface-800 dark:text-surface-100">
+                        {assessment.validation_edition == null
+                          ? 'Legacy'
+                          : `Edition ${assessment.validation_edition}`}
+                      </span>
+                      <span className="ml-2 text-surface-500 dark:text-surface-400">
+                        {guidelineTitleByBinding.get(assessment.binding_id)
+                          ?? 'Policy evaluation'}{' '}
+                        · {formatTimestamp(assessment.recorded_at)}
+                      </span>
+                    </span>
+                    <ValidationCycleStatusBadge
+                      state={assessment.failed_metric_count === 0
+                        ? 'passed'
+                        : 'needs_attention'}
+                    />
+                  </li>
+                ))}
+              </ol>
+            )}
+            <CursorCollectionControls
+              collectionLabel="previous policy results"
+              itemCount={assessments.items.length}
+              hasMore={assessments.hasMore}
+              loading={assessments.loading}
+              error={assessments.error}
+              restartRequired={assessments.restartRequired}
+              onLoadMore={assessments.loadMore}
+              onRetry={assessments.retry}
+              onRestart={assessments.restart}
+              testId="policy-previous-results-cursor"
+            />
+          </PreviousResultsSection>
+        )}
+
         <details
           ref={advancedDetailsRef}
+          onToggle={(event) => setAdvancedExpanded(event.currentTarget.open)}
           className="rounded-xl border border-surface-200 dark:border-surface-700"
           data-testid="policy-compliance-advanced"
         >
-          <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-surface-600 hover:text-surface-900 dark:text-surface-300 dark:hover:text-white">
-            Governance details — receipts, waivers, skips and history
+          <summary className="cursor-pointer select-none rounded-xl px-3 py-2 text-xs font-medium text-surface-600 hover:text-surface-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-2 dark:text-surface-300 dark:hover:text-white dark:focus-visible:ring-offset-surface-900">
+            {lifecycleMode
+              ? 'Technical audit'
+              : 'Governance details — receipts, waivers, skips and history'}
           </summary>
           <div className="space-y-5 border-t border-surface-200 p-3 dark:border-surface-700">
 
@@ -1968,7 +2101,9 @@ export function PolicyCompliancePanel({
         <section className="space-y-3" aria-busy={assessments.loading}>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h4 className="text-sm font-semibold text-surface-800 dark:text-surface-100">
-              Latest assessment state by binding
+              {lifecycleMode
+                ? 'Loaded assessment audit by binding'
+                : 'Latest assessment state by binding'}
             </h4>
             {gateEvidenceReady && (
               <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
@@ -2070,9 +2205,11 @@ export function PolicyCompliancePanel({
           />
         </section>
 
-        <CollapsibleEvidenceSection
-          title="Assessment history"
-          description="Append-only receipts across every loaded subject × binding evaluation."
+        {!lifecycleMode && <CollapsibleEvidenceSection
+          title={lifecycleMode ? 'Previous results' : 'Assessment history'}
+          description={lifecycleMode
+            ? 'Earlier evaluations remain available for reference.'
+            : 'Append-only receipts across every loaded subject × binding evaluation.'}
           expanded={historyExpanded}
           onToggle={() => setHistoryExpanded((value) => !value)}
           testId="policy-compliance-history"
@@ -2093,17 +2230,19 @@ export function PolicyCompliancePanel({
                     {assessment.failed_metric_count} failed ·{' '}
                     {formatTimestamp(assessment.recorded_at)}
                   </span>
-                  <span className="flex items-center gap-2">
-                    <CurrentnessBadge currentness={assessment.currentness} />
-                    <code className="text-[10px] text-surface-500">
-                      {shortIdentity(assessment.receipt_id)}
-                    </code>
-                  </span>
+                  {!lifecycleMode && (
+                    <span className="flex items-center gap-2">
+                      <CurrentnessBadge currentness={assessment.currentness} />
+                      <code className="text-[10px] text-surface-500">
+                        {shortIdentity(assessment.receipt_id)}
+                      </code>
+                    </span>
+                  )}
                 </li>
               ))}
             </ol>
           )}
-        </CollapsibleEvidenceSection>
+        </CollapsibleEvidenceSection>}
 
         <CollapsibleEvidenceSection
           title="Pinpoint metric findings"

@@ -69,6 +69,8 @@ class _SemanticGraphScope:
             "Constraint": {},
         }
         self.edges: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+        self.edge_read_queries: list[str] = []
+        self.edge_exists_calls = 0
         self._before: (
             tuple[
                 dict[str, dict[str, dict[str, Any]]],
@@ -141,6 +143,28 @@ class _SemanticGraphScope:
                 if attrs.get("source_artifact_ref") == params["source_ref"]
             ]
             return GraphStatementResult.from_rows(rows)
+        for edge_type in ("belongs_to", "supersedes"):
+            if normalized.startswith(
+                f"MATCH (source:Entity)-[r:{edge_type}]->(target:Entity)"
+            ):
+                self.edge_read_queries.append(edge_type)
+                source_ids = {str(value) for value in params["source_ids"]}
+                target_ids = {str(value) for value in params["target_ids"]}
+                rows = [
+                    (from_id, to_id)
+                    for (
+                        stored_edge_type,
+                        from_type,
+                        to_type,
+                        from_id,
+                        to_id,
+                    ) in self.edges
+                    if stored_edge_type == edge_type
+                    and from_type == to_type == "Entity"
+                    and from_id in source_ids
+                    and to_id in target_ids
+                ]
+                return GraphStatementResult.from_rows(sorted(rows))
         if normalized.startswith("MATCH (n:Entity {id: $node_id}) SET"):
             node = self.nodes["Entity"][str(params["node_id"])]
             if "ended_at" not in params:
@@ -189,13 +213,8 @@ class _SemanticGraphScope:
         from_id: str,
         to_id: str,
     ) -> bool:
-        return (
-            edge_type,
-            from_type,
-            to_type,
-            from_id,
-            to_id,
-        ) in self.edges
+        self.edge_exists_calls += 1
+        raise AssertionError("semantic projection must batch edge reads")
 
     def create_edge(
         self,
@@ -415,6 +434,107 @@ def _desired_chain() -> tuple[Any, ...]:
         )
         for index, (kind, identity, lineage) in enumerate(identities, start=1)
     )
+
+
+def _desired_edge_batch(extra_nodes: int) -> tuple[Any, ...]:
+    current_id = _semantic_node_id("revision", "revision-current")
+    previous = _desired_semantic_node(
+        kind="revision",
+        identity="revision-previous",
+        digest="a" * 64,
+        generation=1,
+        active=False,
+        reason="semantic_guideline_revision_superseded",
+        successor_id=current_id,
+        title="Previous revision",
+        content="Terminal revision in the semantic lineage.",
+        payload={"revision_id": "revision-previous"},
+        created_at=NOW,
+        projected_at=NOW,
+    )
+    current = _desired_semantic_node(
+        kind="revision",
+        identity="revision-current",
+        digest="b" * 64,
+        generation=2,
+        active=True,
+        reason=None,
+        successor_id=None,
+        title="Current revision",
+        content="Current semantic authority.",
+        payload={"revision_id": "revision-current"},
+        created_at=NOW,
+        projected_at=NOW,
+    )
+    metrics = tuple(
+        _desired_semantic_node(
+            kind="metric_definition",
+            identity=f"revision-current:metric-{index}",
+            digest=f"{index % 16:x}" * 64,
+            generation=2,
+            active=True,
+            reason=None,
+            successor_id=None,
+            lineage_ids=(current_id,),
+            title=f"Metric {index}",
+            content="Metric with a revision lineage edge.",
+            payload={"metric_id": f"metric-{index}"},
+            created_at=NOW,
+            projected_at=NOW,
+        )
+        for index in range(extra_nodes)
+    )
+    return (previous, current, *metrics)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra_nodes", (1, 64))
+async def test_semantic_projection_prefetches_edges_in_constant_reads_and_replays(
+    extra_nodes: int,
+):
+    graph = _SemanticGraph()
+    projector = CommunitySqlAlchemyPolicyConstraintProjection(
+        graph_transaction_resolver=lambda: graph
+    )
+    desired = _desired_edge_batch(extra_nodes)
+
+    first = await projector._reconcile(  # noqa: SLF001
+        board_id=BOARD_ID,
+        operation="sync",
+        event_id=f"event-batch-{extra_nodes}",
+        desired=desired,
+        projected_at=NOW,
+    )
+
+    assert first.active_count == extra_nodes + 1
+    assert graph.scope.edge_read_queries == ["belongs_to", "supersedes"]
+    assert graph.scope.edge_exists_calls == 0
+    expected_root_edges = len(desired)
+    expected_lineage_edges = extra_nodes
+    expected_supersedes_edges = 1
+    assert len(graph.scope.edges) == (
+        expected_root_edges + expected_lineage_edges + expected_supersedes_edges
+    )
+    edges_after_first = deepcopy(graph.scope.edges)
+
+    replay = await projector._reconcile(  # noqa: SLF001
+        board_id=BOARD_ID,
+        operation="sync",
+        event_id=f"event-batch-{extra_nodes}-replay",
+        desired=desired,
+        projected_at=NOW,
+    )
+
+    assert replay.replayed is True
+    assert replay.activated_count == replay.ended_count == 0
+    assert graph.scope.edge_read_queries == [
+        "belongs_to",
+        "supersedes",
+        "belongs_to",
+        "supersedes",
+    ]
+    assert graph.scope.edge_exists_calls == 0
+    assert graph.scope.edges == edges_after_first
 
 
 @pytest.mark.parametrize(

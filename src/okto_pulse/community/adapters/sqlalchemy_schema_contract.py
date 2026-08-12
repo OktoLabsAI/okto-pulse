@@ -106,11 +106,12 @@ LEGACY_CORE_SCHEMA_SHA256 = (
 )
 
 # Current inherited schema after the governed tenant-scope/Knowledge Base
-# migrations and the SK-B internal policy-version fences on Spec and Card.
+# migrations, the SK-B internal policy-version fences, and lifecycle-edition
+# columns on human-reviewed artifacts.
 # Keep the pre-extraction hash above immutable so migration provenance remains
 # independently verifiable.
 CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
-    "d2062dc7dcd2e9af461015b6a773319f93cd0d1aa06cf1edc4c9f929f18d98ed"
+    "c36818e584c1130cf6c87014a5e487ea3af91e2d5033607c52681de6f060c519"
 )
 
 # Additive Community-owned tables introduced after the F01 extraction. They
@@ -144,6 +145,7 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "checklist_item_results",
         "checklist_receipts",
         "checklist_template_versions",
+        "checklist_validation_binding_snapshots",
         "guideline_revisions",
         "guideline_heads",
         "guideline_revision_noop_replays",
@@ -175,6 +177,7 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "semantic_guideline_assessments_v2",
         "semantic_guideline_findings_v2",
         "semantic_guideline_metric_results_v2",
+        "semantic_guideline_validation_scopes",
         "quality_assessment_heads",
         "quality_assessment_legacy_import_candidates",
         "quality_assessment_legacy_import_checkpoints",
@@ -189,6 +192,7 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "quality_finding_qa_links",
         "quality_findings",
         "quality_proposed_questions",
+        "requirement_lint_validation_snapshots",
         "research_decision_derivations",
         "research_decision_entries",
         "research_decision_heads",

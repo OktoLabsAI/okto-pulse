@@ -151,6 +151,7 @@ function assessment({
   assessorIndependent = true,
   currentness = 'current',
   currentnessReasons = [],
+  validationEdition = null,
   metricResults = [metric()],
 }: Partial<{
   receiptId: string;
@@ -161,6 +162,7 @@ function assessment({
   assessorIndependent: boolean;
   currentness: 'current' | 'stale';
   currentnessReasons: SemanticAssessmentCurrentnessReason[];
+  validationEdition: number | null;
   metricResults: SemanticMetricResultDetail[];
 }> = {}): SemanticAssessmentDetail {
   const failedMetricCount = metricResults.filter(
@@ -173,6 +175,7 @@ function assessment({
     entity_type: 'spec',
     subject_id: 'spec-1',
     subject_version: 7,
+    validation_edition: validationEdition,
     binding_id: bindingId,
     guideline_id: guidelineId,
     guideline_revision_id: `${guidelineId}-revision-3`,
@@ -209,6 +212,7 @@ function currentV2Assessment(
       subject_type: entityType,
       subject_id: subjectId,
       subject_version: 7,
+      validation_edition: null,
       binding_id: 'binding-1',
       guideline_id: 'guideline-1',
       guideline_revision_id: 'guideline-1-revision-3',
@@ -426,6 +430,7 @@ function blockedTransitionPreview(
 ) {
   const unavailable = cause === 'assessment_unavailable';
   const decision: PolicyComplianceTransitionDecision = {
+    projection: 'full',
     state: unavailable
       ? 'policy_assessment_unavailable'
       : 'policy_compliance_blocked',
@@ -1216,6 +1221,112 @@ describe('guideline compliance summary', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('keeps lifecycle current evidence edition-scoped and loads previous editions lazily', async () => {
+    const current = assessment({
+      receiptId: 'receipt-current-edition-2',
+      validationEdition: 2,
+    });
+    const previous = assessment({
+      receiptId: 'receipt-previous-edition-1',
+      validationEdition: null,
+      currentness: 'stale',
+      currentnessReasons: ['subject_version_changed'],
+    });
+    dashboardApiMock.getBoardGuidelines.mockResolvedValue([adoptedGuideline()]);
+    policyApiMock.getGuidelineRevision.mockResolvedValue(
+      guidelineRevisionFor('spec'),
+    );
+    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
+      contract_version: 'v1',
+      assessment: current,
+    });
+    policyApiMock.listSemanticGuidelineAssessments.mockResolvedValue(
+      page([current, previous]),
+    );
+
+    renderPanel({
+      subjectEdition: 2,
+      presentationMode: 'lifecycle-edition',
+    });
+
+    await screen.findByTestId('guideline-compliance-binding-1');
+    expect(policyApiMock.listSemanticGuidelineAssessments).not.toHaveBeenCalled();
+    [
+      /stale/i,
+      /receipt-/i,
+      /head r/i,
+      /subject v/i,
+      /contract version/i,
+    ].forEach((pattern) => {
+      screen.queryAllByText(pattern).forEach((node) => {
+        expect(node).not.toBeVisible();
+      });
+    });
+
+    fireEvent.click(
+      screen.getByTestId('policy-compliance-previous-results-toggle'),
+    );
+    const previousContent = await screen.findByTestId(
+      'policy-compliance-previous-results-content',
+    );
+    expect(within(previousContent).getByText('Legacy')).toBeInTheDocument();
+    expect(within(previousContent).queryByText('Edition 1')).not.toBeInTheDocument();
+    expect(within(previousContent).queryByText(/receipt-/i)).not.toBeInTheDocument();
+    expect(
+      policyApiMock.getCurrentSemanticGuidelineAssessment,
+    ).toHaveBeenCalledWith(
+      'board-1',
+      'spec',
+      'spec-1',
+      'binding-1',
+      'detail',
+      expect.any(AbortSignal),
+      2,
+    );
+  });
+
+  it('moves stale evidence out of the lifecycle current slot without exposing stale or receipt noise', async () => {
+    const stale = assessment({
+      receiptId: 'receipt-stale-edition-2',
+      validationEdition: 2,
+      currentness: 'stale',
+      currentnessReasons: ['subject_version_changed'],
+    });
+    dashboardApiMock.getBoardGuidelines.mockResolvedValue([adoptedGuideline()]);
+    policyApiMock.getGuidelineRevision.mockResolvedValue(
+      guidelineRevisionFor('spec'),
+    );
+    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
+      contract_version: 'v1',
+      assessment: stale,
+    });
+    policyApiMock.listSemanticGuidelineAssessments.mockResolvedValue(
+      page([stale]),
+    );
+
+    renderPanel({
+      subjectEdition: 2,
+      presentationMode: 'lifecycle-edition',
+    });
+
+    const card = await screen.findByTestId('guideline-compliance-binding-1');
+    expect(await within(card).findByText('No assessment recorded')).toBeVisible();
+    expect(within(card).queryByText(/stale/i)).not.toBeInTheDocument();
+    expect(within(card).queryByText(/receipt-/i)).not.toBeInTheDocument();
+    expect(within(card).queryByTestId('guideline-confidence-binding-1'))
+      .not.toBeInTheDocument();
+    expect(policyApiMock.listSemanticGuidelineAssessments).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByTestId('policy-compliance-previous-results-toggle'),
+    );
+    const previousContent = await screen.findByTestId(
+      'policy-compliance-previous-results-content',
+    );
+    expect(within(previousContent).getByText('Edition 2')).toBeInTheDocument();
+    expect(within(previousContent).queryByText(/receipt-/i)).not.toBeInTheDocument();
+  });
+
   it.each([
     'ideation',
     'refinement',
@@ -1309,6 +1420,7 @@ describe('guideline compliance summary', () => {
         'binding-1',
         'detail',
         expect.any(AbortSignal),
+        undefined,
       );
     },
   );

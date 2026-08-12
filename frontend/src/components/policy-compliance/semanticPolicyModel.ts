@@ -47,6 +47,7 @@ const ASSESSMENT_DETAIL_FIELDS = [
   'entity_type',
   'subject_id',
   'subject_version',
+  'validation_edition',
   'binding_id',
   'guideline_id',
   'guideline_revision_id',
@@ -209,6 +210,8 @@ export interface SemanticSubjectExpectation {
   boardId: string;
   entityType: PolicyEntityType;
   subjectId: string;
+  /** Required only for the human lifecycle projection of current evidence. */
+  validationEdition?: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -525,6 +528,17 @@ export function parseSemanticAssessmentDetail(
     throw new Error('Semantic guideline assessor admission is invalid.');
   }
   const resolvedCurrentness = currentness(value);
+  const validationEdition = value.validation_edition === null
+    ? null
+    : positiveInteger(value.validation_edition, 'validation edition');
+  if (
+    expected.validationEdition !== undefined
+    && validationEdition !== expected.validationEdition
+  ) {
+    throw new Error(
+      'Semantic guideline assessment does not match the active validation edition.',
+    );
+  }
   const confidence = boundedScore(value.confidence, 'confidence');
   const minimumConfidence = boundedScore(
     value.minimum_confidence,
@@ -577,6 +591,7 @@ export function parseSemanticAssessmentDetail(
     entity_type: expected.entityType,
     subject_id: expected.subjectId,
     subject_version: value.subject_version as number,
+    validation_edition: validationEdition,
     binding_id: requiredText(value.binding_id, 'binding identity'),
     guideline_id: requiredText(value.guideline_id, 'guideline identity'),
     guideline_revision_id: requiredText(
@@ -1008,6 +1023,7 @@ const V2_ASSESSMENT_FIELDS = [
   'subject_type',
   'subject_id',
   'subject_version',
+  'validation_edition',
   'binding_id',
   'guideline_id',
   'guideline_revision_id',
@@ -1253,6 +1269,17 @@ function parseV2Assessment(
     (item) => `${item.metric_id}:${item.metric_result_id}:${item.metric_code}`,
     'v2 metric results',
   );
+  const validationEdition = value.validation_edition === null
+    ? null
+    : positiveInteger(value.validation_edition, 'v2 validation edition');
+  if (
+    expected.validationEdition !== undefined
+    && validationEdition !== expected.validationEdition
+  ) {
+    throw new Error(
+      'Semantic guideline v2 assessment does not match the active validation edition.',
+    );
+  }
   return {
     receipt_id: requiredText(value.receipt_id, 'v2 receipt identity'),
     receipt_digest: sha256(value.receipt_digest, 'v2 receipt digest'),
@@ -1261,6 +1288,7 @@ function parseV2Assessment(
     subject_type: expected.entityType,
     subject_id: expected.subjectId,
     subject_version: positiveInteger(value.subject_version, 'v2 subject version'),
+    validation_edition: validationEdition,
     binding_id: requiredText(value.binding_id, 'v2 binding identity'),
     guideline_id: requiredText(value.guideline_id, 'v2 guideline identity'),
     guideline_revision_id: requiredText(

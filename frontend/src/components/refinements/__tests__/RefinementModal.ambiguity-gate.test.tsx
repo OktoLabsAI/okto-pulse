@@ -30,6 +30,8 @@ const apiMock = vi.hoisted(() => ({
   listRefinementSnapshots: vi.fn(),
   listRefinementHistory: vi.fn(),
   listRefinementQA: vi.fn(),
+  getValidationCycle: vi.fn(),
+  getValidationTechnicalAudit: vi.fn(),
   getCurrentQualityAssessment: vi.fn(),
   listQualityAssessments: vi.fn(),
   listQualityFindings: vi.fn(),
@@ -131,20 +133,33 @@ vi.mock('@/components/policy-compliance', () => ({
     boardId,
     entityType,
     subjectId,
+    subjectEdition,
+    presentationMode,
   }: {
     boardId: string;
     entityType: string;
     subjectId: string;
+    subjectEdition?: number;
+    presentationMode?: string;
   }) => (
     <div
       data-testid="policy-compliance-panel"
       data-board-id={boardId}
       data-entity-type={entityType}
       data-subject-id={subjectId}
+      data-subject-edition={subjectEdition}
+      data-presentation-mode={presentationMode}
     />
   ),
-  PolicyComplianceTransitionPreview: () => (
-    <div data-testid="policy-transition-preview" />
+  PolicyComplianceTransitionPreview: ({
+    presentationMode,
+  }: {
+    presentationMode?: string;
+  }) => (
+    <div
+      data-testid="policy-transition-preview"
+      data-presentation-mode={presentationMode}
+    />
   ),
 }));
 
@@ -162,6 +177,7 @@ function refinementWith(overrides: Partial<Refinement> = {}): Refinement {
     screen_mockups: [],
     architecture_designs: [],
     status: 'approved',
+    edition: 1,
     version: 7,
     assignee_id: null,
     created_by: 'agent-1',
@@ -233,7 +249,7 @@ function currentAssessment(
   return {
     receipt: qualityReceipt(),
     head_revision: 4,
-    currentness: stale ? 'stale' : 'current',
+    currentness: stale ? 'previous' : 'current',
     stale_reasons: stale ? ['content_changed'] : [],
     gate_preview: {
       applicable: true,
@@ -298,6 +314,29 @@ describe('RefinementModal ambiguity gate', () => {
       allowed_transitions: [],
     });
     apiMock.getCurrentQualityAssessment.mockResolvedValue(currentAssessment());
+    apiMock.getValidationCycle.mockResolvedValue({
+      subject_type: 'refinement',
+      subject_id: 'refinement-1',
+      edition: 1,
+      subject_status: 'approved',
+      visible_sections: ['ambiguity_assessment'],
+      cycle_state: 'completed',
+      current_result: {
+        result_id: 'receipt-ref-1',
+        result_type: 'ambiguity_assessment',
+        subject_edition: 1,
+        status: 'passed',
+        summary: { score: 2, threshold: 3 },
+      },
+      previous_result_count: 0,
+      previous_results: [],
+      submission_fence: {
+        expected_validation_edition: 1,
+        expected_subject_version: 7,
+        expected_head_revision: 4,
+      },
+    });
+    apiMock.getValidationTechnicalAudit.mockResolvedValue(null);
     apiMock.listQualityAssessments.mockResolvedValue({
       items: [],
       total_filtered: 0,
@@ -361,7 +400,7 @@ describe('RefinementModal ambiguity gate', () => {
     );
   });
 
-  it('shows the current server receipt and gate result without inventing a legacy score', async () => {
+  it('shows the current-edition result without exposing receipt or stale metadata', async () => {
     render(
       <RefinementModal
         refinementId="refinement-1"
@@ -374,18 +413,23 @@ describe('RefinementModal ambiguity gate', () => {
     await screen.findByText('My Refinement');
     fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
     const panel = screen.getByTestId('refinement-ambiguity-gate-panel');
-    const preview = await screen.findByTestId('quality-gate-preview');
-    expect(apiMock.getCurrentQualityAssessment).toHaveBeenCalledWith(
+    await screen.findByTestId('quality-current-result');
+    expect(apiMock.getValidationCycle).toHaveBeenCalledWith(
       'refinement',
       'refinement-1',
-      'ambiguity',
-      expect.any(AbortSignal),
+      expect.objectContaining({
+        includePrevious: false,
+        signal: expect.any(AbortSignal),
+      }),
     );
-    expect(preview).toHaveTextContent('Score: 2');
-    expect(preview).toHaveTextContent('Threshold: 3');
-    expect(screen.getByTestId('quality-gate-preview-status')).toHaveTextContent(
-      'Ready',
-    );
+    expect(panel).toHaveTextContent('Ambiguity within the allowed limit');
+    expect(screen.getByRole('img', {
+      name: 'Ambiguity score 2 out of 5',
+    })).toBeInTheDocument();
+    expect(panel).toHaveTextContent('Maximum accepted score 3');
+    expect(screen.queryByText(/stale/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/receipt-ref-1/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quality-gate-preview')).not.toBeInTheDocument();
     expect(panel).not.toHaveTextContent('Current ambiguity:');
     expect(screen.getByTestId('ambiguity-gate-skip-control')).toHaveTextContent(
       'Skip Max ambiguity gate',
@@ -430,15 +474,12 @@ describe('RefinementModal ambiguity gate', () => {
           skip_ambiguity_gate: true,
           reason: 'Max ambiguity gate skipped from the refinement UI.',
           expected_refinement_version: 7,
+          expected_refinement_edition: 1,
         },
       );
     });
     expect(onChanged).toHaveBeenCalled();
-    expect(await screen.findByText('v7')).toBeInTheDocument();
     expect(screen.getByText('Approved')).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByTestId('quality-gate-preview-status')).toHaveTextContent(
-      'Skipped by recorded override',
-    ));
     expect(screen.getByTestId('toggle-skip-ambiguity-gate')).toHaveAttribute(
       'aria-checked',
       'true',
@@ -475,6 +516,7 @@ describe('RefinementModal ambiguity gate', () => {
           skip_ambiguity_gate: false,
           reason: 'Max ambiguity gate re-enabled from the refinement UI.',
           expected_refinement_version: 7,
+          expected_refinement_edition: 1,
         },
       );
     });
@@ -504,8 +546,9 @@ describe('RefinementModal ambiguity gate', () => {
         'The refinement changed; refresh before applying this override.',
       );
     });
-    expect(screen.getByTestId('quality-gate-preview-status')).toHaveTextContent(
-      'Ready',
+    expect(screen.getByTestId('quality-current-status')).toHaveAttribute(
+      'data-state',
+      'passed',
     );
     expect(toggle).toHaveAttribute('aria-checked', 'false');
   });
@@ -621,9 +664,17 @@ describe('RefinementModal ambiguity gate', () => {
       'data-subject-id',
       'refinement-1',
     );
+    expect(screen.getByTestId('policy-compliance-panel')).toHaveAttribute(
+      'data-subject-edition',
+      '1',
+    );
+    expect(screen.getByTestId('policy-compliance-panel')).toHaveAttribute(
+      'data-presentation-mode',
+      'lifecycle-edition',
+    );
     expect(
       screen.getByTestId('policy-transition-preview'),
-    ).toBeInTheDocument();
+    ).toHaveAttribute('data-presentation-mode', 'lifecycle-edition');
   });
 
   it('fails closed on approved-to-done while keeping cancellation available', async () => {

@@ -140,7 +140,7 @@ function RefinementReference({
         <span className={`rounded px-1.5 py-0.5 text-xs ${REFINEMENT_STATUS_COLORS[refinement.status] || ''}`}>
           {refinement.status.replace('_', ' ')}
         </span>
-        <span className="text-[10px] text-gray-400">v{refinement.version}</span>
+        <span className="text-[10px] text-gray-400">Edition {refinement.edition ?? 1}</span>
       </div>
     </>
   );

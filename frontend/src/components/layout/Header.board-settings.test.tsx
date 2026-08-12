@@ -391,7 +391,7 @@ describe('Header Board settings resource automation', () => {
 
     expect(
       screen.getByRole('heading', {
-        name: /Requirement lint — deterministic advisory analysis/i,
+        name: /Requirement lint — Edition-based advisory findings/i,
       }),
     ).toBeInTheDocument();
   });

@@ -53,52 +53,45 @@ class AllowedTransitionBindingDecisionResponse(_ClosedResponseModel):
     assessment_available: bool
     receipt_id: str | None
     currentness: PolicyCurrentness | None
-    currentness_reasons: list[
-        SemanticAssessmentCurrentnessReason
-    ] = Field(default_factory=list)
+    currentness_reasons: list[SemanticAssessmentCurrentnessReason] = Field(
+        default_factory=list
+    )
     inadmissibility_cause: SemanticAssessmentInadmissibilityCause | None
     failed_metric_count: int = Field(ge=0)
     waived_metric_count: int = Field(ge=0)
     blocking_metric_count: int = Field(ge=0)
     advisory_issue_count: int = Field(ge=0)
     skipped: bool
-    diagnostic_codes: list[PolicyTransitionDiagnosticCode] = Field(
-        default_factory=list
-    )
+    diagnostic_codes: list[PolicyTransitionDiagnosticCode] = Field(default_factory=list)
 
 
-class AllowedTransitionPolicyComplianceDecisionResponse(
-    _ClosedResponseModel
-):
+class AllowedTransitionPolicyComplianceDecisionResponse(_ClosedResponseModel):
+    projection: Literal["full"]
     state: PolicyTransitionReasonCode
     allowed: bool | None
     policy_compliance_required: bool
-    reason_codes: list[PolicyTransitionReasonCode] = Field(
-        default_factory=list
-    )
-    decision_digest: str | None = None
-    fence_digest: str | None = None
-    receipt_ids: list[str] = Field(default_factory=list)
-    currentness: PolicyCurrentness | None = None
-    currentness_reasons: list[
-        SemanticAssessmentCurrentnessReason
-    ] = Field(default_factory=list)
-    applicable_metric_count: int | None = Field(default=None, ge=0)
-    applicable_blocking_metric_count: int | None = Field(
-        default=None,
-        ge=0,
-    )
-    failed_metric_count: int | None = Field(default=None, ge=0)
-    blocking_metric_count: int | None = Field(default=None, ge=0)
-    waived_metric_count: int | None = Field(default=None, ge=0)
-    advisory_issue_count: int | None = Field(default=None, ge=0)
-    skipped_binding_count: int | None = Field(default=None, ge=0)
-    diagnostic_codes: list[PolicyTransitionDiagnosticCode] = Field(
-        default_factory=list
-    )
-    binding_decisions: list[
-        AllowedTransitionBindingDecisionResponse
-    ] = Field(default_factory=list)
+    reason_codes: list[PolicyTransitionReasonCode]
+    decision_digest: str | None
+    fence_digest: str | None
+    receipt_ids: list[str]
+    currentness: PolicyCurrentness | None
+    currentness_reasons: list[SemanticAssessmentCurrentnessReason]
+    applicable_metric_count: int | None = Field(ge=0)
+    applicable_blocking_metric_count: int | None = Field(ge=0)
+    failed_metric_count: int | None = Field(ge=0)
+    blocking_metric_count: int | None = Field(ge=0)
+    waived_metric_count: int | None = Field(ge=0)
+    advisory_issue_count: int | None = Field(ge=0)
+    skipped_binding_count: int | None = Field(ge=0)
+    diagnostic_codes: list[PolicyTransitionDiagnosticCode]
+    binding_decisions: list[AllowedTransitionBindingDecisionResponse]
+
+
+class AllowedTransitionPolicyComplianceRedactedDecisionResponse(_ClosedResponseModel):
+    projection: Literal["redacted"]
+    state: Literal["policy_compliance_redacted", "policy_subject_required"]
+    allowed: bool | None
+    policy_compliance_required: bool
 
 
 class AllowedTransitionResponse(_ClosedResponseModel):
@@ -112,7 +105,9 @@ class AllowedTransitionResponse(_ClosedResponseModel):
     reason_codes: list[str] = Field(default_factory=list)
     policy_compliance: bool = False
     policy_compliance_decision: (
-        AllowedTransitionPolicyComplianceDecisionResponse | None
+        AllowedTransitionPolicyComplianceDecisionResponse
+        | AllowedTransitionPolicyComplianceRedactedDecisionResponse
+        | None
     ) = None
 
 
@@ -158,6 +153,10 @@ async def get_allowed_transitions(
     except CommandValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except EntityNotFoundError as exc:
-        detail = "Board not found" if exc.entity_type == "board" else f"{exc.entity_type.title()} not found"
+        detail = (
+            "Board not found"
+            if exc.entity_type == "board"
+            else f"{exc.entity_type.title()} not found"
+        )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
     return result.read_model.to_dict()

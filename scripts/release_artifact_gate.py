@@ -31,8 +31,8 @@ from pathlib import Path
 from typing import Any
 
 EXPECTED_VERSION = "0.3.2"
-EXPECTED_MCP_TOOL_COUNT = 332
-EXPECTED_CANONICAL_TOOL_COUNT = 324
+EXPECTED_MCP_TOOL_COUNT = 334
+EXPECTED_CANONICAL_TOOL_COUNT = 326
 EXPECTED_TOOL_ALIAS_COUNT = 8
 EXPECTED_RESOURCE_COUNT = 55
 MINIMUM_SUPPORTED_PYTHON = (3, 11)
@@ -591,7 +591,7 @@ assert under(tool_manifest_path, venv), tool_manifest_path
 assert under(resource_manifest_path, venv), resource_manifest_path
 tool_manifest = json.loads(tool_manifest_path.read_text(encoding="utf-8"))
 resource_manifest = json.loads(resource_manifest_path.read_text(encoding="utf-8"))
-assert tool_manifest["tool_count"] == 11
+assert tool_manifest["tool_count"] == 13
 assert resource_manifest["resource_count"] == 22
 
 bad_sys_path = []

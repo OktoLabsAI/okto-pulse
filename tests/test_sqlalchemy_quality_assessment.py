@@ -30,9 +30,6 @@ from okto_pulse.core.application.domain_event_delivery import (
 from okto_pulse.community.adapters.relational_application import (
     CommunityRelationalApplicationAdapter,
 )
-from okto_pulse.community.adapters.requirement_lint_writer import (
-    CommunityRequirementLintWriterHook,
-)
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ActivityLog,
     Base,
@@ -62,6 +59,9 @@ from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
 )
 from okto_pulse.community.adapters.sqlalchemy_consolidation import (
     CommunitySqlAlchemyConsolidationPersistence,
+)
+from okto_pulse.community.adapters.sqlalchemy_database import (
+    install_community_sqlite_pragmas,
 )
 from okto_pulse.community.api.quality_summary_projection import (
     load_quality_summaries_for_page,
@@ -402,6 +402,7 @@ def _manual_bundle(
 
 async def _schema_engine(path: Path) -> AsyncEngine:
     engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+    install_community_sqlite_pragmas(engine)
 
     @event.listens_for(engine.sync_engine, "connect")
     def _enable_foreign_keys(dbapi_connection, _record) -> None:
@@ -497,6 +498,79 @@ async def rig(tmp_path: Path):
         await engine.dispose()
 
 
+async def test_parent_summary_projects_not_started_for_subject_without_receipts(
+    rig,
+) -> None:
+    async with rig() as session:
+        statement_count = 0
+
+        def count_statement(*_args) -> None:
+            nonlocal statement_count
+            statement_count += 1
+
+        event.listen(
+            session.bind.sync_engine,
+            "before_cursor_execute",
+            count_statement,
+        )
+        try:
+            summaries = await load_quality_summaries_for_page(
+                uow=SimpleNamespace(
+                    services=SimpleNamespace(
+                        resolve_user_permissions=AsyncMock(
+                            return_value=["spec.quality.read"]
+                        ),
+                        cards=SimpleNamespace(db=session),
+                    )
+                ),
+                user_id="quality-reader",
+                board_id=BOARD_ID,
+                subject_type="spec",
+                subject_ids=(SPEC_ID,),
+            )
+        finally:
+            event.remove(
+                session.bind.sync_engine,
+                "before_cursor_execute",
+                count_statement,
+            )
+
+    assert statement_count == 1
+    assert summaries == {
+        SPEC_ID: {
+            "requirement_lint": {
+                "edition": 1,
+                "state": "not_started",
+                "previous_count": 0,
+                "current_result": None,
+            },
+            "spec_validation": {
+                "edition": 1,
+                "state": "not_started",
+                "previous_count": 0,
+                "current_result": None,
+            },
+        }
+    }
+
+
+async def test_semantic_spec_writes_never_run_requirement_lint_in_community(
+    rig,
+) -> None:
+    """External evidence submission is the only Community lint write path."""
+
+    async with rig() as session:
+        for version in (8, 9, 10):
+            spec = await session.get(Spec, SPEC_ID)
+            assert spec is not None
+            spec.version = version
+            spec.description = f"Semantic revision {version}"
+            await session.commit()
+        assert await _count(session, QualityAssessmentReceiptRow) == 0
+        assert await _count(session, QualityAssessmentHeadRow) == 0
+        assert await _count(session, QualityFindingRow) == 0
+
+
 async def _count(session: AsyncSession, model: type) -> int:
     return int(
         (await session.execute(select(func.count()).select_from(model))).scalar_one()
@@ -556,29 +630,30 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
                 "before_cursor_execute",
                 _count_summary_statements,
             )
-        assert statement_count == 2
+        assert statement_count == 1
         sample = ska_metric_samples()[-1]
         assert sample["surface"] == "parent_summary"
         assert sample["subject_type"] == "spec"
         assert sample["outcome"] == "success"
-        assert sample["value"] == 2
+        assert sample["value"] == 1
         assert sample["duration_ms"] >= 0
         assert sample["payload_bytes"] > 0
         assert summaries == {
             SPEC_ID: {
                 "requirement_lint": {
-                    "receipt_id": first.receipt.id,
-                    "subject_version": 7,
-                    "currentness": "current",
-                    "score": first.receipt.score,
-                    "scale": {
-                        "kind": first.receipt.scale.kind.value,
-                        "min": first.receipt.scale.minimum,
-                        "max": first.receipt.scale.maximum,
-                        "direction": first.receipt.scale.direction.value,
-                    },
-                    "head_revision": 1,
-                }
+                    "edition": 1,
+                    "state": "not_started",
+                    # The NULL-edition receipt is legacy history, never the
+                    # current lifecycle result.
+                    "previous_count": 1,
+                    "current_result": None,
+                },
+                "spec_validation": {
+                    "edition": 1,
+                    "state": "not_started",
+                    "previous_count": 0,
+                    "current_result": None,
+                },
             }
         }
 
@@ -755,9 +830,9 @@ async def test_round_trip_audit_projection_pagination_and_board_isolation(
             SpecQAItem,
             first.proposed_questions[0].qa_id,
         )
-        assert qa_row is not None
-        assert qa_row.question_type == "text"
-        assert qa_row.id == first.proposed_questions[0].qa_id
+        # Requirement Lint records proposed-question evidence, but Community
+        # must not materialize it as an owned Spec QA item automatically.
+        assert qa_row is None
         receipt_row = await session.get(
             QualityAssessmentReceiptRow,
             first.receipt.id,
@@ -820,7 +895,7 @@ async def test_idempotent_replay_and_fingerprint_conflict(rig) -> None:
         }
         assert await _count(session, QualityAssessmentReceiptRow) == 1
         assert await _count(session, QualityAssessmentHeadRow) == 1
-        assert await _count(session, SpecQAItem) == len(bundle.proposed_questions)
+        assert await _count(session, SpecQAItem) == 0
         head = (await session.execute(select(QualityAssessmentHeadRow))).scalar_one()
         assert head.revision == 1
         assert head.receipt_id == bundle.receipt.id
@@ -910,6 +985,70 @@ async def test_fail_closed_authority_input_and_subject_fences(rig) -> None:
         await session.commit()
         with pytest.raises(AssessmentInputDigestConflict):
             await _adapter(session).apply_bundle_cas(bundle)
+
+
+async def test_lifecycle_winner_rejects_stale_quality_writer_with_zero_rows(
+    rig,
+) -> None:
+    bundle = _lint_bundle(namespace="lifecycle-winner")
+    quality_reached_fence = asyncio.Event()
+
+    class _ObservedQualityAdapter(CommunitySqlAlchemyQualityAssessment):
+        async def _fence_subject(self, candidate):
+            quality_reached_fence.set()
+            return await super()._fence_subject(candidate)
+
+    async with rig() as quality_session, rig() as lifecycle_session:
+        preloaded = await quality_session.get(Spec, SPEC_ID)
+        assert preloaded is not None
+        assert preloaded.status is SpecStatus.IN_PROGRESS
+
+        # Hold the production-WAL writer mutex with the lifecycle winner while
+        # the quality command, built from the preloaded state, reaches its own
+        # subject fence.  The quality task must wait, refresh after the winner
+        # commits, and reject before staging any append-only rows.
+        await lifecycle_session.execute(
+            update(Spec)
+            .where(Spec.id == SPEC_ID)
+            .values(status=SpecStatus.DONE)
+        )
+
+        adapter = _ObservedQualityAdapter(
+            quality_session,
+            authority_resolver=lambda _session, value: _lint_authority(
+                value.receipt.created_by
+            ),
+            input_digest_resolver=lambda _session, value: value.receipt.digests,
+        )
+
+        async def _write_stale_quality_bundle():
+            try:
+                return await adapter.apply_bundle_cas(bundle)
+            except (
+                AssessmentSubjectStatusConflict,
+                AssessmentSubjectVersionConflict,
+            ) as exc:
+                await quality_session.rollback()
+                return exc
+
+        quality_task = asyncio.create_task(_write_stale_quality_bundle())
+        await asyncio.wait_for(quality_reached_fence.wait(), timeout=2)
+        assert not quality_task.done()
+
+        await lifecycle_session.commit()
+        outcome = await asyncio.wait_for(quality_task, timeout=5)
+        assert isinstance(outcome, AssessmentSubjectStatusConflict)
+
+    async with rig() as verify:
+        assert await _count(verify, QualityAssessmentReceiptRow) == 0
+        assert await _count(verify, QualityAssessmentHeadRow) == 0
+        assert await _count(verify, QualityFindingRow) == 0
+        assert await _count(verify, QualityProposedQuestionRow) == 0
+        assert await _count(verify, QualityAssessmentOutboxRow) == 0
+        assert await _count(verify, DomainEventRow) == 0
+        assert await _count(verify, DomainEventHandlerExecution) == 0
+        assert await _count(verify, ActivityLog) == 0
+        assert await _count(verify, SpecHistory) == 0
 
 
 async def test_stale_head_and_real_head_cas_rollback(rig) -> None:
@@ -1163,106 +1302,6 @@ async def test_relational_application_seam_returns_concrete_adapter(rig) -> None
         )
 
 
-async def test_requirement_lint_hook_stages_full_uow_and_replays_naturally(
-    rig,
-) -> None:
-    payload = _spec_payload()
-    command = RequirementLintWriteCommand(
-        board_id=BOARD_ID,
-        spec_id=SPEC_ID,
-        spec_version=7,
-        actor_id="agent-quality",
-        writer=RequirementLintWriter.BULK_UPDATE,
-        spec_status="in_progress",
-        spec_archived=False,
-        changed_fields=("functional_requirements",),
-        spec_payload=payload,
-    )
-    hook = CommunityRequirementLintWriterHook()
-    async with rig() as session:
-        result = await hook.stage_requirement_lint(session, command)
-        assert not result.replayed
-        assert result.finding_count > 0
-        assert session.in_transaction()
-        assert await _count(session, QualityAssessmentReceiptRow) == 1
-        assert await _count(session, QualityAssessmentHeadRow) == 1
-        assert await _count(session, QualityFindingRow) == result.finding_count
-        assert await _count(session, SpecQAItem) > 0
-        assert await _count(session, SpecHistory) == 1
-        assert await _count(session, ActivityLog) == 1
-        assert await _count(session, DomainEventRow) == 1
-        assert await _count(session, DomainEventHandlerExecution) == 1
-        assert await _count(session, QualityAssessmentOutboxRow) == 1
-        await session.commit()
-
-    async with rig() as session:
-        replay = await hook.stage_requirement_lint(session, command)
-        assert replay.replayed
-        assert replay.receipt_id == result.receipt_id
-        assert replay.head_revision == result.head_revision == 1
-        assert await _count(session, QualityAssessmentReceiptRow) == 1
-        assert await _count(session, QualityAssessmentHeadRow) == 1
-        assert await _count(session, QualityAssessmentOutboxRow) == 1
-        head = (await session.execute(select(QualityAssessmentHeadRow))).scalar_one()
-        assert head.revision == 1
-        assert head.receipt_id == result.receipt_id
-
-
-async def test_requirement_lint_hook_fault_rolls_back_spec_and_assessment(
-    rig,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _fail_audit(self, bundle) -> None:
-        del self, bundle
-        raise RuntimeError("hook_audit_fault")
-
-    monkeypatch.setattr(
-        CommunitySqlAlchemyQualityAssessment,
-        "_stage_audit_rows",
-        _fail_audit,
-    )
-    payload = _spec_payload()
-    payload["version"] = 8
-    payload["description"] = "Staged semantic mutation"
-    command = RequirementLintWriteCommand(
-        board_id=BOARD_ID,
-        spec_id=SPEC_ID,
-        spec_version=8,
-        actor_id="agent-quality",
-        writer=RequirementLintWriter.BULK_UPDATE,
-        spec_status="in_progress",
-        spec_archived=False,
-        changed_fields=("description",),
-        spec_payload=payload,
-    )
-    async with rig() as session:
-        spec = await session.get(Spec, SPEC_ID)
-        assert spec is not None
-        spec.version = 8
-        spec.description = payload["description"]
-        with pytest.raises(RuntimeError, match="hook_audit_fault"):
-            await CommunityRequirementLintWriterHook().stage_requirement_lint(
-                session,
-                command,
-            )
-        await session.rollback()
-
-    async with rig() as session:
-        spec = await session.get(Spec, SPEC_ID)
-        assert spec is not None
-        assert spec.version == 7
-        assert spec.description == _spec_payload()["description"]
-        assert await _count(session, QualityAssessmentReceiptRow) == 0
-        assert await _count(session, QualityAssessmentHeadRow) == 0
-        assert await _count(session, QualityFindingRow) == 0
-        assert await _count(session, SpecQAItem) == 0
-        assert await _count(session, SpecHistory) == 0
-        assert await _count(session, ActivityLog) == 0
-        assert await _count(session, DomainEventRow) == 0
-        assert await _count(session, DomainEventHandlerExecution) == 0
-        assert await _count(session, QualityAssessmentOutboxRow) == 0
-
-
 async def test_consolidation_projection_loads_only_current_quality_head_in_one_query(
     rig,
 ) -> None:
@@ -1335,23 +1374,13 @@ async def test_consolidation_projection_loads_only_current_quality_head_in_one_q
 
         assert 1 <= len(statements) <= 2
         assert projection.research_decisions == ()
-        assert len(projection.quality_assessments) == 1
-        current = projection.quality_assessments[0]
-        assert current.receipt_id == second.receipt.id
-        assert current.head_revision == 2
-        assert len(current.projection_fingerprint) == 64
-        worker_summary = current.to_worker_dict()
-        assert worker_summary["receipt_id"] == second.receipt.id
-        assert "findings" not in worker_summary
-        assert "proposed_questions" not in worker_summary
+        # Legacy editionless evidence remains navigable history but cannot be
+        # projected as current without inventing a human lifecycle edition.
+        assert projection.quality_assessments == ()
 
     from okto_pulse.community.adapters.board_source_reader import (
         _current_quality_head_fingerprints,
     )
-    from okto_pulse.core.kg.board_source_store import (
-        projected_root_content_hash,
-    )
-
     with sqlite3.connect(database_path) as connection:
         connection.row_factory = sqlite3.Row
         rebuild_fingerprints = _current_quality_head_fingerprints(
@@ -1359,14 +1388,7 @@ async def test_consolidation_projection_loads_only_current_quality_head_in_one_q
             board_id=BOARD_ID,
         )
     projection_key = (BOARD_ID, "spec", SPEC_ID)
-    assert rebuild_fingerprints[projection_key] == (current.projection_fingerprint,)
-    assert projected_root_content_hash(
-        "a" * 64,
-        quality_head_fingerprints=(current.projection_fingerprint,),
-    ) == projected_root_content_hash(
-        "a" * 64,
-        quality_head_fingerprints=rebuild_fingerprints[projection_key],
-    )
+    assert projection_key not in rebuild_fingerprints
 
 
 async def test_consolidation_projection_omits_head_stale_by_subject_version(
@@ -1563,8 +1585,6 @@ async def test_board_source_root_hash_ignores_subject_version_stale_quality_head
     )
 
     assert second_root_hash == first_root_hash
-
-
 async def test_board_source_root_hash_ignores_clarification_stale_quality_head(
     rig,
 ) -> None:
@@ -1623,155 +1643,4 @@ async def test_board_source_root_hash_ignores_clarification_stale_quality_head(
     )
 
     assert second_root_hash == first_root_hash
-
-
-async def test_requirement_lint_new_receipt_never_duplicates_existing_questions(
-    rig,
-) -> None:
-    """Regression: every semantic write issues a NEW lint receipt (new natural
-    key). Before the materialization dedupe, each new receipt re-created
-    byte-identical operational Q&A rows (observed live: 300 duplicates of 19
-    findings on one spec). Receipt-owned proposal rows remain immutable per
-    receipt; only the subject Q&A materialization is deduplicated by text."""
-
-    payload = _spec_payload()
-    command = RequirementLintWriteCommand(
-        board_id=BOARD_ID,
-        spec_id=SPEC_ID,
-        spec_version=7,
-        actor_id="agent-quality",
-        writer=RequirementLintWriter.BULK_UPDATE,
-        spec_status="in_progress",
-        spec_archived=False,
-        changed_fields=("functional_requirements",),
-        spec_payload=payload,
-    )
-    hook = CommunityRequirementLintWriterHook()
-    async with rig() as session:
-        first = await hook.stage_requirement_lint(session, command)
-        assert not first.replayed
-        qa_after_first = await _count(session, SpecQAItem)
-        assert qa_after_first > 0
-        await session.commit()
-
-    changed_payload = _spec_payload()
-    changed_payload["version"] = 8
-    changed_payload["description"] = "Different content, same findings."
-    changed = RequirementLintWriteCommand(
-        board_id=BOARD_ID,
-        spec_id=SPEC_ID,
-        spec_version=8,
-        actor_id="agent-quality",
-        writer=RequirementLintWriter.BULK_UPDATE,
-        spec_status="in_progress",
-        spec_archived=False,
-        changed_fields=("description",),
-        spec_payload=changed_payload,
-    )
-    async with rig() as session:
-        spec = await session.get(Spec, SPEC_ID)
-        assert spec is not None
-        spec.version = 8
-        spec.description = "Different content, same findings."
-        await session.flush()
-        second = await hook.stage_requirement_lint(session, changed)
-        assert not second.replayed
-        assert second.receipt_id != first.receipt_id
-        assert await _count(session, QualityAssessmentReceiptRow) == 2
-        # The second receipt still owns its immutable proposal rows...
-        proposal_rows = await _count(session, QualityProposedQuestionRow)
-        assert proposal_rows > qa_after_first
-        # ...but the operational Q&A board gains ZERO duplicate questions.
-        assert await _count(session, SpecQAItem) == qa_after_first
-        questions = (await session.execute(select(SpecQAItem.question))).scalars().all()
-        assert len(questions) == len(set(questions))
-
-
-async def test_board_lint_languages_activate_language_lexicons(rig) -> None:
-    """BoardSettings.lint_languages drives the analyzer profile end to end.
-
-    Without a declared language the neutral-only profile cannot see the
-    Portuguese vague term in the seeded FR ("O fluxo deve ser fácil"), so no
-    vague finding exists. Declaring pt-BR on the board activates the PT
-    lexicon and the fr_vague_without_observable_outcome rule fires — and the
-    natural idempotency key changes with the profile, so both receipts
-    coexist as distinct assessments."""
-
-    payload = _spec_payload()
-    # German AC WITHOUT an explicit child locale and without any neutral
-    # signal (no numbers/comparators): only the declared board profile can
-    # see its condition/observable/error vocabulary.
-    payload["acceptance_criteria"] = list(payload["acceptance_criteria"]) + [
-        {
-            "id": "ac_de_profile",
-            "text": (
-                "Wenn der Benutzer speichert, liefert das System einen " "Fehler."
-            ),
-            "status": "active",
-        }
-    ]
-    command = RequirementLintWriteCommand(
-        board_id=BOARD_ID,
-        spec_id=SPEC_ID,
-        spec_version=7,
-        actor_id="agent-quality",
-        writer=RequirementLintWriter.BULK_UPDATE,
-        spec_status="in_progress",
-        spec_archived=False,
-        changed_fields=("acceptance_criteria",),
-        spec_payload=payload,
-    )
-    hook = CommunityRequirementLintWriterHook()
-
-    def _de_signal_findings(keys):
-        return [
-            key for key in keys if ":ac_de_profile:ac_verifiable_signal_missing" in key
-        ]
-
-    async with rig() as session:
-        spec = await session.get(Spec, SPEC_ID)
-        assert spec is not None
-        spec.acceptance_criteria = payload["acceptance_criteria"]
-        await session.flush()
-        neutral = await hook.stage_requirement_lint(session, command)
-        neutral_findings = (
-            (
-                await session.execute(
-                    select(QualityFindingRow.finding_key).where(
-                        QualityFindingRow.receipt_id == neutral.receipt_id
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        # Neutral-only profile: the German error/state vocabulary is
-        # invisible, so the verifiable-signal rule fires.
-        assert _de_signal_findings(neutral_findings)
-        await session.commit()
-
-    async with rig() as session:
-        board = await session.get(Board, BOARD_ID)
-        assert board is not None
-        settings = dict(board.settings or {})
-        settings["lint_languages"] = ["de-DE"]
-        board.settings = settings
-        await session.flush()
-
-        localized = await hook.stage_requirement_lint(session, command)
-        assert not localized.replayed
-        assert localized.receipt_id != neutral.receipt_id
-        localized_findings = (
-            (
-                await session.execute(
-                    select(QualityFindingRow.finding_key).where(
-                        QualityFindingRow.receipt_id == localized.receipt_id
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        # de-DE profile: "liefert"/"Fehler" are observable/error signals, so
-        # the same AC is no longer flagged.
-        assert not _de_signal_findings(localized_findings)
+    # End-to-end guard: legacy history must not perturb the current root hash.
