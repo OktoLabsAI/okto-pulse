@@ -428,6 +428,172 @@ def test_semantic_architecture_fallback_renders_svg_and_mermaid() -> None:
     assert 'web -- "Fetch boards" --> api' in joined
 
 
+def test_excalidraw_topology_is_authoritative_for_architecture_export() -> None:
+    node_specs = [
+        ("export-ui", "Export Report UI", 40, 180),
+        ("community-export-api", "Community Export API", 290, 180),
+        ("community-export-assembler", "Community Export Assembler", 540, 180),
+        ("core-export-contracts", "Core Export Contracts", 790, 60),
+        ("pulse-relational-store", "Pulse Relational Store", 790, 300),
+        ("community-markdown-renderer", "Markdown Renderer", 540, 390),
+        ("community-html-renderer", "Standalone HTML Renderer", 790, 390),
+    ]
+    edge_specs = [
+        ("e1", "export-ui", "community-export-api", "if-export-request"),
+        (
+            "e2",
+            "community-export-api",
+            "community-export-assembler",
+            "if-export-assemble",
+        ),
+        (
+            "e3",
+            "community-export-assembler",
+            "core-export-contracts",
+            "if-export-domain",
+        ),
+        (
+            "e4",
+            "community-export-assembler",
+            "pulse-relational-store",
+            "if-export-read",
+        ),
+        (
+            "e5",
+            "community-export-assembler",
+            "community-markdown-renderer",
+            "if-render-markdown",
+        ),
+        (
+            "e6",
+            "community-export-assembler",
+            "community-html-renderer",
+            "if-render-html",
+        ),
+    ]
+    interface_names = {
+        "if-export-request": "Create entity export snapshot",
+        "if-export-assemble": "Assemble canonical export bundle",
+        "if-export-domain": "Validate export semantics",
+        "if-export-read": "Read governed aggregates",
+        "if-render-markdown": "Render Markdown",
+        "if-render-html": "Render standalone HTML",
+    }
+    payload = {
+        "records": {
+            "architecture_designs": [
+                {
+                    "id": "design-1",
+                    "title": "Canonical entity export architecture",
+                    "global_description": "Core policy and Community mechanisms.",
+                    "entities": [
+                        {"id": identifier, "name": name}
+                        for identifier, name, _, _ in node_specs
+                    ],
+                    # Empty participants are valid: diagram connections own endpoints.
+                    "interfaces": [
+                        {
+                            "id": identifier,
+                            "name": name,
+                            "participants": [],
+                            "direction": "source_to_target",
+                        }
+                        for identifier, name in interface_names.items()
+                    ],
+                    "diagrams": [
+                        {
+                            "id": "diagram-1",
+                            "title": "Export architecture boundaries",
+                            "format": "excalidraw_json",
+                            "adapter_payload_ref": "payload-1",
+                            "order_index": 0,
+                        }
+                    ],
+                }
+            ],
+            "architecture_diagram_payloads": [
+                {
+                    "id": "payload-1",
+                    "design_id": "design-1",
+                    "diagram_id": "diagram-1",
+                    "format": "excalidraw_json",
+                    "adapter_payload_json": {
+                        "type": "excalidraw",
+                        "version": 2,
+                        "elements": [
+                            *[
+                                {
+                                    "id": identifier,
+                                    "type": "rectangle",
+                                    "x": x,
+                                    "y": y,
+                                    "width": 190,
+                                    "height": 82,
+                                    "linkedEntityId": identifier,
+                                    "text": name,
+                                }
+                                for identifier, name, x, y in node_specs
+                            ],
+                            *[
+                                {
+                                    "id": edge_id,
+                                    "type": "arrow",
+                                    "sourceElementId": source,
+                                    "targetElementId": target,
+                                    "linkedInterfaceIds": [interface_id],
+                                    "connectionType": "elbow",
+                                }
+                                for edge_id, source, target, interface_id in edge_specs
+                            ],
+                        ],
+                        "appState": {},
+                        "files": {},
+                    },
+                }
+            ],
+        }
+    }
+
+    html = render_rich_media_html(payload, field_key="architecture")
+    markdown = render_rich_media_markdown(payload, field_key="architecture")
+
+    assert html is not None and markdown is not None
+    audit = _PassiveStandaloneHTMLAudit()
+    audit.feed(html)
+    audit.close()
+    assert audit.violations == []
+    assert html.count('class="diagram-node"') == 7
+    assert html.count('class="diagram-edge"') == 6
+    assert html.count('class="diagram-arrow"') == 6
+    assert "Export architecture boundaries" in html
+    for name in interface_names.values():
+        assert name in html
+    joined = "\n".join(markdown)
+    assert joined.count("-->") == 6
+    assert (
+        'export_ui -- "Create entity export snapshot" --> community_export_api'
+        in joined
+    )
+    assert (
+        'community_export_assembler -- "Render standalone HTML" --> community_html_renderer'
+        in joined
+    )
+
+
+def test_static_svg_parses_inline_mermaid_node_declarations_on_edges() -> None:
+    svg = mermaid_to_static_svg(
+        'flowchart LR\nweb["Web UI"] --> api["Application API"]\n',
+        title="Inline Mermaid",
+    )
+
+    assert svg is not None
+    assert svg.count('class="diagram-node"') == 2
+    assert svg.count('class="diagram-edge"') == 1
+    assert svg.count('class="diagram-arrow"') == 1
+    assert "Web UI" in svg
+    assert "Application API" in svg
+
+
 def test_static_svg_escapes_labels_and_has_no_active_content() -> None:
     svg = mermaid_to_static_svg(
         'flowchart LR\na["Safe"]\nb["Target"]\na -- "<img onerror=alert(1)>" --> b\n',
@@ -588,5 +754,13 @@ async def test_reader_includes_mockup_visual_and_architecture_diagram_payload() 
         assert len(payloads) == 1
         assert payloads[0]["payload_text"] == mermaid
         assert "storage_key" not in payloads[0]
+        architecture_manifest = next(
+            entry
+            for entry in raw["manifest"]["entries"]
+            if entry["section_key"] == "architecture"
+        )
+        assert architecture_manifest["status"] == "included"
+        assert architecture_manifest["total_count"] == 1
+        assert architecture_manifest["included_count"] == 1
 
     await engine.dispose()

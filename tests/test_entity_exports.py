@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import json
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -18,6 +19,8 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
     build_community_session_factory,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
+    ArchitectureDesign,
+    ArchitectureDiagramPayload,
     Base,
     Board,
     Card,
@@ -463,6 +466,279 @@ async def test_reader_projects_cards_and_qa_for_human_consumption() -> None:
                 "options": ("US East", "US West"),
             },
         )
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_reader_counts_and_emits_only_human_reportable_support_records() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    sessions = build_community_session_factory(engine)
+    mermaid = 'flowchart LR\nui["UI"] --> api["API"]\n'
+    async with sessions() as session:
+        session.add_all(
+            [
+                Board(id="b", name="Board", owner_id="u", realm_id="realm"),
+                Ideation(id="idea", board_id="b", title="Idea", created_by="u"),
+                Refinement(
+                    id="refinement",
+                    board_id="b",
+                    ideation_id="idea",
+                    title="Refinement",
+                    created_by="u",
+                ),
+                Spec(
+                    id="spec",
+                    board_id="b",
+                    refinement_id="refinement",
+                    title="Spec",
+                    created_by="u",
+                ),
+                ArchitectureDesign(
+                    id="design",
+                    board_id="b",
+                    parent_type="refinement",
+                    refinement_id="refinement",
+                    title="Runtime architecture",
+                    global_description="The UI calls the API.",
+                    entities=[],
+                    interfaces=[],
+                    diagrams=[
+                        {
+                            "id": "diagram",
+                            "title": "Runtime",
+                            "format": "mermaid",
+                            "adapter_payload_ref": "diagram-payload",
+                            "order_index": 0,
+                        }
+                    ],
+                    created_by="u",
+                ),
+                ArchitectureDiagramPayload(
+                    id="diagram-payload",
+                    design_id="design",
+                    diagram_id="diagram",
+                    board_id="b",
+                    storage_backend="database",
+                    storage_key="architecture/design/diagram",
+                    format="mermaid",
+                    payload_text=mermaid,
+                    content_hash="a" * 64,
+                    size_bytes=len(mermaid.encode("utf-8")),
+                ),
+            ]
+        )
+        await session.flush()
+        tables = Base.metadata.tables
+        await session.execute(
+            tables["research_decision_snapshots"].insert(),
+            {
+                "id": "rdls-empty",
+                "board_id": "b",
+                "refinement_id": "refinement",
+                "refinement_version": 1,
+                "heads_json": [],
+                "created_at": _NOW,
+            },
+        )
+        await session.execute(
+            tables["research_decision_derivations"].insert(),
+            {
+                "id": "rdld-empty",
+                "board_id": "b",
+                "spec_id": "spec",
+                "spec_version": 1,
+                "source_refinement_id": "refinement",
+                "source_refinement_version": 1,
+                "source_snapshot_id": "rdls-empty",
+                "references_json": [],
+                "created_at": _NOW,
+            },
+        )
+        await session.execute(
+            tables["code_investigation_requests"].insert(),
+            {
+                "id": "request",
+                "board_id": "b",
+                "subject_type": "refinement",
+                "subject_id": "refinement",
+                "subject_version": 1,
+                "issued_to_actor_id": "agent",
+                "source_ref": "source-main",
+                "required_capabilities": ["file_read", "secret_scan"],
+                "selector_scope_digest": "b" * 64,
+                "expected_head_generation": 0,
+                "canonicalization_profile": "code-investigation/v1",
+                "limits_profile": "code-investigation-limits/v1",
+                "challenge_key_id": "challenge-v1",
+                "challenge_token_hash": "c" * 64,
+                "single_use": True,
+                "status": "consumed",
+                "expires_at": _NOW + timedelta(minutes=10),
+                "requested_by": "u",
+                "created_at": _NOW,
+                "consumed_at": _NOW + timedelta(seconds=1),
+                "request_payload_sha256": "d" * 64,
+                "idempotency_key": "request-once",
+            },
+        )
+        await session.execute(
+            tables["code_investigation_receipts"].insert(),
+            {
+                "id": "receipt",
+                "request_id": "request",
+                "board_id": "b",
+                "subject_type": "refinement",
+                "subject_id": "refinement",
+                "subject_version": 1,
+                "attestor_actor_id": "agent",
+                "generation": 1,
+                "trust_level": "single_attestation",
+                "acceptance_status": "accepted",
+                "outcome": "accessible",
+                "capabilities": ["file_read", "secret_scan"],
+                "source_ref": "source-main",
+                "canonicalization_profile": "code-investigation/v1",
+                "limits_profile": "code-investigation-limits/v1",
+                "selector_scope_digest": "b" * 64,
+                "omission_manifest": [],
+                "omission_digest": "e" * 64,
+                "omission_count": 0,
+                "tooling": {
+                    "tool_id": "external-agent",
+                    "tool_version": "1",
+                    "method_id": "inspection",
+                },
+                "observed_at": _NOW,
+                "received_at": _NOW + timedelta(seconds=1),
+                "expires_at": _NOW + timedelta(hours=1),
+                "observation_sha256": "f" * 64,
+                "payload_sha256": "0" * 64,
+                "idempotency_key": "receipt-once",
+            },
+        )
+        await session.commit()
+
+        reader = CommunitySqlAlchemyEntityExportReader(session, clock=lambda: _NOW)
+        selected = ("research_decisions", "code_investigations", "architecture")
+        bundle = await reader.build_bundle(
+            request=EntityExportRequest(
+                board_id="b",
+                entity_type=EntityExportType.REFINEMENT,
+                entity_id="refinement",
+                history_scope=EntityExportHistoryScope.COMPLETE,
+                requested_sections=selected,
+            ),
+            disclosure=EntityExportDisclosure(
+                frozenset(
+                    {
+                        "refinement.research_decisions.read",
+                        "code_traceability.investigation.read",
+                        "refinement.architecture.read",
+                    }
+                ),
+                selected,
+            ),
+            actor_id="u",
+            realm_scope=RealmScope.tenant("realm"),
+        )
+        raw = bundle.to_dict()
+        manifest = {entry["section_key"]: entry for entry in raw["manifest"]["entries"]}
+        sections = {section["section_key"]: section for section in raw["sections"]}
+
+        assert manifest["research_decisions"]["status"] == "empty"
+        assert manifest["research_decisions"]["total_count"] == 0
+        assert not any(sections["research_decisions"]["payload"]["records"].values())
+        assert manifest["code_investigations"]["status"] == "empty"
+        assert manifest["code_investigations"]["total_count"] == 0
+        code_payload = json.dumps(
+            sections["code_investigations"]["payload"], sort_keys=True
+        )
+        assert "capabilities" not in code_payload
+        assert "sha256" not in code_payload
+        code_records = sections["code_investigations"]["payload"]["records"]
+        assert "code_investigation_requests" not in code_records
+        assert "code_investigation_receipts" not in code_records
+        html = render_entity_export_html(raw)
+        assert 'id="section-research_decisions"' not in html
+        assert 'id="section-code_investigations"' not in html
+
+        assert manifest["architecture"]["status"] == "included"
+        assert manifest["architecture"]["total_count"] == 1
+        assert manifest["architecture"]["included_count"] == 1
+        assert (
+            len(
+                sections["architecture"]["payload"]["records"][
+                    "architecture_diagram_payloads"
+                ]
+            )
+            == 1
+        )
+
+        await session.execute(
+            tables["code_investigation_receipt_revocations"].insert(),
+            {
+                "id": "revocation",
+                "receipt_id": "receipt",
+                "board_id": "b",
+                "reason_code": "attestation_conflict",
+                "justification": (
+                    "The claimed source result conflicts with a later "
+                    "independent observation."
+                ),
+                "revoked_by": "u",
+                "revoked_at": _NOW + timedelta(minutes=2),
+            },
+        )
+        await session.commit()
+        curated = await reader.build_bundle(
+            request=EntityExportRequest(
+                board_id="b",
+                entity_type=EntityExportType.REFINEMENT,
+                entity_id="refinement",
+                history_scope=EntityExportHistoryScope.COMPLETE,
+                requested_sections=("code_investigations",),
+            ),
+            disclosure=EntityExportDisclosure(
+                frozenset({"code_traceability.investigation.read"}),
+                ("code_investigations",),
+            ),
+            actor_id="u",
+            realm_scope=RealmScope.tenant("realm"),
+        )
+        curated_raw = curated.to_dict()
+        curated_manifest = next(
+            entry
+            for entry in curated_raw["manifest"]["entries"]
+            if entry["section_key"] == "code_investigations"
+        )
+        curated_section = next(
+            section
+            for section in curated_raw["sections"]
+            if section["section_key"] == "code_investigations"
+        )
+        assert curated_manifest["status"] == "included"
+        assert curated_manifest["total_count"] == 1
+        revocation = curated_section["payload"]["records"][
+            "code_investigation_receipt_revocations"
+        ][0]
+        assert revocation == {
+            "summary": "Code investigation result revoked",
+            "status": "revoked",
+            "rationale": (
+                "The claimed source result conflicts with a later "
+                "independent observation."
+            ),
+            "reason": "attestation_conflict",
+            "created_at": "2026-08-13T12:02:00+00:00",
+        }
+        curated_html = render_entity_export_html(curated_raw)
+        assert 'id="section-code_investigations"' in curated_html
+        assert "The claimed source result conflicts" in curated_html
+        assert "Capabilities" not in curated_html
+        assert "Sha256" not in curated_html
+
     await engine.dispose()
 
 

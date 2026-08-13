@@ -77,6 +77,7 @@ class _TableQuery:
     context_key: str | None = None
     projected_columns: tuple[str, ...] = ()
     emit: bool = True
+    count_in_manifest: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,14 +259,16 @@ def _q(
     context_key: str | None = None,
     projected_columns: tuple[str, ...] = (),
     emit: bool = True,
+    count_in_manifest: bool = True,
 ) -> _TableQuery:
     return _TableQuery(
-        table_name,
-        selector,
-        column,
-        context_key,
-        projected_columns,
-        emit,
+        table_name=table_name,
+        selector=selector,
+        column=column,
+        context_key=context_key,
+        projected_columns=projected_columns,
+        emit=emit,
+        count_in_manifest=count_in_manifest,
     )
 
 
@@ -348,8 +351,13 @@ def _code_sections(entity_type: EntityExportType) -> tuple[_SectionDefinition, .
             "code_investigations",
             "code_traceability.investigation.read",
             queries=(
-                _q("code_investigation_requests", "subject"),
-                _q("code_investigation_receipts", "subject"),
+                # Requests and receipts prove transport/trust mechanics, but
+                # contain no investigated claim, finding, summary or excerpt.
+                # Read them to preserve source-completeness and receipt
+                # context without presenting operational hashes/capabilities
+                # as if they communicated an investigation result.
+                _q("code_investigation_requests", "subject", emit=False),
+                _q("code_investigation_receipts", "subject", emit=False),
                 _q(
                     "code_investigation_receipt_revocations",
                     "context",
@@ -467,8 +475,16 @@ def _architecture_queries(parent_column: str) -> tuple[_TableQuery, ...]:
             "design_id",
             context_key="architecture_design_ids",
             projected_columns=_ARCHITECTURE_PAYLOAD_COLUMNS,
+            # The payload is the visual body of its parent design, not a
+            # second architecture record in the human-facing manifest.
+            count_in_manifest=False,
         ),
-        _q("design_system_gate_audit", "entity"),
+        _q(
+            "design_system_gate_audit",
+            "entity",
+            # Supporting gate evidence must not inflate the design count.
+            count_in_manifest=False,
+        ),
     )
 
 
@@ -620,9 +636,22 @@ def _definitions(entity_type: EntityExportType) -> tuple[_SectionDefinition, ...
                 "research_decisions",
                 "refinement.research_decisions.read",
                 queries=(
-                    _q("research_decision_heads", "entity_fk", "refinement_id"),
+                    # Heads and history are ledger mechanics. Human decisions
+                    # are projected from entries; empty snapshot/derivation
+                    # envelopes are filtered by _human_row_payload below.
+                    _q(
+                        "research_decision_heads",
+                        "entity_fk",
+                        "refinement_id",
+                        emit=False,
+                    ),
                     _q("research_decision_entries", "entity_fk", "refinement_id"),
-                    _q("research_decision_history", "entity_fk", "refinement_id"),
+                    _q(
+                        "research_decision_history",
+                        "entity_fk",
+                        "refinement_id",
+                        emit=False,
+                    ),
                     _q("research_decision_snapshots", "entity_fk", "refinement_id"),
                     _q(
                         "research_decision_derivations",
@@ -1045,6 +1074,94 @@ def _human_v2_finding(row: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _first_present(row: Mapping[str, Any], *field_names: str) -> Any:
+    return next(
+        (
+            row[field_name]
+            for field_name in field_names
+            if row.get(field_name) not in (None, "", [], {})
+        ),
+        None,
+    )
+
+
+def _human_research_decision(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a decision a reader can understand without ledger plumbing."""
+
+    question = _first_present(row, "unknown", "question", "title", "summary")
+    decision = _first_present(row, "decision", "result", "conclusion", "answer")
+    rationale = _first_present(
+        row,
+        "rationale",
+        "justification",
+        "evidence_absence_justification",
+        "description",
+    )
+    # Status, versions, IDs, digests and references do not make an otherwise
+    # empty snapshot or derivation meaningful to a report reader.
+    if question is None and decision is None and rationale is None:
+        return {}
+    result: dict[str, Any] = {}
+    if question is not None:
+        result["question"] = question
+    if decision is not None:
+        result["answer"] = decision
+    if rationale is not None:
+        result["rationale"] = rationale
+    for field_name in (
+        "alternatives",
+        "evidence_refs",
+        "confidence",
+        "status",
+        "created_at",
+    ):
+        if row.get(field_name) not in (None, "", [], {}):
+            result[field_name] = row[field_name]
+    return result
+
+
+def _human_research_support_row(
+    table_name: str, row: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Omit pointer-only snapshots/derivations; retain future sealed prose."""
+
+    direct = _human_research_decision(row)
+    if direct:
+        return direct
+    collection_name = (
+        "heads_json"
+        if table_name == "research_decision_snapshots"
+        else "references_json"
+    )
+    collection = row.get(collection_name)
+    if not isinstance(collection, list):
+        return {}
+    decisions = [
+        projected
+        for item in collection
+        if isinstance(item, Mapping) and (projected := _human_research_decision(item))
+    ]
+    return {"decisions": decisions} if decisions else {}
+
+
+def _human_code_investigation_revocation(
+    row: Mapping[str, Any],
+) -> dict[str, Any]:
+    justification = row.get("justification")
+    if justification in (None, ""):
+        return {}
+    result: dict[str, Any] = {
+        "summary": "Code investigation result revoked",
+        "status": "revoked",
+        "rationale": justification,
+    }
+    if row.get("reason_code") not in (None, ""):
+        result["reason"] = row["reason_code"]
+    if row.get("revoked_at") not in (None, ""):
+        result["created_at"] = row["revoked_at"]
+    return result
+
+
 def _human_row_payload(table_name: str, row: Mapping[str, Any]) -> dict[str, Any]:
     """Project persisted rows into report vocabulary, not storage vocabulary."""
 
@@ -1060,6 +1177,20 @@ def _human_row_payload(table_name: str, row: Mapping[str, Any]) -> dict[str, Any
         return _human_v2_metric(row)
     if table_name == "semantic_guideline_findings_v2":
         return _human_v2_finding(row)
+    if table_name == "research_decision_entries":
+        return _human_research_decision(row)
+    if table_name in {
+        "research_decision_snapshots",
+        "research_decision_derivations",
+    }:
+        return _human_research_support_row(table_name, row)
+    if table_name in {
+        "code_investigation_requests",
+        "code_investigation_receipts",
+    }:
+        return {}
+    if table_name == "code_investigation_receipt_revocations":
+        return _human_code_investigation_revocation(row)
     if fields := _HUMAN_POLICY_FIELDS.get(table_name):
         return _present_fields(row, fields)
     if fields := _HUMAN_QUALITY_FIELDS.get(table_name):
@@ -1446,7 +1577,7 @@ class CommunitySqlAlchemyEntityExportReader:
                 )
                 continue
             try:
-                payload, count = await self._collect_definition(
+                payload, count, materialized_count = await self._collect_definition(
                     definition,
                     request=request,
                     base_row=row,
@@ -1466,7 +1597,7 @@ class CommunitySqlAlchemyEntityExportReader:
                     )
                 )
                 continue
-            total_rows += count
+            total_rows += materialized_count
             if total_rows > self._max_total_rows:
                 raise CommunityEntityExportLimitError(
                     section_key="report", limit=self._max_total_rows
@@ -1518,9 +1649,10 @@ class CommunitySqlAlchemyEntityExportReader:
         request: EntityExportRequest,
         base_row: Any,
         base_payload: Mapping[str, Any],
-    ) -> tuple[dict[str, Any], int]:
+    ) -> tuple[dict[str, Any], int, int]:
         embedded: dict[str, Any] = {}
-        count = 0
+        reportable_count = 0
+        materialized_count = 0
         for field_name in definition.embedded_fields:
             value = _json_value(getattr(base_row, field_name, None))
             if request.history_scope is EntityExportHistoryScope.CURRENT and isinstance(
@@ -1539,14 +1671,16 @@ class CommunitySqlAlchemyEntityExportReader:
             elif definition.key == "spec_validation" and field_name == "validations":
                 value = _seal_spec_validation_pinpoints(value)
             embedded[field_name] = value
-            count += (
+            value_count = (
                 len(value)
                 if isinstance(value, list)
                 else 1
                 if value not in (None, {}, "")
                 else 0
             )
-            if count > self._max_section_rows:
+            reportable_count += value_count
+            materialized_count += value_count
+            if materialized_count > self._max_section_rows:
                 raise CommunityEntityExportLimitError(
                     section_key=definition.key,
                     limit=self._max_section_rows,
@@ -1563,7 +1697,8 @@ class CommunitySqlAlchemyEntityExportReader:
             if query.selector == "context":
                 ids = context.get(query.context_key or "", set())
                 if not ids:
-                    records[query.table_name] = []
+                    if query.emit:
+                        records[query.table_name] = []
                     continue
                 if query.column is None or query.column not in table.c:
                     raise RuntimeError(
@@ -1610,7 +1745,7 @@ class CommunitySqlAlchemyEntityExportReader:
             order_columns = _order_columns(table)
             if order_columns:
                 statement = statement.order_by(*order_columns)
-            remaining = self._max_section_rows - count
+            remaining = self._max_section_rows - materialized_count
             if remaining < 0:
                 raise CommunityEntityExportLimitError(
                     section_key=definition.key,
@@ -1627,6 +1762,7 @@ class CommunitySqlAlchemyEntityExportReader:
                     limit=self._max_section_rows,
                 )
             raw_rows = [_row_payload(row) for row in rows]
+            materialized_count += len(raw_rows)
             for item in raw_rows:
                 _record_context(query.table_name, item, context)
             if query.table_name == "guideline_revisions":
@@ -1646,11 +1782,14 @@ class CommunitySqlAlchemyEntityExportReader:
                 ):
                     if title := guideline_titles.get(str(revision_id)):
                         assessment["guideline_title"] = title
-            serialized = (
-                [_human_row_payload(query.table_name, item) for item in raw_rows]
-                if query.emit
-                else []
-            )
+            serialized = []
+            if query.emit:
+                serialized = [
+                    projected
+                    for item in raw_rows
+                    if (projected := _human_row_payload(query.table_name, item))
+                    not in (None, "", [], {})
+                ]
             if query.table_name == "semantic_guideline_assessment_receipts":
                 guideline_assessment_revision_ids = [
                     str(item["revision_id"])
@@ -1660,8 +1799,13 @@ class CommunitySqlAlchemyEntityExportReader:
                 ]
             if query.emit:
                 records[query.table_name] = serialized
-                count += len(serialized)
-        return {"embedded": embedded, "records": records}, count
+                if query.count_in_manifest:
+                    reportable_count += len(serialized)
+        return (
+            {"embedded": embedded, "records": records},
+            reportable_count,
+            materialized_count,
+        )
 
     @staticmethod
     def _current_embedded(

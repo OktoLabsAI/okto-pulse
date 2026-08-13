@@ -24,6 +24,7 @@ RICH_MEDIA_CSS = """
 .rich-media-item[open]>summary{border-bottom:1px solid var(--line)}.rich-media-body{padding:16px}.rich-media-description{color:var(--muted);margin:0 0 13px;white-space:pre-wrap}
 .rich-media-badge{margin-left:auto;border-radius:999px;background:var(--accent-soft);color:#ddd6fe;padding:3px 9px;font-size:.7rem;text-transform:uppercase;white-space:nowrap}
 .mockup-preview{overflow:auto;border:1px solid var(--line);border-radius:10px;background:#eef2f7;padding:18px;color:#172033}.mockup-surface{max-width:980px;min-height:260px;margin:auto;background:#fff;border:1px solid #cbd5e1;border-radius:12px;box-shadow:0 12px 30px rgba(15,23,42,.13);padding:20px;font:14px/1.45 system-ui,sans-serif}.mockup-surface header,.mockup-surface footer,.mockup-surface nav,.mockup-surface main,.mockup-surface section,.mockup-surface aside{display:block;margin:9px 0;padding:11px;border:1px solid #dbe3ee;border-radius:8px}.mockup-surface header,.mockup-surface nav{background:#f8fafc}.mockup-surface h1,.mockup-surface h2,.mockup-surface h3,.mockup-surface h4,.mockup-surface p{margin:.45em 0}.mockup-surface ul,.mockup-surface ol{padding-left:22px}.mockup-surface table{width:100%;border-collapse:collapse}.mockup-surface th,.mockup-surface td{padding:7px;border:1px solid #dbe3ee}.mockup-surface img{display:block;max-width:100%;height:auto}.mockup-control{display:inline-flex;align-items:center;min-height:34px;margin:3px;padding:6px 11px;border:1px solid #94a3b8;border-radius:7px;background:#f8fafc;color:#172033}.mockup-button{background:#6d4aff;color:#fff;border-color:#6d4aff;font-weight:700}.mockup-input{min-width:170px;justify-content:flex-start;color:#64748b}.mockup-link{color:#5b36d6;text-decoration:underline}.mockup-form{display:block;margin:9px 0;padding:11px;border:1px dashed #94a3b8;border-radius:8px}.mockup-visual-block{display:block}.mockup-visual-inline{display:inline}.mockup-empty{color:#64748b;font-style:italic}
+.architecture-diagrams{display:grid;gap:16px}.architecture-diagram{display:grid;gap:10px}.architecture-diagram+.architecture-diagram{border-top:1px solid var(--line);padding-top:16px}.architecture-diagram-heading{display:flex;align-items:baseline;justify-content:space-between;gap:12px}.architecture-diagram-heading h4{margin:0}.architecture-diagram-format{color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.06em}.architecture-diagram-description{margin:0;color:var(--muted)}
 .diagram-figure{margin:0}.diagram-canvas{display:block;width:100%;height:auto;min-height:220px;border:1px solid var(--line);border-radius:10px;background:#f8fafc}
 .diagram-source{margin-top:12px}.diagram-source>summary{cursor:pointer;color:var(--muted);font-size:.78rem;font-weight:700}.diagram-source pre,.knowledge-content{max-height:560px;overflow:auto;background:#0b1424;border:1px solid var(--line);border-radius:9px;padding:13px;white-space:pre-wrap;overflow-wrap:anywhere}
 .rich-media-fallback{border:1px dashed var(--line);border-radius:9px;padding:16px;color:var(--muted)}
@@ -45,6 +46,19 @@ _MERMAID_EDGE = re.compile(
 )
 _MERMAID_NODE = re.compile(
     r"^\s*([A-Za-z][A-Za-z0-9_]*)\s*(?:\[\s*\"?([^\]\"]+)\"?\s*\]|\(\s*\"?([^\)\"]+)\"?\s*\)|\{\s*\"?([^\}\"]+)\"?\s*\})"
+)
+_MERMAID_NODE_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_]*)\s*(?:"
+    r"\[\s*(?:\"([^\"]*)\"|([^\]]+))\s*\]|"
+    r"\(\s*(?:\"([^\"]*)\"|([^\)]+))\s*\)|"
+    r"\{\s*(?:\"([^\"]*)\"|([^\}]+))\s*\})"
+)
+_MERMAID_EDGE_WITH_NODES = re.compile(
+    r"^\s*(?P<source>[A-Za-z][A-Za-z0-9_]*)"
+    r"(?:\s*(?:\[[^\]]*\]|\([^\)]*\)|\{[^\}]*\}))?\s*"
+    r"(?:--(?:\s*\"(?P<label>[^\"]*)\"\s*)?-->|-->|---|-.->|==>)\s*"
+    r"(?P<target>[A-Za-z][A-Za-z0-9_]*)"
+    r"(?:\s*(?:\[[^\]]*\]|\([^\)]*\)|\{[^\}]*\}))?"
 )
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_]+")
 _MOCKUP_ALLOWED_TAGS = frozenset(
@@ -619,6 +633,214 @@ def _mermaid_label(value: Any) -> str:
     )
 
 
+def _canonical_ref(value: Any) -> str:
+    return str(value or "").strip().casefold()
+
+
+def _custom_or_top_level(item: Mapping[str, Any], key: str) -> Any:
+    if key in item:
+        return item.get(key)
+    custom_data = item.get("customData")
+    return custom_data.get(key) if isinstance(custom_data, Mapping) else None
+
+
+def _linked_interface_refs(item: Mapping[str, Any]) -> list[str]:
+    values: list[Any] = []
+    legacy = _custom_or_top_level(item, "linkedInterfaceId")
+    if legacy not in (None, ""):
+        values.append(legacy)
+    multiple = _custom_or_top_level(item, "linkedInterfaceIds")
+    if isinstance(multiple, Sequence) and not isinstance(multiple, (str, bytes)):
+        values.extend(multiple)
+    refs: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        ref = str(value or "").strip()
+        canonical = _canonical_ref(ref)
+        if canonical and canonical not in seen:
+            seen.add(canonical)
+            refs.append(ref)
+    return refs
+
+
+def _unique_mermaid_id(value: Any, index: int, used: set[str]) -> str:
+    identifier = _safe_mermaid_id(value, index)
+    base = identifier
+    suffix = 2
+    while identifier in used:
+        identifier = f"{base}_{suffix}"
+        suffix += 1
+    used.add(identifier)
+    return identifier
+
+
+def _float(value: Any, default: float) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    return result if math.isfinite(result) else default
+
+
+def _excalidraw_mermaid(
+    design: Mapping[str, Any], diagram: Mapping[str, Any]
+) -> tuple[str, dict[str, tuple[float, float, float, float]]] | None:
+    """Project the authoritative Excalidraw topology to passive Mermaid facts.
+
+    Architecture interfaces intentionally do not own their endpoints.  Nodes and
+    connections are resolved from ``linkedEntityId`` / ``sourceElementId`` /
+    ``targetElementId`` and contracts from ``linkedInterfaceIds``.  The returned
+    layout lets the static HTML renderer retain the authored Pulse positions;
+    Markdown receives the equivalent renderer-independent Mermaid projection.
+    """
+
+    payload = diagram.get("adapter_payload")
+    if not isinstance(payload, Mapping):
+        return None
+    raw_elements = payload.get("elements")
+    if not isinstance(raw_elements, Sequence) or isinstance(raw_elements, (str, bytes)):
+        return None
+    elements = [item for item in raw_elements if isinstance(item, Mapping)]
+    if not elements:
+        return None
+
+    entities = [
+        item for item in design.get("entities") or [] if isinstance(item, Mapping)
+    ]
+    entity_by_ref: dict[str, Mapping[str, Any]] = {}
+    for entity in entities:
+        for ref in (entity.get("id"), entity.get("name")):
+            canonical = _canonical_ref(ref)
+            if canonical:
+                entity_by_ref[canonical] = entity
+
+    interfaces = [
+        item for item in design.get("interfaces") or [] if isinstance(item, Mapping)
+    ]
+    interface_by_ref: dict[str, Mapping[str, Any]] = {}
+    for interface in interfaces:
+        for ref in (interface.get("id"), interface.get("name")):
+            canonical = _canonical_ref(ref)
+            if canonical:
+                interface_by_ref[canonical] = interface
+
+    connections = [
+        item
+        for item in elements
+        if _key(item.get("type")) in {"arrow", "line"}
+        or _custom_or_top_level(item, "sourceElementId") not in (None, "")
+        or _custom_or_top_level(item, "targetElementId") not in (None, "")
+    ]
+    referenced_element_ids = {
+        _canonical_ref(ref)
+        for item in connections
+        for ref in (
+            _custom_or_top_level(item, "sourceElementId"),
+            _custom_or_top_level(item, "targetElementId"),
+        )
+        if _canonical_ref(ref)
+    }
+
+    nodes: list[tuple[str, str]] = []
+    layout: dict[str, tuple[float, float, float, float]] = {}
+    element_nodes: dict[str, str] = {}
+    used: set[str] = set()
+    for index, element in enumerate(elements, start=1):
+        element_id = str(element.get("id") or "").strip()
+        canonical_element_id = _canonical_ref(element_id)
+        if not canonical_element_id:
+            continue
+        linked_entity_ref = _custom_or_top_level(element, "linkedEntityId")
+        if (
+            linked_entity_ref in (None, "")
+            and canonical_element_id not in referenced_element_ids
+        ):
+            # Decorative/text elements are not architecture nodes.
+            continue
+        entity = entity_by_ref.get(_canonical_ref(linked_entity_ref))
+        label = (
+            entity.get("name")
+            if entity is not None
+            else _custom_or_top_level(element, "text")
+            or _custom_or_top_level(element, "label")
+            or linked_entity_ref
+            or element_id
+        )
+        preferred_id = (
+            entity.get("id")
+            if entity is not None and entity.get("id") not in (None, "")
+            else linked_entity_ref or element_id
+        )
+        identifier = _unique_mermaid_id(preferred_id, index, used)
+        nodes.append((identifier, str(label)))
+        element_nodes[canonical_element_id] = identifier
+        width = max(80.0, min(420.0, abs(_float(element.get("width"), 190.0))))
+        height = max(48.0, min(220.0, abs(_float(element.get("height"), 82.0))))
+        layout[identifier] = (
+            _float(element.get("x"), float((index - 1) * 250)),
+            _float(element.get("y"), 0.0),
+            width,
+            height,
+        )
+
+    if not nodes:
+        return None
+
+    edges: list[tuple[str, str, str]] = []
+    for connection in connections:
+        source = element_nodes.get(
+            _canonical_ref(_custom_or_top_level(connection, "sourceElementId"))
+        )
+        target = element_nodes.get(
+            _canonical_ref(_custom_or_top_level(connection, "targetElementId"))
+        )
+        if not source or not target:
+            continue
+        linked_interfaces = [
+            interface_by_ref.get(_canonical_ref(ref))
+            for ref in _linked_interface_refs(connection)
+        ]
+        resolved_interfaces = [item for item in linked_interfaces if item is not None]
+        labels: list[str] = []
+        for interface, fallback_ref in zip(
+            linked_interfaces,
+            _linked_interface_refs(connection),
+            strict=True,
+        ):
+            candidate = interface.get("name") if interface is not None else fallback_ref
+            text = str(candidate or "").strip()
+            if text and text not in labels:
+                labels.append(text)
+        directions = {
+            _key(item.get("direction"))
+            for item in resolved_interfaces
+            if item.get("direction") not in (None, "")
+        }
+        if directions == {"target_to_source"}:
+            source, target = target, source
+        edges.append((source, target, " · ".join(labels)))
+
+    x_values = [position[0] for position in layout.values()]
+    y_values = [position[1] for position in layout.values()]
+    direction = (
+        "TB"
+        if x_values
+        and y_values
+        and max(y_values) - min(y_values) > max(x_values) - min(x_values)
+        else "LR"
+    )
+    lines = [
+        f"flowchart {direction}",
+        *(f'  {identifier}["{_mermaid_label(label)}"]' for identifier, label in nodes),
+    ]
+    for source, target, label in edges:
+        if label:
+            lines.append(f'  {source} -- "{_mermaid_label(label)}" --> {target}')
+        else:
+            lines.append(f"  {source} --> {target}")
+    return "\n".join(lines) + "\n", layout
+
+
 def _semantic_mermaid(design: Mapping[str, Any]) -> str | None:
     entities = [
         item for item in design.get("entities") or [] if isinstance(item, Mapping)
@@ -629,13 +851,9 @@ def _semantic_mermaid(design: Mapping[str, Any]) -> str | None:
     nodes: list[tuple[str, str]] = []
     used: set[str] = set()
     for index, entity in enumerate(entities, start=1):
-        identifier = _safe_mermaid_id(entity.get("id") or entity.get("name"), index)
-        base = identifier
-        suffix = 2
-        while identifier in used:
-            identifier = f"{base}_{suffix}"
-            suffix += 1
-        used.add(identifier)
+        identifier = _unique_mermaid_id(
+            entity.get("id") or entity.get("name"), index, used
+        )
         label = str(entity.get("name") or entity.get("id") or f"Entity {index}")
         nodes.append((identifier, label))
         for alias in (entity.get("id"), entity.get("name")):
@@ -710,20 +928,44 @@ def sanitize_mermaid_source(value: Any) -> str | None:
     return "\n".join(safe) + "\n"
 
 
+def _ordered_diagrams(design: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    diagrams = [
+        item for item in design.get("diagrams") or [] if isinstance(item, Mapping)
+    ]
+    return [
+        item
+        for _, item in sorted(
+            enumerate(diagrams),
+            key=lambda pair: (
+                _float(pair[1].get("order_index"), float(pair[0])),
+                pair[0],
+            ),
+        )
+    ]
+
+
+def _diagram_projection(
+    design: Mapping[str, Any], diagram: Mapping[str, Any]
+) -> tuple[str, dict[str, tuple[float, float, float, float]] | None] | None:
+    format_key = _key(diagram.get("format"))
+    if format_key == "excalidraw_json":
+        return _excalidraw_mermaid(design, diagram)
+    if format_key != "mermaid":
+        return None
+    payload = diagram.get("adapter_payload")
+    if isinstance(payload, Mapping):
+        payload = (
+            payload.get("source") or payload.get("content") or payload.get("mermaid")
+        )
+    safe = sanitize_mermaid_source(payload)
+    return (safe, None) if safe else None
+
+
 def _diagram_source(design: Mapping[str, Any]) -> str | None:
-    for diagram in design.get("diagrams") or []:
-        if not isinstance(diagram, Mapping) or _key(diagram.get("format")) != "mermaid":
-            continue
-        payload = diagram.get("adapter_payload")
-        if isinstance(payload, Mapping):
-            payload = (
-                payload.get("source")
-                or payload.get("content")
-                or payload.get("mermaid")
-            )
-        safe = sanitize_mermaid_source(payload)
-        if safe:
-            return safe
+    for diagram in _ordered_diagrams(design):
+        projection = _diagram_projection(design, diagram)
+        if projection is not None:
+            return projection[0]
     return _semantic_mermaid(design)
 
 
@@ -734,15 +976,24 @@ def _parse_mermaid_graph(
     edges: list[tuple[str, str, str]] = []
     order: list[str] = []
     for line in source.splitlines()[1:]:
-        for match in _MERMAID_NODE.finditer(line):
+        for match in _MERMAID_NODE_TOKEN.finditer(line):
             identifier = match.group(1)
-            label = next((part for part in match.groups()[1:] if part), identifier)
+            label = next(
+                (part.strip() for part in match.groups()[1:] if part is not None),
+                identifier,
+            )
             if identifier not in labels:
                 order.append(identifier)
             labels[identifier] = label
-        edge = _MERMAID_EDGE.search(line)
+        edge_with_nodes = _MERMAID_EDGE_WITH_NODES.search(line)
+        edge = edge_with_nodes or _MERMAID_EDGE.search(line)
         if edge:
-            source_id, edge_label, target_id = edge.groups()
+            if edge_with_nodes:
+                source_id = edge_with_nodes.group("source")
+                edge_label = edge_with_nodes.group("label")
+                target_id = edge_with_nodes.group("target")
+            else:
+                source_id, edge_label, target_id = edge.groups()
             for identifier in (source_id, target_id):
                 if identifier not in labels:
                     labels[identifier] = identifier
@@ -774,61 +1025,224 @@ def _wrapped_lines(value: str, width: int = 24, maximum: int = 3) -> list[str]:
     return lines
 
 
-def mermaid_to_static_svg(source: str, *, title: str) -> str | None:
+def _normalize_authored_layout(
+    nodes: Sequence[tuple[str, str]],
+    authored: Mapping[str, tuple[float, float, float, float]],
+    *,
+    margin: float,
+) -> tuple[dict[str, tuple[float, float, float, float]], float, float] | None:
+    if not nodes or any(identifier not in authored for identifier, _ in nodes):
+        return None
+    raw = {identifier: authored[identifier] for identifier, _ in nodes}
+    min_x = min(item[0] for item in raw.values())
+    min_y = min(item[1] for item in raw.values())
+    max_x = max(item[0] + item[2] for item in raw.values())
+    max_y = max(item[1] + item[3] for item in raw.values())
+    raw_width = max(1.0, max_x - min_x)
+    raw_height = max(1.0, max_y - min_y)
+    scale = min(1.0, 1120.0 / raw_width, 720.0 / raw_height)
+    normalized = {
+        identifier: (
+            margin + (x - min_x) * scale,
+            margin + (y - min_y) * scale,
+            width * scale,
+            height * scale,
+        )
+        for identifier, (x, y, width, height) in raw.items()
+    }
+    return (
+        normalized,
+        margin * 2 + raw_width * scale,
+        margin * 2 + raw_height * scale,
+    )
+
+
+def _box_edge_point(
+    box: tuple[float, float, float, float], target: tuple[float, float]
+) -> tuple[float, float]:
+    x, y, width, height = box
+    center_x, center_y = x + width / 2, y + height / 2
+    delta_x, delta_y = target[0] - center_x, target[1] - center_y
+    if abs(delta_x) < 0.001 and abs(delta_y) < 0.001:
+        return center_x, center_y
+    x_scale = (width / 2) / abs(delta_x) if abs(delta_x) >= 0.001 else math.inf
+    y_scale = (height / 2) / abs(delta_y) if abs(delta_y) >= 0.001 else math.inf
+    scale = min(x_scale, y_scale)
+    return center_x + delta_x * scale, center_y + delta_y * scale
+
+
+def _arrow_points(
+    x1: float, y1: float, x2: float, y2: float
+) -> tuple[tuple[float, float], tuple[float, float], tuple[float, float]] | None:
+    delta_x, delta_y = x2 - x1, y2 - y1
+    length = math.hypot(delta_x, delta_y)
+    if length < 0.001:
+        return None
+    unit_x, unit_y = delta_x / length, delta_y / length
+    size = 10.0
+    base_x, base_y = x2 - unit_x * size * 1.45, y2 - unit_y * size * 1.45
+    perp_x, perp_y = -unit_y * size * 0.62, unit_x * size * 0.62
+    return (
+        (x2, y2),
+        (base_x + perp_x, base_y + perp_y),
+        (base_x - perp_x, base_y - perp_y),
+    )
+
+
+def mermaid_to_static_svg(
+    source: str,
+    *,
+    title: str,
+    authored_layout: Mapping[str, tuple[float, float, float, float]] | None = None,
+) -> str | None:
     """Render the safe flowchart subset as deterministic, scriptless SVG."""
 
     nodes, edges = _parse_mermaid_graph(source)
     if not nodes:
         return None
-    columns = min(3, max(1, math.ceil(math.sqrt(len(nodes)))))
-    rows = math.ceil(len(nodes) / columns)
-    node_width, node_height = 210, 76
-    gap_x, gap_y, margin = 70, 80, 38
-    width = margin * 2 + columns * node_width + max(0, columns - 1) * gap_x
-    height = margin * 2 + rows * node_height + max(0, rows - 1) * gap_y
-    positions: dict[str, tuple[float, float]] = {}
+    default_node_width, default_node_height = 210.0, 76.0
+    gap_x, gap_y, margin = 70.0, 80.0, 38.0
+    normalized = (
+        _normalize_authored_layout(nodes, authored_layout, margin=margin)
+        if authored_layout
+        else None
+    )
+    positions: dict[str, tuple[float, float, float, float]] = {}
+    if normalized is not None:
+        positions, width, height = normalized
+    else:
+        columns = min(3, max(1, math.ceil(math.sqrt(len(nodes)))))
+        rows = math.ceil(len(nodes) / columns)
+        width = margin * 2 + columns * default_node_width + max(0, columns - 1) * gap_x
+        height = margin * 2 + rows * default_node_height + max(0, rows - 1) * gap_y
+        for index, (identifier, _) in enumerate(nodes):
+            column, row = index % columns, index // columns
+            positions[identifier] = (
+                margin + column * (default_node_width + gap_x),
+                margin + row * (default_node_height + gap_y),
+                default_node_width,
+                default_node_height,
+            )
+
     node_parts: list[str] = []
-    for index, (identifier, label) in enumerate(nodes):
-        column, row = index % columns, index // columns
-        x = margin + column * (node_width + gap_x)
-        y = margin + row * (node_height + gap_y)
-        positions[identifier] = (x, y)
-        text_lines = _wrapped_lines(label)
+    for identifier, label in nodes:
+        x, y, node_width, node_height = positions[identifier]
+        wrap_width = max(12, min(34, int(node_width / 8.5)))
+        text_lines = _wrapped_lines(label, width=wrap_width)
         start_y = y + node_height / 2 - (len(text_lines) - 1) * 10
         text = "".join(
             f'<tspan x="{x + node_width / 2:.1f}" y="{start_y + offset * 20:.1f}">{_html(line)}</tspan>'
             for offset, line in enumerate(text_lines)
         )
         node_parts.append(
-            f'<rect x="{x}" y="{y}" width="{node_width}" height="{node_height}" rx="12" fill="#ffffff" stroke="#7c3aed" stroke-width="2"/>'
+            f'<rect class="diagram-node" x="{x:.1f}" y="{y:.1f}" width="{node_width:.1f}" height="{node_height:.1f}" rx="12" fill="#ffffff" stroke="#7c3aed" stroke-width="2"/>'
             f'<text text-anchor="middle" font-family="system-ui,sans-serif" font-size="14" font-weight="650" fill="#172033">{text}</text>'
         )
     edge_parts: list[str] = []
     for source_id, target_id, label in edges:
         if source_id not in positions or target_id not in positions:
             continue
-        source_x, source_y = positions[source_id]
-        target_x, target_y = positions[target_id]
-        x1, y1 = source_x + node_width / 2, source_y + node_height / 2
-        x2, y2 = target_x + node_width / 2, target_y + node_height / 2
-        if abs(x2 - x1) >= abs(y2 - y1):
-            x1 += node_width / 2 if x2 > x1 else -node_width / 2
-            x2 -= node_width / 2 if x2 > x1 else -node_width / 2
-        else:
-            y1 += node_height / 2 if y2 > y1 else -node_height / 2
-            y2 -= node_height / 2 if y2 > y1 else -node_height / 2
-        edge_parts.append(
-            f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" stroke="#64748b" stroke-width="2"/>'
+        source_box = positions[source_id]
+        target_box = positions[target_id]
+        source_center = (
+            source_box[0] + source_box[2] / 2,
+            source_box[1] + source_box[3] / 2,
         )
-        if label:
+        target_center = (
+            target_box[0] + target_box[2] / 2,
+            target_box[1] + target_box[3] / 2,
+        )
+        x1, y1 = _box_edge_point(source_box, target_center)
+        x2, y2 = _box_edge_point(target_box, source_center)
+        edge_parts.append(
+            f'<line class="diagram-edge" x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" stroke="#64748b" stroke-width="2"/>'
+        )
+        arrow = _arrow_points(x1, y1, x2, y2)
+        if arrow is not None:
+            points = " ".join(f"{x:.1f},{y:.1f}" for x, y in arrow)
             edge_parts.append(
-                f'<text x="{(x1 + x2) / 2:.1f}" y="{(y1 + y2) / 2 - 7:.1f}" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#475569">{_html(label)}</text>'
+                f'<polygon class="diagram-arrow" points="{points}" fill="#64748b"/>'
+            )
+        if label:
+            label_lines = _wrapped_lines(label, width=30, maximum=2)
+            label_width = min(
+                250.0, max(64.0, max(len(line) for line in label_lines) * 6.4 + 14)
+            )
+            label_height = len(label_lines) * 15.0 + 8.0
+            label_x, label_y = (x1 + x2) / 2, (y1 + y2) / 2
+            edge_parts.append(
+                f'<rect class="diagram-edge-label-bg" x="{label_x - label_width / 2:.1f}" y="{label_y - label_height / 2:.1f}" width="{label_width:.1f}" height="{label_height:.1f}" rx="4" fill="#f8fafc" fill-opacity=".96"/>'
+            )
+            label_text = "".join(
+                f'<tspan x="{label_x:.1f}" y="{label_y - (len(label_lines) - 1) * 7.5 + index * 15:.1f}">{_html(line)}</tspan>'
+                for index, line in enumerate(label_lines)
+            )
+            edge_parts.append(
+                f'<text class="diagram-edge-label" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#475569">{label_text}</text>'
             )
     return (
-        f'<svg class="diagram-canvas" role="img" aria-label="{_html(title)}" viewBox="0 0 {width} {height}">'
+        f'<svg class="diagram-canvas" role="img" aria-label="{_html(title)}" viewBox="0 0 {width:.1f} {height:.1f}">'
+        f"<title>{_html(title)}</title>"
         + "".join(edge_parts)
         + "".join(node_parts)
         + "</svg>"
+    )
+
+
+def _architecture_diagram_html(
+    design: Mapping[str, Any],
+    diagram: Mapping[str, Any] | None,
+    *,
+    index: int,
+    design_title: str,
+) -> str:
+    if diagram is None:
+        diagram_title = "Semantic architecture overview"
+        diagram_description = None
+        format_key = "semantic_projection"
+        source = _semantic_mermaid(design)
+        authored_layout = None
+    else:
+        diagram_title = str(diagram.get("title") or f"Architecture diagram {index}")
+        diagram_description = diagram.get("description")
+        format_key = _key(diagram.get("format")) or "unknown"
+        projection = _diagram_projection(design, diagram)
+        source, authored_layout = projection if projection is not None else (None, None)
+    accessible_title = f"{design_title} — {diagram_title}"
+    svg = (
+        mermaid_to_static_svg(
+            source,
+            title=accessible_title,
+            authored_layout=authored_layout,
+        )
+        if source
+        else None
+    )
+    visual = (
+        f'<figure class="diagram-figure">{svg}</figure>'
+        if svg
+        else '<p class="rich-media-fallback">A static preview could not be generated for this diagram.</p>'
+    )
+    source_html = (
+        '<details class="diagram-source">'
+        f"<summary>{'Mermaid source' if format_key == 'mermaid' else 'Mermaid projection'}</summary>"
+        f"<pre><code>{_html(source)}</code></pre></details>"
+        if source
+        else ""
+    )
+    description_html = (
+        f'<p class="architecture-diagram-description">{_html(diagram_description)}</p>'
+        if diagram_description
+        else ""
+    )
+    format_label = format_key.replace("_", " ")
+    return (
+        '<section class="architecture-diagram">'
+        '<header class="architecture-diagram-heading">'
+        f"<h4>{_html(diagram_title)}</h4>"
+        f'<span class="architecture-diagram-format">{_html(format_label)}</span>'
+        "</header>"
+        f"{description_html}{visual}{source_html}</section>"
     )
 
 
@@ -842,19 +1256,23 @@ def _architecture_html(value: Any) -> str:
     for index, design in enumerate(designs, start=1):
         title = str(design.get("title") or f"Architecture design {index}")
         description = design.get("global_description") or design.get("description")
-        source = _diagram_source(design)
-        svg = mermaid_to_static_svg(source, title=title) if source else None
-        visual = (
-            f'<figure class="diagram-figure">{svg}</figure>'
-            if svg
-            else '<p class="rich-media-fallback">A static preview could not be generated; the human-readable architecture description remains available.</p>'
+        diagrams = _ordered_diagrams(design)
+        diagrams_html = "".join(
+            _architecture_diagram_html(
+                design,
+                diagram,
+                index=diagram_index,
+                design_title=title,
+            )
+            for diagram_index, diagram in enumerate(diagrams, start=1)
         )
-        source_html = (
-            '<details class="diagram-source"><summary>Mermaid source</summary>'
-            f"<pre><code>{_html(source)}</code></pre></details>"
-            if source
-            else ""
-        )
+        if not diagrams:
+            diagrams_html = _architecture_diagram_html(
+                design,
+                None,
+                index=1,
+                design_title=title,
+            )
         description_html = (
             f'<p class="rich-media-description">{_html(description)}</p>'
             if description
@@ -863,7 +1281,7 @@ def _architecture_html(value: Any) -> str:
         rendered.append(
             '<details class="rich-media-item architecture-item">'
             f'<summary><span>{_html(title)}</span><span class="rich-media-badge">Architecture</span></summary>'
-            f'<div class="rich-media-body">{description_html}{visual}{source_html}</div></details>'
+            f'<div class="rich-media-body">{description_html}<div class="architecture-diagrams">{diagrams_html}</div></div></details>'
         )
     return '<div class="rich-media-list">' + "".join(rendered) + "</div>"
 
@@ -953,11 +1371,37 @@ def _architecture_markdown(value: Any) -> list[str]:
         description = design.get("global_description") or design.get("description")
         if description:
             lines.extend([_md(description), ""])
-        source = _diagram_source(design)
-        if source:
-            lines.extend(["```mermaid", source.rstrip(), "```", ""])
-        else:
-            lines.extend(["_Diagram preview unavailable._", ""])
+        diagrams = _ordered_diagrams(design)
+        if not diagrams:
+            source = _semantic_mermaid(design)
+            if source:
+                lines.extend(
+                    [
+                        "#### Semantic architecture overview",
+                        "",
+                        "```mermaid",
+                        source.rstrip(),
+                        "```",
+                        "",
+                    ]
+                )
+            else:
+                lines.extend(["_Diagram preview unavailable._", ""])
+        for diagram_index, diagram in enumerate(diagrams, start=1):
+            diagram_title = (
+                diagram.get("title") or f"Architecture diagram {diagram_index}"
+            )
+            lines.extend([f"#### {_md(diagram_title)}", ""])
+            if diagram.get("description"):
+                lines.extend([_md(diagram["description"]), ""])
+            projection = _diagram_projection(design, diagram)
+            if projection is not None:
+                lines.extend(["```mermaid", projection[0].rstrip(), "```", ""])
+            else:
+                format_label = str(diagram.get("format") or "stored format")
+                lines.extend(
+                    [f"_Static preview unavailable for {_md(format_label)}._", ""]
+                )
         lines.extend(["</details>", ""])
     return lines
 
