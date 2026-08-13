@@ -679,6 +679,15 @@ class CommunityRelationalApplicationAdapter:
 
         return CommunitySqlAlchemySpecDependency(session)
 
+    def entity_exports(self, session: AsyncSession):
+        """Bind the complete export projection to the caller-owned snapshot."""
+
+        from okto_pulse.community.adapters.sqlalchemy_entity_export import (
+            CommunitySqlAlchemyEntityExportReader,
+        )
+
+        return CommunitySqlAlchemyEntityExportReader(session)
+
     def code_investigations(self, session: AsyncSession):
         """Bind the agent-submitted attestation ledger to this transaction."""
 

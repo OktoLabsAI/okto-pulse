@@ -234,6 +234,13 @@ class CommunityUnitOfWork:
         self.semantic_assessment_v2_capability = (
             CommunitySemanticAssessmentV2Capabilities(session)
         )
+        # Bound to this exact session: composite exports must never escape the
+        # snapshot by constructing a reader from the global session factory.
+        from okto_pulse.community.adapters.sqlalchemy_entity_export import (
+            CommunitySqlAlchemyEntityExportReader,
+        )
+
+        self.entity_exports = CommunitySqlAlchemyEntityExportReader(session)
 
     async def __aenter__(self) -> "CommunityUnitOfWork":
         return self

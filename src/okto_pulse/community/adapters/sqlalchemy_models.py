@@ -1579,6 +1579,28 @@ class SpecDependency(Base):
     )
     remove_request_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
     removed_at_spec_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Additive nullable audit snapshots stay physically last so ALTER ADD on
+    # legacy SQLite/PostgreSQL tables converges to the same exact column order
+    # as a fresh create.  Historical rows remain NULL; current mutable Specs
+    # are never used to invent past facts.
+    source_title_on_create: Mapped[str | None] = mapped_column(
+        String(500), nullable=True
+    )
+    source_edition_on_create: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    source_title_on_remove: Mapped[str | None] = mapped_column(
+        String(500), nullable=True
+    )
+    source_edition_on_remove: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    target_title_on_remove: Mapped[str | None] = mapped_column(
+        String(500), nullable=True
+    )
+    target_edition_on_remove: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
 
 
 class SpecDependencyOperation(Base):
@@ -1752,6 +1774,8 @@ WHEN NOT (
     NEW.introduced_at_spec_version IS OLD.introduced_at_spec_version AND
     NEW.source_version_on_create IS OLD.source_version_on_create AND
     NEW.source_status_on_create IS OLD.source_status_on_create AND
+    NEW.source_title_on_create IS OLD.source_title_on_create AND
+    NEW.source_edition_on_create IS OLD.source_edition_on_create AND
     NEW.target_status_on_create IS OLD.target_status_on_create AND
     NEW.target_version_on_create IS OLD.target_version_on_create AND
     NEW.target_title_on_create IS OLD.target_title_on_create AND
@@ -1812,6 +1836,36 @@ def spec_dependency_sqlite_trigger_predecessors() -> dict[str, tuple[str, ...]]:
     """Return exact, upgradeable predecessor DDL for the closed SK-M manifest."""
 
     return {
+        "trg_spec_dependency_tombstone_immutable_update": (
+            """CREATE TRIGGER trg_spec_dependency_tombstone_immutable_update
+BEFORE UPDATE ON spec_dependencies
+WHEN NOT (
+    OLD.active = 1 AND NEW.active = 0 AND
+    NEW.id IS OLD.id AND NEW.board_id IS OLD.board_id AND
+    NEW.dependent_spec_id IS OLD.dependent_spec_id AND
+    NEW.prerequisite_spec_id IS NULL AND
+    NEW.prerequisite_spec_ref IS OLD.prerequisite_spec_ref AND
+    NEW.resolved_on_create IS OLD.resolved_on_create AND
+    NEW.retrospective IS OLD.retrospective AND
+    NEW.introduced_at_spec_version IS OLD.introduced_at_spec_version AND
+    NEW.source_version_on_create IS OLD.source_version_on_create AND
+    NEW.source_status_on_create IS OLD.source_status_on_create AND
+    NEW.target_status_on_create IS OLD.target_status_on_create AND
+    NEW.target_version_on_create IS OLD.target_version_on_create AND
+    NEW.target_title_on_create IS OLD.target_title_on_create AND
+    NEW.target_edition_on_create IS OLD.target_edition_on_create AND
+    NEW.target_ideation_id_on_create IS OLD.target_ideation_id_on_create AND
+    NEW.add_idempotency_key IS OLD.add_idempotency_key AND
+    NEW.add_request_digest IS OLD.add_request_digest AND
+    NEW.created_at IS OLD.created_at AND
+    NEW.created_by_id IS OLD.created_by_id AND
+    NEW.created_by_type IS OLD.created_by_type AND
+    NEW.created_by_name IS OLD.created_by_name
+)
+BEGIN
+    SELECT RAISE(ABORT, 'spec_dependency_lifecycle_immutable');
+END""",
+        ),
         "trg_spec_dependency_started_edition_insert": (
             """CREATE TRIGGER trg_spec_dependency_started_edition_insert
 BEFORE INSERT ON specs

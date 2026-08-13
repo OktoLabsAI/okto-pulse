@@ -279,7 +279,7 @@ describe('RefinementModal handleMove error surfacing (AC1)', () => {
   });
 });
 
-describe('RefinementModal Markdown export', () => {
+describe('RefinementModal report export', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     apiMock.getRefinement.mockResolvedValue(baseRefinement);
@@ -307,7 +307,7 @@ describe('RefinementModal Markdown export', () => {
     markdownMock.exportRefinement.mockReturnValue('# refinement export');
   });
 
-  it('hydrates full architecture designs (alongside knowledge bases) before export', async () => {
+  it('delegates export preparation to the canonical report service without local hydration', async () => {
     apiMock.getRefinement.mockResolvedValue({
       ...baseRefinement,
       architecture_designs: [{ id: 'arch-1', title: 'Refinement arch', diagrams_count: 1 }] as any,
@@ -317,36 +317,23 @@ describe('RefinementModal Markdown export', () => {
     render(<RefinementModal refinementId="refinement-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
 
     await screen.findByText('My Refinement');
-    fireEvent.click(screen.getByTitle('Download Markdown'));
-
-    // Architecture summary is hydrated into a full design (entities + diagram payloads).
-    await waitFor(() => expect(apiMock.getArchitectureDesign).toHaveBeenCalledWith('arch-1', true));
-    // Knowledge bases are still hydrated too (existing behavior preserved).
-    expect(apiMock.getRefinementKnowledge).toHaveBeenCalledWith('refinement-1', 'kb-1');
-
-    // exportRefinement receives the hydrated full design, not the summary.
-    const lastCall = (markdownMock.exportRefinement.mock.calls.at(-1) ?? []) as any[];
-    const arg = lastCall[0];
-    expect(arg.architecture_designs[0]).toMatchObject({ id: 'arch-1', entities: [{ id: 'arch-1-e', name: 'E' }] });
-
-    await waitFor(() =>
-      expect(markdownMock.downloadMarkdown).toHaveBeenCalledWith('# refinement export', 'refinement_my-refinement_v3.md'),
-    );
+    expect(screen.getByTitle('Export report')).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(apiMock.getArchitectureDesign).not.toHaveBeenCalled();
+    expect(apiMock.getRefinementKnowledge).not.toHaveBeenCalled();
+    expect(markdownMock.exportRefinement).not.toHaveBeenCalled();
+    expect(markdownMock.downloadMarkdown).not.toHaveBeenCalled();
     expect(apiMock.updateRefinement).not.toHaveBeenCalled();
     expect(apiMock.moveRefinement).not.toHaveBeenCalled();
     expect(apiMock.deleteRefinement).not.toHaveBeenCalled();
   });
 
-  it('exports without architecture calls when the refinement has no architecture designs', async () => {
+  it('exposes the same report action when the refinement has no architecture designs', async () => {
     render(<RefinementModal refinementId="refinement-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
 
     await screen.findByText('My Refinement');
-    fireEvent.click(screen.getByTitle('Download Markdown'));
-
-    await waitFor(() => expect(markdownMock.exportRefinement).toHaveBeenCalled());
+    expect(screen.getByTitle('Export report')).toHaveAttribute('aria-haspopup', 'dialog');
     expect(apiMock.getArchitectureDesign).not.toHaveBeenCalled();
-    const arg = ((markdownMock.exportRefinement.mock.calls.at(-1) ?? []) as any[])[0];
-    expect(arg.architecture_designs).toEqual([]);
+    expect(markdownMock.exportRefinement).not.toHaveBeenCalled();
   });
 
   it('renders move actions from the allowed_transitions contract', async () => {

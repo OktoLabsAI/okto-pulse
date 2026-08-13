@@ -34,13 +34,12 @@ import {
   RefreshCw,
   Maximize2,
   Minimize2,
-  Download,
   GitBranch,
   FolderOpen,
   Link2,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { exportIdeation, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
+import { EntityExportButton } from '@/components/export';
 import { getErrorMessage } from '@/lib/getErrorMessage';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
@@ -1297,29 +1296,13 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
             >
               <GitBranch size={16} />
             </button>
-            <button
-              onClick={async () => {
-                try {
-                  // Hydrate architecture design summaries into full designs (entities,
-                  // interfaces, diagram payloads) so the Markdown export renders the
-                  // Mermaid diagram — same pattern as Spec/Card export.
-                  const fullArchitecture = await Promise.all(
-                    (ideation.architecture_designs || []).map((d) =>
-                      api.getArchitectureDesign(d.id, true).catch(() => d)
-                    )
-                  );
-                  const md = exportIdeation({ ...ideation, architecture_designs: fullArchitecture as any });
-                  downloadMarkdown(md, `ideation_${slugify(ideation.title)}_v${ideation.version}.md`);
-                } catch {
-                  toast.error('Failed to prepare markdown export');
-                }
-              }}
+            <EntityExportButton
+              boardId={ideation.board_id || _boardId}
+              entityType="ideation"
+              entityId={ideation.id}
+              entityTitle={ideation.title}
               disabled={loading}
-              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"
-              title="Download Markdown"
-            >
-              <Download size={16} />
-            </button>
+            />
             <button onClick={loadIdeation} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="Refresh">
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
             </button>

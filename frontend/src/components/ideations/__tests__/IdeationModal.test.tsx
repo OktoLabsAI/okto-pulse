@@ -120,7 +120,7 @@ const baseIdeation: Ideation = {
   qa_items: [],
 };
 
-describe('IdeationModal Markdown export', () => {
+describe('IdeationModal report export', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     apiMock.getIdeation.mockResolvedValue(baseIdeation);
@@ -155,7 +155,7 @@ describe('IdeationModal Markdown export', () => {
     markdownMock.exportIdeation.mockReturnValue('# ideation export');
   });
 
-  it('hydrates full architecture designs before export and downloads with a sanitized filename', async () => {
+  it('delegates export preparation to the canonical report service without client-side hydration', async () => {
     apiMock.getIdeation.mockResolvedValue({
       ...baseIdeation,
       architecture_designs: [{ id: 'arch-1', title: 'Ideation arch', diagrams_count: 1 }] as any,
@@ -164,25 +164,16 @@ describe('IdeationModal Markdown export', () => {
     render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
 
     await screen.findByText('My Ideation');
-    fireEvent.click(screen.getByTitle('Download Markdown'));
-
-    // Architecture summary is hydrated into a full design (entities + diagram payloads).
-    await waitFor(() => expect(apiMock.getArchitectureDesign).toHaveBeenCalledWith('arch-1', true));
-
-    // exportIdeation receives the hydrated full design, not the summary.
-    const lastCall = (markdownMock.exportIdeation.mock.calls.at(-1) ?? []) as any[];
-    const arg = lastCall[0];
-    expect(arg.architecture_designs[0]).toMatchObject({ id: 'arch-1', entities: [{ id: 'arch-1-e', name: 'E' }] });
-
-    await waitFor(() =>
-      expect(markdownMock.downloadMarkdown).toHaveBeenCalledWith('# ideation export', 'ideation_my-ideation_v2.md'),
-    );
+    expect(screen.getByTitle('Export report')).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(apiMock.getArchitectureDesign).not.toHaveBeenCalled();
+    expect(markdownMock.exportIdeation).not.toHaveBeenCalled();
+    expect(markdownMock.downloadMarkdown).not.toHaveBeenCalled();
     expect(apiMock.updateIdeation).not.toHaveBeenCalled();
     expect(apiMock.moveIdeation).not.toHaveBeenCalled();
     expect(apiMock.deleteIdeation).not.toHaveBeenCalled();
   });
 
-  it('exports without architecture calls when the ideation has no architecture designs', async () => {
+  it('keeps the evaluation view and canonical report action available without architecture designs', async () => {
     render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
 
     await screen.findByText('My Ideation');
@@ -196,12 +187,9 @@ describe('IdeationModal Markdown export', () => {
       'Ambiguity (complexity input) score 1 out of 5',
     );
     expect(ambiguityComplexityScore).toHaveClass('h-20', 'w-20', 'rounded-full', 'border-4');
-    fireEvent.click(screen.getByTitle('Download Markdown'));
-
-    await waitFor(() => expect(markdownMock.exportIdeation).toHaveBeenCalled());
+    expect(screen.getByTitle('Export report')).toHaveAttribute('aria-haspopup', 'dialog');
     expect(apiMock.getArchitectureDesign).not.toHaveBeenCalled();
-    const arg = ((markdownMock.exportIdeation.mock.calls.at(-1) ?? []) as any[])[0];
-    expect(arg.architecture_designs).toEqual([]);
+    expect(markdownMock.exportIdeation).not.toHaveBeenCalled();
   });
 
   it.each([

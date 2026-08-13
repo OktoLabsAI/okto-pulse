@@ -5,11 +5,11 @@
 import { useEffect, useState } from 'react';
 import {
   X, ChevronRight, ChevronUp, ChevronDown, ArrowRight, FileText, Link2, History, MessageCircleQuestion,
-  FlaskConical, Scale, RefreshCw, Maximize2, Minimize2, Download, GitBranch, Ban,
+  FlaskConical, Scale, RefreshCw, Maximize2, Minimize2, GitBranch, Ban,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
-import { exportSprint, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
+import { EntityExportButton } from '@/components/export';
 import type { Sprint, SprintStatus } from '@/types';
 import { SPRINT_STATUS_LABELS, SPRINT_STATUS_COLORS } from '@/types';
 import { ValidationGateOverride } from '@/components/shared/ValidationGateOverride';
@@ -401,13 +401,13 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
             >
               <GitBranch size={16} />
             </button>
-            <button
-              onClick={() => { if (!sprint || !parentSpec) return; const md = exportSprint(sprint, parentSpec); downloadMarkdown(md, `sprint_${slugify(sprint.title)}.md`); }}
+            <EntityExportButton
+              boardId={sprint.board_id}
+              entityType="sprint"
+              entityId={sprint.id}
+              entityTitle={sprint.title}
               className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg"
-              title="Download Markdown"
-            >
-              <Download size={16} />
-            </button>
+            />
             <button onClick={loadSprint} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg" title="Refresh">
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
             </button>

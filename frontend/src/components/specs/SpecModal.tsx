@@ -38,7 +38,6 @@ import {
   Scale,
   FileCode,
   GitBranch,
-  Download,
   Network,
   ShieldCheck,
   Gauge,
@@ -47,7 +46,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { exportSpec, downloadMarkdown, markdownFilenameForSpec } from '@/lib/exportMarkdown';
+import { EntityExportButton } from '@/components/export';
 import { getErrorMessage } from '@/lib/getErrorMessage';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { useDashboardApi } from '@/services/api';
@@ -2323,38 +2322,13 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
             >
               <GitBranch size={16} />
             </button>
-            <button
-              onClick={async () => {
-                try {
-                  const fullKnowledge = await Promise.all(
-                    (spec.knowledge_bases || []).map((kb) =>
-                      api.getSpecKnowledge(spec.id, kb.id).catch(() => kb)
-                    )
-                  );
-                  // Hydrate architecture design summaries into full designs (entities,
-                  // interfaces, diagram payloads) so the Markdown export can render the
-                  // Mermaid diagram. spec.architecture_designs are summaries by default.
-                  const fullArchitecture = await Promise.all(
-                    (spec.architecture_designs || []).map((d) =>
-                      api.getArchitectureDesign(d.id, true).catch(() => d)
-                    )
-                  );
-                  const md = exportSpec({
-                    ...spec,
-                    knowledge_bases: fullKnowledge as any,
-                    architecture_designs: fullArchitecture as any,
-                  });
-                  downloadMarkdown(md, markdownFilenameForSpec(spec));
-                } catch {
-                  toast.error('Failed to prepare markdown export');
-                }
-              }}
+            <EntityExportButton
+              boardId={spec.board_id || _boardId}
+              entityType="spec"
+              entityId={spec.id}
+              entityTitle={spec.title}
               disabled={loading}
-              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"
-              title="Download Markdown"
-            >
-              <Download size={16} />
-            </button>
+            />
             <button onClick={loadSpec} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="Refresh">
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
             </button>

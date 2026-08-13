@@ -32,14 +32,13 @@ import {
   RefreshCw,
   Maximize2,
   Minimize2,
-  Download,
   GitBranch,
   Shield,
   Fingerprint,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { v4 as uuidv4 } from 'uuid';
-import { exportRefinement, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
+import { EntityExportButton } from '@/components/export';
 import { getErrorMessage } from '@/lib/getErrorMessage';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
@@ -1222,33 +1221,13 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
             >
               <GitBranch size={16} />
             </button>
-            <button
-              onClick={async () => {
-                try {
-                  const fullKnowledge = await Promise.all(
-                    (refinement.knowledge_bases || []).map((kb) =>
-                      api.getRefinementKnowledge(refinement.id, kb.id).catch(() => kb)
-                    )
-                  );
-                  // Hydrate architecture design summaries into full designs so the
-                  // Markdown export renders the Mermaid diagram — same pattern as Spec/Card.
-                  const fullArchitecture = await Promise.all(
-                    (refinement.architecture_designs || []).map((d) =>
-                      api.getArchitectureDesign(d.id, true).catch(() => d)
-                    )
-                  );
-                  const md = exportRefinement({ ...refinement, knowledge_bases: fullKnowledge as any, architecture_designs: fullArchitecture as any });
-                  downloadMarkdown(md, `refinement_${slugify(refinement.title)}_v${refinement.version}.md`);
-                } catch {
-                  toast.error('Failed to prepare markdown export');
-                }
-              }}
+            <EntityExportButton
+              boardId={refinement.board_id || _boardId}
+              entityType="refinement"
+              entityId={refinement.id}
+              entityTitle={refinement.title}
               disabled={loading}
-              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"
-              title="Download Markdown"
-            >
-              <Download size={16} />
-            </button>
+            />
             <button onClick={loadRefinement} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="Refresh">
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
             </button>

@@ -102,6 +102,54 @@ async def test_fresh_schema_is_exact_and_migration_is_idempotent(
 
 
 @pytest.mark.asyncio
+async def test_legacy_dependency_table_adds_sealed_snapshot_columns_before_audit(
+    tmp_path: Path,
+) -> None:
+    runtime = await _runtime(tmp_path / "skm-sealed-snapshot-upgrade.db")
+    snapshot_columns = (
+        "source_title_on_create",
+        "source_edition_on_create",
+        "source_title_on_remove",
+        "source_edition_on_remove",
+        "target_title_on_remove",
+        "target_edition_on_remove",
+    )
+    async with runtime.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+        await connection.exec_driver_sql(
+            "DROP TRIGGER trg_spec_dependency_tombstone_immutable_update"
+        )
+        for column_name in snapshot_columns:
+            await connection.exec_driver_sql(
+                f"ALTER TABLE spec_dependencies DROP COLUMN {column_name}"
+            )
+
+    assert await _migrate_spec_dependency_schema() is None
+    assert await _migrate_spec_dependency_schema() == "skipped"
+    async with runtime.engine.connect() as connection:
+        columns = tuple(
+            str(row[1])
+            for row in (
+                await connection.exec_driver_sql(
+                    "PRAGMA table_info('spec_dependencies')"
+                )
+            ).all()
+        )
+        trigger_sql = str(
+            (
+                await connection.exec_driver_sql(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' "
+                    "AND name='trg_spec_dependency_tombstone_immutable_update'"
+                )
+            ).scalar_one()
+        )
+    assert columns[-6:] == snapshot_columns
+    assert "NEW.source_title_on_create IS OLD.source_title_on_create" in trigger_sql
+    assert "NEW.source_edition_on_create IS OLD.source_edition_on_create" in trigger_sql
+    await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_legacy_schema_adds_marker_backfills_started_editions_and_converges(
     tmp_path: Path,
 ) -> None:
@@ -290,7 +338,11 @@ async def test_started_edition_trigger_predecessor_is_upgraded_exactly_once(
         ).all()
     observed = {str(name): str(sql) for name, sql in rows}
     manifest = spec_dependency_sqlite_trigger_manifest()
-    assert set(observed) == set(spec_dependency_sqlite_trigger_predecessors())
+    started_trigger_names = {
+        "trg_spec_dependency_started_edition_insert",
+        "trg_spec_dependency_started_edition_update",
+    }
+    assert set(observed) == started_trigger_names
     for trigger_name, sql in observed.items():
         assert "".join(sql.split()).lower() == "".join(
             manifest[trigger_name][1].split()

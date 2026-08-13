@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
 import time
 from pathlib import Path
 
@@ -115,6 +117,79 @@ def _community_lock(tmp_path: Path) -> KGSingleWriterLock:
     )
 
 
+def _write_protocol_recovery_marker(
+    path: Path,
+    *,
+    board_id: str,
+    owner_id: str = "crashed-recoverer",
+) -> str:
+    from okto_pulse.community.adapters import coordination
+
+    token = "recovery-token-from-crashed-process"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": coordination._SINGLE_WRITER_RECOVERY_SCHEMA_VERSION,
+                "protocol": coordination._SINGLE_WRITER_RECOVERY_PROTOCOL,
+                "recovery_token": token,
+                "owner_id": owner_id,
+                "operation": "recover",
+                "board_id": board_id,
+                "acquired_at_epoch": time.time() - 60,
+                "expires_at_epoch": time.time() + 30,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return token
+
+
+def _multiprocess_recoverer(
+    base_dir: str,
+    owner_id: str,
+    start_event,
+    results,
+) -> None:
+    lock = KGSingleWriterLock(
+        base_dir=base_dir,
+        write_lock_port=CommunityLocalWriteLockPort(),
+    )
+    start_event.wait(10)
+    try:
+        acquisition = lock.acquire(
+            board_id="board-process-race",
+            operation="rebuild",
+            owner_id=owner_id,
+            ttl_seconds=60,
+        )
+        results.put(
+            {
+                "owner_id": owner_id,
+                "acquired": acquisition.acquired,
+                "current_owner": acquisition.current_owner,
+            }
+        )
+    except BaseException as exc:  # pragma: no cover - child-process evidence
+        results.put({"owner_id": owner_id, "error": repr(exc)})
+
+
+def _multiprocess_crash_inside_recovery(base_dir: str, ready_event) -> None:
+    port = CommunityLocalWriteLockPort()
+    board_dir = Path(base_dir) / "board-protocol-crash"
+    board_dir.mkdir(parents=True, exist_ok=True)
+    recovery_path = board_dir / RECOVERY_LOCK_FILENAME
+    with port._single_writer_recovery_mutex(board_dir):  # noqa: SLF001
+        token, _ = port._claim_single_writer_recovery_marker(  # noqa: SLF001
+            recovery_path=recovery_path,
+            board_id="board-protocol-crash",
+            operation="recover",
+            owner_id="crashed-recoverer",
+        )
+        assert token
+        ready_event.set()
+        os._exit(0)
+
+
 def test_af29_s2_community_write_lock_manifest_is_human_readable_json(
     tmp_path: Path,
 ):
@@ -145,7 +220,10 @@ def test_af29_s2_community_write_lock_manifest_is_human_readable_json(
         board_id="board-json",
         owner_token=str(acquired.owner_token),
     )
-    assert not manifest_path.parent.exists()
+    assert not manifest_path.exists()
+    # The kernel-mutex rendezvous pathname is intentionally persistent. Removing
+    # it could create a second inode while another process waits on the first.
+    assert manifest_path.parent.exists()
 
 
 def test_af29_s2_community_stale_recovery_cas_preserves_fresh_primary(
@@ -244,14 +322,17 @@ def test_af29_s2_community_recovery_lock_serializes_fresh_holder(
         return real_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "unlink", spy_unlink)
-    result = lock.acquire(
-        board_id="board-serial",
-        operation="rebuild",
-        owner_id="recoverer-b",
-        ttl_seconds=60,
-    )
+    with pytest.raises(SingleWriterLockError) as exc_info:
+        lock.acquire(
+            board_id="board-serial",
+            operation="rebuild",
+            owner_id="recoverer-b",
+            ttl_seconds=60,
+        )
 
-    assert result.acquired is False
+    assert "recovery_lock_stale_manual_intervention_required" in (
+        exc_info.value.reason
+    )
     assert primary_unlinks["n"] == 0
     assert primary_path.exists()
     assert recovery_path.exists()
@@ -346,6 +427,194 @@ def test_af29_s2_community_concurrent_stale_recoverers_do_not_corrupt_primary(
     assert "recovery_lock_stale_manual_intervention_required" in exc_b.value.reason
     assert primary_path.read_bytes() == primary_before
     assert recovery_path.read_bytes() == recovery_before
+
+
+def test_protocol_marker_from_crashed_recoverer_is_reclaimed_under_kernel_mutex(
+    tmp_path: Path,
+) -> None:
+    lock = _community_lock(tmp_path)
+    assert lock.acquire(
+        board_id="board-protocol-crash",
+        operation="rebuild",
+        owner_id="dead-primary",
+        ttl_seconds=1,
+    ).acquired
+    time.sleep(1.05)
+
+    board_dir = tmp_path / "locks" / "board-protocol-crash"
+    recovery_path = board_dir / RECOVERY_LOCK_FILENAME
+    context = multiprocessing.get_context("spawn")
+    ready_event = context.Event()
+    crashed = context.Process(
+        target=_multiprocess_crash_inside_recovery,
+        args=(str(tmp_path / "locks"), ready_event),
+    )
+    crashed.start()
+    assert ready_event.wait(20)
+    crashed.join(timeout=20)
+    assert crashed.exitcode == 0
+    assert recovery_path.exists()
+
+    recovered = lock.acquire(
+        board_id="board-protocol-crash",
+        operation="rebuild",
+        owner_id="rescuer",
+        ttl_seconds=60,
+    )
+
+    assert recovered.acquired is True
+    assert recovered.stale_recovered is True
+    assert not recovery_path.exists()
+
+
+def test_kernel_mutex_allows_only_one_multiprocess_stale_recoverer(
+    tmp_path: Path,
+) -> None:
+    base_dir = tmp_path / "locks"
+    lock = KGSingleWriterLock(
+        base_dir=base_dir,
+        write_lock_port=CommunityLocalWriteLockPort(),
+    )
+    assert lock.acquire(
+        board_id="board-process-race",
+        operation="rebuild",
+        owner_id="dead-primary",
+        ttl_seconds=1,
+    ).acquired
+    time.sleep(1.05)
+
+    context = multiprocessing.get_context("spawn")
+    start_event = context.Event()
+    results = context.Queue()
+    processes = [
+        context.Process(
+            target=_multiprocess_recoverer,
+            args=(str(base_dir), owner_id, start_event, results),
+        )
+        for owner_id in ("recoverer-a", "recoverer-b")
+    ]
+    for process in processes:
+        process.start()
+    start_event.set()
+    observed = [results.get(timeout=20) for _ in processes]
+    for process in processes:
+        process.join(timeout=20)
+        assert process.exitcode == 0
+
+    assert not [item for item in observed if "error" in item]
+    assert sum(bool(item["acquired"]) for item in observed) == 1
+    manifest = lock.inspect(board_id="board-process-race")
+    assert manifest is not None
+    assert manifest.owner_id in {"recoverer-a", "recoverer-b"}
+
+
+def test_live_kernel_mutex_blocks_acquire_renew_and_release_without_mutation(
+    tmp_path: Path,
+) -> None:
+    port = CommunityLocalWriteLockPort()
+    base_dir = tmp_path / "locks"
+    lock = KGSingleWriterLock(base_dir=base_dir, write_lock_port=port)
+    acquired = lock.acquire(
+        board_id="board-live-mutex",
+        operation="rebuild",
+        owner_id="owner-a",
+        ttl_seconds=60,
+    )
+    assert acquired.acquired and acquired.owner_token
+    board_dir = base_dir / "board-live-mutex"
+    primary_path = board_dir / LOCK_FILENAME
+    primary_before = primary_path.read_bytes()
+
+    with port._single_writer_recovery_mutex(board_dir):  # noqa: SLF001
+        contender = lock.acquire(
+            board_id="board-live-mutex",
+            operation="rebuild",
+            owner_id="owner-b",
+            ttl_seconds=60,
+        )
+        renewed = lock.renew(
+            board_id="board-live-mutex",
+            owner_token=str(acquired.owner_token),
+            ttl_seconds=60,
+        )
+        released = lock.release(
+            board_id="board-live-mutex",
+            owner_token=str(acquired.owner_token),
+        )
+
+    assert contender.acquired is False
+    assert renewed is False
+    assert released is False
+    assert primary_path.read_bytes() == primary_before
+
+
+def test_renew_and_release_reclaim_orphaned_protocol_markers_safely(
+    tmp_path: Path,
+) -> None:
+    port = CommunityLocalWriteLockPort()
+    base_dir = tmp_path / "locks"
+    lock = KGSingleWriterLock(base_dir=base_dir, write_lock_port=port)
+    acquired = lock.acquire(
+        board_id="board-renew-release-orphan",
+        operation="rebuild",
+        owner_id="owner-a",
+        ttl_seconds=60,
+    )
+    assert acquired.acquired and acquired.owner_token
+    recovery_path = (
+        base_dir / "board-renew-release-orphan" / RECOVERY_LOCK_FILENAME
+    )
+
+    _write_protocol_recovery_marker(
+        recovery_path,
+        board_id="board-renew-release-orphan",
+        owner_id="crashed-renewer",
+    )
+    assert lock.renew(
+        board_id="board-renew-release-orphan",
+        owner_token=str(acquired.owner_token),
+        ttl_seconds=60,
+    )
+    assert not recovery_path.exists()
+
+    _write_protocol_recovery_marker(
+        recovery_path,
+        board_id="board-renew-release-orphan",
+        owner_id="crashed-releaser",
+    )
+    assert lock.release(
+        board_id="board-renew-release-orphan",
+        owner_token=str(acquired.owner_token),
+    )
+    assert not recovery_path.exists()
+
+
+def test_protocol_marker_cleanup_does_not_unlink_foreign_replacement_token(
+    tmp_path: Path,
+) -> None:
+    port = CommunityLocalWriteLockPort()
+    board_dir = tmp_path / "locks" / "board-marker-cas"
+    board_dir.mkdir(parents=True)
+    recovery_path = board_dir / RECOVERY_LOCK_FILENAME
+    token, _ = port._claim_single_writer_recovery_marker(  # noqa: SLF001
+        recovery_path=recovery_path,
+        board_id="board-marker-cas",
+        operation="recover",
+        owner_id="owner-a",
+    )
+    assert token
+    replacement = json.loads(recovery_path.read_text(encoding="utf-8"))
+    replacement["recovery_token"] = "foreign-token"
+    recovery_path.write_text(json.dumps(replacement), encoding="utf-8")
+
+    port._release_single_writer_recovery_marker(  # noqa: SLF001
+        recovery_path,
+        recovery_token=str(token),
+    )
+
+    assert json.loads(recovery_path.read_text(encoding="utf-8"))[
+        "recovery_token"
+    ] == "foreign-token"
 
 
 def test_af29_s2_community_quarantine_adapter_preserves_manifest_and_scope(

@@ -3,9 +3,9 @@
  */
 
 import React, { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { X, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ShieldCheck, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History, Layers, MessageCircleQuestion, MessageSquare, ListChecks, Target } from 'lucide-react';
+import { X, HelpCircle, Trash2, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ShieldCheck, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History, Layers, MessageCircleQuestion, MessageSquare, ListChecks, Target } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { exportCard, downloadMarkdown, markdownFilenameForCard } from '@/lib/exportMarkdown';
+import { EntityExportButton } from '@/components/export';
 import { useDashboardApi, type ActivityLogEntry } from '@/services/api';
 import {
   useDashboardStore,
@@ -1272,41 +1272,14 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
             >
               <GitBranch size={16} />
             </button>
-            <button
-              onClick={async () => {
-                if (!card) return;
-                try {
-                  const hydrateArchitecture = (designs: any[] | null | undefined) =>
-                    Promise.all(
-                      (designs || []).map((d) =>
-                        api.getArchitectureDesign(d.id, true).catch(() => d)
-                      )
-                    );
-                  // Architecture designs arrive as summaries (no entities/diagrams);
-                  // hydrate full designs for both card-owned and inherited spec context
-                  // so the Markdown export can render the Mermaid diagram.
-                  const cardArchitecture = await hydrateArchitecture(card.architecture_designs);
-                  const baseSpec = fullSpec && specKBsFull.length
-                    ? { ...fullSpec, knowledge_bases: specKBsFull as any }
-                    : fullSpec;
-                  const specForExport = baseSpec
-                    ? { ...baseSpec, architecture_designs: (await hydrateArchitecture(baseSpec.architecture_designs)) as any }
-                    : baseSpec;
-                  const md = exportCard(
-                    { ...card, architecture_designs: cardArchitecture as any },
-                    specForExport as any,
-                  );
-                  downloadMarkdown(md, markdownFilenameForCard(card));
-                } catch {
-                  toast.error('Failed to prepare markdown export');
-                }
-              }}
-              disabled={!card}
-              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"
-              title="Download Markdown"
-            >
-              <Download size={16} />
-            </button>
+            {card && (
+              <EntityExportButton
+                boardId={card.board_id || boardId}
+                entityType="card"
+                entityId={card.id}
+                entityTitle={card.title}
+              />
+            )}
             <button onClick={handleRefresh} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="Refresh card">
               <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''} />
             </button>

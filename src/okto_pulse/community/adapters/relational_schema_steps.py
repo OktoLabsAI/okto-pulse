@@ -20465,6 +20465,42 @@ async def _migrate_spec_dependency_schema() -> str | None:
                 "Spec dependency migration requires governed erasure authority: "
                 + ", ".join(sorted(missing_authorization_tables))
             )
+        # These six columns are additive, nullable sealed snapshots.  They are
+        # deliberately installed before the exact owned-table audit below so
+        # an existing 0.3.x database converges rather than being rejected as
+        # unrecognised drift.  Historical values cannot be reconstructed from
+        # mutable current Spec rows, therefore this migration never backfills
+        # them; NULL has the explicit meaning "legacy value unavailable".
+        if "spec_dependencies" in table_names:
+            dependency_columns = await conn.run_sync(
+                lambda sync_conn: {
+                    str(column["name"])
+                    for column in sa_inspect(sync_conn).get_columns(
+                        "spec_dependencies"
+                    )
+                }
+            )
+            additive_snapshot_columns = (
+                ("source_title_on_create", "VARCHAR(500)"),
+                ("source_edition_on_create", "INTEGER"),
+                ("source_title_on_remove", "VARCHAR(500)"),
+                ("source_edition_on_remove", "INTEGER"),
+                ("target_title_on_remove", "VARCHAR(500)"),
+                ("target_edition_on_remove", "INTEGER"),
+            )
+            for column_name, column_type in additive_snapshot_columns:
+                if column_name in dependency_columns:
+                    continue
+                await conn.execute(
+                    sa_text(
+                        "ALTER TABLE spec_dependencies ADD COLUMN "
+                        + column_name
+                        + " "
+                        + column_type
+                    )
+                )
+                dependency_columns.add(column_name)
+                changed = True
         spec_columns = await conn.run_sync(
             lambda sync_conn: {
                 str(column["name"])
@@ -20966,6 +21002,34 @@ END;"""
     END IF;
     RETURN NEW;
 END;"""
+            predecessor_function_body = """BEGIN
+    IF TG_TABLE_NAME = 'spec_dependencies'
+       AND OLD.active = true AND NEW.active = false
+       AND NEW.id IS NOT DISTINCT FROM OLD.id
+       AND NEW.board_id IS NOT DISTINCT FROM OLD.board_id
+       AND NEW.dependent_spec_id IS NOT DISTINCT FROM OLD.dependent_spec_id
+       AND NEW.prerequisite_spec_id IS NULL
+       AND NEW.prerequisite_spec_ref IS NOT DISTINCT FROM OLD.prerequisite_spec_ref
+       AND NEW.resolved_on_create IS NOT DISTINCT FROM OLD.resolved_on_create
+       AND NEW.retrospective IS NOT DISTINCT FROM OLD.retrospective
+       AND NEW.introduced_at_spec_version IS NOT DISTINCT FROM OLD.introduced_at_spec_version
+       AND NEW.source_version_on_create IS NOT DISTINCT FROM OLD.source_version_on_create
+       AND NEW.source_status_on_create IS NOT DISTINCT FROM OLD.source_status_on_create
+       AND NEW.target_status_on_create IS NOT DISTINCT FROM OLD.target_status_on_create
+       AND NEW.target_version_on_create IS NOT DISTINCT FROM OLD.target_version_on_create
+       AND NEW.target_title_on_create IS NOT DISTINCT FROM OLD.target_title_on_create
+       AND NEW.target_edition_on_create IS NOT DISTINCT FROM OLD.target_edition_on_create
+       AND NEW.target_ideation_id_on_create IS NOT DISTINCT FROM OLD.target_ideation_id_on_create
+       AND NEW.add_idempotency_key IS NOT DISTINCT FROM OLD.add_idempotency_key
+       AND NEW.add_request_digest IS NOT DISTINCT FROM OLD.add_request_digest
+       AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at
+       AND NEW.created_by_id IS NOT DISTINCT FROM OLD.created_by_id
+       AND NEW.created_by_type IS NOT DISTINCT FROM OLD.created_by_type
+       AND NEW.created_by_name IS NOT DISTINCT FROM OLD.created_by_name THEN
+        RETURN NEW;
+    END IF;
+    RAISE EXCEPTION 'spec_dependency_immutable';
+END;"""
             function_body = """BEGIN
     IF TG_TABLE_NAME = 'spec_dependencies'
        AND OLD.active = true AND NEW.active = false
@@ -20979,6 +21043,8 @@ END;"""
        AND NEW.introduced_at_spec_version IS NOT DISTINCT FROM OLD.introduced_at_spec_version
        AND NEW.source_version_on_create IS NOT DISTINCT FROM OLD.source_version_on_create
        AND NEW.source_status_on_create IS NOT DISTINCT FROM OLD.source_status_on_create
+       AND NEW.source_title_on_create IS NOT DISTINCT FROM OLD.source_title_on_create
+       AND NEW.source_edition_on_create IS NOT DISTINCT FROM OLD.source_edition_on_create
        AND NEW.target_status_on_create IS NOT DISTINCT FROM OLD.target_status_on_create
        AND NEW.target_version_on_create IS NOT DISTINCT FROM OLD.target_version_on_create
        AND NEW.target_title_on_create IS NOT DISTINCT FROM OLD.target_title_on_create
@@ -21029,6 +21095,11 @@ END;"""
                 ),
                 "pulse_spec_dependency_immutable_guard": function_body,
                 "pulse_spec_dependency_delete_guard": delete_function_body,
+            }
+            function_predecessors = {
+                "pulse_spec_dependency_immutable_guard": (
+                    predecessor_function_body,
+                ),
             }
             function_rows = (
                 (
@@ -21087,16 +21158,32 @@ END;"""
                     changed = True
                     continue
                 function_row = observed_rows[0]
-                if (
-                    str(function_row["lanname"]).lower() != "plpgsql"
-                    or str(function_row["result_type"]).lower() != "trigger"
-                    or str(function_row["arguments"]).strip() != ""
-                    or normalize_body(function_row["source"])
-                    != normalize_body(expected_body)
-                ):
-                    raise RuntimeError(
-                        "Spec dependency guard function is corrupt: " + function_name
+                shape_is_valid = (
+                    str(function_row["lanname"]).lower() == "plpgsql"
+                    and str(function_row["result_type"]).lower() == "trigger"
+                    and str(function_row["arguments"]).strip() == ""
+                )
+                observed_body = normalize_body(function_row["source"])
+                if shape_is_valid and observed_body == normalize_body(expected_body):
+                    continue
+                known_predecessors = {
+                    normalize_body(source)
+                    for source in function_predecessors.get(function_name, ())
+                }
+                if shape_is_valid and observed_body in known_predecessors:
+                    await conn.execute(
+                        sa_text(
+                            f"CREATE OR REPLACE FUNCTION {function_name}() "
+                            "RETURNS trigger AS $$\n"
+                            + expected_body
+                            + "\n$$ LANGUAGE plpgsql"
+                        )
                     )
+                    changed = True
+                    continue
+                raise RuntimeError(
+                    "Spec dependency guard function is corrupt: " + function_name
+                )
             trigger_specs = {
                 "trg_spec_dependency_board_boundary_insert": (
                     "spec_dependencies",

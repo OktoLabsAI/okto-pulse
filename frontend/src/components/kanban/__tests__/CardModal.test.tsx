@@ -1643,25 +1643,14 @@ describe('CardModal', () => {
     expect(within(tab).getByText('No evidence recorded')).toBeInTheDocument();
   });
 
-  it('downloads card Markdown with sanitized type-aware filename and no mutation calls', async () => {
+  it('exposes canonical report export without invoking legacy rendering or mutations', async () => {
     render(<CardModal boardId="board-1" />);
 
     await screen.findByText('Bug: traceability is hidden');
-    fireEvent.click(screen.getByTitle('Download Markdown'));
-
-    await waitFor(() =>
-      expect(markdownMock.exportCard).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'bug-1', card_type: 'bug' }),
-        expect.objectContaining({ id: 'spec-1', title: 'Stories spec' }),
-      ),
-    );
-    expect(markdownMock.markdownFilenameForCard).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'bug-1', card_type: 'bug' }),
-    );
-    expect(markdownMock.downloadMarkdown).toHaveBeenCalledWith(
-      '# card export',
-      'bug_bug-traceability-is-hidden.md',
-    );
+    expect(screen.getByTitle('Export report')).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(markdownMock.exportCard).not.toHaveBeenCalled();
+    expect(markdownMock.markdownFilenameForCard).not.toHaveBeenCalled();
+    expect(markdownMock.downloadMarkdown).not.toHaveBeenCalled();
     expect(apiMock.updateCard).not.toHaveBeenCalled();
     expect(apiMock.moveCard).not.toHaveBeenCalled();
     expect(apiMock.deleteCard).not.toHaveBeenCalled();
@@ -1669,7 +1658,7 @@ describe('CardModal', () => {
     expect(apiMock.unlinkTestTaskFromBug).not.toHaveBeenCalled();
   });
 
-  it('hydrates full architecture designs (card-owned and inherited spec) before export', async () => {
+  it('does not hydrate card or inherited Spec architecture in the modal export path', async () => {
     apiMock.getCard.mockResolvedValue({
       ...bugCard,
       architecture_designs: [{ id: 'arch-card', title: 'Card arch', diagrams_count: 1 }] as any,
@@ -1690,18 +1679,9 @@ describe('CardModal', () => {
 
     render(<CardModal boardId="board-1" />);
     await screen.findByText('Bug: traceability is hidden');
-    fireEvent.click(screen.getByTitle('Download Markdown'));
-
-    // Both card-owned and inherited spec architecture summaries are hydrated with payloads.
-    await waitFor(() => expect(apiMock.getArchitectureDesign).toHaveBeenCalledWith('arch-card', true));
-    await waitFor(() => expect(apiMock.getArchitectureDesign).toHaveBeenCalledWith('arch-spec', true));
-
-    // exportCard receives the hydrated full designs (with entities), not the summaries.
-    const lastCall = (markdownMock.exportCard.mock.calls.at(-1) ?? []) as any[];
-    const cardArg = lastCall[0];
-    const specArg = lastCall[1];
-    expect(cardArg.architecture_designs[0]).toMatchObject({ id: 'arch-card', entities: [{ id: 'arch-card-e', name: 'E' }] });
-    expect(specArg.architecture_designs[0]).toMatchObject({ id: 'arch-spec', entities: [{ id: 'arch-spec-e', name: 'E' }] });
+    expect(screen.getByTitle('Export report')).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(apiMock.getArchitectureDesign).not.toHaveBeenCalled();
+    expect(markdownMock.exportCard).not.toHaveBeenCalled();
     expect(apiMock.updateCard).not.toHaveBeenCalled();
     expect(apiMock.moveCard).not.toHaveBeenCalled();
   });

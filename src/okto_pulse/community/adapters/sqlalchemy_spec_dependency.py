@@ -85,8 +85,28 @@ def _record(row: SpecDependency) -> SpecDependencyRecord:
         created_by_name=str(row.created_by_name),
         source_version_on_create=int(row.source_version_on_create),
         source_status_on_create=_status(row.source_status_on_create),
+        source_title_on_create=(
+            str(row.source_title_on_create)
+            if row.source_title_on_create is not None
+            else None
+        ),
+        source_edition_on_create=(
+            int(row.source_edition_on_create)
+            if row.source_edition_on_create is not None
+            else None
+        ),
         target_status_on_create=_status(row.target_status_on_create),
         target_version_on_create=int(row.target_version_on_create),
+        target_title_on_create=(
+            str(row.target_title_on_create)
+            if row.target_title_on_create is not None
+            else None
+        ),
+        target_edition_on_create=(
+            int(row.target_edition_on_create)
+            if row.target_edition_on_create is not None
+            else None
+        ),
         resolved_on_create=bool(row.resolved_on_create),
         retrospective=bool(row.retrospective),
         removed_at=(
@@ -101,6 +121,26 @@ def _record(row: SpecDependency) -> SpecDependencyRecord:
         source_version_on_remove=(
             int(row.removed_at_spec_version)
             if row.removed_at_spec_version is not None
+            else None
+        ),
+        source_title_on_remove=(
+            str(row.source_title_on_remove)
+            if row.source_title_on_remove is not None
+            else None
+        ),
+        source_edition_on_remove=(
+            int(row.source_edition_on_remove)
+            if row.source_edition_on_remove is not None
+            else None
+        ),
+        target_title_on_remove=(
+            str(row.target_title_on_remove)
+            if row.target_title_on_remove is not None
+            else None
+        ),
+        target_edition_on_remove=(
+            int(row.target_edition_on_remove)
+            if row.target_edition_on_remove is not None
             else None
         ),
         add_idempotency_key=str(row.add_idempotency_key),
@@ -122,8 +162,12 @@ def _record_payload(record: SpecDependencyRecord) -> dict[str, Any]:
         "created_by_name": record.created_by_name,
         "source_version_on_create": record.source_version_on_create,
         "source_status_on_create": record.source_status_on_create.value,
+        "source_title_on_create": record.source_title_on_create,
+        "source_edition_on_create": record.source_edition_on_create,
         "target_status_on_create": record.target_status_on_create.value,
         "target_version_on_create": record.target_version_on_create,
+        "target_title_on_create": record.target_title_on_create,
+        "target_edition_on_create": record.target_edition_on_create,
         "resolved_on_create": record.resolved_on_create,
         "retrospective": record.retrospective,
         "removed_at": record.removed_at.isoformat() if record.removed_at else None,
@@ -132,6 +176,10 @@ def _record_payload(record: SpecDependencyRecord) -> dict[str, Any]:
         "removed_by_name": record.removed_by_name,
         "removal_reason": record.removal_reason,
         "source_version_on_remove": record.source_version_on_remove,
+        "source_title_on_remove": record.source_title_on_remove,
+        "source_edition_on_remove": record.source_edition_on_remove,
+        "target_title_on_remove": record.target_title_on_remove,
+        "target_edition_on_remove": record.target_edition_on_remove,
         "add_idempotency_key": record.add_idempotency_key,
         "remove_idempotency_key": record.remove_idempotency_key,
     }
@@ -151,8 +199,20 @@ def _record_from_payload(payload: dict[str, Any]) -> SpecDependencyRecord:
         created_by_name=payload.get("created_by_name"),
         source_version_on_create=int(payload["source_version_on_create"]),
         source_status_on_create=_status(payload["source_status_on_create"]),
+        source_title_on_create=payload.get("source_title_on_create"),
+        source_edition_on_create=(
+            int(payload["source_edition_on_create"])
+            if payload.get("source_edition_on_create") is not None
+            else None
+        ),
         target_status_on_create=_status(payload["target_status_on_create"]),
         target_version_on_create=int(payload["target_version_on_create"]),
+        target_title_on_create=payload.get("target_title_on_create"),
+        target_edition_on_create=(
+            int(payload["target_edition_on_create"])
+            if payload.get("target_edition_on_create") is not None
+            else None
+        ),
         resolved_on_create=bool(payload["resolved_on_create"]),
         retrospective=bool(payload.get("retrospective", False)),
         removed_at=(
@@ -167,6 +227,18 @@ def _record_from_payload(payload: dict[str, Any]) -> SpecDependencyRecord:
         source_version_on_remove=(
             int(payload["source_version_on_remove"])
             if payload.get("source_version_on_remove") is not None
+            else None
+        ),
+        source_title_on_remove=payload.get("source_title_on_remove"),
+        source_edition_on_remove=(
+            int(payload["source_edition_on_remove"])
+            if payload.get("source_edition_on_remove") is not None
+            else None
+        ),
+        target_title_on_remove=payload.get("target_title_on_remove"),
+        target_edition_on_remove=(
+            int(payload["target_edition_on_remove"])
+            if payload.get("target_edition_on_remove") is not None
             else None
         ),
         add_idempotency_key=payload.get("add_idempotency_key"),
@@ -1007,6 +1079,8 @@ class CommunitySqlAlchemySpecDependency:
                 introduced_at_spec_version=dependency.source_version_on_create,
                 source_version_on_create=dependency.source_version_on_create,
                 source_status_on_create=dependency.source_status_on_create.value,
+                source_title_on_create=source.title,
+                source_edition_on_create=source.edition,
                 target_status_on_create=dependency.target_status_on_create.value,
                 target_version_on_create=dependency.target_version_on_create,
                 target_title_on_create=target.title,
@@ -1033,6 +1107,10 @@ class CommunitySqlAlchemySpecDependency:
         removed_by_name: str | None,
         removal_reason: str,
         source_version_on_remove: int,
+        source_title_on_remove: str,
+        source_edition_on_remove: int,
+        target_title_on_remove: str | None,
+        target_edition_on_remove: int | None,
         idempotency_key: str,
         request_digest: str,
     ) -> SpecDependencyRecord:
@@ -1060,6 +1138,10 @@ class CommunitySqlAlchemySpecDependency:
         row.remove_idempotency_key = idempotency_key
         row.remove_request_digest = request_digest
         row.removed_at_spec_version = source_version_on_remove
+        row.source_title_on_remove = source_title_on_remove
+        row.source_edition_on_remove = source_edition_on_remove
+        row.target_title_on_remove = target_title_on_remove
+        row.target_edition_on_remove = target_edition_on_remove
         await self._session.flush()
         return _record(row)
 
