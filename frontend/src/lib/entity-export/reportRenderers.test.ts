@@ -89,6 +89,7 @@ describe('canonical export report renderers', () => {
 
   it.each([
     '<script>alert(1)</script>',
+    '<iframe sandbox src="data:text/html;base64,PGgxPk1vY2t1cDwvaDE+"></iframe>',
     '<img src="https://example.invalid/a.png">',
     '<div onclick="alert(1)">x</div>',
     '<style>@import "https://example.invalid/a.css"</style>',

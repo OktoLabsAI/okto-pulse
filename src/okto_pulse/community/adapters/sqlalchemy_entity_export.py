@@ -30,7 +30,11 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Sprint,
     Story,
 )
+from okto_pulse.community.services.entity_export_rich_media import (
+    seal_screen_mockups,
+)
 from okto_pulse.core.application.use_cases import EntityNotFoundError
+from okto_pulse.core.domain.checklist import SPECIFY_CHECKLIST_ITEMS_V1
 from okto_pulse.core.domain.entity_export import (
     EntityExportBundle,
     EntityExportDisclosure,
@@ -72,6 +76,7 @@ class _TableQuery:
     column: str | None = None
     context_key: str | None = None
     projected_columns: tuple[str, ...] = ()
+    emit: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +117,100 @@ _IDENTITY_COLUMNS = (
     "policy_version",
     "archived",
 )
+
+_CARD_HUMAN_COLUMNS = (
+    "title",
+    "description",
+    "details",
+    "status",
+    "priority",
+    "card_type",
+    "due_date",
+    "labels",
+    "conclusions",
+    "severity",
+    "expected_behavior",
+    "observed_behavior",
+    "steps_to_reproduce",
+    "action_plan",
+    "cancellation_reason",
+)
+
+_QA_TABLES = frozenset(
+    {
+        "ideation_qa_items",
+        "refinement_qa_items",
+        "spec_qa_items",
+        "sprint_qa_items",
+        "qa_items",
+    }
+)
+
+_CHECKLIST_ITEM_BY_ID = {item.item_id: item for item in SPECIFY_CHECKLIST_ITEMS_V1}
+
+_HUMAN_POLICY_FIELDS: dict[str, tuple[str, ...]] = {
+    "policy_compliance_receipts": (
+        "outcome",
+        "state",
+        "recorded_currentness",
+        "reason_codes",
+        "evaluated_at",
+    ),
+    "policy_compliance_findings": (
+        "outcome",
+        "enforcement",
+        "severity_rank",
+        "message",
+        "created_at",
+    ),
+    "semantic_guideline_assessment_receipts": (
+        "minimum_confidence",
+        "confidence",
+        "state",
+        "recorded_currentness",
+        "assessed_at",
+    ),
+    "semantic_guideline_metric_results": (
+        "metric_code",
+        "direction",
+        "effective_threshold",
+        "score",
+        "outcome",
+        "rationale",
+        "pinpoints",
+        "created_at",
+    ),
+    "semantic_guideline_findings": (
+        "metric_code",
+        "rationale",
+        "pinpoints",
+        "created_at",
+    ),
+    "semantic_guideline_skips": (
+        "status",
+        "reason",
+        "created_at",
+        "revoked_at",
+        "revocation_reason",
+    ),
+}
+
+_HUMAN_QUALITY_FIELDS: dict[str, tuple[str, ...]] = {
+    "quality_assessment_receipts": (
+        "outcome",
+        "score",
+        "justification",
+        "created_at",
+    ),
+    "quality_findings": (
+        "severity",
+        "confidence",
+        "title",
+        "detail",
+        "remediation",
+        "created_at",
+    ),
+}
 
 _SENSITIVE_COLUMNS = frozenset(
     {
@@ -158,6 +257,7 @@ def _q(
     *,
     context_key: str | None = None,
     projected_columns: tuple[str, ...] = (),
+    emit: bool = True,
 ) -> _TableQuery:
     return _TableQuery(
         table_name,
@@ -165,6 +265,7 @@ def _q(
         column,
         context_key,
         projected_columns,
+        emit,
     )
 
 
@@ -181,13 +282,15 @@ def _policy_sections() -> tuple[_SectionDefinition, ...]:
                     "receipt_id",
                     context_key="receipt_ids",
                 ),
-                _q(
-                    "policy_compliance_adopted_revisions",
-                    "context",
-                    "receipt_id",
-                    context_key="receipt_ids",
-                ),
                 _q("semantic_guideline_assessment_receipts", "subject"),
+                _q(
+                    "guideline_revisions",
+                    "context",
+                    "revision_id",
+                    context_key="guideline_revision_ids",
+                    projected_columns=("revision_id", "title"),
+                    emit=False,
+                ),
                 _q("semantic_guideline_assessments_v2", "subject"),
                 _q(
                     "semantic_guideline_metric_results",
@@ -214,7 +317,6 @@ def _policy_sections() -> tuple[_SectionDefinition, ...]:
                     context_key="receipt_ids",
                 ),
                 _q("semantic_guideline_skips", "subject"),
-                _q("semantic_guideline_validation_scopes", "subject"),
             ),
         ),
         _SectionDefinition(
@@ -288,10 +390,30 @@ def _code_sections(entity_type: EntityExportType) -> tuple[_SectionDefinition, .
                 "code_traceability.target.read",
                 queries=target_root
                 + (
-                    _q("implementation_target_resolutions", "context", "target_id", context_key="target_ids"),
-                    _q("implementation_target_execution_records", "context", "target_id", context_key="target_ids"),
-                    _q("implementation_target_evidence_links", "context", "target_id", context_key="target_ids"),
-                    _q("implementation_target_spec_links", "context", "target_id", context_key="target_ids"),
+                    _q(
+                        "implementation_target_resolutions",
+                        "context",
+                        "target_id",
+                        context_key="target_ids",
+                    ),
+                    _q(
+                        "implementation_target_execution_records",
+                        "context",
+                        "target_id",
+                        context_key="target_ids",
+                    ),
+                    _q(
+                        "implementation_target_evidence_links",
+                        "context",
+                        "target_id",
+                        context_key="target_ids",
+                    ),
+                    _q(
+                        "implementation_target_spec_links",
+                        "context",
+                        "target_id",
+                        context_key="target_ids",
+                    ),
                 ),
             )
         )
@@ -301,7 +423,12 @@ def _code_sections(entity_type: EntityExportType) -> tuple[_SectionDefinition, .
                 "target_overlaps",
                 "code_traceability.overlap.read",
                 queries=(
-                    _q("implementation_targets", "card_only", "card_id", projected_columns=("id",)),
+                    _q(
+                        "implementation_targets",
+                        "card_only",
+                        "card_id",
+                        projected_columns=("id",),
+                    ),
                     _q("target_overlap_acknowledgements", "target_overlap"),
                 ),
             )
@@ -317,6 +444,34 @@ def _resource_section() -> _SectionDefinition:
     )
 
 
+_ARCHITECTURE_PAYLOAD_COLUMNS = (
+    "id",
+    "design_id",
+    "diagram_id",
+    "format",
+    "adapter_payload_json",
+    "payload_text",
+    "content_hash",
+    "size_bytes",
+)
+
+
+def _architecture_queries(parent_column: str) -> tuple[_TableQuery, ...]:
+    """Collect diagram bodies in the same fenced snapshot as their design."""
+
+    return (
+        _q("architecture_designs", "entity_fk", parent_column),
+        _q(
+            "architecture_diagram_payloads",
+            "context",
+            "design_id",
+            context_key="architecture_design_ids",
+            projected_columns=_ARCHITECTURE_PAYLOAD_COLUMNS,
+        ),
+        _q("design_system_gate_audit", "entity"),
+    )
+
+
 def _definitions(entity_type: EntityExportType) -> tuple[_SectionDefinition, ...]:
     policy = _policy_sections()
     resources = (_resource_section(),)
@@ -327,7 +482,9 @@ def _definitions(entity_type: EntityExportType) -> tuple[_SectionDefinition, ...
                 "ideation.entity.read",
                 queries=(_q("story_ideation_links", "entity_fk", "story_id"),),
             ),
-            _SectionDefinition("mockups", "story.mockups.read", embedded_fields=("screen_mockups",)),
+            _SectionDefinition(
+                "mockups", "story.mockups.read", embedded_fields=("screen_mockups",)
+            ),
             _SectionDefinition(
                 "history",
                 "story.history_read",
@@ -339,29 +496,126 @@ def _definitions(entity_type: EntityExportType) -> tuple[_SectionDefinition, ...
         )
     if entity_type is EntityExportType.IDEATION:
         return (
-            _SectionDefinition("stories", "story.entity.read", queries=(_q("story_ideation_links", "entity_fk", "ideation_id"),)),
-            _SectionDefinition("refinements", "refinement.entity.read", queries=(_q("refinements", "entity_fk", "ideation_id", projected_columns=_IDENTITY_COLUMNS),)),
-            _SectionDefinition("specs", "spec.entity.read", queries=(_q("specs", "entity_fk", "ideation_id", projected_columns=_IDENTITY_COLUMNS),)),
-            _SectionDefinition("qa", "ideation.qa.read", queries=(_q("ideation_qa_items", "entity_fk", "ideation_id"),)),
-            _SectionDefinition("knowledge", "ideation.knowledge.read", queries=(_q("ideation_knowledge_bases", "entity_fk", "ideation_id"),)),
-            _SectionDefinition("mockups", "ideation.mockups.read", embedded_fields=("screen_mockups",)),
-            _SectionDefinition("architecture", "ideation.architecture.read", queries=(_q("architecture_designs", "entity_fk", "ideation_id"), _q("design_system_gate_audit", "entity"))),
-            _SectionDefinition("history", "ideation.history_read", queries=(_q("ideation_history", "entity_fk", "ideation_id"),), history_only=True),
-            _SectionDefinition("snapshots", "ideation.versions_read", queries=(_q("ideation_snapshots", "entity_fk", "ideation_id"),), history_only=True),
-            _SectionDefinition("ambiguity_assessments", "ideation.quality.read", queries=_quality_queries("ambiguity")),
+            _SectionDefinition(
+                "stories",
+                "story.entity.read",
+                queries=(_q("story_ideation_links", "entity_fk", "ideation_id"),),
+            ),
+            _SectionDefinition(
+                "refinements",
+                "refinement.entity.read",
+                queries=(
+                    _q(
+                        "refinements",
+                        "entity_fk",
+                        "ideation_id",
+                        projected_columns=_IDENTITY_COLUMNS,
+                    ),
+                ),
+            ),
+            _SectionDefinition(
+                "specs",
+                "spec.entity.read",
+                queries=(
+                    _q(
+                        "specs",
+                        "entity_fk",
+                        "ideation_id",
+                        projected_columns=_IDENTITY_COLUMNS,
+                    ),
+                ),
+            ),
+            _SectionDefinition(
+                "qa",
+                "ideation.qa.read",
+                queries=(_q("ideation_qa_items", "entity_fk", "ideation_id"),),
+            ),
+            _SectionDefinition(
+                "knowledge",
+                "ideation.knowledge.read",
+                queries=(_q("ideation_knowledge_bases", "entity_fk", "ideation_id"),),
+            ),
+            _SectionDefinition(
+                "mockups", "ideation.mockups.read", embedded_fields=("screen_mockups",)
+            ),
+            _SectionDefinition(
+                "architecture",
+                "ideation.architecture.read",
+                queries=_architecture_queries("ideation_id"),
+            ),
+            _SectionDefinition(
+                "history",
+                "ideation.history_read",
+                queries=(_q("ideation_history", "entity_fk", "ideation_id"),),
+                history_only=True,
+            ),
+            _SectionDefinition(
+                "snapshots",
+                "ideation.versions_read",
+                queries=(_q("ideation_snapshots", "entity_fk", "ideation_id"),),
+                history_only=True,
+            ),
+            _SectionDefinition(
+                "ambiguity_assessments",
+                "ideation.quality.read",
+                queries=_quality_queries("ambiguity"),
+            ),
             *policy,
             *resources,
         )
     if entity_type is EntityExportType.REFINEMENT:
         return (
-            _SectionDefinition("specs", "spec.entity.read", queries=(_q("specs", "entity_fk", "refinement_id", projected_columns=_IDENTITY_COLUMNS),)),
-            _SectionDefinition("qa", "refinement.qa.read", queries=(_q("refinement_qa_items", "entity_fk", "refinement_id"),)),
-            _SectionDefinition("knowledge", "refinement.knowledge.read", queries=(_q("refinement_knowledge_bases", "entity_fk", "refinement_id"),)),
-            _SectionDefinition("mockups", "refinement.mockups.read", embedded_fields=("screen_mockups",)),
-            _SectionDefinition("architecture", "refinement.architecture.read", queries=(_q("architecture_designs", "entity_fk", "refinement_id"), _q("design_system_gate_audit", "entity"))),
-            _SectionDefinition("history", "refinement.history_read", queries=(_q("refinement_history", "entity_fk", "refinement_id"),), history_only=True),
-            _SectionDefinition("snapshots", "refinement.versions_read", queries=(_q("refinement_snapshots", "entity_fk", "refinement_id"),), history_only=True),
-            _SectionDefinition("ambiguity_assessments", "refinement.quality.read", queries=_quality_queries("ambiguity")),
+            _SectionDefinition(
+                "specs",
+                "spec.entity.read",
+                queries=(
+                    _q(
+                        "specs",
+                        "entity_fk",
+                        "refinement_id",
+                        projected_columns=_IDENTITY_COLUMNS,
+                    ),
+                ),
+            ),
+            _SectionDefinition(
+                "qa",
+                "refinement.qa.read",
+                queries=(_q("refinement_qa_items", "entity_fk", "refinement_id"),),
+            ),
+            _SectionDefinition(
+                "knowledge",
+                "refinement.knowledge.read",
+                queries=(
+                    _q("refinement_knowledge_bases", "entity_fk", "refinement_id"),
+                ),
+            ),
+            _SectionDefinition(
+                "mockups",
+                "refinement.mockups.read",
+                embedded_fields=("screen_mockups",),
+            ),
+            _SectionDefinition(
+                "architecture",
+                "refinement.architecture.read",
+                queries=_architecture_queries("refinement_id"),
+            ),
+            _SectionDefinition(
+                "history",
+                "refinement.history_read",
+                queries=(_q("refinement_history", "entity_fk", "refinement_id"),),
+                history_only=True,
+            ),
+            _SectionDefinition(
+                "snapshots",
+                "refinement.versions_read",
+                queries=(_q("refinement_snapshots", "entity_fk", "refinement_id"),),
+                history_only=True,
+            ),
+            _SectionDefinition(
+                "ambiguity_assessments",
+                "refinement.quality.read",
+                queries=_quality_queries("ambiguity"),
+            ),
             _SectionDefinition(
                 "research_decisions",
                 "refinement.research_decisions.read",
@@ -370,7 +624,11 @@ def _definitions(entity_type: EntityExportType) -> tuple[_SectionDefinition, ...
                     _q("research_decision_entries", "entity_fk", "refinement_id"),
                     _q("research_decision_history", "entity_fk", "refinement_id"),
                     _q("research_decision_snapshots", "entity_fk", "refinement_id"),
-                    _q("research_decision_derivations", "entity_fk", "source_refinement_id"),
+                    _q(
+                        "research_decision_derivations",
+                        "entity_fk",
+                        "source_refinement_id",
+                    ),
                 ),
             ),
             *policy,
@@ -379,32 +637,109 @@ def _definitions(entity_type: EntityExportType) -> tuple[_SectionDefinition, ...
         )
     if entity_type is EntityExportType.SPEC:
         return (
-            _SectionDefinition("cards", "card.entity.read", queries=(_q("cards", "entity_fk", "spec_id", projected_columns=_IDENTITY_COLUMNS + ("card_type", "sprint_id")),)),
-            _SectionDefinition("sprints", "sprint.entity.read", queries=(_q("sprints", "entity_fk", "spec_id", projected_columns=_IDENTITY_COLUMNS + ("lane_type",)),)),
-            _SectionDefinition("research_decision_derivations", "refinement.research_decisions.read", queries=(_q("research_decision_derivations", "entity_fk", "spec_id"),)),
-            _SectionDefinition("qa", "spec.qa.read", queries=(_q("spec_qa_items", "entity_fk", "spec_id"),)),
-            _SectionDefinition("knowledge", "spec.knowledge.read", queries=(_q("spec_knowledge_bases", "entity_fk", "spec_id"),)),
-            _SectionDefinition("mockups", "spec.mockups.read", embedded_fields=("screen_mockups",)),
-            _SectionDefinition("architecture", "spec.architecture.read", queries=(_q("architecture_designs", "entity_fk", "spec_id"), _q("design_system_gate_audit", "entity"))),
-            _SectionDefinition("history", "spec.history_read", queries=(_q("spec_history", "entity_fk", "spec_id"),), history_only=True),
-            _SectionDefinition("dependencies", "spec.entity.read", queries=(_q("spec_dependencies", "spec_dependency"),)),
-            _SectionDefinition("spec_validation", "spec.validation.read", embedded_fields=("validations",)),
-            _SectionDefinition("evaluations", "spec.evaluations.read", embedded_fields=("evaluations",)),
-            _SectionDefinition("test_scenarios", "spec.tests.read", embedded_fields=("test_scenarios",)),
-            _SectionDefinition("business_rules", "spec.rules.read", embedded_fields=("business_rules",)),
-            _SectionDefinition("api_contracts", "spec.contracts.read", embedded_fields=("api_contracts",)),
-            _SectionDefinition("integration_requirements", "spec.integration_requirements.read", embedded_fields=("integration_requirements",)),
-            _SectionDefinition("observability_requirements", "spec.observability_requirements.read", embedded_fields=("observability_requirements",)),
-            _SectionDefinition("requirement_lint", "spec.quality.read", queries=_quality_queries("requirement_lint") + (_q("requirement_lint_validation_snapshots", "entity_fk", "spec_id"),)),
+            _SectionDefinition(
+                "cards",
+                "card.entity.read",
+                queries=(
+                    _q(
+                        "cards",
+                        "entity_fk",
+                        "spec_id",
+                        projected_columns=_CARD_HUMAN_COLUMNS,
+                    ),
+                ),
+            ),
+            _SectionDefinition(
+                "sprints",
+                "sprint.entity.read",
+                queries=(
+                    _q(
+                        "sprints",
+                        "entity_fk",
+                        "spec_id",
+                        projected_columns=_IDENTITY_COLUMNS + ("lane_type",),
+                    ),
+                ),
+            ),
+            _SectionDefinition(
+                "research_decision_derivations",
+                "refinement.research_decisions.read",
+                queries=(_q("research_decision_derivations", "entity_fk", "spec_id"),),
+            ),
+            _SectionDefinition(
+                "qa",
+                "spec.qa.read",
+                queries=(_q("spec_qa_items", "entity_fk", "spec_id"),),
+            ),
+            _SectionDefinition(
+                "knowledge",
+                "spec.knowledge.read",
+                queries=(_q("spec_knowledge_bases", "entity_fk", "spec_id"),),
+            ),
+            _SectionDefinition(
+                "mockups", "spec.mockups.read", embedded_fields=("screen_mockups",)
+            ),
+            _SectionDefinition(
+                "architecture",
+                "spec.architecture.read",
+                queries=_architecture_queries("spec_id"),
+            ),
+            _SectionDefinition(
+                "history",
+                "spec.history_read",
+                queries=(_q("spec_history", "entity_fk", "spec_id"),),
+                history_only=True,
+            ),
+            _SectionDefinition(
+                "dependencies",
+                "spec.entity.read",
+                queries=(_q("spec_dependencies", "spec_dependency"),),
+            ),
+            _SectionDefinition(
+                "spec_validation",
+                "spec.validation.read",
+                embedded_fields=("validations",),
+            ),
+            _SectionDefinition(
+                "evaluations", "spec.evaluations.read", embedded_fields=("evaluations",)
+            ),
+            _SectionDefinition(
+                "test_scenarios", "spec.tests.read", embedded_fields=("test_scenarios",)
+            ),
+            _SectionDefinition(
+                "business_rules", "spec.rules.read", embedded_fields=("business_rules",)
+            ),
+            _SectionDefinition(
+                "api_contracts",
+                "spec.contracts.read",
+                embedded_fields=("api_contracts",),
+            ),
+            _SectionDefinition(
+                "integration_requirements",
+                "spec.integration_requirements.read",
+                embedded_fields=("integration_requirements",),
+            ),
+            _SectionDefinition(
+                "observability_requirements",
+                "spec.observability_requirements.read",
+                embedded_fields=("observability_requirements",),
+            ),
+            _SectionDefinition(
+                "requirement_lint",
+                "spec.quality.read",
+                queries=_quality_queries("requirement_lint"),
+            ),
             _SectionDefinition(
                 "checklist",
                 "spec.checklist.read",
                 queries=(
-                    _q("checklist_executions", "entity_fk", "spec_id"),
-                    _q("checklist_receipts", "entity_fk", "spec_id"),
-                    _q("checklist_item_results", "context", "receipt_id", context_key="receipt_ids"),
-                    _q("checklist_execution_heads", "entity_fk", "spec_id"),
-                    _q("checklist_validation_binding_snapshots", "entity_fk", "spec_id"),
+                    _q("checklist_receipts", "entity_fk", "spec_id", emit=False),
+                    _q(
+                        "checklist_item_results",
+                        "context",
+                        "receipt_id",
+                        context_key="receipt_ids",
+                    ),
                 ),
             ),
             *policy,
@@ -413,27 +748,96 @@ def _definitions(entity_type: EntityExportType) -> tuple[_SectionDefinition, ...
         )
     if entity_type is EntityExportType.SPRINT:
         return (
-            _SectionDefinition("cards", "card.entity.read", queries=(_q("cards", "entity_fk", "sprint_id", projected_columns=_IDENTITY_COLUMNS + ("card_type", "spec_id")),)),
-            _SectionDefinition("qa", "sprint.qa.read", queries=(_q("sprint_qa_items", "entity_fk", "sprint_id"),)),
-            _SectionDefinition("evaluations", "sprint.evaluations.read", embedded_fields=("evaluations",)),
-            _SectionDefinition("test_scenarios", "spec.tests.read", embedded_fields=("test_scenario_ids",)),
-            _SectionDefinition("business_rules", "spec.rules.read", embedded_fields=("business_rule_ids",)),
-            _SectionDefinition("history", "sprint.history_read", queries=(_q("sprint_history", "entity_fk", "sprint_id"),), history_only=True),
+            _SectionDefinition(
+                "cards",
+                "card.entity.read",
+                queries=(
+                    _q(
+                        "cards",
+                        "entity_fk",
+                        "sprint_id",
+                        projected_columns=_CARD_HUMAN_COLUMNS,
+                    ),
+                ),
+            ),
+            _SectionDefinition(
+                "qa",
+                "sprint.qa.read",
+                queries=(_q("sprint_qa_items", "entity_fk", "sprint_id"),),
+            ),
+            _SectionDefinition(
+                "evaluations",
+                "sprint.evaluations.read",
+                embedded_fields=("evaluations",),
+            ),
+            _SectionDefinition(
+                "test_scenarios",
+                "spec.tests.read",
+                embedded_fields=("test_scenario_ids",),
+            ),
+            _SectionDefinition(
+                "business_rules",
+                "spec.rules.read",
+                embedded_fields=("business_rule_ids",),
+            ),
+            _SectionDefinition(
+                "history",
+                "sprint.history_read",
+                queries=(_q("sprint_history", "entity_fk", "sprint_id"),),
+                history_only=True,
+            ),
             *policy,
             *resources,
         )
     if entity_type is EntityExportType.CARD:
         return (
-            _SectionDefinition("relationships", "card.entity.context_read", queries=(_q("card_dependencies", "card_dependency"),)),
-            _SectionDefinition("qa", "card.qa.read", queries=(_q("qa_items", "entity_fk", "card_id"),)),
-            _SectionDefinition("comments", "card.comments.read", queries=(_q("comments", "entity_fk", "card_id"),)),
-            _SectionDefinition("attachments", "card.attachments.read", queries=(_q("attachments", "entity_fk", "card_id"),)),
-            _SectionDefinition("knowledge", "card.entity.context_read", embedded_fields=("knowledge_bases",)),
-            _SectionDefinition("mockups", "card.mockups.read", embedded_fields=("screen_mockups",)),
-            _SectionDefinition("architecture", "card.architecture.read", queries=(_q("architecture_designs", "entity_fk", "card_id"), _q("design_system_gate_audit", "entity"))),
-            _SectionDefinition("card_validation", "card.validation.read", embedded_fields=("validations",)),
-            _SectionDefinition("test_scenarios", "spec.tests.read", embedded_fields=("test_scenario_ids",)),
-            _SectionDefinition("activity", "card.activity_read", queries=(_q("activity_logs", "entity_fk", "card_id"),), history_only=True),
+            _SectionDefinition(
+                "relationships",
+                "card.entity.context_read",
+                queries=(_q("card_dependencies", "card_dependency"),),
+            ),
+            _SectionDefinition(
+                "qa", "card.qa.read", queries=(_q("qa_items", "entity_fk", "card_id"),)
+            ),
+            _SectionDefinition(
+                "comments",
+                "card.comments.read",
+                queries=(_q("comments", "entity_fk", "card_id"),),
+            ),
+            _SectionDefinition(
+                "attachments",
+                "card.attachments.read",
+                queries=(_q("attachments", "entity_fk", "card_id"),),
+            ),
+            _SectionDefinition(
+                "knowledge",
+                "card.entity.context_read",
+                embedded_fields=("knowledge_bases",),
+            ),
+            _SectionDefinition(
+                "mockups", "card.mockups.read", embedded_fields=("screen_mockups",)
+            ),
+            _SectionDefinition(
+                "architecture",
+                "card.architecture.read",
+                queries=_architecture_queries("card_id"),
+            ),
+            _SectionDefinition(
+                "card_validation",
+                "card.validation.read",
+                embedded_fields=("validations",),
+            ),
+            _SectionDefinition(
+                "test_scenarios",
+                "spec.tests.read",
+                embedded_fields=("test_scenario_ids",),
+            ),
+            _SectionDefinition(
+                "activity",
+                "card.activity_read",
+                queries=(_q("activity_logs", "entity_fk", "card_id"),),
+                history_only=True,
+            ),
             *policy,
             *_code_sections(entity_type),
             *resources,
@@ -450,8 +854,12 @@ def _quality_queries(kind: str) -> tuple[_TableQuery, ...]:
             "receipt_id",
             context_key="receipt_ids",
         ),
-        _q("quality_proposed_questions", "context", "receipt_id", context_key="receipt_ids"),
-        _q("quality_finding_qa_links", "context", "receipt_id", context_key="receipt_ids"),
+        _q(
+            "quality_proposed_questions",
+            "context",
+            "receipt_id",
+            context_key="receipt_ids",
+        ),
     )
 
 
@@ -476,36 +884,25 @@ def _json_value(value: Any) -> Any:
             value = value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc).isoformat()
     if isinstance(value, Mapping):
-        return {str(key): _json_value(item) for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))}
+        return {
+            str(key): _json_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
     if isinstance(value, (list, tuple)):
         return [_json_value(item) for item in value]
     if isinstance(value, (set, frozenset)):
-        return sorted((_json_value(item) for item in value), key=lambda item: repr(item))
+        return sorted(
+            (_json_value(item) for item in value), key=lambda item: repr(item)
+        )
     if isinstance(value, bytes):
         return {"encoding": "hex", "value": value.hex()}
     return str(value)
 
 
 def _sealed_mockups(value: Any) -> Any:
-    """Keep mockup facts while preventing stored HTML from becoming report DOM."""
+    """Keep a visual mockup payload without placing stored HTML in report DOM."""
 
-    normalized = _json_value(value)
-    if not isinstance(normalized, list):
-        return normalized
-    sealed: list[Any] = []
-    for item in normalized:
-        if not isinstance(item, dict):
-            sealed.append(item)
-            continue
-        copy = dict(item)
-        html_content = copy.pop("html_content", None)
-        if html_content not in (None, ""):
-            copy["html_content"] = {
-                "state": "omitted_active_content",
-                "reason_code": "screen_mockup_html_not_embedded",
-            }
-        sealed.append(copy)
-    return sealed
+    return seal_screen_mockups(_json_value(value))
 
 
 def _seal_spec_validation_pinpoints(value: Any) -> Any:
@@ -545,6 +942,131 @@ def _row_payload(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _present_fields(
+    row: Mapping[str, Any], field_names: tuple[str, ...]
+) -> dict[str, Any]:
+    return {
+        field_name: row[field_name]
+        for field_name in field_names
+        if field_name in row and row[field_name] not in (None, "", [], {})
+    }
+
+
+def _qa_answer(row: Mapping[str, Any]) -> Any:
+    answer = row.get("answer")
+    if answer not in (None, "", [], {}):
+        return answer
+    selected = row.get("selected")
+    if not isinstance(selected, list) or not selected:
+        return None
+    choices = row.get("choices")
+    labels: dict[str, str] = {}
+    if isinstance(choices, list):
+        for option in choices:
+            if not isinstance(option, Mapping):
+                continue
+            option_id = option.get("id")
+            option_label = option.get("label")
+            if option_id not in (None, "") and option_label not in (None, ""):
+                labels[str(option_id)] = str(option_label)
+    return ", ".join(labels.get(str(option), str(option)) for option in selected)
+
+
+def _human_qa_payload(row: Mapping[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {"question": row.get("question")}
+    answer = _qa_answer(row)
+    if answer not in (None, "", [], {}):
+        payload["answer"] = answer
+        return payload
+    question_type = str(row.get("question_type") or "text").casefold()
+    choices = row.get("choices")
+    if question_type in {"choice", "multi_choice"} and isinstance(choices, list):
+        options = [
+            option.get("label")
+            for option in choices
+            if isinstance(option, Mapping) and option.get("label") not in (None, "")
+        ]
+        if options:
+            payload["options"] = options
+    return payload
+
+
+def _human_checklist_item(row: Mapping[str, Any]) -> dict[str, Any]:
+    item = _CHECKLIST_ITEM_BY_ID.get(str(row.get("item_id") or ""))
+    if item is not None:
+        title = item.title_en
+        description = item.description_en
+    else:
+        title = str(row.get("item_id") or "Checklist item").removeprefix("chk_")
+        title = title.replace("_", " ").strip().capitalize()
+        description = None
+    payload: dict[str, Any] = {
+        "title": title,
+        "outcome": row.get("outcome"),
+    }
+    if description:
+        payload["description"] = description
+    if row.get("rationale") not in (None, ""):
+        payload["rationale"] = row["rationale"]
+    return payload
+
+
+def _human_v2_metric(row: Mapping[str, Any]) -> dict[str, Any]:
+    stored = row.get("payload")
+    payload = stored if isinstance(stored, Mapping) else {}
+    result = _present_fields(
+        payload,
+        (
+            "metric_code",
+            "score",
+            "direction",
+            "effective_threshold",
+            "outcome",
+            "rationale",
+            "pinpoints",
+        ),
+    )
+    for field_name in ("metric_code", "outcome", "created_at"):
+        if field_name not in result and row.get(field_name) not in (None, ""):
+            result[field_name] = row[field_name]
+    return result
+
+
+def _human_v2_finding(row: Mapping[str, Any]) -> dict[str, Any]:
+    stored = row.get("payload")
+    payload = stored if isinstance(stored, Mapping) else {}
+    result = _present_fields(
+        payload,
+        ("metric_code", "rationale", "pinpoints", "created_at"),
+    )
+    for field_name in ("metric_code", "created_at"):
+        if field_name not in result and row.get(field_name) not in (None, ""):
+            result[field_name] = row[field_name]
+    return result
+
+
+def _human_row_payload(table_name: str, row: Mapping[str, Any]) -> dict[str, Any]:
+    """Project persisted rows into report vocabulary, not storage vocabulary."""
+
+    if table_name in _QA_TABLES or table_name == "quality_proposed_questions":
+        return _human_qa_payload(row)
+    if table_name == "cards":
+        return _present_fields(row, _CARD_HUMAN_COLUMNS)
+    if table_name == "checklist_item_results":
+        return _human_checklist_item(row)
+    if table_name == "semantic_guideline_assessments_v2":
+        return _present_fields(row, ("confidence", "recorded_at"))
+    if table_name == "semantic_guideline_metric_results_v2":
+        return _human_v2_metric(row)
+    if table_name == "semantic_guideline_findings_v2":
+        return _human_v2_finding(row)
+    if fields := _HUMAN_POLICY_FIELDS.get(table_name):
+        return _present_fields(row, fields)
+    if fields := _HUMAN_QUALITY_FIELDS.get(table_name):
+        return _present_fields(row, fields)
+    return dict(row)
+
+
 def _model_payload(row: Any, entity_type: EntityExportType) -> dict[str, Any]:
     separated = _EMBEDDED_FIELD_SECTIONS.get(entity_type, {})
     payload: dict[str, Any] = {}
@@ -579,9 +1101,13 @@ def _entity_column(entity_type: EntityExportType) -> str | None:
     }.get(entity_type)
 
 
-def _base_conditions(table: Table, query: _TableQuery, request: EntityExportRequest) -> ColumnElement[bool] | None:
+def _base_conditions(
+    table: Table, query: _TableQuery, request: EntityExportRequest
+) -> ColumnElement[bool] | None:
     selector = query.selector
-    board_condition = table.c.board_id == request.board_id if "board_id" in table.c else None
+    board_condition = (
+        table.c.board_id == request.board_id if "board_id" in table.c else None
+    )
     if selector == "entity_fk":
         column_name = query.column or _entity_column(request.entity_type)
         if column_name is None or column_name not in table.c:
@@ -593,11 +1119,20 @@ def _base_conditions(table: Table, query: _TableQuery, request: EntityExportRequ
             conditions.append(board_condition)
         return and_(*conditions)
     if selector == "subject" or selector.startswith("quality:"):
-        type_column = "subject_type" if "subject_type" in table.c else "entity_type" if "entity_type" in table.c else None
+        type_column = (
+            "subject_type"
+            if "subject_type" in table.c
+            else "entity_type"
+            if "entity_type" in table.c
+            else None
+        )
         id_column = "subject_id" if "subject_id" in table.c else None
         if type_column is None or id_column is None:
             return None
-        conditions: list[ColumnElement[bool]] = [table.c[type_column] == request.entity_type.value, table.c[id_column] == request.entity_id]
+        conditions: list[ColumnElement[bool]] = [
+            table.c[type_column] == request.entity_type.value,
+            table.c[id_column] == request.entity_id,
+        ]
         if board_condition is not None:
             conditions.append(board_condition)
         if selector.startswith("quality:") and "assessment_kind" in table.c:
@@ -606,19 +1141,28 @@ def _base_conditions(table: Table, query: _TableQuery, request: EntityExportRequ
     if selector == "entity":
         if "entity_type" not in table.c or "entity_id" not in table.c:
             return None
-        conditions = [table.c.entity_type == request.entity_type.value, table.c.entity_id == request.entity_id]
+        conditions = [
+            table.c.entity_type == request.entity_type.value,
+            table.c.entity_id == request.entity_id,
+        ]
         if board_condition is not None:
             conditions.append(board_condition)
         return and_(*conditions)
     if selector == "spec_only":
-        if request.entity_type is not EntityExportType.SPEC or query.column not in table.c:
+        if (
+            request.entity_type is not EntityExportType.SPEC
+            or query.column not in table.c
+        ):
             return None
         conditions = [table.c[query.column] == request.entity_id]
         if board_condition is not None:
             conditions.append(board_condition)
         return and_(*conditions)
     if selector == "card_only":
-        if request.entity_type is not EntityExportType.CARD or query.column not in table.c:
+        if (
+            request.entity_type is not EntityExportType.CARD
+            or query.column not in table.c
+        ):
             return None
         conditions = [table.c[query.column] == request.entity_id]
         if board_condition is not None:
@@ -680,7 +1224,10 @@ def _scope_condition(
         return table.c.validation_edition == edition
     if section_key == "dependencies" and "active" in table.c:
         return table.c.active.is_(True)
-    if section_key in {"code_evidence", "implementation_targets"} and "lifecycle_status" in table.c:
+    if (
+        section_key in {"code_evidence", "implementation_targets"}
+        and "lifecycle_status" in table.c
+    ):
         return table.c.lifecycle_status == "active"
     if section_key in {"policy_compliance"} and "recorded_currentness" in table.c:
         return table.c.recorded_currentness == "current"
@@ -706,7 +1253,9 @@ def _order_columns(table: Table) -> tuple[Any, ...]:
     return tuple(ordered)
 
 
-def _record_context(table_name: str, row: Mapping[str, Any], context: dict[str, set[str]]) -> None:
+def _record_context(
+    table_name: str, row: Mapping[str, Any], context: dict[str, set[str]]
+) -> None:
     primary_context = {
         "quality_assessment_receipts": ("id", "receipt_ids"),
         "checklist_receipts": ("id", "receipt_ids"),
@@ -718,10 +1267,16 @@ def _record_context(table_name: str, row: Mapping[str, Any], context: dict[str, 
         "semantic_guideline_waivers": ("waiver_id", "waiver_ids"),
         "implementation_targets": ("id", "target_ids"),
         "implementation_target_spec_links": ("target_id", "target_ids"),
+        "architecture_designs": ("id", "architecture_design_ids"),
     }
     item = primary_context.get(table_name)
     if item is not None and row.get(item[0]) is not None:
         context.setdefault(item[1], set()).add(str(row[item[0]]))
+    if (
+        table_name == "semantic_guideline_assessment_receipts"
+        and row.get("revision_id") is not None
+    ):
+        context.setdefault("guideline_revision_ids", set()).add(str(row["revision_id"]))
 
 
 class CommunitySqlAlchemyEntityExportReader:
@@ -863,7 +1418,10 @@ class CommunitySqlAlchemyEntityExportReader:
                     )
                 )
                 continue
-            if definition.history_only and request.history_scope is EntityExportHistoryScope.CURRENT:
+            if (
+                definition.history_only
+                and request.history_scope is EntityExportHistoryScope.CURRENT
+            ):
                 entries.append(
                     EntityExportSectionManifestEntry(
                         section_key=definition.key,
@@ -965,11 +1523,15 @@ class CommunitySqlAlchemyEntityExportReader:
         count = 0
         for field_name in definition.embedded_fields:
             value = _json_value(getattr(base_row, field_name, None))
-            if request.history_scope is EntityExportHistoryScope.CURRENT and isinstance(value, list):
+            if request.history_scope is EntityExportHistoryScope.CURRENT and isinstance(
+                value, list
+            ):
                 value = self._current_embedded(
                     field_name,
                     value,
-                    current_validation_id=getattr(base_row, "current_validation_id", None),
+                    current_validation_id=getattr(
+                        base_row, "current_validation_id", None
+                    ),
                     edition=getattr(base_row, "edition", None),
                 )
             if field_name == "screen_mockups":
@@ -977,7 +1539,13 @@ class CommunitySqlAlchemyEntityExportReader:
             elif definition.key == "spec_validation" and field_name == "validations":
                 value = _seal_spec_validation_pinpoints(value)
             embedded[field_name] = value
-            count += len(value) if isinstance(value, list) else 1 if value not in (None, {}, "") else 0
+            count += (
+                len(value)
+                if isinstance(value, list)
+                else 1
+                if value not in (None, {}, "")
+                else 0
+            )
             if count > self._max_section_rows:
                 raise CommunityEntityExportLimitError(
                     section_key=definition.key,
@@ -986,6 +1554,8 @@ class CommunitySqlAlchemyEntityExportReader:
 
         records: dict[str, list[dict[str, Any]]] = {}
         context: dict[str, set[str]] = {}
+        guideline_titles: dict[str, str] = {}
+        guideline_assessment_revision_ids: list[str | None] = []
         for query in definition.queries:
             table = _table(query.table_name)
             if table is None:
@@ -996,8 +1566,12 @@ class CommunitySqlAlchemyEntityExportReader:
                     records[query.table_name] = []
                     continue
                 if query.column is None or query.column not in table.c:
-                    raise RuntimeError(f"export_context_column_missing:{query.table_name}")
-                condition: ColumnElement[bool] | None = table.c[query.column].in_(sorted(ids))
+                    raise RuntimeError(
+                        f"export_context_column_missing:{query.table_name}"
+                    )
+                condition: ColumnElement[bool] | None = table.c[query.column].in_(
+                    sorted(ids)
+                )
                 if "board_id" in table.c:
                     condition = and_(
                         condition,
@@ -1010,7 +1584,10 @@ class CommunitySqlAlchemyEntityExportReader:
                     continue
                 condition = and_(
                     table.c.board_id == request.board_id,
-                    or_(table.c.target_a_id.in_(sorted(target_ids)), table.c.target_b_id.in_(sorted(target_ids))),
+                    or_(
+                        table.c.target_a_id.in_(sorted(target_ids)),
+                        table.c.target_b_id.in_(sorted(target_ids)),
+                    ),
                 )
             else:
                 condition = _base_conditions(table, query, request)
@@ -1026,7 +1603,9 @@ class CommunitySqlAlchemyEntityExportReader:
             )
             if scope_condition is not None:
                 condition = and_(condition, scope_condition)
-            projected = [table.c[name] for name in query.projected_columns if name in table.c]
+            projected = [
+                table.c[name] for name in query.projected_columns if name in table.c
+            ]
             statement = select(*(projected or [table])).where(condition)
             order_columns = _order_columns(table)
             if order_columns:
@@ -1038,18 +1617,50 @@ class CommunitySqlAlchemyEntityExportReader:
                     limit=self._max_section_rows,
                 )
             rows = (
-                await self._session.execute(statement.limit(remaining + 1))
-            ).mappings().all()
+                (await self._session.execute(statement.limit(remaining + 1)))
+                .mappings()
+                .all()
+            )
             if len(rows) > remaining:
                 raise CommunityEntityExportLimitError(
                     section_key=definition.key,
                     limit=self._max_section_rows,
                 )
-            serialized = [_row_payload(row) for row in rows]
-            records[query.table_name] = serialized
-            count += len(serialized)
-            for item in serialized:
+            raw_rows = [_row_payload(row) for row in rows]
+            for item in raw_rows:
                 _record_context(query.table_name, item, context)
+            if query.table_name == "guideline_revisions":
+                guideline_titles.update(
+                    {
+                        str(item["revision_id"]): str(item["title"])
+                        for item in raw_rows
+                        if item.get("revision_id") not in (None, "")
+                        and item.get("title") not in (None, "")
+                    }
+                )
+                assessments = records.get("semantic_guideline_assessment_receipts", [])
+                for assessment, revision_id in zip(
+                    assessments,
+                    guideline_assessment_revision_ids,
+                    strict=True,
+                ):
+                    if title := guideline_titles.get(str(revision_id)):
+                        assessment["guideline_title"] = title
+            serialized = (
+                [_human_row_payload(query.table_name, item) for item in raw_rows]
+                if query.emit
+                else []
+            )
+            if query.table_name == "semantic_guideline_assessment_receipts":
+                guideline_assessment_revision_ids = [
+                    str(item["revision_id"])
+                    if item.get("revision_id") not in (None, "")
+                    else None
+                    for item in raw_rows
+                ]
+            if query.emit:
+                records[query.table_name] = serialized
+                count += len(serialized)
         return {"embedded": embedded, "records": records}, count
 
     @staticmethod
@@ -1063,7 +1674,12 @@ class CommunitySqlAlchemyEntityExportReader:
         if not values:
             return []
         if field_name == "validations" and current_validation_id:
-            current = [item for item in values if isinstance(item, Mapping) and str(item.get("id")) == str(current_validation_id)]
+            current = [
+                item
+                for item in values
+                if isinstance(item, Mapping)
+                and str(item.get("id")) == str(current_validation_id)
+            ]
             return current
         if edition is not None:
             current = [

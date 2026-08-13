@@ -25,6 +25,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Ideation,
     Refinement,
     Spec,
+    SpecQAItem,
     Sprint,
     Story,
     Topic,
@@ -226,7 +227,9 @@ async def test_reader_supports_six_types_and_fences_realm_and_related_rows() -> 
 
 
 @pytest.mark.asyncio
-async def test_denied_section_is_not_selected_or_counted_and_current_does_not_leak() -> None:
+async def test_denied_section_is_not_selected_or_counted_and_current_does_not_leak() -> (
+    None
+):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -234,8 +237,8 @@ async def test_denied_section_is_not_selected_or_counted_and_current_does_not_le
     event.listen(
         engine.sync_engine,
         "before_cursor_execute",
-        lambda _conn, _cursor, statement, _parameters, _context, _many: statements.append(
-            statement
+        lambda _conn, _cursor, statement, _parameters, _context, _many: (
+            statements.append(statement)
         ),
     )
     sessions = build_community_session_factory(engine)
@@ -368,6 +371,200 @@ async def test_explicit_section_limit_fails_without_truncation(monkeypatch) -> N
     await engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_reader_projects_cards_and_qa_for_human_consumption() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    sessions = build_community_session_factory(engine)
+    async with sessions() as session:
+        session.add_all(
+            [
+                Board(id="b", name="Board", owner_id="u", realm_id="realm"),
+                Spec(id="spec", board_id="b", title="Spec", created_by="u"),
+                Card(
+                    id="test-card",
+                    board_id="b",
+                    spec_id="spec",
+                    title="Verify graceful failover",
+                    description="Exercise the three-instance Multi-AZ failover.",
+                    details="Capture failover time and service availability.",
+                    status="in_progress",
+                    card_type="test",
+                    archived=False,
+                    policy_version=19,
+                    created_by="u",
+                ),
+                SpecQAItem(
+                    id="qa-answered",
+                    spec_id="spec",
+                    question="Which recovery target applies?",
+                    question_type="choice",
+                    choices=[
+                        {"id": "fast", "label": "Under 30 seconds"},
+                        {"id": "slow", "label": "Under 5 minutes"},
+                    ],
+                    answer="Under 30 seconds",
+                    selected=["fast"],
+                    asked_by="u",
+                ),
+                SpecQAItem(
+                    id="qa-open",
+                    spec_id="spec",
+                    question="Which regions are required?",
+                    question_type="multi_choice",
+                    choices=[
+                        {"id": "east", "label": "US East"},
+                        {"id": "west", "label": "US West"},
+                    ],
+                    asked_by="u",
+                ),
+            ]
+        )
+        await session.commit()
+        bundle = await CommunitySqlAlchemyEntityExportReader(
+            session, clock=lambda: _NOW
+        ).build_bundle(
+            request=EntityExportRequest(
+                board_id="b",
+                entity_type=EntityExportType.SPEC,
+                entity_id="spec",
+                requested_sections=("cards", "qa"),
+            ),
+            disclosure=EntityExportDisclosure(
+                frozenset({"card.entity.read", "spec.qa.read"}),
+                ("cards", "qa"),
+            ),
+            actor_id="u",
+            realm_scope=RealmScope.tenant("realm"),
+        )
+
+        sections = {item.section_key: item.payload for item in bundle.sections}
+        card = sections["cards"]["records"]["cards"][0]
+        assert card == {
+            "title": "Verify graceful failover",
+            "description": "Exercise the three-instance Multi-AZ failover.",
+            "details": "Capture failover time and service availability.",
+            "status": "in_progress",
+            "priority": "none",
+            "card_type": "test",
+        }
+        assert "policy_version" not in card
+        assert "archived" not in card
+
+        qa_items = sections["qa"]["records"]["spec_qa_items"]
+        assert qa_items == (
+            {
+                "question": "Which recovery target applies?",
+                "answer": "Under 30 seconds",
+            },
+            {
+                "question": "Which regions are required?",
+                "options": ("US East", "US West"),
+            },
+        )
+    await engine.dispose()
+
+
+def test_human_projection_removes_validation_storage_noise() -> None:
+    from okto_pulse.community.adapters.sqlalchemy_entity_export import (
+        _definitions,
+        _human_row_payload,
+    )
+
+    spec_definitions = {item.key: item for item in _definitions(EntityExportType.SPEC)}
+    requirement_tables = {
+        query.table_name for query in spec_definitions["requirement_lint"].queries
+    }
+    policy_tables = {
+        query.table_name for query in spec_definitions["policy_compliance"].queries
+    }
+    checklist_queries = spec_definitions["checklist"].queries
+    assert "requirement_lint_validation_snapshots" not in requirement_tables
+    assert "semantic_guideline_validation_scopes" not in policy_tables
+    assert "policy_compliance_adopted_revisions" not in policy_tables
+    revision_query = next(
+        query
+        for query in spec_definitions["policy_compliance"].queries
+        if query.table_name == "guideline_revisions"
+    )
+    assert revision_query.emit is False
+    assert revision_query.projected_columns == ("revision_id", "title")
+    assert [query.table_name for query in checklist_queries] == [
+        "checklist_receipts",
+        "checklist_item_results",
+    ]
+    assert checklist_queries[0].emit is False
+
+    checklist = _human_row_payload(
+        "checklist_item_results",
+        {
+            "receipt_id": "receipt-secret",
+            "item_id": "chk_scope_boundaries",
+            "execution_id": "execution-secret",
+            "outcome": "pass",
+            "anchor": "spec://secret/chk_scope_boundaries",
+            "rationale": "Scope and exclusions are explicit.",
+            "order_index": 0,
+        },
+    )
+    assert checklist == {
+        "title": "Scope and boundaries",
+        "outcome": "pass",
+        "description": (
+            "The Spec explicitly defines in-scope behavior, out-of-scope "
+            "behavior, and relevant boundaries."
+        ),
+        "rationale": "Scope and exclusions are explicit.",
+    }
+
+    policy = _human_row_payload(
+        "semantic_guideline_assessment_receipts",
+        {
+            "receipt_id": "receipt-secret",
+            "subject_type": "spec",
+            "subject_version": 70,
+            "validation_edition": 2,
+            "binding_revision": 2,
+            "minimum_confidence": 80,
+            "confidence": 97,
+            "confidence_admissible": True,
+            "assessor_independent": False,
+            "metric_result_count": 2,
+            "failed_metric_count": 0,
+            "sealed": True,
+            "state": "passed",
+        },
+    )
+    assert policy == {
+        "minimum_confidence": 80,
+        "confidence": 97,
+        "state": "passed",
+    }
+
+    lint_finding = _human_row_payload(
+        "quality_findings",
+        {
+            "id": "finding-secret",
+            "receipt_id": "receipt-secret",
+            "title": "Availability target is not measurable",
+            "detail": "Replace 'high availability' with an explicit SLO.",
+            "severity": "high",
+            "confidence": 96,
+            "anchor_ref": "fr_secret",
+            "excerpt_hash": "0" * 64,
+            "remediation": "State the target percentage and evaluation window.",
+        },
+    )
+    assert lint_finding == {
+        "severity": "high",
+        "confidence": 96,
+        "title": "Availability target is not measurable",
+        "detail": "Replace 'high availability' with an explicit SLO.",
+        "remediation": "State the target percentage and evaluation window.",
+    }
+
+
 def test_renderers_are_semantically_parallel_structured_and_passive() -> None:
     raw = _bundle().to_dict()
     markdown = render_entity_export_markdown(raw)
@@ -377,16 +574,17 @@ def test_renderers_are_semantically_parallel_structured_and_passive() -> None:
         "97",
         "ambiguity",
         "clarity",
-        "Complete for actor",
         "Source complete",
     ):
         assert fact.casefold() in markdown.casefold()
         assert fact.casefold() in html.casefold()
-    assert "ac\\_1" in markdown
-    assert "ac_1" in html
+    assert "Complete for viewer" in markdown
+    assert "Complete for viewer" in html
+    assert "ac\\_1" not in markdown
+    assert "ac_1" not in html
     assert '<div class="score-grid">' in html
     assert '<article class="pinpoint-card">' in html
-    assert '<summary>Report completeness and technical appendix</summary>' in html
+    assert "<summary>Report completeness</summary>" in html
     assert "0" * 64 not in html
     assert "0" * 64 not in markdown
     assert "<script>" not in html
@@ -396,6 +594,30 @@ def test_renderers_are_semantically_parallel_structured_and_passive() -> None:
     assert "<iframe" not in html
     assert "<object" not in html
     assert "<embed" not in html
+
+
+def test_metric_codes_are_humanized_instead_of_exposing_storage_punctuation() -> None:
+    raw = _bundle(title="Metric report").to_dict()
+    raw["sections"][0]["payload"] = {
+        "records": {
+            "semantic_guideline_metric_results": [
+                {
+                    "metric_code": "architecture.failClosedSeams",
+                    "score": 97,
+                    "direction": "minimum",
+                    "effective_threshold": 90,
+                    "rationale": "The seams fail closed.",
+                }
+            ]
+        }
+    }
+
+    html = render_entity_export_html(raw)
+    markdown = render_entity_export_markdown(raw)
+    assert "Architecture Fail Closed Seams" in html
+    assert "Architecture Fail Closed Seams" in markdown
+    assert "architecture.failClosedSeams" not in html
+    assert "architecture.failClosedSeams" not in markdown
 
 
 def test_human_first_report_leads_with_content_and_reduces_technical_identity() -> None:
@@ -419,12 +641,13 @@ def test_human_first_report_leads_with_content_and_reduces_technical_identity() 
     markdown = render_entity_export_markdown(raw)
 
     assert "FR-3 Complete entity coverage: export every authorized fact." in html
-    assert "(fr_ced7e9e8)" in html
+    assert "fr_ced7e9e8" not in html
     assert "39ebfd41-f2a4-5fe7-9133-4ee9c0ee2cbc" not in html
     assert "15877207-c147-4805-96d7-d53a625571df" not in html
     assert "5a15282a-b704-5c89-8e15-4338ca3d0b1b" not in html
     assert "Item 1" not in html
-    assert html.index("Defines the availability behavior") < html.index(">Technical metadata<")
+    assert "Defines the availability behavior" in html
+    assert ">Technical metadata<" not in html
     assert "FR-3 Complete entity coverage: export every authorized fact." in markdown
     assert "39ebfd41-f2a4-5fe7-9133-4ee9c0ee2cbc" not in markdown
 
@@ -434,8 +657,18 @@ def test_current_result_is_visible_and_previous_results_are_collapsed() -> None:
     raw["sections"][0]["payload"] = {
         "embedded": {
             "validations": [
-                {"id": "val_current12345678", "is_current": True, "outcome": "success", "confidence": 97},
-                {"id": "val_previous12345678", "is_current": False, "outcome": "failed", "confidence": 61},
+                {
+                    "id": "val_current12345678",
+                    "is_current": True,
+                    "outcome": "success",
+                    "confidence": 97,
+                },
+                {
+                    "id": "val_previous12345678",
+                    "is_current": False,
+                    "outcome": "failed",
+                    "confidence": 61,
+                },
             ]
         }
     }
@@ -443,9 +676,126 @@ def test_current_result_is_visible_and_previous_results_are_collapsed() -> None:
 
     assert '<details class="previous-results">' in html
     assert "Previous results <span>1</span>" in html
-    assert html.index("val_current1") < html.index("Previous results")
+    assert html.index("97<small>/100") < html.index("Previous results")
+    assert "61<small>/100" in html
     assert "val_current12345678" not in html
     assert "val_previous12345678" not in html
+
+
+def test_html_report_uses_sidebar_navigation_and_collapses_large_sections() -> None:
+    raw = _bundle(title="Human report").to_dict()
+    raw["sections"][0]["payload"] = {
+        "record": {
+            "title": "Human report",
+            "functional_requirements": [
+                {"id": f"fr_{index:08d}", "text": f"FR-{index}: Requirement {index}."}
+                for index in range(1, 6)
+            ],
+        }
+    }
+    raw["manifest"]["entries"].append(
+        {
+            "section_key": "cards",
+            "status": "included",
+            "complete_for_actor": True,
+            "source_complete": True,
+            "schema_version": "entity-export-section/v1",
+            "total_count": 1,
+            "included_count": 1,
+            "pagination_complete": True,
+        }
+    )
+    raw["sections"].append(
+        {
+            "section_key": "cards",
+            "schema_version": "entity-export-section/v1",
+            "payload": {
+                "records": {
+                    "cards": [
+                        {
+                            "title": "Exercise failover",
+                            "card_type": "test",
+                            "description": "Verify continuity during an AZ failure.",
+                            "details": "Capture outage duration and recovery behavior.",
+                            "status": "in_progress",
+                            "policy_version": 19,
+                            "archived": False,
+                        }
+                    ]
+                }
+            },
+        }
+    )
+
+    html = render_entity_export_html(raw)
+    assert '<div class="report-layout"><nav class="toc"' in html
+    assert ".toc { position:sticky" in html
+    assert '<details class="chapter" id="section-cards">' in html
+    assert '<details class="nested-group content-group">' in html
+    assert '<span class="card-type-badge">Test</span>' in html
+    assert "Verify continuity during an AZ failure." in html
+    assert "Capture outage duration and recovery behavior." in html
+    assert "Policy Version" not in html
+    assert "Archived" not in html
+
+
+def test_html_report_omits_validation_storage_noise() -> None:
+    raw = _bundle(title="Validation report").to_dict()
+    raw["sections"][0]["payload"] = {
+        "records": {
+            "requirement_lint_validation_snapshots": [{"id": "snapshot-secret"}],
+            "semantic_guideline_validation_scopes": [{"id": "scope-secret"}],
+            "semantic_guideline_assessment_receipts": [
+                {
+                    "confidence": 97,
+                    "minimum_confidence": 80,
+                    "subject_type": "spec",
+                    "subject_version": 70,
+                    "binding_revision": 2,
+                    "confidence_admissible": True,
+                    "assessor_independent": False,
+                    "metric_result_count": 2,
+                    "failed_metric_count": 0,
+                    "sealed": True,
+                }
+            ],
+        }
+    }
+
+    html = render_entity_export_html(raw)
+    assert "Requirement Lint Validation Snapshot" not in html
+    assert "Semantic Guideline Validation Scope" not in html
+    for label in (
+        "Subject Type",
+        "Subject Version",
+        "Binding Revision",
+        "Confidence Admissible",
+        "Assessor Independent",
+        "Metric Result Count",
+        "Failed Metric Count",
+        "Sealed",
+    ):
+        assert label not in html
+    assert "97<small>/100" in html
+    assert "Minimum 80" in html
+
+
+def test_separated_section_placeholders_are_not_rendered_twice() -> None:
+    raw = _bundle(title="Lifecycle report").to_dict()
+    raw["sections"][0]["payload"] = {
+        "record": {
+            "title": "Lifecycle report",
+            "validations": {"state": "separated", "section_key": "spec_validation"},
+            "test_scenarios": {"state": "separated", "section_key": "test_scenarios"},
+        }
+    }
+
+    html = render_entity_export_html(raw)
+    markdown = render_entity_export_markdown(raw)
+    assert "Separated" not in html
+    assert "Section Key" not in html
+    assert "Separated" not in markdown
+    assert "Section Key" not in markdown
 
 
 def test_policy_pinpoint_uses_human_target_from_same_sealed_bundle() -> None:
@@ -500,7 +850,7 @@ def test_policy_pinpoint_uses_human_target_from_same_sealed_bundle() -> None:
 
     html = render_entity_export_html(raw)
     assert "AC-1: Given the current edition, the result remains readable." in html
-    assert "(ac_2ce4ec3f)" in html
+    assert "ac_2ce4ec3f" not in html
     assert "The condition has an explicit outcome." in html
 
 
@@ -508,7 +858,9 @@ def test_policy_pinpoint_uses_human_target_from_same_sealed_bundle() -> None:
     "entity_type",
     ["story", "ideation", "refinement", "spec", "sprint", "card"],
 )
-def test_preflight_wire_contract_supports_all_six_types(monkeypatch, entity_type: str) -> None:
+def test_preflight_wire_contract_supports_all_six_types(
+    monkeypatch, entity_type: str
+) -> None:
     bundle = _bundle(entity_type=EntityExportType(entity_type), title="Report")
 
     async def materialize(**kwargs):
@@ -535,7 +887,9 @@ def test_preflight_wire_contract_supports_all_six_types(monkeypatch, entity_type
     assert body["snapshot_fingerprint"] == bundle.snapshot_fingerprint
 
 
-def test_download_stale_and_secure_headers_and_render_after_materialization(monkeypatch) -> None:
+def test_download_stale_and_secure_headers_and_render_after_materialization(
+    monkeypatch,
+) -> None:
     bundle = _bundle(title='Report "safe"')
     released = False
 
@@ -588,5 +942,7 @@ def test_download_stale_and_secure_headers_and_render_after_materialization(monk
     assert response.headers["content-disposition"].startswith("attachment;")
     assert "\r" not in response.headers["content-disposition"]
     assert "\n" not in response.headers["content-disposition"]
-    assert response.headers["x-export-snapshot-fingerprint"] == bundle.snapshot_fingerprint
+    assert (
+        response.headers["x-export-snapshot-fingerprint"] == bundle.snapshot_fingerprint
+    )
     assert response.headers["etag"] == f'"{bundle.snapshot_fingerprint}"'
