@@ -969,11 +969,17 @@ class _KuzuTransactionScope:
         to_type: str,
         from_id: str,
         to_id: str,
+        rule_id: str | None = None,
     ) -> bool:
+        rule_filter = " WHERE r.rule_id = $rule_id" if rule_id is not None else ""
         result = self.execute(
             f"MATCH (a:{from_type} {{id: $from_id}})-[r:{edge_type}]->"
-            f"(b:{to_type} {{id: $to_id}}) RETURN r LIMIT 1",
-            {"from_id": from_id, "to_id": to_id},
+            f"(b:{to_type} {{id: $to_id}}){rule_filter} RETURN r LIMIT 1",
+            {
+                "from_id": from_id,
+                "to_id": to_id,
+                **({"rule_id": rule_id} if rule_id is not None else {}),
+            },
         )
         return bool(result.rows)
 
@@ -1001,13 +1007,36 @@ class _KuzuTransactionScope:
         self,
         source_id: str,
     ) -> tuple[SpecLineageEdgeSnapshot, ...]:
+        source_view = self._read_spec_lineage_edges(source_id)
+        for target_id in {edge.target_id for edge in source_view}:
+            source_target_view = tuple(
+                edge for edge in source_view if edge.target_id == target_id
+            )
+            self._assert_spec_lineage_endpoint_consistent(
+                source_id=source_id,
+                target_id=target_id,
+                source_view=source_target_view,
+            )
+        return source_view
+
+    def _read_spec_lineage_edges(
+        self,
+        source_id: str,
+        *,
+        target_id: str | None = None,
+    ) -> tuple[SpecLineageEdgeSnapshot, ...]:
+        target_filter = " {id: $target_id}" if target_id is not None else ""
+        params = {
+            "source_id": source_id,
+            **({"target_id": target_id} if target_id is not None else {}),
+        }
         result = self.execute(
             "MATCH (source:Entity {id: $source_id})"
-            "-[r:belongs_to]->(target:Entity) "
+            f"-[r:belongs_to]->(target:Entity{target_filter}) "
             "RETURN target.id, r.confidence, r.created_by_session_id, "
             "r.created_at, r.layer, r.rule_id, r.created_by, "
             "r.fallback_reason",
-            {"source_id": source_id},
+            params,
         )
         snapshots: list[SpecLineageEdgeSnapshot] = []
         for row in result.rows:
@@ -1030,6 +1059,62 @@ class _KuzuTransactionScope:
             )
         return tuple(snapshots)
 
+    @staticmethod
+    def _spec_lineage_edge_signature(
+        snapshot: SpecLineageEdgeSnapshot,
+    ) -> tuple[tuple[str, str], ...]:
+        values = (
+            snapshot.source_id,
+            snapshot.target_id,
+            snapshot.rule_id,
+            snapshot.attrs.get("confidence"),
+            snapshot.attrs.get("created_by_session_id"),
+            snapshot.attrs.get("created_at"),
+            snapshot.attrs.get("layer"),
+            snapshot.attrs.get("rule_id"),
+            snapshot.attrs.get("created_by"),
+            snapshot.attrs.get("fallback_reason"),
+        )
+        return tuple((type(value).__name__, str(value)) for value in values)
+
+    def _assert_spec_lineage_endpoint_consistent(
+        self,
+        *,
+        source_id: str,
+        target_id: str,
+        source_view: tuple[SpecLineageEdgeSnapshot, ...],
+    ) -> tuple[SpecLineageEdgeSnapshot, ...]:
+        """Prove that Kuzu exposes one relationship identity consistently.
+
+        A damaged relationship group can return different properties when a
+        MATCH is anchored only by its source versus by both endpoints.  A
+        source-only ``rule_id`` must therefore never authorize a DELETE until
+        the endpoint-anchored view agrees on the complete metadata multiset.
+        """
+
+        endpoint_view = self._read_spec_lineage_edges(
+            source_id,
+            target_id=target_id,
+        )
+        source_signatures = Counter(
+            self._spec_lineage_edge_signature(edge) for edge in source_view
+        )
+        endpoint_signatures = Counter(
+            self._spec_lineage_edge_signature(edge) for edge in endpoint_view
+        )
+        relevant = any(
+            is_spec_lineage_rule_id(edge.rule_id)
+            for edge in (*source_view, *endpoint_view)
+        )
+        if relevant and source_signatures != endpoint_signatures:
+            raise SpecLineageReconciliationError(
+                "spec_lineage_edge_metadata_inconsistent",
+                "The same Spec-parent relationship exposes inconsistent "
+                "metadata across directional endpoint reads; graph rebuild "
+                "is required before lineage can be mutated.",
+            )
+        return endpoint_view
+
     def _delete_spec_lineage_edge(
         self,
         snapshot: SpecLineageEdgeSnapshot,
@@ -1044,6 +1129,26 @@ class _KuzuTransactionScope:
                 "rule_id": snapshot.rule_id,
             },
         )
+        source_view = tuple(
+            edge
+            for edge in self._read_spec_lineage_edges(snapshot.source_id)
+            if edge.target_id == snapshot.target_id
+        )
+        self._assert_spec_lineage_endpoint_consistent(
+            source_id=snapshot.source_id,
+            target_id=snapshot.target_id,
+            source_view=source_view,
+        )
+        deleted_signature = self._spec_lineage_edge_signature(snapshot)
+        if any(
+            self._spec_lineage_edge_signature(edge) == deleted_signature
+            for edge in source_view
+        ):
+            raise SpecLineageReconciliationError(
+                "spec_lineage_edge_delete_unconfirmed",
+                "The exact Spec-parent relationship remained visible after "
+                "DELETE; its replacement was preserved for bounded recovery.",
+            )
 
     def reconcile_spec_lineage_parent(
         self,
@@ -1147,6 +1252,32 @@ class _KuzuTransactionScope:
                     "parents remain; retry reconciliation to converge.",
                     receipt=receipt,
                 )
+        except SpecLineageReconciliationError as exc:
+            if exc.code in {
+                "spec_lineage_edge_delete_unconfirmed",
+                "spec_lineage_edge_metadata_inconsistent",
+                "spec_lineage_old_parent_cleanup_incomplete",
+            }:
+                raise SpecLineageReconciliationError(
+                    exc.code,
+                    str(exc),
+                    receipt=receipt,
+                ) from exc
+            try:
+                self.compensate_spec_lineage_parent(receipt)
+            except Exception as restore_exc:
+                raise SpecLineageReconciliationError(
+                    "spec_lineage_partial_cleanup_restore_failed",
+                    "Old-parent cleanup and restore-first compensation both "
+                    "failed; the replacement edge was preserved.",
+                    receipt=receipt,
+                ) from restore_exc
+            raise SpecLineageReconciliationError(
+                "spec_lineage_old_parent_cleanup_failed",
+                "Old-parent cleanup failed and was restored before the "
+                "replacement edge was removed.",
+                receipt=receipt,
+            ) from exc
         except Exception as exc:
             try:
                 self.compensate_spec_lineage_parent(receipt)
@@ -1215,6 +1346,31 @@ class _KuzuTransactionScope:
                     "the explicit clear to converge.",
                     receipt=receipt,
                 )
+        except SpecLineageReconciliationError as exc:
+            if exc.code in {
+                "spec_lineage_edge_delete_unconfirmed",
+                "spec_lineage_edge_metadata_inconsistent",
+                "spec_lineage_clear_incomplete",
+            }:
+                raise SpecLineageReconciliationError(
+                    exc.code,
+                    str(exc),
+                    receipt=receipt,
+                ) from exc
+            try:
+                self.compensate_spec_lineage_parent(receipt)
+            except Exception as restore_exc:
+                raise SpecLineageReconciliationError(
+                    "spec_lineage_clear_restore_failed",
+                    "Spec-parent clear failed and its before-image could not "
+                    "be fully restored.",
+                    receipt=receipt,
+                ) from restore_exc
+            raise SpecLineageReconciliationError(
+                "spec_lineage_clear_failed",
+                "Spec-parent clear failed and its before-image was restored.",
+                receipt=receipt,
+            ) from exc
         except Exception as exc:
             try:
                 self.compensate_spec_lineage_parent(receipt)
@@ -1366,16 +1522,262 @@ class _KuzuTransactionScope:
                 {"from_id": edge.from_id, "to_id": edge.to_id},
             )
 
+    def _restore_projection_edges(
+        self,
+        edges: tuple[ProjectionEdgeBeforeImage, ...],
+    ) -> None:
+        for edge in edges:
+            desired = self._edge_state_signature(edge)
+            dependency_rule_id = (
+                str(edge.attrs.get("rule_id") or "")
+                if edge.edge_type == "precedes"
+                and edge.from_type == "Entity"
+                and edge.to_type == "Entity"
+                and str(edge.attrs.get("rule_id") or "").startswith(
+                    "precedes/spec_dependency/"
+                )
+                else None
+            )
+            current = {
+                self._edge_state_signature(item)
+                for item in self._snapshot_incident_edges(
+                    edge.from_type,
+                    edge.from_id,
+                )
+                if (
+                    item.edge_type == edge.edge_type
+                    and item.from_type == edge.from_type
+                    and item.to_type == edge.to_type
+                    and item.from_id == edge.from_id
+                    and item.to_id == edge.to_id
+                    and (
+                        dependency_rule_id is None
+                        or str(item.attrs.get("rule_id") or "")
+                        == dependency_rule_id
+                    )
+                )
+            }
+            if desired in current:
+                continue
+            if current:
+                raise RuntimeError(
+                    "projection_edge_restore_identity_conflict"
+                )
+            self.create_edge(
+                edge.edge_type,
+                edge.from_type,
+                edge.to_type,
+                edge.from_id,
+                edge.to_id,
+                {
+                    key: value
+                    for key, value in edge.attrs.items()
+                    if value is not None
+                },
+            )
+            restored = {
+                self._edge_state_signature(item)
+                for item in self._snapshot_incident_edges(
+                    edge.from_type,
+                    edge.from_id,
+                )
+                if (
+                    item.edge_type == edge.edge_type
+                    and item.from_type == edge.from_type
+                    and item.to_type == edge.to_type
+                    and item.from_id == edge.from_id
+                    and item.to_id == edge.to_id
+                    and (
+                        dependency_rule_id is None
+                        or str(item.attrs.get("rule_id") or "")
+                        == dependency_rule_id
+                    )
+                )
+            }
+            if desired not in restored:
+                raise RuntimeError("projection_edge_restore_incomplete")
+
+    def _reconcile_spec_dependency_edges(
+        self,
+        intent: ProjectionActiveSetIntent,
+    ) -> ProjectionActiveSetReceipt:
+        if intent.active_nodes or intent.owner_node_id is None:
+            raise ProjectionActiveSetReconciliationError(
+                "projection_active_set_member_invalid",
+                "The Spec dependency projection owns edges and requires its root.",
+            )
+        desired: set[tuple[str, str, str, str, str, str]] = set()
+        for edge in intent.active_edges:
+            identity = (
+                edge.edge_type,
+                edge.from_type,
+                edge.to_type,
+                edge.from_id,
+                edge.to_id,
+                edge.rule_id,
+            )
+            if (
+                edge.edge_type != "precedes"
+                or edge.from_type != "Entity"
+                or edge.to_type != "Entity"
+                or edge.to_id != intent.owner_node_id
+                or not edge.rule_id.startswith("precedes/spec_dependency/")
+                or identity in desired
+            ):
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_member_invalid",
+                    "A Spec dependency edge is outside the exact projection scope.",
+                )
+            desired.add(identity)
+
+        edge_return = ", ".join(
+            f"r.{property_name}"
+            for property_name in _TOMBSTONE_EDGE_PROPERTIES
+        )
+        rows = self.execute(
+            "MATCH (prerequisite:Entity)-[r:precedes]->"
+            "(owner:Entity {id: $owner_id}) "
+            f"RETURN prerequisite.id, owner.id, {edge_return}",
+            {"owner_id": intent.owner_node_id},
+        ).rows
+        owned: list[
+                tuple[
+                tuple[str, str, str, str, str, str],
+                ProjectionEdgeBeforeImage,
+            ]
+        ] = []
+        for row in rows:
+            attrs = {
+                property_name: row[index + 2]
+                for index, property_name in enumerate(
+                    _TOMBSTONE_EDGE_PROPERTIES
+                )
+            }
+            if not str(attrs.get("rule_id") or "").startswith(
+                "precedes/spec_dependency/"
+            ):
+                continue
+            identity = (
+                "precedes",
+                "Entity",
+                "Entity",
+                str(row[0]),
+                str(row[1]),
+                str(attrs.get("rule_id") or ""),
+            )
+            owned.append(
+                (
+                    identity,
+                    ProjectionEdgeBeforeImage(
+                        edge_type="precedes",
+                        from_type="Entity",
+                        to_type="Entity",
+                        from_id=str(row[0]),
+                        to_id=str(row[1]),
+                        attrs=attrs,
+                    ),
+                )
+            )
+
+        owned_identities = [identity for identity, _edge in owned]
+        if len(owned_identities) != len(set(owned_identities)):
+            raise ProjectionActiveSetReconciliationError(
+                "projection_active_set_source_ref_ambiguous",
+                "A Spec dependency identity resolves to multiple edges.",
+            )
+        if desired.difference(owned_identities):
+            raise ProjectionActiveSetReconciliationError(
+                "projection_active_set_member_missing",
+                "An active Spec dependency edge is missing or untrusted.",
+            )
+        stale = tuple(
+            edge for identity, edge in owned if identity not in desired
+        )
+        receipt = ProjectionActiveSetReceipt(
+            intent=intent,
+            edge_before_images=stale,
+        )
+        if not stale:
+            return receipt
+
+        transaction_open = False
+        try:
+            transaction_open = True
+            self.execute("BEGIN TRANSACTION")
+            for edge in stale:
+                self.execute(
+                    "MATCH (prerequisite:Entity {id: $from_id})"
+                    "-[r:precedes]->(owner:Entity {id: $to_id}) "
+                    "WHERE r.rule_id = $rule_id DELETE r",
+                    {
+                        "from_id": edge.from_id,
+                        "to_id": edge.to_id,
+                        "rule_id": str(edge.attrs.get("rule_id") or ""),
+                    },
+                )
+            remaining = self.execute(
+                "MATCH (prerequisite:Entity)-[r:precedes]->"
+                "(owner:Entity {id: $owner_id}) "
+                "RETURN prerequisite.id, r.rule_id",
+                {"owner_id": intent.owner_node_id},
+            ).rows
+            stale_pairs = {
+                (edge.from_id, str(edge.attrs.get("rule_id") or ""))
+                for edge in stale
+            }
+            if any(
+                (str(row[0]), str(row[1] or "")) in stale_pairs
+                for row in remaining
+            ):
+                raise RuntimeError("projection_stale_edge_cleanup_unconfirmed")
+            self.execute("COMMIT")
+            transaction_open = False
+        except BaseException as apply_error:
+            if transaction_open:
+                try:
+                    self.execute("ROLLBACK")
+                except BaseException as rollback_error:
+                    self._close(
+                        phase="projection_edge_cleanup_unconfirmed"
+                    )
+                    raise ProjectionActiveSetReconciliationError(
+                        "projection_active_set_transaction_cleanup_unconfirmed",
+                        "The native projection transaction could not be proven closed.",
+                        receipt=receipt,
+                    ) from rollback_error
+            try:
+                self._restore_projection_edges(stale)
+            except BaseException as restore_error:
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_apply_and_restore_failed",
+                    "Projection edge reconciliation failed and could not be restored.",
+                    receipt=receipt,
+                ) from restore_error
+            raise ProjectionActiveSetReconciliationError(
+                "projection_active_set_apply_failed",
+                "Projection edge reconciliation failed and was restored.",
+                receipt=receipt,
+            ) from apply_error
+        return receipt
+
     def reconcile_projection_active_set(
         self,
         intent: ProjectionActiveSetIntent,
     ) -> ProjectionActiveSetReceipt:
-        """Atomically replace one exact refinement/RDL active set."""
+        """Atomically replace one exact relational active set."""
+
+        if intent.owner_type == "spec" and intent.namespace == "dependencies":
+            return self._reconcile_spec_dependency_edges(intent)
 
         if intent.owner_type != "refinement" or intent.namespace != "rdl":
             raise ProjectionActiveSetReconciliationError(
                 "projection_active_set_scope_invalid",
                 "Only the exact refinement/RDL relational projection is supported.",
+            )
+        if intent.active_edges:
+            raise ProjectionActiveSetReconciliationError(
+                "projection_active_set_member_invalid",
+                "The refinement/RDL projection cannot own operational edges.",
             )
 
         active_by_ref: dict[str, tuple[str, str]] = {}
@@ -1576,6 +1978,7 @@ class _KuzuTransactionScope:
 
         for before_image in receipt.before_images:
             self._restore_node_before_image(before_image)
+        self._restore_projection_edges(receipt.edge_before_images)
 
     def find_node_types(self, node_id: str) -> tuple[str, ...]:
         from okto_pulse.community.adapters.kg_runtime import NODE_TYPES

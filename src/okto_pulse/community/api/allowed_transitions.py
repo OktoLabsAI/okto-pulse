@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -99,6 +99,7 @@ class AllowedTransitionResponse(_ClosedResponseModel):
     label: str
     gate: str
     blocked_reason: str | None = None
+    blocked_facts: dict[str, Any] | None = None
     preconditions: list[str] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
     effects: list[str] = Field(default_factory=list)

@@ -6,6 +6,7 @@ type GateState = 'inherit' | 'required' | 'disabled';
 
 interface ValidationGateOverrideProps {
   title?: string;
+  description?: string;
   requireValue: boolean | null;
   minConfidence: number | null;
   minCompleteness: number | null;
@@ -27,6 +28,7 @@ function fromState(state: GateState): boolean | null {
 
 export function ValidationGateOverride({
   title = 'Validation Gate',
+  description,
   requireValue,
   minConfidence,
   minCompleteness,
@@ -83,6 +85,11 @@ export function ValidationGateOverride({
         <ShieldCheck size={14} className="text-violet-500" />
         <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300">{title}</h4>
       </div>
+      {description && (
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          {description}
+        </p>
+      )}
 
       {/* Segmented control */}
       <div className="flex bg-gray-100 dark:bg-gray-700 rounded-lg p-0.5">

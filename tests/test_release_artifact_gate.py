@@ -35,8 +35,8 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
 
     assert Path(core_mcp_server.__file__).resolve().is_relative_to(module.CORE_REPO)
     assert module.EXPECTED_VERSION == "0.3.2"
-    assert module.EXPECTED_MCP_TOOL_COUNT == live_tool_count == 334
-    assert module.EXPECTED_CANONICAL_TOOL_COUNT == live_canonical_count == 326
+    assert module.EXPECTED_MCP_TOOL_COUNT == live_tool_count == 337
+    assert module.EXPECTED_CANONICAL_TOOL_COUNT == live_canonical_count == 329
     assert module.EXPECTED_TOOL_ALIAS_COUNT == live_alias_count == 8
     assert module.EXPECTED_RESOURCE_COUNT == live_resource_count == 55
     assert module.MINIMUM_SUPPORTED_PYTHON == (3, 11)
@@ -50,6 +50,9 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
     assert "okto_labs_pulse_community" in forbidden_names
     assert "ska_tool_manifest.json" in module._INSTALLED_ORIGIN_PROBE
     assert "ska_resource_manifest.json" in module._INSTALLED_ORIGIN_PROBE
+    assert "installed semantic-v2 reader contract mismatch" in (
+        module._INSTALLED_ORIGIN_PROBE
+    )
     assert "__EXPECTED_" not in module._MCP_CLIENT_PROBE
     assert "installed runtime" in module._INSTALLED_RUNTIME_VERSION_PROBE
     assert 'metadata.version("pydantic")' in (
@@ -86,6 +89,34 @@ def test_release_gate_resolves_core_from_explicit_workspace_root(
     gate = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gate)
 
+    assert gate.CORE_REPO == expected.resolve()
+
+
+def test_release_gate_prefers_the_anchor_checkout_family(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    stale = workspace / "okto-pulse-core"
+    expected = workspace / "okto_labs_pulse_core"
+    for checkout in (stale, expected):
+        (checkout / "src" / "okto_pulse" / "core").mkdir(parents=True)
+        (checkout / "pyproject.toml").write_text(
+            "[project]\nname = 'okto-pulse-core'\nversion = '0.0.0'\n",
+            encoding="utf-8",
+        )
+    monkeypatch.delenv("OKTO_PULSE_CORE_REPO", raising=False)
+    monkeypatch.setenv("OKTO_PULSE_WORKSPACE_ROOT", str(workspace))
+
+    spec = importlib.util.spec_from_file_location(
+        "release_artifact_gate_anchor_family_resolution",
+        GATE,
+    )
+    assert spec is not None and spec.loader is not None
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+
+    assert gate.COMMUNITY_REPO.name == "okto_labs_pulse_community"
     assert gate.CORE_REPO == expected.resolve()
 
 
@@ -151,6 +182,8 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     assert origin["about_version"] == "0.3.2"
     assert origin["ska_contract_manifests"]["tool_count"] == 13
     assert origin["ska_contract_manifests"]["resource_count"] == 22
+    assert origin["semantic_v2_reader_contract"]["compatible"] is True
+    assert "subject_edition" in origin["semantic_v2_reader_contract"]["signature"]
     assert len(origin["required_core_resources"]) == 2
     for distribution in ("core", "community"):
         provenance = evidence["installed"]["payload_provenance"][distribution]
@@ -210,8 +243,8 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     )
     mcp_http = evidence["installed"]["mcp_http"]
     assert mcp_http["transport"] == "streamable-http-loopback"
-    assert mcp_http["tool_count"] == 334
-    assert mcp_http["canonical_tool_count"] == 326
+    assert mcp_http["tool_count"] == 337
+    assert mcp_http["canonical_tool_count"] == 329
     assert mcp_http["tool_alias_count"] == 8
     assert mcp_http["resource_count"] == 55
     assert mcp_http["ska_tool_count"] == 13

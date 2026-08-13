@@ -10,6 +10,7 @@ from okto_pulse.community.adapters.kuzu_graph_transaction import (
     CommunityKuzuGraphTransaction,
 )
 from okto_pulse.core.kg.interfaces.graph_transaction import (
+    GraphStatementResult,
     SpecLineageEdgeSnapshot,
     SpecLineageReconciliationError,
 )
@@ -238,6 +239,119 @@ async def test_real_adapter_partial_delete_and_restore_failure_carries_receipt(
         assert _outgoing_edges(board_id) == [
             (BOARD_ROOT_ID, BOARD_RULE),
             (IDEATION_ID, IDEATION_RULE),
+        ]
+    finally:
+        kg_runtime.close_all_connections(board_id)
+
+
+@pytest.mark.asyncio
+async def test_real_adapter_fails_closed_on_directional_metadata_inconsistency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board_id = f"spec-lineage-metadata-{uuid4().hex}"
+    monkeypatch.setattr(kg_runtime, "_kg_base_dir", lambda: tmp_path / "kg")
+    kg_runtime.reset_bootstrap_cache_for_tests()
+
+    try:
+        kg_runtime.bootstrap_board_graph(board_id)
+        scope = await _seed_scope(board_id)
+        original_execute = scope.execute
+
+        def _inconsistent_endpoint_read(statement, params=None):
+            result = original_execute(statement, params)
+            if (
+                "(target:Entity {id: $target_id})" in statement
+                and "RETURN target.id" in statement
+                and (params or {}).get("target_id") == IDEATION_ID
+            ):
+                rows = []
+                for row in result.rows:
+                    changed = list(row)
+                    changed[4] = "legacy"
+                    changed[5] = "belongs_to/semantic_guideline_lineage@1.0"
+                    rows.append(tuple(changed))
+                return GraphStatementResult(
+                    rows=tuple(rows),
+                    columns=result.columns,
+                    affected_count=result.affected_count,
+                )
+            return result
+
+        scope.execute = _inconsistent_endpoint_read  # type: ignore[method-assign]
+
+        with pytest.raises(SpecLineageReconciliationError) as excinfo:
+            scope.reconcile_spec_lineage_parent(
+                SPEC_ID,
+                REFINEMENT_ID,
+                _edge_attrs(REFINEMENT_RULE, "session-new"),
+            )
+
+        assert excinfo.value.code == "spec_lineage_edge_metadata_inconsistent"
+        assert excinfo.value.receipt is None
+        await scope.rollback()
+        assert _outgoing_edges(board_id) == [
+            (BOARD_ROOT_ID, BOARD_RULE),
+            (IDEATION_ID, IDEATION_RULE),
+        ]
+    finally:
+        kg_runtime.close_all_connections(board_id)
+
+
+@pytest.mark.asyncio
+async def test_real_adapter_preserves_replacement_when_delete_is_silent_noop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board_id = f"spec-lineage-delete-noop-{uuid4().hex}"
+    monkeypatch.setattr(kg_runtime, "_kg_base_dir", lambda: tmp_path / "kg")
+    kg_runtime.reset_bootstrap_cache_for_tests()
+
+    try:
+        kg_runtime.bootstrap_board_graph(board_id)
+        scope = await _seed_scope(board_id)
+        original_execute = scope.execute
+
+        def _silent_delete(statement, params=None):
+            if (
+                "WHERE r.rule_id = $rule_id DELETE r" in statement
+                and (params or {}).get("rule_id") == IDEATION_RULE
+            ):
+                return GraphStatementResult()
+            return original_execute(statement, params)
+
+        scope.execute = _silent_delete  # type: ignore[method-assign]
+
+        with pytest.raises(SpecLineageReconciliationError) as excinfo:
+            scope.reconcile_spec_lineage_parent(
+                SPEC_ID,
+                REFINEMENT_ID,
+                _edge_attrs(REFINEMENT_RULE, "session-new"),
+            )
+
+        assert excinfo.value.code == "spec_lineage_edge_delete_unconfirmed"
+        assert excinfo.value.receipt is not None
+        assert excinfo.value.receipt.new_edge_created is True
+        await scope.rollback()
+        assert _outgoing_edges(board_id) == [
+            (BOARD_ROOT_ID, BOARD_RULE),
+            (IDEATION_ID, IDEATION_RULE),
+            (REFINEMENT_ID, REFINEMENT_RULE),
+        ]
+
+        retry_scope = await CommunityKuzuGraphTransaction().begin(board_id)
+        retry = retry_scope.reconcile_spec_lineage_parent(
+            SPEC_ID,
+            REFINEMENT_ID,
+            _edge_attrs(REFINEMENT_RULE, "session-retry"),
+        )
+        await retry_scope.commit()
+
+        assert retry.new_edge_created is False
+        assert len(retry.removed_edges) == 1
+        assert _outgoing_edges(board_id) == [
+            (BOARD_ROOT_ID, BOARD_RULE),
+            (REFINEMENT_ID, REFINEMENT_RULE),
         ]
     finally:
         kg_runtime.close_all_connections(board_id)

@@ -10,7 +10,7 @@ from typing import Any, Sequence
 from sqlalchemy import and_, case, delete, exists, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     AmendmentHotfixRevision,
@@ -38,6 +38,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ResearchDecisionEntryRow,
     ResearchDecisionHeadRow,
     Spec,
+    SpecDependency,
     SpecQAItem,
     Sprint,
     Story,
@@ -48,6 +49,7 @@ from okto_pulse.core.ports.consolidation import (
     ConsolidationQueueRecord,
     CurrentQualityAssessmentSummary,
     CurrentResearchDecisionSummary,
+    CurrentSpecDependencyProjection,
 )
 from okto_pulse.core.kg.board_source_store import (
     quality_current_head_fingerprint,
@@ -186,6 +188,7 @@ def _queue_record(row: Any) -> ConsolidationQueueRecord:
         payload=row.payload,
         delete_event_id=row.delete_event_id,
         claim_token=row.claim_token,
+        triggered_by_event=row.triggered_by_event,
     )
 
 
@@ -739,6 +742,58 @@ class CommunitySqlAlchemyConsolidationPersistence:
                         quality_current_head_fingerprint(fingerprint_payload)
                     ),
                 )
+            )
+
+        if artifact_type == "spec":
+            prerequisite = aliased(Spec)
+            dependency_rows = (
+                await context.execute(
+                    select(SpecDependency, prerequisite)
+                    .join(
+                        prerequisite,
+                        prerequisite.id
+                        == SpecDependency.prerequisite_spec_id,
+                    )
+                    .where(
+                        SpecDependency.board_id == board_id,
+                        SpecDependency.dependent_spec_id == artifact_id,
+                        SpecDependency.active.is_(True),
+                    )
+                    .order_by(
+                        SpecDependency.prerequisite_spec_ref.asc(),
+                        SpecDependency.id.asc(),
+                    )
+                )
+            ).all()
+            dependencies: list[CurrentSpecDependencyProjection] = []
+            for dependency, target in dependency_rows:
+                target_id = str(dependency.prerequisite_spec_id or "")
+                if (
+                    not target_id
+                    or target_id != str(dependency.prerequisite_spec_ref)
+                    or str(target.id) != target_id
+                    or str(target.board_id) != board_id
+                    or str(dependency.dependent_spec_id) != artifact_id
+                ):
+                    raise RuntimeError(
+                        "spec_dependency_projection_scope_mismatch"
+                    )
+                dependencies.append(
+                    CurrentSpecDependencyProjection(
+                        dependency_id=str(dependency.id),
+                        board_id=board_id,
+                        dependent_spec_id=artifact_id,
+                        prerequisite_spec_id=target_id,
+                        prerequisite_title=str(target.title or ""),
+                        prerequisite_status=str(
+                            getattr(target.status, "value", target.status)
+                        ),
+                        prerequisite_version=int(target.version),
+                    )
+                )
+            return ConsolidationProjectionInputs(
+                quality_assessments=tuple(quality_assessments),
+                spec_dependencies=tuple(dependencies),
             )
 
         if artifact_type != "refinement":

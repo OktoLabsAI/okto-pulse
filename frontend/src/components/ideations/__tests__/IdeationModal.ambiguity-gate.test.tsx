@@ -293,9 +293,9 @@ describe('IdeationModal Max ambiguity gate panel', () => {
       current_status: 'evaluating',
       source: 'core_sdlc_registry_v1',
       allowed_transitions: [
-        { to_status: 'done', label: 'Done', gate: 'ambiguity_resource_cognitive', blocked_reason: null, policy_compliance: false, policy_compliance_decision: null },
-        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null, policy_compliance: false, policy_compliance_decision: null },
-        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null, policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'done', label: 'Done', gate: 'ambiguity_resource_cognitive', blocked_reason: null, blocked_facts: null, policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null, blocked_facts: null, policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null, blocked_facts: null, policy_compliance: false, policy_compliance_decision: null },
       ],
     });
     apiMock.getCurrentQualityAssessment.mockResolvedValue(currentAssessment());

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import replace
 
 import pytest
@@ -195,6 +196,17 @@ def test_v2_adapter_satisfies_public_core_persistence_port():
     )
     assert isinstance(adapter, SemanticAssessmentV2PersistencePort)
     assert isinstance(adapter, SemanticAssessmentV2ReadPort)
+
+
+def test_v2_read_adapter_signature_matches_public_core_port() -> None:
+    adapter_signature = inspect.signature(
+        CommunitySqlAlchemySemanticGuidelineAssessmentV2
+        .get_current_semantic_assessment_v2
+    )
+    port_signature = inspect.signature(
+        SemanticAssessmentV2ReadPort.get_current_semantic_assessment_v2
+    )
+    assert adapter_signature == port_signature
 
 
 def test_subject_projection_adapter_satisfies_public_core_port():
@@ -543,6 +555,18 @@ async def test_v2_persistence_records_and_fences_validation_edition(
             assert stored is not None
             assert stored.validation_edition == 1
 
+            current_for_edition = (
+                await adapter.get_current_semantic_assessment_v2(
+                    board_id=board_id,
+                    entity_type=entity_type.value,
+                    subject_id=subject_id,
+                    binding_id=binding.binding_id,
+                    subject_edition=1,
+                )
+            )
+            assert current_for_edition is not None
+            assert current_for_edition.receipt_id == created.receipt_id
+
             subject = await session.get(model, subject_id)
             assert subject is not None
             subject.edition = 2
@@ -571,5 +595,22 @@ async def test_v2_persistence_records_and_fences_validation_edition(
                 .all()
             )
             assert receipt_ids == (created.receipt_id,)
+            # A current-read fence never turns an earlier lifecycle edition
+            # into Current after the live subject advances.
+            stale_edition = await adapter.get_current_semantic_assessment_v2(
+                board_id=board_id,
+                entity_type=entity_type.value,
+                subject_id=subject_id,
+                binding_id=binding.binding_id,
+                subject_edition=1,
+            )
+            current = await adapter.get_current_semantic_assessment_v2(
+                board_id=board_id,
+                entity_type=entity_type.value,
+                subject_id=subject_id,
+                binding_id=binding.binding_id,
+            )
+            assert stale_edition is None
+            assert current is None
     finally:
         await engine.dispose()

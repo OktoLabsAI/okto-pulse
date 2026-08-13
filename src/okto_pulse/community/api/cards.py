@@ -19,6 +19,9 @@ from okto_pulse.community.api.knowledge_propagation import (
 from okto_pulse.community.api.permission_errors import (
     permission_denied_http_error,
 )
+from okto_pulse.community.api.spec_dependency_errors import (
+    spec_dependency_http_error,
+)
 from okto_pulse.core.application.knowledge_propagation_projection import (
     project_knowledge_mutation_response,
     project_refresh_response,
@@ -71,6 +74,7 @@ from okto_pulse.core.application.use_cases import (
     UpdateCardCommand,
     UpdateCardUseCase,
 )
+from okto_pulse.core.domain.spec_dependency import SpecDependencyOperationError
 from okto_pulse.core.application.use_cases.knowledge_propagation import (
     DropCardKnowledgeAssignmentsCommand,
     DropCardKnowledgeAssignmentsUseCase,
@@ -281,6 +285,8 @@ async def move_card(
         )
     except PolicyTransitionRejected as e:
         raise RESTAdapterContract.http_error(e) from e
+    except SpecDependencyOperationError as exc:
+        raise spec_dependency_http_error(exc) from exc
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except EntityNotFoundError:

@@ -111,7 +111,7 @@ LEGACY_CORE_SCHEMA_SHA256 = (
 # Keep the pre-extraction hash above immutable so migration provenance remains
 # independently verifiable.
 CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
-    "c36818e584c1130cf6c87014a5e487ea3af91e2d5033607c52681de6f060c519"
+    "68a8dc7d1ecaa91e915932882076b149ac62a8c0a7a2f7ce61f5a64e4bc98e8c"
 )
 
 # Additive Community-owned tables introduced after the F01 extraction. They
@@ -200,6 +200,9 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "research_decision_idempotency",
         "research_decision_outbox",
         "research_decision_snapshots",
+        "spec_dependency_board_locks",
+        "spec_dependencies",
+        "spec_dependency_operations",
         "knowledge_propagation_scopes",
         "knowledge_propagation_assignments",
         "knowledge_propagation_snapshots",

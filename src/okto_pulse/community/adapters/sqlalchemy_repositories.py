@@ -123,6 +123,7 @@ _SPEC_FIELDS = (
     "cancelled_by",
     "status",
     "edition",
+    "last_started_edition",
     "version",
     "assignee_id",
     "created_by",

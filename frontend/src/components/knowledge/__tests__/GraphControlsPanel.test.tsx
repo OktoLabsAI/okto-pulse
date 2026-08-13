@@ -47,6 +47,27 @@ function renderPanel(props: Partial<React.ComponentProps<typeof GraphControlsPan
 }
 
 describe('GraphControlsPanel — edge type chips (S4.4, AC-5)', () => {
+  it('mirrors the canonical backend relationship vocabulary and order', () => {
+    expect(ALL_EDGE_TYPES).toEqual([
+      'supersedes',
+      'contradicts',
+      'derives_from',
+      'relates_to',
+      'mentions',
+      'depends_on',
+      'violates',
+      'implements',
+      'tests',
+      'validates',
+      'precedes',
+      'supports',
+      'overlaps',
+      'belongs_to',
+      'originates_from',
+      'covered_by',
+    ]);
+  });
+
   it('renders one chip per KGEdgeType', () => {
     renderPanel();
     for (const et of ALL_EDGE_TYPES) {
@@ -59,6 +80,7 @@ describe('GraphControlsPanel — edge type chips (S4.4, AC-5)', () => {
     renderPanel();
     expect(screen.getByTestId('kg-edge-chip-originates_from')).toBeInTheDocument();
     expect(screen.getByTestId('kg-edge-chip-covered_by')).toBeInTheDocument();
+    expect(screen.getByTestId('kg-edge-chip-precedes')).toBeInTheDocument();
     expect(screen.getByTestId('kg-edge-chip-supports')).toBeInTheDocument();
     expect(screen.getByTestId('kg-edge-chip-overlaps')).toBeInTheDocument();
   });

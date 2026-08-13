@@ -17,6 +17,7 @@ import type {
 } from './semanticPolicyModel';
 
 export interface ActionablePinpointProps {
+  metricLabel: string;
   pinpoint: SemanticPinpointViewModel;
   policyState: SemanticPolicyUiState;
   onNavigate?: (target: string) => void;
@@ -92,6 +93,7 @@ function StateIcon({ state }: { state: SemanticPolicyUiState }) {
  * domain semantics.
  */
 export function ActionablePinpoint({
+  metricLabel,
   pinpoint,
   policyState,
   onNavigate,
@@ -107,6 +109,13 @@ export function ActionablePinpoint({
       : '',
     [pinpoint.technicalDetails],
   );
+  const locationText = useMemo(() => {
+    const label = pinpoint.locationLabel.trim();
+    const excerpt = pinpoint.excerpt?.trim();
+    if (!excerpt || label === excerpt || label.includes(excerpt)) return label;
+    if (!label || excerpt.includes(label)) return excerpt;
+    return `${label}: ${excerpt}`;
+  }, [pinpoint.excerpt, pinpoint.locationLabel]);
 
   useEffect(() => () => {
     if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
@@ -134,6 +143,12 @@ export function ActionablePinpoint({
         className="flex flex-wrap items-center gap-1.5"
         data-testid="actionable-pinpoint-badges"
       >
+        <span
+          className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-blue-700 dark:bg-blue-950/50 dark:text-blue-300"
+          data-testid="actionable-pinpoint-metric"
+        >
+          {metricLabel}
+        </span>
         {pinpoint.severity && (
           <span
             className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${SEVERITY_TONES[pinpoint.severity]}`}
@@ -141,9 +156,6 @@ export function ActionablePinpoint({
             {pinpoint.severity}
           </span>
         )}
-        <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-blue-700 dark:bg-blue-950/50 dark:text-blue-300">
-          {pinpoint.kind === 'legacy' ? 'Legacy location' : pinpoint.kind}
-        </span>
         <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-violet-700 dark:bg-violet-950/50 dark:text-violet-300">
           {pinpoint.categoryLabel}
         </span>
@@ -153,34 +165,19 @@ export function ActionablePinpoint({
         </span>
       </div>
 
-      <h4
-        className="mt-3 text-sm font-semibold text-surface-900 dark:text-surface-100"
-        data-testid="actionable-pinpoint-title"
-      >
-        {pinpoint.title}
-      </h4>
-      <p
-        className="mt-2 whitespace-pre-wrap text-xs leading-5 text-surface-700 dark:text-surface-300"
-        data-testid="actionable-pinpoint-detail"
-      >
-        {pinpoint.detail}
-      </p>
-
       <section className="mt-3" aria-label="Assessment location">
-        <p className="text-[10px] font-semibold uppercase tracking-wide text-surface-500 dark:text-surface-400">
-          Location
+        <p
+          className="whitespace-pre-wrap text-sm font-semibold leading-5 text-surface-900 dark:text-surface-100"
+          data-testid="actionable-pinpoint-target"
+        >
+          {locationText}
+          {pinpoint.locationReference && (
+            <span className="font-normal text-surface-500 dark:text-surface-400">
+              {' '}
+              ({pinpoint.locationReference})
+            </span>
+          )}
         </p>
-        <p className="mt-1 text-xs font-semibold text-surface-800 dark:text-surface-100">
-          {pinpoint.locationLabel}
-        </p>
-        {pinpoint.excerpt && (
-          <blockquote
-            className="mt-2 border-l-2 border-violet-300 bg-surface-50 py-1.5 pl-3 pr-2 text-xs italic text-surface-700 dark:border-violet-700 dark:bg-surface-950/50 dark:text-surface-200"
-            data-testid="actionable-pinpoint-excerpt"
-          >
-            {pinpoint.excerpt}
-          </blockquote>
-        )}
         {pinpoint.unavailableMessage && (
           <p
             className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-surface-600 dark:text-surface-300"
@@ -193,6 +190,21 @@ export function ActionablePinpoint({
           </p>
         )}
       </section>
+
+      {pinpoint.kind !== 'legacy' && (
+        <h4
+          className="mt-3 text-sm font-semibold text-surface-800 dark:text-surface-100"
+          data-testid="actionable-pinpoint-title"
+        >
+          {pinpoint.title}
+        </h4>
+      )}
+      <p
+        className={`${pinpoint.kind === 'legacy' ? 'mt-3' : 'mt-1'} whitespace-pre-wrap text-xs leading-5 text-surface-700 dark:text-surface-300`}
+        data-testid="actionable-pinpoint-detail"
+      >
+        {pinpoint.detail}
+      </p>
 
       {pinpoint.remediation && (
         <p

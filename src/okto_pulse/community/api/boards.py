@@ -35,6 +35,9 @@ from okto_pulse.community.api.knowledge_propagation import (
 from okto_pulse.community.api.permission_errors import (
     permission_denied_http_error,
 )
+from okto_pulse.community.api.spec_dependency_errors import (
+    spec_dependency_http_error,
+)
 from okto_pulse.community.api.pagination import (
     project_page,
     resolve_window,
@@ -76,6 +79,7 @@ from okto_pulse.core.application.knowledge_propagation_projection import (
     project_card_create_response,
 )
 from okto_pulse.core.domain.enums import CardStatus
+from okto_pulse.core.domain.spec_dependency import SpecDependencyOperationError
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_principal
 from okto_pulse.core.models import (
@@ -605,6 +609,8 @@ async def archive_tree(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"{exc.entity_type.capitalize()} not found",
         ) from exc
+    except SpecDependencyOperationError as exc:
+        raise spec_dependency_http_error(exc) from exc
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)

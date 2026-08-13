@@ -176,6 +176,9 @@ function assessment({
     subject_id: 'spec-1',
     subject_version: 7,
     validation_edition: validationEdition,
+    lifecycle_state: validationEdition === null
+      ? 'history_only'
+      : currentness === 'current' ? 'current' : 'previous',
     binding_id: bindingId,
     guideline_id: guidelineId,
     guideline_revision_id: `${guidelineId}-revision-3`,
@@ -213,6 +216,7 @@ function currentV2Assessment(
       subject_id: subjectId,
       subject_version: 7,
       validation_edition: null,
+      lifecycle_state: 'current' as const,
       binding_id: 'binding-1',
       guideline_id: 'guideline-1',
       guideline_revision_id: 'guideline-1-revision-3',
@@ -311,6 +315,8 @@ function finding(): SemanticFindingDetail {
     entity_type: 'spec',
     subject_id: 'spec-1',
     subject_version: 7,
+    validation_edition: null,
+    lifecycle_state: 'history_only',
     guideline_id: 'guideline-1',
     guideline_revision_id: 'guideline-1-revision-3',
     binding_id: 'binding-1',
@@ -348,6 +354,8 @@ function waiver(): SemanticWaiverDetail {
     entity_type: 'spec',
     subject_id: 'spec-1',
     subject_version: 7,
+    validation_edition: null,
+    lifecycle_state: 'history_only',
     finding_id: 'finding-1',
     receipt_id: 'receipt-failed',
     guideline_id: 'guideline-1',
@@ -391,6 +399,8 @@ function skip({
     entity_type: 'spec',
     subject_id: 'spec-1',
     subject_version: 7,
+    validation_edition: null,
+    lifecycle_state: 'history_only',
     guideline_id: 'guideline-1',
     guideline_revision_id: 'guideline-1-revision-3',
     binding_id: 'binding-1',
@@ -482,6 +492,7 @@ function blockedTransitionPreview(
     label: 'Validated',
     gate: 'approved_to_validated',
     blocked_reason: 'Semantic guideline evidence is not admissible.',
+    blocked_facts: null,
     preconditions: [],
     capabilities: [],
     effects: [],
@@ -1397,12 +1408,12 @@ describe('guideline compliance summary', () => {
       expect(within(card).getByText('Passed')).toBeVisible();
       expect(within(card).getByText('v2')).toBeVisible();
       expect(within(card).getByText('Domain boundary is explicit')).toBeVisible();
-      expect(within(card).getByText('Technical requirements')).toBeVisible();
-      expect(
-        within(card).getByText(
-          'Runtime adapters remain outside the domain boundary.',
-        ),
-      ).toBeVisible();
+      expect(within(card).getByTestId('actionable-pinpoint-metric'))
+        .toHaveTextContent('Segregation');
+      expect(within(card).getByTestId('actionable-pinpoint-target'))
+        .toHaveTextContent(
+          'Technical requirements: Runtime adapters remain outside the domain boundary. (technical_requirements)',
+        );
       expect(within(card).queryByRole('spinbutton')).not.toBeInTheDocument();
 
       fireEvent.click(within(card).getByRole('button', {
@@ -1424,6 +1435,64 @@ describe('guideline compliance summary', () => {
       );
     },
   );
+
+  it('renders a legacy policy pinpoint as metric, human target with stable ID, then rationale', async () => {
+    const legacyMetric = metric({
+      code: 'architecture.segregation',
+    });
+    legacyMetric.rationale = 'The requirement leaves the adapter boundary explicit.';
+    legacyMetric.pinpoints = [{
+      anchor_type: 'structured_child',
+      anchor_ref: 'technical_requirements.tr_boundary',
+      excerpt_hash: HASH_B,
+      input_digest: HASH_A,
+    }];
+    dashboardApiMock.getBoardGuidelines.mockResolvedValue([adoptedGuideline()]);
+    policyApiMock.getGuidelineRevision.mockResolvedValue(
+      guidelineRevisionFor('spec'),
+    );
+    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
+      contract_version: 'v1',
+      assessment: assessment({
+        validationEdition: 2,
+        metricResults: [legacyMetric],
+      }),
+    });
+
+    renderPanel({
+      subjectEdition: 2,
+      presentationMode: 'lifecycle-edition',
+      resolveSemanticAnchor: () => ({
+        state: 'available',
+        navigationTarget: 'spec:requirement:tr_boundary',
+        displayText: 'TR-1: Runtime adapters remain outside the domain boundary.',
+        stableReference: 'tr_boundary',
+      }),
+    });
+
+    const card = await screen.findByTestId('actionable-pinpoint');
+    expect(within(card).getByTestId('actionable-pinpoint-metric'))
+      .toHaveTextContent('Segregation');
+    expect(within(card).getByTestId('actionable-pinpoint-target'))
+      .toHaveTextContent(
+        'TR-1: Runtime adapters remain outside the domain boundary. (tr_boundary)',
+      );
+    expect(within(card).getByTestId('actionable-pinpoint-detail'))
+      .toHaveTextContent(
+        'The requirement leaves the adapter boundary explicit.',
+      );
+    expect(within(card).queryByText('Legacy assessment evidence'))
+      .not.toBeInTheDocument();
+    expect(within(card).queryByText('Legacy location'))
+      .not.toBeInTheDocument();
+    const content = card.textContent ?? '';
+    expect(content.indexOf('Segregation')).toBeLessThan(
+      content.indexOf('TR-1:'),
+    );
+    expect(content.indexOf('TR-1:')).toBeLessThan(
+      content.indexOf('The requirement leaves'),
+    );
+  });
 
   it('preserves the last valid v2 evidence and offers retry after a refresh error', async () => {
     dashboardApiMock.getBoardGuidelines.mockResolvedValue([adoptedGuideline()]);

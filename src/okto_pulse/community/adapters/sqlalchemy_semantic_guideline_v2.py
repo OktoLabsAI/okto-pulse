@@ -694,6 +694,7 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
         entity_type: str,
         subject_id: str,
         binding_id: str,
+        subject_edition: int | None = None,
     ) -> SemanticAssessmentReceiptProjectionV2 | None:
         try:
             subject_type = PolicyEntityType(entity_type)
@@ -708,6 +709,12 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
         )
         if subject is None:
             return None
+        live_subject_edition = subject.subject.subject_edition
+        if (
+            subject_edition is not None
+            and subject_edition != live_subject_edition
+        ):
+            return None
         statement = (
             select(SemanticGuidelineAssessmentV2Row)
             .where(
@@ -718,10 +725,10 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
                 SemanticGuidelineAssessmentV2Row.binding_id == binding_id,
             )
         )
-        if subject.subject.subject_edition is not None:
+        if live_subject_edition is not None:
             statement = statement.where(
                 SemanticGuidelineAssessmentV2Row.validation_edition
-                == subject.subject.subject_edition
+                == live_subject_edition
             )
         row = (
             await self._session.execute(
@@ -737,7 +744,7 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
             return None
         # Edition-aware human evidence remains current for the lifecycle
         # edition; technical digest drift stays available as audit metadata.
-        if subject.subject.subject_edition is not None:
+        if live_subject_edition is not None:
             return await self.get_semantic_assessment_v2(
                 board_id=board_id,
                 receipt_id=row.receipt_id,

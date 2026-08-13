@@ -181,6 +181,7 @@ const TRANSITION_FIELDS = [
   'label',
   'gate',
   'blocked_reason',
+  'blocked_facts',
   'preconditions',
   'capabilities',
   'effects',
@@ -1123,6 +1124,11 @@ function parseTransition(value: unknown): AllowedTransition {
   const blockedReason = value.blocked_reason === null
     ? null
     : requiredText(value.blocked_reason, 'blocked reason');
+  if (value.blocked_facts !== null && !isRecord(value.blocked_facts)) {
+    throw new Error(
+      'Policy Compliance gate preview has invalid blocked facts.',
+    );
+  }
   uniqueTextValues(value.preconditions, 'preconditions');
   uniqueTextValues(value.capabilities, 'capabilities');
   uniqueTextValues(value.effects, 'effects');
@@ -1150,6 +1156,7 @@ function parseTransition(value: unknown): AllowedTransition {
     label: requiredText(value.label, 'target label'),
     gate: requiredText(value.gate, 'gate identity'),
     blocked_reason: blockedReason,
+    blocked_facts: value.blocked_facts,
     preconditions: value.preconditions as string[],
     capabilities: value.capabilities as string[],
     effects: value.effects as string[],

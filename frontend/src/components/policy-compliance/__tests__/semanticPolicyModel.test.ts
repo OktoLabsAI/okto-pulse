@@ -46,6 +46,7 @@ function assessment(overrides: Record<string, unknown> = {}) {
     subject_id: 'spec-1',
     subject_version: 7,
     validation_edition: null,
+    lifecycle_state: 'history_only',
     binding_id: 'binding-1',
     guideline_id: 'guideline-1',
     guideline_revision_id: 'revision-1',
@@ -90,6 +91,8 @@ function finding(overrides: Record<string, unknown> = {}) {
     entity_type: 'spec',
     subject_id: 'spec-1',
     subject_version: 7,
+    validation_edition: null,
+    lifecycle_state: 'history_only',
     guideline_id: 'guideline-1',
     guideline_revision_id: 'revision-1',
     binding_id: 'binding-1',
@@ -115,6 +118,8 @@ function waiver(overrides: Record<string, unknown> = {}) {
     entity_type: 'spec',
     subject_id: 'spec-1',
     subject_version: 7,
+    validation_edition: null,
+    lifecycle_state: 'history_only',
     finding_id: 'finding-1',
     receipt_id: 'receipt-1',
     guideline_id: 'guideline-1',
@@ -152,6 +157,8 @@ function skip(overrides: Record<string, unknown> = {}) {
     entity_type: 'spec',
     subject_id: 'spec-1',
     subject_version: 7,
+    validation_edition: null,
+    lifecycle_state: 'history_only',
     guideline_id: 'guideline-1',
     guideline_revision_id: 'revision-1',
     binding_id: 'binding-1',
@@ -189,13 +196,32 @@ describe('semanticPolicyModel', () => {
       lifecycleExpectation,
     )).toThrow('active validation edition');
     expect(() => parseSemanticAssessmentDetail(
-      assessment({ validation_edition: 1 }),
+      assessment({ validation_edition: 1, lifecycle_state: 'current' }),
       lifecycleExpectation,
     )).toThrow('active validation edition');
     expect(parseSemanticAssessmentDetail(
-      assessment({ validation_edition: 2 }),
+      assessment({ validation_edition: 2, lifecycle_state: 'current' }),
       lifecycleExpectation,
     ).validation_edition).toBe(2);
+  });
+
+  it('requires lifecycle placement to agree with edition and currentness', () => {
+    expect(parseSemanticAssessmentDetail(assessment(), expected)
+      .lifecycle_state).toBe('history_only');
+    expect(parseSemanticAssessmentDetail(assessment({
+      validation_edition: 2,
+      lifecycle_state: 'current',
+    }), expected).lifecycle_state).toBe('current');
+    expect(parseSemanticAssessmentDetail(assessment({
+      validation_edition: 2,
+      lifecycle_state: 'previous',
+      currentness: 'stale',
+      currentness_reasons: ['subject_version_changed'],
+    }), expected).lifecycle_state).toBe('previous');
+    expect(() => parseSemanticAssessmentDetail(assessment({
+      validation_edition: 2,
+      lifecycle_state: 'history_only',
+    }), expected)).toThrow(/lifecycle state is inconsistent/u);
   });
 
   it.each([

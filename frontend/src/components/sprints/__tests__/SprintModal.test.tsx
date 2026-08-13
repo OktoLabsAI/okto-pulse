@@ -169,6 +169,7 @@ function transition(
     label: toStatus.charAt(0).toUpperCase() + toStatus.slice(1),
     gate: 'none',
     blocked_reason: null,
+    blocked_facts: null,
     preconditions: [],
     capabilities: [],
     effects: [],

@@ -100,12 +100,12 @@ describe('SpecValidationHistoryPanel score presentation', () => {
     expect(within(completeness).getByText('/100')).toBeInTheDocument();
   });
 
-  it('preserves the expandable per-dimension justifications', async () => {
+  it('preserves expandable per-dimension justifications for legacy history', async () => {
     render(<SpecValidationHistoryPanel specId="spec-1" />);
 
     fireEvent.click(
       await screen.findByRole('button', {
-        name: 'View dimension details',
+        name: 'View metric justifications',
       }),
     );
 
@@ -118,6 +118,105 @@ describe('SpecValidationHistoryPanel score presentation', () => {
     expect(
       screen.getByText('Residual ambiguity is sufficiently low.'),
     ).toBeInTheDocument();
+  });
+
+  it('renders five current metrics, their justifications and metric-tagged pinpoints', async () => {
+    apiMock.getCurrentSpecValidation.mockResolvedValue({
+      spec_id: 'spec-1',
+      edition: 2,
+      lifecycle_state: 'current',
+      current_validation: {
+        ...validationHistory.validations[0],
+        id: 'validation-five-metrics',
+        edition: 2,
+        lifecycle_state: 'current',
+        confidence: 93,
+        confidence_justification: 'The evidence supports a confident assessment.',
+        clarity: 88,
+        clarity_justification: 'The problem and solution are clearly framed.',
+        assertiveness: 84,
+        assertiveness_justification: 'Requirements use direct measurable language.',
+        decidability: 76,
+        decidability_justification: 'One capacity decision still needs a bound.',
+        ambiguity: 18,
+        ambiguity_justification: 'Only a small interpretation gap remains.',
+        pinpoints: [{
+          metric: 'decidability',
+          anchor_type: 'structured_child',
+          anchor_ref: 'fr-availability',
+          detail: 'The scaling requirement does not define minimum capacity.',
+        }],
+        resolved_thresholds: {
+          min_spec_confidence: 70,
+          min_spec_clarity: 80,
+          min_spec_assertiveness: 80,
+          min_spec_decidability: 80,
+          max_spec_ambiguity: 30,
+        },
+      },
+      previous_count: 1,
+    });
+
+    render(
+      <SpecValidationHistoryPanel
+        specId="spec-1"
+        currentEdition={2}
+        view="current"
+        anchorTexts={{
+          'fr-availability': 'FR-4: Run across three availability zones.',
+        }}
+      />,
+    );
+
+    expect(await screen.findByTestId('spec-validation-score-confidence'))
+      .toHaveAccessibleName('Confidence score 93 out of 100, Minimum 70');
+    expect(screen.getByTestId('spec-validation-score-clarity'))
+      .toHaveAccessibleName('Clarity score 88 out of 100, Minimum 80');
+    expect(screen.getByTestId('spec-validation-score-decidability'))
+      .toHaveAccessibleName('Decidability score 76 out of 100, Minimum 80');
+    expect(screen.getByTestId('spec-validation-score-decidability'))
+      .toHaveClass('border-red-400');
+    expect(screen.getByText('decidability')).toBeInTheDocument();
+    expect(screen.getByTestId('spec-validation-pinpoint-target'))
+      .toHaveTextContent(
+        'FR-4: Run across three availability zones. (fr-availability)',
+      );
+    expect(screen.getByText(/minimum capacity/)).toBeInTheDocument();
+    expect(screen.getByText(/confident assessment/)).toBeInTheDocument();
+    expect(screen.getByText(/capacity decision/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', {
+      name: 'View metric justifications',
+    })).not.toBeInTheDocument();
+  });
+
+  it('keeps previous validation justifications collapsible', async () => {
+    apiMock.listSpecValidations.mockResolvedValue({
+      ...validationHistory,
+      current_validation_id: null,
+      validations: [{
+        ...validationHistory.validations[0],
+        edition: 1,
+        lifecycle_state: 'previous',
+        active: false,
+      }],
+    });
+
+    render(
+      <SpecValidationHistoryPanel
+        specId="spec-1"
+        currentEdition={2}
+        view="previous"
+      />,
+    );
+
+    const toggle = await screen.findByRole('button', {
+      name: 'View metric justifications',
+    });
+    expect(screen.queryByText('All required sections are present.'))
+      .not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(screen.getByText('All required sections are present.'))
+      .toBeInTheDocument();
   });
 
   it('loads only the current summary when the current detail is opened', async () => {
@@ -177,7 +276,7 @@ describe('SpecValidationHistoryPanel score presentation', () => {
     )).toBeInTheDocument();
     expect(screen.queryByTestId('spec-validation-score-completeness'))
       .not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'View dimension details' }))
+    expect(screen.queryByRole('button', { name: 'View metric justifications' }))
       .not.toBeInTheDocument();
   });
 

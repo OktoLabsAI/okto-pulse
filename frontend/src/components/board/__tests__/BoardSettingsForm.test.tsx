@@ -103,6 +103,46 @@ describe('BoardSettingsForm — requirement lint languages', () => {
   });
 });
 
+describe('BoardSettingsForm — spec validation metric gates', () => {
+  it('renders the five canonical thresholds without the legacy completeness threshold', () => {
+    render(
+      <BoardSettingsForm
+        settings={{ ...baseSettings, require_spec_validation: true }}
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('bsf-num-min_spec_confidence')).toHaveValue(70);
+    expect(screen.getByTestId('bsf-num-min_spec_clarity')).toHaveValue(80);
+    expect(screen.getByTestId('bsf-num-min_spec_assertiveness')).toHaveValue(80);
+    expect(screen.getByTestId('bsf-num-min_spec_decidability')).toHaveValue(80);
+    expect(screen.getByTestId('bsf-num-max_spec_ambiguity')).toHaveValue(30);
+    expect(screen.queryByTestId('bsf-num-min_spec_completeness')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['bsf-num-min_spec_confidence', 'min_spec_confidence', 73],
+    ['bsf-num-min_spec_clarity', 'min_spec_clarity', 81],
+    ['bsf-num-min_spec_assertiveness', 'min_spec_assertiveness', 82],
+    ['bsf-num-min_spec_decidability', 'min_spec_decidability', 83],
+    ['bsf-num-max_spec_ambiguity', 'max_spec_ambiguity', 24],
+  ] as const)('commits %s on blur', (testId, key, value) => {
+    const onChange = vi.fn();
+    render(
+      <BoardSettingsForm
+        settings={{ ...baseSettings, require_spec_validation: true }}
+        onChange={onChange}
+      />,
+    );
+
+    const input = screen.getByTestId(testId);
+    fireEvent.change(input, { target: { value: String(value) } });
+    fireEvent.blur(input);
+
+    expect(onChange).toHaveBeenCalledWith({ [key]: value });
+  });
+});
+
 describe('BoardSettingsForm — execution report evidence mode', () => {
   it('defaults to off and offers the three modes', () => {
     render(<BoardSettingsForm settings={baseSettings} onChange={vi.fn()} />);

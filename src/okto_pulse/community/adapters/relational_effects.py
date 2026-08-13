@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import exists, func, literal, select, update
+from sqlalchemy import JSON, exists, func, literal, select, update
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ArtifactDeletionTombstone,
@@ -140,6 +140,11 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
     ) -> bool:
         insert = _upsert_insert_for_session(session)
         candidate_id = str(uuid.uuid4())
+        payload_expression = (
+            literal(None)
+            if upsert.payload is None
+            else literal(dict(upsert.payload), type_=JSON)
+        )
         admitted_values = select(
             literal(candidate_id),
             literal(upsert.board_id),
@@ -150,6 +155,7 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
             literal(upsert.priority),
             literal(upsert.source),
             literal(upsert.triggered_by_event),
+            payload_expression,
             literal("pending"),
             literal(0),
         ).where(
@@ -174,6 +180,7 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
                     "priority",
                     "source",
                     "triggered_by_event",
+                    "payload",
                     "status",
                     "attempts",
                 ),
@@ -190,6 +197,7 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
                     "priority": upsert.priority,
                     "source": upsert.source,
                     "triggered_by_event": upsert.triggered_by_event,
+                    "payload": upsert.payload,
                     "claimed_by_session_id": None,
                     "claim_token": None,
                     "claimed_at": None,

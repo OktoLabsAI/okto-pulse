@@ -14,7 +14,11 @@ CONFIGURED_CORE_REPO = os.environ.get("OKTO_PULSE_CORE_REPO")
 CORE_REPO = (
     Path(CONFIGURED_CORE_REPO).expanduser().resolve()
     if CONFIGURED_CORE_REPO
-    else WORKSPACE_ROOT / "okto-pulse-core"
+    else (
+        WORKSPACE_ROOT / "okto_labs_pulse_core"
+        if REPO_ROOT.name.casefold() == "okto_labs_pulse_community"
+        else WORKSPACE_ROOT / "okto-pulse-core"
+    )
 )
 LOCAL_IMPORT_PATHS = (
     REPO_ROOT / "src",

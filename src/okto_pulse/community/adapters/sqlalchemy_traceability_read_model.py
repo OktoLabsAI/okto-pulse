@@ -14,6 +14,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Ideation,
     Refinement,
     Spec,
+    SpecDependency,
     Sprint,
     Story,
     StoryIdeationLink,
@@ -40,6 +41,7 @@ from okto_pulse.core.services.traceability import project_code_traceability_repo
 
 
 _CODE_TRACEABILITY_REPORT_CONTEXT_LIMIT = 2_000
+_SPEC_DEPENDENCY_REPORT_EDGE_LIMIT = 10_000
 
 
 class _LegacyTraceabilityReadError(Exception):
@@ -268,7 +270,12 @@ def _story_summary(story: Story) -> dict[str, Any]:
     }
 
 
-def _spec_summary(spec: Spec, *, include_artifacts: bool) -> dict[str, Any]:
+def _spec_summary(
+    spec: Spec,
+    *,
+    include_artifacts: bool,
+    dependency_state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     cards = list(spec.cards or [])
     payload = {
         "id": spec.id,
@@ -276,6 +283,14 @@ def _spec_summary(spec: Spec, *, include_artifacts: bool) -> dict[str, Any]:
         "status": _enum_value(spec.status),
         "ideation_id": spec.ideation_id,
         "refinement_id": spec.refinement_id,
+        "dependency_readiness": dependency_state
+        or {
+            "can_start": True,
+            "active_dependency_count": 0,
+            "unmet_count": 0,
+            "dependencies": [],
+            "blockers": [],
+        },
         "coverage_summary": _spec_coverage(spec),
         "sprints": [_sprint_summary(sprint) for sprint in spec.sprints],
         "cards": [
@@ -406,6 +421,80 @@ async def build_traceability_report(
         spec_query = spec_query.where(or_(*filters))
     specs = list((await db.execute(spec_query)).scalars().all())
 
+    # Dependency truth is relational and board-scoped.  Load every active
+    # outgoing edge for the selected Specs in one bounded statement, then
+    # project compact target summaries in memory.  This keeps the report free
+    # of an edge/spec N+1 and avoids consulting the eventually-consistent KG.
+    dependency_states: dict[str, dict[str, Any]] = {
+        str(spec.id): {
+            "can_start": True,
+            "active_dependency_count": 0,
+            "unmet_count": 0,
+            "dependencies": [],
+            "blockers": [],
+        }
+        for spec in specs
+    }
+    selected_spec_ids = tuple(dependency_states)
+    if selected_spec_ids:
+        dependency_target = Spec.__table__.alias("traceability_dependency_target")
+        dependency_rows = (
+            await db.execute(
+                select(
+                    SpecDependency.id,
+                    SpecDependency.dependent_spec_id,
+                    SpecDependency.prerequisite_spec_ref,
+                    dependency_target.c.title,
+                    dependency_target.c.status,
+                    dependency_target.c.archived,
+                    dependency_target.c.edition,
+                    dependency_target.c.version,
+                )
+                .join(
+                    dependency_target,
+                    dependency_target.c.id == SpecDependency.prerequisite_spec_id,
+                )
+                .where(
+                    SpecDependency.board_id == board_id,
+                    SpecDependency.dependent_spec_id.in_(selected_spec_ids),
+                    SpecDependency.active.is_(True),
+                )
+                .order_by(
+                    SpecDependency.dependent_spec_id,
+                    SpecDependency.created_at.desc(),
+                    SpecDependency.id.desc(),
+                )
+                .limit(_SPEC_DEPENDENCY_REPORT_EDGE_LIMIT + 1)
+            )
+        ).mappings().all()
+        if len(dependency_rows) > _SPEC_DEPENDENCY_REPORT_EDGE_LIMIT:
+            raise TraceabilityReadError(
+                "spec_dependency_report_context_limit_exceeded",
+                "Spec dependency report scope exceeds the bounded edge limit.",
+                status_code=409,
+            )
+        for row in dependency_rows:
+            state = dependency_states[str(row["dependent_spec_id"])]
+            target_status = _enum_value(row["status"])
+            target_archived = bool(row["archived"])
+            satisfied = target_status == "done" and not target_archived
+            item = {
+                "dependency_id": str(row["id"]),
+                "prerequisite_spec_id": str(row["prerequisite_spec_ref"]),
+                "title": str(row["title"]),
+                "status": target_status,
+                "archived": target_archived,
+                "edition": int(row["edition"]),
+                "version": int(row["version"]),
+                "satisfied": satisfied,
+            }
+            state["dependencies"].append(item)
+            state["active_dependency_count"] += 1
+            if not satisfied:
+                state["blockers"].append(item)
+                state["unmet_count"] += 1
+                state["can_start"] = False
+
     specs_by_ideation: dict[str | None, list[Spec]] = {}
     specs_by_refinement: dict[str | None, list[Spec]] = {}
     for spec in specs:
@@ -454,7 +543,11 @@ async def build_traceability_report(
                 "title": refinement.title,
                 "status": _enum_value(refinement.status),
                 "specs": [
-                    _spec_summary(spec, include_artifacts=include_artifacts)
+                    _spec_summary(
+                        spec,
+                        include_artifacts=include_artifacts,
+                        dependency_state=dependency_states.get(str(spec.id)),
+                    )
                     for spec in refinement_specs
                 ],
             }
@@ -476,7 +569,11 @@ async def build_traceability_report(
             ],
             "refinements": refinement_payloads,
             "direct_specs": [
-                _spec_summary(spec, include_artifacts=include_artifacts)
+                _spec_summary(
+                    spec,
+                    include_artifacts=include_artifacts,
+                    dependency_state=dependency_states.get(str(spec.id)),
+                )
                 for spec in ideation_specs
             ],
         }
@@ -489,7 +586,11 @@ async def build_traceability_report(
         report_ideations.append(ideation_payload)
 
     orphan_specs = [
-        _spec_summary(spec, include_artifacts=include_artifacts)
+        _spec_summary(
+            spec,
+            include_artifacts=include_artifacts,
+            dependency_state=dependency_states.get(str(spec.id)),
+        )
         for spec in specs
         if spec.id not in attached_spec_ids
     ]
@@ -554,6 +655,12 @@ async def build_traceability_report(
             "specs": len(specs),
             "orphan_specs": len(orphan_specs),
             "cards": sum(len(spec.cards or []) for spec in specs),
+            "specs_blocked_by_dependencies": sum(
+                1 for state in dependency_states.values() if not state["can_start"]
+            ),
+            "spec_dependency_blockers": sum(
+                int(state["unmet_count"]) for state in dependency_states.values()
+            ),
         },
         "ideations": report_ideations,
         "orphan_specs": orphan_specs,

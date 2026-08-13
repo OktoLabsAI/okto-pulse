@@ -193,8 +193,10 @@ type NumericSettingKey =
   | 'min_confidence'
   | 'min_completeness'
   | 'max_drift'
-  | 'min_spec_completeness'
+  | 'min_spec_confidence'
+  | 'min_spec_clarity'
   | 'min_spec_assertiveness'
+  | 'min_spec_decidability'
   | 'max_spec_ambiguity';
 
 export interface BoardSettingsFormProps {
@@ -214,14 +216,18 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
   const [minConfidenceDraft, setMinConfidenceDraft] = useState<string>(String(settings.min_confidence));
   const [minCompletenessDraft, setMinCompletenessDraft] = useState<string>(String(settings.min_completeness));
   const [maxDriftDraft, setMaxDriftDraft] = useState<string>(String(settings.max_drift));
-  const [minSpecCompletenessDraft, setMinSpecCompletenessDraft] = useState<string>(String(settings.min_spec_completeness ?? 80));
+  const [minSpecConfidenceDraft, setMinSpecConfidenceDraft] = useState<string>(String(settings.min_spec_confidence ?? 70));
+  const [minSpecClarityDraft, setMinSpecClarityDraft] = useState<string>(String(settings.min_spec_clarity ?? 80));
   const [minSpecAssertivenessDraft, setMinSpecAssertivenessDraft] = useState<string>(String(settings.min_spec_assertiveness ?? 80));
+  const [minSpecDecidabilityDraft, setMinSpecDecidabilityDraft] = useState<string>(String(settings.min_spec_decidability ?? 80));
   const [maxSpecAmbiguityDraft, setMaxSpecAmbiguityDraft] = useState<string>(String(settings.max_spec_ambiguity ?? 30));
   useEffect(() => { setMinConfidenceDraft(String(settings.min_confidence)); }, [settings.min_confidence]);
   useEffect(() => { setMinCompletenessDraft(String(settings.min_completeness)); }, [settings.min_completeness]);
   useEffect(() => { setMaxDriftDraft(String(settings.max_drift)); }, [settings.max_drift]);
-  useEffect(() => { setMinSpecCompletenessDraft(String(settings.min_spec_completeness ?? 80)); }, [settings.min_spec_completeness]);
+  useEffect(() => { setMinSpecConfidenceDraft(String(settings.min_spec_confidence ?? 70)); }, [settings.min_spec_confidence]);
+  useEffect(() => { setMinSpecClarityDraft(String(settings.min_spec_clarity ?? 80)); }, [settings.min_spec_clarity]);
   useEffect(() => { setMinSpecAssertivenessDraft(String(settings.min_spec_assertiveness ?? 80)); }, [settings.min_spec_assertiveness]);
+  useEffect(() => { setMinSpecDecidabilityDraft(String(settings.min_spec_decidability ?? 80)); }, [settings.min_spec_decidability]);
   useEffect(() => { setMaxSpecAmbiguityDraft(String(settings.max_spec_ambiguity ?? 30)); }, [settings.max_spec_ambiguity]);
 
   const autoDeriveEnabled = settings.auto_derive_spec_resources_enabled ?? false;
@@ -281,8 +287,10 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
       if (key === 'min_confidence') setMinConfidenceDraft(String(safe));
       if (key === 'min_completeness') setMinCompletenessDraft(String(safe));
       if (key === 'max_drift') setMaxDriftDraft(String(safe));
-      if (key === 'min_spec_completeness') setMinSpecCompletenessDraft(String(safe));
+      if (key === 'min_spec_confidence') setMinSpecConfidenceDraft(String(safe));
+      if (key === 'min_spec_clarity') setMinSpecClarityDraft(String(safe));
       if (key === 'min_spec_assertiveness') setMinSpecAssertivenessDraft(String(safe));
+      if (key === 'min_spec_decidability') setMinSpecDecidabilityDraft(String(safe));
       if (key === 'max_spec_ambiguity') setMaxSpecAmbiguityDraft(String(safe));
       return;
     }
@@ -853,7 +861,7 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
           />
         </SettingRow>
 
-        <SettingRow label="Require spec validation" description="Specs must pass Completeness, Assertiveness and Ambiguity gates before Validated.">
+        <SettingRow label="Require spec validation" description="Specs must pass Confidence, Clarity, Assertiveness, Decidability and Ambiguity gates before Validated.">
           <SettingsToggle
             checked={settings.require_spec_validation ?? true}
             onChange={() => onChange({ require_spec_validation: !(settings.require_spec_validation ?? true) })}
@@ -862,20 +870,39 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
         </SettingRow>
 
         {settings.require_spec_validation && (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
             <div>
               <label className="mb-1 block text-[10px] font-medium text-gray-500 dark:text-gray-400">
-                Min Completeness
+                Min Confidence
               </label>
               <div className="flex items-center gap-2">
                 <input
                   type="number"
                   min={0}
                   max={100}
-                  value={minSpecCompletenessDraft}
-                  data-testid="bsf-num-min_spec_completeness"
-                  onChange={(e) => setMinSpecCompletenessDraft(e.target.value)}
-                  onBlur={(e) => commitNumericSetting('min_spec_completeness', e.target.value)}
+                  value={minSpecConfidenceDraft}
+                  data-testid="bsf-num-min_spec_confidence"
+                  onChange={(e) => setMinSpecConfidenceDraft(e.target.value)}
+                  onBlur={(e) => commitNumericSetting('min_spec_confidence', e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                  className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                />
+                <span className="text-[10px] text-gray-400">/ 100</span>
+              </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-[10px] font-medium text-gray-500 dark:text-gray-400">
+                Min Clarity
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={minSpecClarityDraft}
+                  data-testid="bsf-num-min_spec_clarity"
+                  onChange={(e) => setMinSpecClarityDraft(e.target.value)}
+                  onBlur={(e) => commitNumericSetting('min_spec_clarity', e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
                   className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
                 />
@@ -895,6 +922,25 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
                   data-testid="bsf-num-min_spec_assertiveness"
                   onChange={(e) => setMinSpecAssertivenessDraft(e.target.value)}
                   onBlur={(e) => commitNumericSetting('min_spec_assertiveness', e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                  className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                />
+                <span className="text-[10px] text-gray-400">/ 100</span>
+              </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-[10px] font-medium text-gray-500 dark:text-gray-400">
+                Min Decidability
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={minSpecDecidabilityDraft}
+                  data-testid="bsf-num-min_spec_decidability"
+                  onChange={(e) => setMinSpecDecidabilityDraft(e.target.value)}
+                  onBlur={(e) => commitNumericSetting('min_spec_decidability', e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
                   className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
                 />

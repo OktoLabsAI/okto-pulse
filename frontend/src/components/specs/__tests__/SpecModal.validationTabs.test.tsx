@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Spec, SpecStatus } from '@/types';
@@ -18,6 +24,9 @@ const permissionMock = vi.hoisted(() => ({
   allowAll: true,
   allowed: new Set<string>(),
 }));
+const boardSettingsMock = vi.hoisted(() => ({
+  requireSpecValidation: true,
+}));
 
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
@@ -28,20 +37,27 @@ vi.mock('@/store/dashboard', () => ({
     id: 'board-1',
     owner_id: null,
     agents: [],
-    settings: { require_spec_validation: true },
+    settings: {
+      require_spec_validation:
+        boardSettingsMock.requireSpecValidation,
+    },
   }),
 }));
 
-vi.mock('@/hooks/usePermissions', () => ({
-  usePermissions: () => ({
-    preset: null,
-    isLoading: false,
-    error: null,
-    has: (permission: string) =>
-      permissionMock.allowAll ||
-      permissionMock.allowed.has(permission),
-  }),
-}));
+vi.mock('@/hooks/usePermissions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks/usePermissions')>();
+  return {
+    ...actual,
+    usePermissions: () => ({
+      preset: null,
+      isLoading: false,
+      error: null,
+      has: (permission: string) =>
+        permissionMock.allowAll ||
+        permissionMock.allowed.has(permission),
+    }),
+  };
+});
 
 vi.mock('@/components/traceability', () => ({
   openLineageGraph: vi.fn(),
@@ -66,13 +82,17 @@ vi.mock('@/components/policy-compliance', () => ({
   readPolicyTransitionRejection: () => null,
   policyTransitionRejectionMessage: () => 'Policy Compliance rejected',
   isAllowedTransitionActionable: (transition: {
+    blocked_reason?: string | null;
     policy_compliance?: boolean;
     policy_compliance_decision?: { allowed?: boolean } | null;
   }) => (
-    transition.policy_compliance === false
-    || (
-      transition.policy_compliance === true
-      && transition.policy_compliance_decision?.allowed === true
+    transition.blocked_reason == null
+    && (
+      transition.policy_compliance === false
+      || (
+        transition.policy_compliance === true
+        && transition.policy_compliance_decision?.allowed === true
+      )
     )
   ),
   PolicyCompliancePanel: ({
@@ -221,6 +241,7 @@ describe('SpecModal validation navigation', () => {
     vi.clearAllMocks();
     permissionMock.allowAll = true;
     permissionMock.allowed = new Set();
+    boardSettingsMock.requireSpecValidation = true;
     apiMock.getAllowedTransitions.mockResolvedValue({
       allowed_transitions: [],
     });
@@ -295,7 +316,7 @@ describe('SpecModal validation navigation', () => {
     },
   );
 
-  it('presents one summary-first validation workspace with lazy details', async () => {
+  it('presents four ordered, lazy validation subtabs', async () => {
     renderSpec('approved');
 
     await screen.findByText(baseSpec.title);
@@ -305,17 +326,22 @@ describe('SpecModal validation navigation', () => {
 
     expect(screen.getByTestId('spec-validation-workspace')).toBeInTheDocument();
     expect(screen.getByTestId('spec-validation-current')).toBeInTheDocument();
-    expect(screen.getByTestId('spec-validation-checklist-row')).toBeInTheDocument();
-    expect(screen.getByTestId('spec-validation-lint-row')).toBeInTheDocument();
-    expect(screen.getByTestId('spec-validation-policy-row')).toBeInTheDocument();
-    expect(screen.queryByTestId('spec-validation-qualitative-row')).not.toBeInTheDocument();
+    expect(within(screen.getByRole('tablist', {
+      name: 'Spec validation sections',
+    })).getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+      'Spec Validation',
+      'Checklist',
+      'Requirement lint',
+      'Policy Compliance',
+    ]);
     expect(screen.getByTestId('spec-validation-previous-toggle')).toBeInTheDocument();
     expect(screen.queryByTestId('checklist-panel')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('spec-validation-history')).not.toBeInTheDocument();
+    expect(screen.getByTestId('spec-validation-history')).toHaveAttribute(
+      'data-view',
+      'current',
+    );
 
-    fireEvent.click(within(
-      screen.getByTestId('spec-validation-checklist-row'),
-    ).getByRole('button'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Checklist' }));
     expect(screen.getByTestId('checklist-panel')).toHaveAttribute(
       'data-validation-stage-active',
       'true',
@@ -325,9 +351,7 @@ describe('SpecModal validation navigation', () => {
       'true',
     );
 
-    fireEvent.click(within(
-      screen.getByTestId('spec-validation-current'),
-    ).getByRole('button'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Spec Validation' }));
     expect(screen.getByTestId('spec-validation-history')).toHaveAttribute(
       'data-view',
       'current',
@@ -357,15 +381,15 @@ describe('SpecModal validation navigation', () => {
       screen.getByRole('tab', { name: 'Validation' }),
     );
 
-    expect(screen.getByTestId('spec-validation-policy-row')).toBeInTheDocument();
-    expect(screen.queryByTestId('spec-validation-lint-row')).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Policy Compliance' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.queryByRole('tab', { name: 'Requirement lint' })).not.toBeInTheDocument();
     expect(screen.queryByTestId('spec-validation-current')).not.toBeInTheDocument();
     expect(screen.queryByTestId('spec-validation-previous-toggle')).not.toBeInTheDocument();
     expect(screen.queryByTestId('spec-validation-technical-audit-toggle'))
       .not.toBeInTheDocument();
-    fireEvent.click(within(
-      screen.getByTestId('spec-validation-policy-row'),
-    ).getByRole('button'));
     expect(screen.getByTestId('policy-compliance-panel')).toHaveAttribute(
       'data-board-id',
       'board-1',
@@ -391,9 +415,7 @@ describe('SpecModal validation navigation', () => {
 
     await screen.findByText(baseSpec.title);
     fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
-    fireEvent.click(within(
-      screen.getByTestId('spec-validation-policy-row'),
-    ).getByRole('button'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Policy Compliance' }));
     expect(screen.getByTestId('policy-compliance-panel'))
       .toBeInTheDocument();
 
@@ -408,9 +430,9 @@ describe('SpecModal validation navigation', () => {
     );
 
     expect(
-      screen.queryByTestId('spec-validation-policy-row'),
+      screen.queryByRole('tab', { name: 'Policy Compliance' }),
     ).not.toBeInTheDocument();
-    expect(screen.getByTestId('spec-validation-lint-row')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Requirement lint' })).toBeInTheDocument();
   });
 
   it('withholds every transition action while authority loading fails', async () => {
@@ -426,6 +448,108 @@ describe('SpecModal validation navigation', () => {
     ).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'Draft' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('offers the validation form for the canonical Spec Validation gate blocker', async () => {
+    boardSettingsMock.requireSpecValidation = false;
+    apiMock.getAllowedTransitions.mockResolvedValue({
+      board_id: 'board-1',
+      entity_type: 'spec',
+      entity_id: baseSpec.id,
+      current_status: 'approved',
+      source: 'core_sdlc_registry_v1',
+      allowed_transitions: [
+        {
+          to_status: 'validated',
+          label: 'Validated',
+          gate: 'spec_validation',
+          blocked_reason: (
+            'spec_validation_required: submit the Spec Validation Gate; '
+            + 'direct approved→validated moves are not admitted.'
+          ),
+          blocked_facts: null,
+          preconditions: ['spec_validation_ready'],
+          capabilities: ['validate'],
+          effects: ['status_changed'],
+          reason_codes: [
+            'spec_validation_required',
+            'spec_checklist_gate_required',
+            'transition_not_allowed',
+          ],
+          policy_compliance: true,
+          policy_compliance_decision: {
+            ...blockedPolicyDecision(),
+            state: 'policy_compliance_ready',
+            allowed: true,
+            reason_codes: ['policy_compliance_ready'],
+            currentness: 'current',
+          },
+        },
+      ],
+    });
+    renderSpec('approved');
+
+    await screen.findByText(baseSpec.title);
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Validate' }),
+    );
+
+    expect(
+      await screen.findByRole('heading', { name: 'Validate Spec' }),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(apiMock.getSpecChecklistState).toHaveBeenCalledWith(
+        'board-1',
+        baseSpec.id,
+      );
+      expect(apiMock.getValidationCycle).toHaveBeenCalledWith(
+        'spec',
+        baseSpec.id,
+        { includePrevious: false },
+      );
+    });
+  });
+
+  it('does not offer validation submission for another blocker on the same edge', async () => {
+    apiMock.getAllowedTransitions.mockResolvedValue({
+      board_id: 'board-1',
+      entity_type: 'spec',
+      entity_id: baseSpec.id,
+      current_status: 'approved',
+      source: 'core_sdlc_registry_v1',
+      allowed_transitions: [
+        {
+          to_status: 'validated',
+          label: 'Validated',
+          gate: 'spec_validation',
+          blocked_reason: 'test_coverage_required: link every AC to a scenario.',
+          blocked_facts: null,
+          preconditions: ['spec_validation_ready'],
+          capabilities: ['validate'],
+          effects: ['status_changed'],
+          reason_codes: [
+            'spec_validation_required',
+            'spec_checklist_gate_required',
+            'transition_not_allowed',
+          ],
+          policy_compliance: true,
+          policy_compliance_decision: {
+            ...blockedPolicyDecision(),
+            state: 'policy_compliance_ready',
+            allowed: true,
+            reason_codes: ['policy_compliance_ready'],
+            currentness: 'current',
+          },
+        },
+      ],
+    });
+    renderSpec('approved');
+
+    await screen.findByText(baseSpec.title);
+
+    expect(
+      screen.queryByRole('button', { name: 'Validate' }),
     ).not.toBeInTheDocument();
   });
 
@@ -475,12 +599,14 @@ describe('SpecModal validation navigation', () => {
       screen.getByRole('tab', { name: 'Validation' }),
     );
 
-    expect(screen.queryByTestId('spec-validation-checklist-row')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('spec-validation-lint-row')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('spec-validation-policy-row')).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Checklist' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Requirement lint' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Policy Compliance' })).not.toBeInTheDocument();
     expect(screen.getByTestId('spec-validation-current')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('spec-validation-previous-toggle'));
-    expect(screen.getByTestId('spec-validation-history')).toHaveAttribute(
+    expect(screen.getAllByTestId('spec-validation-history').find(
+      (element) => element.getAttribute('data-view') === 'previous',
+    )).toHaveAttribute(
       'data-view',
       'previous',
     );
@@ -496,15 +622,14 @@ describe('SpecModal validation navigation', () => {
       screen.getByRole('tab', { name: 'Validation' }),
     );
 
-    expect(screen.getByTestId('spec-validation-checklist-row')).toBeInTheDocument();
-    expect(screen.queryByTestId('spec-validation-qualitative-row')).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Checklist' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
     expect(screen.queryByTestId('spec-validation-current')).not.toBeInTheDocument();
     expect(screen.queryByTestId('spec-validation-previous-toggle')).not.toBeInTheDocument();
     expect(screen.queryByTestId('spec-validation-technical-audit-toggle'))
       .not.toBeInTheDocument();
-    fireEvent.click(within(
-      screen.getByTestId('spec-validation-checklist-row'),
-    ).getByRole('button'));
     expect(screen.getByTestId('checklist-panel')).toBeInTheDocument();
   });
 
@@ -518,12 +643,11 @@ describe('SpecModal validation navigation', () => {
       screen.getByRole('tab', { name: 'Validation' }),
     );
 
-    expect(screen.getByTestId('spec-validation-lint-row')).toBeInTheDocument();
-    expect(screen.queryByTestId('spec-validation-checklist-row')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('spec-validation-qualitative-row')).not.toBeInTheDocument();
-    fireEvent.click(within(
-      screen.getByTestId('spec-validation-lint-row'),
-    ).getByRole('button'));
+    expect(screen.getByRole('tab', { name: 'Requirement lint' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.queryByRole('tab', { name: 'Checklist' })).not.toBeInTheDocument();
     expect(screen.getByTestId('requirement-lint-panel')).toBeInTheDocument();
   });
 
@@ -535,9 +659,7 @@ describe('SpecModal validation navigation', () => {
       screen.getByRole('tab', { name: 'Validation' }),
     );
 
-    fireEvent.click(within(
-      screen.getByTestId('spec-validation-checklist-row'),
-    ).getByRole('button'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Checklist' }));
 
     expect(screen.getByTestId('checklist-panel')).toHaveAttribute(
       'data-can-execute',

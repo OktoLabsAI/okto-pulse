@@ -216,6 +216,7 @@ const POST_SKB_INTRODUCED_EXACT_LEAVES = new Set([
   'spec.tests.execute',
   'spec.tests.edit',
   'spec.tests.delete',
+  'spec.entity.manage_dependencies',
   'sprint.tasks.assign',
   'ideation.interact_in.review',
   'ideation.interact_in.approved',

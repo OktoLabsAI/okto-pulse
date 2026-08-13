@@ -50,6 +50,9 @@ from okto_pulse.core.ports.application_persistence import (
     register_application_persistence_port,
 )
 from okto_pulse.core.domain.realm import RealmScope, require_realm_scope
+from okto_pulse.core.repositories.interfaces.unit_of_work import (
+    ConsistentReadContractError,
+)
 from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
     CommunitySqlAlchemyApplicationPersistence,
 )
@@ -78,6 +81,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _UOW_CLEANUP_DRAIN_TIMEOUT_S = 5.0
 _pending_uow_cleanups: set[asyncio.Task[Any]] = set()
+_CONSISTENT_READ_INFO_KEY = "okto_pulse_consistent_read"
+_REPEATABLE_READ = "REPEATABLE READ"
 
 
 def _knowledge_creation_race_target(
@@ -262,10 +267,77 @@ class CommunityUnitOfWork:
         return None
 
     async def commit(self) -> None:
-        await self._application_persistence.commit(self._session)
+        try:
+            await self._application_persistence.commit(self._session)
+        finally:
+            self._session.info.pop(_CONSISTENT_READ_INFO_KEY, None)
 
     async def rollback(self) -> None:
-        await self._application_persistence.rollback(self._session)
+        try:
+            await self._application_persistence.rollback(self._session)
+        finally:
+            self._session.info.pop(_CONSISTENT_READ_INFO_KEY, None)
+
+    async def begin_consistent_read(self) -> None:
+        """Pin one snapshot before a composite Core read performs any lookup.
+
+        SQLite receives a deferred ``BEGIN``: its first subsequent SELECT pins
+        a WAL snapshot while concurrent writers remain able to commit.
+        PostgreSQL receives ``REPEATABLE READ`` as a connection execution
+        option before its first physical statement.  An existing PostgreSQL
+        transaction is accepted only when it already has that isolation;
+        ``READ COMMITTED`` is never upgraded after the fact.
+        """
+
+        marker = self._session.info.get(_CONSISTENT_READ_INFO_KEY)
+        if marker is not None:
+            if not self._session.in_transaction():
+                raise ConsistentReadContractError(
+                    "consistent_read_snapshot_no_longer_active"
+                )
+            return
+
+        bind = self._session.get_bind()
+        dialect = bind.dialect.name if bind is not None else ""
+        transaction_already_active = bool(self._session.in_transaction())
+
+        if dialect == "sqlite":
+            connection = await self._session.connection()
+
+            def physical_transaction_active(sync_connection: Any) -> bool:
+                driver_connection = getattr(
+                    sync_connection.connection,
+                    "driver_connection",
+                    None,
+                )
+                return bool(getattr(driver_connection, "in_transaction", False))
+
+            physical_active = await connection.run_sync(
+                physical_transaction_active
+            )
+            if not physical_active:
+                await connection.exec_driver_sql("BEGIN")
+            self._session.info[_CONSISTENT_READ_INFO_KEY] = "sqlite_deferred"
+            return
+
+        if dialect == "postgresql":
+            if transaction_already_active:
+                connection = await self._session.connection()
+            else:
+                connection = await self._session.connection(
+                    execution_options={"isolation_level": _REPEATABLE_READ}
+                )
+            isolation = (await connection.get_isolation_level()).replace(
+                "_", " "
+            ).upper()
+            if isolation != _REPEATABLE_READ:
+                raise ConsistentReadContractError(
+                    "consistent_read_incompatible_active_transaction"
+                )
+            self._session.info[_CONSISTENT_READ_INFO_KEY] = "postgresql_repeatable_read"
+            return
+
+        raise ConsistentReadContractError("consistent_read_dialect_unsupported")
 
     async def synchronize(
         self,
@@ -302,6 +374,7 @@ class CommunityUnitOfWork:
         try:
             await self._session.close()
         finally:
+            self._session.info.pop(_CONSISTENT_READ_INFO_KEY, None)
             unbind_semantic_subject_actor(self._session)
 
 

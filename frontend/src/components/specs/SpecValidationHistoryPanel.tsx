@@ -5,7 +5,11 @@ import toast from 'react-hot-toast';
 import { ValidationCycleStatusBadge } from '@/components/validation-cycle/ValidationCyclePrimitives';
 import { useDashboardApi } from '@/services/api';
 import { measureValidationWorkspaceInteraction } from '@/services/validation-workspace-telemetry';
-import type { SpecValidation, SpecValidationList } from '@/types';
+import type {
+  SpecValidation,
+  SpecValidationList,
+  SpecValidationPinpoint,
+} from '@/types';
 
 interface SpecValidationHistoryPanelProps {
   specId: string;
@@ -14,6 +18,8 @@ interface SpecValidationHistoryPanelProps {
   view?: 'all' | 'current' | 'previous';
   /** Avoids a history request when the bounded current summary is available. */
   currentValidation?: SpecValidation | null;
+  /** Human-readable Spec content keyed by stable field, child, or Q&A id. */
+  anchorTexts?: Readonly<Record<string, string>>;
 }
 
 function belongsToCurrentEdition(
@@ -35,6 +41,7 @@ export function SpecValidationHistoryPanel({
   currentEdition,
   view = 'all',
   currentValidation,
+  anchorTexts,
 }: SpecValidationHistoryPanelProps) {
   const api = useDashboardApi();
   const apiRef = useRef(api);
@@ -159,6 +166,7 @@ export function SpecValidationHistoryPanel({
           onToggleExpand={() => setExpandedId(
             expandedId === validation.id ? null : validation.id,
           )}
+          anchorTexts={anchorTexts}
         />
       ))}
       {view === 'previous' && data?.has_more && (
@@ -181,6 +189,7 @@ interface ValidationRecordProps {
   attemptNumber: number;
   expanded: boolean;
   onToggleExpand: () => void;
+  anchorTexts?: Readonly<Record<string, string>>;
 }
 
 function ValidationRecord({
@@ -189,12 +198,18 @@ function ValidationRecord({
   attemptNumber,
   expanded,
   onToggleExpand,
+  anchorTexts,
 }: ValidationRecordProps) {
   const detailsId = useId();
   const isSuccess = validation.outcome !== 'failed';
   const thresholds = validation.resolved_thresholds;
   const formalResult = typeof validation.score === 'number'
     && Boolean(validation.summary?.trim());
+  const canonicalDimensions = typeof validation.confidence === 'number'
+    && typeof validation.clarity === 'number'
+    && typeof validation.assertiveness === 'number'
+    && typeof validation.decidability === 'number'
+    && typeof validation.ambiguity === 'number';
   const legacyDimensions = typeof validation.completeness === 'number'
     && typeof validation.assertiveness === 'number'
     && typeof validation.ambiguity === 'number';
@@ -233,7 +248,11 @@ function ValidationRecord({
             {validation.reviewer_name || validation.reviewer_id}
           </p>
         </div>
-        {formalResult ? (
+        {canonicalDimensions ? (
+          <span className="text-xs font-semibold text-violet-700 dark:text-violet-300">
+            Five-metric assessment
+          </span>
+        ) : formalResult ? (
           <span className="text-xs font-semibold text-violet-700 dark:text-violet-300">
             Score {validation.score}/100
           </span>
@@ -248,7 +267,45 @@ function ValidationRecord({
         ) : null}
       </div>
 
-      {formalResult ? (
+      {canonicalDimensions ? (
+        <div className="my-4 grid grid-cols-2 gap-5 sm:grid-cols-3 lg:grid-cols-5">
+          <ScoreCell
+            dimension="confidence"
+            label="Confidence"
+            value={validation.confidence!}
+            threshold={thresholds?.min_spec_confidence}
+            direction="min"
+          />
+          <ScoreCell
+            dimension="clarity"
+            label="Clarity"
+            value={validation.clarity!}
+            threshold={thresholds?.min_spec_clarity}
+            direction="min"
+          />
+          <ScoreCell
+            dimension="assertiveness"
+            label="Assertiveness"
+            value={validation.assertiveness!}
+            threshold={thresholds?.min_spec_assertiveness}
+            direction="min"
+          />
+          <ScoreCell
+            dimension="decidability"
+            label="Decidability"
+            value={validation.decidability!}
+            threshold={thresholds?.min_spec_decidability}
+            direction="min"
+          />
+          <ScoreCell
+            dimension="ambiguity"
+            label="Ambiguity"
+            value={validation.ambiguity!}
+            threshold={thresholds?.max_spec_ambiguity}
+            direction="max"
+          />
+        </div>
+      ) : formalResult ? (
         <div className="my-4 flex justify-center">
           <ScoreCell
             dimension="overall"
@@ -296,10 +353,12 @@ function ValidationRecord({
         </div>
       )}
 
-      <p className="border-l-2 border-surface-300 pl-3 text-xs italic text-surface-700 dark:border-surface-600 dark:text-surface-300">
-        {formalResult ? validation.summary : validation.general_justification}
-      </p>
-      {legacyDimensions && (
+      {!canonicalDimensions && (formalResult || validation.general_justification) && (
+        <p className="border-l-2 border-surface-300 pl-3 text-xs italic text-surface-700 dark:border-surface-600 dark:text-surface-300">
+          {formalResult ? validation.summary : validation.general_justification}
+        </p>
+      )}
+      {(canonicalDimensions || legacyDimensions) && !current && (
         <>
           <button
             type="button"
@@ -313,26 +372,144 @@ function ValidationRecord({
             className="mt-3 inline-flex items-center gap-1 rounded text-[11px] font-medium text-violet-600 hover:text-violet-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-2 dark:text-violet-300 dark:focus-visible:ring-offset-surface-900"
           >
             {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-            {expanded ? 'Hide details' : 'View dimension details'}
+            {expanded ? 'Hide details' : 'View metric justifications'}
           </button>
           {expanded && (
             <dl
               id={detailsId}
               className="mt-3 space-y-2 text-xs text-surface-600 dark:text-surface-300"
             >
-              <div><dt className="font-semibold">Completeness</dt><dd>{validation.completeness_justification}</dd></div>
-              <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
-              <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
+              {canonicalDimensions ? (
+                <>
+                  <div><dt className="font-semibold">Confidence</dt><dd>{validation.confidence_justification}</dd></div>
+                  <div><dt className="font-semibold">Clarity</dt><dd>{validation.clarity_justification}</dd></div>
+                  <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
+                  <div><dt className="font-semibold">Decidability</dt><dd>{validation.decidability_justification}</dd></div>
+                  <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
+                </>
+              ) : (
+                <>
+                  <div><dt className="font-semibold">Completeness</dt><dd>{validation.completeness_justification}</dd></div>
+                  <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
+                  <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
+                </>
+              )}
             </dl>
           )}
         </>
+      )}
+      {(canonicalDimensions || legacyDimensions) && current && (
+        <MetricJustifications
+          validation={validation}
+          canonicalDimensions={canonicalDimensions}
+        />
+      )}
+
+      {(validation.pinpoints?.length ?? 0) > 0 && (
+        <section className="mt-4 space-y-2" aria-label="Pinpoint findings">
+          <h4 className="text-xs font-semibold text-surface-800 dark:text-surface-100">
+            Pinpoint findings
+          </h4>
+          <ol className="space-y-2">
+            {validation.pinpoints!.map((pinpoint, index) => {
+              const anchorReference = pinpoint.anchor_ref?.trim() || null;
+              const anchorText = resolvePinpointAnchorText(
+                pinpoint.anchor_type,
+                anchorReference,
+                anchorTexts,
+              );
+              return (
+              <li key={`${pinpoint.metric}-${pinpoint.anchor_type}-${pinpoint.anchor_ref ?? index}`} className="rounded-lg border border-surface-200 bg-white p-3 dark:border-surface-700 dark:bg-surface-900/50">
+                <div className="flex flex-wrap items-start gap-2">
+                  <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-violet-700 dark:bg-violet-950/50 dark:text-violet-300">
+                    {pinpoint.metric}
+                  </span>
+                  <p
+                    data-testid="spec-validation-pinpoint-target"
+                    className="min-w-0 flex-1 whitespace-pre-wrap text-xs font-medium text-surface-800 dark:text-surface-100"
+                  >
+                    {anchorText}
+                    {anchorReference ? (
+                      <>
+                        {' '}
+                        <span className="font-mono text-[11px] font-normal text-surface-500 dark:text-surface-400">
+                          ({anchorReference})
+                        </span>
+                      </>
+                    ) : null}
+                  </p>
+                </div>
+                <p className="mt-2 whitespace-pre-wrap text-xs text-surface-700 dark:text-surface-300">
+                  {pinpoint.detail}
+                </p>
+              </li>
+              );
+            })}
+          </ol>
+        </section>
       )}
     </article>
   );
 }
 
+function MetricJustifications({
+  validation,
+  canonicalDimensions,
+}: {
+  validation: SpecValidation;
+  canonicalDimensions: boolean;
+}) {
+  return (
+    <dl className="mt-3 space-y-2 text-xs text-surface-600 dark:text-surface-300">
+      {canonicalDimensions ? (
+        <>
+          <div><dt className="font-semibold">Confidence</dt><dd>{validation.confidence_justification}</dd></div>
+          <div><dt className="font-semibold">Clarity</dt><dd>{validation.clarity_justification}</dd></div>
+          <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
+          <div><dt className="font-semibold">Decidability</dt><dd>{validation.decidability_justification}</dd></div>
+          <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
+        </>
+      ) : (
+        <>
+          <div><dt className="font-semibold">Completeness</dt><dd>{validation.completeness_justification}</dd></div>
+          <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
+          <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
+        </>
+      )}
+    </dl>
+  );
+}
+
+function resolvePinpointAnchorText(
+  anchorType: SpecValidationPinpoint['anchor_type'],
+  anchorRef: string | null,
+  anchorTexts?: Readonly<Record<string, string>>,
+): string {
+  if (anchorType === 'whole_artifact') return 'Whole Spec';
+  if (!anchorRef) return 'Referenced Spec item';
+  const direct = anchorTexts?.[anchorRef];
+  if (direct) return direct;
+  const stableId = anchorRef.split('.').at(-1);
+  const qualified = stableId ? anchorTexts?.[stableId] : undefined;
+  if (qualified) return qualified;
+  if (anchorType === 'field') {
+    return anchorRef
+      .split('_')
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
+  }
+  return 'Referenced item is no longer available in the current Spec';
+}
+
 interface ScoreCellProps {
-  dimension: 'overall' | 'completeness' | 'assertiveness' | 'ambiguity';
+  dimension:
+    | 'overall'
+    | 'confidence'
+    | 'clarity'
+    | 'completeness'
+    | 'assertiveness'
+    | 'decidability'
+    | 'ambiguity';
   label: string;
   value: number;
   threshold?: number | null;

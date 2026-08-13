@@ -447,8 +447,17 @@ async def test_submit_spec_validation_maps_gate_contract_like_move_spec(
                 expected_validation_edition=1,
                 expected_spec_version=1,
                 expected_head_revision=0,
-                score=100,
-                summary="Validation result is ready for submission.",
+                confidence=95,
+                confidence_justification="The evaluator has strong supporting evidence.",
+                clarity=94,
+                clarity_justification="The problem and solution are clearly specified.",
+                assertiveness=93,
+                assertiveness_justification="Requirements use direct and testable language.",
+                decidability=92,
+                decidability_justification="Requirements provide concrete implementation choices.",
+                ambiguity=5,
+                ambiguity_justification="No material ambiguity remains in this edition.",
+                recommendation="approve",
             ),
             user_id="human-1",
             uow=object(),
@@ -458,7 +467,7 @@ async def test_submit_spec_validation_maps_gate_contract_like_move_spec(
 
 
 @pytest.mark.asyncio
-async def test_submit_spec_validation_rest_preserves_legacy_shape_without_null_formal_fields(
+async def test_submit_spec_validation_rest_forwards_only_canonical_fields(
     monkeypatch,
 ) -> None:
     observed: dict[str, object] = {}
@@ -482,15 +491,16 @@ async def test_submit_spec_validation_rest_preserves_legacy_shape_without_null_f
             expected_validation_edition=1,
             expected_spec_version=3,
             expected_head_revision=0,
-            completeness=95,
-            completeness_justification="Complete enough for validation.",
+            confidence=95,
+            confidence_justification="The evaluator has strong supporting evidence.",
+            clarity=95,
+            clarity_justification="The problem and solution are clearly specified.",
             assertiveness=94,
             assertiveness_justification="Assertive enough for validation.",
+            decidability=93,
+            decidability_justification="Requirements provide concrete implementation choices.",
             ambiguity=4,
             ambiguity_justification="Ambiguity is sufficiently low.",
-            general_justification=(
-                "The legacy dimensions support a human approval decision."
-            ),
             recommendation="approve",
         ),
         user_id="human-1",
@@ -500,6 +510,8 @@ async def test_submit_spec_validation_rest_preserves_legacy_shape_without_null_f
     assert response["validation_id"] == "validation-1"
     assert "score" not in observed
     assert "summary" not in observed
+    assert "completeness" not in observed
+    assert "general_justification" not in observed
 
 
 @pytest.mark.asyncio
@@ -529,8 +541,17 @@ async def test_submit_spec_validation_preserves_typed_conflict_codes(
                 expected_validation_edition=2,
                 expected_spec_version=4,
                 expected_head_revision=0,
-                score=80,
-                summary="Formal validation assessment is complete.",
+                confidence=90,
+                confidence_justification="The evaluator has strong supporting evidence.",
+                clarity=90,
+                clarity_justification="The problem and solution are clearly specified.",
+                assertiveness=90,
+                assertiveness_justification="Requirements use direct and testable language.",
+                decidability=90,
+                decidability_justification="Requirements provide concrete implementation choices.",
+                ambiguity=10,
+                ambiguity_justification="No material ambiguity remains in this edition.",
+                recommendation="approve",
             ),
             user_id="human-1",
             uow=object(),

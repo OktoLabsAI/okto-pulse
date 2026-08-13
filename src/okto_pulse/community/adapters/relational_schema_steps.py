@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 import shutil
@@ -15,12 +17,139 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
 )
 
 StepCallable = Callable[[], "Awaitable[object] | object"]
+logger = logging.getLogger(__name__)
+
+
+def _decoded_history_changes(raw: object) -> tuple[Mapping[str, object], ...]:
+    """Decode one cross-dialect JSON history value without guessing on drift."""
+
+    value = raw
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return ()
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, Mapping))
+
+
+def _history_proves_current_spec_edition_started(
+    *,
+    current_edition: int,
+    history_changes: tuple[object, ...],
+) -> bool:
+    """Infer execution memory only from an unbroken current-edition history.
+
+    Edition 1 has an implicit creation boundary.  Later editions must have an
+    explicit edition change to the current value before an ``in_progress``
+    transition can be attributed safely.  A Draft transition resets the
+    inference even if a malformed legacy row omitted its edition delta.
+    """
+
+    observed_edition = 1
+    current_boundary_observed = current_edition == 1
+    started = False
+    for raw in history_changes:
+        changes = _decoded_history_changes(raw)
+        next_edition: int | None = None
+        next_status: str | None = None
+        previous_status: str | None = None
+        for change in changes:
+            field = str(change.get("field") or "")
+            if field == "edition":
+                try:
+                    next_edition = int(change.get("new"))
+                except (TypeError, ValueError):
+                    return False
+            elif field == "status":
+                previous_status = str(change.get("old") or "")
+                next_status = str(change.get("new") or "")
+        if next_status == "draft":
+            started = False
+            if next_edition is None and current_edition != 1:
+                current_boundary_observed = False
+        if next_edition is not None:
+            observed_edition = next_edition
+            current_boundary_observed = observed_edition == current_edition
+            started = False
+        if (
+            (
+                next_status == "in_progress"
+                or (previous_status == "in_progress" and next_status != "draft")
+            )
+            and current_boundary_observed
+            and observed_edition == current_edition
+        ):
+            started = True
+    return current_boundary_observed and observed_edition == current_edition and started
+
+
+def _history_current_spec_edition_boundary(
+    *,
+    current_edition: int,
+    history_rows: tuple[Mapping[str, object], ...],
+) -> tuple[bool, object | None]:
+    """Locate the explicit boundary that opened the current lifecycle edition.
+
+    Edition 1 starts at creation and therefore needs no timestamp lower bound.
+    For later editions, card activity is attributable only after an immutable
+    history row records the exact edition advance.  This keeps a Done card
+    from a prior edition from falsely proving that a newly reopened Draft has
+    already executed.
+    """
+
+    if current_edition == 1:
+        return True, None
+    observed_edition = 1
+    boundary_at: object | None = None
+    for row in history_rows:
+        changes = _decoded_history_changes(row.get("changes"))
+        next_status: str | None = None
+        next_edition: int | None = None
+        for change in changes:
+            field = str(change.get("field") or "")
+            if field == "status":
+                next_status = str(change.get("new") or "")
+            elif field == "edition":
+                try:
+                    next_edition = int(change.get("new"))
+                except (TypeError, ValueError):
+                    return False, None
+        if next_status == "draft":
+            boundary_at = None
+        if next_edition is not None:
+            observed_edition = next_edition
+            boundary_at = (
+                row.get("created_at")
+                if observed_edition == current_edition
+                else None
+            )
+    return observed_edition == current_edition, boundary_at
 
 
 def normalize_global_discovery_source_revision_trigger_sql(raw: object) -> str:
     """Canonicalize SQLite trigger DDL for bounded integrity comparison."""
 
     return re.sub(r'[\s"`;\[\]]+', "", str(raw or "").lower())
+
+
+def _normalize_spec_started_edition_postgresql_check(raw: object) -> str:
+    """Normalize only catalog formatting for the owned edition CHECK.
+
+    This deliberately preserves every operand and boolean operator.  A
+    substring check would accept weakened definitions such as ``... OR TRUE``
+    and silently turn the lifecycle-edition fence into documentation only.
+    PostgreSQL's ``pg_get_constraintdef`` adds quotes and parentheses around
+    the same expression, so those representation-only tokens are removed.
+    """
+
+    normalized = re.sub(
+        r"::\s*(?:smallint|integer|bigint)\b",
+        "",
+        str(raw or "").lower(),
+    )
+    return re.sub(r'[\s"()]+', "", normalized)
 
 
 def global_discovery_source_revision_trigger_manifest() -> dict[str, tuple[str, str]]:
@@ -7458,9 +7587,7 @@ async def _migrate_cognitive_source_revision_ledger() -> str | None:
                 observed["tbl_name"]
             ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
                 observed["sql"]
-            ) != normalize_global_discovery_source_revision_trigger_sql(
-                trigger_sql
-            ):
+            ) != normalize_global_discovery_source_revision_trigger_sql(trigger_sql):
                 raise RuntimeError(
                     "cognitive source immutability trigger audit failed: "
                     + trigger_name
@@ -7994,9 +8121,7 @@ async def _migrate_global_discovery_recovery_control_plane() -> str | None:
                 existing["tbl_name"]
             ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
                 existing["sql"]
-            ) != normalize_global_discovery_source_revision_trigger_sql(
-                trigger_sql
-            ):
+            ) != normalize_global_discovery_source_revision_trigger_sql(trigger_sql):
                 raise RuntimeError(
                     f"global recovery source revision trigger {trigger_name} is corrupt"
                 )
@@ -10139,9 +10264,7 @@ async def _migrate_knowledge_propagation_v2_schema() -> str | None:
                 observed["tbl_name"]
             ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
                 observed["sql"]
-            ) != normalize_global_discovery_source_revision_trigger_sql(
-                trigger_sql
-            ):
+            ) != normalize_global_discovery_source_revision_trigger_sql(trigger_sql):
                 raise RuntimeError(
                     "knowledge propagation v2 trigger postcondition failed: "
                     + trigger_name
@@ -10628,12 +10751,14 @@ async def _migrate_guideline_policy_lifecycle_substrate() -> str | None:
                     await conn.execute(sa_text(trigger_sql))
                     changed = True
                     continue
-                if str(
-                    observed["tbl_name"]
-                ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
-                    observed["sql"]
-                ) != normalize_global_discovery_source_revision_trigger_sql(
-                    trigger_sql
+                if (
+                    str(observed["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        observed["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
                 ):
                     raise RuntimeError(
                         "guideline revision no-op trigger drift: " + trigger_name
@@ -10676,12 +10801,14 @@ async def _migrate_guideline_policy_lifecycle_substrate() -> str | None:
                     await conn.execute(sa_text(trigger_sql))
                     changed = True
                     continue
-                if str(
-                    observed["tbl_name"]
-                ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
-                    observed["sql"]
-                ) != normalize_global_discovery_source_revision_trigger_sql(
-                    trigger_sql
+                if (
+                    str(observed["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        observed["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
                 ):
                     raise RuntimeError(
                         "guideline import candidate trigger drift: " + trigger_name
@@ -11731,7 +11858,9 @@ async def _migrate_guideline_policy_v1_schema() -> str | None:
                     legacy_version = (
                         existing_legacy_version
                         if existing_legacy_version is not None
-                        else captured_version if migrated_legacy else None
+                        else captured_version
+                        if migrated_legacy
+                        else None
                     )
                     normalized.update(
                         {
@@ -12306,9 +12435,7 @@ async def _migrate_guideline_impact_v1_schema() -> str | None:
                 row["tbl_name"]
             ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
                 row["sql"]
-            ) != normalize_global_discovery_source_revision_trigger_sql(
-                trigger_sql
-            ):
+            ) != normalize_global_discovery_source_revision_trigger_sql(trigger_sql):
                 raise RuntimeError(
                     "guideline impact trigger audit failed: " + trigger_name
                 )
@@ -15089,12 +15216,14 @@ WHERE event.event_id IS NULL
                     await conn.execute(sa_text(trigger_sql))
                     changed = True
                     continue
-                if str(
-                    row["tbl_name"]
-                ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
-                    row["sql"]
-                ) != normalize_global_discovery_source_revision_trigger_sql(
-                    trigger_sql
+                if (
+                    str(row["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        row["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
                 ):
                     raise RuntimeError(
                         "policy waiver immutable trigger is corrupt: " + trigger_name
@@ -15342,9 +15471,9 @@ END""",
     return manifest
 
 
-def semantic_pinpoint_v2_postgresql_ddl() -> (
-    tuple[str, dict[str, tuple[str, str, int]]]
-):
+def semantic_pinpoint_v2_postgresql_ddl() -> tuple[
+    str, dict[str, tuple[str, str, int]]
+]:
     """Return PostgreSQL guards equivalent to the SQLite v2 manifest."""
 
     receipt, result, finding = (
@@ -16131,8 +16260,9 @@ async def _converge_semantic_guideline_waiver_contract() -> bool:
             expected_checks = dict(expected["checks"])
             for name in predecessor_event_checks:
                 expression = observed_checks.get(name)
-                if expression is None or _sql_tokens(expression) != (
-                    expected_checks[name]
+                if (
+                    expression is None
+                    or _sql_tokens(expression) != (expected_checks[name])
                 ):
                     return False
                 observed_checks[name] = expected_checks[name]
@@ -16439,12 +16569,14 @@ WHERE NOT trigger.tgisinternal
                     trigger_sql,
                 ) in manifest.items():
                     row = observed[trigger_name]
-                    if str(
-                        row["tbl_name"]
-                    ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
-                        row["sql"]
-                    ) != normalize_global_discovery_source_revision_trigger_sql(
-                        trigger_sql
+                    if (
+                        str(row["tbl_name"]) != table_name
+                        or normalize_global_discovery_source_revision_trigger_sql(
+                            row["sql"]
+                        )
+                        != normalize_global_discovery_source_revision_trigger_sql(
+                            trigger_sql
+                        )
                     ):
                         raise RuntimeError(
                             "semantic waiver convergence produced a corrupt "
@@ -16921,12 +17053,14 @@ async def _migrate_semantic_guideline_governance_schema() -> str | None:
                     await conn.execute(sa_text(trigger_sql))
                     changed = True
                     continue
-                if str(
-                    row["tbl_name"]
-                ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
-                    row["sql"]
-                ) != normalize_global_discovery_source_revision_trigger_sql(
-                    trigger_sql
+                if (
+                    str(row["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        row["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
                 ):
                     raise RuntimeError(
                         "semantic guideline owned trigger is corrupt: " + trigger_name
@@ -17082,12 +17216,14 @@ async def _migrate_semantic_pinpoint_v2_schema() -> str | None:
                 if observed is None:
                     await conn.execute(sa_text(trigger_sql))
                     changed = True
-                elif str(
-                    observed["tbl_name"]
-                ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
-                    observed["sql"]
-                ) != normalize_global_discovery_source_revision_trigger_sql(
-                    trigger_sql
+                elif (
+                    str(observed["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        observed["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
                 ):
                     raise RuntimeError(
                         "semantic pinpoint v2 owned trigger is corrupt: " + trigger_name
@@ -20180,12 +20316,14 @@ END $$
                     await conn.execute(sa_text(trigger_sql))
                     changed = True
                     continue
-                if str(
-                    observed["tbl_name"]
-                ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
-                    observed["sql"]
-                ) != normalize_global_discovery_source_revision_trigger_sql(
-                    trigger_sql
+                if (
+                    str(observed["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        observed["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
                 ):
                     raise RuntimeError(
                         "Code Traceability owned trigger is corrupt: " + trigger_name
@@ -20275,6 +20413,806 @@ WHERE NOT trigger.tgisinternal
             raise RuntimeError(
                 "Code Traceability lineage-column convergence is incomplete"
             )
+    return None if changed else "skipped"
+
+
+async def _migrate_spec_dependency_schema() -> str | None:
+    """Converge and audit the exact SK-M relational authority.
+
+    ``create_all`` is the only table-create boundary.  This post-boundary step
+    verifies that an existing table was not silently accepted with schema
+    drift and installs the small, closed immutability-trigger manifest.  It is
+    deliberately relational-only and never calls an agent, network provider,
+    or knowledge graph while holding SQLite's writer lock.
+    """
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        SPEC_DEPENDENCY_TRIGGER_PREFIX,
+        SpecDependency,
+        SpecDependencyBoardLock,
+        SpecDependencyOperation,
+        spec_dependency_sqlite_trigger_manifest,
+        spec_dependency_sqlite_trigger_predecessors,
+    )
+
+    engine = get_engine()
+    tables = (
+        SpecDependencyBoardLock.__table__,
+        SpecDependency.__table__,
+        SpecDependencyOperation.__table__,
+    )
+    changed = False
+    async with engine.begin() as conn:
+        dialect = conn.dialect.name
+        if dialect not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "Spec dependency migration supports only SQLite and PostgreSQL"
+            )
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(sa_inspect(sync_conn).get_table_names())
+        )
+        required_authorization_tables = {
+            "artifact_deletion_tombstones",
+            "kg_board_erasure_permits",
+            "specs",
+        }
+        missing_authorization_tables = required_authorization_tables - table_names
+        if missing_authorization_tables:
+            raise RuntimeError(
+                "Spec dependency migration requires governed erasure authority: "
+                + ", ".join(sorted(missing_authorization_tables))
+            )
+        spec_columns = await conn.run_sync(
+            lambda sync_conn: {
+                str(column["name"])
+                for column in sa_inspect(sync_conn).get_columns("specs")
+            }
+        )
+        added_started_edition_column = "last_started_edition" not in spec_columns
+        if added_started_edition_column:
+            await conn.execute(
+                sa_text("ALTER TABLE specs ADD COLUMN last_started_edition INTEGER")
+            )
+            changed = True
+        started_trigger_names = {
+            "trg_spec_dependency_started_edition_insert",
+            "trg_spec_dependency_started_edition_update",
+        }
+        if dialect == "sqlite":
+            current_started_trigger_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name IN "
+                            "('trg_spec_dependency_started_edition_insert', "
+                            "'trg_spec_dependency_started_edition_update')"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            current_started_triggers = {
+                str(row["name"]): normalize_global_discovery_source_revision_trigger_sql(
+                    row["sql"]
+                )
+                for row in current_started_trigger_rows
+            }
+            canonical_started_triggers = {
+                trigger_name: normalize_global_discovery_source_revision_trigger_sql(
+                    spec_dependency_sqlite_trigger_manifest()[trigger_name][1]
+                )
+                for trigger_name in started_trigger_names
+            }
+            started_contract_needs_upgrade = (
+                current_started_triggers != canonical_started_triggers
+            )
+        else:
+            current_started_trigger_names = set(
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT trigger_row.tgname FROM pg_trigger AS trigger_row "
+                            "JOIN pg_class AS relation "
+                            "ON relation.oid = trigger_row.tgrelid "
+                            "JOIN pg_namespace AS relation_namespace "
+                            "ON relation_namespace.oid = relation.relnamespace "
+                            "WHERE NOT trigger_row.tgisinternal "
+                            "AND relation_namespace.nspname = current_schema() "
+                            "AND relation.relname = 'specs' "
+                            "AND trigger_row.tgname IN "
+                            "('trg_spec_dependency_started_edition_insert', "
+                            "'trg_spec_dependency_started_edition_update')"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            started_contract_needs_upgrade = (
+                current_started_trigger_names != started_trigger_names
+            )
+        needs_started_backfill = (
+            added_started_edition_column or started_contract_needs_upgrade
+        )
+        if needs_started_backfill:
+            started_backfill = await conn.execute(
+                sa_text(
+                    "UPDATE specs SET last_started_edition = edition "
+                    "WHERE last_started_edition IS NULL "
+                    "AND status IN ('in_progress', 'done', 'cancelled')"
+                )
+            )
+            if int(started_backfill.rowcount or 0) > 0:
+                changed = True
+        # A Spec can move backward from In progress to Validated, Approved,
+        # or Review without opening a new edition.  Reconstruct that durable
+        # execution memory from immutable status history and from associated
+        # normal/test cards whose execution activity belongs to this edition.
+        # A recorded return to Draft is an edition boundary: prior-edition
+        # cards must never make the new Draft look started.
+        card_columns: set[str] = set()
+        if needs_started_backfill and "cards" in table_names:
+            card_columns = await conn.run_sync(
+                lambda sync_conn: {
+                    str(column["name"])
+                    for column in sa_inspect(sync_conn).get_columns("cards")
+                }
+            )
+        candidates = (
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT id, edition, status FROM specs "
+                        "WHERE last_started_edition IS NULL ORDER BY id"
+                    )
+                )
+            ).all()
+            if needs_started_backfill
+            else ()
+        )
+        conservative_validated_backfill: list[str] = []
+        for spec_id, edition, status in candidates:
+            history_rows: tuple[Mapping[str, object], ...] = ()
+            if "spec_history" in table_names:
+                history_rows = tuple(
+                    (
+                        await conn.execute(
+                            sa_text(
+                                "SELECT changes, created_at FROM spec_history "
+                                "WHERE spec_id = :spec_id "
+                                "AND action = 'status_changed' "
+                                "ORDER BY created_at, id"
+                            ),
+                            {"spec_id": str(spec_id)},
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+            history_proves_started = _history_proves_current_spec_edition_started(
+                current_edition=int(edition),
+                history_changes=tuple(row["changes"] for row in history_rows),
+            )
+            card_proves_started = False
+            required_card_columns = {"spec_id", "status"}
+            if required_card_columns.issubset(card_columns):
+                boundary_known, boundary_at = _history_current_spec_edition_boundary(
+                    current_edition=int(edition),
+                    history_rows=history_rows,
+                )
+                time_column = (
+                    "COALESCE(updated_at, created_at)"
+                    if {"created_at", "updated_at"}.issubset(card_columns)
+                    else "updated_at"
+                    if "updated_at" in card_columns
+                    else "created_at"
+                    if "created_at" in card_columns
+                    else None
+                )
+                can_attribute_card = int(edition) == 1 or (
+                    boundary_known and boundary_at is not None and time_column is not None
+                )
+                if can_attribute_card:
+                    time_predicate = (
+                        "" if int(edition) == 1 else f"AND {time_column} >= :boundary_at "
+                    )
+                    card_proves_started = bool(
+                        (
+                            await conn.execute(
+                                sa_text(
+                                    "SELECT COUNT(*) FROM cards "
+                                    "WHERE spec_id = :spec_id "
+                                    "AND status IN ('started', 'in_progress', "
+                                    "'validation', 'on_hold', 'done') "
+                                    + time_predicate
+                                ),
+                                {
+                                    "spec_id": str(spec_id),
+                                    **(
+                                        {"boundary_at": boundary_at}
+                                        if int(edition) != 1
+                                        else {}
+                                    ),
+                                },
+                            )
+                        ).scalar_one()
+                    )
+            # Legacy Validated is intrinsically ambiguous: it may be the
+            # pre-execution admission state or a rollback from In progress.
+            # Leaving NULL would fail open and authorize graph mutation after
+            # execution.  The one-time migration therefore fails closed while
+            # live writes continue to set the marker only at actual start.
+            fail_closed_validated = str(status) == "validated"
+            if fail_closed_validated and not (
+                history_proves_started or card_proves_started
+            ):
+                conservative_validated_backfill.append(str(spec_id))
+            if (
+                history_proves_started
+                or card_proves_started
+                or fail_closed_validated
+            ):
+                derived_backfill = await conn.execute(
+                    sa_text(
+                        "UPDATE specs SET last_started_edition = edition "
+                        "WHERE id = :spec_id "
+                        "AND last_started_edition IS NULL"
+                    ),
+                    {"spec_id": str(spec_id)},
+                )
+                if int(derived_backfill.rowcount or 0) > 0:
+                    changed = True
+        if conservative_validated_backfill:
+            logger.warning(
+                "spec_dependency.started_edition_backfill_fail_closed count=%s",
+                len(conservative_validated_backfill),
+                extra={
+                    "event": "spec_dependency.started_edition_backfill_fail_closed",
+                    "count": len(conservative_validated_backfill),
+                    "spec_ids": tuple(conservative_validated_backfill),
+                },
+            )
+        invalid_started_edition_count = int(
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT COUNT(*) FROM specs "
+                        "WHERE last_started_edition IS NOT NULL "
+                        "AND (last_started_edition < 1 "
+                        "OR last_started_edition > edition)"
+                    )
+                )
+            ).scalar_one()
+        )
+        if invalid_started_edition_count:
+            raise RuntimeError(
+                "Spec dependency started-edition data is corrupt: "
+                f"{invalid_started_edition_count} invalid row(s)"
+            )
+        if dialect == "postgresql":
+            constraint_row = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT pg_get_constraintdef(constraint_row.oid) AS definition "
+                            "FROM pg_constraint AS constraint_row "
+                            "JOIN pg_class AS relation "
+                            "ON relation.oid = constraint_row.conrelid "
+                            "JOIN pg_namespace AS relation_namespace "
+                            "ON relation_namespace.oid = relation.relnamespace "
+                            "WHERE relation.relname = 'specs' "
+                            "AND relation_namespace.nspname = current_schema() "
+                            "AND constraint_row.conname = "
+                            "'ck_spec_last_started_edition'"
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if constraint_row is None:
+                await conn.execute(
+                    sa_text(
+                        "ALTER TABLE specs ADD CONSTRAINT "
+                        "ck_spec_last_started_edition CHECK "
+                        "(last_started_edition IS NULL OR "
+                        "(last_started_edition >= 1 "
+                        "AND last_started_edition <= edition))"
+                    )
+                )
+                changed = True
+            else:
+                normalized_definition = (
+                    _normalize_spec_started_edition_postgresql_check(
+                        constraint_row["definition"]
+                    )
+                )
+                expected_definition = _normalize_spec_started_edition_postgresql_check(
+                    "CHECK (last_started_edition IS NULL OR "
+                    "(last_started_edition >= 1 "
+                    "AND last_started_edition <= edition))"
+                )
+                if normalized_definition != expected_definition:
+                    raise RuntimeError(
+                        "Spec dependency started-edition constraint is corrupt"
+                    )
+        missing = [table.name for table in tables if table.name not in table_names]
+        if missing:
+            raise RuntimeError(
+                "Spec dependency migration requires create_all; missing tables: "
+                + ", ".join(sorted(missing))
+            )
+        for table in tables:
+            contract = await conn.run_sync(
+                (
+                    lambda sync_conn, owned=table: _sqlite_owned_table_contract(
+                        sync_conn, owned
+                    )
+                )
+                if dialect == "sqlite"
+                else (
+                    lambda sync_conn, owned=table: _postgresql_owned_table_contract(
+                        sync_conn, owned
+                    )
+                )
+            )
+            if contract["observed"] != contract["expected"]:
+                raise RuntimeError(
+                    "Spec dependency table has a non-canonical contract: " + table.name
+                )
+
+        # Existing rows may predate the boundary guards. Fail closed rather
+        # than installing triggers over a graph that already crosses boards
+        # or whose live FK disagrees with its immutable prerequisite identity.
+        invalid_board_boundary_count = int(
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT COUNT(*) FROM spec_dependencies AS dependency "
+                        "LEFT JOIN specs AS dependent "
+                        "ON dependent.id = dependency.dependent_spec_id "
+                        "LEFT JOIN specs AS prerequisite "
+                        "ON prerequisite.id = dependency.prerequisite_spec_ref "
+                        "WHERE dependent.id IS NULL "
+                        "OR dependent.board_id <> dependency.board_id "
+                        "OR (dependency.active = true AND ("
+                        "prerequisite.id IS NULL "
+                        "OR prerequisite.board_id <> dependency.board_id "
+                        "OR dependency.prerequisite_spec_id IS NULL "
+                        "OR dependency.prerequisite_spec_id "
+                        "<> dependency.prerequisite_spec_ref))"
+                    )
+                )
+            ).scalar_one()
+        )
+        if invalid_board_boundary_count:
+            raise RuntimeError(
+                "Spec dependency board-boundary data is corrupt: "
+                f"{invalid_board_boundary_count} invalid row(s)"
+            )
+
+        # SQLAlchemy's generic index inspector does not make the partial
+        # predicate part of its cross-dialect contract.  Audit it explicitly:
+        # silently widening this index to a full unique index would prevent a
+        # removed edge from being added again, while dropping the predicate
+        # without uniqueness would permit two active edges.
+        if dialect == "sqlite":
+            active_index_sql = (
+                await conn.execute(
+                    sa_text(
+                        "SELECT sql FROM sqlite_master WHERE type = 'index' "
+                        "AND name = 'uq_spec_dependency_active_edge'"
+                    )
+                )
+            ).scalar_one_or_none()
+            normalized_active_index = re.sub(
+                r'[\s"`()\[\]]+', "", str(active_index_sql or "").lower()
+            )
+            if not normalized_active_index.endswith("whereactive=true"):
+                raise RuntimeError(
+                    "Spec dependency active-edge index predicate is corrupt"
+                )
+        else:
+            active_index_predicate = (
+                await conn.execute(
+                    sa_text(
+                        "SELECT pg_get_expr(index_row.indpred, "
+                        "index_row.indrelid) AS predicate "
+                        "FROM pg_index AS index_row "
+                        "JOIN pg_class AS index_relation "
+                        "ON index_relation.oid = index_row.indexrelid "
+                        "JOIN pg_class AS table_relation "
+                        "ON table_relation.oid = index_row.indrelid "
+                        "JOIN pg_namespace AS table_namespace "
+                        "ON table_namespace.oid = table_relation.relnamespace "
+                        "WHERE table_relation.relname = 'spec_dependencies' "
+                        "AND table_namespace.nspname = current_schema() "
+                        "AND index_relation.relname = "
+                        "'uq_spec_dependency_active_edge'"
+                    )
+                )
+            ).scalar_one_or_none()
+            normalized_active_predicate = re.sub(
+                r'[\s"()]+', "", str(active_index_predicate or "").lower()
+            )
+            if normalized_active_predicate not in {"active", "active=true"}:
+                raise RuntimeError(
+                    "Spec dependency active-edge index predicate is corrupt"
+                )
+
+        if dialect == "sqlite":
+            manifest = spec_dependency_sqlite_trigger_manifest()
+            rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, tbl_name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' "
+                            "AND substr(name, 1, :prefix_length) = :prefix"
+                        ),
+                        {
+                            "prefix": SPEC_DEPENDENCY_TRIGGER_PREFIX,
+                            "prefix_length": len(SPEC_DEPENDENCY_TRIGGER_PREFIX),
+                        },
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            observed = {str(row["name"]): row for row in rows}
+            predecessors = spec_dependency_sqlite_trigger_predecessors()
+            unexpected = set(observed) - set(manifest)
+            if unexpected:
+                raise RuntimeError(
+                    "Spec dependency has unexpected owned triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for trigger_name, (table_name, trigger_sql) in manifest.items():
+                current = observed.get(trigger_name)
+                if current is None:
+                    await conn.execute(sa_text(trigger_sql))
+                    changed = True
+                    continue
+                current_sql = normalize_global_discovery_source_revision_trigger_sql(
+                    current["sql"]
+                )
+                expected_sql = normalize_global_discovery_source_revision_trigger_sql(
+                    trigger_sql
+                )
+                if str(current["tbl_name"]) != table_name:
+                    raise RuntimeError(
+                        "Spec dependency owned trigger is corrupt: " + trigger_name
+                    )
+                if current_sql == expected_sql:
+                    continue
+                known_predecessors = {
+                    normalize_global_discovery_source_revision_trigger_sql(source)
+                    for source in predecessors.get(trigger_name, ())
+                }
+                if current_sql not in known_predecessors:
+                    raise RuntimeError(
+                        "Spec dependency owned trigger is corrupt: " + trigger_name
+                    )
+                await conn.execute(sa_text(f'DROP TRIGGER "{trigger_name}"'))
+                await conn.execute(sa_text(trigger_sql))
+                changed = True
+            violations = list(
+                (await conn.exec_driver_sql("PRAGMA foreign_key_check")).all()
+            )
+            if violations:
+                raise RuntimeError(
+                    "Spec dependency migration left foreign-key violations: "
+                    + repr(violations[:10])
+                )
+        else:
+            board_boundary_function_body = """BEGIN
+    IF NOT EXISTS (
+           SELECT 1 FROM specs
+           WHERE id = NEW.dependent_spec_id AND board_id = NEW.board_id
+       ) OR (NEW.active = true AND NOT EXISTS (
+           SELECT 1 FROM specs
+           WHERE id = NEW.prerequisite_spec_ref AND board_id = NEW.board_id
+       )) OR (NEW.active = true AND (
+           NEW.prerequisite_spec_id IS NULL OR
+           NEW.prerequisite_spec_id IS DISTINCT FROM NEW.prerequisite_spec_ref
+       )) THEN
+        RAISE EXCEPTION 'spec_dependency_board_boundary_invalid';
+    END IF;
+    RETURN NEW;
+END;"""
+            spec_board_function_body = """BEGIN
+    IF NEW.board_id IS DISTINCT FROM OLD.board_id AND (
+        EXISTS (
+            SELECT 1 FROM spec_dependencies
+            WHERE dependent_spec_id = OLD.id
+        ) OR EXISTS (
+            SELECT 1 FROM spec_dependencies
+            WHERE active = true AND prerequisite_spec_id = OLD.id
+        )
+    ) THEN
+        RAISE EXCEPTION 'spec_dependency_board_boundary_invalid';
+    END IF;
+    RETURN NEW;
+END;"""
+            started_edition_function_body = """BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.edition < 1 OR (
+            NEW.last_started_edition IS NOT NULL AND
+            NEW.last_started_edition IS DISTINCT FROM NEW.edition
+        ) THEN
+            RAISE EXCEPTION 'spec_dependency_started_edition_invalid';
+        END IF;
+    ELSIF TG_OP = 'UPDATE' THEN
+        IF NEW.edition < OLD.edition OR
+           NEW.edition > OLD.edition + 1 OR
+           (NEW.edition = OLD.edition + 1 AND
+            NEW.last_started_edition IS DISTINCT FROM OLD.last_started_edition) OR
+           (NEW.edition = OLD.edition AND NOT (
+            NEW.last_started_edition IS NOT DISTINCT FROM OLD.last_started_edition OR
+            (NEW.last_started_edition = NEW.edition AND (
+             OLD.last_started_edition IS NULL OR
+             OLD.last_started_edition < NEW.edition
+            ))
+           )) THEN
+            RAISE EXCEPTION 'spec_dependency_started_edition_invalid';
+        END IF;
+    ELSE
+        RAISE EXCEPTION 'spec_dependency_started_edition_operation_invalid';
+    END IF;
+    RETURN NEW;
+END;"""
+            function_body = """BEGIN
+    IF TG_TABLE_NAME = 'spec_dependencies'
+       AND OLD.active = true AND NEW.active = false
+       AND NEW.id IS NOT DISTINCT FROM OLD.id
+       AND NEW.board_id IS NOT DISTINCT FROM OLD.board_id
+       AND NEW.dependent_spec_id IS NOT DISTINCT FROM OLD.dependent_spec_id
+       AND NEW.prerequisite_spec_id IS NULL
+       AND NEW.prerequisite_spec_ref IS NOT DISTINCT FROM OLD.prerequisite_spec_ref
+       AND NEW.resolved_on_create IS NOT DISTINCT FROM OLD.resolved_on_create
+       AND NEW.retrospective IS NOT DISTINCT FROM OLD.retrospective
+       AND NEW.introduced_at_spec_version IS NOT DISTINCT FROM OLD.introduced_at_spec_version
+       AND NEW.source_version_on_create IS NOT DISTINCT FROM OLD.source_version_on_create
+       AND NEW.source_status_on_create IS NOT DISTINCT FROM OLD.source_status_on_create
+       AND NEW.target_status_on_create IS NOT DISTINCT FROM OLD.target_status_on_create
+       AND NEW.target_version_on_create IS NOT DISTINCT FROM OLD.target_version_on_create
+       AND NEW.target_title_on_create IS NOT DISTINCT FROM OLD.target_title_on_create
+       AND NEW.target_edition_on_create IS NOT DISTINCT FROM OLD.target_edition_on_create
+       AND NEW.target_ideation_id_on_create IS NOT DISTINCT FROM OLD.target_ideation_id_on_create
+       AND NEW.add_idempotency_key IS NOT DISTINCT FROM OLD.add_idempotency_key
+       AND NEW.add_request_digest IS NOT DISTINCT FROM OLD.add_request_digest
+       AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at
+       AND NEW.created_by_id IS NOT DISTINCT FROM OLD.created_by_id
+       AND NEW.created_by_type IS NOT DISTINCT FROM OLD.created_by_type
+       AND NEW.created_by_name IS NOT DISTINCT FROM OLD.created_by_name THEN
+        RETURN NEW;
+    END IF;
+    RAISE EXCEPTION 'spec_dependency_immutable';
+END;"""
+            delete_function_body = """BEGIN
+    IF TG_TABLE_NAME = 'spec_dependencies' THEN
+        IF EXISTS (
+               SELECT 1 FROM kg_board_erasure_permits
+               WHERE board_id = OLD.board_id
+           ) OR EXISTS (
+               SELECT 1 FROM artifact_deletion_tombstones
+               WHERE board_id = OLD.board_id
+                 AND artifact_type = 'spec'
+                 AND artifact_id = OLD.dependent_spec_id
+           ) THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'spec_dependency_delete_forbidden';
+    ELSIF TG_TABLE_NAME = 'spec_dependency_operations' THEN
+        IF EXISTS (
+            SELECT 1 FROM kg_board_erasure_permits
+            WHERE board_id = OLD.board_id
+        ) THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'spec_dependency_operation_immutable';
+    END IF;
+    RAISE EXCEPTION 'spec_dependency_delete_guard_table_invalid';
+END;"""
+            function_contracts = {
+                "pulse_spec_dependency_board_boundary_guard": (
+                    board_boundary_function_body
+                ),
+                "pulse_spec_dependency_spec_board_guard": spec_board_function_body,
+                "pulse_spec_dependency_started_edition_guard": (
+                    started_edition_function_body
+                ),
+                "pulse_spec_dependency_immutable_guard": function_body,
+                "pulse_spec_dependency_delete_guard": delete_function_body,
+            }
+            function_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT function_row.proname AS function_name, "
+                            "language.lanname, "
+                            "pg_get_function_result(function_row.oid) AS result_type, "
+                            "pg_get_function_arguments(function_row.oid) AS arguments, "
+                            "function_row.prosrc AS source "
+                            "FROM pg_proc AS function_row "
+                            "JOIN pg_namespace AS namespace "
+                            "ON namespace.oid = function_row.pronamespace "
+                            "JOIN pg_language AS language "
+                            "ON language.oid = function_row.prolang "
+                            "WHERE namespace.nspname = current_schema() "
+                            "AND left(function_row.proname, "
+                            "length('pulse_spec_dependency_')) = "
+                            "'pulse_spec_dependency_'"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            observed_functions: dict[str, list[object]] = {}
+            for function_row in function_rows:
+                observed_functions.setdefault(
+                    str(function_row["function_name"]), []
+                ).append(function_row)
+            unexpected_functions = set(observed_functions) - set(function_contracts)
+            if unexpected_functions:
+                raise RuntimeError(
+                    "Spec dependency has unexpected owned functions: "
+                    + ", ".join(sorted(unexpected_functions))
+                )
+            normalize_body = lambda value: re.sub(  # noqa: E731
+                r"\s+", " ", str(value).strip()
+            ).lower()
+            for function_name, expected_body in function_contracts.items():
+                observed_rows = observed_functions.get(function_name, [])
+                if len(observed_rows) > 1:
+                    raise RuntimeError(
+                        "Spec dependency guard has unexpected overloads: "
+                        + function_name
+                    )
+                if not observed_rows:
+                    await conn.execute(
+                        sa_text(
+                            f"CREATE FUNCTION {function_name}() "
+                            "RETURNS trigger AS $$\n"
+                            + expected_body
+                            + "\n$$ LANGUAGE plpgsql"
+                        )
+                    )
+                    changed = True
+                    continue
+                function_row = observed_rows[0]
+                if (
+                    str(function_row["lanname"]).lower() != "plpgsql"
+                    or str(function_row["result_type"]).lower() != "trigger"
+                    or str(function_row["arguments"]).strip() != ""
+                    or normalize_body(function_row["source"])
+                    != normalize_body(expected_body)
+                ):
+                    raise RuntimeError(
+                        "Spec dependency guard function is corrupt: " + function_name
+                    )
+            trigger_specs = {
+                "trg_spec_dependency_board_boundary_insert": (
+                    "spec_dependencies",
+                    "pulse_spec_dependency_board_boundary_guard",
+                    7,
+                ),
+                "trg_spec_dependency_board_boundary_update": (
+                    "spec_dependencies",
+                    "pulse_spec_dependency_board_boundary_guard",
+                    19,
+                ),
+                "trg_spec_dependency_tombstone_immutable_update": (
+                    "spec_dependencies",
+                    "pulse_spec_dependency_immutable_guard",
+                    19,
+                ),
+                "trg_spec_dependency_operation_immutable_update": (
+                    "spec_dependency_operations",
+                    "pulse_spec_dependency_immutable_guard",
+                    19,
+                ),
+                "trg_spec_dependency_immutable_delete": (
+                    "spec_dependencies",
+                    "pulse_spec_dependency_delete_guard",
+                    11,
+                ),
+                "trg_spec_dependency_operation_immutable_delete": (
+                    "spec_dependency_operations",
+                    "pulse_spec_dependency_delete_guard",
+                    11,
+                ),
+                "trg_spec_dependency_spec_board_update": (
+                    "specs",
+                    "pulse_spec_dependency_spec_board_guard",
+                    19,
+                ),
+                "trg_spec_dependency_started_edition_insert": (
+                    "specs",
+                    "pulse_spec_dependency_started_edition_guard",
+                    7,
+                ),
+                "trg_spec_dependency_started_edition_update": (
+                    "specs",
+                    "pulse_spec_dependency_started_edition_guard",
+                    19,
+                ),
+            }
+            trigger_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT trigger_row.tgname, relation.relname AS table_name, "
+                            "trigger_row.tgenabled, trigger_row.tgtype, "
+                            "trigger_row.tgnargs, trigger_row.tgattr::text AS tgattr, "
+                            "function_row.proname AS function_name "
+                            "FROM pg_trigger AS trigger_row "
+                            "JOIN pg_class AS relation "
+                            "ON relation.oid = trigger_row.tgrelid "
+                            "JOIN pg_namespace AS relation_namespace "
+                            "ON relation_namespace.oid = relation.relnamespace "
+                            "JOIN pg_proc AS function_row "
+                            "ON function_row.oid = trigger_row.tgfoid "
+                            "WHERE NOT trigger_row.tgisinternal "
+                            "AND relation_namespace.nspname = current_schema() "
+                            "AND left(trigger_row.tgname, "
+                            "length('trg_spec_dependency_')) = "
+                            "'trg_spec_dependency_'"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            observed_triggers = {str(row["tgname"]): row for row in trigger_rows}
+            unexpected_triggers = set(observed_triggers) - set(trigger_specs)
+            if unexpected_triggers:
+                raise RuntimeError(
+                    "Spec dependency has unexpected owned triggers: "
+                    + ", ".join(sorted(unexpected_triggers))
+                )
+            for trigger_name, (
+                table_name,
+                function_name,
+                trigger_type,
+            ) in trigger_specs.items():
+                observed_trigger = observed_triggers.get(trigger_name)
+                if observed_trigger is None:
+                    trigger_event = {
+                        7: "INSERT",
+                        11: "DELETE",
+                        19: "UPDATE",
+                    }[trigger_type]
+                    await conn.execute(
+                        sa_text(
+                            f'CREATE TRIGGER "{trigger_name}" BEFORE '
+                            f"{trigger_event} "
+                            f'ON "{table_name}" FOR EACH ROW EXECUTE FUNCTION '
+                            f"{function_name}()"
+                        )
+                    )
+                    changed = True
+                    continue
+                if (
+                    str(observed_trigger["table_name"]) != table_name
+                    or str(observed_trigger["tgenabled"]) != "O"
+                    # PostgreSQL tgtype bitmask: ROW(1) | BEFORE(2) |
+                    # INSERT(4), DELETE(8), or UPDATE(16).
+                    or int(observed_trigger["tgtype"]) != trigger_type
+                    or int(observed_trigger["tgnargs"]) != 0
+                    or str(observed_trigger["tgattr"]).strip() != ""
+                    or str(observed_trigger["function_name"]) != function_name
+                ):
+                    raise RuntimeError(
+                        "Spec dependency owned trigger is corrupt: " + trigger_name
+                    )
+
     return None if changed else "skipped"
 
 
@@ -20390,9 +21328,9 @@ WHERE NOT trigger.tgisinternal
             raise RuntimeError(f"quality C7 trigger convergence incomplete: {missing}")
 
 
-def _validation_cycle_edition_column_manifest() -> (
-    dict[str, tuple[tuple[str, str], ...]]
-):
+def _validation_cycle_edition_column_manifest() -> dict[
+    str, tuple[tuple[str, str], ...]
+]:
     return {
         "quality_assessment_receipts": (("subject_edition", "INTEGER"),),
         "checklist_executions": (("spec_edition", "INTEGER"),),
@@ -20851,12 +21789,14 @@ async def _migrate_validation_cycle_editions() -> object:
                 observed = existing_positive.get(trigger_name)
                 if observed is None:
                     continue
-                if str(
-                    observed["tbl_name"]
-                ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
-                    observed["sql"]
-                ) != normalize_global_discovery_source_revision_trigger_sql(
-                    trigger_sql
+                if (
+                    str(observed["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        observed["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
                 ):
                     raise RuntimeError(
                         "validation edition owned trigger is corrupt: " + trigger_name
@@ -21087,12 +22027,14 @@ async def _migrate_validation_cycle_editions() -> object:
                 if observed is None:
                     await conn.exec_driver_sql(trigger_sql)
                     changed = True
-                elif str(
-                    observed["tbl_name"]
-                ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
-                    observed["sql"]
-                ) != normalize_global_discovery_source_revision_trigger_sql(
-                    trigger_sql
+                elif (
+                    str(observed["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        observed["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
                 ):
                     raise RuntimeError(
                         "validation edition owned trigger is corrupt: " + trigger_name
@@ -21217,5 +22159,6 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     ),
     "_migrate_quality_assessment_c7_schema": _migrate_quality_assessment_c7_schema,
     "_migrate_code_traceability_schema": _migrate_code_traceability_schema,
+    "_migrate_spec_dependency_schema": _migrate_spec_dependency_schema,
     "_migrate_agent_permissions": _migrate_agent_permissions,
 }

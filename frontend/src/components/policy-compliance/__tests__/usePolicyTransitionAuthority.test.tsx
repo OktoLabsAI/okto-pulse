@@ -27,6 +27,7 @@ function transition(
     label: 'Done',
     gate: 'card_to_done',
     blocked_reason: null,
+    blocked_facts: null,
     preconditions: [],
     capabilities: [],
     effects: [],

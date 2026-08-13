@@ -84,6 +84,7 @@ function response(metrics: unknown[], validationEdition: number | null = null) {
       subject_id: 'spec-1',
       subject_version: 7,
       validation_edition: validationEdition,
+      lifecycle_state: 'current',
       binding_id: 'binding-1',
       guideline_id: 'guideline-1',
       guideline_revision_id: 'revision-1',
@@ -105,6 +106,7 @@ function legacyResponse(currentness: 'current' | 'stale' = 'current') {
       subject_id: 'spec-1',
       subject_version: 7,
       validation_edition: null,
+      lifecycle_state: 'history_only',
       binding_id: 'binding-1',
       guideline_id: 'guideline-1',
       guideline_revision_id: 'revision-1',
@@ -142,8 +144,8 @@ function legacyResponse(currentness: 'current' | 'stale' = 'current') {
           content_hash: digest,
         }],
         pinpoints: [{
-          anchor_type: 'field',
-          anchor_ref: 'technical_requirements',
+          anchor_type: 'structured_child',
+          anchor_ref: 'technical_requirements.tr_boundary',
           excerpt_hash: digest,
           input_digest: digest,
         }],
@@ -235,12 +237,14 @@ describe('semanticPolicyModel v2 dual-read resolver', () => {
     expect(whole).toMatchObject({
       state: 'available',
       locationLabel: 'Location whole',
+      locationReference: null,
       excerpt: 'Excerpt whole',
       navigationTarget: '/focus/root',
     });
     expect(field).toMatchObject({
       state: 'removed',
       locationLabel: 'Location field',
+      locationReference: 'description',
       excerpt: 'Excerpt field',
       navigationTarget: null,
       unavailableMessage: 'Referenced element is no longer available.',
@@ -248,6 +252,7 @@ describe('semanticPolicyModel v2 dual-read resolver', () => {
     expect(child).toMatchObject({
       state: 'inaccessible',
       locationLabel: 'Restricted assessment location',
+      locationReference: null,
       excerpt: null,
       navigationTarget: null,
       unavailableMessage: 'Location unavailable with your current access.',
@@ -259,6 +264,7 @@ describe('semanticPolicyModel v2 dual-read resolver', () => {
     expect(JSON.stringify(child)).not.toContain('child-secret-id');
     expect(JSON.stringify(child)).not.toContain(digest);
     expect(qa.navigationTarget).toBe('/focus/qa-7');
+    expect(qa.locationReference).toBe('qa-7');
     expect(model.uiStates).toEqual([
       'positive_evidence',
       'removed',
@@ -291,6 +297,8 @@ describe('semanticPolicyModel v2 dual-read resolver', () => {
       resolveAnchor: () => ({
         state: 'available',
         navigationTarget: '/focus/technical-requirements',
+        displayText: 'TR-2: Keep persistence outside the domain boundary.',
+        stableReference: 'tr_boundary',
       }),
       canViewTechnicalDetails: true,
     });
@@ -303,10 +311,11 @@ describe('semanticPolicyModel v2 dual-read resolver', () => {
       detail: 'The legacy rationale remains the explanation.',
       severity: null,
       remediation: null,
-      locationLabel: 'Technical Requirements',
+      locationLabel: 'TR-2: Keep persistence outside the domain boundary.',
+      locationReference: 'tr_boundary',
     });
     expect(view.technicalDetails).toMatchObject({
-      anchorReference: 'technical_requirements',
+      anchorReference: 'technical_requirements.tr_boundary',
       excerptHash: digest,
       inputDigest: digest,
     });

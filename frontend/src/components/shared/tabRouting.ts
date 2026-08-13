@@ -67,6 +67,7 @@ export type SpecModalTab =
   | 'evidence-matrix'
   | 'tests'
   | 'rules'
+  | 'dependencies'
   | 'contracts'
   | 'irs'
   | 'ors'

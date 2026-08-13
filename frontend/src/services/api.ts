@@ -6,6 +6,13 @@ import { useMemo } from 'react';
 import { useApiClient } from '@/contexts/ApiContext';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import type {
+  AddSpecDependencyRequest,
+  ListSpecDependenciesOptions,
+  RemoveSpecDependencyRequest,
+  SpecDependencyMutationResponse,
+  SpecDependencyPage,
+} from '@/types/spec-dependencies';
+import type {
   Board,
   BoardSummary,
   BoardShare,
@@ -1194,6 +1201,72 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     async getSpec(specId: string): Promise<Spec> {
       return apiClient.fetchJson<Spec>(`/specs/${specId}`);
+    },
+
+    async listSpecDependencies(
+      boardId: string,
+      specId: string,
+      options: ListSpecDependenciesOptions,
+    ): Promise<SpecDependencyPage> {
+      const params = new URLSearchParams({
+        direction: options.direction,
+        limit: String(options.limit ?? 25),
+      });
+      if (options.cursor !== undefined) params.set('cursor', options.cursor);
+      if (options.satisfaction && options.satisfaction !== 'all') {
+        params.set('satisfaction', options.satisfaction);
+      }
+      if (options.retrospective !== undefined) {
+        params.set('retrospective', String(options.retrospective));
+      }
+      if (options.active_state) params.set('active_state', options.active_state);
+      if (options.lineage && options.lineage !== 'all') {
+        params.set('lineage', options.lineage);
+      }
+      for (const relatedStatus of options.related_statuses ?? []) {
+        params.append('related_status', relatedStatus);
+      }
+      const page = await apiClient.fetchJson<SpecDependencyPage>(
+        `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/dependencies?${params.toString()}`,
+        { signal: options.signal },
+      );
+      return {
+        ...page,
+        has_more: page.has_more ?? Boolean(page.next_cursor),
+      };
+    },
+
+    async addSpecDependency(
+      boardId: string,
+      specId: string,
+      request: AddSpecDependencyRequest,
+      signal?: AbortSignal,
+    ): Promise<SpecDependencyMutationResponse> {
+      return apiClient.fetchJson<SpecDependencyMutationResponse>(
+        `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/dependencies`,
+        {
+          method: 'POST',
+          body: JSON.stringify(request),
+          signal,
+        },
+      );
+    },
+
+    async removeSpecDependency(
+      boardId: string,
+      specId: string,
+      dependencyId: string,
+      request: RemoveSpecDependencyRequest,
+      signal?: AbortSignal,
+    ): Promise<SpecDependencyMutationResponse> {
+      return apiClient.fetchJson<SpecDependencyMutationResponse>(
+        `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/dependencies/${encodeURIComponent(dependencyId)}`,
+        {
+          method: 'DELETE',
+          body: JSON.stringify(request),
+          signal,
+        },
+      );
     },
 
     async updateSpec(specId: string, data: UpdateSpecRequest): Promise<Spec> {

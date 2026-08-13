@@ -90,6 +90,7 @@ GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES: tuple[str, ...] = (
     "refinement_qa_items",
     "research_decision_entries",
     "research_decision_heads",
+    "spec_dependencies",
     "specs",
     "spec_qa_items",
     "sprints",
@@ -97,7 +98,7 @@ GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES: tuple[str, ...] = (
 )
 GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID = "_global"
 GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION = "gdsr-fence-v2"
-GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v6"
+GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v7"
 GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX = "trg_global_discovery_source_revision"
 
 
@@ -403,6 +404,9 @@ class Board(Base):
     ideations: Mapped[list["Ideation"]] = relationship(
         "Ideation", back_populates="board", cascade="all, delete-orphan"
     )
+    refinements: Mapped[list["Refinement"]] = relationship(
+        "Refinement", back_populates="board", cascade="all, delete-orphan"
+    )
     topics: Mapped[list["Topic"]] = relationship(
         "Topic", back_populates="board", cascade="all, delete-orphan"
     )
@@ -635,8 +639,7 @@ class Ideation(Base):
     __table_args__ = (
         CheckConstraint("edition >= 1", name="ck_ideation_edition"),
         CheckConstraint(
-            "skip_ambiguity_gate_edition IS NULL "
-            "OR skip_ambiguity_gate_edition >= 1",
+            "skip_ambiguity_gate_edition IS NULL OR skip_ambiguity_gate_edition >= 1",
             name="ck_ideation_skip_ambiguity_gate_edition",
         ),
     )
@@ -907,8 +910,7 @@ class Refinement(Base):
     __table_args__ = (
         CheckConstraint("edition >= 1", name="ck_refinement_edition"),
         CheckConstraint(
-            "skip_ambiguity_gate_edition IS NULL "
-            "OR skip_ambiguity_gate_edition >= 1",
+            "skip_ambiguity_gate_edition IS NULL OR skip_ambiguity_gate_edition >= 1",
             name="ck_refinement_skip_ambiguity_gate_edition",
         ),
     )
@@ -973,6 +975,7 @@ class Refinement(Base):
     cancelled_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Relationships
+    board: Mapped["Board"] = relationship("Board", back_populates="refinements")
     ideation: Mapped["Ideation"] = relationship(
         "Ideation", back_populates="refinements"
     )
@@ -1182,6 +1185,11 @@ class Spec(Base):
     __tablename__ = "specs"
     __table_args__ = (
         CheckConstraint("edition >= 1", name="ck_spec_edition"),
+        CheckConstraint(
+            "last_started_edition IS NULL OR "
+            "(last_started_edition >= 1 AND last_started_edition <= edition)",
+            name="ck_spec_last_started_edition",
+        ),
     )
 
     id: Mapped[str] = mapped_column(
@@ -1314,6 +1322,10 @@ class Spec(Base):
     edition: Mapped[int] = mapped_column(
         Integer, default=1, server_default=text("1"), nullable=False
     )
+    # Monotonic proof that this human lifecycle edition has executed.  It is
+    # deliberately not cleared on a nominal backward move; a new edition makes
+    # the older marker inapplicable without destroying audit meaning.
+    last_started_edition: Mapped[int | None] = mapped_column(Integer, nullable=True)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     assignee_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -1394,6 +1406,453 @@ class SpecHistory(Base):
 
     # Relationships
     spec: Mapped["Spec"] = relationship("Spec", back_populates="history")
+
+
+class SpecDependencyBoardLock(Base):
+    """SQLite-safe serialization row for one board dependency graph.
+
+    PostgreSQL locks the authoritative ``boards`` row with ``FOR UPDATE``.
+    SQLite has no row locks, so an UPSERT against this deliberately inert
+    table acquires the database writer lock without touching a product entity
+    (and therefore without emitting discovery/currentness noise).
+    """
+
+    __tablename__ = "spec_dependency_board_locks"
+
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "boards.id",
+            name="fk_spec_dependency_board_locks_board_id",
+            ondelete="CASCADE",
+            onupdate="RESTRICT",
+        ),
+        primary_key=True,
+    )
+
+
+class SpecDependency(Base):
+    """Lifecycle record for one directed Spec prerequisite.
+
+    ``dependent_spec_id`` is the Spec whose execution is gated and
+    ``prerequisite_spec_id`` is the Spec that must be Done.  Removal keeps the
+    row as an immutable tombstone.  The nullable prerequisite FK is cleared on
+    removal so a historical edge never prevents later target deletion; the
+    immutable ``prerequisite_spec_ref`` retains the audit identity.
+    """
+
+    __tablename__ = "spec_dependencies"
+    __table_args__ = (
+        CheckConstraint(
+            "dependent_spec_id <> prerequisite_spec_ref",
+            name="ck_spec_dependency_no_self_reference",
+        ),
+        CheckConstraint(
+            "introduced_at_spec_version >= 1",
+            name="ck_spec_dependency_introduced_version",
+        ),
+        CheckConstraint(
+            "source_version_on_create >= 1 AND target_version_on_create >= 1",
+            name="ck_spec_dependency_snapshot_versions",
+        ),
+        CheckConstraint(
+            "source_status_on_create IN "
+            "('draft', 'review', 'approved', 'validated', 'in_progress', "
+            "'done', 'cancelled') AND target_status_on_create IN "
+            "('draft', 'review', 'approved', 'validated', 'in_progress', "
+            "'done', 'cancelled')",
+            name="ck_spec_dependency_snapshot_statuses",
+        ),
+        CheckConstraint(
+            "target_edition_on_create >= 1 "
+            "AND length(trim(add_idempotency_key)) >= 1 "
+            "AND length(add_request_digest) = 64",
+            name="ck_spec_dependency_creation_evidence",
+        ),
+        CheckConstraint(
+            "(active = true AND prerequisite_spec_id IS NOT NULL "
+            "AND removed_at IS NULL AND removed_by_id IS NULL "
+            "AND removed_by_type IS NULL AND removed_by_name IS NULL "
+            "AND removal_reason IS NULL AND removed_at_spec_version IS NULL "
+            "AND remove_idempotency_key IS NULL "
+            "AND remove_request_digest IS NULL) OR "
+            "(active = false AND prerequisite_spec_id IS NULL "
+            "AND removed_at IS NOT NULL AND removed_by_id IS NOT NULL "
+            "AND removed_by_type IS NOT NULL AND removed_by_name IS NOT NULL "
+            "AND length(trim(removal_reason)) >= 1 "
+            "AND length(trim(remove_idempotency_key)) >= 1 "
+            "AND length(remove_request_digest) = 64 "
+            "AND removed_at_spec_version >= introduced_at_spec_version)",
+            name="ck_spec_dependency_lifecycle",
+        ),
+        Index(
+            "uq_spec_dependency_active_edge",
+            "board_id",
+            "dependent_spec_id",
+            "prerequisite_spec_ref",
+            unique=True,
+            sqlite_where=text("active = true"),
+            postgresql_where=text("active = true"),
+        ),
+        Index(
+            "ix_spec_dependency_outgoing_keyset",
+            "board_id",
+            "dependent_spec_id",
+            "active",
+            "created_at",
+            "id",
+        ),
+        Index(
+            "ix_spec_dependency_incoming_keyset",
+            "board_id",
+            "prerequisite_spec_ref",
+            "active",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "boards.id",
+            name="fk_spec_dependencies_board_id",
+            ondelete="CASCADE",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    dependent_spec_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "specs.id",
+            name="fk_spec_dependencies_dependent_spec_id",
+            ondelete="CASCADE",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    prerequisite_spec_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey(
+            "specs.id",
+            name="fk_spec_dependencies_prerequisite_spec_id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=True,
+    )
+    prerequisite_spec_ref: Mapped[str] = mapped_column(String(36), nullable=False)
+    active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    resolved_on_create: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    retrospective: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    introduced_at_spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_version_on_create: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_status_on_create: Mapped[str] = mapped_column(String(50), nullable=False)
+    target_status_on_create: Mapped[str] = mapped_column(String(50), nullable=False)
+    target_version_on_create: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_title_on_create: Mapped[str] = mapped_column(String(500), nullable=False)
+    target_edition_on_create: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_ideation_id_on_create: Mapped[str | None] = mapped_column(
+        String(36), nullable=True
+    )
+    add_idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    add_request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    created_by_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_by_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    created_by_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    removed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    removed_by_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    removed_by_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    removed_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    removal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    remove_idempotency_key: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    remove_request_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    removed_at_spec_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class SpecDependencyOperation(Base):
+    """Immutable idempotency/result ledger for dependency mutations."""
+
+    __tablename__ = "spec_dependency_operations"
+    __table_args__ = (
+        CheckConstraint(
+            "operation IN ('add', 'remove')",
+            name="ck_spec_dependency_operation_kind",
+        ),
+        CheckConstraint(
+            "length(trim(idempotency_key)) >= 1 AND length(request_digest) = 64",
+            name="ck_spec_dependency_operation_identity",
+        ),
+        CheckConstraint(
+            "expected_spec_version >= 1 AND resulting_spec_version >= 1",
+            name="ck_spec_dependency_operation_versions",
+        ),
+        UniqueConstraint(
+            "board_id",
+            "actor_id",
+            "actor_type",
+            "operation",
+            "idempotency_key",
+            name="uq_spec_dependency_operation_idempotency",
+        ),
+        Index(
+            "ix_spec_dependency_operation_source",
+            "board_id",
+            "dependent_spec_ref",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "boards.id",
+            name="fk_spec_dependency_operations_board_id",
+            ondelete="CASCADE",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    dependent_spec_ref: Mapped[str] = mapped_column(String(36), nullable=False)
+    dependency_ref: Mapped[str] = mapped_column(String(36), nullable=False)
+    operation: Mapped[str] = mapped_column(String(16), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    actor_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    expected_spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    resulting_spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    result_payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+SPEC_DEPENDENCY_TRIGGER_PREFIX = "trg_spec_dependency_"
+
+
+def spec_dependency_sqlite_trigger_manifest() -> dict[str, tuple[str, str]]:
+    """Return the closed SQLite immutability-trigger contract for SK-M."""
+
+    return {
+        "trg_spec_dependency_board_boundary_insert": (
+            "spec_dependencies",
+            """CREATE TRIGGER trg_spec_dependency_board_boundary_insert
+BEFORE INSERT ON spec_dependencies
+WHEN NOT EXISTS (
+         SELECT 1 FROM specs
+         WHERE id = NEW.dependent_spec_id AND board_id = NEW.board_id
+     ) OR
+     (NEW.active = 1 AND NOT EXISTS (
+         SELECT 1 FROM specs
+         WHERE id = NEW.prerequisite_spec_ref AND board_id = NEW.board_id
+     )) OR
+     (NEW.active = 1 AND (
+      NEW.prerequisite_spec_id IS NULL OR
+      NEW.prerequisite_spec_id IS NOT NEW.prerequisite_spec_ref))
+BEGIN
+    SELECT RAISE(ABORT, 'spec_dependency_board_boundary_invalid');
+END""",
+        ),
+        "trg_spec_dependency_board_boundary_update": (
+            "spec_dependencies",
+            """CREATE TRIGGER trg_spec_dependency_board_boundary_update
+BEFORE UPDATE ON spec_dependencies
+WHEN NOT EXISTS (
+         SELECT 1 FROM specs
+         WHERE id = NEW.dependent_spec_id AND board_id = NEW.board_id
+     ) OR
+     (NEW.active = 1 AND NOT EXISTS (
+         SELECT 1 FROM specs
+         WHERE id = NEW.prerequisite_spec_ref AND board_id = NEW.board_id
+     )) OR
+     (NEW.active = 1 AND (
+      NEW.prerequisite_spec_id IS NULL OR
+      NEW.prerequisite_spec_id IS NOT NEW.prerequisite_spec_ref))
+BEGIN
+    SELECT RAISE(ABORT, 'spec_dependency_board_boundary_invalid');
+END""",
+        ),
+        "trg_spec_dependency_spec_board_update": (
+            "specs",
+            """CREATE TRIGGER trg_spec_dependency_spec_board_update
+BEFORE UPDATE ON specs
+WHEN NEW.board_id IS NOT OLD.board_id AND (
+    EXISTS (
+        SELECT 1 FROM spec_dependencies
+        WHERE dependent_spec_id = OLD.id
+    ) OR EXISTS (
+        SELECT 1 FROM spec_dependencies
+        WHERE active = 1 AND prerequisite_spec_id = OLD.id
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'spec_dependency_board_boundary_invalid');
+END""",
+        ),
+        "trg_spec_dependency_started_edition_insert": (
+            "specs",
+            """CREATE TRIGGER trg_spec_dependency_started_edition_insert
+BEFORE INSERT ON specs
+WHEN NEW.edition < 1 OR (
+    NEW.last_started_edition IS NOT NULL AND
+    NEW.last_started_edition <> NEW.edition
+)
+BEGIN
+    SELECT RAISE(ABORT, 'spec_dependency_started_edition_invalid');
+END""",
+        ),
+        "trg_spec_dependency_started_edition_update": (
+            "specs",
+            """CREATE TRIGGER trg_spec_dependency_started_edition_update
+BEFORE UPDATE OF edition, last_started_edition ON specs
+WHEN NEW.edition < OLD.edition OR
+     NEW.edition > OLD.edition + 1 OR
+     (NEW.edition = OLD.edition + 1 AND
+      NEW.last_started_edition IS NOT OLD.last_started_edition) OR
+     (NEW.edition = OLD.edition AND (
+      (OLD.last_started_edition IS NOT NULL AND
+       NEW.last_started_edition IS NULL) OR
+      (OLD.last_started_edition IS NULL AND
+       NEW.last_started_edition IS NOT NULL AND
+       NEW.last_started_edition <> NEW.edition) OR
+      (OLD.last_started_edition IS NOT NULL AND
+       NEW.last_started_edition IS NOT NULL AND
+       NEW.last_started_edition <> OLD.last_started_edition AND
+       NEW.last_started_edition <> NEW.edition)
+     ))
+BEGIN
+    SELECT RAISE(ABORT, 'spec_dependency_started_edition_invalid');
+END""",
+        ),
+        "trg_spec_dependency_tombstone_immutable_update": (
+            "spec_dependencies",
+            """CREATE TRIGGER trg_spec_dependency_tombstone_immutable_update
+BEFORE UPDATE ON spec_dependencies
+WHEN NOT (
+    OLD.active = 1 AND NEW.active = 0 AND
+    NEW.id IS OLD.id AND NEW.board_id IS OLD.board_id AND
+    NEW.dependent_spec_id IS OLD.dependent_spec_id AND
+    NEW.prerequisite_spec_id IS NULL AND
+    NEW.prerequisite_spec_ref IS OLD.prerequisite_spec_ref AND
+    NEW.resolved_on_create IS OLD.resolved_on_create AND
+    NEW.retrospective IS OLD.retrospective AND
+    NEW.introduced_at_spec_version IS OLD.introduced_at_spec_version AND
+    NEW.source_version_on_create IS OLD.source_version_on_create AND
+    NEW.source_status_on_create IS OLD.source_status_on_create AND
+    NEW.target_status_on_create IS OLD.target_status_on_create AND
+    NEW.target_version_on_create IS OLD.target_version_on_create AND
+    NEW.target_title_on_create IS OLD.target_title_on_create AND
+    NEW.target_edition_on_create IS OLD.target_edition_on_create AND
+    NEW.target_ideation_id_on_create IS OLD.target_ideation_id_on_create AND
+    NEW.add_idempotency_key IS OLD.add_idempotency_key AND
+    NEW.add_request_digest IS OLD.add_request_digest AND
+    NEW.created_at IS OLD.created_at AND
+    NEW.created_by_id IS OLD.created_by_id AND
+    NEW.created_by_type IS OLD.created_by_type AND
+    NEW.created_by_name IS OLD.created_by_name
+)
+BEGIN
+    SELECT RAISE(ABORT, 'spec_dependency_lifecycle_immutable');
+END""",
+        ),
+        "trg_spec_dependency_immutable_delete": (
+            "spec_dependencies",
+            """CREATE TRIGGER trg_spec_dependency_immutable_delete
+BEFORE DELETE ON spec_dependencies
+WHEN NOT EXISTS (
+         SELECT 1 FROM kg_board_erasure_permits
+         WHERE board_id = OLD.board_id
+     ) AND NOT EXISTS (
+         SELECT 1 FROM artifact_deletion_tombstones
+         WHERE board_id = OLD.board_id
+           AND artifact_type = 'spec'
+           AND artifact_id = OLD.dependent_spec_id
+     )
+BEGIN
+    SELECT RAISE(ABORT, 'spec_dependency_delete_forbidden');
+END""",
+        ),
+        "trg_spec_dependency_operation_immutable_update": (
+            "spec_dependency_operations",
+            """CREATE TRIGGER trg_spec_dependency_operation_immutable_update
+BEFORE UPDATE ON spec_dependency_operations
+BEGIN
+    SELECT RAISE(ABORT, 'spec_dependency_operation_immutable');
+END""",
+        ),
+        "trg_spec_dependency_operation_immutable_delete": (
+            "spec_dependency_operations",
+            """CREATE TRIGGER trg_spec_dependency_operation_immutable_delete
+BEFORE DELETE ON spec_dependency_operations
+WHEN NOT EXISTS (
+    SELECT 1 FROM kg_board_erasure_permits
+    WHERE board_id = OLD.board_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'spec_dependency_operation_immutable');
+END""",
+        ),
+    }
+
+
+def spec_dependency_sqlite_trigger_predecessors() -> dict[str, tuple[str, ...]]:
+    """Return exact, upgradeable predecessor DDL for the closed SK-M manifest."""
+
+    return {
+        "trg_spec_dependency_started_edition_insert": (
+            """CREATE TRIGGER trg_spec_dependency_started_edition_insert
+BEFORE INSERT ON specs
+WHEN NEW.last_started_edition IS NOT NULL AND
+     (NEW.last_started_edition < 1 OR NEW.last_started_edition > NEW.edition)
+BEGIN
+    SELECT RAISE(ABORT, 'spec_dependency_started_edition_invalid');
+END""",
+        ),
+        "trg_spec_dependency_started_edition_update": (
+            """CREATE TRIGGER trg_spec_dependency_started_edition_update
+BEFORE UPDATE OF edition, last_started_edition ON specs
+WHEN NEW.last_started_edition IS NOT NULL AND
+     (NEW.last_started_edition < 1 OR NEW.last_started_edition > NEW.edition)
+BEGIN
+    SELECT RAISE(ABORT, 'spec_dependency_started_edition_invalid');
+END""",
+        ),
+    }
+
+
+for _dependency_trigger_name, (
+    _dependency_trigger_table,
+    _dependency_trigger_ddl,
+) in spec_dependency_sqlite_trigger_manifest().items():
+    # The board-change guard is a Spec trigger whose body queries the SK-M
+    # dependency authority.  Install it only when that authority is created:
+    # a legitimate partial ``create_all(tables=(Spec, ...))`` must not leave
+    # ``specs`` with a trigger that fails every UPDATE because
+    # ``spec_dependencies`` does not exist yet.  Full create_all remains
+    # deterministic because Spec is an FK predecessor of SpecDependency.
+    _dependency_trigger_anchor = (
+        SpecDependency.__table__
+        if _dependency_trigger_name == "trg_spec_dependency_spec_board_update"
+        else Base.metadata.tables[_dependency_trigger_table]
+    )
+    event.listen(
+        _dependency_trigger_anchor,
+        "after_create",
+        DDL(_dependency_trigger_ddl).execute_if(dialect="sqlite"),
+    )
 
 
 class SpecQAItem(Base):
@@ -3333,9 +3792,7 @@ class GuidelineImpactReceiptRow(Base):
     artifact_snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     waiver_snapshot_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     proposed_priority: Mapped[int] = mapped_column(Integer, nullable=False)
-    proposed_enforcement: Mapped[str] = mapped_column(
-        String(20), nullable=False
-    )
+    proposed_enforcement: Mapped[str] = mapped_column(String(20), nullable=False)
     proposed_minimum_confidence: Mapped[int] = mapped_column(
         Integer,
         nullable=False,
@@ -4604,8 +5061,7 @@ class SemanticGuidelineRevisionRow(Base):
             name="uq_sg_revision_digest",
         ),
         CheckConstraint(
-            "length(revision_digest) = 64 "
-            "AND length(source_revision_digest) = 64",
+            "length(revision_digest) = 64 AND length(source_revision_digest) = 64",
             name="ck_sg_revision_digests",
         ),
         CheckConstraint(
@@ -4729,8 +5185,7 @@ class SemanticGuidelineBindingConfigurationRow(Base):
             name="ck_sg_binding_enforcement",
         ),
         CheckConstraint(
-            "length(revision_digest) = 64 "
-            "AND length(configuration_digest) = 64",
+            "length(revision_digest) = 64 AND length(configuration_digest) = 64",
             name="ck_sg_binding_digests",
         ),
         Index(
@@ -4957,8 +5412,7 @@ class SemanticGuidelineValidationScopeRow(Base):
             name="ck_sg_validation_scope_edition",
         ),
         CheckConstraint(
-            "length(policy_set_digest) = 64 "
-            "AND length(binding_head_digest) = 64",
+            "length(policy_set_digest) = 64 AND length(binding_head_digest) = 64",
             name="ck_sg_validation_scope_digests",
         ),
         Index(
@@ -5630,8 +6084,7 @@ class SemanticGuidelineWaiverRow(Base):
             use_alter=True,
         ),
         CheckConstraint(
-            "subject_version >= 1 AND binding_revision >= 1 "
-            "AND waiver_revision >= 1",
+            "subject_version >= 1 AND binding_revision >= 1 AND waiver_revision >= 1",
             name="ck_sg_waiver_versions",
         ),
         CheckConstraint(
@@ -6162,8 +6615,7 @@ class SemanticGuidelineSkipRow(Base):
             name="ck_sg_skip_subject_type",
         ),
         CheckConstraint(
-            "subject_version >= 1 AND binding_revision >= 1 "
-            "AND skip_revision >= 1",
+            "subject_version >= 1 AND binding_revision >= 1 AND skip_revision >= 1",
             name="ck_sg_skip_versions",
         ),
         CheckConstraint(
@@ -9618,8 +10070,7 @@ class ChecklistValidationBindingSnapshotRow(Base):
     __tablename__ = "checklist_validation_binding_snapshots"
     __table_args__ = (
         CheckConstraint(
-            "spec_edition >= 1 AND binding_version >= 1 "
-            "AND binding_revision >= 0",
+            "spec_edition >= 1 AND binding_version >= 1 AND binding_revision >= 0",
             name="ck_checklist_validation_binding_snapshot_versions",
         ),
         CheckConstraint(
@@ -10273,9 +10724,7 @@ class QualityAssessmentLifecycleTransitionRow(Base):
             name="uq_quality_lifecycle_board_idempotency",
         ),
         CheckConstraint(
-            "action IN ("
-            "'admit_validation', 'archive', 'cancel', 'restore', 'reopen'"
-            ")",
+            "action IN ('admit_validation', 'archive', 'cancel', 'restore', 'reopen')",
             name="ck_quality_lifecycle_action",
         ),
         CheckConstraint(
@@ -10636,9 +11085,7 @@ class CodeInvestigationRequestRow(Base):
         String(64),
         nullable=True,
     )
-    canonicalization_profile: Mapped[str] = mapped_column(
-        String(128), nullable=False
-    )
+    canonicalization_profile: Mapped[str] = mapped_column(String(128), nullable=False)
     limits_profile: Mapped[str] = mapped_column(String(128), nullable=False)
     challenge_key_id: Mapped[str] = mapped_column(String(128), nullable=False)
     challenge_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -10686,8 +11133,7 @@ class CodeInvestigationReceiptRow(Base):
             name="ck_code_investigation_receipt_versions",
         ),
         CheckConstraint(
-            "trust_level IN "
-            "('single_attestation', 'corroborated', 'conflicted')",
+            "trust_level IN ('single_attestation', 'corroborated', 'conflicted')",
             name="ck_code_investigation_receipt_trust",
         ),
         CheckConstraint(
@@ -10794,17 +11240,13 @@ class CodeInvestigationReceiptRow(Base):
     source_identity_digest: Mapped[str | None] = mapped_column(
         String(64), nullable=True
     )
-    canonicalization_profile: Mapped[str] = mapped_column(
-        String(128), nullable=False
-    )
+    canonicalization_profile: Mapped[str] = mapped_column(String(128), nullable=False)
     limits_profile: Mapped[str] = mapped_column(String(128), nullable=False)
     selector_scope_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     declared_revision: Mapped[str | None] = mapped_column(String(255), nullable=True)
     workspace_state_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     declared_dirty: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    reproducibility_claim: Mapped[str | None] = mapped_column(
-        String(32), nullable=True
-    )
+    reproducibility_claim: Mapped[str | None] = mapped_column(String(32), nullable=True)
     fingerprint_algorithm: Mapped[str | None] = mapped_column(
         String(128), nullable=True
     )
@@ -10966,8 +11408,7 @@ class CodeEvidenceRow(Base):
             name="ck_code_evidence_line_span",
         ),
         CheckConstraint(
-            "attestation_state IN "
-            "('agent_attested', 'agent_attested_worktree')",
+            "attestation_state IN ('agent_attested', 'agent_attested_worktree')",
             name="ck_code_evidence_attestation_state",
         ),
         CheckConstraint(
@@ -11285,9 +11726,7 @@ class ImplementationTargetRow(Base):
     )
     source_ref: Mapped[str] = mapped_column(String(512), nullable=False)
     selector_kind: Mapped[str] = mapped_column(String(24), nullable=False)
-    relative_path_hint: Mapped[str | None] = mapped_column(
-        String(1024), nullable=True
-    )
+    relative_path_hint: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     language: Mapped[str | None] = mapped_column(String(128), nullable=True)
     symbol_kind: Mapped[str | None] = mapped_column(String(128), nullable=True)
     qualified_symbol: Mapped[str | None] = mapped_column(String(2048), nullable=True)
@@ -11320,9 +11759,7 @@ class ImplementationTargetRow(Base):
     )
     # Kept logical to avoid the target/resolution circular DDL dependency.  The
     # store advances this pointer only after inserting the append-only row.
-    current_resolution_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True
-    )
+    current_resolution_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_change_reason_sha256: Mapped[str | None] = mapped_column(
         String(64), nullable=True
     )
@@ -11424,8 +11861,7 @@ class ImplementationTargetResolutionRow(Base):
             name="uq_implementation_target_resolution_idempotency",
         ),
         CheckConstraint(
-            "receipt_generation >= 1 AND subject_version >= 1 "
-            "AND target_revision >= 1",
+            "receipt_generation >= 1 AND subject_version >= 1 AND target_revision >= 1",
             name="ck_implementation_target_resolution_versions",
         ),
         CheckConstraint(
@@ -11517,9 +11953,7 @@ class ImplementationTargetResolutionRow(Base):
         String(1024), nullable=True
     )
     resolved_language: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    resolved_symbol_kind: Mapped[str | None] = mapped_column(
-        String(128), nullable=True
-    )
+    resolved_symbol_kind: Mapped[str | None] = mapped_column(String(128), nullable=True)
     resolved_qualified_symbol: Mapped[str | None] = mapped_column(
         String(2048), nullable=True
     )

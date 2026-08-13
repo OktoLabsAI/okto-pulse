@@ -76,6 +76,8 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     SemanticSubjectVersionEventRow,
     SemanticSubjectVersionRow,
     Spec,
+    SpecDependency,
+    SpecDependencyOperation,
     Sprint,
     Story,
     TargetOverlapAcknowledgementRow,
@@ -476,6 +478,20 @@ class CommunitySqlAlchemyKGGovernanceStore:
             quality_lifecycle.validate_purge_postcondition(
                 plan=quality_purge_plan,
                 postcondition=quality_postcondition,
+            )
+
+            # Spec precedence edges and their idempotency/result ledger are
+            # immutable outside governed erasure.  Purge both explicitly while
+            # the transaction-scoped Board permit is visible to their guards;
+            # the later Board DELETE must not depend on an implicit cascade to
+            # cross the immutability boundary.
+            await context.execute(
+                delete(SpecDependency).where(SpecDependency.board_id == board_id)
+            )
+            await context.execute(
+                delete(SpecDependencyOperation).where(
+                    SpecDependencyOperation.board_id == board_id
+                )
             )
 
             # Code Traceability attestations are physically immutable during
@@ -881,6 +897,8 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 ImplementationTargetExecutionRecordRow,
                 TargetOverlapAcknowledgementRow,
                 CodeTraceabilityWaiverRow,
+                SpecDependency,
+                SpecDependencyOperation,
             )
             residuals = {
                 model.__tablename__: await _count_where(

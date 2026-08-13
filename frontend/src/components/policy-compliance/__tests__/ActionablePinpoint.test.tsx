@@ -31,7 +31,8 @@ function pinpoint(
     remediation: 'Move session ownership to the Community adapter.',
     blocking: true,
     categoryLabel: 'Structured item',
-    locationLabel: 'Technical requirement · Persistence boundary',
+    locationLabel: 'TR-2',
+    locationReference: 'tr-secret-id',
     excerpt: 'Core creates and commits the SQLAlchemy session.',
     navigationTarget: '/specs/spec-1?focus=technical-requirements',
     unavailableMessage: null,
@@ -49,19 +50,21 @@ function pinpoint(
 describe('ActionablePinpoint', () => {
   it('renders issue content in the ambiguity FindingItems hierarchy', () => {
     const { container } = render(
-      <ActionablePinpoint pinpoint={pinpoint()} policyState="fail" />,
+      <ActionablePinpoint
+        metricLabel="Boundary integrity"
+        pinpoint={pinpoint()}
+        policyState="fail"
+      />,
     );
     const text = container.textContent ?? '';
     const ordered = [
+      'Boundary integrity',
       'high',
-      'issue',
       'Structured item',
       'Current issue',
+      'TR-2: Core creates and commits the SQLAlchemy session. (tr-secret-id)',
       'Persistence responsibility leaks into Core',
       'The use case owns a Community transaction detail.',
-      'Location',
-      'Technical requirement · Persistence boundary',
-      'Core creates and commits the SQLAlchemy session.',
       'Suggested remediation:',
       'Move session ownership to the Community adapter.',
       'Technical details',
@@ -76,6 +79,7 @@ describe('ActionablePinpoint', () => {
   it('renders positive evidence without invented issue fields', () => {
     render(
       <ActionablePinpoint
+        metricLabel="Boundary integrity"
         pinpoint={pinpoint({
           kind: 'evidence',
           severity: null,
@@ -87,7 +91,8 @@ describe('ActionablePinpoint', () => {
       />,
     );
 
-    expect(screen.getByText('evidence')).toBeInTheDocument();
+    expect(screen.getByTestId('actionable-pinpoint-metric'))
+      .toHaveTextContent('Boundary integrity');
     expect(screen.getByText('Current evidence')).toBeInTheDocument();
     expect(screen.queryByText('Suggested remediation:')).not.toBeInTheDocument();
     expect(screen.queryByText(/blocking/iu)).not.toBeInTheDocument();
@@ -110,6 +115,7 @@ describe('ActionablePinpoint', () => {
           testId="policy-score-ring"
         />
         <ActionablePinpoint
+          metricLabel="Boundary integrity"
           pinpoint={pinpoint()}
           policyState="fail"
           onNavigate={onNavigate}
@@ -147,6 +153,7 @@ describe('ActionablePinpoint', () => {
     const onCopy = vi.fn().mockResolvedValue(undefined);
     render(
       <ActionablePinpoint
+        metricLabel="Boundary integrity"
         pinpoint={pinpoint()}
         policyState="fail"
         onCopy={onCopy}
@@ -173,6 +180,7 @@ describe('ActionablePinpoint', () => {
   ] as const)('disables navigation for %s locations', (state, message) => {
     render(
       <ActionablePinpoint
+        metricLabel="Boundary integrity"
         pinpoint={pinpoint({
           state,
           locationLabel: state === 'inaccessible'
@@ -184,6 +192,7 @@ describe('ActionablePinpoint', () => {
           technicalDetails: state === 'inaccessible'
             ? { anchorType: 'structured_child', sourceVersion: '12' }
             : pinpoint().technicalDetails,
+          locationReference: state === 'inaccessible' ? null : 'tr-secret-id',
         })}
         policyState={state}
         onNavigate={vi.fn()}
@@ -205,6 +214,7 @@ describe('ActionablePinpoint', () => {
       <main>
         <h2>Policy Compliance</h2>
         <ActionablePinpoint
+          metricLabel="Boundary integrity"
           pinpoint={pinpoint()}
           policyState="fail"
           onNavigate={vi.fn()}

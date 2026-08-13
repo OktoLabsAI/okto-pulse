@@ -21,6 +21,7 @@ type QualityPanelProps = {
 const apiMock = vi.hoisted(() => ({
   getSpec: vi.fn(),
   getAllowedTransitions: vi.fn(),
+  getCurrentSpecValidation: vi.fn(),
   getValidationCycle: vi.fn(),
   getValidationTechnicalAudit: vi.fn(),
   listSprints: vi.fn(),
@@ -43,15 +44,19 @@ vi.mock('@/store/dashboard', () => ({
   }),
 }));
 
-vi.mock('@/hooks/usePermissions', () => ({
-  usePermissions: () => ({
-    preset: null,
-    isLoading: false,
-    error: null,
-    has: (permission: string) =>
-      permissionMock.allowed.has(permission),
-  }),
-}));
+vi.mock('@/hooks/usePermissions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks/usePermissions')>();
+  return {
+    ...actual,
+    usePermissions: () => ({
+      preset: null,
+      isLoading: false,
+      error: null,
+      has: (permission: string) =>
+        permissionMock.allowed.has(permission),
+    }),
+  };
+});
 
 vi.mock('@/components/quality', () => ({
   QualityPanel: (props: QualityPanelProps) => {
@@ -174,6 +179,11 @@ describe('SpecModal Requirement lint in Validation', () => {
       remaining_actions: [],
     });
     apiMock.getValidationTechnicalAudit.mockResolvedValue(null);
+    apiMock.getCurrentSpecValidation.mockResolvedValue({
+      spec_id: baseSpec.id,
+      edition: 1,
+      result: null,
+    });
     apiMock.listSprints.mockResolvedValue([]);
   });
 
@@ -222,7 +232,7 @@ describe('SpecModal Requirement lint in Validation', () => {
       fireEvent.click(validationTab!);
       if (!lintVisible) {
         expect(
-          screen.queryByRole('button', { name: /Requirement lint/ }),
+          screen.queryByRole('tab', { name: /Requirement lint/ }),
         ).not.toBeInTheDocument();
         expect(
           screen.queryByTestId('spec-quality-panel'),
@@ -230,7 +240,7 @@ describe('SpecModal Requirement lint in Validation', () => {
         return;
       }
       fireEvent.click(
-        screen.getByRole('button', { name: /Requirement lint/ }),
+        screen.getByRole('tab', { name: /Requirement lint/ }),
       );
       expect(
         screen.getByTestId('spec-quality-panel'),
@@ -266,7 +276,7 @@ describe('SpecModal Requirement lint in Validation', () => {
         screen.getByRole('tab', { name: 'Validation' }),
       );
       fireEvent.click(
-        screen.getByRole('button', { name: /Requirement lint/ }),
+        screen.getByRole('tab', { name: /Requirement lint/ }),
       );
 
       const props = qualityPanelSpy.mock.calls.at(-1)?.[0] as

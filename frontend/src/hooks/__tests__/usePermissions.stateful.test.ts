@@ -131,6 +131,7 @@ describe('state-aware UI permission composition', () => {
       'sprint',
       'draft',
     )).toBe(false);
+    expect(unavailable('spec.entity.manage_dependencies')).toBe(false);
   });
 
   it('fails closed when an existing entity has no trustworthy current status', () => {

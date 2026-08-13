@@ -144,9 +144,9 @@ describe('IdeationModal Markdown export', () => {
       current_status: 'review',
       source: 'core_sdlc_registry_v1',
       allowed_transitions: [
-        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
-        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
-        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null, blocked_facts: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, blocked_facts: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null, blocked_facts: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
       ],
     });
     apiMock.getArchitectureDesign.mockImplementation((id: string) =>
@@ -257,7 +257,7 @@ describe('IdeationModal Markdown export', () => {
       current_status: 'review',
       source: 'core_sdlc_registry_v1',
       allowed_transitions: [
-        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, blocked_facts: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
       ],
     });
 

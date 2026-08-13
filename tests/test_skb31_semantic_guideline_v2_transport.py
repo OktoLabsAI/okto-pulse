@@ -180,6 +180,7 @@ def test_v2_rest_route_dispatches_the_explicit_contract() -> None:
                 "request_digest": "b" * 64,
                 "receipt_digest": "c" * 64,
                 "currentness": "current",
+                "lifecycle_state": "current",
                 "validation_edition": 1,
                 "metrics": [],
             }
@@ -283,6 +284,7 @@ def test_current_route_accepts_explicit_dual_read_v2_projection() -> None:
                     "receipt_id": "receipt-v2",
                     "receipt_digest": "c" * 64,
                     "currentness": "current",
+                    "lifecycle_state": "current",
                     "board_id": BOARD_ID,
                     "subject_type": "spec",
                     "subject_id": "spec-v2",

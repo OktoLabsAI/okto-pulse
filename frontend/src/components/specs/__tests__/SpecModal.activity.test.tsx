@@ -4,6 +4,11 @@ import { SpecModal } from '../SpecModal';
 import { persistTestScenariosWithWriteGuard } from '../scenarioWriteGuard';
 import type { Spec, SpecHistoryEntry, TestScenario } from '@/types';
 
+type ValidationGateOverrideProps = {
+  title?: string;
+  description?: string;
+};
+
 const apiMock = vi.hoisted(() => ({
   getSpec: vi.fn(),
   getAllowedTransitions: vi.fn(),
@@ -13,6 +18,7 @@ const apiMock = vi.hoisted(() => ({
   listSpecKnowledge: vi.fn(),
   updateSpec: vi.fn(),
 }));
+const validationGateOverrideSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
@@ -22,14 +28,18 @@ vi.mock('@/store/dashboard', () => ({
   useCurrentBoard: () => ({ id: 'board-1', owner_id: null, agents: [] }),
 }));
 
-vi.mock('@/hooks/usePermissions', () => ({
-  usePermissions: () => ({
-    preset: null,
-    isLoading: false,
-    error: null,
-    has: () => true,
-  }),
-}));
+vi.mock('@/hooks/usePermissions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks/usePermissions')>();
+  return {
+    ...actual,
+    usePermissions: () => ({
+      preset: null,
+      isLoading: false,
+      error: null,
+      has: () => true,
+    }),
+  };
+});
 
 vi.mock('@/components/traceability', () => ({
   openLineageGraph: vi.fn(),
@@ -44,7 +54,15 @@ vi.mock('@/components/resources/ResourceGateSummary', () => ({
 }));
 
 vi.mock('@/components/shared/ValidationGateOverride', () => ({
-  ValidationGateOverride: () => <div />,
+  ValidationGateOverride: (props: ValidationGateOverrideProps) => {
+    validationGateOverrideSpy(props);
+    return (
+      <div data-testid="validation-gate-override">
+        <span>{props.title}</span>
+        <span>{props.description}</span>
+      </div>
+    );
+  },
 }));
 
 vi.mock('@/components/shared/EditableField', () => ({
@@ -124,6 +142,29 @@ describe('SpecModal Activity tab', () => {
       next_cursor: null,
       resources: { architecture: [], mockup: [], knowledge_base: [] },
     });
+  });
+
+  it('identifies the Details override as the Task Validation Gate for descendant cards', async () => {
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    const gate = screen.getByTestId('validation-gate-override');
+    expect(gate).toHaveTextContent('Task Validation Gate');
+    expect(gate).toHaveTextContent('cards derived from this spec');
+    expect(gate).toHaveTextContent('do not change the Spec Validation Gate');
+    expect(validationGateOverrideSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Task Validation Gate',
+        description: expect.stringContaining('cards derived from this spec'),
+      }),
+    );
   });
 
   it('loads and expands the shared Before/After history renderer', async () => {
@@ -209,6 +250,7 @@ describe('SpecModal Activity tab', () => {
       'Evidence Matrix',
       'Tests',
       'Rules',
+      'Dependencies',
       'Contracts',
       'IRs',
       'ORs',

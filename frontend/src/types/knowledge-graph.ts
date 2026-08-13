@@ -11,8 +11,8 @@ export type KGNodeType =
 export type KGEdgeType =
   | 'supersedes' | 'contradicts' | 'derives_from' | 'relates_to'
   | 'mentions' | 'depends_on' | 'violates' | 'implements'
-  | 'tests' | 'validates' | 'belongs_to' | 'originates_from'
-  | 'covered_by' | 'supports' | 'overlaps';
+  | 'tests' | 'validates' | 'precedes' | 'supports' | 'overlaps'
+  | 'belongs_to' | 'originates_from' | 'covered_by';
 
 export type GraphLayerMode = 'canonical' | 'working' | 'all';
 
@@ -224,16 +224,18 @@ export const EDGE_TYPE_CONFIG: Record<KGEdgeType, {
     description: 'A TestScenario exercises a Requirement, Business Rule, or API Contract. Key edge for coverage reporting.' },
   validates:    { color: '#7C3AED', label: 'validates',
     description: 'A successful validation run vouches for the target node. Similar to `tests` but aimed at gate outcomes rather than scenarios.' },
-  originates_from: { color: '#F97316', label: 'originates_from',
-    description: 'A Bug points to the entity or card where the defect originated. Used for lineage and root-cause tracing from bug reports.' },
-  covered_by:   { color: '#22C55E', label: 'covered_by',
-    description: 'A Bug is covered by a regression test card or TestScenario, making the defect visible in coverage and revalidation flows.' },
-  belongs_to:   { color: '#64748B', label: 'belongs_to',
-    description: 'Hierarchy backbone linking KG nodes to their parent artifact or grouping entity.' },
+  precedes:     { color: '#0EA5E9', label: 'precedes',
+    description: 'A prerequisite Spec must be satisfied before the dependent Spec can start execution. Projected from the authoritative Spec dependency DAG.' },
   supports:     { color: '#8B5CF6', label: 'supports',
     description: 'Agent-attested Code Evidence supports a structured Spec entity. The link is projected from accepted Pulse records.' },
   overlaps:     { color: '#F59E0B', label: 'overlaps',
     description: 'Two Implementation Targets affect an overlapping submitted path or symbol resolution.' },
+  belongs_to:   { color: '#64748B', label: 'belongs_to',
+    description: 'Hierarchy backbone linking KG nodes to their parent artifact or grouping entity.' },
+  originates_from: { color: '#F97316', label: 'originates_from',
+    description: 'A Bug points to the entity or card where the defect originated. Used for lineage and root-cause tracing from bug reports.' },
+  covered_by:   { color: '#22C55E', label: 'covered_by',
+    description: 'A Bug is covered by a regression test card or TestScenario, making the defect visible in coverage and revalidation flows.' },
 };
 
 export const ALL_EDGE_TYPES = Object.keys(EDGE_TYPE_CONFIG) as KGEdgeType[];

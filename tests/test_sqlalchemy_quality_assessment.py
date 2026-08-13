@@ -1302,7 +1302,7 @@ async def test_relational_application_seam_returns_concrete_adapter(rig) -> None
         )
 
 
-async def test_consolidation_projection_loads_only_current_quality_head_in_one_query(
+async def test_consolidation_projection_loads_spec_inputs_in_three_bounded_queries(
     rig,
 ) -> None:
     first = _lint_bundle(namespace="projection-first")
@@ -1372,7 +1372,16 @@ async def test_consolidation_projection_loads_only_current_quality_head_in_one_q
                 record_statement,
             )
 
-        assert 1 <= len(statements) <= 2
+        # The spec projection has three independent, bounded rowsets: the
+        # current quality heads, their board/Q&A context, and the complete
+        # dependency snapshot joined to prerequisite Specs.  Keeping the
+        # dependency load separate avoids a multiplicative head x Q&A x
+        # dependency join while still remaining constant for every page size.
+        assert len(statements) == 3
+        assert sum(
+            "from spec_dependencies" in " ".join(statement.lower().split())
+            for statement in statements
+        ) == 1
         assert projection.research_decisions == ()
         # Legacy editionless evidence remains navigable history but cannot be
         # projected as current without inventing a human lifecycle edition.

@@ -97,6 +97,8 @@ const WAIVER_DETAIL_FIELDS = [
   'entity_type',
   'subject_id',
   'subject_version',
+  'validation_edition',
+  'lifecycle_state',
   'finding_id',
   'receipt_id',
   'guideline_id',

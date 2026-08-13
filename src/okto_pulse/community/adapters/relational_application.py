@@ -670,6 +670,15 @@ class CommunityRelationalApplicationAdapter:
 
         return CommunitySqlAlchemyResearchDecisionLedger(session)
 
+    def spec_dependencies(self, session: AsyncSession):
+        """Bind the SK-M precedence authority to the caller's short UoW."""
+
+        from okto_pulse.community.adapters.sqlalchemy_spec_dependency import (
+            CommunitySqlAlchemySpecDependency,
+        )
+
+        return CommunitySqlAlchemySpecDependency(session)
+
     def code_investigations(self, session: AsyncSession):
         """Bind the agent-submitted attestation ledger to this transaction."""
 

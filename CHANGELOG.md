@@ -25,6 +25,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   Configuration.
 - Route and UI regressions for board sharing, permission presets and canonical
   authorization projection.
+- Audited Spec dependency persistence, REST delivery and an accessible lazy
+  Dependencies workspace in the existing Spec modal.
 
 ### Changed
 

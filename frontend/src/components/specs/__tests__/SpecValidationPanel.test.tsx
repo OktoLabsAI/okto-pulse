@@ -152,7 +152,7 @@ function renderPanel(
   );
 }
 
-function rowState(testId: string): string | null {
+function summaryState(testId: string): string | null {
   return screen.getByTestId(testId).querySelector('[data-state]')
     ?.getAttribute('data-state') ?? null;
 }
@@ -191,31 +191,34 @@ describe('SpecValidationPanel lifecycle edition projection', () => {
     });
   });
 
-  it('uses only current-edition evidence and preserves explicit failed outcomes', async () => {
+  it('renders the four accessible subtabs in product order and keeps current-edition states', async () => {
     renderPanel();
 
+    const tabs = within(screen.getByRole('tablist', {
+      name: 'Spec validation sections',
+    })).getAllByRole('tab');
+    expect(tabs.map((tab) => tab.textContent)).toEqual([
+      'Spec Validation',
+      'Checklist',
+      'Requirement lint',
+      'Policy Compliance',
+    ]);
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'true');
     await waitFor(() => expect(
       screen.getByTestId('spec-validation-current').querySelector('[data-state]'),
     ).toHaveAttribute('data-state', 'failed'));
-    expect(rowState('spec-validation-checklist-row')).toBe('not_started');
-    expect(rowState('spec-validation-lint-row')).toBe('not_started');
-    expect(rowState('spec-validation-policy-row')).toBe('needs_attention');
-    expect(screen.queryByTestId('spec-validation-qualitative-row'))
-      .not.toBeInTheDocument();
-    expect(screen.getAllByTestId('spec-validation-current')).toHaveLength(1);
-    expect(screen.getAllByTestId('spec-validation-previous-toggle')).toHaveLength(1);
-    expect(screen.getByLabelText('Current validation checks').children)
-      .toHaveLength(3);
+
+    fireEvent.click(tabs[1]);
+    expect(summaryState('spec-validation-checklist-summary')).toBe('not_started');
+    fireEvent.click(tabs[2]);
+    expect(summaryState('spec-validation-lint-summary')).toBe('not_started');
+    fireEvent.click(tabs[3]);
+    expect(summaryState('spec-validation-policy-summary')).toBe('needs_attention');
     expect(screen.queryByText(/stale/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/receipt/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/head r/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/subject r/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/open to review its score and summary/i))
-      .toBeInTheDocument();
-    expect(screen.queryByText(/dimension details/i)).not.toBeInTheDocument();
     expect(apiMock.getValidationCycle).toHaveBeenCalledTimes(1);
     expect(apiMock.getSpecChecklistState).not.toHaveBeenCalled();
-    expect(apiMock.getCurrentSpecValidation).not.toHaveBeenCalled();
+    expect(apiMock.getCurrentSpecValidation).toHaveBeenCalledTimes(1);
     expect(apiMock.getValidationTechnicalAudit).not.toHaveBeenCalled();
   });
 
@@ -256,7 +259,9 @@ describe('SpecValidationPanel lifecycle edition projection', () => {
       canReadPolicyCompliance: false,
     });
 
-    await screen.findByTestId('spec-validation-checklist-row');
+    const checklistTab = await screen.findByRole('tab', { name: 'Checklist' });
+    expect(checklistTab).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('checklist-detail')).toBeInTheDocument();
     expect(screen.queryByTestId('spec-validation-current')).not.toBeInTheDocument();
     expect(screen.queryByTestId('spec-validation-previous-toggle')).not.toBeInTheDocument();
     expect(screen.queryByTestId('spec-validation-technical-audit-toggle'))
@@ -266,13 +271,11 @@ describe('SpecValidationPanel lifecycle edition projection', () => {
     expect(apiMock.getValidationTechnicalAudit).not.toHaveBeenCalled();
   });
 
-  it('does not expose Policy Compliance preview through validation audit authority', async () => {
+  it('does not expose Policy Compliance when its read authority is absent', async () => {
     renderPanel({ canReadPolicyCompliance: false });
     await screen.findByTestId('spec-validation-current');
-
-    fireEvent.click(screen.getByTestId('spec-validation-technical-audit-toggle'));
-
-    await screen.findByText('validation-receipt-2');
+    expect(screen.queryByRole('tab', { name: 'Policy Compliance' }))
+      .not.toBeInTheDocument();
     expect(screen.queryByTestId('policy-audit')).not.toBeInTheDocument();
   });
 
@@ -286,43 +289,34 @@ describe('SpecValidationPanel lifecycle edition projection', () => {
 
     renderPanel();
 
-    const checklistRow = await screen.findByTestId('spec-validation-checklist-row');
-    expect(rowState('spec-validation-checklist-row')).toBe('completed');
-    expect(within(checklistRow).getByText('Not required')).toBeInTheDocument();
-    expect(checklistRow).toHaveTextContent('Checklist is disabled for this board.');
-    expect(within(checklistRow).queryByText('Needs attention')).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('tab', { name: 'Checklist' }));
+    const summary = screen.getByTestId('spec-validation-checklist-summary');
+    expect(summaryState('spec-validation-checklist-summary')).toBe('completed');
+    expect(within(summary).getByText('Not required')).toBeInTheDocument();
+    expect(summary).toHaveTextContent('Checklist is disabled for this board.');
+    expect(within(summary).queryByText('Needs attention')).not.toBeInTheDocument();
   });
 
-  it('exposes accessible lazy rows without mounting their details eagerly', async () => {
+  it('lazy-mounts subtabs, preserves a checklist draft and keeps validation audit bounded', async () => {
     renderPanel();
-    await screen.findByTestId('spec-validation-checklist-row');
-
-    const row = screen.getByTestId('spec-validation-checklist-row');
-    const toggle = within(row).getByRole('button');
-    const contentId = toggle.getAttribute('aria-controls');
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(contentId).toBeTruthy();
+    await screen.findByTestId('spec-validation-current');
     expect(screen.queryByTestId('checklist-detail')).not.toBeInTheDocument();
 
-    fireEvent.click(toggle);
-    expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(document.getElementById(contentId!)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: 'Checklist' }));
     expect(screen.getByTestId('checklist-detail')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Cached checklist draft'), {
       target: { value: 'retained draft' },
     });
 
-    fireEvent.keyDown(screen.getByTestId('checklist-detail'), { key: 'Escape' });
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(toggle).toHaveFocus();
+    fireEvent.click(screen.getByRole('tab', { name: 'Spec Validation' }));
     expect(screen.getByTestId('checklist-detail')).not.toBeVisible();
-
-    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole('tab', { name: 'Checklist' }));
     expect(screen.getByTestId('checklist-detail')).toBeVisible();
     expect(screen.getByLabelText('Cached checklist draft')).toHaveValue(
       'retained draft',
     );
 
+    fireEvent.click(screen.getByRole('tab', { name: 'Spec Validation' }));
     const auditToggle = screen.getByTestId(
       'spec-validation-technical-audit-toggle',
     );
@@ -339,12 +333,8 @@ describe('SpecValidationPanel lifecycle edition projection', () => {
     expect(apiMock.getValidationTechnicalAudit).toHaveBeenCalledTimes(1);
 
     const currentCard = screen.getByTestId('spec-validation-current');
-    const currentToggle = within(currentCard).getByRole('button');
-    expect(apiMock.getCurrentSpecValidation).not.toHaveBeenCalled();
-    fireEvent.click(currentToggle);
-    await waitFor(() => expect(apiMock.getCurrentSpecValidation).toHaveBeenCalledTimes(1));
-    fireEvent.click(currentToggle);
-    fireEvent.click(currentToggle);
+    expect(within(currentCard).queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.getByTestId('validation-detail-current')).toBeVisible();
     expect(apiMock.getCurrentSpecValidation).toHaveBeenCalledTimes(1);
 
     const previousToggle = screen.getByTestId('spec-validation-previous-toggle');

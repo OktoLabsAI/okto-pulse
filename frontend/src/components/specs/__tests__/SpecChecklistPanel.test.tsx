@@ -408,8 +408,10 @@ describe('SpecChecklistPanel', () => {
           min_completeness: 80,
           max_drift: 20,
           require_spec_validation: true,
-          min_spec_completeness: 80,
+          min_spec_confidence: 70,
+          min_spec_clarity: 80,
           min_spec_assertiveness: 80,
+          min_spec_decidability: 80,
           max_spec_ambiguity: 30,
         }}
         canReadChecklist
@@ -422,12 +424,18 @@ describe('SpecChecklistPanel', () => {
     expect(await screen.findByTestId('spec-validation-checklist-readiness')).toHaveTextContent(
       'needs attention',
     );
-    fireEvent.change(
-      screen.getByPlaceholderText(
-        'Summarize the human validation result for this edition',
-      ),
-      { target: { value: 'A sufficiently detailed overall justification.' } },
-    );
+    for (const metric of [
+      'Confidence',
+      'Clarity',
+      'Assertiveness',
+      'Decidability',
+      'Ambiguity',
+    ]) {
+      fireEvent.change(screen.getByLabelText(`${metric} justification`), {
+        target: { value: `${metric} has enough supporting evidence.` },
+      });
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
 
     const submitButton = screen.getByRole('button', {
       name: 'Submit Validation',
@@ -450,8 +458,108 @@ describe('SpecChecklistPanel', () => {
       expected_validation_edition: 1,
       expected_spec_version: 4,
       expected_head_revision: 0,
-      score: 80,
-      summary: 'A sufficiently detailed overall justification.',
+      confidence: 70,
+      confidence_justification: 'Confidence has enough supporting evidence.',
+      clarity: 80,
+      clarity_justification: 'Clarity has enough supporting evidence.',
+      assertiveness: 80,
+      assertiveness_justification: 'Assertiveness has enough supporting evidence.',
+      decidability: 80,
+      decidability_justification: 'Decidability has enough supporting evidence.',
+      ambiguity: 30,
+      ambiguity_justification: 'Ambiguity has enough supporting evidence.',
+      pinpoints: [],
+      recommendation: 'approve',
     });
+  });
+
+  it('submits five justified scores and a metric-tagged pinpoint', async () => {
+    apiMock.getSpecChecklistState.mockResolvedValue(currentState);
+    render(
+      <SubmitSpecValidationModal
+        specId="spec-1"
+        specTitle="Five-metric Spec"
+        boardId="board-1"
+        specVersion={4}
+        settings={{
+          max_scenarios_per_card: 3,
+          skip_test_coverage_global: false,
+          skip_rules_coverage_global: false,
+          skip_trs_coverage_global: false,
+          skip_contract_coverage_global: false,
+          skip_ir_coverage_global: false,
+          skip_or_coverage_global: false,
+          skip_decisions_coverage_global: false,
+          require_task_validation: true,
+          min_confidence: 80,
+          min_completeness: 80,
+          max_drift: 20,
+          require_spec_validation: true,
+          min_spec_confidence: 70,
+          min_spec_clarity: 80,
+          min_spec_assertiveness: 80,
+          min_spec_decidability: 80,
+          max_spec_ambiguity: 30,
+        }}
+        canReadChecklist
+        canExecuteChecklist
+        onClose={() => {}}
+        onSubmitted={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(
+      screen.getByTestId('spec-validation-checklist-readiness'),
+    ).toHaveTextContent('is ready'));
+    fireEvent.change(screen.getByLabelText('Confidence score'), {
+      target: { value: '91' },
+    });
+    fireEvent.change(screen.getByLabelText('Decidability score'), {
+      target: { value: '74' },
+    });
+    for (const metric of [
+      'Confidence',
+      'Clarity',
+      'Assertiveness',
+      'Decidability',
+      'Ambiguity',
+    ]) {
+      fireEvent.change(screen.getByLabelText(`${metric} justification`), {
+        target: { value: `${metric} is supported by specific evidence.` },
+      });
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Add pinpoint' }));
+    fireEvent.change(screen.getByLabelText('Pinpoint 1 metric'), {
+      target: { value: 'decidability' },
+    });
+    fireEvent.change(screen.getByLabelText('Pinpoint 1 location type'), {
+      target: { value: 'structured_child' },
+    });
+    fireEvent.change(screen.getByLabelText('Pinpoint 1 location reference'), {
+      target: { value: 'fr-availability' },
+    });
+    fireEvent.change(screen.getByLabelText('Pinpoint 1 detail'), {
+      target: { value: 'The requirement does not establish a minimum capacity.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Submit Validation' }));
+
+    await waitFor(() => expect(apiMock.submitSpecValidation).toHaveBeenCalledWith(
+      'spec-1',
+      expect.objectContaining({
+        confidence: 91,
+        clarity: 80,
+        assertiveness: 80,
+        decidability: 74,
+        ambiguity: 30,
+        recommendation: 'approve',
+        pinpoints: [{
+          metric: 'decidability',
+          anchor_type: 'structured_child',
+          anchor_ref: 'fr-availability',
+          detail: 'The requirement does not establish a minimum capacity.',
+        }],
+      }),
+    ));
   });
 });

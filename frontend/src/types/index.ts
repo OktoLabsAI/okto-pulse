@@ -141,6 +141,7 @@ export interface AllowedTransition {
   label: string;
   gate: string;
   blocked_reason: string | null;
+  blocked_facts: Record<string, unknown> | null;
   preconditions: string[];
   capabilities: string[];
   effects: string[];
@@ -2060,6 +2061,8 @@ export interface Spec extends TaskValidationGateOverride {
   knowledge_bases: SpecKnowledgeSummary[];
   qa_items: SpecQAItem[];
   quality_summaries?: QualitySummaryMap;
+  /** Authoritative precedence gate projection used by the modal header. */
+  dependency_readiness?: import('./spec-dependencies').SpecDependencyReadiness;
 }
 
 // Spec summary (without nested cards)
@@ -2084,6 +2087,7 @@ export interface SpecSummary {
   architecture_designs?: ArchitectureDesignSummary[];
   archived?: boolean;
   quality_summaries?: QualitySummaryMap;
+  dependency_readiness?: import('./spec-dependencies').SpecDependencyReadiness;
 }
 
 // Ideation
@@ -2864,6 +2868,10 @@ export interface BoardSettings {
   max_drift: number;
   // Spec Validation Gate settings (default enabled unless explicitly disabled)
   require_spec_validation?: boolean;
+  min_spec_confidence?: number;
+  min_spec_clarity?: number;
+  min_spec_decidability?: number;
+  /** Legacy setting retained for reading older board snapshots. */
   min_spec_completeness?: number;
   min_spec_assertiveness?: number;
   max_spec_ambiguity?: number;
@@ -2901,6 +2909,20 @@ export interface BoardSettings {
 export type LintLanguageCode = 'pt-BR' | 'en-US' | 'es-ES' | 'de-DE' | 'fr-FR';
 
 // Spec Validation Gate
+export type SpecValidationMetric =
+  | 'confidence'
+  | 'clarity'
+  | 'assertiveness'
+  | 'decidability'
+  | 'ambiguity';
+
+export interface SpecValidationPinpoint {
+  metric: SpecValidationMetric;
+  anchor_type: QualityFindingAnchorType;
+  anchor_ref?: string | null;
+  detail: string;
+}
+
 export interface SpecValidation {
   id: string;
   validation_id?: string;
@@ -2913,6 +2935,13 @@ export interface SpecValidation {
   /** Canonical human validation fields. */
   score?: number | null;
   summary?: string | null;
+  confidence?: number | null;
+  confidence_justification?: string | null;
+  clarity?: number | null;
+  clarity_justification?: string | null;
+  decidability?: number | null;
+  decidability_justification?: string | null;
+  pinpoints?: SpecValidationPinpoint[] | null;
   /** Legacy dimension fields remain readable in immutable history. */
   completeness?: number | null;
   completeness_justification?: string | null;
@@ -2925,9 +2954,13 @@ export interface SpecValidation {
   outcome?: 'success' | 'failed' | null;
   threshold_violations?: string[] | null;
   resolved_thresholds?: {
-    min_spec_completeness: number;
-    min_spec_assertiveness: number;
-    max_spec_ambiguity: number;
+    min_spec_confidence?: number;
+    min_spec_clarity?: number;
+    min_spec_assertiveness?: number;
+    min_spec_decidability?: number;
+    max_spec_ambiguity?: number;
+    /** Legacy threshold retained for old immutable records. */
+    min_spec_completeness?: number;
   } | null;
   created_at: string;
   spec_status?: string | null;
@@ -2941,8 +2974,18 @@ export interface SpecValidationSubmitPayload {
   expected_validation_edition: number;
   expected_spec_version: number;
   expected_head_revision: number;
-  score: number;
-  summary: string;
+  confidence: number;
+  confidence_justification: string;
+  clarity: number;
+  clarity_justification: string;
+  assertiveness: number;
+  assertiveness_justification: string;
+  decidability: number;
+  decidability_justification: string;
+  ambiguity: number;
+  ambiguity_justification: string;
+  pinpoints: SpecValidationPinpoint[];
+  recommendation: 'approve' | 'reject';
 }
 
 export interface SpecValidationSubmitResponse {

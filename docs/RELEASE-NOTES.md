@@ -18,6 +18,9 @@ metric rationale, remediation and exact currentness fences.
 - FastMCP remains on its supported Authlib 1.6 compatibility line, removing the
   startup deprecation warning until the joserfc-based host migration.
 - Community requires the matching `okto-pulse-core>=0.3.2` release.
+- The existing Spec modal gains a lazy, accessible Dependencies workspace backed
+  by audited SQLite/PostgreSQL-capable persistence, opaque pagination and the
+  Core-owned Done-only precedence policy.
 
 
 ### 0.3.1

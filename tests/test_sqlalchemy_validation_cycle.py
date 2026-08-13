@@ -20,6 +20,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Ideation,
     QualityAssessmentHeadRow,
     QualityAssessmentReceiptRow,
+    Refinement,
     SemanticGuidelineSkipRow,
     SemanticGuidelineWaiverEventRow,
     SemanticGuidelineWaiverRow,
@@ -35,7 +36,7 @@ from okto_pulse.community.adapters.sqlalchemy_validation_cycle import (
     CommunitySqlAlchemyValidationCycleReader,
     _spec_remaining_actions,
 )
-from okto_pulse.core.domain.enums import IdeationStatus, SpecStatus
+from okto_pulse.core.domain.enums import IdeationStatus, RefinementStatus, SpecStatus
 from okto_pulse.core.domain.quality_assessment import (
     AssessmentSubjectType,
 )
@@ -116,12 +117,13 @@ def _ambiguity_receipt(
     edition: int,
     score: float,
     head_revision: int,
+    subject_type: str = "ideation",
 ) -> QualityAssessmentReceiptRow:
     digest = "d" * 64
     return QualityAssessmentReceiptRow(
         id=receipt_id,
         board_id=BOARD_ID,
-        subject_type="ideation",
+        subject_type=subject_type,
         subject_id=subject_id,
         subject_version=7,
         subject_edition=edition,
@@ -517,6 +519,90 @@ async def test_current_ambiguity_projects_real_edition_gate_outcomes(
     assert batch_payload[1]["current_result"]["summary"]["reason_code"] == (
         "ambiguity_gate_skipped"
     )
+
+
+async def test_refinement_cycle_loads_board_settings_for_single_and_batch(
+    cycle_rig,
+) -> None:
+    refinement_id = "refinement-current-ambiguity"
+    async with cycle_rig.factory() as session:
+        board = await session.get(Board, BOARD_ID)
+        assert board is not None
+        board.settings = {
+            "require_refinement_ambiguity_gate": True,
+            "max_refinement_ambiguity": 2,
+        }
+        session.add_all(
+            (
+                Refinement(
+                    id=refinement_id,
+                    ideation_id="ideation-refinement-parent",
+                    board_id=BOARD_ID,
+                    title="Current refinement ambiguity",
+                    status=RefinementStatus.APPROVED,
+                    edition=2,
+                    version=7,
+                    created_by="owner",
+                ),
+                Ideation(
+                    id="ideation-refinement-parent",
+                    board_id=BOARD_ID,
+                    title="Refinement parent",
+                    status=IdeationStatus.DONE,
+                    edition=1,
+                    version=1,
+                    created_by="owner",
+                ),
+                _ambiguity_receipt(
+                    receipt_id="refinement-ambiguity-current",
+                    subject_id=refinement_id,
+                    edition=2,
+                    score=4,
+                    head_revision=1,
+                    subject_type="refinement",
+                ),
+                QualityAssessmentHeadRow(
+                    board_id=BOARD_ID,
+                    subject_type="refinement",
+                    subject_id=refinement_id,
+                    assessment_kind="ambiguity",
+                    receipt_id="refinement-ambiguity-current",
+                    revision=1,
+                    updated_at=NOW,
+                ),
+            )
+        )
+        await session.commit()
+
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    single = await reader.get_validation_cycle(
+        subject_type=AssessmentSubjectType.REFINEMENT,
+        subject_id=refinement_id,
+        include_previous=False,
+        offset=0,
+        limit=25,
+        actor_id="owner",
+        realm_scope=RealmScope.local(),
+    )
+    batch = await reader.get_validation_cycles(
+        subjects=(
+            ValidationCycleSubjectRef(
+                AssessmentSubjectType.REFINEMENT,
+                refinement_id,
+            ),
+        ),
+        actor_id="owner",
+        realm_scope=RealmScope.local(),
+    )
+
+    for cycle in (single, batch[0]):
+        payload = project_validation_cycle(cycle)
+        assert payload["current_result"]["status"] == "failed"
+        assert payload["current_result"]["summary"]["enabled"] is True
+        assert payload["current_result"]["summary"]["threshold"] == 2
+        assert payload["current_result"]["summary"]["reason_code"] == (
+            "ambiguity_score_exceeds_threshold"
+        )
 
 
 async def test_requirement_lint_result_has_subject_scoped_technical_audit(

@@ -31,8 +31,8 @@ from pathlib import Path
 from typing import Any
 
 EXPECTED_VERSION = "0.3.2"
-EXPECTED_MCP_TOOL_COUNT = 334
-EXPECTED_CANONICAL_TOOL_COUNT = 326
+EXPECTED_MCP_TOOL_COUNT = 337
+EXPECTED_CANONICAL_TOOL_COUNT = 329
 EXPECTED_TOOL_ALIAS_COUNT = 8
 EXPECTED_RESOURCE_COUNT = 55
 MINIMUM_SUPPORTED_PYTHON = (3, 11)
@@ -69,7 +69,12 @@ def _resolve_core_repo() -> Path:
     if configured_workspace:
         workspace = Path(configured_workspace).expanduser().resolve()
         checked: list[str] = []
-        for name in ("okto-pulse-core", "okto_labs_pulse_core"):
+        names = (
+            ("okto_labs_pulse_core", "okto-pulse-core")
+            if COMMUNITY_REPO.name.casefold() == "okto_labs_pulse_community"
+            else ("okto-pulse-core", "okto_labs_pulse_core")
+        )
+        for name in names:
             candidate = (workspace / name).resolve()
             checked.append(str(candidate))
             if _is_core_checkout(candidate):
@@ -80,10 +85,12 @@ def _resolve_core_repo() -> Path:
         )
 
     roots = (COMMUNITY_REPO.parent, COMMUNITY_REPO.parent.parent)
-    candidates = (
-        *(root / "okto-pulse-core" for root in roots),
-        *(root / "okto_labs_pulse_core" for root in roots),
+    names = (
+        ("okto_labs_pulse_core", "okto-pulse-core")
+        if COMMUNITY_REPO.name.casefold() == "okto_labs_pulse_community"
+        else ("okto-pulse-core", "okto_labs_pulse_core")
     )
+    candidates = tuple(root / name for root in roots for name in names)
     checked: list[str] = []
     for candidate in candidates:
         resolved = candidate.resolve()
@@ -519,6 +526,7 @@ def _audit_core_artifact(
 _INSTALLED_ORIGIN_PROBE = r"""
 import importlib.metadata as metadata
 import importlib.util
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -528,11 +536,17 @@ forbidden_roots = tuple(Path(value).resolve() for value in sys.argv[2:])
 
 import okto_pulse.core as core
 import okto_pulse.community as community
+from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_v2 import (
+    CommunitySqlAlchemySemanticGuidelineAssessmentV2,
+)
 from okto_pulse.core.mcp.ska_resource_manifest import (
     verify_checked_in_manifest as verify_ska_resource_manifest,
 )
 from okto_pulse.core.mcp.ska_tool_manifest import (
     verify_checked_in_manifest as verify_ska_tool_manifest,
+)
+from okto_pulse.core.ports.semantic_subject_projection import (
+    SemanticAssessmentV2ReadPort,
 )
 
 def under(path, root):
@@ -594,6 +608,19 @@ resource_manifest = json.loads(resource_manifest_path.read_text(encoding="utf-8"
 assert tool_manifest["tool_count"] == 13
 assert resource_manifest["resource_count"] == 22
 
+semantic_v2_reader_signature = inspect.signature(
+    SemanticAssessmentV2ReadPort.get_current_semantic_assessment_v2
+)
+community_semantic_v2_reader_signature = inspect.signature(
+    CommunitySqlAlchemySemanticGuidelineAssessmentV2
+    .get_current_semantic_assessment_v2
+)
+assert community_semantic_v2_reader_signature == semantic_v2_reader_signature, (
+    "installed semantic-v2 reader contract mismatch",
+    semantic_v2_reader_signature,
+    community_semantic_v2_reader_signature,
+)
+
 bad_sys_path = []
 for value in sys.path:
     if not value:
@@ -627,6 +654,10 @@ print("INSTALLED_ORIGIN_PROBE=" + json.dumps({
         "tool_manifest_sha256": tool_manifest["manifest_sha256"],
         "resource_count": resource_manifest["resource_count"],
         "resource_manifest_sha256": resource_manifest["manifest_sha256"],
+    },
+    "semantic_v2_reader_contract": {
+        "compatible": True,
+        "signature": str(semantic_v2_reader_signature),
     },
     "about_version": "0.3.2",
 }, sort_keys=True))

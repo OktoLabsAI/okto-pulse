@@ -73,6 +73,8 @@ _ENTITY_CLASSES = {
     "refinement_qa_item": models.RefinementQAItem,
     "refinement_snapshot": models.RefinementSnapshot,
     "spec": models.Spec,
+    "spec_dependency": models.SpecDependency,
+    "spec_dependency_operation": models.SpecDependencyOperation,
     "spec_history": models.SpecHistory,
     "spec_knowledge_base": models.SpecKnowledgeBase,
     "spec_qa_item": models.SpecQAItem,

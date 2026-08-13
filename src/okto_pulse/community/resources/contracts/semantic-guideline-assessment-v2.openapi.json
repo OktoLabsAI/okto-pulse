@@ -243,6 +243,11 @@
             "title": "Currentness",
             "type": "string"
           },
+          "lifecycle_state": {
+            "const": "current",
+            "title": "Lifecycle State",
+            "type": "string"
+          },
           "metrics": {
             "items": {
               "$ref": "#/components/schemas/SemanticMetricResultV2Response"
@@ -283,6 +288,7 @@
           "receipt_digest",
           "currentness",
           "validation_edition",
+          "lifecycle_state",
           "metrics"
         ],
         "title": "RecordedSemanticAssessmentV2Response",

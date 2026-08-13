@@ -169,9 +169,10 @@ async def _build_engine(path: Path) -> AsyncEngine:
         await conn.execute(
             text(
                 "INSERT INTO specs "
-                "(id, board_id, title, status, version, created_by, archived, "
+                "(id, board_id, title, status, edition, version, created_by, archived, "
                 "updated_at) VALUES "
-                "(:id, :board_id, :title, :status, 1, :created_by, :archived, "
+                "(:id, :board_id, :title, :status, :edition, :version, "
+                ":created_by, :archived, "
                 "'2026-07-20 00:00:00')"
             ),
             [
@@ -180,6 +181,11 @@ async def _build_engine(path: Path) -> AsyncEngine:
                     "board_id": "b1",
                     "title": f"Spec {i}",
                     "status": "draft" if i % 2 == 0 else "review",
+                    # p00 exercises the public edition/revision projection.
+                    # Declare that synthetic state at creation time instead of
+                    # bypassing the operational one-edition lifecycle fence.
+                    "edition": 3 if i == 0 else 1,
+                    "version": 42 if i == 0 else 1,
                     "created_by": "u",
                     "archived": i >= 25,
                 }
@@ -191,6 +197,8 @@ async def _build_engine(path: Path) -> AsyncEngine:
                     "board_id": "b2",
                     "title": "Secret spec",
                     "status": "draft",
+                    "edition": 1,
+                    "version": 1,
                     "created_by": "other",
                     "archived": False,
                 }
@@ -206,12 +214,6 @@ async def _build_engine(path: Path) -> AsyncEngine:
             text(
                 "UPDATE refinements SET edition = 5, version = 43 "
                 "WHERE id = 'r00'"
-            )
-        )
-        await conn.execute(
-            text(
-                "UPDATE specs SET edition = 3, version = 42 "
-                "WHERE id = 'p00'"
             )
         )
         await conn.execute(

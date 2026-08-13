@@ -155,7 +155,7 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         f"missing_steps={sorted(migrate_names - ledger_migrate_ids)} "
         f"orphan_steps={sorted(ledger_migrate_ids - migrate_names)}"
     )
-    # 61 = the historical ledger plus the Code Traceability schema/guard step,
+    # 66 = the historical ledger plus the Code Traceability schema/guard step,
     # the SK-A Refinement ambiguity-skip
     # column, SK-A/C7 quality-assessment persistence schema, the curated Spec
     # checklist mode, the human-facing Spec edition counter, and SK-B's
@@ -166,10 +166,10 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
     # plus the SK-B3 closure backfill of the 5-column unique authority index
     # on guideline_board_bindings (structural prerequisite of the
     # binding-configuration composite FK on migrated databases).
-    assert len(migrate_names) == 65, (
-        f"expected 65 _migrate_*, found {len(migrate_names)}"
+    assert len(migrate_names) == 66, (
+        f"expected 66 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 65
+    assert len(ledger_migrate_ids) == 66
     ordered_ids = [step.step_id for step in ledger]
     assert ordered_ids.index(
         "_migrate_guideline_policy_lifecycle_substrate"
@@ -534,6 +534,13 @@ def test_fresh_create_all_installs_canonical_lifecycle_edition_guards(
                     )
                 )
             ).all()
+            dependency_board_guard = await connection.scalar(
+                text(
+                    "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+                    "AND name = 'trg_spec_dependency_spec_board_update'"
+                )
+            )
+            assert dependency_board_guard is None
             await connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
             await connection.execute(
                 text(
@@ -757,6 +764,8 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         "_migrate_rebuild_guideline_policy_v1_semantic_alignment",
         "_migrate_drop_retired_guideline_impact_v1_triggers",
         "_migrate_seed_semantic_configurations_for_legacy_bindings",
+        # Fresh create_all emits the complete SK-M ledger and guards.
+        "_migrate_spec_dependency_schema",
         # The durable v3 epoch seals an immutable receipt even when a fresh
         # database has zero revision rows to rewrite. Fresh instances then
         # observe that receipt and skip without touching fingerprints.
@@ -785,6 +794,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         "_migrate_drop_retired_guideline_impact_v1_triggers",
         "_migrate_seed_semantic_configurations_for_legacy_bindings",
         "_migrate_recompute_cognitive_source_fingerprints_v2",
+        "_migrate_spec_dependency_schema",
     }
 
     # First run: clean databases skip fixture repair and convergence steps

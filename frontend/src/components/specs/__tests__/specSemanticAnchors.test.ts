@@ -10,7 +10,12 @@ describe('resolveSpecSemanticAnchor', () => {
       anchor_type: 'whole_artifact',
       anchor_ref: null,
       excerpt_hash: null,
-    })).toEqual({ state: 'available', navigationTarget: 'spec:details:root' });
+    })).toEqual({
+      state: 'available',
+      navigationTarget: 'spec:details:root',
+      displayText: 'Whole Spec',
+      stableReference: null,
+    });
 
     expect(resolveSpecSemanticAnchor({
       anchor_type: 'field',
@@ -19,20 +24,32 @@ describe('resolveSpecSemanticAnchor', () => {
     })).toEqual({
       state: 'available',
       navigationTarget: 'spec:field:title',
+      displayText: undefined,
+      stableReference: 'title',
     });
   });
 
-  it('authorizes only structured children loaded by the Spec modal', () => {
-    const anchorTexts = { fr_visible: 'The visible requirement.' };
+  it.each([
+    'fr_visible',
+    'functional_requirements.fr_visible',
+  ])('authorizes a loaded structured child from %s', (anchorRef) => {
+    const anchorTexts = { fr_visible: 'FR-1: The visible requirement.' };
 
     expect(resolveSpecSemanticAnchor({
       anchor_type: 'structured_child',
-      anchor_ref: 'fr_visible',
+      anchor_ref: anchorRef,
       excerpt_hash: digest,
     }, anchorTexts)).toEqual({
       state: 'available',
       navigationTarget: 'spec:requirement:fr_visible',
+      displayText: 'FR-1: The visible requirement.',
+      stableReference: 'fr_visible',
     });
+  });
+
+  it('rejects structured children not loaded by the Spec modal', () => {
+    const anchorTexts = { fr_visible: 'FR-1: The visible requirement.' };
+
     expect(resolveSpecSemanticAnchor({
       anchor_type: 'structured_child',
       anchor_ref: 'opaque-child-id',

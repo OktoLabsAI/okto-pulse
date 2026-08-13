@@ -78,6 +78,7 @@ function transition(
     label: toStatus[0].toUpperCase() + toStatus.slice(1),
     gate: policyCompliance ? 'test_scenario_progression' : 'none',
     blocked_reason: null,
+    blocked_facts: null,
     preconditions,
     capabilities: [],
     effects: ['status_changed', 'activity_logged'],

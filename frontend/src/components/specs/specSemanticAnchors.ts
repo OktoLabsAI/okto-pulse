@@ -30,7 +30,12 @@ export function resolveSpecSemanticAnchor(
   anchorTexts?: Readonly<Record<string, string>>,
 ): SemanticAnchorResolution {
   if (anchor.anchor_type === 'whole_artifact') {
-    return { state: 'available', navigationTarget: 'spec:details:root' };
+    return {
+      state: 'available',
+      navigationTarget: 'spec:details:root',
+      displayText: 'Whole Spec',
+      stableReference: null,
+    };
   }
   if (
     anchor.anchor_type === 'field'
@@ -40,16 +45,22 @@ export function resolveSpecSemanticAnchor(
     return {
       state: 'available',
       navigationTarget: `spec:field:${anchor.anchor_ref}`,
+      displayText: anchorTexts?.[anchor.anchor_ref],
+      stableReference: anchor.anchor_ref,
     };
   }
-  if (
-    anchor.anchor_type === 'structured_child'
-    && anchor.anchor_ref !== null
-    && anchorTexts?.[anchor.anchor_ref] !== undefined
-  ) {
+  if (anchor.anchor_type === 'structured_child' && anchor.anchor_ref !== null) {
+    const stableReference = anchor.anchor_ref.split('.').at(-1)?.trim();
+    const displayText = anchorTexts?.[anchor.anchor_ref]
+      ?? (stableReference ? anchorTexts?.[stableReference] : undefined);
+    if (displayText === undefined || !stableReference) {
+      return { state: 'inaccessible' };
+    }
     return {
       state: 'available',
-      navigationTarget: `spec:requirement:${anchor.anchor_ref}`,
+      navigationTarget: `spec:requirement:${stableReference}`,
+      displayText,
+      stableReference,
     };
   }
   return { state: 'inaccessible' };

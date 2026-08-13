@@ -726,15 +726,17 @@ These checks can be bypassed per-spec (\`skip_test_coverage\`, \`skip_rules_cove
 
 ### Spec Validation Gate
 
-Before a spec can move from **approved** to **validated**, it can be evaluated on 3 dimensions:
+Before a spec can move from **approved** to **validated**, it is evaluated on five dimensions:
 
 | Metric | What it measures |
 |--------|-----------------|
-| **Completeness** (0–100) | How thoroughly does the spec define what to build? |
-| **Assertiveness** (0–100) | How measurable and testable are the requirements? |
+| **Confidence** (0–100) | How confident is the evaluator in the assessment? |
+| **Clarity** (0–100) | How clearly are the problem, solution and requirements expressed? |
+| **Assertiveness** (0–100) | How direct, measurable and testable are the statements? |
+| **Decidability** (0–100) | How many concrete implementation decisions can be made from the Spec? |
 | **Ambiguity** (0–100) | How many ways can the requirements be interpreted? (lower is better) |
 
-Thresholds are configurable per board in Settings. Multiple evaluations can be submitted; the spec must pass all three to advance.
+Each score includes a justification and may include metric-tagged pinpoint findings. Thresholds are configurable per board in Settings; the spec must pass all five to advance.
 
 ### Export
 
@@ -1183,11 +1185,13 @@ When \`require_spec_validation\` is enabled in board settings, specs must pass a
 
 | Metric | What it measures | Default |
 |--------|-----------------|---------|
-| **Completeness** | How thoroughly defined | ≥ 70 |
-| **Assertiveness** | How measurable/testable | ≥ 70 |
+| **Confidence** | Evaluator confidence in the assessment | ≥ 70 |
+| **Clarity** | Problem, solution and requirements are clear | ≥ 80 |
+| **Assertiveness** | Statements are direct, measurable and testable | ≥ 80 |
+| **Decidability** | Requirements provide concrete decision parameters | ≥ 80 |
 | **Ambiguity** | How many interpretations possible | ≤ 30 |
 
-Multiple evaluations can be submitted (by humans or AI agents). The spec must pass all thresholds to advance.
+Every metric requires a justification. Evaluators may attach pinpoint findings tagged with the affected metric. The current lifecycle edition must pass all thresholds to advance.
 
 ### Spec → Done gates
 
@@ -1390,9 +1394,9 @@ Click the **Knowledge Graph** tab in the main navigation. The KG page has 6 sub-
 | **Learning** | 💡 | Lessons learned from bugs or incidents |
 | **Alternative** | ↔️ | Considered but not chosen alternatives |
 
-### Edge types (10)
+### Edge types (16)
 
-\`supersedes\` · \`contradicts\` · \`derives_from\` · \`relates_to\` · \`mentions\` · \`depends_on\` · \`violates\` · \`implements\` · \`tests\` · \`validates\`
+\`supersedes\` · \`contradicts\` · \`derives_from\` · \`relates_to\` · \`mentions\` · \`depends_on\` · \`violates\` · \`implements\` · \`tests\` · \`validates\` · \`precedes\` · \`supports\` · \`overlaps\` · \`belongs_to\` · \`originates_from\` · \`covered_by\`
 
 ### How consolidation works
 
@@ -1530,8 +1534,10 @@ These flags bypass specific coverage checks for the entire board:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | \`require_spec_validation\` | true | Enable the spec validation gate (approved → validated) |
-| \`min_spec_completeness\` | 80 | Minimum completeness score |
+| \`min_spec_confidence\` | 70 | Minimum evaluator-confidence score |
+| \`min_spec_clarity\` | 80 | Minimum clarity score |
 | \`min_spec_assertiveness\` | 80 | Minimum assertiveness score |
+| \`min_spec_decidability\` | 80 | Minimum decidability score |
 | \`max_spec_ambiguity\` | 30 | Maximum ambiguity score |
 
 ### Other settings

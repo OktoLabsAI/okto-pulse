@@ -1347,6 +1347,7 @@ class SemanticAssessmentCurrentV2Response(_ClosedModel):
     subject_id: str
     subject_version: int = Field(ge=1)
     validation_edition: int | None
+    lifecycle_state: Literal["current"]
     binding_id: str
     guideline_id: str
     guideline_revision_id: str
@@ -1362,6 +1363,7 @@ class RecordedSemanticAssessmentV2Response(_ClosedModel):
     receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     currentness: Literal["current"]
     validation_edition: int | None
+    lifecycle_state: Literal["current"]
     metrics: list[SemanticMetricResultV2Response]
 
 

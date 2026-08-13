@@ -126,7 +126,7 @@ def test_revision_model_is_additive_and_has_the_exact_owned_contract() -> None:
     assert table.name in COMMUNITY_SCHEMA_EXTENSION_TABLES
     assert table.name in GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES
     assert GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION == (
-        "gdsr-trigger-manifest-v6"
+        "gdsr-trigger-manifest-v7"
     )
 
 

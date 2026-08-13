@@ -188,13 +188,19 @@ class CommunityKuzuGraphStore:
         to_type: str,
         from_id: str,
         to_id: str,
+        rule_id: str | None = None,
     ) -> bool:
+        rule_filter = " WHERE r.rule_id = $rule_id" if rule_id is not None else ""
         return bool(
             self._exec(
                 board_id,
                 f"MATCH (a:{from_type} {{id: $from_id}})-[r:{edge_type}]->"
-                f"(b:{to_type} {{id: $to_id}}) RETURN r LIMIT 1",
-                {"from_id": from_id, "to_id": to_id},
+                f"(b:{to_type} {{id: $to_id}}){rule_filter} RETURN r LIMIT 1",
+                {
+                    "from_id": from_id,
+                    "to_id": to_id,
+                    **({"rule_id": rule_id} if rule_id is not None else {}),
+                },
             )
         )
 

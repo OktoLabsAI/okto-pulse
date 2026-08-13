@@ -48,6 +48,7 @@ const ASSESSMENT_DETAIL_FIELDS = [
   'subject_id',
   'subject_version',
   'validation_edition',
+  'lifecycle_state',
   'binding_id',
   'guideline_id',
   'guideline_revision_id',
@@ -105,6 +106,8 @@ const FINDING_DETAIL_FIELDS = [
   'entity_type',
   'subject_id',
   'subject_version',
+  'validation_edition',
+  'lifecycle_state',
   'guideline_id',
   'guideline_revision_id',
   'binding_id',
@@ -127,6 +130,8 @@ const WAIVER_DETAIL_FIELDS = [
   'entity_type',
   'subject_id',
   'subject_version',
+  'validation_edition',
+  'lifecycle_state',
   'finding_id',
   'receipt_id',
   'guideline_id',
@@ -161,6 +166,8 @@ const SKIP_DETAIL_FIELDS = [
   'entity_type',
   'subject_id',
   'subject_version',
+  'validation_edition',
+  'lifecycle_state',
   'guideline_id',
   'guideline_revision_id',
   'binding_id',
@@ -370,6 +377,38 @@ function matchesSubject(
   positiveInteger(value.subject_version, 'subject version');
 }
 
+function lifecyclePlacement(
+  value: Record<string, unknown>,
+  currentnessValue: PolicyCurrentness,
+  label: string,
+): {
+  validationEdition: number | null;
+  lifecycleState: 'current' | 'previous' | 'history_only';
+} {
+  const validationEdition = value.validation_edition === null
+    ? null
+    : positiveInteger(value.validation_edition, `${label} validation edition`);
+  if (
+    value.lifecycle_state !== 'current'
+    && value.lifecycle_state !== 'previous'
+    && value.lifecycle_state !== 'history_only'
+  ) {
+    throw new Error(`Semantic guideline ${label} lifecycle state is invalid.`);
+  }
+  const expectedState = validationEdition === null
+    ? 'history_only'
+    : currentnessValue === 'current' ? 'current' : 'previous';
+  if (value.lifecycle_state !== expectedState) {
+    throw new Error(
+      `Semantic guideline ${label} lifecycle state is inconsistent.`,
+    );
+  }
+  return {
+    validationEdition,
+    lifecycleState: value.lifecycle_state,
+  };
+}
+
 function parseEvidence(value: unknown): SemanticEvidenceRef {
   if (!isRecord(value)) {
     throw new Error('Semantic guideline evidence reference is invalid.');
@@ -532,6 +571,23 @@ export function parseSemanticAssessmentDetail(
     ? null
     : positiveInteger(value.validation_edition, 'validation edition');
   if (
+    value.lifecycle_state !== 'current'
+    && value.lifecycle_state !== 'previous'
+    && value.lifecycle_state !== 'history_only'
+  ) {
+    throw new Error('Semantic guideline assessment lifecycle state is invalid.');
+  }
+  const expectedLifecycleState = validationEdition === null
+    ? 'history_only'
+    : resolvedCurrentness.currentness === 'current'
+      ? 'current'
+      : 'previous';
+  if (value.lifecycle_state !== expectedLifecycleState) {
+    throw new Error(
+      'Semantic guideline assessment lifecycle state is inconsistent.',
+    );
+  }
+  if (
     expected.validationEdition !== undefined
     && validationEdition !== expected.validationEdition
   ) {
@@ -592,6 +648,7 @@ export function parseSemanticAssessmentDetail(
     subject_id: expected.subjectId,
     subject_version: value.subject_version as number,
     validation_edition: validationEdition,
+    lifecycle_state: value.lifecycle_state,
     binding_id: requiredText(value.binding_id, 'binding identity'),
     guideline_id: requiredText(value.guideline_id, 'guideline identity'),
     guideline_revision_id: requiredText(
@@ -638,6 +695,11 @@ export function parseSemanticFindingDetail(
   }
   matchesSubject(value, expected);
   const resolvedCurrentness = currentness(value);
+  const placement = lifecyclePlacement(
+    value,
+    resolvedCurrentness.currentness,
+    'finding',
+  );
   if (!Array.isArray(value.evidence_refs) || value.evidence_refs.length === 0) {
     throw new Error('Semantic guideline finding evidence is missing.');
   }
@@ -652,6 +714,8 @@ export function parseSemanticFindingDetail(
     entity_type: expected.entityType,
     subject_id: expected.subjectId,
     subject_version: value.subject_version as number,
+    validation_edition: placement.validationEdition,
+    lifecycle_state: placement.lifecycleState,
     guideline_id: requiredText(value.guideline_id, 'finding guideline'),
     guideline_revision_id: requiredText(
       value.guideline_revision_id,
@@ -718,6 +782,11 @@ export function parseSemanticWaiverDetail(
     throw new Error('Semantic guideline waiver lifecycle is invalid.');
   }
   const resolvedCurrentness = currentness(value);
+  const placement = lifecyclePlacement(
+    value,
+    resolvedCurrentness.currentness,
+    'waiver',
+  );
   if (!Array.isArray(value.evidence_refs) || value.evidence_refs.length === 0) {
     throw new Error('Semantic guideline waiver evidence is missing.');
   }
@@ -767,6 +836,8 @@ export function parseSemanticWaiverDetail(
     entity_type: expected.entityType,
     subject_id: expected.subjectId,
     subject_version: value.subject_version as number,
+    validation_edition: placement.validationEdition,
+    lifecycle_state: placement.lifecycleState,
     finding_id: requiredText(value.finding_id, 'waiver finding identity'),
     receipt_id: requiredText(value.receipt_id, 'waiver receipt identity'),
     guideline_id: requiredText(value.guideline_id, 'waiver guideline identity'),
@@ -830,6 +901,11 @@ export function parseSemanticSkipDetail(
     throw new Error('Semantic guideline skip lifecycle is invalid.');
   }
   const resolvedCurrentness = currentness(value);
+  const placement = lifecyclePlacement(
+    value,
+    resolvedCurrentness.currentness,
+    'skip',
+  );
   const createdAt = timestamp(value.created_at, 'skip creation timestamp');
   const lastEventAt = timestamp(value.last_event_at, 'skip event timestamp');
   if (Date.parse(lastEventAt) < Date.parse(createdAt)) {
@@ -868,6 +944,8 @@ export function parseSemanticSkipDetail(
     entity_type: expected.entityType,
     subject_id: expected.subjectId,
     subject_version: value.subject_version as number,
+    validation_edition: placement.validationEdition,
+    lifecycle_state: placement.lifecycleState,
     guideline_id: requiredText(value.guideline_id, 'skip guideline identity'),
     guideline_revision_id: requiredText(
       value.guideline_revision_id,
@@ -1024,6 +1102,7 @@ const V2_ASSESSMENT_FIELDS = [
   'subject_id',
   'subject_version',
   'validation_edition',
+  'lifecycle_state',
   'binding_id',
   'guideline_id',
   'guideline_revision_id',
@@ -1254,6 +1333,9 @@ function parseV2Assessment(
   if (value.currentness !== 'current') {
     throw new Error('Semantic guideline v2 currentness is invalid.');
   }
+  if (value.lifecycle_state !== 'current') {
+    throw new Error('Semantic guideline v2 lifecycle state is invalid.');
+  }
   if (
     value.board_id !== expected.boardId
     || value.subject_type !== expected.entityType
@@ -1289,6 +1371,7 @@ function parseV2Assessment(
     subject_id: expected.subjectId,
     subject_version: positiveInteger(value.subject_version, 'v2 subject version'),
     validation_edition: validationEdition,
+    lifecycle_state: 'current',
     binding_id: requiredText(value.binding_id, 'v2 binding identity'),
     guideline_id: requiredText(value.guideline_id, 'v2 guideline identity'),
     guideline_revision_id: requiredText(
@@ -1343,7 +1426,14 @@ export type SemanticPolicyUiState =
   | 'recoverable_transport_error';
 
 export type SemanticAnchorResolution =
-  | { state: 'available'; navigationTarget: string }
+  | {
+      state: 'available';
+      navigationTarget: string;
+      /** Human-readable live content the caller is already authorized to see. */
+      displayText?: string;
+      /** Canonical stable identifier after resolving a qualified reference. */
+      stableReference?: string | null;
+    }
   | { state: 'removed' }
   | { state: 'inaccessible' };
 
@@ -1367,6 +1457,7 @@ export interface SemanticPinpointViewModel {
   blocking: boolean;
   categoryLabel: string;
   locationLabel: string;
+  locationReference: string | null;
   excerpt: string | null;
   navigationTarget: string | null;
   unavailableMessage: string | null;
@@ -1418,6 +1509,13 @@ export interface SemanticPolicyResolverOptions {
 
 const OPAQUE_ID = /^(?:[0-9a-f]{8}-[0-9a-f-]{27,}|[0-9a-f]{32,})$/iu;
 
+function stableAnchorReference(anchorRef: string | null): string | null {
+  const trimmed = anchorRef?.trim();
+  if (!trimmed) return null;
+  const stableReference = trimmed.split('.').at(-1)?.trim();
+  return stableReference || trimmed;
+}
+
 function bestEffortLegacyLabel(pinpoint: SemanticPinpoint): string {
   if (pinpoint.anchor_type === 'whole_artifact') return 'Whole artifact';
   if (pinpoint.anchor_type === 'qa') return 'Question or answer';
@@ -1453,6 +1551,12 @@ function v2PinpointView(
   const resolution = safeResolution(options.resolveAnchor, pinpoint.anchor);
   const inaccessible = resolution.state === 'inaccessible';
   const removed = resolution.state === 'removed';
+  const locationReference = inaccessible
+    ? null
+    : resolution.state === 'available'
+      ? resolution.stableReference
+        ?? stableAnchorReference(pinpoint.anchor.anchor_ref)
+      : stableAnchorReference(pinpoint.anchor.anchor_ref);
   return {
     contractVersion: 'v2',
     state: resolution.state,
@@ -1466,6 +1570,7 @@ function v2PinpointView(
     locationLabel: inaccessible
       ? 'Restricted assessment location'
       : pinpoint.anchor_snapshot.label,
+    locationReference,
     excerpt: inaccessible ? null : pinpoint.anchor_snapshot.excerpt,
     navigationTarget: resolution.state === 'available'
       ? resolution.navigationTarget
@@ -1502,6 +1607,11 @@ function legacyPinpointView(
   const resolution = safeResolution(options.resolveAnchor, pinpoint);
   const inaccessible = resolution.state === 'inaccessible';
   const removed = resolution.state === 'removed';
+  const locationReference = inaccessible
+    ? null
+    : resolution.state === 'available'
+      ? resolution.stableReference ?? stableAnchorReference(pinpoint.anchor_ref)
+      : stableAnchorReference(pinpoint.anchor_ref);
   return {
     contractVersion: 'v1',
     state: inaccessible || removed ? resolution.state : 'legacy',
@@ -1514,7 +1624,12 @@ function legacyPinpointView(
     categoryLabel: anchorCategoryLabel(pinpoint.anchor_type),
     locationLabel: inaccessible
       ? 'Restricted assessment location'
-      : bestEffortLegacyLabel(pinpoint),
+      : resolution.state === 'available' && resolution.displayText?.trim()
+        ? resolution.displayText.trim()
+        : removed
+          ? 'Referenced item'
+          : bestEffortLegacyLabel(pinpoint),
+    locationReference,
     excerpt: null,
     navigationTarget: resolution.state === 'available'
       ? resolution.navigationTarget

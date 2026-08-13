@@ -66,6 +66,8 @@ function waiver(
     entity_type: 'spec',
     subject_id: 'spec-1',
     subject_version: 7,
+    validation_edition: null,
+    lifecycle_state: 'history_only',
     finding_id: 'finding-1',
     receipt_id: 'receipt-1',
     guideline_id: 'guideline-1',

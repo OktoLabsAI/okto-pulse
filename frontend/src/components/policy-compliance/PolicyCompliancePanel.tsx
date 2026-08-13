@@ -1823,11 +1823,16 @@ export function PolicyCompliancePanel({
                     result,
                   ]),
                 );
+                const metricTitleByCode = new Map(
+                  binding.metrics.map((metric) => [metric.code, metric.title]),
+                );
                 const isLoading = currentSemantic.status === 'loading' && !view;
                 const noAssessment = currentSemantic.status === 'ready'
                   && currentSemantic.missingBindingIds.includes(binding.bindingId);
                 const pinpoints = view?.metrics.flatMap((metric) =>
                   metric.pinpoints.map((pinpoint) => ({
+                    metricLabel: metricTitleByCode.get(metric.metricCode)
+                      ?? metric.metricCode,
                     metricState: metric.uiState,
                     pinpoint,
                   }))
@@ -1938,9 +1943,14 @@ export function PolicyCompliancePanel({
                     <section className="space-y-2" aria-label={`${binding.guidelineTitle} pinpoints`}>
                       <h4 className="text-xs font-semibold text-surface-800 dark:text-surface-100">Actionable pinpoints</h4>
                       <div className="space-y-2">
-                        {pinpoints.map(({ metricState, pinpoint }, index) => (
+                        {pinpoints.map(({
+                          metricLabel,
+                          metricState,
+                          pinpoint,
+                        }, index) => (
                           <ActionablePinpoint
                             key={`${pinpoint.contractVersion}:${index}:${pinpoint.title}`}
+                            metricLabel={metricLabel}
                             pinpoint={pinpoint}
                             policyState={pinpoint.state === 'removed'
                               ? 'removed'

@@ -316,6 +316,7 @@ function allowedTransition(
     label: STATUS_LABELS_FOR_TEST[toStatus],
     gate: 'none',
     blocked_reason: null,
+    blocked_facts: null,
     preconditions: [],
     capabilities: [],
     effects: [],

@@ -2,7 +2,7 @@
  * GraphControlsPanel — left sidebar with filters, sub-view nav, search.
  *
  * Spec 8 / Sprint 4:
- *   - S4.4: 10 coloured chips, one per KGEdgeType; independent toggle.
+ *   - S4.4: one coloured chip per KGEdgeType; independent toggle.
  *   - S4.5: confidence slider restricted to 0..1 with step 0.05.
  *   - S4.6: node-limit dropdown (50/100/200/500/1000); `onNodeLimitChange` bubbles
  *     up so the parent can refetch with the new page size.

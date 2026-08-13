@@ -489,6 +489,13 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "introducing any repository or filesystem access in Community.",
     ),
     (
+        "_migrate_spec_dependency_schema",
+        "post_create_all",
+        False,
+        "Install the authoritative Spec precedence ledger, operation replay proof, "
+        "edition-start marker, exact keyset indexes and immutability guards.",
+    ),
+    (
         "_migrate_agent_permissions",
         "post_create_all",
         False,

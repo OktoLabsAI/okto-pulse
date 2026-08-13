@@ -215,7 +215,9 @@ interface SemanticAssessmentBase {
   subject_id: string;
   subject_version: number;
   /** Spec validation edition; null is legacy history-only evidence. */
-  validation_edition?: number | null;
+  validation_edition: number | null;
+  /** Human lifecycle placement, separate from technical currentness drift. */
+  lifecycle_state: 'current' | 'previous' | 'history_only';
   binding_id: string;
   guideline_id: string;
   guideline_revision_id: string;
@@ -274,6 +276,8 @@ interface SemanticFindingBase {
   entity_type: PolicyEntityType;
   subject_id: string;
   subject_version: number;
+  validation_edition: number | null;
+  lifecycle_state: 'current' | 'previous' | 'history_only';
   guideline_id: string;
   guideline_revision_id: string;
   binding_id: string;
@@ -340,6 +344,8 @@ interface SemanticWaiverBase {
   entity_type: PolicyEntityType;
   subject_id: string;
   subject_version: number;
+  validation_edition: number | null;
+  lifecycle_state: 'current' | 'previous' | 'history_only';
   finding_id: string;
   receipt_id: string;
   guideline_id: string;
@@ -416,6 +422,8 @@ interface SemanticSkipBase {
   entity_type: PolicyEntityType;
   subject_id: string;
   subject_version: number;
+  validation_edition: number | null;
+  lifecycle_state: 'current' | 'previous' | 'history_only';
   guideline_id: string;
   guideline_revision_id: string;
   binding_id: string;
@@ -528,8 +536,9 @@ export interface SemanticAssessmentCurrentV2 {
   subject_type: PolicyEntityType;
   subject_id: string;
   subject_version: number;
-  /** Spec validation edition; null is legacy history-only evidence. */
-  validation_edition?: number | null;
+  /** Validation edition when the subject participates in editioned lifecycle validation. */
+  validation_edition: number | null;
+  lifecycle_state: 'current';
   binding_id: string;
   guideline_id: string;
   guideline_revision_id: string;

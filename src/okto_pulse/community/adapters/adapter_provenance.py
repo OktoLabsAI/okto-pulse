@@ -59,6 +59,7 @@ _CROSS_EDITION_CONTRACT_EXPECTATION: tuple[str, ...] = (
     "okto_pulse.core.inbound.policy_transition_error.project_policy_transition_rejection",
     "okto_pulse.core.inbound.quality_assessment_error",
     "okto_pulse.core.inbound.ska_contract_error",
+    "okto_pulse.core.inbound.spec_dependency_error",
     "okto_pulse.core.kg.async_bridge",
     "okto_pulse.core.kg.board_rebuild_adapter",
     "okto_pulse.core.kg.board_source_store",

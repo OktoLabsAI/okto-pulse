@@ -35,6 +35,10 @@ const DEFAULT_ACTION_LABELS: Readonly<Record<string, string>> = {
   knowledge_removed: 'Knowledge removed',
   qa_added: 'Question added',
   qa_answered: 'Question answered',
+  dependency_added: 'Dependency added',
+  dependency_removed: 'Dependency removed',
+  spec_dependency_added: 'Spec dependency added',
+  spec_dependency_removed: 'Spec dependency removed',
 };
 
 const DEFAULT_ACTION_COLORS: Readonly<Record<string, string>> = {
@@ -42,6 +46,10 @@ const DEFAULT_ACTION_COLORS: Readonly<Record<string, string>> = {
   updated: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
   status_changed: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
   cards_derived: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+  dependency_added: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300',
+  dependency_removed: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
+  spec_dependency_added: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900/40 dark:text-cyan-300',
+  spec_dependency_removed: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
 };
 
 const FALLBACK_ACTION_COLOR = 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300';

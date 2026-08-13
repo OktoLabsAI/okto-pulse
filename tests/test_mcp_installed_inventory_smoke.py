@@ -47,8 +47,8 @@ async def test_live_catalog_initialize_tools_list_and_manifest_agree(
     assert initialized.serverInfo.version == "0.3.2"
     assert version("okto-pulse-core") == initialized.serverInfo.version
     assert version("okto-pulse") == initialized.serverInfo.version
-    assert len(names) == manifest["tool_inventory"]["count"] == 334
-    assert len(names) - len(aliases) == 326
+    assert len(names) == manifest["tool_inventory"]["count"] == 337
+    assert len(names) - len(aliases) == 329
     assert len(aliases) == 8
     # Code Traceability exposes its canonical protocol and typed tool-doc family.
     assert len(listed_resources) == 55
