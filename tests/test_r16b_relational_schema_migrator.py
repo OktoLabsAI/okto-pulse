@@ -290,6 +290,99 @@ def test_legacy_default_template_table_gains_nullable_checklist_mode(
     assert mode is None
 
 
+def test_code_traceability_migration_upgrades_only_legacy_policy_values(
+    tmp_path,
+    monkeypatch,
+):
+    async def drive():
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from okto_pulse.community.adapters.sqlalchemy_models import (
+            Base,
+            Board,
+            DefaultBoardConfiguration,
+        )
+
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'traceability-policy-mode.db'}"
+        )
+        monkeypatch.setattr(_steps_mod, "get_engine", lambda: engine)
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(Base.metadata.create_all)
+                await connection.execute(
+                    Board.__table__.insert(),
+                    [
+                        {
+                            "id": "legacy-off",
+                            "name": "Legacy off",
+                            "owner_id": "owner",
+                            "settings": {
+                                "max_scenarios_per_card": 7,
+                                "code_traceability": {
+                                    "mode": "off",
+                                    "minimum_trust": "corroborated",
+                                },
+                            },
+                        },
+                        {
+                            "id": "blocking",
+                            "name": "Blocking",
+                            "owner_id": "owner",
+                            "settings": {"code_traceability": {"mode": "blocking"}},
+                        },
+                    ],
+                )
+                await connection.execute(
+                    DefaultBoardConfiguration.__table__.insert().values(
+                        id="legacy-null-template",
+                        version=1,
+                        status="active",
+                        is_active=True,
+                        scope="global",
+                        settings_payload={"code_traceability": None},
+                        created_by="owner",
+                    )
+                )
+
+            first = await _steps_mod._migrate_code_traceability_schema()
+            second = await _steps_mod._migrate_code_traceability_schema()
+
+            async with engine.connect() as connection:
+                boards = {
+                    row.id: row.settings
+                    for row in (
+                        await connection.execute(
+                            select(Board.id, Board.settings).where(
+                                Board.id.in_(("legacy-off", "blocking"))
+                            )
+                        )
+                    ).all()
+                }
+                template_payload = await connection.scalar(
+                    select(DefaultBoardConfiguration.settings_payload).where(
+                        DefaultBoardConfiguration.id == "legacy-null-template"
+                    )
+                )
+            return first, second, boards, template_payload
+        finally:
+            await engine.dispose()
+
+    first, second, boards, template_payload = asyncio.run(drive())
+    assert first is None
+    assert second == "skipped"
+    assert boards["legacy-off"] == {
+        "max_scenarios_per_card": 7,
+        "code_traceability": {
+            "mode": "advisory",
+            "minimum_trust": "corroborated",
+        },
+    }
+    assert boards["blocking"]["code_traceability"]["mode"] == "blocking"
+    assert template_payload == {"code_traceability": {"mode": "advisory"}}
+
+
 def test_legacy_specs_gain_backfilled_non_null_edition(
     tmp_path,
     _isolate_engine,

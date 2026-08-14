@@ -591,8 +591,8 @@ describe('Header Board settings resource automation', () => {
   });
 
   it.each([
-    ['legacy null', null, 'off'],
-    ['explicit off', codeTraceabilitySettings('off'), 'off'],
+    ['legacy null', null, 'advisory'],
+    ['retired explicit off', codeTraceabilitySettings('off'), 'advisory'],
     ['stored blocking policy', codeTraceabilitySettings('blocking'), 'blocking'],
   ] as const)(
     'projects the %s Code Traceability setting into the board form',

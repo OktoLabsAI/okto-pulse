@@ -452,24 +452,49 @@ describe('Code Traceability passive Community surfaces', () => {
     const refinementGuide = screen.getByRole('dialog', { name: 'Submission guide' });
     expect(within(refinementGuide).getByText(/No source check runs from this dialog/i)).toBeInTheDocument();
     expect(within(refinementGuide).getByText(/agent determines whether its own execution environment/i)).toBeInTheDocument();
+    expect(within(refinementGuide).getByText(/okto_pulse_submit_code_evidence/i)).toBeInTheDocument();
+    expect(within(refinementGuide).getByText(/Advisory does not mean disposable/i)).toBeInTheDocument();
     fireEvent.click(within(refinementGuide).getByRole('button', { name: 'Copy agent workflow' }));
 
     await waitFor(() => expect(clipboardWriteText).toHaveBeenCalledTimes(1));
     expect(clipboardWriteText).toHaveBeenCalledWith(expect.stringContaining(
-      'Before investigating, determine whether your execution environment has suitable source-inspection capability',
+      'okto_pulse_start_code_investigation',
     ));
     expect(clipboardWriteText).toHaveBeenCalledWith(expect.stringContaining(
       'Pulse Community only stores, projects and displays accepted records',
     ));
     expect(clipboardWriteText).toHaveBeenCalledWith(expect.stringContaining(
-      'submit a typed preflight receipt',
+      'okto_pulse_submit_code_investigation_receipt',
+    ));
+    expect(clipboardWriteText).toHaveBeenCalledWith(expect.stringContaining(
+      'okto-pulse://reference/code-traceability',
+    ));
+    expect(clipboardWriteText).toHaveBeenCalledWith(expect.stringContaining(
+      'okto_pulse_link_code_evidence',
+    ));
+    expect(clipboardWriteText).toHaveBeenCalledWith(expect.stringContaining(
+      'okto_pulse_set_code_evidence_disposition',
+    ));
+    expect(clipboardWriteText).toHaveBeenCalledWith(expect.stringContaining(
+      'force the source survey, receipt and evidence work to be repeated',
     ));
     fireEvent.click(within(refinementGuide).getByRole('button', { name: 'Close submission guide' }));
 
     fireEvent.click(guides[1]);
     const taskGuide = screen.getByRole('dialog', { name: 'Submission guide' });
     expect(within(taskGuide).getByText('card:card-1@4')).toBeInTheDocument();
-    expect(within(taskGuide).getByText(/concrete target resolutions/i)).toBeInTheDocument();
+    expect(within(taskGuide).getByText(/okto_pulse_create_implementation_target/i)).toBeInTheDocument();
+    fireEvent.click(within(taskGuide).getByRole('button', { name: 'Copy agent workflow' }));
+    await waitFor(() => expect(clipboardWriteText).toHaveBeenCalledTimes(2));
+    expect(clipboardWriteText).toHaveBeenLastCalledWith(expect.stringContaining(
+      'okto_pulse_submit_implementation_target_resolution',
+    ));
+    expect(clipboardWriteText).toHaveBeenLastCalledWith(expect.stringContaining(
+      'okto_pulse_submit_implementation_target_execution_receipt',
+    ));
+    expect(clipboardWriteText).toHaveBeenLastCalledWith(expect.stringContaining(
+      'deleted, superseded or not_touched',
+    ));
   });
 
   it('keeps operator revocation separate, permission-gated and append-only', async () => {

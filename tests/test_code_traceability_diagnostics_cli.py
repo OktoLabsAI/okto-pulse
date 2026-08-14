@@ -58,7 +58,10 @@ def _request_database() -> sqlite3.Connection:
         "'[\"path_read\"]', 0, NULL, 'canonical-v1', 'limits-v1', "
         "'composed-v1', 'secret-digest', 1, 'open', "
         "'2026-08-09T12:30:00Z', 'agent-1', ?, NULL)",
-        [(f"request-{index:03}", f"2026-08-09T12:{index % 60:02}:00Z") for index in range(205)],
+        [
+            (f"request-{index:03}", f"2026-08-09T12:{index % 60:02}:00Z")
+            for index in range(205)
+        ],
     )
     return connection
 
@@ -90,17 +93,24 @@ def test_inspect_finds_record_outside_first_diagnostics_page() -> None:
     assert "challenge_token_hash" not in record
 
 
-def test_policy_validation_keeps_legacy_board_off_and_rejects_invalid_enum() -> None:
+def test_policy_validation_upgrades_legacy_off_and_rejects_invalid_enum() -> None:
     connection = _request_database()
 
     legacy = validate_policy(connection, board_id="board-1")
-    assert legacy == {
-        "valid": True,
-        "effective_mode": "off",
-        "legacy_default_applied": True,
-        "policy": None,
-        "responsibility_boundary": "external_authenticated_agent",
-    }
+    assert legacy["valid"] is True
+    assert legacy["effective_mode"] == "advisory"
+    assert legacy["legacy_default_applied"] is True
+    assert legacy["policy"]["mode"] == "advisory"
+    assert legacy["responsibility_boundary"] == "external_authenticated_agent"
+
+    connection.execute(
+        "UPDATE boards SET settings = ? WHERE id = 'board-1'",
+        ('{"code_traceability":{"mode":"off","minimum_trust":"corroborated"}}',),
+    )
+    explicit_off = validate_policy(connection, board_id="board-1")
+    assert explicit_off["effective_mode"] == "advisory"
+    assert explicit_off["legacy_default_applied"] is True
+    assert explicit_off["policy"]["minimum_trust"] == "corroborated"
 
     connection.execute(
         "UPDATE boards SET settings = ? WHERE id = 'board-1'",
@@ -130,9 +140,7 @@ def test_diagnose_applies_open_limit_per_actor_and_ignores_expired(
     from okto_pulse.community.commands import code_traceability_diagnostics as module
 
     connection = _request_database()
-    connection.execute(
-        "UPDATE code_investigation_requests SET status = 'consumed'"
-    )
+    connection.execute("UPDATE code_investigation_requests SET status = 'consumed'")
     for table in module._TRACEABILITY_TABLES:  # noqa: SLF001 - schema fixture census
         if table == "code_investigation_requests":
             continue
@@ -146,11 +154,23 @@ def test_diagnose_applies_open_limit_per_actor_and_ignores_expired(
     connection.executemany(
         template,
         [
-            (f"active-{index}", "agent-a", "2099-01-01T00:00:00Z", "agent-a", "2098-01-01T00:00:00Z")
+            (
+                f"active-{index}",
+                "agent-a",
+                "2099-01-01T00:00:00Z",
+                "agent-a",
+                "2098-01-01T00:00:00Z",
+            )
             for index in range(9)
         ]
         + [
-            (f"expired-{index}", "agent-b", "2000-01-01T00:00:00Z", "agent-b", "1999-01-01T00:00:00Z")
+            (
+                f"expired-{index}",
+                "agent-b",
+                "2000-01-01T00:00:00Z",
+                "agent-b",
+                "1999-01-01T00:00:00Z",
+            )
             for index in range(20)
         ],
     )

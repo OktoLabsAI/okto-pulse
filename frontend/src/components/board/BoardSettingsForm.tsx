@@ -13,6 +13,10 @@ import {
   normalizeReviewerSeparationMode,
   REVIEWER_SEPARATION_MODES,
 } from '@/components/board/reviewerSeparationSettings';
+import {
+  normalizeCodeTraceabilitySettings,
+  type CodeTraceabilityEnforcementMode,
+} from '@/components/board/codeTraceabilitySettings';
 import type {
   BoardSettings,
   CodeTraceabilitySettings,
@@ -20,18 +24,6 @@ import type {
   ReviewerSeparationMode,
   SpecResourceAutoDeriveType,
 } from '@/types';
-
-const DEFAULT_CODE_TRACEABILITY_SETTINGS: CodeTraceabilitySettings = {
-  mode: 'off',
-  evidence_attestation: 'preferred',
-  target_resolution: 'advisory',
-  accepted_attestor_policy: 'granular_permission',
-  minimum_trust: 'single_attestation',
-  preflight_freshness_seconds: 1800,
-  overlap_policy: 'warn',
-  observed_state_policy: 'allow_dirty_attestation',
-  receipt_content: 'safe_excerpt',
-};
 
 interface SettingsToggleProps {
   checked: boolean;
@@ -255,10 +247,9 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
   };
 
   const lintLanguages = settings.lint_languages ?? [];
-  const codeTraceability = {
-    ...DEFAULT_CODE_TRACEABILITY_SETTINGS,
-    ...(settings.code_traceability ?? {}),
-  };
+  const codeTraceability = normalizeCodeTraceabilitySettings(
+    settings.code_traceability,
+  );
 
   const updateCodeTraceability = (
     patch: Partial<CodeTraceabilitySettings>,
@@ -561,22 +552,37 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
         </div>
 
         <div className="grid gap-x-8 gap-y-3 lg:grid-cols-2">
-          <SettingRow
-            label="Enforcement mode"
-            description="Keep existing boards off, show guidance, or block gated transitions."
-          >
-            <SettingsSelect
-              ariaLabel="Code Traceability enforcement mode"
-              value={codeTraceability.mode}
-              onChange={(value) => updateCodeTraceability({
-                mode: value as CodeTraceabilitySettings['mode'],
-              })}
+          <div>
+            <SettingRow
+              label="Enforcement mode"
+              description="Advise about missing traceability by default, or block gated transitions."
             >
-              <option value="off">Off</option>
-              <option value="advisory">Advisory</option>
-              <option value="blocking">Blocking</option>
-            </SettingsSelect>
-          </SettingRow>
+              <SettingsSelect
+                ariaLabel="Code Traceability enforcement mode"
+                value={codeTraceability.mode}
+                onChange={(value) => updateCodeTraceability({
+                  mode: value as CodeTraceabilityEnforcementMode,
+                })}
+              >
+                <option value="advisory">Advisory</option>
+                <option value="blocking">Blocking</option>
+              </SettingsSelect>
+            </SettingRow>
+
+            <p
+              className={`mt-2 rounded-md border px-2.5 py-2 text-[10px] leading-4 ${
+                codeTraceability.mode === 'blocking'
+                  ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-900/70 dark:bg-red-950/25 dark:text-red-300'
+                  : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/70 dark:bg-amber-950/25 dark:text-amber-200'
+              }`}
+              role="note"
+              data-testid="code-traceability-enforcement-guidance"
+            >
+              {codeTraceability.mode === 'blocking'
+                ? 'Blocking: Missing requirements selected by the Code Evidence, Technical Anchor and attestation sub-policies become blockers on applicable gated transitions.'
+                : 'Advisory: Missing Technical Anchors or Code Evidence does not block applicable transitions, but it removes the reusable investigation trail and may force the agent to repeat repository analysis after entity-version or source-head drift, or when this policy is later promoted to Blocking.'}
+            </p>
+          </div>
 
           <SettingRow
             label="Accepted attestors"
@@ -870,13 +876,20 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
         </SettingRow>
 
         {settings.require_spec_validation && (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            <div>
-              <label className="mb-1 block text-[10px] font-medium text-gray-500 dark:text-gray-400">
+          <div className="space-y-2" data-testid="spec-validation-thresholds">
+            <div
+              className="flex items-center justify-between gap-4"
+              data-testid="bsf-row-min_spec_confidence"
+            >
+              <label
+                htmlFor="bsf-num-min_spec_confidence"
+                className="min-w-0 text-xs font-medium text-gray-500 dark:text-gray-400"
+              >
                 Min Confidence
               </label>
-              <div className="flex items-center gap-2">
+              <div className="flex shrink-0 items-center gap-2">
                 <input
+                  id="bsf-num-min_spec_confidence"
                   type="number"
                   min={0}
                   max={100}
@@ -885,17 +898,24 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
                   onChange={(e) => setMinSpecConfidenceDraft(e.target.value)}
                   onBlur={(e) => commitNumericSetting('min_spec_confidence', e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                  className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                  className="w-20 rounded border border-gray-300 bg-white px-2 py-1 text-right text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
                 />
-                <span className="text-[10px] text-gray-400">/ 100</span>
+                <span className="w-8 text-[10px] text-gray-400">/ 100</span>
               </div>
             </div>
-            <div>
-              <label className="mb-1 block text-[10px] font-medium text-gray-500 dark:text-gray-400">
+            <div
+              className="flex items-center justify-between gap-4"
+              data-testid="bsf-row-min_spec_clarity"
+            >
+              <label
+                htmlFor="bsf-num-min_spec_clarity"
+                className="min-w-0 text-xs font-medium text-gray-500 dark:text-gray-400"
+              >
                 Min Clarity
               </label>
-              <div className="flex items-center gap-2">
+              <div className="flex shrink-0 items-center gap-2">
                 <input
+                  id="bsf-num-min_spec_clarity"
                   type="number"
                   min={0}
                   max={100}
@@ -904,17 +924,24 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
                   onChange={(e) => setMinSpecClarityDraft(e.target.value)}
                   onBlur={(e) => commitNumericSetting('min_spec_clarity', e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                  className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                  className="w-20 rounded border border-gray-300 bg-white px-2 py-1 text-right text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
                 />
-                <span className="text-[10px] text-gray-400">/ 100</span>
+                <span className="w-8 text-[10px] text-gray-400">/ 100</span>
               </div>
             </div>
-            <div>
-              <label className="mb-1 block text-[10px] font-medium text-gray-500 dark:text-gray-400">
+            <div
+              className="flex items-center justify-between gap-4"
+              data-testid="bsf-row-min_spec_assertiveness"
+            >
+              <label
+                htmlFor="bsf-num-min_spec_assertiveness"
+                className="min-w-0 text-xs font-medium text-gray-500 dark:text-gray-400"
+              >
                 Min Assertiveness
               </label>
-              <div className="flex items-center gap-2">
+              <div className="flex shrink-0 items-center gap-2">
                 <input
+                  id="bsf-num-min_spec_assertiveness"
                   type="number"
                   min={0}
                   max={100}
@@ -923,17 +950,24 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
                   onChange={(e) => setMinSpecAssertivenessDraft(e.target.value)}
                   onBlur={(e) => commitNumericSetting('min_spec_assertiveness', e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                  className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                  className="w-20 rounded border border-gray-300 bg-white px-2 py-1 text-right text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
                 />
-                <span className="text-[10px] text-gray-400">/ 100</span>
+                <span className="w-8 text-[10px] text-gray-400">/ 100</span>
               </div>
             </div>
-            <div>
-              <label className="mb-1 block text-[10px] font-medium text-gray-500 dark:text-gray-400">
+            <div
+              className="flex items-center justify-between gap-4"
+              data-testid="bsf-row-min_spec_decidability"
+            >
+              <label
+                htmlFor="bsf-num-min_spec_decidability"
+                className="min-w-0 text-xs font-medium text-gray-500 dark:text-gray-400"
+              >
                 Min Decidability
               </label>
-              <div className="flex items-center gap-2">
+              <div className="flex shrink-0 items-center gap-2">
                 <input
+                  id="bsf-num-min_spec_decidability"
                   type="number"
                   min={0}
                   max={100}
@@ -942,17 +976,24 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
                   onChange={(e) => setMinSpecDecidabilityDraft(e.target.value)}
                   onBlur={(e) => commitNumericSetting('min_spec_decidability', e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                  className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                  className="w-20 rounded border border-gray-300 bg-white px-2 py-1 text-right text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
                 />
-                <span className="text-[10px] text-gray-400">/ 100</span>
+                <span className="w-8 text-[10px] text-gray-400">/ 100</span>
               </div>
             </div>
-            <div>
-              <label className="mb-1 block text-[10px] font-medium text-gray-500 dark:text-gray-400">
+            <div
+              className="flex items-center justify-between gap-4"
+              data-testid="bsf-row-max_spec_ambiguity"
+            >
+              <label
+                htmlFor="bsf-num-max_spec_ambiguity"
+                className="min-w-0 text-xs font-medium text-gray-500 dark:text-gray-400"
+              >
                 Max Ambiguity
               </label>
-              <div className="flex items-center gap-2">
+              <div className="flex shrink-0 items-center gap-2">
                 <input
+                  id="bsf-num-max_spec_ambiguity"
                   type="number"
                   min={0}
                   max={100}
@@ -961,9 +1002,9 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
                   onChange={(e) => setMaxSpecAmbiguityDraft(e.target.value)}
                   onBlur={(e) => commitNumericSetting('max_spec_ambiguity', e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                  className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                  className="w-20 rounded border border-gray-300 bg-white px-2 py-1 text-right text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
                 />
-                <span className="text-[10px] text-gray-400">/ 100</span>
+                <span className="w-8 text-[10px] text-gray-400">/ 100</span>
               </div>
             </div>
           </div>

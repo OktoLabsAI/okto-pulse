@@ -14,6 +14,7 @@ import {
   BoardSettingsForm,
   normalizeDesignSystemGateMode,
 } from '@/components/board/BoardSettingsForm';
+import { normalizeCodeTraceabilitySettings } from '@/components/board/codeTraceabilitySettings';
 import { normalizeReviewerSeparationMode } from '@/components/board/reviewerSeparationSettings';
 import { ChecklistModeSelector } from '@/components/board/ChecklistModeSelector';
 import {
@@ -80,6 +81,7 @@ const DEFAULT_TEMPLATE_SETTINGS: Record<string, unknown> = {
   require_test_task_for_bug: true,
   bug_test_gate_min_severity: 'minor',
   skip_test_evidence_global: false,
+  code_traceability: { mode: 'advisory' },
 };
 
 function loadErrorMessage(error: unknown): string {
@@ -162,6 +164,7 @@ function toBoardSettings(raw: Record<string, unknown>): BoardSettings {
       ? (raw.auto_derive_spec_resource_types as SpecResourceAutoDeriveType[])
       : [],
     design_system_gate_mode: normalizeDesignSystemGateMode(raw.design_system_gate_mode),
+    code_traceability: normalizeCodeTraceabilitySettings(raw.code_traceability),
   };
 }
 

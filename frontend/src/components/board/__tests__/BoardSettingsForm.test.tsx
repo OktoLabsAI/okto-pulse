@@ -118,6 +118,20 @@ describe('BoardSettingsForm — spec validation metric gates', () => {
     expect(screen.getByTestId('bsf-num-min_spec_decidability')).toHaveValue(80);
     expect(screen.getByTestId('bsf-num-max_spec_ambiguity')).toHaveValue(30);
     expect(screen.queryByTestId('bsf-num-min_spec_completeness')).not.toBeInTheDocument();
+
+    const thresholds = screen.getByTestId('spec-validation-thresholds');
+    expect(thresholds.children).toHaveLength(5);
+    for (const metric of [
+      'min_spec_confidence',
+      'min_spec_clarity',
+      'min_spec_assertiveness',
+      'min_spec_decidability',
+      'max_spec_ambiguity',
+    ]) {
+      expect(screen.getByTestId(`bsf-row-${metric}`)).toContainElement(
+        screen.getByTestId(`bsf-num-${metric}`),
+      );
+    }
   });
 
   it.each([
@@ -205,22 +219,93 @@ describe('BoardSettingsForm — agent-mediated Code Traceability', () => {
     expect(screen.queryByRole('button', { name: /connect|sync|clone|probe|submit|check/i })).not.toBeInTheDocument();
   });
 
-  it('materializes safe defaults and patches the nested policy as one complete value', () => {
+  it('offers only Advisory and Blocking, with Advisory as the safe default', () => {
     const onChange = vi.fn();
     render(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
 
-    const mode = screen.getByLabelText('Code Traceability enforcement mode');
-    expect(mode).toHaveValue('off');
-    fireEvent.change(mode, { target: { value: 'advisory' } });
+    const mode = screen.getByLabelText<HTMLSelectElement>(
+      'Code Traceability enforcement mode',
+    );
+    expect(mode).toHaveValue('advisory');
+    expect(Array.from(mode.options, (option) => option.value)).toEqual([
+      'advisory',
+      'blocking',
+    ]);
+    expect(
+      screen.getByTestId('code-traceability-enforcement-guidance'),
+    ).toHaveTextContent(
+      'Missing Technical Anchors or Code Evidence does not block applicable transitions',
+    );
+    expect(
+      screen.getByTestId('code-traceability-enforcement-guidance'),
+    ).toHaveTextContent(
+      'repeat repository analysis after entity-version or source-head drift',
+    );
+
+    fireEvent.change(mode, { target: { value: 'blocking' } });
 
     expect(onChange).toHaveBeenCalledWith({
       code_traceability: expect.objectContaining({
-        mode: 'advisory',
+        mode: 'blocking',
         evidence_attestation: 'preferred',
         target_resolution: 'advisory',
         accepted_attestor_policy: 'granular_permission',
         receipt_content: 'safe_excerpt',
       }),
     });
+  });
+
+  it('projects the retired Off value as Advisory', () => {
+    render(
+      <BoardSettingsForm
+        settings={{
+          ...baseSettings,
+          code_traceability: {
+            mode: 'off',
+            evidence_attestation: 'preferred',
+            target_resolution: 'advisory',
+            accepted_attestor_policy: 'granular_permission',
+            minimum_trust: 'single_attestation',
+            preflight_freshness_seconds: 1800,
+            overlap_policy: 'warn',
+            observed_state_policy: 'allow_dirty_attestation',
+            receipt_content: 'safe_excerpt',
+          },
+        }}
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByLabelText('Code Traceability enforcement mode'),
+    ).toHaveValue('advisory');
+  });
+
+  it('explains the current-coverage requirement in Blocking mode', () => {
+    render(
+      <BoardSettingsForm
+        settings={{
+          ...baseSettings,
+          code_traceability: {
+            mode: 'blocking',
+            evidence_attestation: 'required',
+            target_resolution: 'required_current_receipt',
+            accepted_attestor_policy: 'granular_permission',
+            minimum_trust: 'single_attestation',
+            preflight_freshness_seconds: 1800,
+            overlap_policy: 'warn',
+            observed_state_policy: 'allow_dirty_attestation',
+            receipt_content: 'safe_excerpt',
+          },
+        }}
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByTestId('code-traceability-enforcement-guidance'),
+    ).toHaveTextContent(
+      'Missing requirements selected by the Code Evidence, Technical Anchor and attestation sub-policies become blockers',
+    );
   });
 });

@@ -20,6 +20,37 @@ StepCallable = Callable[[], "Awaitable[object] | object"]
 logger = logging.getLogger(__name__)
 
 
+def _normalize_legacy_code_traceability_settings_payload(
+    raw: object,
+) -> tuple[object, bool]:
+    """Converge only the two Code Traceability compatibility values.
+
+    Historical board/default-template JSON could explicitly persist ``null``
+    or ``mode=off``. The authored Core contract no longer accepts either, so
+    startup upgrades them to Advisory while preserving every sibling policy
+    field. Missing policies remain missing and inherit the Core default; any
+    other malformed value is left untouched so validation still fails closed.
+    """
+
+    value = raw
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return raw, False
+    if not isinstance(value, Mapping) or "code_traceability" not in value:
+        return raw, False
+    payload = dict(value)
+    policy = payload.get("code_traceability")
+    if policy is None:
+        payload["code_traceability"] = {"mode": "advisory"}
+        return payload, True
+    if isinstance(policy, Mapping) and policy.get("mode") == "off":
+        payload["code_traceability"] = {**policy, "mode": "advisory"}
+        return payload, True
+    return raw, False
+
+
 def _decoded_history_changes(raw: object) -> tuple[Mapping[str, object], ...]:
     """Decode one cross-dialect JSON history value without guessing on drift."""
 
@@ -20165,7 +20196,12 @@ async def _migrate_code_traceability_schema() -> str | None:
     """
 
     from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import select as sa_select
     from sqlalchemy import text as sa_text
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        Board,
+        DefaultBoardConfiguration,
+    )
 
     engine = get_engine()
     changed = False
@@ -20190,6 +20226,28 @@ async def _migrate_code_traceability_schema() -> str | None:
             await conn.exec_driver_sql("BEGIN IMMEDIATE")
 
         existing_tables = await conn.run_sync(table_names)
+        for table, payload_column in (
+            (Board.__table__, Board.__table__.c.settings),
+            (
+                DefaultBoardConfiguration.__table__,
+                DefaultBoardConfiguration.__table__.c.settings_payload,
+            ),
+        ):
+            if table.name not in existing_tables:
+                continue
+            rows = (await conn.execute(sa_select(table.c.id, payload_column))).all()
+            for row_id, raw_payload in rows:
+                normalized, payload_changed = (
+                    _normalize_legacy_code_traceability_settings_payload(raw_payload)
+                )
+                if not payload_changed:
+                    continue
+                await conn.execute(
+                    table.update()
+                    .where(table.c.id == row_id)
+                    .values({payload_column.key: normalized})
+                )
+                changed = True
         for table_name, additions in (
             (
                 "refinement_snapshots",
