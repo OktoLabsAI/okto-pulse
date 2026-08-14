@@ -222,6 +222,18 @@ export interface QualityFindingPageWindow extends PageWindow {
   subjectEdition?: number;
 }
 
+export type CodeTraceabilityProjectionOptions =
+  | {
+      profile?: CodeTraceabilityProfile;
+      signal?: AbortSignal;
+      contextScope?: 'default';
+    }
+  | {
+      profile: 'full';
+      signal?: AbortSignal;
+      contextScope: 'gate';
+    };
+
 export type StoryPageItem = Omit<
   StorySummary,
   'pre_archive_status' | 'screen_mockups' | 'ideation_links'
@@ -481,10 +493,13 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       subjectType: CodeTraceabilitySubjectType,
       subjectId: string,
       subjectVersion: number,
-      profile: CodeTraceabilityProfile = 'detail',
-      signal?: AbortSignal,
-      contextScope: 'default' | 'gate' = 'default',
+      options: CodeTraceabilityProjectionOptions = {},
     ): Promise<CodeTraceabilityProjection> {
+      const profile = options.profile ?? 'detail';
+      const contextScope = options.contextScope ?? 'default';
+      if (contextScope === 'gate' && profile !== 'full') {
+        throw new Error('code_traceability_gate_profile_full_required');
+      }
       const params = new URLSearchParams({
         subject_type: subjectType,
         subject_id: subjectId,
@@ -494,7 +509,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       });
       return apiClient.fetchJson<CodeTraceabilityProjection>(
         `/boards/${encodeURIComponent(boardId)}/code-traceability-projection?${params.toString()}`,
-        { signal },
+        { signal: options.signal },
       );
     },
 

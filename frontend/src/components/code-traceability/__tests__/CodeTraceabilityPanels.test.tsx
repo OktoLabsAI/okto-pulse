@@ -184,6 +184,15 @@ const projection: CodeTraceabilityProjection = {
   },
 };
 
+const gateProjection: CodeTraceabilityProjection = {
+  ...projection,
+  subject_type: 'spec',
+  subject_id: 'spec-1',
+  subject_version: 7,
+  profile: 'full',
+  context_scope: 'gate',
+};
+
 const receiptResult: CodeInvestigationReceiptReadResult = {
   currentness: 'current',
   receipt: {
@@ -261,7 +270,11 @@ beforeEach(() => {
     configurable: true,
     value: { writeText: clipboardWriteText },
   });
-  apiMock.getCodeTraceabilityProjection.mockResolvedValue(projection);
+  apiMock.getCodeTraceabilityProjection.mockImplementation(
+    async (_boardId: string, subjectType: string) => (
+      subjectType === 'spec' ? gateProjection : projection
+    ),
+  );
   apiMock.getCodeInvestigationReceipt.mockResolvedValue(receiptResult);
   apiMock.revokeCodeInvestigationReceipt.mockResolvedValue({});
   apiMock.revokeCodeEvidence.mockResolvedValue({});
@@ -327,7 +340,7 @@ describe('Code Traceability passive Community surfaces', () => {
 
   it('renders authoritative inherited-evidence coverage and includes IR/OR link columns', async () => {
     const matrixProjection: CodeTraceabilityProjection = {
-      ...projection,
+      ...gateProjection,
       evidence: [
         projection.evidence[0],
         {
@@ -361,7 +374,7 @@ describe('Code Traceability passive Community surfaces', () => {
         coverage_pct: 50,
       },
       gate_readiness: {
-        ...projection.gate_readiness,
+        ...gateProjection.gate_readiness,
         receipt_currentness: {
           'receipt-1': 'current',
           'receipt-2': 'expired',
@@ -392,16 +405,17 @@ describe('Code Traceability passive Community surfaces', () => {
       'spec',
       'spec-1',
       7,
-      'detail',
-      expect.any(AbortSignal),
-      'gate',
+      {
+        profile: 'full',
+        signal: expect.any(AbortSignal),
+        contextScope: 'gate',
+      },
     );
   });
 
   it('never presents a truncated gate projection as covered or skippable', async () => {
     apiMock.getCodeTraceabilityProjection.mockResolvedValue({
-      ...projection,
-      context_scope: 'gate',
+      ...gateProjection,
       coverage: {
         total: 1,
         linked: 1,
@@ -412,7 +426,7 @@ describe('Code Traceability passive Community surfaces', () => {
         skipped: true,
       },
       gate_readiness: {
-        ...projection.gate_readiness,
+        ...gateProjection.gate_readiness,
         blockers: [{
           code: 'code_traceability_projection_incomplete',
           message: 'Gate context exceeded a server-owned projection budget.',
@@ -440,9 +454,31 @@ describe('Code Traceability passive Community surfaces', () => {
     );
   });
 
+  it.each([
+    { profile: 'detail' as const, contextScope: 'gate' as const },
+    { profile: 'full' as const, contextScope: 'default' as const },
+  ])('fails closed when the server returns $profile + $contextScope', async ({
+    profile,
+    contextScope,
+  }) => {
+    apiMock.getCodeTraceabilityProjection.mockResolvedValue({
+      ...gateProjection,
+      profile,
+      context_scope: contextScope,
+    });
+
+    render(
+      <EvidenceMatrixPanel boardId="board-1" subjectId="spec-1" subjectVersion={7} />,
+    );
+
+    expect(await screen.findByTestId('code-evidence-coverage-status')).toHaveTextContent('Incomplete');
+    expect(screen.queryByText('Covered')).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('Validation remains blocked');
+  });
+
   it('excludes direct or future evidence outside the authoritative inherited snapshot', async () => {
     const inheritedProjection: CodeTraceabilityProjection = {
-      ...projection,
+      ...gateProjection,
       evidence: [
         projection.evidence[0],
         {
@@ -516,6 +552,61 @@ describe('Code Traceability passive Community surfaces', () => {
       .toHaveAttribute('aria-checked', 'true');
   });
 
+  it('reloads the projection when a same-version local skip is turned off', async () => {
+    apiMock.getCodeTraceabilityProjection
+      .mockResolvedValueOnce({
+        ...gateProjection,
+        coverage: {
+          ...gateProjection.coverage,
+          skipped: true,
+        },
+        gate_readiness: {
+          ...gateProjection.gate_readiness,
+          evidence_coverage_skipped: true,
+        },
+      })
+      .mockResolvedValueOnce({
+        ...gateProjection,
+        coverage: {
+          ...gateProjection.coverage,
+          skipped: false,
+        },
+        gate_readiness: {
+          ...gateProjection.gate_readiness,
+          evidence_coverage_skipped: false,
+        },
+      });
+
+    const { rerender } = render(
+      <EvidenceMatrixPanel
+        boardId="board-1"
+        subjectId="spec-1"
+        subjectVersion={7}
+        skipCoverage
+      />,
+    );
+
+    expect(await screen.findByTestId('code-evidence-coverage-status'))
+      .toHaveTextContent('Skipped for this Spec');
+    expect(apiMock.getCodeTraceabilityProjection).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <EvidenceMatrixPanel
+        boardId="board-1"
+        subjectId="spec-1"
+        subjectVersion={7}
+        skipCoverage={false}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(apiMock.getCodeTraceabilityProjection).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId('code-evidence-coverage-status'))
+        .toHaveTextContent('Covered');
+    });
+    expect(apiMock.getCodeTraceabilityProjection.mock.calls[1]?.[3]).toBe(7);
+  });
+
   it('keeps the coverage state visible without exposing the skip control to read-only viewers', async () => {
     render(
       <EvidenceMatrixPanel
@@ -529,6 +620,61 @@ describe('Code Traceability passive Community surfaces', () => {
     expect(await screen.findByTestId('code-evidence-coverage-status')).toHaveTextContent('Skipped');
     expect(screen.queryByRole('switch', { name: 'Skip Code Evidence coverage' }))
       .not.toBeInTheDocument();
+  });
+
+  it('distinguishes a Board-wide skip from the local Spec override', async () => {
+    const onSkipCoverageChange = vi.fn().mockResolvedValue(undefined);
+    render(
+      <EvidenceMatrixPanel
+        boardId="board-1"
+        subjectId="spec-1"
+        subjectVersion={7}
+        boardSkipCoverage
+        skipCoverage={false}
+        canEditCoverageFlags
+        onSkipCoverageChange={onSkipCoverageChange}
+      />,
+    );
+
+    expect(await screen.findByTestId('code-evidence-coverage-status'))
+      .toHaveTextContent('Skipped by Board');
+    expect(screen.getByTestId('code-evidence-board-skip-notice')).toHaveTextContent(
+      'skipped for every Spec by the Board setting',
+    );
+    const localToggle = screen.getByRole('switch', {
+      name: 'Skip Code Evidence coverage',
+    });
+    expect(localToggle).toHaveAttribute('aria-checked', 'false');
+    expect(localToggle).toBeEnabled();
+
+    fireEvent.click(localToggle);
+    await waitFor(() => expect(onSkipCoverageChange).toHaveBeenCalledWith(true));
+  });
+
+  it('honors the authoritative effective-skip projection without inventing a local override', async () => {
+    apiMock.getCodeTraceabilityProjection.mockResolvedValue({
+      ...gateProjection,
+      coverage: {
+        ...gateProjection.coverage,
+        skipped: true,
+      },
+      gate_readiness: {
+        ...gateProjection.gate_readiness,
+        evidence_coverage_skipped: true,
+      },
+    });
+
+    render(
+      <EvidenceMatrixPanel
+        boardId="board-1"
+        subjectId="spec-1"
+        subjectVersion={7}
+      />,
+    );
+
+    expect(await screen.findByTestId('code-evidence-coverage-status'))
+      .toHaveTextContent('Skipped');
+    expect(screen.queryByTestId('code-evidence-board-skip-notice')).not.toBeInTheDocument();
   });
 
   it('renders agent execution receipts with receipt currentness and resolution freshness', async () => {

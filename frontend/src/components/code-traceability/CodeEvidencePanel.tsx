@@ -220,8 +220,7 @@ export function CodeEvidencePanel({ boardId, subjectId, subjectVersion }: Props)
         'refinement',
         subjectId,
         subjectVersion,
-        'detail',
-        signal,
+        { profile: 'detail', signal },
       ));
     } catch (caught) {
       if (!signal?.aborted) {

@@ -239,6 +239,8 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         skip_test_coverage_global: currentBoard.settings.skip_test_coverage_global ?? false,
         skip_rules_coverage_global: currentBoard.settings.skip_rules_coverage_global ?? false,
         skip_trs_coverage_global: currentBoard.settings.skip_trs_coverage_global ?? false,
+        skip_code_evidence_coverage_global:
+          currentBoard.settings.skip_code_evidence_coverage_global ?? false,
         skip_contract_coverage_global: currentBoard.settings.skip_contract_coverage_global ?? false,
         skip_ir_coverage_global: currentBoard.settings.skip_ir_coverage_global ?? false,
         skip_or_coverage_global: currentBoard.settings.skip_or_coverage_global ?? false,
@@ -281,6 +283,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         skip_test_coverage_global: false,
         skip_rules_coverage_global: false,
         skip_trs_coverage_global: false,
+        skip_code_evidence_coverage_global: false,
         skip_contract_coverage_global: false,
         skip_ir_coverage_global: false,
         skip_or_coverage_global: false,

@@ -781,8 +781,7 @@ export function ImplementationTargetsPanel({
         'card',
         subjectId,
         subjectVersion,
-        'detail',
-        signal,
+        { profile: 'detail', signal },
       ));
     } catch (caught) {
       if (!signal?.aborted) {

@@ -24,6 +24,60 @@ beforeEach(() => {
 });
 
 describe('Code Traceability REST client', () => {
+  it('keeps detail and default scope as the exploratory projection defaults', async () => {
+    const { result } = renderHook(() => useDashboardApi());
+
+    await result.current.getCodeTraceabilityProjection(
+      'board-1',
+      'refinement',
+      'refinement-1',
+      3,
+    );
+
+    expect(mockApiClient.fetchJson).toHaveBeenCalledWith(
+      '/boards/board-1/code-traceability-projection?subject_type=refinement&subject_id=refinement-1&subject_version=3&profile=detail&context_scope=default',
+      { signal: undefined },
+    );
+  });
+
+  it('serializes the only valid full gate projection request', async () => {
+    const controller = new AbortController();
+    const { result } = renderHook(() => useDashboardApi());
+
+    await result.current.getCodeTraceabilityProjection(
+      'board/1',
+      'spec',
+      'spec/1',
+      7,
+      {
+        profile: 'full',
+        signal: controller.signal,
+        contextScope: 'gate',
+      },
+    );
+
+    expect(mockApiClient.fetchJson).toHaveBeenCalledWith(
+      '/boards/board%2F1/code-traceability-projection?subject_type=spec&subject_id=spec%2F1&subject_version=7&profile=full&context_scope=gate',
+      { signal: controller.signal },
+    );
+  });
+
+  it('rejects a gate projection with a non-full profile before transport', async () => {
+    const { result } = renderHook(() => useDashboardApi());
+
+    await expect(result.current.getCodeTraceabilityProjection(
+      'board-1',
+      'spec',
+      'spec-1',
+      7,
+      {
+        profile: 'detail',
+        contextScope: 'gate',
+      } as never,
+    )).rejects.toThrow('code_traceability_gate_profile_full_required');
+    expect(mockApiClient.fetchJson).not.toHaveBeenCalled();
+  });
+
   it('sends a target intent to the board/card-scoped endpoint without server-owned fields', async () => {
     const payload: ImplementationTargetCreateRequest = {
       source_ref: 'source:opaque-1',

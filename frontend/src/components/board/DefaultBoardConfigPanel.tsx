@@ -51,6 +51,7 @@ const DEFAULT_TEMPLATE_SETTINGS: Record<string, unknown> = {
   skip_test_coverage_global: false,
   skip_rules_coverage_global: false,
   skip_trs_coverage_global: false,
+  skip_code_evidence_coverage_global: false,
   skip_contract_coverage_global: false,
   skip_ir_coverage_global: false,
   skip_or_coverage_global: false,
@@ -131,6 +132,10 @@ function toBoardSettings(raw: Record<string, unknown>): BoardSettings {
     skip_test_coverage_global: bool('skip_test_coverage_global', false),
     skip_rules_coverage_global: bool('skip_rules_coverage_global', false),
     skip_trs_coverage_global: bool('skip_trs_coverage_global', false),
+    skip_code_evidence_coverage_global: bool(
+      'skip_code_evidence_coverage_global',
+      false,
+    ),
     skip_contract_coverage_global: bool('skip_contract_coverage_global', false),
     skip_ir_coverage_global: bool('skip_ir_coverage_global', false),
     skip_or_coverage_global: bool('skip_or_coverage_global', false),

@@ -2735,6 +2735,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
               boardId={spec.board_id}
               subjectId={spec.id}
               subjectVersion={spec.version}
+              boardSkipCoverage={boardSettings.skip_code_evidence_coverage_global ?? false}
               skipCoverage={spec.skip_code_evidence_coverage}
               canEditCoverageFlags={canEditCodeEvidenceCoverage}
               onSkipCoverageChange={async (skip) => {

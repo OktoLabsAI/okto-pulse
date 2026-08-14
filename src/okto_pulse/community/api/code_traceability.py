@@ -1166,16 +1166,20 @@ async def get_code_traceability_projection(
     principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> object:
-    return await _execute(
-        GetCodeTraceabilityProjectionUseCase(),
-        CodeTraceabilityProjectionQuery(
+    try:
+        query = CodeTraceabilityProjectionQuery(
             board_id=board_id,
             subject_type=subject_type,
             subject_id=subject_id,
             subject_version=subject_version,
             profile=profile,
             context_scope=context_scope,
-        ),
+        )
+    except CodeTraceabilityContractError as exc:
+        raise _http_error(exc) from exc
+    return await _execute(
+        GetCodeTraceabilityProjectionUseCase(),
+        query,
         board_id=board_id,
         principal=principal,
         uow=uow,

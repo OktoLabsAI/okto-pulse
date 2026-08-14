@@ -379,6 +379,20 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
             activeColor="amber"
           />
         </SettingRow>
+        <SettingRow
+          label="Skip Code Evidence Matrix coverage"
+          description="Bypass pending Code Evidence Matrix coverage checks for all specs. Projection integrity and independently applicable technical gates remain enforced."
+        >
+          <SettingsToggle
+            checked={settings.skip_code_evidence_coverage_global ?? false}
+            onChange={() => onChange({
+              skip_code_evidence_coverage_global:
+                !(settings.skip_code_evidence_coverage_global ?? false),
+            })}
+            ariaLabel="Skip Code Evidence Matrix coverage"
+            activeColor="amber"
+          />
+        </SettingRow>
         <SettingRow label="Skip contract coverage" description="Bypass API contract to Task coverage checks.">
           <SettingsToggle
             checked={settings.skip_contract_coverage_global}

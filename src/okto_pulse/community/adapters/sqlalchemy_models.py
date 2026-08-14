@@ -382,7 +382,10 @@ class Board(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     owner_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     realm_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
-    # Board settings (JSON): {max_scenarios_per_card: int, skip_test_coverage_global: bool}
+    # Board settings are a JSON payload validated by Core ``BoardSettings``.
+    # Coverage gates (including ``skip_code_evidence_coverage_global``) remain
+    # additive JSON keys, so legacy SQLite/PostgreSQL schemas require no
+    # physical ALTER TABLE when a new board-level coverage default is added.
     settings: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Applied DefaultBoardConfiguration snapshot metadata (spec 9df814bc / FR4).
     # Lives OUTSIDE Board.settings so it never affects BoardSettings/governance

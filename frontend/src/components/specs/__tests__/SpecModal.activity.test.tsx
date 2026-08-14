@@ -20,13 +20,24 @@ const apiMock = vi.hoisted(() => ({
 }));
 const validationGateOverrideSpy = vi.hoisted(() => vi.fn());
 const evidenceMatrixPropsSpy = vi.hoisted(() => vi.fn());
+const currentBoardState = vi.hoisted(() => ({
+  skipCodeEvidenceCoverageGlobal: false,
+}));
 
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
 }));
 
 vi.mock('@/store/dashboard', () => ({
-  useCurrentBoard: () => ({ id: 'board-1', owner_id: null, agents: [] }),
+  useCurrentBoard: () => ({
+    id: 'board-1',
+    owner_id: null,
+    agents: [],
+    settings: {
+      skip_code_evidence_coverage_global:
+        currentBoardState.skipCodeEvidenceCoverageGlobal,
+    },
+  }),
 }));
 
 vi.mock('@/hooks/usePermissions', async (importOriginal) => {
@@ -49,6 +60,7 @@ vi.mock('@/components/traceability', () => ({
 vi.mock('@/components/code-traceability', () => ({
   useCodeTraceabilityAuthority: () => ({ canReadProjection: true }),
   EvidenceMatrixPanel: (props: {
+    boardSkipCoverage?: boolean;
     skipCoverage?: boolean;
     canEditCoverageFlags?: boolean;
     onSkipCoverageChange?: (skip: boolean) => Promise<void> | void;
@@ -152,6 +164,7 @@ const historyEntry: SpecHistoryEntry = {
 describe('SpecModal Activity tab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    currentBoardState.skipCodeEvidenceCoverageGlobal = false;
     apiMock.getSpec.mockResolvedValue(spec);
     apiMock.getAllowedTransitions.mockResolvedValue({ allowed_transitions: [] });
     apiMock.listSprints.mockResolvedValue([]);
@@ -299,11 +312,11 @@ describe('SpecModal Activity tab', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('persists the Draft-only Code Evidence coverage skip from its own tab', async () => {
+  it('persists the same-version Draft-only Code Evidence coverage skip from its own tab', async () => {
     const updatedSpec = {
       ...spec,
       skip_code_evidence_coverage: true,
-      version: spec.version + 1,
+      version: spec.version,
     };
     apiMock.updateSpec.mockResolvedValueOnce(updatedSpec);
 
@@ -329,7 +342,32 @@ describe('SpecModal Activity tab', () => {
     });
     await waitFor(() => {
       expect(evidenceMatrixPropsSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+        boardSkipCoverage: false,
         skipCoverage: true,
+        canEditCoverageFlags: true,
+      }));
+    });
+  });
+
+  it('passes the effective Board-wide Code Evidence coverage skip to the matrix', async () => {
+    currentBoardState.skipCodeEvidenceCoverageGlobal = true;
+
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Code Evidence Matrix' }));
+
+    await waitFor(() => {
+      expect(evidenceMatrixPropsSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+        boardSkipCoverage: true,
+        skipCoverage: false,
         canEditCoverageFlags: true,
       }));
     });

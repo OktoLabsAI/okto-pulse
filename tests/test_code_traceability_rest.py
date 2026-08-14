@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+import httpx
 from pydantic import SecretStr
 import pytest
 
@@ -21,6 +22,7 @@ from okto_pulse.core.domain.code_traceability import (
 from okto_pulse.core.ports.code_traceability import (
     CodeTraceabilityRevisionConflict,
 )
+from okto_pulse.core.ports.authentication import Principal
 
 
 def test_transport_bodies_exclude_every_path_owned_identifier() -> None:
@@ -94,6 +96,104 @@ def test_rest_error_envelope_matches_typed_core_contract() -> None:
     assert projected_quota.detail == quota_error.to_error_dict()
 
 
+def _projection_rest_app(uow: object) -> FastAPI:
+    app = FastAPI()
+    app.include_router(api.router)
+
+    async def principal() -> Principal:
+        return Principal(subject="rest-user", realm_id="local")
+
+    async def unit_of_work() -> object:
+        return uow
+
+    app.dependency_overrides[api.require_principal] = principal
+    app.dependency_overrides[api.get_unit_of_work] = unit_of_work
+    return app
+
+
+@pytest.mark.asyncio
+async def test_projection_route_maps_detail_gate_contract_error_to_409(
+    monkeypatch,
+) -> None:
+    calls: list[object] = []
+
+    class ProjectionUseCaseSpy:
+        async def execute(self, command, **_kwargs):
+            calls.append(command)
+            raise AssertionError("invalid query must not reach the use case")
+
+    monkeypatch.setattr(
+        api,
+        "GetCodeTraceabilityProjectionUseCase",
+        ProjectionUseCaseSpy,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_projection_rest_app(object())),
+        base_url="http://test",
+    ) as client:
+        response = await client.get(
+            "/boards/board-1/code-traceability-projection",
+            params={
+                "subject_type": "spec",
+                "subject_id": "spec-1",
+                "subject_version": 7,
+                "profile": "detail",
+                "context_scope": "gate",
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == (
+        "code_traceability_gate_profile_full_required"
+    )
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_projection_route_accepts_full_gate_and_executes_use_case(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[object, object, object]] = []
+    uow = object()
+
+    class ProjectionUseCaseSpy:
+        async def execute(self, command, *, actor, uow):
+            calls.append((command, actor, uow))
+            return {
+                "profile": command.profile,
+                "context_scope": command.context_scope,
+            }
+
+    monkeypatch.setattr(
+        api,
+        "GetCodeTraceabilityProjectionUseCase",
+        ProjectionUseCaseSpy,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_projection_rest_app(uow)),
+        base_url="http://test",
+    ) as client:
+        response = await client.get(
+            "/boards/board-1/code-traceability-projection",
+            params={
+                "subject_type": "spec",
+                "subject_id": "spec-1",
+                "subject_version": 7,
+                "profile": "full",
+                "context_scope": "gate",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"profile": "full", "context_scope": "gate"}
+    assert len(calls) == 1
+    command, actor, received_uow = calls[0]
+    assert command.profile.value == "full"
+    assert command.context_scope.value == "gate"
+    assert actor.board_id == "board-1"
+    assert received_uow is uow
+
+
 def test_cursor_is_signed_and_bound_to_board_and_filters(monkeypatch) -> None:
     monkeypatch.setattr(
         api,
@@ -141,9 +241,7 @@ def test_routes_are_board_scoped_and_overlap_ack_is_card_scoped() -> None:
         in paths
     )
     assert "/boards/{board_id}/code-evidence/{evidence_id}/revoke" in paths
-    assert (
-        "/boards/{board_id}/specs/{spec_id}/code-evidence/rebase/preview" in paths
-    )
+    assert "/boards/{board_id}/specs/{spec_id}/code-evidence/rebase/preview" in paths
     assert "/boards/{board_id}/specs/{spec_id}/code-evidence/rebase" in paths
     assert "/boards/{board_id}/implementation-overlap-acknowledgements" not in paths
 
@@ -191,14 +289,12 @@ def test_code_traceability_community_modules_have_no_source_acquisition() -> Non
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 assert all(
-                    alias.name.split(".", 1)[0].lower()
-                    not in forbidden_import_roots
+                    alias.name.split(".", 1)[0].lower() not in forbidden_import_roots
                     for alias in node.names
                 ), relative_path
             elif isinstance(node, ast.ImportFrom) and node.module:
                 assert (
-                    node.module.split(".", 1)[0].lower()
-                    not in forbidden_import_roots
+                    node.module.split(".", 1)[0].lower() not in forbidden_import_roots
                 ), relative_path
             elif isinstance(node, ast.Call):
                 called = (
@@ -224,7 +320,8 @@ def test_code_traceability_community_modules_have_no_source_acquisition() -> Non
         node
         for node in cli_tree.body
         if isinstance(node, ast.FunctionDef)
-        and node.name in {
+        and node.name
+        in {
             "_emit_code_traceability_diagnostics",
             "cmd_code_traceability",
         }
@@ -237,14 +334,12 @@ def test_code_traceability_community_modules_have_no_source_acquisition() -> Non
         for node in ast.walk(function):
             if isinstance(node, ast.Import):
                 assert all(
-                    alias.name.split(".", 1)[0].lower()
-                    not in forbidden_import_roots
+                    alias.name.split(".", 1)[0].lower() not in forbidden_import_roots
                     for alias in node.names
                 )
             elif isinstance(node, ast.ImportFrom) and node.module:
                 assert (
-                    node.module.split(".", 1)[0].lower()
-                    not in forbidden_import_roots
+                    node.module.split(".", 1)[0].lower() not in forbidden_import_roots
                 )
             elif isinstance(node, ast.Name):
                 assert node.id not in forbidden_identifiers

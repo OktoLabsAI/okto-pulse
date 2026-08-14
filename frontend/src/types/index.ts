@@ -2978,6 +2978,8 @@ export interface BoardSettings {
   skip_test_coverage_global: boolean;
   skip_rules_coverage_global: boolean;
   skip_trs_coverage_global: boolean;
+  /** Missing on legacy board snapshots; effective default is false. */
+  skip_code_evidence_coverage_global?: boolean;
   skip_contract_coverage_global: boolean;
   skip_ir_coverage_global: boolean;
   skip_or_coverage_global: boolean;

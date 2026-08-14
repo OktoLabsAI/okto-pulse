@@ -19,6 +19,7 @@ interface Props {
   boardId: string;
   subjectId: string;
   subjectVersion: number;
+  boardSkipCoverage?: boolean;
   skipCoverage?: boolean;
   canEditCoverageFlags?: boolean;
   onSkipCoverageChange?: (skip: boolean) => Promise<void> | void;
@@ -126,6 +127,7 @@ export function EvidenceMatrixPanel({
   boardId,
   subjectId,
   subjectVersion,
+  boardSkipCoverage = false,
   skipCoverage = false,
   canEditCoverageFlags = false,
   onSkipCoverageChange,
@@ -146,9 +148,11 @@ export function EvidenceMatrixPanel({
         'spec',
         subjectId,
         subjectVersion,
-        'detail',
-        signal,
-        'gate',
+        {
+          profile: 'full',
+          signal,
+          contextScope: 'gate',
+        },
       ));
     } catch (caught) {
       if (!signal?.aborted) {
@@ -163,7 +167,7 @@ export function EvidenceMatrixPanel({
     const controller = new AbortController();
     void load(controller.signal);
     return () => controller.abort();
-  }, [load]);
+  }, [boardSkipCoverage, load, skipCoverage]);
 
   const evidence = useMemo(() => {
     if (!projection) return [];
@@ -180,9 +184,16 @@ export function EvidenceMatrixPanel({
       coveragePct,
     };
   }, [projection]);
-  const projectionIncomplete = projection?.gate_readiness.blockers.some(
-    (blocker) => blocker.code === 'code_traceability_projection_incomplete',
-  ) ?? false;
+  const projectionIncomplete = projection !== null && (
+    projection.profile !== 'full'
+    || projection.context_scope !== 'gate'
+    || projection.gate_readiness.blockers.some(
+      (blocker) => blocker.code === 'code_traceability_projection_incomplete',
+    )
+  );
+  const projectionSkipCoverage = projection?.coverage.skipped
+    || projection?.gate_readiness.evidence_coverage_skipped
+    || false;
 
   const coverageStatus = useMemo(() => {
     if (projectionIncomplete) {
@@ -191,7 +202,19 @@ export function EvidenceMatrixPanel({
         className: 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300',
       };
     }
+    if (boardSkipCoverage) {
+      return {
+        label: 'Skipped by Board',
+        className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+      };
+    }
     if (skipCoverage) {
+      return {
+        label: 'Skipped for this Spec',
+        className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+      };
+    }
+    if (projectionSkipCoverage) {
       return {
         label: 'Skipped',
         className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
@@ -213,7 +236,7 @@ export function EvidenceMatrixPanel({
       label: 'Pending',
       className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
     };
-  }, [coverage, projectionIncomplete, skipCoverage]);
+  }, [boardSkipCoverage, coverage, projectionIncomplete, projectionSkipCoverage, skipCoverage]);
 
   const toggleSkipCoverage = useCallback(async () => {
     if (!onSkipCoverageChange || updatingSkipCoverage) return;
@@ -307,14 +330,31 @@ export function EvidenceMatrixPanel({
         </div>
       )}
 
+      {boardSkipCoverage && (
+        <div
+          data-testid="code-evidence-board-skip-notice"
+          className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
+        >
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          <span>
+            Code Evidence Matrix coverage is skipped for every Spec by the Board setting.
+            Configure it in Menu &gt; Board &gt; Coverage Overrides. Incomplete projections and
+            independently applicable technical gates remain enforced; Evidence and receipts
+            are not altered.
+          </span>
+        </div>
+      )}
+
       {canEditCoverageFlags && onSkipCoverageChange && (
         <div className="flex items-center justify-between gap-4 rounded-lg border border-gray-200 bg-gray-50/50 px-3 py-2 dark:border-gray-700 dark:bg-gray-700/20">
           <div>
             <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
-              Skip Code Evidence coverage
+              Skip Code Evidence coverage for this Spec
             </span>
             <p className="text-[10px] text-gray-400">
-              Bypass only pending links or dispositions. The underlying Evidence and receipt status remain unchanged.
+              {boardSkipCoverage
+                ? 'The Board-wide skip currently governs. This local setting is stored independently and will apply if the Board skip is removed.'
+                : 'Bypass only pending links or dispositions. The underlying Evidence and receipt status remain unchanged.'}
             </p>
           </div>
           <button

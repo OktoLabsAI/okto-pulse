@@ -364,6 +364,29 @@ describe('DefaultBoardConfigPanel', () => {
     );
   });
 
+  it('persists the Board-wide Code Evidence Matrix skip in a new default version', async () => {
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+
+    const toggle = await screen.findByRole('switch', {
+      name: 'Skip Code Evidence Matrix coverage',
+    });
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId('dbc-save-template'));
+
+    await waitFor(() => {
+      expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledTimes(1);
+    });
+    expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        settings_payload: expect.objectContaining({
+          skip_code_evidence_coverage_global: true,
+        }),
+      }),
+    );
+  });
+
   it('composes guideline edit authority with lifecycle actions that change exact pins', async () => {
     grant(
       'default_board_config.read',

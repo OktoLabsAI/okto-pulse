@@ -9,6 +9,7 @@ const baseSettings: BoardSettings = {
   skip_test_coverage_global: false,
   skip_rules_coverage_global: false,
   skip_trs_coverage_global: false,
+  skip_code_evidence_coverage_global: false,
   skip_contract_coverage_global: false,
   skip_ir_coverage_global: false,
   skip_or_coverage_global: false,
@@ -19,6 +20,27 @@ const baseSettings: BoardSettings = {
   min_completeness: 70,
   max_drift: 30,
 };
+
+describe('BoardSettingsForm — coverage overrides', () => {
+  it('configures the Board-wide Code Evidence Matrix skip independently', () => {
+    const onChange = vi.fn();
+    render(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
+
+    const toggle = screen.getByRole('switch', {
+      name: 'Skip Code Evidence Matrix coverage',
+    });
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+
+    fireEvent.click(toggle);
+
+    expect(onChange).toHaveBeenCalledWith({
+      skip_code_evidence_coverage_global: true,
+    });
+    expect(onChange).not.toHaveBeenCalledWith(
+      expect.objectContaining({ skip_trs_coverage_global: true }),
+    );
+  });
+});
 
 describe('BoardSettingsForm — independent reviewer policy', () => {
   it('renders the persisted mode and offers all three policies', () => {

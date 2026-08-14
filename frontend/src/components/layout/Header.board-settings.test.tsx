@@ -131,6 +131,7 @@ const baseSettings: BoardSettings = {
   skip_test_coverage_global: false,
   skip_rules_coverage_global: false,
   skip_trs_coverage_global: false,
+  skip_code_evidence_coverage_global: false,
   skip_contract_coverage_global: false,
   skip_ir_coverage_global: false,
   skip_or_coverage_global: false,
@@ -605,6 +606,19 @@ describe('Header Board settings resource automation', () => {
       })).toHaveValue(expectedMode);
     },
   );
+
+  it('persists the Board-wide Code Evidence Matrix coverage skip', async () => {
+    renderOpenHeader();
+
+    fireEvent.click(screen.getByRole('switch', {
+      name: 'Skip Code Evidence Matrix coverage',
+    }));
+
+    await waitFor(() => expect(apiMock.updateBoard).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateBoard).toHaveBeenCalledWith('board-1', {
+      settings: { skip_code_evidence_coverage_global: true },
+    });
+  });
 
   it('persists ideation ambiguity threshold 1 without using free-text input', async () => {
     boardState.currentBoard = boardWith({ require_ideation_ambiguity_gate: true, max_ideation_ambiguity: 3 });

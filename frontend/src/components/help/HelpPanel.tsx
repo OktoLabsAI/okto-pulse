@@ -1596,7 +1596,7 @@ MCP agents can query **and curate** the Knowledge Graph via 25+ tools:
       content: `
 ## Board Settings — Configure quality gates and behavior
 
-Each board has configurable settings that control governance rules, validation thresholds, and coverage requirements. Access via **Menu** (☰) → **Settings**.
+Each board has configurable settings that control governance rules, validation thresholds, and coverage requirements. Access via **Menu** (☰) → **Board**.
 
 ### Coverage skip flags
 
@@ -1607,6 +1607,7 @@ These flags bypass specific coverage checks for the entire board:
 | \`skip_test_coverage_global\` | Test scenario → acceptance criteria coverage |
 | \`skip_rules_coverage_global\` | Business rules → functional requirements coverage |
 | \`skip_trs_coverage_global\` | Technical requirements → task card linkage |
+| \`skip_code_evidence_coverage_global\` | Pending Code Evidence Matrix links or dispositions for every Spec; projection integrity and independently applicable technical gates remain enforced |
 | \`skip_contract_coverage_global\` | API contract → task card linkage |
 | \`skip_task_requirement_link_gate_global\` | Task start gate requiring a direct FR/TR/BR/IR/OR link |
 | \`skip_test_evidence_global\` | **Test Evidence Gate** (NC-9) — when ON, test scenarios can be marked \`automated/passed/failed\` without proof of execution. A persistent amber banner appears app-wide until disabled. |
