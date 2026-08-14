@@ -1279,6 +1279,11 @@ class Spec(Base):
     skip_or_coverage: Mapped[bool] = mapped_column(
         nullable=False, server_default=text("false")
     )
+    # If true, Spec validation can proceed while Code Evidence Matrix items are
+    # still neither linked to this Spec nor explicitly dispositioned.
+    skip_code_evidence_coverage: Mapped[bool] = mapped_column(
+        nullable=False, server_default=text("false")
+    )
     # If true, spec can skip qualitative validation (validated→in_progress without evaluations)
     skip_qualitative_validation: Mapped[bool] = mapped_column(
         nullable=False, server_default=text("false")

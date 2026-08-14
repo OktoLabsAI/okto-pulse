@@ -325,7 +325,7 @@ describe('Code Traceability passive Community surfaces', () => {
     }
   });
 
-  it('derives matrix coverage from visible rows and includes IR/OR link columns', async () => {
+  it('renders authoritative inherited-evidence coverage and includes IR/OR link columns', async () => {
     const matrixProjection: CodeTraceabilityProjection = {
       ...projection,
       evidence: [
@@ -337,6 +337,7 @@ describe('Code Traceability passive Community surfaces', () => {
           claim: 'The operational alert remains pending disposition.',
         },
       ],
+      inherited_evidence_ids: ['evidence-1', 'evidence-2'],
       links: [
         {
           ...projection.links[0],
@@ -352,12 +353,12 @@ describe('Code Traceability passive Community surfaces', () => {
         },
       ],
       coverage: {
-        total: 0,
-        linked: 0,
+        total: 2,
+        linked: 1,
         dispositioned: 0,
-        pending: 0,
-        pending_ids: [],
-        coverage_pct: 100,
+        pending: 1,
+        pending_ids: ['evidence-2'],
+        coverage_pct: 50,
       },
       gate_readiness: {
         ...projection.gate_readiness,
@@ -376,6 +377,7 @@ describe('Code Traceability passive Community surfaces', () => {
     expect(await screen.findByText('1/2')).toBeInTheDocument();
     expect(screen.getByText('1', { selector: 'p' })).toBeInTheDocument();
     expect(screen.getByText('50%')).toBeInTheDocument();
+    expect(screen.getByTestId('code-evidence-coverage-status')).toHaveTextContent('Pending');
     expect(screen.getByText('evidence items addressed')).toBeInTheDocument();
     expect(screen.getByText('evidence item pending')).toBeInTheDocument();
     expect(screen.queryByText('100%')).not.toBeInTheDocument();
@@ -385,6 +387,148 @@ describe('Code Traceability passive Community surfaces', () => {
     expect(screen.getByText('OR-3')).toBeInTheDocument();
     expect(screen.getByText('Current receipt')).toBeInTheDocument();
     expect(screen.getByText('Expired')).toBeInTheDocument();
+    expect(apiMock.getCodeTraceabilityProjection).toHaveBeenCalledWith(
+      'board-1',
+      'spec',
+      'spec-1',
+      7,
+      'detail',
+      expect.any(AbortSignal),
+      'gate',
+    );
+  });
+
+  it('never presents a truncated gate projection as covered or skippable', async () => {
+    apiMock.getCodeTraceabilityProjection.mockResolvedValue({
+      ...projection,
+      context_scope: 'gate',
+      coverage: {
+        total: 1,
+        linked: 1,
+        dispositioned: 0,
+        pending: 0,
+        pending_ids: [],
+        coverage_pct: 100,
+        skipped: true,
+      },
+      gate_readiness: {
+        ...projection.gate_readiness,
+        blockers: [{
+          code: 'code_traceability_projection_incomplete',
+          message: 'Gate context exceeded a server-owned projection budget.',
+          blocking: false,
+        }],
+      },
+    });
+
+    render(
+      <EvidenceMatrixPanel
+        boardId="board-1"
+        subjectId="spec-1"
+        subjectVersion={7}
+        skipCoverage
+        canEditCoverageFlags
+        onSkipCoverageChange={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByTestId('code-evidence-coverage-status')).toHaveTextContent('Incomplete');
+    expect(screen.getByRole('alert')).toHaveTextContent('Validation remains blocked');
+    expect(screen.getByRole('progressbar')).toHaveAttribute(
+      'aria-valuetext',
+      'Coverage projection incomplete',
+    );
+  });
+
+  it('excludes direct or future evidence outside the authoritative inherited snapshot', async () => {
+    const inheritedProjection: CodeTraceabilityProjection = {
+      ...projection,
+      evidence: [
+        projection.evidence[0],
+        {
+          ...projection.evidence[0],
+          id: 'evidence-future',
+          claim: 'A finding recorded after the Spec snapshot.',
+        },
+        {
+          ...projection.evidence[0],
+          id: 'evidence-direct',
+          claim: 'Direct evidence outside inherited matrix coverage.',
+        },
+      ],
+      inherited_evidence_ids: ['evidence-1'],
+      direct_evidence_ids: ['evidence-direct'],
+      coverage: {
+        total: 1,
+        linked: 1,
+        dispositioned: 0,
+        pending: 0,
+        pending_ids: [],
+        coverage_pct: 100,
+      },
+    };
+    apiMock.getCodeTraceabilityProjection.mockResolvedValue(inheritedProjection);
+
+    render(
+      <EvidenceMatrixPanel boardId="board-1" subjectId="spec-1" subjectVersion={7} />,
+    );
+
+    expect(await screen.findByText('1/1')).toBeInTheDocument();
+    expect(screen.getByTestId('code-evidence-coverage-status')).toHaveTextContent('Covered');
+    expect(screen.queryByText('A finding recorded after the Spec snapshot.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Direct evidence outside inherited matrix coverage.')).not.toBeInTheDocument();
+  });
+
+  it('shows the matrix coverage state and lets an authorized Draft editor skip it', async () => {
+    const onSkipCoverageChange = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = render(
+      <EvidenceMatrixPanel
+        boardId="board-1"
+        subjectId="spec-1"
+        subjectVersion={7}
+        skipCoverage={false}
+        canEditCoverageFlags
+        onSkipCoverageChange={onSkipCoverageChange}
+      />,
+    );
+
+    expect(await screen.findByTestId('code-evidence-coverage-status')).toHaveTextContent('Covered');
+    expect(screen.getByRole('progressbar', { name: 'Code Evidence coverage progress' }))
+      .toHaveAttribute('aria-valuenow', '100');
+
+    const toggle = screen.getByRole('switch', { name: 'Skip Code Evidence coverage' });
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(toggle);
+    await waitFor(() => expect(onSkipCoverageChange).toHaveBeenCalledWith(true));
+
+    rerender(
+      <EvidenceMatrixPanel
+        boardId="board-1"
+        subjectId="spec-1"
+        subjectVersion={7}
+        skipCoverage
+        canEditCoverageFlags
+        onSkipCoverageChange={onSkipCoverageChange}
+      />,
+    );
+    expect(screen.getByTestId('code-evidence-coverage-status')).toHaveTextContent('Skipped');
+    expect(screen.getByRole('switch', { name: 'Skip Code Evidence coverage' }))
+      .toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('keeps the coverage state visible without exposing the skip control to read-only viewers', async () => {
+    render(
+      <EvidenceMatrixPanel
+        boardId="board-1"
+        subjectId="spec-1"
+        subjectVersion={7}
+        skipCoverage
+      />,
+    );
+
+    expect(await screen.findByTestId('code-evidence-coverage-status')).toHaveTextContent('Skipped');
+    expect(screen.queryByRole('switch', { name: 'Skip Code Evidence coverage' }))
+      .not.toBeInTheDocument();
   });
 
   it('renders agent execution receipts with receipt currentness and resolution freshness', async () => {

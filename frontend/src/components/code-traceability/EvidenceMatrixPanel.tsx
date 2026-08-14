@@ -19,6 +19,9 @@ interface Props {
   boardId: string;
   subjectId: string;
   subjectVersion: number;
+  skipCoverage?: boolean;
+  canEditCoverageFlags?: boolean;
+  onSkipCoverageChange?: (skip: boolean) => Promise<void> | void;
 }
 
 const ENTITY_COLUMNS = [
@@ -119,12 +122,20 @@ function MatrixRow({
   );
 }
 
-export function EvidenceMatrixPanel({ boardId, subjectId, subjectVersion }: Props) {
+export function EvidenceMatrixPanel({
+  boardId,
+  subjectId,
+  subjectVersion,
+  skipCoverage = false,
+  canEditCoverageFlags = false,
+  onSkipCoverageChange,
+}: Props) {
   const api = useDashboardApi();
   const [projection, setProjection] = useState<CodeTraceabilityProjection | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [receiptId, setReceiptId] = useState<string | null>(null);
+  const [updatingSkipCoverage, setUpdatingSkipCoverage] = useState(false);
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -137,6 +148,7 @@ export function EvidenceMatrixPanel({ boardId, subjectId, subjectVersion }: Prop
         subjectVersion,
         'detail',
         signal,
+        'gate',
       ));
     } catch (caught) {
       if (!signal?.aborted) {
@@ -153,36 +165,65 @@ export function EvidenceMatrixPanel({ boardId, subjectId, subjectVersion }: Prop
     return () => controller.abort();
   }, [load]);
 
-  const evidence = useMemo(() => projection?.evidence ?? [], [projection]);
+  const evidence = useMemo(() => {
+    if (!projection) return [];
+    const inheritedIds = new Set(projection.inherited_evidence_ids);
+    return projection.evidence.filter((item) => inheritedIds.has(item.id));
+  }, [projection]);
   const coverage = useMemo(() => {
     if (!projection) return null;
-
-    const evidenceIds = new Set(evidence.map((item) => item.id));
-    const linkedIds = new Set(
-      projection.links
-        .filter((link) => evidenceIds.has(link.evidence_id))
-        .map((link) => link.evidence_id),
-    );
-    const dispositionedIds = new Set(
-      projection.dispositions
-        .filter((disposition) => (
-          disposition.active
-          && evidenceIds.has(disposition.evidence_id)
-          && !linkedIds.has(disposition.evidence_id)
-        ))
-        .map((disposition) => disposition.evidence_id),
-    );
-    const total = evidence.length;
-    const addressed = linkedIds.size + dispositionedIds.size;
-    const pending = Math.max(total - addressed, 0);
-
+    const { total, linked, dispositioned, pending, coverage_pct: coveragePct } = projection.coverage;
     return {
       total,
-      addressed,
+      addressed: linked + dispositioned,
       pending,
-      coveragePct: total > 0 ? (addressed / total) * 100 : 0,
+      coveragePct,
     };
-  }, [evidence, projection]);
+  }, [projection]);
+  const projectionIncomplete = projection?.gate_readiness.blockers.some(
+    (blocker) => blocker.code === 'code_traceability_projection_incomplete',
+  ) ?? false;
+
+  const coverageStatus = useMemo(() => {
+    if (projectionIncomplete) {
+      return {
+        label: 'Incomplete',
+        className: 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300',
+      };
+    }
+    if (skipCoverage) {
+      return {
+        label: 'Skipped',
+        className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+      };
+    }
+    if (!coverage || coverage.total === 0) {
+      return {
+        label: 'No evidence',
+        className: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
+      };
+    }
+    if (coverage.pending === 0) {
+      return {
+        label: 'Covered',
+        className: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
+      };
+    }
+    return {
+      label: 'Pending',
+      className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+    };
+  }, [coverage, projectionIncomplete, skipCoverage]);
+
+  const toggleSkipCoverage = useCallback(async () => {
+    if (!onSkipCoverageChange || updatingSkipCoverage) return;
+    setUpdatingSkipCoverage(true);
+    try {
+      await onSkipCoverageChange(!skipCoverage);
+    } finally {
+      setUpdatingSkipCoverage(false);
+    }
+  }, [onSkipCoverageChange, skipCoverage, updatingSkipCoverage]);
 
   return (
     <div className="space-y-4" data-testid="spec-evidence-matrix-panel">
@@ -202,21 +243,98 @@ export function EvidenceMatrixPanel({ boardId, subjectId, subjectVersion }: Prop
       </div>
 
       {coverage && (
-        <div className="grid gap-2 sm:grid-cols-3">
-          <div className="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700">
-            <p className="text-lg font-semibold text-gray-900 dark:text-white">
-              {coverage.addressed}/{coverage.total}
+        <section
+          aria-label="Code Evidence coverage"
+          className="rounded-lg border border-gray-200 p-3 dark:border-gray-700"
+        >
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              Code Evidence coverage
+            </h3>
+            <span
+              data-testid="code-evidence-coverage-status"
+              className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${coverageStatus.className}`}
+            >
+              {coverageStatus.label}
+            </span>
+          </div>
+          <div className="mb-3 h-2 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
+            <div
+              role="progressbar"
+              aria-label="Code Evidence coverage progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(coverage.coveragePct)}
+              aria-valuetext={projectionIncomplete ? 'Coverage projection incomplete' : undefined}
+              className={`h-full rounded-full transition-all duration-500 ${
+                projectionIncomplete
+                  ? 'bg-red-500'
+                  : coverage.pending === 0 && coverage.total > 0
+                    ? 'bg-green-500'
+                    : 'bg-amber-500'
+              }`}
+              style={{ width: `${coverage.coveragePct}%` }}
+            />
+          </div>
+          <div className="grid gap-2 sm:grid-cols-3">
+            <div className="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700">
+              <p className="text-lg font-semibold text-gray-900 dark:text-white">
+                {coverage.addressed}/{coverage.total}
+              </p>
+              <p className="text-[11px] text-gray-400">evidence items addressed</p>
+            </div>
+            <div className="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700">
+              <p className="text-lg font-semibold text-amber-600 dark:text-amber-400">{coverage.pending}</p>
+              <p className="text-[11px] text-gray-400">evidence item{coverage.pending === 1 ? '' : 's'} pending</p>
+            </div>
+            <div className="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700">
+              <p className="text-lg font-semibold text-blue-600 dark:text-blue-400">{Math.round(coverage.coveragePct)}%</p>
+              <p className="text-[11px] text-gray-400">coverage</p>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {projectionIncomplete && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300"
+        >
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          <span>
+            Coverage could not be evaluated completely. Validation remains blocked, and the coverage skip does not bypass this technical condition.
+          </span>
+        </div>
+      )}
+
+      {canEditCoverageFlags && onSkipCoverageChange && (
+        <div className="flex items-center justify-between gap-4 rounded-lg border border-gray-200 bg-gray-50/50 px-3 py-2 dark:border-gray-700 dark:bg-gray-700/20">
+          <div>
+            <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
+              Skip Code Evidence coverage
+            </span>
+            <p className="text-[10px] text-gray-400">
+              Bypass only pending links or dispositions. The underlying Evidence and receipt status remain unchanged.
             </p>
-            <p className="text-[11px] text-gray-400">evidence items addressed</p>
           </div>
-          <div className="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700">
-            <p className="text-lg font-semibold text-amber-600 dark:text-amber-400">{coverage.pending}</p>
-            <p className="text-[11px] text-gray-400">evidence item{coverage.pending === 1 ? '' : 's'} pending</p>
-          </div>
-          <div className="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700">
-            <p className="text-lg font-semibold text-blue-600 dark:text-blue-400">{Math.round(coverage.coveragePct)}%</p>
-            <p className="text-[11px] text-gray-400">coverage</p>
-          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-label="Skip Code Evidence coverage"
+            aria-checked={skipCoverage}
+            aria-busy={updatingSkipCoverage}
+            disabled={updatingSkipCoverage}
+            onClick={() => void toggleSkipCoverage()}
+            className={`relative h-5 w-10 shrink-0 rounded-full transition-colors disabled:cursor-wait disabled:opacity-60 ${
+              skipCoverage ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'
+            }`}
+          >
+            <span
+              className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
+                skipCoverage ? 'translate-x-5' : ''
+              }`}
+            />
+          </button>
         </div>
       )}
 

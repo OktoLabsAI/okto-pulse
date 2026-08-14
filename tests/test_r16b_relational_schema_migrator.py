@@ -166,11 +166,12 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
     # plus the SK-B3 closure backfill of the 5-column unique authority index
     # on guideline_board_bindings (structural prerequisite of the
     # binding-configuration composite FK on migrated databases), and the
-    # evidence-based legacy Task Validation -> Rejected convergence.
-    assert len(migrate_names) == 67, (
-        f"expected 67 _migrate_*, found {len(migrate_names)}"
+    # evidence-based legacy Task Validation -> Rejected convergence, and the
+    # per-Spec Code Evidence Matrix coverage skip.
+    assert len(migrate_names) == 68, (
+        f"expected 68 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 67
+    assert len(ledger_migrate_ids) == 68
     ordered_ids = [step.step_id for step in ledger]
     assert ordered_ids.index(
         "_migrate_guideline_policy_lifecycle_substrate"
@@ -860,6 +861,9 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         "_migrate_seed_semantic_configurations_for_legacy_bindings",
         # Fresh create_all emits the complete SK-M ledger and guards.
         "_migrate_spec_dependency_schema",
+        # The pre-create compatibility step has no legacy specs table to alter;
+        # create_all emits the fail-closed Code Evidence Matrix skip column.
+        "_migrate_add_code_evidence_coverage_skip",
         # Fresh create_all already emits the causal rejection columns and
         # audit table, with no legacy Validation evidence to classify.
         "_migrate_card_rejected_lifecycle",
@@ -893,6 +897,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         "_migrate_recompute_cognitive_source_fingerprints_v2",
         "_migrate_spec_dependency_schema",
         "_migrate_card_rejected_lifecycle",
+        "_migrate_add_code_evidence_coverage_skip",
     }
 
     # First run: clean databases skip fixture repair and convergence steps

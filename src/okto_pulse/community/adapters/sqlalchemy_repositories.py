@@ -107,6 +107,7 @@ _SPEC_FIELDS = (
     "skip_contract_coverage",
     "skip_ir_coverage",
     "skip_or_coverage",
+    "skip_code_evidence_coverage",
     "skip_qualitative_validation",
     "validation_threshold",
     "require_task_validation",
@@ -226,9 +227,12 @@ class CommunityIdeationRepository:
         return ideation_to_domain(row) if row is not None else None
 
     async def add(self, ideation: IdeationEntity) -> None:
-        if await CommunityBoardRepository(
-            self._session, self.realm_scope
-        ).get(ideation.board_id) is None:
+        if (
+            await CommunityBoardRepository(self._session, self.realm_scope).get(
+                ideation.board_id
+            )
+            is None
+        ):
             raise RealmIsolationViolation()
         self._session.add(ideation_to_row(ideation))
 
@@ -253,9 +257,12 @@ class CommunitySpecRepository:
         return spec_to_domain(row) if row is not None else None
 
     async def add(self, spec: SpecEntity) -> None:
-        if await CommunityBoardRepository(
-            self._session, self.realm_scope
-        ).get(spec.board_id) is None:
+        if (
+            await CommunityBoardRepository(self._session, self.realm_scope).get(
+                spec.board_id
+            )
+            is None
+        ):
             raise RealmIsolationViolation()
         self._session.add(spec_to_row(spec))
 

@@ -8788,6 +8788,38 @@ async def _migrate_add_spec_validation_columns() -> None:
                 pass
 
 
+async def _migrate_add_code_evidence_coverage_skip() -> object:
+    """Add the Code Evidence Matrix coverage skip to existing Specs.
+
+    Fresh databases receive the column from ``Base.metadata.create_all``.  On
+    upgraded databases this pre-create step adds it with the same fail-closed
+    default as the ORM/domain contract, while preserving every existing row.
+    """
+
+    from sqlalchemy import inspect as sa_inspect
+
+    async with get_engine().begin() as conn:
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(sa_inspect(sync_conn).get_table_names())
+        )
+        if "specs" not in table_names:
+            return "skipped"
+        columns = await conn.run_sync(
+            lambda sync_conn: {
+                str(column["name"])
+                for column in sa_inspect(sync_conn).get_columns("specs")
+            }
+        )
+        if "skip_code_evidence_coverage" in columns:
+            return "skipped"
+        default = "0" if conn.dialect.name == "sqlite" else "false"
+        await conn.exec_driver_sql(
+            "ALTER TABLE specs ADD COLUMN "
+            f"skip_code_evidence_coverage BOOLEAN DEFAULT {default} NOT NULL"
+        )
+    return None
+
+
 async def _migrate_add_ir_or_columns() -> None:
     """Add first-class IR/OR JSON columns and coverage flags to specs."""
     from sqlalchemy import text as sa_text
@@ -23321,6 +23353,9 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_add_spec_edition": _migrate_add_spec_edition,
     "_migrate_add_human_lifecycle_editions": (_migrate_add_human_lifecycle_editions),
     "_migrate_add_spec_validation_columns": _migrate_add_spec_validation_columns,
+    "_migrate_add_code_evidence_coverage_skip": (
+        _migrate_add_code_evidence_coverage_skip
+    ),
     "_migrate_add_ir_or_columns": _migrate_add_ir_or_columns,
     "_migrate_add_spec_validation_gate_columns": _migrate_add_spec_validation_gate_columns,
     "_migrate_add_ideation_skip_ambiguity_gate": _migrate_add_ideation_skip_ambiguity_gate,

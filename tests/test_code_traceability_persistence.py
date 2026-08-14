@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import sqlite3
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -102,8 +103,7 @@ def test_open_request_admission_is_atomic_for_quota_and_replay(
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
             await connection.exec_driver_sql(
-                "INSERT INTO boards (id, name, owner_id, realm_id) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO boards (id, name, owner_id, realm_id) VALUES (?, ?, ?, ?)",
                 ("board-1", "Board", "owner-1", "local"),
             )
 
@@ -127,14 +127,14 @@ def test_open_request_admission_is_atomic_for_quota_and_replay(
                 challenge_token_hash=hashlib.sha256(
                     f"challenge-{sequence}".encode()
                 ).hexdigest(),
-                request_payload_sha256=(payload_sha256 or base_request.request_payload_sha256),
+                request_payload_sha256=(
+                    payload_sha256 or base_request.request_payload_sha256
+                ),
                 idempotency_key=(idempotency_key or f"admission-{sequence}"),
             )
 
         async with sessions() as session:
-            store = CommunityRelationalApplicationAdapter().code_investigations(
-                session
-            )
+            store = CommunityRelationalApplicationAdapter().code_investigations(session)
             for sequence in range(7):
                 result = await store.create_request_if_below_open_limit(
                     request=variant(sequence),
@@ -166,14 +166,20 @@ def test_open_request_admission_is_atomic_for_quota_and_replay(
             race(variant(8)),
             return_exceptions=True,
         )
-        assert sum(
-            isinstance(item, CodeInvestigationRequestCreateResult)
-            for item in quota_results
-        ) == 1
-        assert sum(
-            isinstance(item, domain.CodeInvestigationSubmissionLimitExceeded)
-            for item in quota_results
-        ) == 1
+        assert (
+            sum(
+                isinstance(item, CodeInvestigationRequestCreateResult)
+                for item in quota_results
+            )
+            == 1
+        )
+        assert (
+            sum(
+                isinstance(item, domain.CodeInvestigationSubmissionLimitExceeded)
+                for item in quota_results
+            )
+            == 1
+        )
         assert not any(
             "database is locked" in str(item).casefold() for item in quota_results
         )
@@ -206,9 +212,7 @@ def test_open_request_admission_is_atomic_for_quota_and_replay(
         )
 
         async with sessions() as session:
-            store = CommunityRelationalApplicationAdapter().code_investigations(
-                session
-            )
+            store = CommunityRelationalApplicationAdapter().code_investigations(session)
             assert (
                 await store.count_open_requests(
                     board_id="board-1",
@@ -242,16 +246,13 @@ def test_receipt_head_compare_and_swap_is_atomic_under_sqlite_race(
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
             await connection.exec_driver_sql(
-                "INSERT INTO boards (id, name, owner_id, realm_id) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO boards (id, name, owner_id, realm_id) VALUES (?, ?, ?, ?)",
                 ("board-1", "Board", "owner-1", "local"),
             )
 
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         now = datetime.now(timezone.utc).replace(microsecond=0)
-        request_a, consumed_a, receipt_a, head_a, _workspace = (
-            _attestation_bundle(now)
-        )
+        request_a, consumed_a, receipt_a, head_a, _workspace = _attestation_bundle(now)
         request_b = replace(
             request_a,
             id="request-race-2",
@@ -280,9 +281,7 @@ def test_receipt_head_compare_and_swap_is_atomic_under_sqlite_race(
         )
 
         async with sessions() as session:
-            store = CommunityRelationalApplicationAdapter().code_investigations(
-                session
-            )
+            store = CommunityRelationalApplicationAdapter().code_investigations(session)
             await store.create_request(request_a)
             await store.create_request(request_b)
             await session.commit()
@@ -312,17 +311,25 @@ def test_receipt_head_compare_and_swap_is_atomic_under_sqlite_race(
             race(consumed_b, receipt_b, head_b),
             return_exceptions=True,
         )
-        assert sum(
-            isinstance(item, domain.CodeInvestigationReceiptCommitResult)
-            for item in results
-        ) == 1, results
-        assert sum(isinstance(item, CodeInvestigationHeadConflict) for item in results) == 1
+        assert (
+            sum(
+                isinstance(item, domain.CodeInvestigationReceiptCommitResult)
+                for item in results
+            )
+            == 1
+        ), results
+        assert (
+            sum(isinstance(item, CodeInvestigationHeadConflict) for item in results)
+            == 1
+        )
         assert not any("database is locked" in str(item).casefold() for item in results)
 
         async with sessions() as session:
-            stored_head = await CommunityRelationalApplicationAdapter().code_investigations(
-                session
-            ).get_current_head(board_id="board-1", source_ref="source-main")
+            stored_head = (
+                await CommunityRelationalApplicationAdapter()
+                .code_investigations(session)
+                .get_current_head(board_id="board-1", source_ref="source-main")
+            )
             assert stored_head is not None
             assert stored_head.revision == 1
             assert stored_head.latest_receipt_id in {receipt_a.id, receipt_b.id}
@@ -355,8 +362,7 @@ def test_gate_projection_caps_targets_before_overlap_and_discloses_omission(
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
             await connection.exec_driver_sql(
-                "INSERT INTO boards (id, name, owner_id, realm_id) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO boards (id, name, owner_id, realm_id) VALUES (?, ?, ?, ?)",
                 ("board-1", "Board", "owner-1", "local"),
             )
             await connection.exec_driver_sql(
@@ -391,9 +397,7 @@ def test_gate_projection_caps_targets_before_overlap_and_discloses_omission(
                         now,
                     )
                     for sequence in range(
-                        domain.CODE_TRACEABILITY_CONTEXT_COLLECTION_LIMITS[
-                            "targets"
-                        ]
+                        domain.CODE_TRACEABILITY_CONTEXT_COLLECTION_LIMITS["targets"]
                         + 1
                     )
                 ],
@@ -401,21 +405,21 @@ def test_gate_projection_caps_targets_before_overlap_and_discloses_omission(
 
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         async with sessions() as session:
-            context = await CommunityRelationalApplicationAdapter().code_traceability_read(
-                session
-            ).card_context(
-                CodeTraceabilityProjectionQuery(
-                    board_id="board-1",
-                    subject_type=domain.CodeTraceabilitySubjectType.CARD,
-                    subject_id="card-1",
-                    subject_version=1,
-                    profile=domain.CodeTraceabilityProjectionProfile.FULL,
-                    context_scope=domain.CodeTraceabilityContextScope.GATE,
+            context = (
+                await CommunityRelationalApplicationAdapter()
+                .code_traceability_read(session)
+                .card_context(
+                    CodeTraceabilityProjectionQuery(
+                        board_id="board-1",
+                        subject_type=domain.CodeTraceabilitySubjectType.CARD,
+                        subject_id="card-1",
+                        subject_version=1,
+                        profile=domain.CodeTraceabilityProjectionProfile.FULL,
+                        context_scope=domain.CodeTraceabilityContextScope.GATE,
+                    )
                 )
             )
-            target_limit = domain.CODE_TRACEABILITY_CONTEXT_COLLECTION_LIMITS[
-                "targets"
-            ]
+            target_limit = domain.CODE_TRACEABILITY_CONTEXT_COLLECTION_LIMITS["targets"]
             assert len(context.targets) == target_limit
             assert context.omitted_content_manifest == (
                 domain.CodeTraceabilityOmittedContent(
@@ -424,10 +428,14 @@ def test_gate_projection_caps_targets_before_overlap_and_discloses_omission(
                     included_count=target_limit,
                 ),
             )
-            projection = CodeTraceabilityProjectionService().project_context(
-                context,
-                CodeTraceabilitySettings(mode="blocking"),
-            ).as_dict()
+            projection = (
+                CodeTraceabilityProjectionService()
+                .project_context(
+                    context,
+                    CodeTraceabilitySettings(mode="blocking"),
+                )
+                .as_dict()
+            )
             assert projection["gate_readiness"]["allowed"] is False
             assert any(
                 blocker["code"] == "code_traceability_projection_incomplete"
@@ -439,7 +447,15 @@ def test_gate_projection_caps_targets_before_overlap_and_discloses_omission(
     asyncio.run(exercise())
 
 
-def _attestation_bundle(now: datetime):
+def _attestation_bundle(
+    now: datetime,
+    *,
+    subject_type: domain.CodeTraceabilitySubjectType = (
+        domain.CodeTraceabilitySubjectType.CARD
+    ),
+    subject_id: str = "card-1",
+    subject_version: int = 1,
+):
     capabilities = tuple(domain.CodeInvestigationCapability)
     workspace = domain.ObservedWorkspaceStateRef(
         declared_revision="revision-1",
@@ -454,9 +470,9 @@ def _attestation_bundle(now: datetime):
     request = domain.CodeInvestigationRequest(
         id="request-1",
         board_id="board-1",
-        subject_type=domain.CodeTraceabilitySubjectType.CARD,
-        subject_id="card-1",
-        subject_version=1,
+        subject_type=subject_type,
+        subject_id=subject_id,
+        subject_version=subject_version,
         issued_to_actor_id="agent-1",
         source_ref="source-main",
         required_capabilities=capabilities,
@@ -540,6 +556,182 @@ def _attestation_bundle(now: datetime):
     return request, consumed, receipt, head, workspace
 
 
+def test_spec_context_keeps_active_v3_evidence_in_v4_snapshot_denominator(
+    tmp_path: Path,
+) -> None:
+    async def exercise() -> None:
+        database_path = tmp_path / "code-evidence-inherited-snapshot.sqlite3"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{database_path.as_posix()}")
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        request, consumed, receipt, head, workspace = _attestation_bundle(
+            now,
+            subject_type=domain.CodeTraceabilitySubjectType.REFINEMENT,
+            subject_id="refinement-1",
+            subject_version=3,
+        )
+        evidence = domain.CodeEvidence(
+            id="evidence-refinement-v3",
+            board_id="board-1",
+            investigation_receipt_id=receipt.id,
+            source_ref=receipt.source_ref,
+            parent_type=domain.CodeTraceabilitySubjectType.REFINEMENT,
+            parent_id="refinement-1",
+            parent_version=3,
+            evidence_type=domain.CodeEvidenceType.STRUCTURE,
+            claim="The v3 investigation established the relevant module structure.",
+            workspace_state=workspace,
+            selector_kind=domain.CodeEvidenceSelectorKind.FILE,
+            relative_path="src/module.py",
+            language="python",
+            symbol_kind=None,
+            qualified_symbol=None,
+            symbol_signature=None,
+            snapshot_line_start=None,
+            snapshot_line_end=None,
+            excerpt=None,
+            excerpt_sha256=None,
+            declared_file_blob_sha256=_B,
+            declared_source_content_sha256=_C,
+            excerpt_omitted_reason="not_submitted",
+            attestation_state=domain.CodeEvidenceAttestationState.AGENT_ATTESTED,
+            attestation_basis=(
+                domain.CodeEvidenceAttestationBasis.AUTHENTICATED_AGENT_RECEIPT
+            ),
+            lifecycle_status=domain.CodeTraceabilityLifecycleStatus.ACTIVE,
+            supersedes_evidence_id=None,
+            revocation_reason=None,
+            submitted_by="agent-1",
+            received_at=now + timedelta(seconds=2),
+            payload_sha256=_E,
+            idempotency_key="evidence-refinement-v3",
+        )
+        manifest = json.dumps(
+            [
+                {
+                    "evidence_id": evidence.id,
+                    "content_sha256": evidence.content_sha256,
+                    "lifecycle_status": evidence.lifecycle_status.value,
+                }
+            ]
+        )
+
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+            await connection.exec_driver_sql(
+                "INSERT INTO boards (id, name, owner_id, realm_id) VALUES (?, ?, ?, ?)",
+                ("board-1", "Board", "owner-1", "local"),
+            )
+            await connection.exec_driver_sql(
+                "INSERT INTO ideations "
+                "(id, board_id, title, status, edition, version, created_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("ideation-1", "board-1", "Idea", "done", 1, 1, "owner-1"),
+            )
+            await connection.exec_driver_sql(
+                "INSERT INTO refinements "
+                "(id, ideation_id, board_id, title, status, edition, version, "
+                "created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "refinement-1",
+                    "ideation-1",
+                    "board-1",
+                    "Refinement",
+                    "done",
+                    1,
+                    4,
+                    "owner-1",
+                ),
+            )
+            await connection.exec_driver_sql(
+                "INSERT INTO refinement_snapshots "
+                "(id, refinement_id, version, title, code_evidence_manifest, "
+                "created_by) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    "snapshot-v4",
+                    "refinement-1",
+                    4,
+                    "Refinement v4",
+                    manifest,
+                    "owner-1",
+                ),
+            )
+            await connection.exec_driver_sql(
+                "INSERT INTO specs "
+                "(id, board_id, ideation_id, refinement_id, "
+                "source_refinement_snapshot_id, source_refinement_version, "
+                "title, status, edition, version, created_by) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "spec-1",
+                    "board-1",
+                    "ideation-1",
+                    "refinement-1",
+                    "snapshot-v4",
+                    4,
+                    "Spec",
+                    "draft",
+                    1,
+                    1,
+                    "owner-1",
+                ),
+            )
+
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        async with sessions() as session:
+            adapter = CommunityRelationalApplicationAdapter()
+            investigations = adapter.code_investigations(session)
+            await investigations.create_request(request)
+            await investigations.consume_request_append_receipt_and_advance_head(
+                request=consumed,
+                receipt=receipt,
+                head=head,
+                expected_head_revision=None,
+            )
+            await adapter.code_traceability(session).create_evidence(
+                evidence=evidence,
+                expected_head_revision=1,
+            )
+            await session.commit()
+
+        async with sessions() as session:
+            query = CodeTraceabilityProjectionQuery(
+                board_id="board-1",
+                subject_type=domain.CodeTraceabilitySubjectType.SPEC,
+                subject_id="spec-1",
+                subject_version=1,
+                profile=domain.CodeTraceabilityProjectionProfile.SUMMARY,
+            )
+            projection = await CodeTraceabilityProjectionService().project(
+                query,
+                CodeTraceabilitySettings(mode="blocking"),
+                read_port=(
+                    CommunityRelationalApplicationAdapter().code_traceability_read(
+                        session
+                    )
+                ),
+            )
+            payload = projection.as_dict()
+
+            assert tuple(item.id for item in projection.context.evidence) == (
+                evidence.id,
+            )
+            assert payload["source_refinement_snapshot_id"] == "snapshot-v4"
+            assert payload["source_refinement_version"] == 4
+            assert payload["inherited_evidence_ids"] == [evidence.id]
+            assert payload["coverage"] == {
+                "total": 1,
+                "linked": 0,
+                "dispositioned": 0,
+                "pending": 1,
+                "pending_ids": [evidence.id],
+                "coverage_pct": 0.0,
+                "skipped": False,
+            }
+        await engine.dispose()
+
+    asyncio.run(exercise())
+
+
 def test_resolution_snapshot_is_unique_under_real_sqlite_race(
     tmp_path: Path,
 ) -> None:
@@ -552,8 +744,7 @@ def test_resolution_snapshot_is_unique_under_real_sqlite_race(
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
             await connection.exec_driver_sql(
-                "INSERT INTO boards (id, name, owner_id, realm_id) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO boards (id, name, owner_id, realm_id) VALUES (?, ?, ?, ?)",
                 ("board-1", "Board", "owner-1", "local"),
             )
             await connection.exec_driver_sql(
@@ -691,16 +882,21 @@ def test_resolution_snapshot_is_unique_under_real_sqlite_race(
         )
         successes = [item for item in results if not isinstance(item, BaseException)]
         assert len(successes) == 1, results
-        assert sum(
-            isinstance(item, CodeTraceabilityPersistenceConflict)
-            for item in results
-        ) == 1, results
+        assert (
+            sum(
+                isinstance(item, CodeTraceabilityPersistenceConflict)
+                for item in results
+            )
+            == 1
+        ), results
         assert not any("database is locked" in str(item).casefold() for item in results)
 
         async with sessions() as session:
-            stored_target = await CommunityRelationalApplicationAdapter().code_traceability(
-                session
-            ).get_target(board_id="board-1", target_id=target.id)
+            stored_target = (
+                await CommunityRelationalApplicationAdapter()
+                .code_traceability(session)
+                .get_target(board_id="board-1", target_id=target.id)
+            )
             resolution_count = await session.scalar(
                 text(
                     "SELECT COUNT(*) FROM implementation_target_resolutions "
@@ -727,8 +923,7 @@ def test_evidence_racing_a_newer_preflight_fails_closed_without_busy_error(
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
             await connection.exec_driver_sql(
-                "INSERT INTO boards (id, name, owner_id, realm_id) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO boards (id, name, owner_id, realm_id) VALUES (?, ?, ?, ?)",
                 ("board-1", "Board", "owner-1", "local"),
             )
 
@@ -864,9 +1059,11 @@ def test_evidence_racing_a_newer_preflight_fails_closed_without_busy_error(
                     "WHERE id = 'evidence-losing-race'"
                 )
             )
-            current_head = await CommunityRelationalApplicationAdapter().code_investigations(
-                session
-            ).get_current_head(board_id="board-1", source_ref="source-main")
+            current_head = (
+                await CommunityRelationalApplicationAdapter()
+                .code_investigations(session)
+                .get_current_head(board_id="board-1", source_ref="source-main")
+            )
             assert int(evidence_count or 0) == 0
             assert current_head == head_2
         await engine.dispose()
@@ -888,8 +1085,7 @@ def test_transaction_bound_stores_persist_only_submitted_attestations(
             ) in code_traceability_sqlite_trigger_manifest().items():
                 await connection.exec_driver_sql(ddl)
             await connection.exec_driver_sql(
-                "INSERT INTO boards (id, name, owner_id, realm_id) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT INTO boards (id, name, owner_id, realm_id) VALUES (?, ?, ?, ?)",
                 ("board-1", "Board", "owner-1", "local"),
             )
             await connection.exec_driver_sql(
@@ -986,9 +1182,7 @@ def test_transaction_bound_stores_persist_only_submitted_attestations(
                 snapshot_line_start=None,
                 snapshot_line_end=None,
                 excerpt=safe_excerpt,
-                excerpt_sha256=hashlib.sha256(
-                    safe_excerpt.encode("utf-8")
-                ).hexdigest(),
+                excerpt_sha256=hashlib.sha256(safe_excerpt.encode("utf-8")).hexdigest(),
                 declared_file_blob_sha256=_B,
                 declared_source_content_sha256=_C,
                 excerpt_omitted_reason=None,
@@ -1273,8 +1467,7 @@ def test_transaction_bound_stores_persist_only_submitted_attestations(
                 updated_at=now + timedelta(seconds=7, microseconds=2),
             )
             assert (
-                await investigations.create_request(request_current)
-                == request_current
+                await investigations.create_request(request_current) == request_current
             )
             assert (
                 await investigations.consume_request_append_receipt_and_advance_head(
@@ -1378,10 +1571,7 @@ def test_transaction_bound_stores_persist_only_submitted_attestations(
             )
             assert target_projection is not None
             assert target_projection["resolution_state"] == "resolved"
-            assert (
-                target_projection["investigation_receipt_id"]
-                == receipt_current.id
-            )
+            assert target_projection["investigation_receipt_id"] == receipt_current.id
             assert target_projection["overlap_target_ids"] == []
             assert "symbol_signature" not in target_projection
 
@@ -1545,11 +1735,7 @@ def test_transaction_bound_stores_persist_only_submitted_attestations(
                     "UPDATE specs SET technical_requirements = :requirements "
                     "WHERE id = 'spec-1'"
                 ),
-                {
-                    "requirements": (
-                        '[{"id":"tr-1","linked_task_ids":["card-1"]}]'
-                    )
-                },
+                {"requirements": ('[{"id":"tr-1","linked_task_ids":["card-1"]}]')},
             )
             entity_link = replace(
                 spec_link,
@@ -1658,10 +1844,14 @@ def test_transaction_bound_stores_persist_only_submitted_attestations(
                     profile=domain.CodeTraceabilityProjectionProfile.DETAIL,
                 )
             )
-            detail_projection = CodeTraceabilityProjectionService().project_context(
-                detail_context,
-                CodeTraceabilitySettings(mode="advisory"),
-            ).as_dict()
+            detail_projection = (
+                CodeTraceabilityProjectionService()
+                .project_context(
+                    detail_context,
+                    CodeTraceabilitySettings(mode="advisory"),
+                )
+                .as_dict()
+            )
             detail_excerpt = detail_projection["evidence"][0]["excerpt"]
             assert len(detail_excerpt.encode("utf-8")) <= 2 * 1024
             assert detail_projection["evidence"][0]["excerpt_truncated"] is True
@@ -1702,18 +1892,24 @@ def test_transaction_bound_stores_persist_only_submitted_attestations(
                 lifecycle_status=domain.CodeTraceabilityLifecycleStatus.REVOKED,
                 revocation_reason="Operator invalidated the submitted observation.",
             )
-            assert await traceability.revoke_evidence(
-                evidence=revoked_evidence,
-                expected_lifecycle_status=(
-                    domain.CodeTraceabilityLifecycleStatus.ACTIVE
-                ),
-            ) == revoked_evidence
-            assert await traceability.revoke_evidence(
-                evidence=revoked_evidence,
-                expected_lifecycle_status=(
-                    domain.CodeTraceabilityLifecycleStatus.ACTIVE
-                ),
-            ) == revoked_evidence
+            assert (
+                await traceability.revoke_evidence(
+                    evidence=revoked_evidence,
+                    expected_lifecycle_status=(
+                        domain.CodeTraceabilityLifecycleStatus.ACTIVE
+                    ),
+                )
+                == revoked_evidence
+            )
+            assert (
+                await traceability.revoke_evidence(
+                    evidence=revoked_evidence,
+                    expected_lifecycle_status=(
+                        domain.CodeTraceabilityLifecycleStatus.ACTIVE
+                    ),
+                )
+                == revoked_evidence
+            )
             with pytest.raises(CodeTraceabilityImmutableConflict):
                 await traceability.revoke_evidence(
                     evidence=replace(

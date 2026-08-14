@@ -19,6 +19,7 @@ const apiMock = vi.hoisted(() => ({
   updateSpec: vi.fn(),
 }));
 const validationGateOverrideSpy = vi.hoisted(() => vi.fn());
+const evidenceMatrixPropsSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
@@ -43,6 +44,28 @@ vi.mock('@/hooks/usePermissions', async (importOriginal) => {
 
 vi.mock('@/components/traceability', () => ({
   openLineageGraph: vi.fn(),
+}));
+
+vi.mock('@/components/code-traceability', () => ({
+  useCodeTraceabilityAuthority: () => ({ canReadProjection: true }),
+  EvidenceMatrixPanel: (props: {
+    skipCoverage?: boolean;
+    canEditCoverageFlags?: boolean;
+    onSkipCoverageChange?: (skip: boolean) => Promise<void> | void;
+  }) => {
+    evidenceMatrixPropsSpy(props);
+    return props.canEditCoverageFlags ? (
+      <button
+        type="button"
+        role="switch"
+        aria-label="Skip Code Evidence coverage"
+        aria-checked={props.skipCoverage ?? false}
+        onClick={() => void props.onSkipCoverageChange?.(!props.skipCoverage)}
+      >
+        Toggle Code Evidence coverage
+      </button>
+    ) : <div data-testid="read-only-code-evidence-matrix" />;
+  },
 }));
 
 vi.mock('@/components/architecture', () => ({
@@ -93,6 +116,7 @@ const spec: Spec = {
   screen_mockups: [],
   architecture_designs: [],
   skip_test_coverage: false,
+  skip_code_evidence_coverage: false,
   status: 'draft',
   edition: 2,
   version: 3,
@@ -273,6 +297,86 @@ describe('SpecModal Activity tab', () => {
     expect(
       within(tabList).queryByRole('tab', { name: 'Cards' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('persists the Draft-only Code Evidence coverage skip from its own tab', async () => {
+    const updatedSpec = {
+      ...spec,
+      skip_code_evidence_coverage: true,
+      version: spec.version + 1,
+    };
+    apiMock.updateSpec.mockResolvedValueOnce(updatedSpec);
+
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Code Evidence Matrix' }));
+    const toggle = screen.getByRole('switch', { name: 'Skip Code Evidence coverage' });
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(apiMock.updateSpec).toHaveBeenCalledWith(spec.id, {
+        skip_code_evidence_coverage: true,
+      });
+    });
+    await waitFor(() => {
+      expect(evidenceMatrixPropsSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+        skipCoverage: true,
+        canEditCoverageFlags: true,
+      }));
+    });
+  });
+
+  it('does not expose Code Evidence coverage editing outside Draft', async () => {
+    apiMock.getSpec.mockResolvedValueOnce({ ...spec, status: 'validated' });
+
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Code Evidence Matrix' }));
+    expect(screen.getByTestId('read-only-code-evidence-matrix')).toBeInTheDocument();
+    expect(screen.queryByRole('switch', { name: 'Skip Code Evidence coverage' }))
+      .not.toBeInTheDocument();
+    expect(evidenceMatrixPropsSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+      canEditCoverageFlags: false,
+    }));
+  });
+
+  it('does not expose Code Evidence coverage editing on an archived Draft Spec', async () => {
+    apiMock.getSpec.mockResolvedValueOnce({ ...spec, archived: true });
+
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Code Evidence Matrix' }));
+    expect(screen.getByTestId('read-only-code-evidence-matrix')).toBeInTheDocument();
+    expect(screen.queryByRole('switch', { name: 'Skip Code Evidence coverage' }))
+      .not.toBeInTheDocument();
+    expect(evidenceMatrixPropsSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+      canEditCoverageFlags: false,
+    }));
   });
 
   it('shows cancellation audit in Details without a Cancellation tab', async () => {

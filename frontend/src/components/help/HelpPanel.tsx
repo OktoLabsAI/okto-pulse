@@ -720,6 +720,15 @@ apply.
 In short: **Code Evidence** is the observation; the **Code Evidence Matrix** is
 the coverage view that connects that observation to the Spec.
 
+The matrix reports **Covered**, **Pending**, **Skipped**, **No evidence**, or
+**Incomplete** in the Spec tab. Incomplete means the authoritative gate
+projection could not be evaluated in full and requires technical remediation;
+skip does not resolve it. A user with permission may enable **Skip Code
+Evidence coverage** while the Spec is in Draft. This is a deliberate exception
+for evidence rows that still lack a link or disposition. It does not alter the
+underlying Evidence or receipt status, nor waive any independently applicable
+ownership or technical check.
+
 ### Technical anchors in Tasks
 
 Task **Implementation Targets** are technical anchors: mutable implementation

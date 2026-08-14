@@ -143,6 +143,12 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "Add spec-validation columns.",
     ),
     (
+        "_migrate_add_code_evidence_coverage_skip",
+        "pre_create_all",
+        False,
+        "Add the per-Spec Code Evidence Matrix coverage skip.",
+    ),
+    (
         "_migrate_add_ir_or_columns",
         "pre_create_all",
         False,

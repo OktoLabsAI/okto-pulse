@@ -107,11 +107,12 @@ LEGACY_CORE_SCHEMA_SHA256 = (
 
 # Current inherited schema after the governed tenant-scope/Knowledge Base
 # migrations, the SK-B internal policy-version fences, and lifecycle-edition
-# columns on human-reviewed artifacts.
+# columns on human-reviewed artifacts, including the fail-closed per-Spec Code
+# Evidence Matrix coverage skip.
 # Keep the pre-extraction hash above immutable so migration provenance remains
 # independently verifiable.
 CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
-    "3bb02aff7ee574d158b85e05a0b128eee826a64e1288470714bb5ad7135e8802"
+    "ec2846f713d0667d63fc8a1aee359b9d94741d22031849dbf1baaa6f5620a5f8"
 )
 
 # Additive Community-owned tables introduced after the F01 extraction. They

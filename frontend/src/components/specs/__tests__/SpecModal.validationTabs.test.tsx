@@ -188,6 +188,7 @@ const baseSpec: Spec = {
   screen_mockups: [],
   architecture_designs: [],
   skip_test_coverage: false,
+  skip_code_evidence_coverage: false,
   status: 'draft',
   edition: 1,
   version: 4,

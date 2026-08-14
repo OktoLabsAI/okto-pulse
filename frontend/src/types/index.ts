@@ -2046,6 +2046,7 @@ export interface Spec extends TaskValidationGateOverride {
   screen_mockups: ScreenMockup[] | null;
   architecture_designs?: ArchitectureDesignSummary[];
   skip_test_coverage: boolean;
+  skip_code_evidence_coverage: boolean;
   skip_rules_coverage?: boolean;
   skip_decisions_coverage?: boolean;
   skip_contract_coverage?: boolean;
@@ -2874,6 +2875,7 @@ export interface CodeTraceabilityProjection {
     pending: number;
     pending_ids: string[];
     coverage_pct: number;
+    skipped?: boolean;
   };
   resolution_freshness: Record<string, {
     state: string;
@@ -2885,6 +2887,7 @@ export interface CodeTraceabilityProjection {
     mode: string;
     allowed: boolean;
     passed: boolean;
+    evidence_coverage_skipped?: boolean;
     blockers: Array<{ code: string; message: string; blocking: boolean }>;
     receipt_currentness: Record<string, CodeTraceabilityReceiptCurrentness>;
     resolution_freshness: Record<string, {
@@ -3843,6 +3846,7 @@ export interface UpdateSpecRequest extends TaskValidationGateOverride {
   decisions?: Decision[];
   screen_mockups?: ScreenMockup[];
   skip_test_coverage?: boolean;
+  skip_code_evidence_coverage?: boolean;
   skip_contract_coverage?: boolean;
   skip_ir_coverage?: boolean;
   skip_or_coverage?: boolean;

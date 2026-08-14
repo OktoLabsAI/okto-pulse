@@ -245,6 +245,7 @@ _HIDDEN_HUMAN_FIELDS = {
     "skip_contract_coverage",
     "skip_ir_coverage",
     "skip_or_coverage",
+    "skip_code_evidence_coverage",
     "skip_qualitative_validation",
     "last_started_edition",
     "created_by",

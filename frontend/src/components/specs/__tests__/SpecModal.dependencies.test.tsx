@@ -114,6 +114,7 @@ const spec: Spec = {
   screen_mockups: [],
   architecture_designs: [],
   skip_test_coverage: false,
+  skip_code_evidence_coverage: false,
   status: 'validated',
   edition: 2,
   version: 4,

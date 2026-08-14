@@ -483,13 +483,14 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       subjectVersion: number,
       profile: CodeTraceabilityProfile = 'detail',
       signal?: AbortSignal,
+      contextScope: 'default' | 'gate' = 'default',
     ): Promise<CodeTraceabilityProjection> {
       const params = new URLSearchParams({
         subject_type: subjectType,
         subject_id: subjectId,
         subject_version: String(subjectVersion),
         profile,
-        context_scope: 'default',
+        context_scope: contextScope,
       });
       return apiClient.fetchJson<CodeTraceabilityProjection>(
         `/boards/${encodeURIComponent(boardId)}/code-traceability-projection?${params.toString()}`,

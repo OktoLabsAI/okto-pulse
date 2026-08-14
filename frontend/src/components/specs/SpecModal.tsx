@@ -1462,6 +1462,12 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const { canReadProjection: canReadCodeTraceability } =
     useCodeTraceabilityAuthority(_boardId || currentBoard?.id);
   const [spec, setSpec] = useState<Spec | null>(null);
+  const canEditCodeEvidenceCoverage = !spec?.archived && spec?.status === 'draft' && hasPermissionWithState(
+    perms.has,
+    'spec.entity.edit_coverage_flags',
+    'spec',
+    spec.status,
+  );
   const canManageDependencies = hasPermissionWithState(
     perms.has,
     'spec.entity.manage_dependencies',
@@ -2729,6 +2735,20 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
               boardId={spec.board_id}
               subjectId={spec.id}
               subjectVersion={spec.version}
+              skipCoverage={spec.skip_code_evidence_coverage}
+              canEditCoverageFlags={canEditCodeEvidenceCoverage}
+              onSkipCoverageChange={async (skip) => {
+                try {
+                  const updated = await api.updateSpec(specId, {
+                    skip_code_evidence_coverage: skip,
+                  });
+                  setSpec(updated);
+                } catch (err) {
+                  toast.error(err instanceof Error && err.message
+                    ? err.message
+                    : 'Failed to update Code Evidence coverage');
+                }
+              }}
             />
           )}
 
