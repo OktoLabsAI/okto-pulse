@@ -161,6 +161,7 @@ export function SpecValidationHistoryPanel({
           key={validation.id}
           validation={validation}
           current={belongsToCurrentEdition(validation, currentEdition)}
+          currentEdition={currentEdition}
           attemptNumber={visible.length - index}
           expanded={expandedId === validation.id}
           onToggleExpand={() => setExpandedId(
@@ -186,6 +187,7 @@ export function SpecValidationHistoryPanel({
 interface ValidationRecordProps {
   validation: SpecValidation;
   current: boolean;
+  currentEdition?: number;
   attemptNumber: number;
   expanded: boolean;
   onToggleExpand: () => void;
@@ -195,6 +197,7 @@ interface ValidationRecordProps {
 function ValidationRecord({
   validation,
   current,
+  currentEdition,
   attemptNumber,
   expanded,
   onToggleExpand,
@@ -216,6 +219,13 @@ function ValidationRecord({
   const editionLabel = validation.edition == null
     ? 'Legacy'
     : `Edition ${validation.edition}`;
+  const historyLabel = current
+    ? null
+    : validation.edition == null
+      ? 'Historical result'
+      : currentEdition !== undefined && validation.edition === currentEdition
+        ? 'Superseded attempt'
+        : 'Previous edition';
 
   return (
     <article
@@ -235,7 +245,7 @@ function ValidationRecord({
             </span>
             {!current && (
               <span className="text-[10px] text-surface-500 dark:text-surface-400">
-                Attempt {attemptNumber}
+                {historyLabel} · Attempt {attemptNumber}
               </span>
             )}
             <ValidationCycleStatusBadge

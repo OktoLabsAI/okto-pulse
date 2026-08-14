@@ -155,7 +155,7 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         f"missing_steps={sorted(migrate_names - ledger_migrate_ids)} "
         f"orphan_steps={sorted(ledger_migrate_ids - migrate_names)}"
     )
-    # 67 = the historical ledger plus the Code Traceability schema/guard step,
+    # 69 = the historical ledger plus the Code Traceability schema/guard step,
     # the SK-A Refinement ambiguity-skip
     # column, SK-A/C7 quality-assessment persistence schema, the curated Spec
     # checklist mode, the human-facing Spec edition counter, and SK-B's
@@ -167,11 +167,12 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
     # on guideline_board_bindings (structural prerequisite of the
     # binding-configuration composite FK on migrated databases), and the
     # evidence-based legacy Task Validation -> Rejected convergence, and the
-    # per-Spec Code Evidence Matrix coverage skip.
-    assert len(migrate_names) == 68, (
-        f"expected 68 _migrate_*, found {len(migrate_names)}"
+    # per-Spec Code Evidence Matrix coverage skip, and the audited restoration
+    # of Spec validation pointers lost by historical Code Traceability effects.
+    assert len(migrate_names) == 69, (
+        f"expected 69 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 68
+    assert len(ledger_migrate_ids) == 69
     ordered_ids = [step.step_id for step in ledger]
     assert ordered_ids.index(
         "_migrate_guideline_policy_lifecycle_substrate"
@@ -867,6 +868,9 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         # Fresh create_all already emits the causal rejection columns and
         # audit table, with no legacy Validation evidence to classify.
         "_migrate_card_rejected_lifecycle",
+        # No Spec on a fresh database can have a lost current validation
+        # pointer, while create_all already emits the immutable audit table.
+        "_migrate_restore_spec_validation_pointers",
         # The durable v3 epoch seals an immutable receipt even when a fresh
         # database has zero revision rows to rewrite. Fresh instances then
         # observe that receipt and skip without touching fingerprints.
@@ -897,6 +901,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         "_migrate_recompute_cognitive_source_fingerprints_v2",
         "_migrate_spec_dependency_schema",
         "_migrate_card_rejected_lifecycle",
+        "_migrate_restore_spec_validation_pointers",
         "_migrate_add_code_evidence_coverage_skip",
     }
 

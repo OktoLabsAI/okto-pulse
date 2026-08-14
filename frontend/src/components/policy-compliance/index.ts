@@ -40,3 +40,6 @@ export {
 export {
   usePolicyTransitionAuthority,
 } from './usePolicyTransitionAuthority';
+export {
+  parsePolicyComplianceLifecycleDetails,
+} from './policyLifecycleSnapshot';

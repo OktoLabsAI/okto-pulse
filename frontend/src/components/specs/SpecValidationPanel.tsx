@@ -17,6 +17,12 @@ import {
   type PolicyTransitionRejection,
   type PolicyTransitionPreviewLoadState,
 } from '@/components/policy-compliance';
+import {
+  parsePolicyComplianceLifecycleDetails,
+} from '@/components/policy-compliance/policyLifecycleSnapshot';
+import {
+  policyTransitionRejectionMessage,
+} from '@/components/policy-compliance/policyTransitionPreviewModel';
 import { QualityPanel } from '@/components/quality';
 import {
   AccessibleTabList,
@@ -186,6 +192,153 @@ function checkValidationState(
   return normalizedValidationState(check.summary) ?? 'completed';
 }
 
+interface PolicyCheckPresentation {
+  state: ValidationCycleState;
+  summary: string;
+  badgeLabel?: string;
+}
+
+function quantity(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function humanJoin(parts: string[]): string {
+  if (parts.length <= 1) return parts[0] ?? '';
+  if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
+  return `${parts.slice(0, -1).join(', ')}, and ${parts.at(-1)}`;
+}
+
+function policyContextSuffix(contextOnly: number): string {
+  if (contextOnly === 0) return '';
+  return ` ${quantity(contextOnly, 'adopted guideline')} ${contextOnly === 1 ? 'has' : 'have'} no Spec metrics and ${contextOnly === 1 ? 'is' : 'are'} excluded from the applicable total.`;
+}
+
+function policyResolvedBreakdown(
+  counts: NonNullable<ReturnType<typeof parsePolicyComplianceLifecycleDetails>>['counts'],
+): string {
+  const parts = [
+    counts.passed > 0 ? `${counts.passed} passed` : null,
+    counts.waived > 0 ? `${counts.waived} waived` : null,
+    counts.skipped > 0 ? `${counts.skipped} skipped` : null,
+  ].filter((part): part is string => part !== null);
+  return parts.length > 0 ? ` (${parts.join(', ')})` : '';
+}
+
+function policyWaiverMetricSummary(
+  counts: NonNullable<ReturnType<typeof parsePolicyComplianceLifecycleDetails>>['counts'],
+): string {
+  if (counts.waived_metrics === 0) return '';
+  const covered = `${quantity(counts.waived_metrics, 'failed metric finding')} ${counts.waived_metrics === 1 ? 'is covered by an approved waiver' : 'are covered by approved waivers'}`;
+  const residual = counts.unwaived_failed_metrics > 0
+    ? `; ${quantity(counts.unwaived_failed_metrics, 'failed metric finding')} ${counts.unwaived_failed_metrics === 1 ? 'remains' : 'remain'} unresolved`
+    : '';
+  return ` ${covered}${residual}.`;
+}
+
+function advisoryIssueSummary(
+  counts: NonNullable<ReturnType<typeof parsePolicyComplianceLifecycleDetails>>['counts'],
+): string {
+  return [
+    counts.advisory_failed > 0
+      ? `${quantity(counts.advisory_failed, 'advisory policy', 'advisory policies')} ${counts.advisory_failed === 1 ? 'has' : 'have'} findings`
+      : null,
+    counts.advisory_pending > 0
+      ? `${quantity(counts.advisory_pending, 'advisory policy', 'advisory policies')} ${counts.advisory_pending === 1 ? 'awaits' : 'await'} assessment`
+      : null,
+  ].filter((part): part is string => part !== null).join('; ');
+}
+
+function policyCheckPresentation(
+  check: ValidationCycleCheckSummary | undefined,
+  loading: boolean,
+): PolicyCheckPresentation {
+  if (loading) {
+    return {
+      state: 'in_progress',
+      summary: 'Loading applicable policies for this edition…',
+    };
+  }
+  const snapshot = parsePolicyComplianceLifecycleDetails(check);
+  if (!snapshot) {
+    return {
+      state: 'needs_attention',
+      badgeLabel: 'Unavailable',
+      summary: 'The frozen policy scope for this edition could not be verified.',
+    };
+  }
+  const { counts } = snapshot;
+  const contextSuffix = policyContextSuffix(counts.context_only);
+  const resolvedBreakdown = policyResolvedBreakdown(counts);
+  const advisoryIssues = advisoryIssueSummary(counts);
+  const waiverSummary = policyWaiverMetricSummary(counts);
+  if (counts.inconsistent > 0 || counts.scope_inconsistent > 0) {
+    const unavailable = [
+      counts.inconsistent > 0
+        ? quantity(counts.inconsistent, 'applicable policy')
+        : null,
+      counts.scope_inconsistent > 0
+        ? quantity(counts.scope_inconsistent, 'frozen scope item')
+        : null,
+    ].filter((item): item is string => item !== null).join(' and ');
+    return {
+      state: 'needs_attention',
+      badgeLabel: 'Unavailable',
+      summary: `${unavailable} could not be reconciled safely for this edition. Verified applicable policies remain visible below.${contextSuffix}`,
+    };
+  }
+  if (counts.applicable === 0) {
+    return {
+      state: 'completed',
+      badgeLabel: 'Not required',
+      summary: `No policies apply to this Spec edition.${contextSuffix}`,
+    };
+  }
+  if (counts.blocking_failed > 0) {
+    return {
+      state: 'needs_attention',
+      summary: `${counts.completed} of ${counts.applicable} applicable policies assessed${resolvedBreakdown}; ${quantity(counts.blocking_failed, 'blocking policy', 'blocking policies')} failed.${waiverSummary}${advisoryIssues ? ` ${advisoryIssues}; these advisory items do not block validation.` : ''}${contextSuffix}`,
+    };
+  }
+  if (counts.blocking_pending > 0) {
+    return {
+      state: counts.completed === 0 ? 'not_started' : 'in_progress',
+      summary: `${counts.completed} of ${counts.applicable} applicable policies assessed${resolvedBreakdown}; ${quantity(counts.blocking_pending, 'blocking policy', 'blocking policies')} ${counts.blocking_pending === 1 ? 'awaits' : 'await'} assessment.${waiverSummary}${advisoryIssues ? ` ${advisoryIssues}; these advisory items do not block validation.` : ''}${contextSuffix}`,
+    };
+  }
+  if (
+    check?.status.trim().toLowerCase() === 'advisory'
+    || counts.advisory_failed > 0
+    || counts.advisory_pending > 0
+  ) {
+    return {
+      state: 'completed',
+      badgeLabel: 'Advisory',
+      summary: `${counts.completed} of ${counts.applicable} applicable policies assessed${resolvedBreakdown}; ${advisoryIssues || 'advisory review remains open'}. These advisory items do not block validation.${waiverSummary}${contextSuffix}`,
+    };
+  }
+  if (counts.skipped > 0 || counts.waived > 0) {
+    const resolutionParts = [
+      counts.passed > 0 ? `${counts.passed} passed` : null,
+      counts.waived > 0 ? `${counts.waived} waived` : null,
+      counts.skipped > 0 ? `${counts.skipped} skipped` : null,
+    ].filter((part): part is string => part !== null);
+    const badgeLabel = counts.waived > 0 && counts.skipped > 0
+      ? 'Resolved with exceptions'
+      : counts.waived > 0
+        ? counts.passed === 0 ? 'Waived' : 'Passed with waivers'
+        : counts.passed === 0 ? 'Skipped' : 'Passed with skips';
+    return {
+      state: 'passed',
+      badgeLabel,
+      summary: `All ${counts.applicable} applicable ${counts.applicable === 1 ? 'policy is' : 'policies are'} resolved: ${humanJoin(resolutionParts)}.${waiverSummary}${contextSuffix}`,
+    };
+  }
+  return {
+    state: 'passed',
+    summary: `All ${counts.applicable} applicable ${counts.applicable === 1 ? 'policy passed' : 'policies passed'}.${contextSuffix}`,
+  };
+}
+
 function humanizeAction(value: string): string {
   const normalized = value.split('_').join(' ').trim();
   return normalized
@@ -322,12 +475,15 @@ export function SpecValidationPanel({
   const lintCheck = checksByType.get('requirement_lint');
   const checklistCheck = checksByType.get('curated_checklist');
   const policyCheck = checksByType.get('policy_compliance');
+  const policySnapshot = useMemo(
+    () => parsePolicyComplianceLifecycleDetails(policyCheck),
+    [policyCheck],
+  );
   const lintState = checkValidationState(lintCheck, cycleLoading);
   const checklistState = checkValidationState(checklistCheck, cycleLoading);
   const checklistNotRequired = checklistCheck?.status.trim().toLowerCase() === 'off';
-  const policyState = policyTransitionRejection
-    ? 'needs_attention'
-    : checkValidationState(policyCheck, cycleLoading);
+  const policyPresentation = policyCheckPresentation(policyCheck, cycleLoading);
+  const policyState = policyPresentation.state;
 
   useEffect(() => {
     if (!tabs.some((tab) => tab.id === activeTab) && tabs[0]) {
@@ -354,7 +510,9 @@ export function SpecValidationPanel({
         ? `Edition ${specEdition} is ready for validation`
         : validationState === 'passed'
           ? `Edition ${specEdition} validation is complete`
-          : `Edition ${specEdition} needs attention`;
+          : validationState === 'completed'
+            ? `Edition ${specEdition} validation is recorded`
+            : `Edition ${specEdition} needs attention`;
   const currentDescription = validationState === 'not_started'
     ? 'The validation workspace creates a new current result when this Spec enters its validation stage.'
     : currentResult
@@ -615,9 +773,24 @@ export function SpecValidationPanel({
       {canReadPolicyCompliance && (
         <AccessibleTabPanel idBase={tabIdPrefix} tabId="policy-compliance" value={activeTab} mount="lazy-keep" className="space-y-3">
           <div className="flex items-center justify-between gap-3 rounded-lg border border-surface-200 bg-surface-50 px-3 py-2 dark:border-surface-700 dark:bg-surface-900/40" data-testid="spec-validation-policy-summary">
-            <p className="text-xs text-surface-600 dark:text-surface-300">{policyCheck?.summary || 'Applicable guideline results for the current edition.'}</p>
-            <ValidationCycleStatusBadge state={policyState} />
+            <p className="text-xs text-surface-600 dark:text-surface-300">{policyPresentation.summary}</p>
+            <ValidationCycleStatusBadge
+              state={policyState}
+              label={policyPresentation.badgeLabel}
+            />
           </div>
+          {policyTransitionRejection && (
+            <p
+              role="status"
+              data-testid="spec-validation-policy-transition-attempt"
+              className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"
+            >
+              Last transition attempt: {policyTransitionRejectionMessage(
+                policyTransitionRejection,
+                'lifecycle-edition',
+              )}. The frozen edition summary above is unchanged.
+            </p>
+          )}
           <PolicyCompliancePanel
             boardId={boardId}
             entityType="spec"
@@ -627,6 +800,7 @@ export function SpecValidationPanel({
             presentationMode="lifecycle-edition"
             embedded
             transitionPreview={policyTransitionPreview}
+            lifecycleSnapshot={cycleLoading ? undefined : policySnapshot}
             refreshKey={validationHistoryRefreshKey}
             resolveSemanticAnchor={resolveSemanticAnchor}
             onEvaluated={() => {

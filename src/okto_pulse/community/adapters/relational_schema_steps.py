@@ -9089,6 +9089,233 @@ def _decode_rejected_migration_validations(
     return decoded, digest_input
 
 
+def _decode_spec_validation_pointer_repair_history(
+    raw: object,
+) -> tuple[list[object] | None, object]:
+    """Decode the immutable Spec validation history without coercion."""
+
+    decoded = raw
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except (TypeError, ValueError):
+            return None, {"invalid_json": raw}
+    if decoded is None:
+        return [], []
+    if not isinstance(decoded, list):
+        return None, {"invalid_shape": repr(decoded)}
+    return decoded, decoded
+
+
+def _classify_spec_validation_pointer_repair(
+    *,
+    spec_id: str,
+    board_id: str,
+    edition: int,
+    version: int,
+    validations: list[object] | None,
+) -> tuple[str, str | None, str, dict[str, object]]:
+    """Select only one unequivocal latest successful current-edition attempt.
+
+    Canonical Spec validations are append-only and carry a monotonically
+    increasing ``head_revision`` within the lifecycle edition.  The classifier
+    validates that fence, timestamp order, append order and stable identity;
+    it never falls back to an older success when newer evidence failed or is
+    malformed.
+    """
+
+    from datetime import datetime, timezone
+
+    def ambiguous(
+        reason: str,
+        *,
+        append_index: int | None = None,
+    ) -> tuple[str, None, str, dict[str, object]]:
+        details: dict[str, object] = {"current_edition": edition}
+        if append_index is not None:
+            details["append_index"] = append_index
+        return "ambiguous_evidence", None, reason, details
+
+    if validations is None:
+        return ambiguous("validation_history_malformed")
+
+    current: list[dict[str, object]] = []
+    seen_ids: set[str] = set()
+    previous_head = 0
+    previous_created_at: datetime | None = None
+    for append_index, raw in enumerate(validations):
+        if not isinstance(raw, Mapping):
+            return ambiguous(
+                "validation_record_malformed",
+                append_index=append_index,
+            )
+        item = dict(raw)
+        record_edition = item.get("edition")
+        validation_edition = item.get("validation_edition")
+        if record_edition is None:
+            # Core projects records without ``edition`` as legacy history-only.
+            # A current-edition alias without that canonical field is conflict.
+            if validation_edition is not None:
+                return ambiguous(
+                    "validation_edition_without_edition",
+                    append_index=append_index,
+                )
+            continue
+        if (
+            isinstance(record_edition, bool)
+            or not isinstance(record_edition, int)
+            or record_edition < 1
+        ):
+            return ambiguous(
+                "validation_edition_invalid",
+                append_index=append_index,
+            )
+        if validation_edition is not None and (
+            isinstance(validation_edition, bool)
+            or not isinstance(validation_edition, int)
+            or validation_edition != record_edition
+        ):
+            return ambiguous(
+                "validation_edition_conflict",
+                append_index=append_index,
+            )
+        if record_edition > edition:
+            return ambiguous(
+                "validation_future_edition",
+                append_index=append_index,
+            )
+        if record_edition != edition:
+            continue
+
+        validation_id = item.get("id")
+        alias_id = item.get("validation_id")
+        if (
+            not isinstance(validation_id, str)
+            or not validation_id.strip()
+            or len(validation_id.strip()) > 32
+        ):
+            return ambiguous(
+                "validation_id_invalid",
+                append_index=append_index,
+            )
+        validation_id = validation_id.strip()
+        if alias_id is not None and (
+            not isinstance(alias_id, str) or alias_id.strip() != validation_id
+        ):
+            return ambiguous(
+                "validation_id_conflict",
+                append_index=append_index,
+            )
+        if validation_id in seen_ids:
+            return ambiguous(
+                "validation_id_duplicate",
+                append_index=append_index,
+            )
+        seen_ids.add(validation_id)
+
+        for field_name, expected in (("spec_id", spec_id), ("board_id", board_id)):
+            observed = item.get(field_name)
+            if observed is not None and (
+                not isinstance(observed, str) or observed != expected
+            ):
+                return ambiguous(
+                    f"validation_{field_name}_mismatch",
+                    append_index=append_index,
+                )
+
+        outcome = item.get("outcome")
+        if outcome not in {"success", "failed"}:
+            return ambiguous(
+                "validation_outcome_invalid",
+                append_index=append_index,
+            )
+        head_revision = item.get("head_revision")
+        if (
+            isinstance(head_revision, bool)
+            or not isinstance(head_revision, int)
+            or head_revision <= previous_head
+        ):
+            return ambiguous(
+                "validation_head_order_invalid",
+                append_index=append_index,
+            )
+        subject_version = item.get("subject_version")
+        if (
+            isinstance(subject_version, bool)
+            or not isinstance(subject_version, int)
+            or subject_version < 1
+            or subject_version > version
+        ):
+            return ambiguous(
+                "validation_subject_version_invalid",
+                append_index=append_index,
+            )
+        created_raw = item.get("created_at")
+        if not isinstance(created_raw, str) or not created_raw.strip():
+            return ambiguous(
+                "validation_timestamp_invalid",
+                append_index=append_index,
+            )
+        try:
+            created_at = datetime.fromisoformat(
+                created_raw.strip().replace("Z", "+00:00")
+            )
+        except ValueError:
+            return ambiguous(
+                "validation_timestamp_invalid",
+                append_index=append_index,
+            )
+        if created_at.tzinfo is None or created_at.utcoffset() is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        else:
+            created_at = created_at.astimezone(timezone.utc)
+        if previous_created_at is not None and created_at < previous_created_at:
+            return ambiguous(
+                "validation_timestamp_order_invalid",
+                append_index=append_index,
+            )
+        previous_head = head_revision
+        previous_created_at = created_at
+        current.append(
+            {
+                "id": validation_id,
+                "outcome": outcome,
+                "head": head_revision,
+                "created_at": created_at.isoformat(),
+                "append_index": append_index,
+            }
+        )
+
+    if not current:
+        return (
+            "no_current_validation",
+            None,
+            "no_current_edition_validation",
+            {"current_edition": edition, "attempt_count": 0},
+        )
+    latest = current[-1]
+    details = {
+        "current_edition": edition,
+        "attempt_count": len(current),
+        "latest_outcome": str(latest["outcome"]),
+        "latest_append_index": int(latest["append_index"]),
+        "latest_created_at": str(latest["created_at"]),
+    }
+    if latest["outcome"] != "success":
+        return (
+            "latest_not_success",
+            str(latest["id"]),
+            "latest_current_edition_validation_failed",
+            details,
+        )
+    return (
+        "restored",
+        str(latest["id"]),
+        "latest_current_edition_validation_success",
+        details,
+    )
+
+
 def _legacy_task_validation_decision(
     *,
     card_id: str,
@@ -10155,6 +10382,189 @@ async def _migrate_card_rejected_lifecycle() -> str | None:
                         {"id": str(item["id"]), "position": position},
                     )
                     changed = True
+
+    return None if changed else "skipped"
+
+
+async def _migrate_restore_spec_validation_pointers() -> str | None:
+    """Repair only demonstrably lost current Spec Validation pointers.
+
+    Historical Code Traceability effects could clear the pointer while
+    preserving the append-only successful validation.  Eligible lifecycle
+    states are Approved or beyond; the exact latest current-edition
+    attempt must be a unique canonical success.  Every other classification is
+    persisted as an immutable fail-closed audit decision.
+    """
+
+    from datetime import datetime, timezone
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import select as sa_select
+    from sqlalchemy import text as sa_text
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        SpecValidationPointerRepairRow,
+    )
+    from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
+
+    changed = False
+    async with get_engine().begin() as conn:
+        tables = set(
+            await conn.run_sync(
+                lambda sync_conn: sa_inspect(sync_conn).get_table_names()
+            )
+        )
+        if "specs" not in tables:
+            return "skipped"
+        audit_table = SpecValidationPointerRepairRow.__table__
+        if audit_table.name not in tables:
+            await conn.run_sync(
+                lambda sync_conn: audit_table.create(sync_conn, checkfirst=True)
+            )
+            changed = True
+        audit_contract = await conn.run_sync(
+            (lambda sync_conn: _sqlite_owned_table_contract(sync_conn, audit_table))
+            if conn.dialect.name == "sqlite"
+            else (
+                lambda sync_conn: _postgresql_owned_table_contract(
+                    sync_conn, audit_table
+                )
+            )
+        )
+        if audit_contract["observed"] != audit_contract["expected"]:
+            raise RuntimeError(
+                "spec validation pointer repair audit has a non-canonical contract"
+            )
+
+        rows = list(
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT id, board_id, status, edition, version, validations "
+                        "FROM specs WHERE current_validation_id IS NULL "
+                        "AND status IN ('approved', 'validated', 'in_progress', 'done') "
+                        "ORDER BY board_id, id"
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        for row in rows:
+            spec_id = str(row["id"])
+            board_id = str(row["board_id"])
+            status = str(row["status"])
+            edition = int(row["edition"])
+            version = int(row["version"])
+            validations, digest_input = _decode_spec_validation_pointer_repair_history(
+                row["validations"]
+            )
+            state, candidate_id, reason_code, details = (
+                _classify_spec_validation_pointer_repair(
+                    spec_id=spec_id,
+                    board_id=board_id,
+                    edition=edition,
+                    version=version,
+                    validations=validations,
+                )
+            )
+            source_digest = canonical_sha256(
+                {
+                    "contract": "spec-validation-pointer-repair/v1",
+                    "spec_id": spec_id,
+                    "board_id": board_id,
+                    "status": status,
+                    "edition": edition,
+                    "version": version,
+                    "validations": digest_input,
+                    "current_validation_id": None,
+                }
+            )
+            migration_id = canonical_sha256(
+                {
+                    "contract": "spec-validation-pointer-repair-audit/v1",
+                    "spec_id": spec_id,
+                    "source_digest": source_digest,
+                }
+            )
+            audit_details = {
+                **details,
+                "eligible_status": status,
+            }
+            existing = (
+                (
+                    await conn.execute(
+                        sa_select(audit_table).where(
+                            audit_table.c.spec_id == spec_id,
+                            audit_table.c.source_digest == source_digest,
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if existing is not None:
+                expected = {
+                    "migration_id": migration_id,
+                    "board_id": board_id,
+                    "migration_state": state,
+                    "candidate_validation_id": candidate_id,
+                    "reason_code": reason_code,
+                    "source_digest": source_digest,
+                }
+                for field_name, expected_value in expected.items():
+                    if existing[field_name] != expected_value:
+                        raise RuntimeError(
+                            "spec validation pointer repair audit conflict: "
+                            f"{spec_id}:{field_name}"
+                        )
+                if canonical_sha256(existing["details"]) != canonical_sha256(
+                    audit_details
+                ):
+                    raise RuntimeError(
+                        "spec validation pointer repair audit conflict: "
+                        f"{spec_id}:details"
+                    )
+            else:
+                await conn.execute(
+                    audit_table.insert().values(
+                        migration_id=migration_id,
+                        board_id=board_id,
+                        spec_id=spec_id,
+                        migration_state=state,
+                        candidate_validation_id=candidate_id,
+                        reason_code=reason_code,
+                        source_digest=source_digest,
+                        details=audit_details,
+                        repaired_at=datetime.now(timezone.utc),
+                    )
+                )
+                changed = True
+
+            if state != "restored" or candidate_id is None:
+                continue
+            result = await conn.execute(
+                sa_text(
+                    "UPDATE specs SET current_validation_id = :candidate_id "
+                    "WHERE id = :spec_id AND board_id = :board_id "
+                    "AND status = :status AND edition = :edition "
+                    "AND version = :version AND current_validation_id IS NULL"
+                ),
+                {
+                    "candidate_id": candidate_id,
+                    "spec_id": spec_id,
+                    "board_id": board_id,
+                    "status": status,
+                    "edition": edition,
+                    "version": version,
+                },
+            )
+            if result.rowcount != 1:
+                raise RuntimeError(
+                    "spec validation pointer repair lost its lifecycle fence: "
+                    + spec_id
+                )
+            changed = True
 
     return None if changed else "skipped"
 
@@ -23418,6 +23828,9 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_guideline_impact_v1_schema": (_migrate_guideline_impact_v1_schema),
     "_migrate_policy_compliance_v1_schema": (_migrate_policy_compliance_v1_schema),
     "_migrate_card_rejected_lifecycle": _migrate_card_rejected_lifecycle,
+    "_migrate_restore_spec_validation_pointers": (
+        _migrate_restore_spec_validation_pointers
+    ),
     "_migrate_policy_waiver_v1_schema": _migrate_policy_waiver_v1_schema,
     "_migrate_semantic_guideline_governance_schema": (
         _migrate_semantic_guideline_governance_schema

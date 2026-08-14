@@ -921,6 +921,78 @@ export interface ValidationCycleResultSummary {
   summary: Record<string, unknown>;
 }
 
+export type PolicyComplianceLifecycleBindingStatus =
+  | 'passed'
+  | 'failed'
+  | 'waived'
+  | 'skipped'
+  | 'pending'
+  | 'inconsistent';
+
+export type PolicyComplianceLifecycleMetricOutcome =
+  | 'passed'
+  | 'failed'
+  | 'waived'
+  | 'pending';
+
+export interface PolicyComplianceLifecycleCounts {
+  applicable: number;
+  completed: number;
+  passed: number;
+  failed: number;
+  waived: number;
+  skipped: number;
+  pending: number;
+  context_only: number;
+  inconsistent: number;
+  /** Frozen scope items whose applicability/authority could not be proven. */
+  scope_inconsistent: number;
+  blocking: number;
+  advisory: number;
+  blocking_failed: number;
+  blocking_pending: number;
+  advisory_failed: number;
+  advisory_pending: number;
+  failed_metrics: number;
+  waived_metrics: number;
+  unwaived_failed_metrics: number;
+}
+
+export interface PolicyComplianceLifecycleMetric {
+  metric_id: string;
+  code: string;
+  title: string;
+  description: string;
+  description_truncated: boolean;
+  evaluation_rubric: string;
+  evaluation_rubric_truncated: boolean;
+  assessment_outcome: PolicyComplianceLifecycleMetricOutcome;
+  direction: 'minimum' | 'maximum';
+  default_threshold: number;
+  effective_threshold: number;
+  threshold_source: 'default' | 'override';
+}
+
+export interface PolicyComplianceLifecycleBinding {
+  binding_id: string;
+  guideline_id: string;
+  /** Exact immutable guideline revision frozen for this validation edition. */
+  revision_id: string;
+  title: string;
+  enforcement: 'advisory' | 'blocking';
+  minimum_confidence: number;
+  status: PolicyComplianceLifecycleBindingStatus;
+  failed_metric_count: number;
+  waived_metric_count: number;
+  unwaived_failed_metric_count: number;
+  metrics: PolicyComplianceLifecycleMetric[];
+}
+
+export interface PolicyComplianceLifecycleDetails {
+  counts: PolicyComplianceLifecycleCounts;
+  applicable_bindings: PolicyComplianceLifecycleBinding[];
+}
+
 export interface ValidationCycleCheckSummary {
   result_type:
     | 'requirement_lint'
@@ -928,6 +1000,8 @@ export interface ValidationCycleCheckSummary {
     | 'policy_compliance';
   status: string;
   summary: string;
+  /** Policy checks expose a frozen, edition-bound human projection here. */
+  details: PolicyComplianceLifecycleDetails | Record<string, unknown>;
 }
 
 export type ValidationCycleVisibleSection =

@@ -162,7 +162,7 @@ def _http_error_from_conflict(error: ConflictError) -> HTTPException:
         )
     return HTTPException(
         status_code=status.HTTP_409_CONFLICT,
-        detail="Spec is locked because validation passed. Move it back to draft or approved to edit architecture.",
+        detail="Spec is locked because validation passed. Move it to Draft to open a new edition before editing architecture.",
     )
 
 
@@ -215,7 +215,7 @@ async def _create_architecture(
     except ConflictError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Spec is locked because validation passed. Move it back to draft or approved to edit architecture.",
+            detail="Spec is locked because validation passed. Move it to Draft to open a new edition before editing architecture.",
         )
     except SubjectEditRequiresDraftError as error:
         raise RESTAdapterContract.http_error(error) from error

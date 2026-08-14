@@ -212,11 +212,40 @@ describe('SpecValidationHistoryPanel score presentation', () => {
     const toggle = await screen.findByRole('button', {
       name: 'View metric justifications',
     });
+    expect(screen.getByText(/Previous edition · Attempt 1/))
+      .toBeInTheDocument();
     expect(screen.queryByText('All required sections are present.'))
       .not.toBeInTheDocument();
     fireEvent.click(toggle);
     expect(screen.getByText('All required sections are present.'))
       .toBeInTheDocument();
+  });
+
+  it('labels a replaced result from the current edition as a superseded attempt', async () => {
+    apiMock.listSpecValidations.mockResolvedValue({
+      ...validationHistory,
+      current_validation_id: 'validation-current-2',
+      validations: [{
+        ...validationHistory.validations[0],
+        id: 'validation-superseded-2',
+        edition: 2,
+        lifecycle_state: 'previous',
+        active: false,
+      }],
+    });
+
+    render(
+      <SpecValidationHistoryPanel
+        specId="spec-1"
+        currentEdition={2}
+        view="previous"
+      />,
+    );
+
+    expect(await screen.findByText(/Superseded attempt · Attempt 1/))
+      .toBeInTheDocument();
+    expect(screen.getByText('Edition 2')).toBeInTheDocument();
+    expect(screen.queryByText(/invalid/i)).not.toBeInTheDocument();
   });
 
   it('loads only the current summary when the current detail is opened', async () => {
@@ -303,6 +332,8 @@ describe('SpecValidationHistoryPanel score presentation', () => {
     );
 
     expect(await screen.findByText('Legacy')).toBeInTheDocument();
+    expect(screen.getByText(/Historical result · Attempt 1/))
+      .toBeInTheDocument();
     expect(screen.queryByText('Edition 1')).not.toBeInTheDocument();
     previousRender.unmount();
 

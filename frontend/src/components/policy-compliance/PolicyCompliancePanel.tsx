@@ -33,6 +33,11 @@ import {
 import { useDashboardApi } from '@/services/api';
 import { recordPolicyComplianceRender } from '@/services/policy-compliance-telemetry';
 import type {
+  PolicyComplianceLifecycleBindingStatus,
+  PolicyComplianceLifecycleDetails,
+  PolicyComplianceLifecycleMetricOutcome,
+} from '@/types';
+import type {
   GuidelineMetricDirection,
   NonEmptyArray,
   PolicyEntityType,
@@ -94,6 +99,11 @@ export interface PolicyCompliancePanelProps {
    * Binding decisions allow a human skip before an admissible receipt exists.
    */
   transitionPreview?: PolicyTransitionPreviewLoadState;
+  /**
+   * Immutable human projection frozen for the rendered Spec edition.
+   * Undefined means it is still loading; null means it could not be verified.
+   */
+  lifecycleSnapshot?: PolicyComplianceLifecycleDetails | null;
   /**
    * Kept for host compatibility. Assessments are authored by agents through
    * the governed MCP/REST contract; this panel never invokes cognition.
@@ -243,6 +253,9 @@ interface ComplianceMetricAuthority {
   code: string;
   title: string;
   description: string;
+  descriptionTruncated: boolean;
+  rubricTruncated: boolean;
+  assessmentOutcome?: PolicyComplianceLifecycleMetricOutcome;
   direction: GuidelineMetricDirection;
   effectiveThreshold: number;
   overridden: boolean;
@@ -251,9 +264,14 @@ interface ComplianceMetricAuthority {
 interface BindingComplianceAuthority {
   bindingId: string;
   guidelineId: string;
+  revisionId: string;
   guidelineTitle: string;
   enforcement: 'advisory' | 'blocking';
   minimumConfidence: number | null;
+  lifecycleStatus?: PolicyComplianceLifecycleBindingStatus;
+  failedMetricCount?: number;
+  waivedMetricCount?: number;
+  unwaivedFailedMetricCount?: number;
   metrics: ComplianceMetricAuthority[];
 }
 
@@ -364,6 +382,80 @@ function ComplianceStateChip({
     <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-red-700 dark:bg-red-400/15 dark:text-red-200">
       Failed
     </span>
+  );
+}
+
+function LifecycleComplianceStateChip({
+  status,
+  enforcement,
+}: {
+  status: PolicyComplianceLifecycleBindingStatus;
+  enforcement: 'advisory' | 'blocking';
+}) {
+  const label = status === 'passed'
+    ? 'Passed'
+    : status === 'waived'
+      ? 'Waived'
+      : status === 'skipped'
+        ? 'Skipped'
+        : status === 'pending'
+          ? enforcement === 'advisory'
+            ? 'Advisory pending'
+            : 'Not assessed'
+          : status === 'inconsistent'
+            ? 'Unavailable'
+            : enforcement === 'advisory'
+              ? 'Advisory finding'
+              : 'Failed';
+  const tone = status === 'passed'
+    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-400/15 dark:text-emerald-200'
+    : status === 'waived'
+      ? 'bg-violet-100 text-violet-700 dark:bg-violet-400/15 dark:text-violet-200'
+      : status === 'failed' && enforcement === 'blocking'
+        ? 'bg-red-100 text-red-700 dark:bg-red-400/15 dark:text-red-200'
+        : status === 'failed' || status === 'inconsistent'
+          ? 'bg-amber-100 text-amber-700 dark:bg-amber-400/15 dark:text-amber-200'
+          : 'bg-surface-100 text-surface-600 dark:bg-surface-700/60 dark:text-surface-300';
+  return (
+    <span
+      data-testid={`lifecycle-policy-status-${status}`}
+      className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${tone}`}
+    >
+      {label}
+    </span>
+  );
+}
+
+function LifecycleMetricOutcomeChip({
+  outcome,
+  metricId,
+  enforcement,
+}: {
+  outcome: PolicyComplianceLifecycleMetricOutcome;
+  metricId: string;
+  enforcement: 'advisory' | 'blocking';
+}) {
+  const label = outcome === 'passed'
+    ? 'Passed'
+    : outcome === 'waived'
+      ? 'Waiver active'
+      : outcome === 'failed'
+        ? enforcement === 'advisory' ? 'Advisory finding' : 'Finding remains'
+        : 'Not assessed';
+  const tone = outcome === 'passed'
+    ? 'text-emerald-700 dark:text-emerald-300'
+    : outcome === 'waived'
+      ? 'text-violet-700 dark:text-violet-300'
+      : outcome === 'failed'
+        ? 'text-amber-700 dark:text-amber-300'
+        : 'text-surface-500 dark:text-surface-400';
+  return (
+    <p
+      className={`mt-1 text-center text-[10px] font-semibold ${tone}`}
+      data-testid={`lifecycle-policy-metric-outcome-${metricId}`}
+    >
+      {label}
+    </p>
   );
 }
 
@@ -1169,6 +1261,7 @@ export function PolicyCompliancePanel({
   presentationMode = 'legacy',
   embedded = false,
   transitionPreview,
+  lifecycleSnapshot,
   evaluationEnabled = true,
   evaluationUnavailableReason,
   onRequestWaiver,
@@ -1271,6 +1364,46 @@ export function PolicyCompliancePanel({
 
   useEffect(() => {
     if (!canRead) return undefined;
+    if (lifecycleMode) {
+      if (lifecycleSnapshot === undefined) {
+        setComplianceAuthority({ status: 'loading', items: [] });
+      } else if (lifecycleSnapshot === null) {
+        setComplianceAuthority({
+          status: 'error',
+          items: [],
+          message: 'The frozen policy scope for this edition could not be verified.',
+        });
+      } else {
+        setComplianceAuthority({
+          status: 'ready',
+          items: lifecycleSnapshot.applicable_bindings.map((binding) => ({
+            bindingId: binding.binding_id,
+            guidelineId: binding.guideline_id,
+            revisionId: binding.revision_id,
+            guidelineTitle: binding.title,
+            enforcement: binding.enforcement,
+            minimumConfidence: binding.minimum_confidence,
+            lifecycleStatus: binding.status,
+            failedMetricCount: binding.failed_metric_count,
+            waivedMetricCount: binding.waived_metric_count,
+            unwaivedFailedMetricCount: binding.unwaived_failed_metric_count,
+            metrics: binding.metrics.map((metric) => ({
+              metricId: metric.metric_id,
+              code: metric.code,
+              title: metric.title,
+              description: metric.description,
+              descriptionTruncated: metric.description_truncated,
+              rubricTruncated: metric.evaluation_rubric_truncated,
+              assessmentOutcome: metric.assessment_outcome,
+              direction: metric.direction,
+              effectiveThreshold: metric.effective_threshold,
+              overridden: metric.threshold_source === 'override',
+            })),
+          })),
+        });
+      }
+      return undefined;
+    }
     const controller = new AbortController();
     let cancelled = false;
     setComplianceAuthority({ status: 'loading', items: [] });
@@ -1307,6 +1440,9 @@ export function PolicyCompliancePanel({
               code: metric.code,
               title: metric.title,
               description: metric.description,
+              descriptionTruncated: false,
+              rubricTruncated: false,
+              assessmentOutcome: undefined,
               direction: metric.direction,
               effectiveThreshold:
                 overrides[metric.code] ?? metric.default_threshold,
@@ -1316,6 +1452,7 @@ export function PolicyCompliancePanel({
             items.push({
               bindingId: entry.binding_id,
               guidelineId: entry.guideline.id,
+              revisionId,
               guidelineTitle: entry.guideline.title,
               enforcement: entry.enforcement,
               minimumConfidence: entry.minimum_confidence ?? null,
@@ -1347,7 +1484,7 @@ export function PolicyCompliancePanel({
     // hooks are intentionally excluded: an unstable hook identity must never
     // refire this effect (root cause of the guidelines request loop).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canRead, resetScope]);
+  }, [canRead, lifecycleMode, lifecycleSnapshot, resetScope]);
 
   useEffect(() => {
     if (!canRead || complianceAuthority.status !== 'ready') return undefined;
@@ -1365,6 +1502,16 @@ export function PolicyCompliancePanel({
       const missingBindingIds: string[] = [];
       const errors: string[] = [];
       await Promise.all(complianceAuthority.items.map(async (binding) => {
+        if (
+          lifecycleMode
+          && (
+            binding.lifecycleStatus === 'skipped'
+            || binding.lifecycleStatus === 'inconsistent'
+          )
+        ) {
+          missingBindingIds.push(binding.bindingId);
+          return;
+        }
         try {
           const response = await api.getCurrentSemanticGuidelineAssessment(
             boardId,
@@ -1379,12 +1526,14 @@ export function PolicyCompliancePanel({
             response,
             currentExpectation,
           );
-          // In the human lifecycle projection, stale evidence belongs only to
-          // Previous results. A current-edition slot with no current evidence
-          // is presented as Not assessed instead of leaking version drift.
-          if (lifecycleMode && parsed.assessment.currentness !== 'current') {
-            missingBindingIds.push(binding.bindingId);
-            return;
+          if (
+            parsed.assessment.binding_id !== binding.bindingId
+            || parsed.assessment.guideline_id !== binding.guidelineId
+            || parsed.assessment.guideline_revision_id !== binding.revisionId
+          ) {
+            throw new Error(
+              'Semantic assessment does not match the authoritative guideline binding.',
+            );
           }
           responses[binding.bindingId] = parsed;
         } catch (caught) {
@@ -1776,6 +1925,18 @@ export function PolicyCompliancePanel({
           className="space-y-3"
           data-testid="guideline-compliance-summary"
         >
+          {lifecycleMode
+            && lifecycleSnapshot
+            && lifecycleSnapshot.counts.scope_inconsistent > 0 && (
+            <p
+              role="alert"
+              className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"
+              data-testid="policy-compliance-scope-inconsistent"
+            >
+              {lifecycleSnapshot.counts.scope_inconsistent}{' '}
+              frozen policy scope {lifecycleSnapshot.counts.scope_inconsistent === 1 ? 'item is' : 'items are'} unavailable. Verified applicable policies are shown below; no current board policy was substituted.
+            </p>
+          )}
           {complianceAuthority.status === 'loading' ? (
             <p
               role="status"
@@ -1796,8 +1957,15 @@ export function PolicyCompliancePanel({
               data-testid="guideline-compliance-none"
               className="rounded-lg border border-dashed border-surface-300 p-3 text-xs text-surface-600 dark:border-surface-700 dark:text-surface-300"
             >
-              No guideline metric applies to this {entityType}. Adopted
-              guidelines remain context-only here.
+              {lifecycleMode
+                ? lifecycleSnapshot && lifecycleSnapshot.counts.scope_inconsistent > 0
+                  ? <>No applicable policy details could be verified for {subjectEdition == null ? 'this edition' : `Edition ${subjectEdition}`}.</>
+                  : <>
+                      No policies apply to {subjectEdition == null ? 'this edition' : `Edition ${subjectEdition}`}.
+                      {' '}{lifecycleSnapshot?.counts.context_only ?? 0}{' '}
+                      adopted {lifecycleSnapshot?.counts.context_only === 1 ? 'guideline is' : 'guidelines are'} context-only for this Spec.
+                    </>
+                : <>No guideline metric applies to this {entityType}. Adopted guidelines remain context-only here.</>}
             </p>
           ) : (
             <>
@@ -1829,14 +1997,26 @@ export function PolicyCompliancePanel({
                 const isLoading = currentSemantic.status === 'loading' && !view;
                 const noAssessment = currentSemantic.status === 'ready'
                   && currentSemantic.missingBindingIds.includes(binding.bindingId);
+                const lifecycleStatus = binding.lifecycleStatus;
                 const pinpoints = view?.metrics.flatMap((metric) =>
                   metric.pinpoints.map((pinpoint) => ({
                     metricLabel: metricTitleByCode.get(metric.metricCode)
                       ?? metric.metricCode,
                     metricState: metric.uiState,
+                    metricOutcome: metric.outcome,
+                    lifecycleMetricOutcome: binding.metrics.find(
+                      (authority) => authority.code === metric.metricCode,
+                    )?.assessmentOutcome,
                     pinpoint,
                   }))
                 ) ?? [];
+                const lifecycleReassessmentNeeded = lifecycleMode
+                  && noAssessment
+                  && lifecycleStatus === 'pending';
+                const failedMetricCount = binding.failedMetricCount ?? 0;
+                const waivedMetricCount = binding.waivedMetricCount ?? 0;
+                const unwaivedFailedMetricCount =
+                  binding.unwaivedFailedMetricCount ?? 0;
                 return (
                 <article
                   key={binding.bindingId}
@@ -1849,15 +2029,16 @@ export function PolicyCompliancePanel({
                       {binding.guidelineTitle}
                     </span>
                     <EnforcementBadge enforcement={binding.enforcement} />
-                    {state
-                      ? lifecycleMode && state === 'stale'
-                        ? (
-                            <span className="rounded-full bg-surface-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-surface-600 dark:bg-surface-800 dark:text-surface-300">
-                              Previous result
-                            </span>
-                          )
-                        : <SemanticStateChip state={state} />
-                      : <ComplianceStateChip assessment={null} />}
+                    {lifecycleMode && lifecycleStatus
+                      ? (
+                          <LifecycleComplianceStateChip
+                            status={lifecycleStatus}
+                            enforcement={binding.enforcement}
+                          />
+                        )
+                      : state
+                        ? <SemanticStateChip state={state} />
+                        : <ComplianceStateChip assessment={null} />}
                     {view && !lifecycleMode && (
                       <span className="rounded-full bg-surface-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-surface-600 dark:bg-surface-800 dark:text-surface-300">
                         {view.contractVersion}
@@ -1870,11 +2051,54 @@ export function PolicyCompliancePanel({
                       Loading assessment evidence…
                     </div>
                   )}
-                  {noAssessment && (
-                    <div className="rounded-lg border border-dashed border-surface-300 p-3 text-xs text-surface-600 dark:border-surface-700 dark:text-surface-300" data-testid="policy-compliance-no-assessment">
-                      <p className="font-semibold">No assessment recorded</p>
-                      <p className="mt-1">Ask an independent agent to assess the current {lifecycleMode ? 'edition' : 'version'}. Scores cannot be entered here.</p>
+                  {noAssessment && lifecycleStatus === 'skipped' && (
+                    <div className="rounded-lg border border-surface-200 bg-surface-50 p-3 text-xs text-surface-600 dark:border-surface-700 dark:bg-surface-800/40 dark:text-surface-300" data-testid="policy-compliance-skipped">
+                      <p className="font-semibold">Assessment skipped for this edition</p>
+                      <p className="mt-1">An authorized human resolved this applicable policy with an audited skip.</p>
                     </div>
+                  )}
+                  {noAssessment && lifecycleStatus === 'inconsistent' && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200" data-testid="policy-compliance-inconsistent">
+                      <p className="font-semibold">Policy result unavailable</p>
+                      <p className="mt-1">The frozen policy scope could not be reconciled safely for this binding.</p>
+                    </div>
+                  )}
+                  {noAssessment && lifecycleStatus !== 'skipped' && lifecycleStatus !== 'inconsistent' && (
+                    <div className="rounded-lg border border-dashed border-surface-300 p-3 text-xs text-surface-600 dark:border-surface-700 dark:text-surface-300" data-testid="policy-compliance-no-assessment">
+                      <p className="font-semibold">
+                        {lifecycleMode && lifecycleStatus !== 'pending'
+                          ? 'Assessment detail unavailable'
+                          : 'No assessment recorded'}
+                      </p>
+                      <p className="mt-1">
+                        {lifecycleMode && lifecycleStatus !== 'pending'
+                          ? 'The frozen summary remains authoritative, but its human-readable evidence could not be loaded.'
+                          : lifecycleMode && binding.enforcement === 'advisory'
+                            ? <>This pending advisory assessment does not block validation. Ask an independent agent to assess the current edition; scores cannot be entered here.</>
+                            : <>Ask an independent agent to assess the current {lifecycleMode ? 'edition' : 'version'}. Scores cannot be entered here.</>}
+                      </p>
+                    </div>
+                  )}
+                  {lifecycleMode && lifecycleStatus === 'waived' && (
+                    <p className="rounded-lg border border-violet-200 bg-violet-50 p-2 text-xs text-violet-800 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-200" data-testid="policy-compliance-waived">
+                      All {failedMetricCount}{' '}
+                      failed metric {failedMetricCount === 1 ? 'finding is' : 'findings are'} covered by {failedMetricCount === 1 ? 'an approved waiver' : 'approved waivers'} for this edition.
+                    </p>
+                  )}
+                  {lifecycleMode
+                    && lifecycleStatus === 'failed'
+                    && waivedMetricCount > 0 && (
+                    <p className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200" data-testid="policy-compliance-partial-waiver">
+                      {waivedMetricCount}{' '}
+                      failed metric {waivedMetricCount === 1 ? 'finding is' : 'findings are'} covered by {waivedMetricCount === 1 ? 'an approved waiver' : 'approved waivers'};{' '}
+                      {unwaivedFailedMetricCount}{' '}
+                      {unwaivedFailedMetricCount === 1 ? 'finding remains' : 'findings remain'} unresolved.
+                    </p>
+                  )}
+                  {lifecycleMode && lifecycleStatus === 'failed' && binding.enforcement === 'advisory' && (
+                    <p className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200" data-testid="policy-compliance-advisory-note">
+                      This advisory finding does not block validation.
+                    </p>
                   )}
                   <div className="flex flex-wrap items-start justify-start gap-x-6 gap-y-3 pt-1">
                     {view && (
@@ -1930,6 +2154,22 @@ export function PolicyCompliancePanel({
                               Board override
                             </p>
                           )}
+                          {lifecycleMode && metric.assessmentOutcome && (
+                            <LifecycleMetricOutcomeChip
+                              outcome={metric.assessmentOutcome}
+                              metricId={metric.metricId}
+                              enforcement={binding.enforcement}
+                            />
+                          )}
+                          {(metric.descriptionTruncated || metric.rubricTruncated) && (
+                            <p
+                              className="mt-1 text-center text-[10px] font-medium text-amber-700 dark:text-amber-300"
+                              data-testid={`guideline-metric-truncated-${metric.metricId}`}
+                              title="The frozen policy text was shortened for this view."
+                            >
+                              Policy text excerpt truncated
+                            </p>
+                          )}
                         </div>
                       );
                     })}
@@ -1946,6 +2186,8 @@ export function PolicyCompliancePanel({
                         {pinpoints.map(({
                           metricLabel,
                           metricState,
+                          metricOutcome,
+                          lifecycleMetricOutcome,
                           pinpoint,
                         }, index) => (
                           <ActionablePinpoint
@@ -1956,7 +2198,21 @@ export function PolicyCompliancePanel({
                               ? 'removed'
                               : pinpoint.state === 'inaccessible'
                                 ? 'inaccessible'
-                                : metricState}
+                                : lifecycleMode
+                                  ? lifecycleMetricOutcome === 'waived'
+                                    ? 'waived_fail_finding'
+                                    : lifecycleMetricOutcome === 'failed'
+                                      ? binding.enforcement === 'advisory'
+                                        ? 'non_blocking_warning'
+                                        : 'fail'
+                                      : lifecycleMetricOutcome === 'passed'
+                                        ? 'positive_evidence'
+                                        : metricOutcome === 'fail'
+                                          ? binding.enforcement === 'advisory'
+                                            ? 'non_blocking_warning'
+                                            : 'fail'
+                                          : 'positive_evidence'
+                                  : metricState}
                             onNavigate={onNavigateSemanticAnchor}
                           />
                         ))}
@@ -1983,7 +2239,8 @@ export function PolicyCompliancePanel({
                       setHistoryExpanded(true);
                     }}
                     onViewReassessmentGuidance={
-                      state === 'stale' || noAssessment
+                      (!lifecycleMode && (state === 'stale' || noAssessment))
+                      || lifecycleReassessmentNeeded
                         ? () => {
                             setGuidanceVisible(true);
                             onOpenReassessmentGuidance?.();
@@ -1991,7 +2248,10 @@ export function PolicyCompliancePanel({
                         : undefined
                     }
                   />
-                  {guidanceVisible && (state === 'stale' || noAssessment) && (
+                  {guidanceVisible && (
+                    (!lifecycleMode && (state === 'stale' || noAssessment))
+                    || lifecycleReassessmentNeeded
+                  ) && (
                     <p role="status" aria-live="polite" className="rounded-lg bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
                       Reassessment is performed by an independent agent for the current {lifecycleMode ? 'edition' : 'subject and binding fences'}; this browser never accepts a manual score or executes cognition.
                     </p>

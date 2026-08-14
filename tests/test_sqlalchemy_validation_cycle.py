@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -17,11 +17,22 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Base,
     Board,
     ChecklistValidationBindingSnapshotRow,
+    Guideline,
+    GuidelineBoardBindingRow,
+    GuidelineRevisionRow,
     Ideation,
     QualityAssessmentHeadRow,
+    QualityAssessmentLifecycleTransitionRow,
     QualityAssessmentReceiptRow,
     Refinement,
+    SemanticGuidelineAssessmentReceiptRow,
+    SemanticGuidelineAssessmentV2Row,
+    SemanticGuidelineBindingConfigurationRow,
+    SemanticGuidelineMetricResultRow,
+    SemanticGuidelineMetricResultV2Row,
+    SemanticGuidelineRevisionRow,
     SemanticGuidelineSkipRow,
+    SemanticGuidelineValidationScopeRow,
     SemanticGuidelineWaiverEventRow,
     SemanticGuidelineWaiverRow,
     Spec,
@@ -312,6 +323,989 @@ async def test_batch_of_fifty_is_summary_only_and_has_constant_select_budget(
     assert [item.subject_id for item in fifty_result] == [
         item.subject_id for item in fifty
     ]
+
+
+def _semantic_metric(
+    suffix: str,
+    *,
+    target: str = "spec",
+    long_copy: bool = False,
+) -> dict[str, object]:
+    return {
+        "metric_id": f"metric-{suffix}",
+        "code": f"policy.{suffix}",
+        "title": f"Metric {suffix}",
+        "description": "D" * 5000 if long_copy else f"Description {suffix}",
+        "evaluation_rubric": "R" * 5000 if long_copy else f"Rubric {suffix}",
+        "target_entity_types": [target],
+        "direction": "minimum",
+        "default_threshold": 70,
+    }
+
+
+def _semantic_authority_rows(
+    suffix: str,
+    *,
+    enforcement: str,
+    metrics: list[dict[str, object]],
+) -> tuple[object, ...]:
+    guideline_id = f"guideline-{suffix}"
+    revision_id = f"revision-{suffix}"
+    binding_id = f"binding-{suffix}"
+    source_digest = suffix[0] * 64
+    revision_digest = suffix[-1] * 64
+    configuration_digest = ("f" if suffix[-1] != "f" else "e") * 64
+    metric_code = str(metrics[0]["code"])
+    return (
+        Guideline(
+            id=guideline_id,
+            title=f"Policy {suffix}",
+            content=f"Policy content {suffix}",
+            tags=[],
+            scope="global",
+            board_id=None,
+            owner_id="owner",
+            version=1,
+        ),
+        GuidelineRevisionRow(
+            revision_id=revision_id,
+            guideline_id=guideline_id,
+            revision_number=1,
+            semantic_version="1.0.0",
+            title=f"Policy {suffix}",
+            content=f"Frozen policy {suffix}",
+            content_digest=source_digest,
+            tags=[],
+            rules=[],
+            created_by="owner",
+            created_at=NOW,
+            published_head_revision=1,
+            published_head_updated_at=NOW,
+            parent_revision_id=None,
+        ),
+        SemanticGuidelineRevisionRow(
+            revision_id=revision_id,
+            guideline_id=guideline_id,
+            metrics=metrics,
+            revision_digest=revision_digest,
+            source_revision_digest=source_digest,
+            authority_state="native",
+            legacy_rules_digest=None,
+            created_by="owner",
+            created_at=NOW,
+        ),
+        GuidelineBoardBindingRow(
+            binding_id=binding_id,
+            binding_revision=1,
+            board_id=BOARD_ID,
+            guideline_id=guideline_id,
+            revision_id=revision_id,
+            semantic_version="1.0.0",
+            revision_digest=source_digest,
+            priority=0,
+            adopted_by="owner",
+            adopted_at=NOW,
+            enforcement=enforcement,
+            source_kind="native",
+            state="active",
+            binding_origin="native",
+        ),
+        SemanticGuidelineBindingConfigurationRow(
+            binding_id=binding_id,
+            binding_revision=1,
+            board_id=BOARD_ID,
+            guideline_id=guideline_id,
+            revision_id=revision_id,
+            revision_digest=revision_digest,
+            enforcement=enforcement,
+            minimum_confidence=80,
+            metric_threshold_overrides=(
+                {metric_code: 85} if suffix == "blocking" else {}
+            ),
+            configuration_digest=configuration_digest,
+            configured_by="owner",
+            configured_at=NOW,
+        ),
+    )
+
+
+def _scope_item(suffix: str, *, enforcement: str) -> dict[str, object]:
+    return {
+        "binding_id": f"binding-{suffix}",
+        "binding_revision": 1,
+        "guideline_id": f"guideline-{suffix}",
+        "revision_id": f"revision-{suffix}",
+        "revision_digest": suffix[-1] * 64,
+        "configuration_digest": ("f" if suffix[-1] != "f" else "e") * 64,
+        "state": "active",
+        "enforcement": enforcement,
+    }
+
+
+def _v1_policy_receipt(
+    suffix: str,
+    *,
+    state: str,
+    assessed_at: datetime,
+    metric_count: int = 1,
+    failed_count: int | None = None,
+) -> SemanticGuidelineAssessmentReceiptRow:
+    failed = (
+        (0 if state == "passed" else metric_count)
+        if failed_count is None
+        else failed_count
+    )
+    digest = "a" * 64
+    return SemanticGuidelineAssessmentReceiptRow(
+        receipt_id=f"receipt-v1-{suffix}",
+        board_id=BOARD_ID,
+        subject_type="spec",
+        subject_id="spec-cycle-00",
+        subject_version=1,
+        validation_edition=1,
+        subject_content_digest=digest,
+        last_semantic_editor_id="author",
+        guideline_id=f"guideline-{suffix}",
+        revision_id=f"revision-{suffix}",
+        revision_digest=suffix[-1] * 64,
+        binding_id=f"binding-{suffix}",
+        binding_revision=1,
+        configuration_digest=("f" if suffix[-1] != "f" else "e") * 64,
+        policy_set_digest=digest,
+        binding_head_digest=digest,
+        enforcement="blocking" if suffix == "blocking" else "advisory",
+        minimum_confidence=80,
+        confidence=90,
+        confidence_admissible=True,
+        assessor_agent_id="assessor",
+        assessor_model_id=None,
+        assessor_independent=True,
+        state=state,
+        recorded_currentness="current",
+        input_digest=digest,
+        receipt_digest=digest,
+        metric_result_count=metric_count,
+        failed_metric_count=failed,
+        idempotency_key=f"v1-{suffix}",
+        request_digest=digest,
+        assessed_at=assessed_at,
+        sealed=True,
+    )
+
+
+def _v1_policy_result(
+    suffix: str,
+    *,
+    outcome: str,
+    metric_suffix: str | None = None,
+) -> SemanticGuidelineMetricResultRow:
+    digest = "a" * 64
+    resolved_metric_suffix = metric_suffix or suffix
+    return SemanticGuidelineMetricResultRow(
+        result_id=f"result-v1-{suffix}-{resolved_metric_suffix}",
+        receipt_id=f"receipt-v1-{suffix}",
+        board_id=BOARD_ID,
+        subject_type="spec",
+        subject_id="spec-cycle-00",
+        subject_version=1,
+        subject_content_digest=digest,
+        receipt_digest=digest,
+        guideline_id=f"guideline-{suffix}",
+        revision_id=f"revision-{suffix}",
+        revision_digest=suffix[-1] * 64,
+        binding_id=f"binding-{suffix}",
+        binding_revision=1,
+        configuration_digest=("f" if suffix[-1] != "f" else "e") * 64,
+        metric_id=f"metric-{resolved_metric_suffix}",
+        metric_code=f"policy.{resolved_metric_suffix}",
+        metric_definition_digest="d" * 64,
+        direction="minimum",
+        default_threshold=70,
+        effective_threshold=70,
+        threshold_source="default",
+        score=80 if outcome == "pass" else 60,
+        outcome=outcome,
+        rationale="Deterministic v1 metric result.",
+        evidence_refs=[],
+        pinpoints=[],
+        result_digest="e" * 64,
+        created_at=NOW,
+    )
+
+
+def _v2_policy_rows(
+    suffix: str,
+    *,
+    outcome: str,
+    recorded_at: datetime,
+) -> tuple[object, object]:
+    digest = "b" * 64
+    receipt_id = f"receipt-v2-{suffix}"
+    receipt = SemanticGuidelineAssessmentV2Row(
+        receipt_id=receipt_id,
+        contract_version="semantic-guideline-assessment/v2",
+        board_id=BOARD_ID,
+        subject_type="spec",
+        subject_id="spec-cycle-00",
+        subject_version=1,
+        validation_edition=1,
+        subject_content_digest=digest,
+        binding_id=f"binding-{suffix}",
+        binding_revision=1,
+        guideline_id=f"guideline-{suffix}",
+        revision_id=f"revision-{suffix}",
+        revision_digest=suffix[-1] * 64,
+        configuration_digest=("f" if suffix[-1] != "f" else "e") * 64,
+        confidence=90,
+        assessor_agent_id="assessor",
+        idempotency_key=f"v2-{suffix}",
+        request_digest=digest,
+        receipt_digest=digest,
+        payload={},
+        recorded_at=recorded_at,
+    )
+    result = SemanticGuidelineMetricResultV2Row(
+        result_id=f"result-v2-{suffix}",
+        contract_version="semantic-metric-result/v2",
+        receipt_id=receipt_id,
+        board_id=BOARD_ID,
+        subject_type="spec",
+        subject_id="spec-cycle-00",
+        metric_id=f"metric-{suffix}",
+        metric_code=f"policy.{suffix}",
+        outcome=outcome,
+        result_digest=digest,
+        payload={},
+        created_at=recorded_at,
+    )
+    return receipt, result
+
+
+def _active_policy_skip(
+    suffix: str,
+    *,
+    skip_identity: str = "primary",
+) -> SemanticGuidelineSkipRow:
+    digest = "c" * 64
+    return SemanticGuidelineSkipRow(
+        event_id=f"event-skip-{suffix}-{skip_identity}".ljust(64, "0"),
+        predecessor_event_id=None,
+        skip_id=f"skip-{suffix}-{skip_identity}",
+        skip_revision=1,
+        event_type="create",
+        from_status=None,
+        status="active",
+        board_id=BOARD_ID,
+        subject_type="spec",
+        subject_id="spec-cycle-00",
+        subject_version=1,
+        validation_edition=1,
+        subject_content_digest=digest,
+        guideline_id=f"guideline-{suffix}",
+        revision_id=f"revision-{suffix}",
+        revision_digest=suffix[-1] * 64,
+        binding_id=f"binding-{suffix}",
+        binding_revision=1,
+        configuration_digest=("f" if suffix[-1] != "f" else "e") * 64,
+        scope_digest=digest,
+        reason="Human-owned validation-cycle exception.",
+        created_by="owner",
+        created_at=NOW,
+        actor_id="owner",
+        actor_kind="human",
+        occurred_at=NOW,
+        revoked_by=None,
+        revoked_at=None,
+        revocation_reason=None,
+        skip_digest=digest,
+        idempotency_key=f"skip-{suffix}-{skip_identity}",
+        request_digest=digest,
+    )
+
+
+def _metric_waiver(
+    binding_suffix: str,
+    metric_suffix: str,
+    *,
+    status: str = "approved",
+    validation_edition: int = 1,
+    receipt_id: str | None = None,
+    expires_at: datetime | None = None,
+) -> SemanticGuidelineWaiverRow:
+    digest = "6" * 64
+    resolved_receipt_id = receipt_id or f"receipt-v1-{binding_suffix}"
+    reviewed = status != "requested"
+    revoked = status == "revoked"
+    expired = status == "expired"
+    last_event_type = {
+        "approved": "approve",
+        "revoked": "revoke",
+        "expired": "expire",
+    }[status]
+    revision = 2 if status == "approved" else 3
+    return SemanticGuidelineWaiverRow(
+        waiver_id=f"waiver-{binding_suffix}-{metric_suffix}-{status}",
+        board_id=BOARD_ID,
+        metric_result_id=(
+            f"result-v1-{binding_suffix}-{metric_suffix}"
+            if receipt_id is None
+            else f"result-stale-{binding_suffix}-{metric_suffix}"
+        ),
+        finding_id=f"finding-{binding_suffix}-{metric_suffix}-{status}",
+        receipt_id=resolved_receipt_id,
+        subject_type="spec",
+        subject_id="spec-cycle-00",
+        subject_version=1,
+        validation_edition=validation_edition,
+        subject_content_digest="a" * 64,
+        receipt_digest="a" * 64,
+        guideline_id=f"guideline-{binding_suffix}",
+        revision_id=f"revision-{binding_suffix}",
+        revision_digest=binding_suffix[-1] * 64,
+        binding_id=f"binding-{binding_suffix}",
+        binding_revision=1,
+        configuration_digest=("f" if binding_suffix[-1] != "f" else "e") * 64,
+        metric_id=f"metric-{metric_suffix}",
+        metric_code=f"policy.{metric_suffix}",
+        metric_result_digest="e" * 64,
+        finding_digest=digest,
+        scope_digest=digest,
+        justification="An independently approved bounded exception.",
+        evidence_refs=[],
+        requested_by="requester",
+        requested_at=NOW,
+        original_expires_at=expires_at,
+        status=status,
+        waiver_revision=revision,
+        expires_at=expires_at,
+        last_event_id=f"event-{binding_suffix}-{metric_suffix}-{status}",
+        last_event_type=last_event_type,
+        last_event_at=NOW,
+        reviewed_by="reviewer" if reviewed else None,
+        reviewed_at=NOW if reviewed else None,
+        review_reason="Approved independently." if reviewed else None,
+        revoked_by="reviewer" if revoked else None,
+        revoked_at=NOW if revoked else None,
+        expire_reason_code="scheduled_expiry" if expired else None,
+        head_digest=digest,
+        idempotency_key=f"waiver-{binding_suffix}-{metric_suffix}",
+        request_digest=digest,
+        assessment_assessor_id="assessor",
+        last_event_idempotency_key=(
+            f"waiver-event-{binding_suffix}-{metric_suffix}-{status}"
+        ),
+        last_revalidation_status=None,
+        last_revalidation_current=None,
+        last_revalidation_reason_code=None,
+        last_revalidation_evaluated_at=None,
+        last_revalidation_currentness_reasons=[],
+        last_revalidation_scheduled_expiry_observed=False,
+    )
+
+
+def _spec_validation_admission(
+    *, subject_id: str = "spec-cycle-00", edition: int = 1
+) -> QualityAssessmentLifecycleTransitionRow:
+    return QualityAssessmentLifecycleTransitionRow(
+        transition_digest="9" * 64,
+        board_id=BOARD_ID,
+        idempotency_key=f"admit-{subject_id}-{edition}",
+        action="admit_validation",
+        subject_type="spec",
+        subject_id=subject_id,
+        before_version=1,
+        before_edition=edition,
+        before_status="draft",
+        before_archived=False,
+        after_version=1,
+        after_edition=edition,
+        after_status="approved",
+        after_archived=False,
+        head_rebuilds_json=[],
+        actor_id="owner",
+        event_id=f"admit-event-{subject_id}-{edition}",
+        history_id=f"admit-history-{subject_id}-{edition}",
+        outbox_id=f"admit-outbox-{subject_id}-{edition}",
+        occurred_at=NOW,
+        applied_at=NOW,
+    )
+
+
+async def test_policy_summary_distinguishes_legacy_from_missing_frozen_scope(
+    cycle_rig,
+) -> None:
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    legacy = project_validation_cycle(
+        await reader.get_validation_cycle(
+            subject_type=AssessmentSubjectType.SPEC,
+            subject_id="spec-cycle-00",
+            include_previous=False,
+            offset=0,
+            limit=25,
+            actor_id="owner",
+            realm_scope=RealmScope.local(),
+        )
+    )
+    legacy_policy = next(
+        check
+        for check in legacy["checks"]
+        if check["result_type"] == "policy_compliance"
+    )
+    assert legacy_policy["status"] == "off"
+    assert legacy_policy["summary"] == "No applicable policies"
+    assert legacy_policy["details"]["counts"]["scope_inconsistent"] == 0
+
+    async with cycle_rig.factory() as session:
+        session.add(_spec_validation_admission())
+        await session.commit()
+
+    single = project_validation_cycle(
+        await reader.get_validation_cycle(
+            subject_type=AssessmentSubjectType.SPEC,
+            subject_id="spec-cycle-00",
+            include_previous=False,
+            offset=0,
+            limit=25,
+            actor_id="owner",
+            realm_scope=RealmScope.local(),
+        )
+    )
+    batch, statements = await _count_selects(
+        cycle_rig.engine,
+        reader.get_validation_cycles(
+            subjects=(
+                ValidationCycleSubjectRef(
+                    AssessmentSubjectType.SPEC,
+                    "spec-cycle-00",
+                ),
+            ),
+            actor_id="owner",
+            realm_scope=RealmScope.local(),
+        ),
+    )
+    single_policy = next(
+        check
+        for check in single["checks"]
+        if check["result_type"] == "policy_compliance"
+    )
+    batch_policy = next(
+        check
+        for check in project_validation_cycle(batch[0])["checks"]
+        if check["result_type"] == "policy_compliance"
+    )
+
+    assert len(statements) == 6
+    assert batch_policy == single_policy
+    assert single_policy["status"] == "needs_attention"
+    assert single_policy["summary"] == ("1 policy scope item could not be verified")
+    assert single_policy["details"]["counts"]["scope_inconsistent"] == 1
+    assert single_policy["details"]["applicable_bindings"] == []
+
+
+async def test_policy_summary_is_snapshot_bound_deduplicated_and_human(
+    cycle_rig,
+) -> None:
+    authorities = (
+        ("blocking", "blocking", _semantic_metric("blocking", long_copy=True)),
+        ("advisory", "advisory", _semantic_metric("advisory")),
+        ("skipped", "advisory", _semantic_metric("skipped")),
+        ("context", "advisory", _semantic_metric("context", target="ideation")),
+    )
+    async with cycle_rig.factory() as session:
+        for suffix, enforcement, metric in authorities:
+            session.add_all(
+                _semantic_authority_rows(
+                    suffix,
+                    enforcement=enforcement,
+                    metrics=[metric],
+                )
+            )
+        session.add(
+            SemanticGuidelineValidationScopeRow(
+                board_id=BOARD_ID,
+                subject_type="spec",
+                subject_id="spec-cycle-00",
+                validation_edition=1,
+                scope_json=[
+                    _scope_item(suffix, enforcement=enforcement)
+                    for suffix, enforcement, _metric in authorities
+                ],
+                policy_set_digest="d" * 64,
+                binding_head_digest="e" * 64,
+                captured_at=NOW,
+            )
+        )
+        # Both contracts exist for two bindings. Only the deterministic latest
+        # receipt contributes to each denominator item.
+        session.add_all(
+            (
+                _v1_policy_receipt(
+                    "blocking",
+                    state="metric_threshold_failed",
+                    assessed_at=NOW,
+                ),
+                _v1_policy_result("blocking", outcome="fail"),
+                *_v2_policy_rows(
+                    "blocking",
+                    outcome="pass",
+                    recorded_at=NOW.replace(minute=1),
+                ),
+                _v1_policy_receipt(
+                    "advisory",
+                    state="passed",
+                    assessed_at=NOW,
+                ),
+                _v1_policy_result("advisory", outcome="pass"),
+                *_v2_policy_rows(
+                    "advisory",
+                    outcome="fail",
+                    recorded_at=NOW.replace(minute=1),
+                ),
+                _active_policy_skip("skipped"),
+            )
+        )
+        await session.commit()
+
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    single = project_validation_cycle(
+        await reader.get_validation_cycle(
+            subject_type=AssessmentSubjectType.SPEC,
+            subject_id="spec-cycle-00",
+            include_previous=False,
+            offset=0,
+            limit=25,
+            actor_id="owner",
+            realm_scope=RealmScope.local(),
+        )
+    )
+    batch, statements = await _count_selects(
+        cycle_rig.engine,
+        reader.get_validation_cycles(
+            subjects=(
+                ValidationCycleSubjectRef(
+                    AssessmentSubjectType.SPEC,
+                    "spec-cycle-00",
+                ),
+            ),
+            actor_id="owner",
+            realm_scope=RealmScope.local(),
+        ),
+    )
+    batch_payload = project_validation_cycle(batch[0])
+    single_policy = next(
+        check
+        for check in single["checks"]
+        if check["result_type"] == "policy_compliance"
+    )
+    batch_policy = next(
+        check
+        for check in batch_payload["checks"]
+        if check["result_type"] == "policy_compliance"
+    )
+
+    assert len(statements) == 6
+    assert batch_policy == single_policy
+    assert single_policy["status"] == "advisory"
+    assert single_policy["summary"] == (
+        "Non-blocking advisory coverage: 1 needs attention"
+    )
+    assert single_policy["details"]["counts"] == {
+        "applicable": 3,
+        "completed": 3,
+        "passed": 1,
+        "failed": 1,
+        "skipped": 1,
+        "waived": 0,
+        "pending": 0,
+        "context_only": 1,
+        "inconsistent": 0,
+        "scope_inconsistent": 0,
+        "blocking": 1,
+        "advisory": 2,
+        "blocking_failed": 0,
+        "blocking_pending": 0,
+        "advisory_failed": 1,
+        "advisory_pending": 0,
+        "failed_metrics": 1,
+        "waived_metrics": 0,
+        "unwaived_failed_metrics": 1,
+    }
+    bindings = single_policy["details"]["applicable_bindings"]
+    assert [binding["status"] for binding in bindings] == [
+        "passed",
+        "failed",
+        "skipped",
+    ]
+    blocking_metric = bindings[0]["metrics"][0]
+    assert blocking_metric["effective_threshold"] == 85
+    assert blocking_metric["threshold_source"] == "override"
+    assert len(blocking_metric["description"]) <= 4096
+    assert blocking_metric["description_truncated"] is True
+    assert len(blocking_metric["evaluation_rubric"]) <= 4096
+    assert blocking_metric["evaluation_rubric_truncated"] is True
+    encoded = json.dumps(single_policy)
+    assert "digest" not in encoded
+    assert "receipt" not in encoded
+
+
+async def test_policy_summary_preserves_valid_cards_when_scope_item_is_corrupt(
+    cycle_rig,
+) -> None:
+    metric = _semantic_metric("mixed")
+    async with cycle_rig.factory() as session:
+        session.add_all(
+            _semantic_authority_rows(
+                "mixed",
+                enforcement="blocking",
+                metrics=[metric],
+            )
+        )
+        missing = {
+            "binding_id": "binding-missing",
+            "binding_revision": 1,
+            "guideline_id": "guideline-missing",
+            "revision_id": "revision-missing",
+            "revision_digest": "1" * 64,
+            "configuration_digest": "2" * 64,
+            "state": "active",
+            "enforcement": "blocking",
+        }
+        session.add(
+            SemanticGuidelineValidationScopeRow(
+                board_id=BOARD_ID,
+                subject_type="spec",
+                subject_id="spec-cycle-00",
+                validation_edition=1,
+                scope_json=[
+                    _scope_item("mixed", enforcement="blocking"),
+                    missing,
+                ],
+                policy_set_digest="d" * 64,
+                binding_head_digest="e" * 64,
+                captured_at=NOW,
+            )
+        )
+        session.add_all(
+            _v2_policy_rows(
+                "mixed",
+                outcome="pass",
+                recorded_at=NOW,
+            )
+        )
+        await session.commit()
+
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    payload = project_validation_cycle(
+        await reader.get_validation_cycle(
+            subject_type=AssessmentSubjectType.SPEC,
+            subject_id="spec-cycle-00",
+            include_previous=False,
+            offset=0,
+            limit=25,
+            actor_id="owner",
+            realm_scope=RealmScope.local(),
+        )
+    )
+    policy = next(
+        check
+        for check in payload["checks"]
+        if check["result_type"] == "policy_compliance"
+    )
+    counts = policy["details"]["counts"]
+
+    assert policy["status"] == "needs_attention"
+    assert policy["summary"] == "1 policy scope item could not be verified"
+    assert counts["applicable"] == 1
+    assert counts["completed"] == 1
+    assert counts["passed"] == 1
+    assert counts["inconsistent"] == 0
+    assert counts["scope_inconsistent"] == 1
+    assert len(policy["details"]["applicable_bindings"]) == 1
+    assert policy["details"]["applicable_bindings"][0]["status"] == "passed"
+
+
+@pytest.mark.parametrize(
+    (
+        "case",
+        "waived_metric_suffixes",
+        "expected_check_status",
+        "expected_summary",
+        "expected_binding_status",
+        "expected_waived_bindings",
+        "expected_failed_bindings",
+        "expected_waived_metrics",
+        "expected_unwaived_metrics",
+    ),
+    (
+        (
+            "full",
+            ("one", "two"),
+            "passed",
+            "1 waived",
+            "waived",
+            1,
+            0,
+            2,
+            0,
+        ),
+        (
+            "partial",
+            ("one",),
+            "needs_attention",
+            "1 blocking policy failed",
+            "failed",
+            0,
+            1,
+            1,
+            1,
+        ),
+    ),
+)
+async def test_policy_summary_applies_exact_current_metric_waivers(
+    cycle_rig,
+    case: str,
+    waived_metric_suffixes: tuple[str, ...],
+    expected_check_status: str,
+    expected_summary: str,
+    expected_binding_status: str,
+    expected_waived_bindings: int,
+    expected_failed_bindings: int,
+    expected_waived_metrics: int,
+    expected_unwaived_metrics: int,
+) -> None:
+    binding_suffix = f"waiver-{case}"
+    metric_suffixes = tuple(f"{binding_suffix}-{suffix}" for suffix in ("one", "two"))
+    waived = {f"{binding_suffix}-{suffix}" for suffix in waived_metric_suffixes}
+    async with cycle_rig.factory() as session:
+        session.add_all(
+            _semantic_authority_rows(
+                binding_suffix,
+                enforcement="blocking",
+                metrics=[
+                    _semantic_metric(metric_suffix) for metric_suffix in metric_suffixes
+                ],
+            )
+        )
+        session.add(
+            SemanticGuidelineValidationScopeRow(
+                board_id=BOARD_ID,
+                subject_type="spec",
+                subject_id="spec-cycle-00",
+                validation_edition=1,
+                scope_json=[_scope_item(binding_suffix, enforcement="blocking")],
+                policy_set_digest="d" * 64,
+                binding_head_digest="e" * 64,
+                captured_at=NOW,
+            )
+        )
+        session.add(
+            _v1_policy_receipt(
+                binding_suffix,
+                state="metric_threshold_failed",
+                assessed_at=NOW,
+                metric_count=2,
+                failed_count=2,
+            )
+        )
+        session.add_all(
+            _v1_policy_result(
+                binding_suffix,
+                metric_suffix=metric_suffix,
+                outcome="fail",
+            )
+            for metric_suffix in metric_suffixes
+        )
+        session.add_all(
+            _metric_waiver(binding_suffix, metric_suffix) for metric_suffix in waived
+        )
+        await session.commit()
+
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    payload = project_validation_cycle(
+        await reader.get_validation_cycle(
+            subject_type=AssessmentSubjectType.SPEC,
+            subject_id="spec-cycle-00",
+            include_previous=False,
+            offset=0,
+            limit=25,
+            actor_id="owner",
+            realm_scope=RealmScope.local(),
+        )
+    )
+    policy = next(
+        check
+        for check in payload["checks"]
+        if check["result_type"] == "policy_compliance"
+    )
+    counts = policy["details"]["counts"]
+    binding = policy["details"]["applicable_bindings"][0]
+
+    assert policy["status"] == expected_check_status
+    assert policy["summary"] == expected_summary
+    assert counts["applicable"] == counts["completed"] == 1
+    assert counts["waived"] == expected_waived_bindings
+    assert counts["failed"] == expected_failed_bindings
+    assert counts["failed_metrics"] == 2
+    assert counts["waived_metrics"] == expected_waived_metrics
+    assert counts["unwaived_failed_metrics"] == expected_unwaived_metrics
+    assert counts["failed_metrics"] == (
+        counts["waived_metrics"] + counts["unwaived_failed_metrics"]
+    )
+    assert binding["status"] == expected_binding_status
+    assert binding["failed_metric_count"] == 2
+    assert binding["waived_metric_count"] == expected_waived_metrics
+    assert binding["unwaived_failed_metric_count"] == expected_unwaived_metrics
+    assert [metric["assessment_outcome"] for metric in binding["metrics"]] == [
+        "waived" if metric_suffix in waived else "failed"
+        for metric_suffix in metric_suffixes
+    ]
+
+
+@pytest.mark.parametrize(
+    ("case", "waiver_kwargs"),
+    (
+        ("stale-receipt", {"receipt_id": "receipt-v1-stale-old"}),
+        ("wrong-edition", {"validation_edition": 2}),
+        ("revoked", {"status": "revoked"}),
+        ("expired", {"status": "expired"}),
+        (
+            "elapsed",
+            {"expires_at": NOW + timedelta(days=1)},
+        ),
+    ),
+)
+async def test_policy_summary_ignores_non_current_metric_waivers(
+    cycle_rig,
+    case: str,
+    waiver_kwargs: dict[str, object],
+) -> None:
+    binding_suffix = f"waiver-{case}"
+    metric_suffix = f"{binding_suffix}-metric"
+    async with cycle_rig.factory() as session:
+        session.add_all(
+            _semantic_authority_rows(
+                binding_suffix,
+                enforcement="blocking",
+                metrics=[_semantic_metric(metric_suffix)],
+            )
+        )
+        session.add(
+            SemanticGuidelineValidationScopeRow(
+                board_id=BOARD_ID,
+                subject_type="spec",
+                subject_id="spec-cycle-00",
+                validation_edition=1,
+                scope_json=[_scope_item(binding_suffix, enforcement="blocking")],
+                policy_set_digest="d" * 64,
+                binding_head_digest="e" * 64,
+                captured_at=NOW,
+            )
+        )
+        session.add(
+            _v1_policy_receipt(
+                binding_suffix,
+                state="metric_threshold_failed",
+                assessed_at=NOW,
+            )
+        )
+        session.add(
+            _v1_policy_result(
+                binding_suffix,
+                metric_suffix=metric_suffix,
+                outcome="fail",
+            )
+        )
+        session.add(
+            _metric_waiver(
+                binding_suffix,
+                metric_suffix,
+                **waiver_kwargs,
+            )
+        )
+        await session.commit()
+
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    payload = project_validation_cycle(
+        await reader.get_validation_cycle(
+            subject_type=AssessmentSubjectType.SPEC,
+            subject_id="spec-cycle-00",
+            include_previous=False,
+            offset=0,
+            limit=25,
+            actor_id="owner",
+            realm_scope=RealmScope.local(),
+        )
+    )
+    policy = next(
+        check
+        for check in payload["checks"]
+        if check["result_type"] == "policy_compliance"
+    )
+    binding = policy["details"]["applicable_bindings"][0]
+
+    assert policy["status"] == "needs_attention"
+    assert binding["status"] == "failed"
+    assert binding["failed_metric_count"] == 1
+    assert binding["waived_metric_count"] == 0
+    assert binding["unwaived_failed_metric_count"] == 1
+    assert binding["metrics"][0]["assessment_outcome"] == "failed"
+
+
+async def test_policy_summary_fails_closed_on_multiple_active_skip_heads(
+    cycle_rig,
+) -> None:
+    async with cycle_rig.factory() as session:
+        session.add_all(
+            _semantic_authority_rows(
+                "skipped",
+                enforcement="advisory",
+                metrics=[_semantic_metric("skipped")],
+            )
+        )
+        session.add(
+            SemanticGuidelineValidationScopeRow(
+                board_id=BOARD_ID,
+                subject_type="spec",
+                subject_id="spec-cycle-00",
+                validation_edition=1,
+                scope_json=[_scope_item("skipped", enforcement="advisory")],
+                policy_set_digest="d" * 64,
+                binding_head_digest="e" * 64,
+                captured_at=NOW,
+            )
+        )
+        session.add_all(
+            (
+                _active_policy_skip("skipped", skip_identity="one"),
+                _active_policy_skip("skipped", skip_identity="two"),
+            )
+        )
+        await session.commit()
+
+    reader = CommunitySqlAlchemyValidationCycleReader(cycle_rig.factory)
+    payload = project_validation_cycle(
+        await reader.get_validation_cycle(
+            subject_type=AssessmentSubjectType.SPEC,
+            subject_id="spec-cycle-00",
+            include_previous=False,
+            offset=0,
+            limit=25,
+            actor_id="owner",
+            realm_scope=RealmScope.local(),
+        )
+    )
+    policy = next(
+        check
+        for check in payload["checks"]
+        if check["result_type"] == "policy_compliance"
+    )
+
+    assert policy["status"] == "needs_attention"
+    assert policy["details"]["counts"]["applicable"] == 1
+    assert policy["details"]["counts"]["skipped"] == 0
+    assert policy["details"]["counts"]["inconsistent"] == 1
+    assert policy["details"]["counts"]["scope_inconsistent"] == 0
+    assert policy["details"]["applicable_bindings"][0]["status"] == ("inconsistent")
 
 
 async def test_cycle_keeps_history_findings_and_audit_lazy(cycle_rig) -> None:
@@ -952,6 +1946,21 @@ async def test_lint_findings_are_advisory_not_a_request_to_run_lint_again() -> N
         lint_status="needs_attention",
         checklist_status="passed",
         policy_status="off",
+        has_current_validation=False,
+    ) == ("submit_spec_validation",)
+
+
+async def test_advisory_policy_gap_is_not_a_blocking_remaining_action() -> None:
+    assert _spec_remaining_actions(
+        lint_status="passed",
+        checklist_status="passed",
+        policy_status="advisory",
+        has_current_validation=False,
+    ) == ("submit_spec_validation",)
+    assert _spec_remaining_actions(
+        lint_status="passed",
+        checklist_status="passed",
+        policy_status="waived",
         has_current_validation=False,
     ) == ("submit_spec_validation",)
 

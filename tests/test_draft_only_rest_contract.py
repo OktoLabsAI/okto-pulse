@@ -14,6 +14,7 @@ from okto_pulse.community.api import (
     resource_gate,
     specs,
 )
+from okto_pulse.core.application.use_cases import ConflictError
 from okto_pulse.core.domain.human_validation_cycle import (
     LifecycleTransitionConflictError,
     SubjectEditRequiresDraftError,
@@ -36,6 +37,18 @@ class _NoWriteUow:
 
 
 RouteInvocation = Callable[[_NoWriteUow], Awaitable[object]]
+
+
+def test_architecture_validation_lock_points_to_a_new_draft_edition() -> None:
+    projected = architecture._http_error_from_conflict(
+        ConflictError("spec_architecture_locked", "spec-1")
+    )
+
+    assert projected.status_code == 409
+    assert projected.detail == (
+        "Spec is locked because validation passed. Move it to Draft to open a new "
+        "edition before editing architecture."
+    )
 
 
 _CASES: tuple[tuple[type, RouteInvocation, str, str], ...] = (

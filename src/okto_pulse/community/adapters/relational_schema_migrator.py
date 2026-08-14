@@ -446,6 +446,13 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "legacy Normal/Bug cards with a demonstrably failed latest validation.",
     ),
     (
+        "_migrate_restore_spec_validation_pointers",
+        "post_create_all",
+        False,
+        "Audit and restore only unequivocal latest successful current-edition "
+        "Spec validation pointers lost by historical Code Traceability effects.",
+    ),
+    (
         "_migrate_policy_waiver_v1_schema",
         "post_create_all",
         False,

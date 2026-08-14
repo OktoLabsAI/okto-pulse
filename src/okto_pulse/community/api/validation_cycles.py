@@ -60,6 +60,7 @@ class ValidationCycleCheckResponse(_ClosedResponseModel):
     result_type: ValidationCycleResultType
     status: str
     summary: str
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class SpecValidationCycleResponse(_ClosedResponseModel):

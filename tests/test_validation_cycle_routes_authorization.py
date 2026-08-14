@@ -118,6 +118,7 @@ def test_rest_single_omits_hidden_validation_fields_per_check_leaf(
     payload = response.json()
     assert payload["visible_sections"] == [section.value]
     assert [item["result_type"] for item in payload["checks"]] == [section.value]
+    assert payload["checks"][0]["details"] == {}
     assert {
         "cycle_state",
         "current_result",

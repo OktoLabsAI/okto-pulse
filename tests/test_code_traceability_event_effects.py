@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from okto_pulse.community.adapters.sqlalchemy_code_traceability_event_effects import (
@@ -73,7 +73,7 @@ def test_event_effect_is_transactional_idempotent_and_preserves_validation_histo
             await effects.apply(session, event)
             spec = await session.get(Spec, "spec-1")
             assert spec is not None
-            assert spec.current_validation_id is None
+            assert spec.current_validation_id == "validation-1"
             assert spec.validations == [{"id": "validation-1", "outcome": "success"}]
             await session.rollback()
 
@@ -81,7 +81,9 @@ def test_event_effect_is_transactional_idempotent_and_preserves_validation_histo
             spec = await session.get(Spec, "spec-1")
             assert spec is not None
             assert spec.current_validation_id == "validation-1"
-            assert await session.scalar(select(func.count()).select_from(ActivityLog)) == 0
+            assert (
+                await session.scalar(select(func.count()).select_from(ActivityLog)) == 0
+            )
 
             await effects.apply(session, event)
             await effects.apply(session, event)
@@ -90,7 +92,7 @@ def test_event_effect_is_transactional_idempotent_and_preserves_validation_histo
         async with sessions() as session:
             spec = await session.get(Spec, "spec-1")
             assert spec is not None
-            assert spec.current_validation_id is None
+            assert spec.current_validation_id == "validation-1"
             assert spec.validations == [{"id": "validation-1", "outcome": "success"}]
             activities = tuple(
                 (await session.execute(select(ActivityLog))).scalars().all()
@@ -100,7 +102,7 @@ def test_event_effect_is_transactional_idempotent_and_preserves_validation_histo
             assert activity.action == "code_evidence_linked"
             assert activity.actor_type == "agent"
             assert activity.actor_id == "agent-1"
-            assert activity.details["invalidated_spec_ids"] == ["spec-1"]
+            assert "invalidated_spec_ids" not in activity.details
             assert activity.details["read_model_projection"] == "query_time"
             assert {
                 "relative_path",
@@ -113,7 +115,7 @@ def test_event_effect_is_transactional_idempotent_and_preserves_validation_histo
     asyncio.run(exercise())
 
 
-def test_spec_entity_waiver_events_invalidate_only_the_canonical_board_spec(
+def test_spec_entity_waiver_events_are_metadata_only_across_boards(
     tmp_path,
 ) -> None:
     async def exercise() -> None:
@@ -182,17 +184,14 @@ def test_spec_entity_waiver_events_invalidate_only_the_canonical_board_spec(
         async with sessions() as session:
             spec = await session.get(Spec, "spec-1")
             assert spec is not None
-            assert spec.current_validation_id is None
+            assert spec.current_validation_id == "validation-1"
             activity = await session.scalar(
-                select(ActivityLog).where(ActivityLog.action == "code_traceability_waiver_created")
+                select(ActivityLog).where(
+                    ActivityLog.action == "code_traceability_waiver_created"
+                )
             )
             assert activity is not None
-            assert activity.details["invalidated_spec_ids"] == ["spec-1"]
-            await session.execute(
-                update(Spec)
-                .where(Spec.id == "spec-1")
-                .values(current_validation_id="validation-1")
-            )
+            assert "invalidated_spec_ids" not in activity.details
             await session.commit()
 
         async with sessions() as session:
@@ -201,24 +200,30 @@ def test_spec_entity_waiver_events_invalidate_only_the_canonical_board_spec(
         async with sessions() as session:
             spec = await session.get(Spec, "spec-1")
             assert spec is not None
-            assert spec.current_validation_id is None
+            assert spec.current_validation_id == "validation-1"
             activity = await session.scalar(
-                select(ActivityLog).where(ActivityLog.action == "code_traceability_waiver_cleared")
+                select(ActivityLog).where(
+                    ActivityLog.action == "code_traceability_waiver_cleared"
+                )
             )
             assert activity is not None
-            assert activity.details["invalidated_spec_ids"] == ["spec-1"]
+            assert "invalidated_spec_ids" not in activity.details
 
         wrong_board = created.model_copy(
             update={"event_id": "wrong-board-event", "board_id": "board-2"}
         )
         async with sessions() as session:
-            try:
-                await effects.apply(session, wrong_board)
-            except RuntimeError as exc:
-                assert str(exc) == "code_traceability_event_spec_projection_missing"
-            else:  # pragma: no cover - assertion clarity
-                raise AssertionError("cross-board canonical entity was accepted")
-            await session.rollback()
+            await effects.apply(session, wrong_board)
+            await session.commit()
+        async with sessions() as session:
+            wrong_board_activity = await session.scalar(
+                select(ActivityLog).where(ActivityLog.board_id == "board-2")
+            )
+            assert wrong_board_activity is not None
+            assert "invalidated_spec_ids" not in wrong_board_activity.details
+            spec = await session.get(Spec, "spec-1")
+            assert spec is not None
+            assert spec.current_validation_id == "validation-1"
         await engine.dispose()
 
     asyncio.run(exercise())

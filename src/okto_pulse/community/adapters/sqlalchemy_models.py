@@ -1308,7 +1308,7 @@ class Spec(Base):
     #  ambiguity, ambiguity_justification, general_justification, recommendation,
     #  outcome, threshold_violations, resolved_thresholds, created_at}
     validations: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    # Pointer to the current active validation id — NULL when cleared by backward move.
+    # Pointer to the current active validation id — NULL when a new Draft edition starts.
     # Content lock is ACTIVE when this is non-NULL and the pointed record has outcome='success'.
     current_validation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Archive support
@@ -6903,6 +6903,62 @@ class CardRejectedLifecycleMigrationRow(Base):
         server_default=text("'{}'"),
     )
     migrated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class SpecValidationPointerRepairRow(Base):
+    """Append-only audit for narrowly restoring lost Spec validation pointers.
+
+    Code Traceability historically cleared the pointer without changing the
+    immutable validation history.  The repair records the exact source digest
+    and every fail-closed classification; it never rewrites a validation.
+    """
+
+    __tablename__ = "spec_validation_pointer_repairs"
+    __table_args__ = (
+        UniqueConstraint(
+            "spec_id",
+            "source_digest",
+            name="uq_spec_validation_pointer_repair_source",
+        ),
+        CheckConstraint(
+            "migration_state IN "
+            "('restored', 'latest_not_success', 'no_current_validation', "
+            "'ambiguous_evidence')",
+            name="ck_spec_validation_pointer_repair_state",
+        ),
+        CheckConstraint(
+            "length(source_digest) = 64",
+            name="ck_spec_validation_pointer_repair_digest",
+        ),
+        Index(
+            "ix_spec_validation_pointer_repair_board",
+            "board_id",
+            "migration_state",
+            "repaired_at",
+            "migration_id",
+        ),
+    )
+
+    migration_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    spec_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    migration_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    candidate_validation_id: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    reason_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    details: Mapped[dict] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'"),
+    )
+    repaired_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class DesignSystem(Base):

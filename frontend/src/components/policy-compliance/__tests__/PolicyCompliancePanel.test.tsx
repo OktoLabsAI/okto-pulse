@@ -16,6 +16,8 @@ import {
 import type {
   AllowedTransition,
   PolicyComplianceTransitionDecision,
+  PolicyComplianceLifecycleBinding,
+  PolicyComplianceLifecycleDetails,
 } from '@/types';
 import type {
   SemanticAssessmentCurrentnessReason,
@@ -303,6 +305,133 @@ function guidelineRevisionFor(
         default_threshold: 75,
       }],
     },
+  };
+}
+
+function frozenBinding({
+  bindingId = 'binding-1',
+  guidelineId = 'guideline-1',
+  revisionId = 'guideline-1-revision-3',
+  title = 'Hexagonal architecture',
+  enforcement = 'advisory',
+  status = 'passed',
+  metricId = 'metric-1',
+  metricCode = 'architecture.segregation',
+  metricTitle = 'Segregation',
+  threshold = 75,
+  descriptionTruncated = false,
+  rubricTruncated = false,
+  assessmentOutcome,
+  failedMetricCount,
+  waivedMetricCount,
+  unwaivedFailedMetricCount,
+}: Partial<{
+  bindingId: string;
+  guidelineId: string;
+  revisionId: string;
+  title: string;
+  enforcement: 'advisory' | 'blocking';
+  status: PolicyComplianceLifecycleBinding['status'];
+  metricId: string;
+  metricCode: string;
+  metricTitle: string;
+  threshold: number;
+  descriptionTruncated: boolean;
+  rubricTruncated: boolean;
+  assessmentOutcome: PolicyComplianceLifecycleBinding['metrics'][number]['assessment_outcome'];
+  failedMetricCount: number;
+  waivedMetricCount: number;
+  unwaivedFailedMetricCount: number;
+}> = {}): PolicyComplianceLifecycleBinding {
+  const resolvedOutcome = assessmentOutcome
+    ?? (status === 'passed'
+      ? 'passed'
+      : status === 'failed'
+        ? 'failed'
+        : status === 'waived'
+          ? 'waived'
+          : 'pending');
+  const resolvedWaivedMetricCount = waivedMetricCount
+    ?? (resolvedOutcome === 'waived' ? 1 : 0);
+  const resolvedUnwaivedFailedMetricCount = unwaivedFailedMetricCount
+    ?? (resolvedOutcome === 'failed' ? 1 : 0);
+  return {
+    binding_id: bindingId,
+    guideline_id: guidelineId,
+    revision_id: revisionId,
+    title,
+    enforcement,
+    minimum_confidence: 80,
+    status,
+    failed_metric_count: failedMetricCount
+      ?? resolvedWaivedMetricCount + resolvedUnwaivedFailedMetricCount,
+    waived_metric_count: resolvedWaivedMetricCount,
+    unwaived_failed_metric_count: resolvedUnwaivedFailedMetricCount,
+    metrics: [{
+      metric_id: metricId,
+      code: metricCode,
+      title: metricTitle,
+      description: `${metricTitle} frozen description.`,
+      description_truncated: descriptionTruncated,
+      evaluation_rubric: `${metricTitle} frozen rubric.`,
+      evaluation_rubric_truncated: rubricTruncated,
+      assessment_outcome: resolvedOutcome,
+      direction: 'minimum',
+      default_threshold: threshold,
+      effective_threshold: threshold,
+      threshold_source: 'default',
+    }],
+  };
+}
+
+function frozenLifecycleDetails(
+  bindings: PolicyComplianceLifecycleBinding[] = [frozenBinding()],
+  contextOnly = 0,
+): PolicyComplianceLifecycleDetails {
+  const count = (status: PolicyComplianceLifecycleBinding['status']) =>
+    bindings.filter((binding) => binding.status === status).length;
+  const passed = count('passed');
+  const failed = count('failed');
+  const waived = count('waived');
+  const skipped = count('skipped');
+  const blocking = bindings.filter(
+    (binding) => binding.enforcement === 'blocking',
+  );
+  const advisory = bindings.filter(
+    (binding) => binding.enforcement === 'advisory',
+  );
+  return {
+    counts: {
+      applicable: bindings.length,
+      completed: passed + failed + waived + skipped,
+      passed,
+      failed,
+      waived,
+      skipped,
+      pending: count('pending'),
+      context_only: contextOnly,
+      inconsistent: count('inconsistent'),
+      scope_inconsistent: 0,
+      blocking: blocking.length,
+      advisory: advisory.length,
+      blocking_failed: blocking.filter((binding) => binding.status === 'failed').length,
+      blocking_pending: blocking.filter((binding) => binding.status === 'pending').length,
+      advisory_failed: advisory.filter((binding) => binding.status === 'failed').length,
+      advisory_pending: advisory.filter((binding) => binding.status === 'pending').length,
+      failed_metrics: bindings.reduce(
+        (total, binding) => total + binding.failed_metric_count,
+        0,
+      ),
+      waived_metrics: bindings.reduce(
+        (total, binding) => total + binding.waived_metric_count,
+        0,
+      ),
+      unwaived_failed_metrics: bindings.reduce(
+        (total, binding) => total + binding.unwaived_failed_metric_count,
+        0,
+      ),
+    },
+    applicable_bindings: bindings,
   };
 }
 
@@ -1258,6 +1387,7 @@ describe('guideline compliance summary', () => {
     renderPanel({
       subjectEdition: 2,
       presentationMode: 'lifecycle-edition',
+      lifecycleSnapshot: frozenLifecycleDetails(),
     });
 
     await screen.findByTestId('guideline-compliance-binding-1');
@@ -1296,7 +1426,7 @@ describe('guideline compliance summary', () => {
     );
   });
 
-  it('moves stale evidence out of the lifecycle current slot without exposing stale or receipt noise', async () => {
+  it('keeps same-edition evidence visible when live currentness marks it stale after a version-only change', async () => {
     const stale = assessment({
       receiptId: 'receipt-stale-edition-2',
       validationEdition: 2,
@@ -1318,14 +1448,18 @@ describe('guideline compliance summary', () => {
     renderPanel({
       subjectEdition: 2,
       presentationMode: 'lifecycle-edition',
+      lifecycleSnapshot: frozenLifecycleDetails(),
     });
 
     const card = await screen.findByTestId('guideline-compliance-binding-1');
-    expect(await within(card).findByText('No assessment recorded')).toBeVisible();
+    expect(await within(card).findByTestId('guideline-confidence-binding-1'))
+      .toBeVisible();
+    expect(within(card).getByTestId('lifecycle-policy-status-passed'))
+      .toHaveTextContent('Passed');
+    expect(within(card).queryByText('No assessment recorded'))
+      .not.toBeInTheDocument();
     expect(within(card).queryByText(/stale/i)).not.toBeInTheDocument();
     expect(within(card).queryByText(/receipt-/i)).not.toBeInTheDocument();
-    expect(within(card).queryByTestId('guideline-confidence-binding-1'))
-      .not.toBeInTheDocument();
     expect(policyApiMock.listSemanticGuidelineAssessments).not.toHaveBeenCalled();
 
     fireEvent.click(
@@ -1334,7 +1468,10 @@ describe('guideline compliance summary', () => {
     const previousContent = await screen.findByTestId(
       'policy-compliance-previous-results-content',
     );
-    expect(within(previousContent).getByText('Edition 2')).toBeInTheDocument();
+    expect(within(previousContent).getByText(
+      'No previous policy results are available.',
+    )).toBeInTheDocument();
+    expect(within(previousContent).queryByText('Edition 2')).not.toBeInTheDocument();
     expect(within(previousContent).queryByText(/receipt-/i)).not.toBeInTheDocument();
   });
 
@@ -1462,6 +1599,7 @@ describe('guideline compliance summary', () => {
     renderPanel({
       subjectEdition: 2,
       presentationMode: 'lifecycle-edition',
+      lifecycleSnapshot: frozenLifecycleDetails(),
       resolveSemanticAnchor: () => ({
         state: 'available',
         navigationTarget: 'spec:requirement:tr_boundary',
@@ -1492,6 +1630,410 @@ describe('guideline compliance summary', () => {
     expect(content.indexOf('TR-1:')).toBeLessThan(
       content.indexOf('The requirement leaves'),
     );
+  });
+
+  it('uses a frozen binding without a receipt and never substitutes a later live revision', async () => {
+    dashboardApiMock.getBoardGuidelines.mockResolvedValue([{
+      ...adoptedGuideline(),
+      guideline: {
+        ...adoptedGuideline().guideline,
+        title: 'Later live architecture policy',
+        revision_id: 'guideline-1-revision-9',
+      },
+    }]);
+    policyApiMock.getGuidelineRevision.mockResolvedValue({
+      revision: {
+        metrics: [{
+          ...guidelineRevisionFor('spec').revision.metrics[0],
+          title: 'Later live metric',
+          default_threshold: 99,
+        }],
+      },
+    });
+    policyApiMock.getCurrentSemanticGuidelineAssessment.mockRejectedValue(
+      new PolicyGovernanceApiError({
+        message: 'Assessment not found.',
+        status: 404,
+        kind: 'not_found',
+        code: 'semantic_assessment_not_found',
+      }),
+    );
+
+    renderPanel({
+      subjectEdition: 4,
+      presentationMode: 'lifecycle-edition',
+      lifecycleSnapshot: frozenLifecycleDetails([
+        frozenBinding({
+          revisionId: 'guideline-1-revision-3',
+          title: 'Frozen architecture policy',
+          enforcement: 'blocking',
+          status: 'pending',
+          metricTitle: 'Frozen segregation metric',
+          threshold: 72,
+        }),
+      ]),
+    });
+
+    const card = await screen.findByTestId('guideline-compliance-binding-1');
+    expect(within(card).getByText('Frozen architecture policy')).toBeVisible();
+    expect(within(card).getByText('Frozen segregation metric')).toBeVisible();
+    expect(within(card).getByText(/Minimum 72/)).toBeVisible();
+    expect(within(card).getByText('No assessment recorded')).toBeVisible();
+    expect(within(card).getByTestId('lifecycle-policy-status-pending'))
+      .toHaveTextContent('Not assessed');
+    expect(screen.queryByText(/Later live/)).not.toBeInTheDocument();
+    expect(dashboardApiMock.getBoardGuidelines).not.toHaveBeenCalled();
+    expect(policyApiMock.getGuidelineRevision).not.toHaveBeenCalled();
+    expect(policyApiMock.getCurrentSemanticGuidelineAssessment).toHaveBeenCalledWith(
+      'board-1',
+      'spec',
+      'spec-1',
+      'binding-1',
+      'detail',
+      expect.any(AbortSignal),
+      4,
+    );
+  });
+
+  it('shows frozen passed, skipped and advisory outcomes with their enforcement', async () => {
+    policyApiMock.getCurrentSemanticGuidelineAssessment.mockRejectedValue(
+      new PolicyGovernanceApiError({
+        message: 'Assessment detail not found.',
+        status: 404,
+        kind: 'not_found',
+        code: 'semantic_assessment_not_found',
+      }),
+    );
+    renderPanel({
+      subjectEdition: 5,
+      presentationMode: 'lifecycle-edition',
+      lifecycleSnapshot: frozenLifecycleDetails([
+        frozenBinding({
+          bindingId: 'binding-passed',
+          guidelineId: 'guideline-passed',
+          revisionId: 'revision-passed',
+          title: 'Passed policy',
+          enforcement: 'blocking',
+          status: 'passed',
+          metricId: 'metric-passed',
+          metricCode: 'quality.passed',
+        }),
+        frozenBinding({
+          bindingId: 'binding-skipped',
+          guidelineId: 'guideline-skipped',
+          revisionId: 'revision-skipped',
+          title: 'Skipped policy',
+          enforcement: 'blocking',
+          status: 'skipped',
+          metricId: 'metric-skipped',
+          metricCode: 'quality.skipped',
+        }),
+        frozenBinding({
+          bindingId: 'binding-advisory',
+          guidelineId: 'guideline-advisory',
+          revisionId: 'revision-advisory',
+          title: 'Advisory policy',
+          enforcement: 'advisory',
+          status: 'failed',
+          metricId: 'metric-advisory',
+          metricCode: 'quality.advisory',
+        }),
+      ]),
+    });
+
+    const passedCard = await screen.findByTestId(
+      'guideline-compliance-binding-passed',
+    );
+    const skippedCard = screen.getByTestId(
+      'guideline-compliance-binding-skipped',
+    );
+    const advisoryCard = screen.getByTestId(
+      'guideline-compliance-binding-advisory',
+    );
+    expect(within(passedCard).getByTestId('lifecycle-policy-status-passed'))
+      .toHaveTextContent('Passed');
+    expect(within(passedCard).getByTestId('compliance-enforcement-blocking'))
+      .toBeVisible();
+    expect(within(skippedCard).getByTestId('lifecycle-policy-status-skipped'))
+      .toHaveTextContent('Skipped');
+    expect(within(skippedCard).getByTestId('policy-compliance-skipped'))
+      .toHaveTextContent('authorized human');
+    expect(within(advisoryCard).getByTestId('lifecycle-policy-status-failed'))
+      .toHaveTextContent('Advisory finding');
+    expect(within(advisoryCard).getByTestId('compliance-enforcement-advisory'))
+      .toBeVisible();
+    expect(within(advisoryCard).getByTestId('policy-compliance-advisory-note'))
+      .toHaveTextContent('does not block validation');
+    expect(dashboardApiMock.getBoardGuidelines).not.toHaveBeenCalled();
+    expect(policyApiMock.getGuidelineRevision).not.toHaveBeenCalled();
+  });
+
+  it('shows a fully waived binding as resolved and labels the waived finding', async () => {
+    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
+      contract_version: 'v1',
+      assessment: assessment({
+        validationEdition: 10,
+        metricResults: [metric({
+          score: 60,
+          defaultThreshold: 75,
+          effectiveThreshold: 75,
+        })],
+      }),
+    });
+
+    renderPanel({
+      subjectEdition: 10,
+      presentationMode: 'lifecycle-edition',
+      lifecycleSnapshot: frozenLifecycleDetails([
+        frozenBinding({ status: 'waived', enforcement: 'blocking' }),
+      ]),
+      resolveSemanticAnchor: () => ({
+        state: 'available',
+        navigationTarget: 'spec:spec-1:description',
+      }),
+    });
+
+    const card = await screen.findByTestId('guideline-compliance-binding-1');
+    expect(within(card).getByTestId('lifecycle-policy-status-waived'))
+      .toHaveTextContent('Waived');
+    expect(within(card).getByTestId('policy-compliance-waived'))
+      .toHaveTextContent(
+        'All 1 failed metric finding is covered by an approved waiver for this edition.',
+      );
+    expect(within(card).getByTestId('lifecycle-policy-metric-outcome-metric-1'))
+      .toHaveTextContent('Waiver active');
+    expect(await within(card).findByTestId('actionable-pinpoint-badges'))
+      .toHaveTextContent('Waiver active');
+    expect(within(card).queryByRole('button', {
+      name: 'View reassessment guidance',
+    })).not.toBeInTheDocument();
+  });
+
+  it('shows partial waiver coverage without hiding the residual failed finding', async () => {
+    const partial = frozenBinding({ status: 'failed', enforcement: 'blocking' });
+    partial.failed_metric_count = 2;
+    partial.waived_metric_count = 1;
+    partial.unwaived_failed_metric_count = 1;
+    partial.metrics = [
+      {
+        ...partial.metrics[0],
+        assessment_outcome: 'waived',
+      },
+      {
+        ...partial.metrics[0],
+        metric_id: 'metric-2',
+        code: 'architecture.residual',
+        title: 'Residual finding',
+        assessment_outcome: 'failed',
+      },
+    ];
+    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
+      contract_version: 'v1',
+      assessment: assessment({
+        validationEdition: 11,
+        metricResults: [
+          metric({
+            score: 60,
+            defaultThreshold: 75,
+            effectiveThreshold: 75,
+          }),
+          metric({
+            id: 'metric-2',
+            resultId: 'metric-result-2',
+            code: 'architecture.residual',
+            score: 55,
+            defaultThreshold: 75,
+            effectiveThreshold: 75,
+          }),
+        ],
+      }),
+    });
+
+    renderPanel({
+      subjectEdition: 11,
+      presentationMode: 'lifecycle-edition',
+      lifecycleSnapshot: frozenLifecycleDetails([partial]),
+      resolveSemanticAnchor: () => ({
+        state: 'available',
+        navigationTarget: 'spec:spec-1:description',
+      }),
+    });
+
+    const card = await screen.findByTestId('guideline-compliance-binding-1');
+    expect(within(card).getByTestId('policy-compliance-partial-waiver'))
+      .toHaveTextContent(
+        '1 failed metric finding is covered by an approved waiver; 1 finding remains unresolved.',
+      );
+    expect(within(card).getByTestId('lifecycle-policy-metric-outcome-metric-1'))
+      .toHaveTextContent('Waiver active');
+    expect(within(card).getByTestId('lifecycle-policy-metric-outcome-metric-2'))
+      .toHaveTextContent('Finding remains');
+    const pinpointBadges = await within(card).findAllByTestId(
+      'actionable-pinpoint-badges',
+    );
+    expect(pinpointBadges[0]).toHaveTextContent('Waiver active');
+    expect(pinpointBadges[1]).toHaveTextContent('Current issue');
+  });
+
+  it.each(['revoked', 'expired'] as const)(
+    'does not treat a %s live waiver record as frozen coverage',
+    async (waiverStatus) => {
+      grant('guidelines.assessments.read', 'guidelines.waiver.read');
+      const inactiveWaiver: SemanticWaiverDetail = {
+        ...waiver(),
+        status: waiverStatus,
+        validation_edition: 12,
+        lifecycle_state: 'current',
+        last_event_type: waiverStatus === 'revoked' ? 'revoke' : 'expire',
+        revoked_by: waiverStatus === 'revoked' ? 'independent-reviewer' : null,
+        revoked_at: waiverStatus === 'revoked'
+          ? '2026-07-30T01:04:00Z'
+          : null,
+        expire_reason: waiverStatus === 'expired' ? 'scheduled_expiry' : null,
+      };
+      policyApiMock.listSemanticMetricWaivers.mockResolvedValue(
+        page([inactiveWaiver]),
+      );
+      policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
+        contract_version: 'v1',
+        assessment: assessment({
+          validationEdition: 12,
+          metricResults: [metric({
+            score: 60,
+            defaultThreshold: 75,
+            effectiveThreshold: 75,
+          })],
+        }),
+      });
+
+      renderPanel({
+        subjectEdition: 12,
+        presentationMode: 'lifecycle-edition',
+        lifecycleSnapshot: frozenLifecycleDetails([
+          frozenBinding({ status: 'failed', enforcement: 'blocking' }),
+        ]),
+        resolveSemanticAnchor: () => ({
+          state: 'available',
+          navigationTarget: 'spec:spec-1:description',
+        }),
+      });
+
+      const card = await screen.findByTestId('guideline-compliance-binding-1');
+      expect(await within(card).findByTestId('actionable-pinpoint-badges'))
+        .toHaveTextContent('Current issue');
+      expect(within(card).getByTestId('lifecycle-policy-status-failed'))
+        .toHaveTextContent('Failed');
+      expect(within(card).queryByText('Waiver active')).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByText('Technical audit'));
+      await waitFor(() => {
+        expect(policyApiMock.listSemanticMetricWaivers).toHaveBeenCalled();
+      });
+      fireEvent.click(screen.getByTestId('semantic-waivers-toggle'));
+      expect(await screen.findByText(
+        `architecture.segregation · ${waiverStatus}`,
+      )).toBeVisible();
+      expect(within(card).getByTestId('actionable-pinpoint-badges'))
+        .toHaveTextContent('Current issue');
+      expect(within(card).queryByText('Waiver active')).not.toBeInTheDocument();
+    },
+  );
+
+  it('renders v2 evidence against the same frozen lifecycle authority as v1', async () => {
+    const v2 = currentV2Assessment('spec', 'spec-1');
+    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
+      ...v2,
+      assessment: {
+        ...v2.assessment,
+        validation_edition: 6,
+      },
+    });
+
+    renderPanel({
+      subjectEdition: 6,
+      presentationMode: 'lifecycle-edition',
+      lifecycleSnapshot: frozenLifecycleDetails(),
+      resolveSemanticAnchor: () => ({
+        state: 'available',
+        navigationTarget: 'spec:spec-1:technical_requirements',
+      }),
+    });
+
+    const card = await screen.findByTestId('guideline-compliance-binding-1');
+    expect(within(card).getByTestId('lifecycle-policy-status-passed'))
+      .toHaveTextContent('Passed');
+    expect(within(card).getByText('Domain boundary is explicit')).toBeVisible();
+    expect(within(card).getByTestId('guideline-metric-ring-metric-1'))
+      .toHaveAttribute('data-status', 'met');
+    expect(dashboardApiMock.getBoardGuidelines).not.toHaveBeenCalled();
+    expect(policyApiMock.getGuidelineRevision).not.toHaveBeenCalled();
+  });
+
+  it('signals when frozen policy text was bounded instead of hiding truncation', async () => {
+    const current = assessment({ validationEdition: 9 });
+    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
+      contract_version: 'v1',
+      assessment: current,
+    });
+    renderPanel({
+      subjectEdition: 9,
+      presentationMode: 'lifecycle-edition',
+      lifecycleSnapshot: frozenLifecycleDetails([
+        frozenBinding({
+          descriptionTruncated: true,
+          rubricTruncated: true,
+        }),
+      ]),
+    });
+
+    const signal = await screen.findByTestId(
+      'guideline-metric-truncated-metric-1',
+    );
+    expect(signal).toHaveTextContent('Policy text excerpt truncated');
+    expect(signal).toHaveAttribute(
+      'title',
+      'The frozen policy text was shortened for this view.',
+    );
+  });
+
+  it('fails closed when the lifecycle snapshot is unavailable without loading live authority', async () => {
+    renderPanel({
+      subjectEdition: 7,
+      presentationMode: 'lifecycle-edition',
+      lifecycleSnapshot: null,
+    });
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'The frozen policy scope for this edition could not be verified.',
+    );
+    expect(dashboardApiMock.getBoardGuidelines).not.toHaveBeenCalled();
+    expect(policyApiMock.getGuidelineRevision).not.toHaveBeenCalled();
+    expect(policyApiMock.getCurrentSemanticGuidelineAssessment)
+      .not.toHaveBeenCalled();
+  });
+
+  it('keeps verified frozen cards visible when another scope item is inconsistent', async () => {
+    const snapshot = frozenLifecycleDetails();
+    snapshot.counts.scope_inconsistent = 1;
+    policyApiMock.getCurrentSemanticGuidelineAssessment.mockResolvedValue({
+      contract_version: 'v1',
+      assessment: assessment({ validationEdition: 8 }),
+    });
+
+    renderPanel({
+      subjectEdition: 8,
+      presentationMode: 'lifecycle-edition',
+      lifecycleSnapshot: snapshot,
+    });
+
+    expect(await screen.findByTestId('policy-compliance-scope-inconsistent'))
+      .toHaveTextContent('1 frozen policy scope item is unavailable');
+    expect(screen.getByTestId('guideline-compliance-binding-1'))
+      .toHaveTextContent('Hexagonal architecture');
+    expect(screen.getByTestId('policy-compliance-scope-inconsistent'))
+      .toHaveTextContent('no current board policy was substituted');
+    expect(dashboardApiMock.getBoardGuidelines).not.toHaveBeenCalled();
+    expect(policyApiMock.getGuidelineRevision).not.toHaveBeenCalled();
   });
 
   it('preserves the last valid v2 evidence and offers retry after a refresh error', async () => {

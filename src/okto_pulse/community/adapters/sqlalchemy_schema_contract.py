@@ -160,6 +160,7 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "guideline_retirements",
         "permission_introduction_audit",
         "card_rejected_lifecycle_migrations",
+        "spec_validation_pointer_repairs",
         "policy_compliance_receipts",
         "policy_compliance_adopted_revisions",
         "policy_compliance_findings",
