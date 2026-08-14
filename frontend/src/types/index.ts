@@ -13,6 +13,7 @@ export type CardStatus =
   | 'started'
   | 'in_progress'
   | 'validation'
+  | 'rejected'
   | 'on_hold'
   | 'done'
   | 'cancelled';
@@ -22,9 +23,19 @@ export const CARD_STATUSES: CardStatus[] = [
   'started',
   'in_progress',
   'validation',
+  'rejected',
   'on_hold',
   'done',
   'cancelled',
+];
+
+/**
+ * Card creation may only enter at the beginning of the lifecycle. Rejected
+ * and every advanced state are consequences of governed transitions.
+ */
+export const CREATABLE_CARD_STATUSES: CardStatus[] = [
+  'not_started',
+  'started',
 ];
 
 export const STATUS_LABELS: Record<CardStatus, string> = {
@@ -32,6 +43,7 @@ export const STATUS_LABELS: Record<CardStatus, string> = {
   started: 'Started',
   in_progress: 'In Progress',
   validation: 'Validation',
+  rejected: 'Rejected',
   on_hold: 'On Hold',
   done: 'Done',
   cancelled: 'Cancelled',
@@ -2246,6 +2258,11 @@ export interface Card {
   linked_test_task_ids?: string[] | null;
   skip_task_requirement_link_gate?: boolean;
   validations?: ValidationEntry[] | null;
+  rejection_records?: CardRejectionRecord[] | null;
+  current_rejection_kind?: CardRejectionKind | null;
+  current_rejection_id?: string | null;
+  current_rejection_code?: string | null;
+  current_rejection_summary?: string | null;
   // Cancellation justification (set only while status === 'cancelled')
   cancellation_reason?: string | null;
   cancelled_at?: string | null;
@@ -2264,6 +2281,8 @@ export type TaskValidationVerdict = 'pass' | 'fail';
  * `summary`) here: those are response/history compatibility fields.
  */
 export interface TaskValidationSubmitPayload {
+  expected_subject_version: number;
+  idempotency_key: string;
   confidence: number;
   confidence_justification: string;
   estimated_completeness: number;
@@ -2272,6 +2291,25 @@ export interface TaskValidationSubmitPayload {
   drift_justification: string;
   general_justification: string;
   recommendation: TaskValidationRecommendation;
+}
+
+export type CardRejectionKind = 'task_validation' | 'completion_gate';
+
+export interface CardRejectionCause {
+  kind: CardRejectionKind;
+  id: string;
+  code: string;
+  summary: string;
+}
+
+export interface CardRejectionRecord extends CardRejectionCause {
+  card_id?: string;
+  board_id?: string;
+  source_id?: string | null;
+  reason_codes?: string[];
+  created_by?: string;
+  created_at?: string;
+  subject_version?: number;
 }
 
 export interface TaskValidationResolvedThresholds {
@@ -2342,6 +2380,18 @@ export interface ValidationEntry {
   threshold_violations?: string[];
   resolved_thresholds?: TaskValidationResolvedThresholds | null;
   reviewer_separation?: TaskValidationReviewerSeparation | null;
+  expected_subject_version?: number;
+  idempotency_key?: string;
+  validation_outcome?: TaskValidationOutcome;
+  completion_outcome?: 'completed' | 'rejected';
+  completion_gate_failures?: Array<{
+    code: string;
+    summary: string;
+    reason_codes?: string[];
+  }>;
+  rejection_cause?: CardRejectionCause | null;
+  subject_version?: number;
+  replayed?: boolean;
 
   created_at: string;
   card_status?: CardStatus | null;
@@ -2379,6 +2429,10 @@ export interface CardSummary {
   linked_test_task_ids?: string[] | null;
   skip_task_requirement_link_gate?: boolean;
   archived?: boolean;
+  current_rejection_kind?: CardRejectionKind | null;
+  current_rejection_id?: string | null;
+  current_rejection_code?: string | null;
+  current_rejection_summary?: string | null;
 }
 
 export interface KanbanColumnMeta {

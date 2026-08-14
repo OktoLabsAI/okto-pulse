@@ -28,13 +28,32 @@ This table is the **single source of truth** for MCP-level errors. Before any ad
 
 ## Card / Move Transitions
 
+For **Normal and Bug** cards, an admitted task-validation submission evaluates
+both the assessment and the completion gates. A failed assessment, or a passed
+assessment followed by a blocking completion gate, atomically moves the card
+from `validation` to `rejected` and publishes the sealed Current rejection
+cause. `rejected` means **rework is required**, not "waiting for another
+validator": do not resubmit validation from that status. The only public rework
+edge is `rejected` → `in_progress`; after the implementation changes, submit a
+new executor report when moving back to `validation`, then create a new
+validation attempt. Historical validations and rejection records remain
+append-only.
+
 | Error message | Cause | Fix |
 |---|---|---|
 | `"A conclusion is required when moving a card to Validation"` / `"A conclusion is required when moving a card to Done"` | Missing executor report: `conclusion`, `completeness`, `completeness_justification`, `drift`, `drift_justification` | Add all 5 parameters to `okto_pulse_move_card`. |
 | `"Card type 'test' is not subject to validation gate"` | Called `okto_pulse_submit_task_validation` on a test card | Test cards skip the validation gate — move directly to `done` after scenarios are `passed`. |
 | `"N test scenario(s) still have status 'draft'"` / `"ready"` | Test card's linked scenarios not updated | Call `okto_pulse_update_test_scenario_status(status="passed")` for each linked scenario, then retry `okto_pulse_move_card`. If the spec is `validated` or `done`, make sure the scenario is already linked to this executable test card (`started`, `in_progress`, `validation`, or `done`); otherwise the scenario status call remains blocked by `status_not_mutable`. |
 | `"Cannot move card forward: spec must be at least 'in_progress'"` | Spec is in `approved` or `validated` | Move the spec to `in_progress` first via `okto_pulse_move_spec` (requires `okto_pulse_submit_spec_evaluation` with `recommendation=approve` on a `validated` spec). |
-| `"Validation gate is active. Move card to 'validation' first"` | Tried to move a normal card directly to `done` | Move to `validation` with the executor report, then `okto_pulse_submit_task_validation`. |
+| `"Validation gate is active. Move card to 'validation' first"` | Tried to move a Normal or Bug card directly to `done` | Move to `validation` with the executor report, then `okto_pulse_submit_task_validation`. |
+| `"Card is not in 'validation' status"` | Validation was requested before the implementor completed the handoff, or was retried after the card had already become `rejected` | Confirm the live card status. From `in_progress`, move it to `validation` with a complete executor report before the validator submits. From `rejected`, first follow the rework handoff below; never loop validation submissions against the same rejected attempt. |
+| `card_rejected_rework_handoff_required` | An implementation, content, evidence, implementation-target, or code-traceability mutation was attempted while a Normal or Bug card is `rejected`; operational state is frozen until ownership returns to the implementor | Read the Current rejection cause, move the card exactly `rejected` → `in_progress`, remediate it, and provide a **new executor report** on the next move to `validation`. |
+| `current_rejection_cause_missing` | A legacy or damaged `rejected` card has no sealed Current cause, so Pulse cannot safely explain the requested rework | Do not bypass or resubmit validation. Repair or migrate the causal record through the operator path, then retry `rejected` → `in_progress`. |
+| `card_initial_status_invalid` / schema validation for `status` | A card create attempted to start directly in `rejected` (or another non-initial state) | Create only in `not_started` or `started`. `rejected` is consequence-only and can be assigned only by an admitted validation/completion decision. |
+| `card_transition_not_allowed` / schema validation for `status` | `okto_pulse_move_card` used `rejected` as a manual target, or attempted any edge other than the public lifecycle contract | Never move a card manually into `rejected`; it is an internal gate consequence. From `rejected`, the sole public target is `in_progress`. |
+| `task_validation_subject_version_conflict` | The card changed after the validation request was prepared | Reload gate context and retry with the new `expected_subject_version` and a **new** idempotency key. |
+| `task_validation_idempotency_conflict` | The same idempotency key was reused with a different validation request | Preserve the original key only for an exact retry of the same payload; use a new key for a changed assessment. |
+| `task_validation_history_append_only` | Tried to delete an admitted task validation, including one referenced by a Current rejection cause | Keep the immutable causal history. After rework, record a new validation attempt; do not edit or delete the earlier result. |
 
 ## Card Creation
 

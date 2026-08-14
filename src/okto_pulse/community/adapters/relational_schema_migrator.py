@@ -433,6 +433,13 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "receipts, adopted revisions, and findings with keyset indexes.",
     ),
     (
+        "_migrate_card_rejected_lifecycle",
+        "post_create_all",
+        False,
+        "Add immutable card rejection cause/history storage and converge only "
+        "legacy Normal/Bug cards with a demonstrably failed latest validation.",
+    ),
+    (
         "_migrate_policy_waiver_v1_schema",
         "post_create_all",
         False,

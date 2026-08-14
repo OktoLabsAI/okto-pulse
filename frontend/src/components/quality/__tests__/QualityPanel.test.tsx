@@ -821,32 +821,14 @@ describe('QualityPanel', () => {
     ));
   });
 
-  it.each([
-    {
-      subjectType: 'ideation' as const,
-      subjectStatus: 'review' as const,
-      subjectArchived: false,
-      reason: 'only while the Ideation is Evaluating',
-    },
-    {
-      subjectType: 'refinement' as const,
-      subjectStatus: 'approved' as const,
-      subjectArchived: true,
-      reason: 'archived subjects cannot receive',
-    },
-  ])('fails the writer closed outside accepted lifecycle: $reason', async ({
-    subjectType,
-    subjectStatus,
-    subjectArchived,
-    reason,
-  }) => {
+  it('keeps manual ambiguity authoring unavailable outside its lifecycle without an inline warning', async () => {
     render(
       <QualityPanel
-        subjectType={subjectType}
+        subjectType="ideation"
         subjectId="subject-1"
         subjectVersion={7}
-        subjectStatus={subjectStatus}
-        subjectArchived={subjectArchived}
+        subjectStatus="review"
+        subjectArchived={false}
         canRead
         canAssess
         canProposeQuestions
@@ -855,7 +837,30 @@ describe('QualityPanel', () => {
 
     await screen.findByTestId('quality-score-ring');
     expect(screen.queryByRole('button', { name: 'Record assessment' })).not.toBeInTheDocument();
-    expect(screen.getByTestId('quality-read-only')).toHaveTextContent(reason);
+    expect(screen.queryByTestId('quality-read-only')).not.toBeInTheDocument();
+    expect(screen.queryByText(/manual ambiguity assessment is available only/i))
+      .not.toBeInTheDocument();
+  });
+
+  it('retains the actionable archive explanation when ambiguity authoring is unavailable', async () => {
+    render(
+      <QualityPanel
+        subjectType="refinement"
+        subjectId="subject-1"
+        subjectVersion={7}
+        subjectStatus="approved"
+        subjectArchived
+        canRead
+        canAssess
+        canProposeQuestions
+      />,
+    );
+
+    await screen.findByTestId('quality-score-ring');
+    expect(screen.queryByRole('button', { name: 'Record assessment' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('quality-read-only')).toHaveTextContent(
+      'archived subjects cannot receive',
+    );
   });
 
   it('omits the question composer and sends no questions without the Q&A ask leaf', async () => {

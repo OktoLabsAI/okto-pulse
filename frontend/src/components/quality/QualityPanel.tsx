@@ -1474,9 +1474,7 @@ export function QualityPanel({
       ? 'Read-only: archived subjects cannot receive manual quality assessments.'
       : !canAssess
         ? 'Read-only: your effective board permissions do not allow recording assessments.'
-        : subjectType === 'ideation'
-          ? 'Read-only: manual ambiguity assessment is available only while the Ideation is Evaluating.'
-          : 'Read-only: manual ambiguity assessment is available only while the Refinement is Approved.';
+        : null;
 
   if (presentationMode === 'lifecycle-edition') {
     const currentForEdition = current?.lifecycle_state === 'current'
@@ -1698,11 +1696,11 @@ export function QualityPanel({
               disabled={loading || Boolean(error)}
               onRecorded={reload}
             />
-          ) : (
+          ) : writeUnavailableReason ? (
             <p className="rounded-lg border border-surface-200 bg-surface-50 p-3 text-xs text-surface-600 dark:border-surface-700 dark:bg-surface-900/40 dark:text-surface-300">
               {writeUnavailableReason}
             </p>
-          )
+          ) : null
         )}
 
         <CollapsibleEvidenceSection
@@ -1961,14 +1959,14 @@ export function QualityPanel({
             disabled={loading || Boolean(error)}
             onRecorded={reload}
           />
-        ) : (
+        ) : writeUnavailableReason ? (
           <p
             className="rounded-lg border border-surface-200 bg-surface-50 p-3 text-xs text-surface-600 dark:border-surface-700 dark:bg-surface-900/40 dark:text-surface-300"
             data-testid="quality-read-only"
           >
             {writeUnavailableReason}
           </p>
-        )
+        ) : null
       )}
 
       <CollapsibleEvidenceSection

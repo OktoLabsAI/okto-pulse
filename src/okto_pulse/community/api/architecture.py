@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases import ConflictError, EntityNotFoundError
+from okto_pulse.core.application.errors import CardOperationError
 from okto_pulse.core.domain.human_validation_cycle import (
     SubjectEditRequiresDraftError,
 )
@@ -641,6 +642,11 @@ async def copy_architecture_from_spec_to_card(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=error.to_error_dict(),
+        ) from error
+    except CardOperationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=error.to_dict(),
         ) from error
     except ValueError as error:
         raise _http_error_from_value(error)

@@ -1586,21 +1586,15 @@ class SpecDependency(Base):
     source_title_on_create: Mapped[str | None] = mapped_column(
         String(500), nullable=True
     )
-    source_edition_on_create: Mapped[int | None] = mapped_column(
-        Integer, nullable=True
-    )
+    source_edition_on_create: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_title_on_remove: Mapped[str | None] = mapped_column(
         String(500), nullable=True
     )
-    source_edition_on_remove: Mapped[int | None] = mapped_column(
-        Integer, nullable=True
-    )
+    source_edition_on_remove: Mapped[int | None] = mapped_column(Integer, nullable=True)
     target_title_on_remove: Mapped[str | None] = mapped_column(
         String(500), nullable=True
     )
-    target_edition_on_remove: Mapped[int | None] = mapped_column(
-        Integer, nullable=True
-    )
+    target_edition_on_remove: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class SpecDependencyOperation(Base):
@@ -2264,10 +2258,27 @@ class Card(Base):
     screen_mockups: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Knowledge bases: [{id, title, description, content, mime_type, source}]
     knowledge_bases: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    # Task validations: [{id, card_id, board_id, reviewer_id, confidence, confidence_justification,
-    # estimated_completeness, completeness_justification, estimated_drift, drift_justification,
-    # general_justification, recommendation, outcome, threshold_violations, created_at}]
+    # Task validations: append-only public assessment fields (including
+    # reviewer_id + reviewer_name) plus private idempotency ledger fields
+    # (idempotency_key, request_digest and exact response replay snapshot).
     validations: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Append-only rejection-cause history for both Task Validation and completion
+    # gates. Current always points to one record here; ``source_id`` on that
+    # record identifies the immutable validation attempt that caused rejection.
+    rejection_records: Mapped[list] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'"),
+    )
+    current_rejection_kind: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    current_rejection_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    current_rejection_code: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+    current_rejection_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # --- Bug card fields ---
     card_type: Mapped[CardType] = mapped_column(
@@ -6824,6 +6835,61 @@ class SemanticGuidelineLegacyMigrationRow(Base):
     board_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     guideline_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     migration_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    details: Mapped[dict] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'"),
+    )
+    migrated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class CardRejectedLifecycleMigrationRow(Base):
+    """Append-only audit of legacy Validation -> Rejected convergence.
+
+    The source digest freezes the evidence inspected by the migration.  A
+    repeated startup must reproduce the same decision, while any subsequent
+    human-authored validation produces a distinct audit fact instead of
+    rewriting history.
+    """
+
+    __tablename__ = "card_rejected_lifecycle_migrations"
+    __table_args__ = (
+        UniqueConstraint(
+            "card_id",
+            "source_digest",
+            name="uq_card_rejected_migration_source",
+        ),
+        CheckConstraint(
+            "migration_state IN "
+            "('migrated', 'already_rejected', 'not_rejected', "
+            "'ambiguous_evidence', 'excluded_test', 'quarantined')",
+            name="ck_card_rejected_migration_state",
+        ),
+        CheckConstraint(
+            "length(source_digest) = 64",
+            name="ck_card_rejected_migration_digest",
+        ),
+        Index(
+            "ix_card_rejected_migration_board",
+            "board_id",
+            "migration_state",
+            "migrated_at",
+            "migration_id",
+        ),
+    )
+
+    migration_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    card_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    migration_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    latest_validation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    reason_code: Mapped[str] = mapped_column(String(128), nullable=False)
     source_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     details: Mapped[dict] = mapped_column(
         JSON,

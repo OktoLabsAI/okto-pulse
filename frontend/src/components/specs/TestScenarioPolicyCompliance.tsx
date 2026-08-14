@@ -4,7 +4,6 @@ import toast from 'react-hot-toast';
 
 import {
   PolicyCompliancePanel,
-  PolicyComplianceTransitionPreview,
   usePolicyTransitionAuthority,
 } from '@/components/policy-compliance';
 import { useDashboardApi } from '@/services/api';
@@ -237,10 +236,6 @@ export function TestScenarioPolicyCompliance({
           className="space-y-3"
           data-testid="test-scenario-policy-compliance"
         >
-          <PolicyComplianceTransitionPreview
-            preview={authority.preview}
-            rejection={authority.rejection}
-          />
           <PolicyCompliancePanel
             boardId={boardId}
             entityType="test_scenario"

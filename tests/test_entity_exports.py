@@ -470,6 +470,303 @@ async def test_reader_projects_cards_and_qa_for_human_consumption() -> None:
 
 
 @pytest.mark.asyncio
+async def test_card_rejection_export_separates_current_cause_from_history() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    sessions = build_community_session_factory(engine)
+    async with sessions() as session:
+        session.add_all(
+            [
+                Board(id="b", name="Board", owner_id="u", realm_id="realm"),
+                Card(
+                    id="card",
+                    board_id="b",
+                    title="Implement availability controls",
+                    status="rejected",
+                    created_by="u",
+                    validations=[
+                        {"id": "validation-old", "outcome": "success"},
+                        {
+                            "id": "validation-current",
+                            "card_id": "card",
+                            "board_id": "b",
+                            "evaluator_id": "reviewer-1",
+                            "reviewer_name": "Clara Reviewer",
+                            "confidence": 91,
+                            "confidence_justification": "Evidence was reproducible.",
+                            "estimated_completeness": 70,
+                            "completeness": 70,
+                            "completeness_justification": "One proof is missing.",
+                            "estimated_drift": 12,
+                            "drift": 12,
+                            "drift_justification": "The approach remained aligned.",
+                            "outcome": "failed",
+                            "validation_outcome": "failed",
+                            "completion_outcome": "rejected",
+                            "general_justification": "Availability evidence is missing.",
+                            "summary": "Availability evidence is missing.",
+                            "expected_subject_version": 11,
+                            "idempotency_key": "attempt-task",
+                            "request_digest": "a" * 64,
+                            "response": {
+                                "subject_version": 12,
+                                "replayed": False,
+                            },
+                        },
+                    ],
+                    rejection_records=[
+                        {
+                            "id": "gate-rejection-old",
+                            "kind": "completion_gate",
+                            "code": "resource_gate_blocked",
+                            "summary": "A prior resource gate blocked completion.",
+                        },
+                        {
+                            "id": "task-rejection-current",
+                            "card_id": "card",
+                            "board_id": "b",
+                            "kind": "task_validation",
+                            "source_id": "validation-current",
+                            "code": "task_validation_failed",
+                            "summary": "Availability evidence is missing.",
+                            "reason_codes": [
+                                "completeness_below",
+                                "reject_recommendation",
+                            ],
+                            "created_by": "reviewer-1",
+                            "created_at": "2026-08-14T11:00:00+00:00",
+                            "subject_version": 11,
+                        },
+                    ],
+                    current_rejection_kind="task_validation",
+                    current_rejection_id="task-rejection-current",
+                    current_rejection_code="task_validation_failed",
+                    current_rejection_summary="Availability evidence is missing.",
+                ),
+                Card(
+                    id="card-gate",
+                    board_id="b",
+                    title="Verify governed evidence",
+                    status="rejected",
+                    created_by="u",
+                    validations=[
+                        {
+                            "id": "validation-gate",
+                            "evaluator_id": "agent-opaque-2",
+                            "evaluator_name": "Gate Evaluation Agent",
+                            "confidence": 96,
+                            "confidence_justification": "The implementation is clear.",
+                            "completeness": 100,
+                            "completeness_justification": "All work was delivered.",
+                            "drift": 2,
+                            "drift_justification": "No material drift was observed.",
+                            "summary": "Implementation validation passed.",
+                            "recommendation": "approve",
+                            "validation_outcome": "success",
+                            "completion_outcome": "rejected",
+                            "completion_gate_failures": [
+                                {
+                                    "code": "code_evidence_missing",
+                                    "summary": "Required code evidence is missing.",
+                                    "reason_codes": ["code_evidence_missing"],
+                                }
+                            ],
+                            "idempotency_key": "attempt-gate",
+                            "request_digest": "b" * 64,
+                            "expected_subject_version": 8,
+                            "response": {
+                                "card_status": "rejected",
+                                "subject_version": 9,
+                                "replayed": False,
+                            },
+                        }
+                    ],
+                    rejection_records=[
+                        {
+                            "id": "gate-rejection-current",
+                            "card_id": "card-gate",
+                            "board_id": "b",
+                            "kind": "completion_gate",
+                            "source_id": "validation-gate",
+                            "code": "code_evidence_missing",
+                            "summary": "Required code evidence is missing.",
+                            "reason_codes": ["code_evidence_missing"],
+                            "created_by": "reviewer-2",
+                            "created_at": "2026-08-14T12:00:00+00:00",
+                            "subject_version": 8,
+                        }
+                    ],
+                    current_rejection_kind="completion_gate",
+                    current_rejection_id="gate-rejection-current",
+                    current_rejection_code="code_evidence_missing",
+                    current_rejection_summary="Required code evidence is missing.",
+                ),
+            ]
+        )
+        await session.commit()
+        reader = CommunitySqlAlchemyEntityExportReader(session, clock=lambda: _NOW)
+        current = await reader.build_bundle(
+            request=EntityExportRequest(
+                board_id="b",
+                entity_type=EntityExportType.CARD,
+                entity_id="card",
+                history_scope=EntityExportHistoryScope.CURRENT,
+                requested_sections=("base", "card_validation", "card_rejections"),
+            ),
+            disclosure=EntityExportDisclosure(
+                frozenset({"card.validation.read"}),
+                ("base", "card_validation", "card_rejections"),
+            ),
+            actor_id="u",
+            realm_scope=RealmScope.tenant("realm"),
+        )
+        sections = {item.section_key: item.payload for item in current.sections}
+        assert sections["base"]["record"]["current_rejection"] == {
+            "type": "Task validation",
+            "summary": "Availability evidence is missing.",
+        }
+        rendered = render_entity_export_html(current.to_dict())
+        assert "Availability evidence is missing." in rendered
+        assert "Task validation" in rendered
+        assert "task_validation_failed" not in rendered
+        assert "attempt-task" not in rendered
+        assert "a" * 64 not in rendered
+        assert "validation-current" not in rendered
+        assert sections["card_validation"]["embedded"]["validations"] == (
+            {
+                "id": "validation-current",
+                "reviewer": "Clara Reviewer",
+                "confidence": 91,
+                "confidence_justification": "Evidence was reproducible.",
+                "completeness": 70,
+                "completeness_justification": "One proof is missing.",
+                "drift": 12,
+                "drift_justification": "The approach remained aligned.",
+                "summary": "Availability evidence is missing.",
+                "validation_outcome": "failed",
+                "completion_outcome": "rejected",
+            },
+        )
+        assert sections["card_rejections"]["embedded"]["rejection_records"] == (
+            {
+                "id": "task-rejection-current",
+                "summary": "Availability evidence is missing.",
+                "created_at": "2026-08-14T11:00:00+00:00",
+                "cause_type": "Task validation",
+                "reasons": ("Completeness below", "Reject recommendation"),
+            },
+        )
+        assert "reviewer-1" not in rendered
+        assert "Clara Reviewer" in rendered
+
+        sparse = await reader.build_bundle(
+            request=EntityExportRequest(
+                board_id="b",
+                entity_type=EntityExportType.CARD,
+                entity_id="card",
+                history_scope=EntityExportHistoryScope.CURRENT,
+                requested_sections=("base", "card_validation", "card_rejections"),
+            ),
+            disclosure=EntityExportDisclosure(
+                frozenset(),
+                ("base", "card_validation", "card_rejections"),
+            ),
+            actor_id="sparse-reader",
+            realm_scope=RealmScope.tenant("realm"),
+        )
+        sparse_sections = {item.section_key: item.payload for item in sparse.sections}
+        assert "current_rejection" not in sparse_sections["base"]["record"]
+        sparse_manifest = {item.section_key: item for item in sparse.manifest.entries}
+        assert (
+            sparse_manifest["card_validation"].status
+            is EntityExportSectionStatus.OMITTED
+        )
+        assert sparse_manifest["card_validation"].reason_code == "permission_denied"
+        assert (
+            sparse_manifest["card_rejections"].status
+            is EntityExportSectionStatus.OMITTED
+        )
+        assert sparse_manifest["card_rejections"].reason_code == "permission_denied"
+
+        complete = await reader.build_bundle(
+            request=EntityExportRequest(
+                board_id="b",
+                entity_type=EntityExportType.CARD,
+                entity_id="card",
+                history_scope=EntityExportHistoryScope.COMPLETE,
+                requested_sections=("card_validation", "card_rejections"),
+            ),
+            disclosure=EntityExportDisclosure(
+                frozenset({"card.validation.read"}),
+                ("card_validation", "card_rejections"),
+            ),
+            actor_id="u",
+            realm_scope=RealmScope.tenant("realm"),
+        )
+        complete_sections = {
+            item.section_key: item.payload for item in complete.sections
+        }
+        assert len(complete_sections["card_validation"]["embedded"]["validations"]) == 2
+        assert (
+            len(complete_sections["card_rejections"]["embedded"]["rejection_records"])
+            == 2
+        )
+        assert (
+            complete_sections["card_rejections"]["embedded"]["rejection_records"][0][
+                "id"
+            ]
+            == "gate-rejection-old"
+        )
+
+        gate_current = await reader.build_bundle(
+            request=EntityExportRequest(
+                board_id="b",
+                entity_type=EntityExportType.CARD,
+                entity_id="card-gate",
+                history_scope=EntityExportHistoryScope.CURRENT,
+                requested_sections=("base", "card_validation", "card_rejections"),
+            ),
+            disclosure=EntityExportDisclosure(
+                frozenset({"card.validation.read"}),
+                ("base", "card_validation", "card_rejections"),
+            ),
+            actor_id="u",
+            realm_scope=RealmScope.tenant("realm"),
+        )
+        gate_sections = {
+            item.section_key: item.payload for item in gate_current.sections
+        }
+        gate_validation = gate_sections["card_validation"]["embedded"]["validations"]
+        assert len(gate_validation) == 1
+        assert gate_validation[0]["id"] == "validation-gate"
+        assert gate_validation[0]["validation_outcome"] == "success"
+        assert gate_validation[0]["completion_outcome"] == "rejected"
+        assert gate_validation[0]["reviewer"] == "Gate Evaluation Agent"
+        assert "response" not in gate_validation[0]
+        assert "request_digest" not in gate_validation[0]
+        assert "idempotency_key" not in gate_validation[0]
+        assert gate_sections["base"]["record"]["current_rejection"] == {
+            "type": "Completion gate",
+            "summary": "Required code evidence is missing.",
+        }
+        assert gate_sections["card_rejections"]["embedded"]["rejection_records"] == (
+            {
+                "id": "gate-rejection-current",
+                "summary": "Required code evidence is missing.",
+                "created_at": "2026-08-14T12:00:00+00:00",
+                "cause_type": "Completion gate",
+                "reasons": ("Code evidence missing",),
+            },
+        )
+        gate_rendered = render_entity_export_html(gate_current.to_dict())
+        assert "Completion gate" in gate_rendered
+        assert "code_evidence_missing" not in gate_rendered
+        assert "attempt-gate" not in gate_rendered
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_reader_counts_and_emits_only_human_reportable_support_records() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:

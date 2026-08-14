@@ -137,6 +137,15 @@ _CARD_HUMAN_COLUMNS = (
     "cancellation_reason",
 )
 
+_CURRENT_REJECTION_COLUMNS = frozenset(
+    {
+        "current_rejection_kind",
+        "current_rejection_id",
+        "current_rejection_code",
+        "current_rejection_summary",
+    }
+)
+
 _QA_TABLES = frozenset(
     {
         "ideation_qa_items",
@@ -246,6 +255,7 @@ _EMBEDDED_FIELD_SECTIONS: dict[EntityExportType, dict[str, str]] = {
         "screen_mockups": "mockups",
         "knowledge_bases": "knowledge",
         "validations": "card_validation",
+        "rejection_records": "card_rejections",
         "test_scenario_ids": "test_scenarios",
     },
 }
@@ -857,6 +867,11 @@ def _definitions(entity_type: EntityExportType) -> tuple[_SectionDefinition, ...
                 embedded_fields=("validations",),
             ),
             _SectionDefinition(
+                "card_rejections",
+                "card.validation.read",
+                embedded_fields=("rejection_records",),
+            ),
+            _SectionDefinition(
                 "test_scenarios",
                 "spec.tests.read",
                 embedded_fields=("test_scenario_ids",),
@@ -1162,13 +1177,118 @@ def _human_code_investigation_revocation(
     return result
 
 
+def _human_rejection_type(value: object) -> str:
+    return {
+        "task_validation": "Task validation",
+        "completion_gate": "Completion gate",
+    }.get(str(value or "").strip().lower(), "Rejection")
+
+
+def _human_reason_codes(value: object) -> list[str]:
+    if not isinstance(value, list | tuple):
+        return []
+    return [
+        " ".join(str(item).strip().replace("_", " ").split()).capitalize()
+        for item in value
+        if str(item).strip()
+    ]
+
+
+def _human_current_rejection(row: Mapping[str, Any]) -> dict[str, Any] | None:
+    summary = row.get("current_rejection_summary")
+    if summary in (None, ""):
+        return None
+    return {
+        "type": _human_rejection_type(row.get("current_rejection_kind")),
+        "summary": summary,
+    }
+
+
+def _human_card_payload(row: Mapping[str, Any]) -> dict[str, Any]:
+    result = _present_fields(row, _CARD_HUMAN_COLUMNS)
+    if cause := _human_current_rejection(row):
+        result["current_rejection"] = cause
+    return result
+
+
+def _human_task_validation(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Collapse dual aliases and omit the idempotency receipt plumbing."""
+
+    result: dict[str, Any] = {}
+    for field_name in ("id", "created_at"):
+        if row.get(field_name) not in (None, ""):
+            result[field_name] = row[field_name]
+    # A reader needs to know who performed the assessment, not the opaque
+    # identity key used to authorize it.  New task-validation records persist
+    # ``reviewer_name``; ``evaluator_name`` remains a tolerated cross-surface
+    # alias.  Legacy rows that only carry an ID deliberately omit the reviewer
+    # rather than promoting an implementation identifier into report content.
+    reviewer_name = _first_present(row, "reviewer_name", "evaluator_name")
+    if reviewer_name is not None:
+        result["reviewer"] = reviewer_name
+    for metric, legacy_metric in (
+        ("confidence", "confidence"),
+        ("completeness", "estimated_completeness"),
+        ("drift", "estimated_drift"),
+    ):
+        score = _first_present(row, metric, legacy_metric)
+        if score is not None:
+            result[metric] = score
+        justification = row.get(f"{metric}_justification")
+        if justification not in (None, ""):
+            result[f"{metric}_justification"] = justification
+    summary = _first_present(row, "summary", "general_justification")
+    if summary is not None:
+        result["summary"] = summary
+    for field_name in (
+        "recommendation",
+        "validation_outcome",
+        "completion_outcome",
+        "resolved_thresholds",
+    ):
+        if row.get(field_name) not in (None, "", [], {}):
+            result[field_name] = row[field_name]
+    if failures := _human_reason_codes(row.get("threshold_violations")):
+        result["threshold_failures"] = failures
+    if "validation_outcome" not in result:
+        outcome = _first_present(row, "outcome", "verdict")
+        if outcome is not None:
+            result["validation_outcome"] = outcome
+    failures = row.get("completion_gate_failures")
+    if isinstance(failures, list):
+        curated_failures = [
+            {
+                **_present_fields(item, ("summary",)),
+                **(
+                    {"reasons": reasons}
+                    if (reasons := _human_reason_codes(item.get("reason_codes")))
+                    else {}
+                ),
+            }
+            for item in failures
+            if isinstance(item, Mapping)
+        ]
+        curated_failures = [item for item in curated_failures if item]
+        if curated_failures:
+            result["completion_gate_failures"] = curated_failures
+    return result
+
+
+def _human_rejection_record(row: Mapping[str, Any]) -> dict[str, Any]:
+    result = _present_fields(row, ("id", "summary", "created_at"))
+    result["cause_type"] = _human_rejection_type(row.get("kind"))
+    if reasons := _human_reason_codes(row.get("reason_codes")):
+        result["reasons"] = reasons
+    return result
+
+
 def _human_row_payload(table_name: str, row: Mapping[str, Any]) -> dict[str, Any]:
     """Project persisted rows into report vocabulary, not storage vocabulary."""
 
     if table_name in _QA_TABLES or table_name == "quality_proposed_questions":
         return _human_qa_payload(row)
     if table_name == "cards":
-        return _present_fields(row, _CARD_HUMAN_COLUMNS)
+        return _human_card_payload(row)
     if table_name == "checklist_item_results":
         return _human_checklist_item(row)
     if table_name == "semantic_guideline_assessments_v2":
@@ -1205,6 +1325,8 @@ def _model_payload(row: Any, entity_type: EntityExportType) -> dict[str, Any]:
         name = str(column.name)
         if name in _SENSITIVE_COLUMNS:
             continue
+        if entity_type is EntityExportType.CARD and name in _CURRENT_REJECTION_COLUMNS:
+            continue
         if name in separated:
             payload[name] = {
                 "state": "separated",
@@ -1212,6 +1334,12 @@ def _model_payload(row: Any, entity_type: EntityExportType) -> dict[str, Any]:
             }
         else:
             payload[name] = _json_value(getattr(row, name))
+    if entity_type is EntityExportType.CARD:
+        row_values = {
+            name: getattr(row, name, None) for name in _CURRENT_REJECTION_COLUMNS
+        }
+        if cause := _human_current_rejection(row_values):
+            payload["current_rejection"] = cause
     return payload
 
 
@@ -1466,6 +1594,18 @@ class CommunitySqlAlchemyEntityExportReader:
             for column in model.__table__.columns
             if column.name not in separated or column.name in allowed_embedded
         ]
+        if (
+            request.entity_type is EntityExportType.CARD
+            and request.history_scope is EntityExportHistoryScope.CURRENT
+            and "validations" in allowed_embedded
+            and all(
+                getattr(attribute, "key", None) != "rejection_records"
+                for attribute in base_attributes
+            )
+        ):
+            # Every Rejected Current pointer targets its sealed cause record;
+            # that record's source_id selects the validation attempt to render.
+            base_attributes.append(Card.rejection_records)
         row = (
             await self._session.execute(
                 select(model)
@@ -1482,6 +1622,13 @@ class CommunitySqlAlchemyEntityExportReader:
             raise EntityNotFoundError(request.entity_type.value, request.entity_id)
 
         base_payload = _model_payload(row, request.entity_type)
+        if request.entity_type is EntityExportType.CARD and not disclosure.allows(
+            "card.validation.read"
+        ):
+            # The Current rejection pointer is validation governance data, not
+            # an ordinary Card scalar.  Keep it behind the same disclosure
+            # leaf as assessment history and rejection records.
+            base_payload.pop("current_rejection", None)
         now = self._clock().astimezone(timezone.utc)
         subject = EntityExportSubjectSnapshot(
             board_id=request.board_id,
@@ -1658,18 +1805,55 @@ class CommunitySqlAlchemyEntityExportReader:
             if request.history_scope is EntityExportHistoryScope.CURRENT and isinstance(
                 value, list
             ):
+                current_item_id = getattr(base_row, "current_validation_id", None)
+                if field_name == "validations" and getattr(
+                    base_row, "current_rejection_kind", None
+                ) in {"task_validation", "completion_gate"}:
+                    rejection_id = getattr(base_row, "current_rejection_id", None)
+                    records = getattr(base_row, "rejection_records", None) or []
+                    current_record = next(
+                        (
+                            item
+                            for item in records
+                            if isinstance(item, Mapping)
+                            and str(item.get("id")) == str(rejection_id)
+                        ),
+                        None,
+                    )
+                    current_item_id = (
+                        current_record.get("source_id")
+                        if isinstance(current_record, Mapping)
+                        else None
+                    )
+                elif field_name == "rejection_records" and getattr(
+                    base_row, "current_rejection_kind", None
+                ) in {"task_validation", "completion_gate"}:
+                    current_item_id = getattr(base_row, "current_rejection_id", None)
                 value = self._current_embedded(
                     field_name,
                     value,
-                    current_validation_id=getattr(
-                        base_row, "current_validation_id", None
-                    ),
+                    current_item_id=current_item_id,
                     edition=getattr(base_row, "edition", None),
                 )
             if field_name == "screen_mockups":
                 value = _sealed_mockups(value)
             elif definition.key == "spec_validation" and field_name == "validations":
                 value = _seal_spec_validation_pinpoints(value)
+            elif definition.key == "card_validation" and field_name == "validations":
+                value = [
+                    _human_task_validation(item)
+                    for item in value
+                    if isinstance(item, Mapping)
+                ]
+            elif (
+                definition.key == "card_rejections"
+                and field_name == "rejection_records"
+            ):
+                value = [
+                    _human_rejection_record(item)
+                    for item in value
+                    if isinstance(item, Mapping)
+                ]
             embedded[field_name] = value
             value_count = (
                 len(value)
@@ -1812,17 +1996,17 @@ class CommunitySqlAlchemyEntityExportReader:
         field_name: str,
         values: list[Any],
         *,
-        current_validation_id: str | None,
+        current_item_id: str | None,
         edition: int | None,
     ) -> list[Any]:
         if not values:
             return []
-        if field_name == "validations" and current_validation_id:
+        if field_name in {"validations", "rejection_records"} and current_item_id:
             current = [
                 item
                 for item in values
                 if isinstance(item, Mapping)
-                and str(item.get("id")) == str(current_validation_id)
+                and str(item.get("id")) == str(current_item_id)
             ]
             return current
         if edition is not None:
@@ -1834,7 +2018,7 @@ class CommunitySqlAlchemyEntityExportReader:
             ]
             if current:
                 return current
-        if field_name == "validations":
+        if field_name in {"validations", "rejection_records"}:
             # Lifecycle validation has no safe "latest" fallback: no current
             # pointer/current-edition record means there is no current result.
             return []

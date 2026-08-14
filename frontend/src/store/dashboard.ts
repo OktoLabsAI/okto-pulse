@@ -8,6 +8,7 @@ import type {
   BoardSummary,
   CardSummary,
   CardStatus,
+  CardType,
   Agent,
   ColumnPageResponse,
   ColumnsOptInResponse,
@@ -27,6 +28,15 @@ export interface ColumnPageLoadState {
   error: string | null;
 }
 
+/** The server-side result set represented by the currently loaded columns. */
+export interface LoadedColumnsProjection {
+  specIds?: readonly string[];
+  includeUnlinked?: boolean;
+  cardTypesByStatus?: Partial<Record<CardStatus, readonly CardType[]>>;
+  search?: string;
+  includeArchived?: boolean;
+}
+
 let columnRequestSequence = 0;
 
 function emptyColumnPageState(): Record<CardStatus, ColumnPageLoadState> {
@@ -39,6 +49,63 @@ function emptyColumnPageState(): Record<CardStatus, ColumnPageLoadState> {
   );
 }
 
+function normalizedCardType(card: CardSummary): CardType {
+  return card.card_type === 'bug' || card.card_type === 'test'
+    ? card.card_type
+    : 'normal';
+}
+
+function belongsToLoadedProjection(
+  card: CardSummary,
+  projection: LoadedColumnsProjection | null,
+): boolean {
+  if (!projection) return true;
+  if (!projection.includeArchived && card.archived) return false;
+
+  const allowedTypes = projection.cardTypesByStatus?.[card.status];
+  if (allowedTypes && !allowedTypes.includes(normalizedCardType(card))) {
+    return false;
+  }
+
+  const specIds = projection.specIds ?? [];
+  if (specIds.length > 0 || projection.includeUnlinked) {
+    const matchesSpec = card.spec_id != null && specIds.includes(card.spec_id);
+    const matchesUnlinked = projection.includeUnlinked && card.spec_id == null;
+    if (!matchesSpec && !matchesUnlinked) return false;
+  }
+
+  const search = projection.search?.trim().toLocaleLowerCase();
+  if (search) {
+    const searchable = `${card.title} ${card.description ?? ''}`.toLocaleLowerCase();
+    if (!searchable.includes(search)) return false;
+  }
+  return true;
+}
+
+function adjustColumnMeta(
+  meta: KanbanColumnMeta | undefined,
+  cardType: CardType,
+  overallDelta: number,
+  filteredDelta: number,
+): KanbanColumnMeta | undefined {
+  if (!meta) return undefined;
+  return {
+    ...meta,
+    total_overall: Math.max(0, meta.total_overall + overallDelta),
+    total_filtered: Math.max(0, meta.total_filtered + filteredDelta),
+    facets: {
+      ...meta.facets,
+      card_type: {
+        ...meta.facets.card_type,
+        [cardType]: Math.max(
+          0,
+          (meta.facets.card_type[cardType] ?? 0) + filteredDelta,
+        ),
+      },
+    },
+  };
+}
+
 interface DashboardState {
   // Data
   boards: BoardSummary[];
@@ -46,6 +113,7 @@ interface DashboardState {
   currentBoard: Board | null;
   columns: Record<CardStatus, CardSummary[]>;
   columnsMeta: Partial<Record<CardStatus, KanbanColumnMeta>>;
+  columnsProjection: LoadedColumnsProjection | null;
   columnsGeneration: number;
   columnPageState: Record<CardStatus, ColumnPageLoadState>;
   agents: Agent[];
@@ -62,7 +130,7 @@ interface DashboardState {
   setSharedBoards: (boards: BoardSummary[]) => void;
   setCurrentBoard: (board: Board | null) => void;
   setColumns: (columns: Record<CardStatus, CardSummary[]>) => void;
-  beginColumnsGeneration: () => number;
+  beginColumnsGeneration: (projection?: LoadedColumnsProjection) => number;
   applyColumnsBatch: (generation: number, response: ColumnsOptInResponse) => boolean;
   beginColumnPage: (column: CardStatus, offset: number) => ColumnPageToken | null;
   applyColumnPage: (token: ColumnPageToken, response: ColumnPageResponse) => boolean;
@@ -102,6 +170,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   currentBoard: null,
   columns: {} as Record<CardStatus, CardSummary[]>,
   columnsMeta: {},
+  columnsProjection: null,
   columnsGeneration: 0,
   columnPageState: emptyColumnPageState(),
   agents: [],
@@ -120,6 +189,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
       currentBoard: board,
       columns: {} as Record<CardStatus, CardSummary[]>,
       columnsMeta: {},
+      columnsProjection: null,
       columnsGeneration: state.columnsGeneration + 1,
       columnPageState: emptyColumnPageState(),
     };
@@ -127,13 +197,26 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   setColumns: (columns) => set((state) => ({
     columns,
     columnsMeta: {},
+    columnsProjection: null,
     columnsGeneration: state.columnsGeneration + 1,
     columnPageState: emptyColumnPageState(),
   })),
-  beginColumnsGeneration: () => {
+  beginColumnsGeneration: (projection) => {
     const generation = get().columnsGeneration + 1;
     set({
       columnsGeneration: generation,
+      columnsProjection: projection ? {
+        ...projection,
+        specIds: projection.specIds ? [...projection.specIds] : undefined,
+        cardTypesByStatus: projection.cardTypesByStatus
+          ? Object.fromEntries(
+              Object.entries(projection.cardTypesByStatus).map(([status, types]) => [
+                status,
+                types ? [...types] : types,
+              ]),
+            )
+          : undefined,
+      } : null,
       columnPageState: emptyColumnPageState(),
     });
     return generation;
@@ -231,6 +314,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   // Card CRUD
   addCardToColumn: (card) => {
+    if (card.status === 'rejected') return;
     const { columns } = get();
     const column = columns[card.status] || [];
     set({
@@ -242,15 +326,64 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   },
 
   updateCardInColumn: (card) => {
-    const { columns } = get();
-    const column = columns[card.status] || [];
-    set({
-      columns: {
-        ...columns,
-        [card.status]: column
-          .map((c) => (c.id === card.id ? card : c))
-          .sort((a, b) => a.position - b.position),
-      },
+    set((state) => {
+      if (state.currentBoard && card.board_id !== state.currentBoard.id) {
+        return state;
+      }
+
+      const loadedStatuses = CARD_STATUSES.filter((status) =>
+        (state.columns[status] ?? []).some((candidate) => candidate.id === card.id),
+      );
+      // A modal opened from another surface must not inject an entity into an
+      // unrelated, filtered or paginated Kanban result set.
+      if (loadedStatuses.length === 0) return state;
+      const sourceStatus = loadedStatuses.find((status) => status !== card.status)
+        ?? loadedStatuses[0];
+      const previousCard = (state.columns[sourceStatus] ?? []).find(
+        (candidate) => candidate.id === card.id,
+      ) ?? card;
+
+      const nextColumns = { ...state.columns };
+      for (const status of CARD_STATUSES) {
+        nextColumns[status] = (nextColumns[status] ?? []).filter(
+          (candidate) => candidate.id !== card.id,
+        );
+      }
+
+      const alreadyVisibleInTarget = loadedStatuses.includes(card.status);
+      const targetIsPartial = state.columnsMeta[card.status]?.has_more === true;
+      const matchesProjection = belongsToLoadedProjection(
+        card,
+        state.columnsProjection,
+      );
+      const shouldInsert = matchesProjection
+        && (alreadyVisibleInTarget || !targetIsPartial);
+
+      if (shouldInsert) {
+        nextColumns[card.status] = [...(nextColumns[card.status] ?? []), card]
+          .sort((left, right) => (
+            left.position - right.position || left.id.localeCompare(right.id)
+          ));
+      }
+
+      if (loadedStatuses.length !== 1 || sourceStatus === card.status) {
+        return { columns: nextColumns };
+      }
+
+      const nextMeta = { ...state.columnsMeta };
+      nextMeta[sourceStatus] = adjustColumnMeta(
+        state.columnsMeta[sourceStatus],
+        normalizedCardType(previousCard),
+        -1,
+        -1,
+      );
+      nextMeta[card.status] = adjustColumnMeta(
+        state.columnsMeta[card.status],
+        normalizedCardType(card),
+        1,
+        matchesProjection ? 1 : 0,
+      );
+      return { columns: nextColumns, columnsMeta: nextMeta };
     });
   },
 

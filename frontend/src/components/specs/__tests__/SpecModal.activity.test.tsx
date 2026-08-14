@@ -247,7 +247,7 @@ describe('SpecModal Activity tab', () => {
       within(tabList).getAllByRole('tab').map((tab) => tab.textContent),
     ).toEqual([
       'Details',
-      'Evidence Matrix',
+      'Code Evidence Matrix',
       'Tests',
       'Rules',
       'Dependencies',
@@ -305,11 +305,18 @@ describe('SpecModal Activity tab', () => {
   it('groups origin and derived cards under References', async () => {
     apiMock.getSpec.mockResolvedValueOnce({
       ...spec,
-      cards: [{
-        id: 'card-1',
-        title: 'Implement deterministic lint view',
-        status: 'not_started',
-      }],
+      cards: [
+        {
+          id: 'card-1',
+          title: 'Implement deterministic lint view',
+          status: 'validation',
+        },
+        {
+          id: 'card-2',
+          title: 'Repair rejected traceability',
+          status: 'rejected',
+        },
+      ],
     });
 
     render(
@@ -330,6 +337,8 @@ describe('SpecModal Activity tab', () => {
     expect(
       screen.getByText('Implement deterministic lint view'),
     ).toBeInTheDocument();
+    expect(screen.getByText('validation')).toHaveClass('bg-violet-100');
+    expect(screen.getByText('rejected')).toHaveClass('bg-rose-100');
   });
 
   it('omits an unsupported legacy scenario type from the whole-list request', async () => {

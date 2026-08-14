@@ -23,12 +23,6 @@ export type {
   PolicyWaiverAction,
   PolicyWaiverMutationResult,
 } from './PolicyWaiverDialogs';
-export {
-  PolicyComplianceTransitionPreview,
-} from './PolicyComplianceTransitionPreview';
-export type {
-  PolicyComplianceTransitionPreviewProps,
-} from './PolicyComplianceTransitionPreview';
 export type {
   PolicyTransitionRejection,
   PolicyTransitionRejectionExpectation,

@@ -181,17 +181,17 @@ async def analytics_overview(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Cross-board KPIs: totals, lifecycle status breakdowns, validation gates,
-sprint summary, funnel, velocity, board list.
+    sprint summary, funnel, velocity, board list.
 
-Semântica de campos opcionais:
-- ``avg_triage_hours``: null quando não há bugs triados no período
-  (sem bugs com ``linked_test_task_ids`` populado). Não é erro —
-  indica ausência do sinal.
-- ``bug_rate_per_spec``: retorna apenas specs com ``rate > 0``.
-  Specs sem bugs são omitidas da lista para reduzir o payload.
-- ``sprint_evaluation``: mesmo shape que ``spec_evaluation``
-  (inclui ``avg_dimension_scores`` — dict vazio quando nenhum
-  sprint_evaluation carrega dimensions).
+    Semântica de campos opcionais:
+    - ``avg_triage_hours``: null quando não há bugs triados no período
+      (sem bugs com ``linked_test_task_ids`` populado). Não é erro —
+      indica ausência do sinal.
+    - ``bug_rate_per_spec``: retorna apenas specs com ``rate > 0``.
+      Specs sem bugs são omitidas da lista para reduzir o payload.
+    - ``sprint_evaluation``: mesmo shape que ``spec_evaluation``
+      (inclui ``avg_dimension_scores`` — dict vazio quando nenhum
+      sprint_evaluation carrega dimensions).
     """
     result = await AnalyticsOverviewUseCase().execute(
         AnalyticsOverviewCommand(
@@ -221,7 +221,7 @@ async def board_blockers(
         None,
         description=(
             "Optional: return only blockers of this type. "
-            "One of: dependency_blocked, on_hold, stale, "
+            "One of: dependency_blocked, on_hold, stale, rework_required, "
             "spec_pending_validation, spec_no_cards, uncovered_scenario."
         ),
     ),
@@ -238,6 +238,8 @@ async def board_blockers(
     - ``on_hold`` — card is explicitly paused (status=on_hold).
     - ``stale`` — card is in_progress/started/validation but
       ``now() - updated_at > stale_hours``.
+    - ``rework_required`` — card is Rejected and explicitly awaits the
+      rejected -> in_progress rework handoff, independent of its age.
     - ``spec_pending_validation`` — spec is approved but lacks an 'approve'
       validation gate (unable to promote to in_progress).
     - ``spec_no_cards`` — spec is validated/in_progress but has ZERO
@@ -253,7 +255,9 @@ async def board_blockers(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
     return result.data
 
 
@@ -281,7 +285,9 @@ async def board_funnel(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
     return result.data
 
 
@@ -316,7 +322,9 @@ async def board_quality(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
     return result.data
 
 
@@ -353,14 +361,20 @@ async def board_velocity(
     try:
         result = await BoardVelocityUseCase().execute(
             BoardVelocityCommand(
-                board_id, granularity=granularity, weeks=weeks, days=days,
-                dt_from=dt_from, dt_to=dt_to,
+                board_id,
+                granularity=granularity,
+                weeks=weeks,
+                days=days,
+                dt_from=dt_from,
+                dt_to=dt_to,
             ),
             actor=RESTAdapterContract.actor(user_id, board_id=board_id),
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
     return result.data
 
 
@@ -388,7 +402,9 @@ async def board_coverage(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
     return result.data
 
 
@@ -407,11 +423,11 @@ async def board_validations(
 ):
     """Validation Gate panel for a board.
 
-Returns:
-- spec_validation_gate: aggregate across all specs + per-spec breakdown
-- task_validation_gate: aggregate across all cards + per-card breakdown
-- spec_evaluation: aggregate (different gate — qualitative breakdown quality)
-- sprint_evaluation: aggregate
+    Returns:
+    - spec_validation_gate: aggregate across all specs + per-spec breakdown
+    - task_validation_gate: aggregate across all cards + per-card breakdown
+    - spec_evaluation: aggregate (different gate — qualitative breakdown quality)
+    - sprint_evaluation: aggregate
     """
     try:
         result = await BoardValidationsUseCase().execute(
@@ -424,7 +440,9 @@ Returns:
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
     return result.data
 
 
@@ -443,9 +461,9 @@ async def board_sprints_analytics(
 ):
     """Sprint panel for a board.
 
-Returns:
-- summary: counts by status + evaluation aggregate
-- sprints: per-sprint breakdown with cards, completion, last eval"""
+    Returns:
+    - summary: counts by status + evaluation aggregate
+    - sprints: per-sprint breakdown with cards, completion, last eval"""
     try:
         result = await BoardSprintsAnalyticsUseCase().execute(
             BoardSprintsAnalyticsCommand(
@@ -457,7 +475,9 @@ Returns:
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
     return result.data
 
 
@@ -526,13 +546,13 @@ async def board_agents(
 ):
     """Agent activity ranking with role-aware metrics.
 
-Groups by `created_by` (cards) plus reviewer_id (validations) so both
-implementers and validators show up. Emits:
-- total_cards, done_cards (implementer side)
-- avg_completeness, avg_drift (self-reported from conclusions)
-- task_validations_submitted, task_validation_success_rate
-- spec_validations_submitted, spec_validation_success_rate
-- first_pass_acceptance: % of own cards that passed validation on 1st try"""
+    Groups by `created_by` (cards) plus reviewer_id (validations) so both
+    implementers and validators show up. Emits:
+    - total_cards, done_cards (implementer side)
+    - avg_completeness, avg_drift (self-reported from conclusions)
+    - task_validations_submitted, task_validation_success_rate
+    - spec_validations_submitted, spec_validation_success_rate
+    - first_pass_acceptance: % of own cards that passed validation on 1st try"""
     try:
         result = await BoardAgentsUseCase().execute(
             BoardAgentsCommand(
@@ -544,7 +564,9 @@ implementers and validators show up. Emits:
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
     return result.data
 
 
@@ -571,8 +593,13 @@ async def board_entities(
     try:
         result = await BoardEntitiesUseCase().execute(
             BoardEntitiesCommand(
-                board_id, type=type, offset=offset, limit=limit, search=search,
-                dt_from=dt_from, dt_to=dt_to,
+                board_id,
+                type=type,
+                offset=offset,
+                limit=limit,
+                search=search,
+                dt_from=dt_from,
+                dt_to=dt_to,
             ),
             actor=RESTAdapterContract.actor(user_id, board_id=board_id),
             uow=uow,
@@ -580,7 +607,9 @@ async def board_entities(
     except CommandValidationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
     return result.data
 
 
@@ -608,7 +637,8 @@ async def board_entity_detail(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except EntityNotFoundError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"{exc.entity_type.capitalize()} not found"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{exc.entity_type.capitalize()} not found",
         )
     return result.data
 
@@ -685,7 +715,9 @@ async def analytics_overview_export(
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="analytics-overview-{today}.csv"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="analytics-overview-{today}.csv"'
+        },
     )
 
 
@@ -707,14 +739,31 @@ async def board_analytics_export(
     dt_from = _parse_date(date_from)
     dt_to = _parse_date(date_to, end_of_day=True)
     try:
-        funnel = (await BoardFunnelUseCase().execute(
-            BoardFunnelCommand(board_id, dt_from=dt_from, dt_to=dt_to), actor=actor, uow=uow)).data
-        quality = (await BoardQualityUseCase().execute(
-            BoardQualityCommand(board_id, dt_from=dt_from, dt_to=dt_to), actor=actor, uow=uow)).data
-        velocity = (await BoardVelocityUseCase().execute(
-            BoardVelocityCommand(board_id, dt_from=dt_from, dt_to=dt_to), actor=actor, uow=uow)).data
+        funnel = (
+            await BoardFunnelUseCase().execute(
+                BoardFunnelCommand(board_id, dt_from=dt_from, dt_to=dt_to),
+                actor=actor,
+                uow=uow,
+            )
+        ).data
+        quality = (
+            await BoardQualityUseCase().execute(
+                BoardQualityCommand(board_id, dt_from=dt_from, dt_to=dt_to),
+                actor=actor,
+                uow=uow,
+            )
+        ).data
+        velocity = (
+            await BoardVelocityUseCase().execute(
+                BoardVelocityCommand(board_id, dt_from=dt_from, dt_to=dt_to),
+                actor=actor,
+                uow=uow,
+            )
+        ).data
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -745,7 +794,9 @@ async def board_analytics_export(
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="analytics-board-{today}.csv"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="analytics-board-{today}.csv"'
+        },
     )
 
 
@@ -773,7 +824,8 @@ async def board_entity_detail_export(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
     except EntityNotFoundError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"{exc.entity_type.capitalize()} not found"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{exc.entity_type.capitalize()} not found",
         )
     data = result.data
 
@@ -801,13 +853,12 @@ async def board_entity_detail_export(
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="analytics-entity-{today}.csv"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="analytics-entity-{today}.csv"'
+        },
     )
 
 
 # ============================================================================
 # Internal helpers
 # ============================================================================
-
-
-

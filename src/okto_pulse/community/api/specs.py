@@ -1509,6 +1509,11 @@ async def link_card_to_spec(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Spec or card not found, or they belong to different boards",
         )
+    except CardOperationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_dict(),
+        ) from exc
     return {"success": True, "spec_id": spec_id, "card_id": card_id}
 
 
@@ -1531,6 +1536,11 @@ async def unlink_card_from_spec(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Card not found or not linked to any spec",
         )
+    except CardOperationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_dict(),
+        ) from exc
     return {"success": True, "spec_id": spec_id, "card_id": card_id}
 
 
@@ -1604,6 +1614,11 @@ async def unlink_task_from_scenario(
     except EntityNotFoundError as exc:
         detail = "Spec not found" if exc.entity_type == "spec" else "Scenario not found"
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+    except CardOperationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_dict(),
+        ) from exc
     return {
         "success": True,
         "spec_id": spec_id,
@@ -1736,6 +1751,11 @@ async def link_task_to_integration_requirement(
         )
     except PermissionDeniedError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.message)
+    except CardOperationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_dict(),
+        ) from exc
     except SubjectEditRequiresDraftError as e:
         raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
@@ -1776,6 +1796,11 @@ async def link_task_to_observability_requirement(
         )
     except PermissionDeniedError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.message)
+    except CardOperationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_dict(),
+        ) from exc
     except SubjectEditRequiresDraftError as e:
         raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:

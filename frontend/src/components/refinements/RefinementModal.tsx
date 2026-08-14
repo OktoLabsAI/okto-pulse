@@ -74,12 +74,10 @@ import { usePermissions } from '@/hooks/usePermissions';
 import { QualityPanel } from '@/components/quality';
 import {
   PolicyCompliancePanel,
-  PolicyComplianceTransitionPreview,
   isAllowedTransitionActionable,
   policyTransitionRejectionMessage,
   readPolicyTransitionRejection,
   requirePolicyTransitionEnvelope,
-  type PolicyTransitionRejection,
   type PolicyTransitionPreviewLoadState,
 } from '@/components/policy-compliance';
 import { useOptionalModalStack } from '@/contexts/ModalStackContext';
@@ -807,10 +805,6 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
     transitions: [],
     error: null,
   });
-  const [
-    policyTransitionRejection,
-    setPolicyTransitionRejection,
-  ] = useState<PolicyTransitionRejection | null>(null);
   const lastTransitionSubjectKey = useRef<string | null>(null);
   const transitionRequestId = useRef(0);
   const [activeTab, setActiveTab] = useState<ModalTab>('details');
@@ -889,7 +883,6 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
       data.version,
       data.status,
     ].join(':');
-    setPolicyTransitionRejection(null);
     setNextStatuses([]);
     setPolicyTransitionPreview({
       status: 'loading',
@@ -969,7 +962,6 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
   const performMove = async (status: RefinementStatus, cancellationReason?: string) => {
     if (!refinement) return;
     setMovingTo(status);
-    setPolicyTransitionRejection(null);
     try {
       const updated = await api.moveRefinement(refinementId, {
         status,
@@ -993,7 +985,6 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
           : getErrorMessage(err),
       );
       await loadAllowedTransitions(refinement);
-      setPolicyTransitionRejection(rejection);
     } finally { setMovingTo(null); }
   };
 
@@ -1557,11 +1548,6 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                     mount="lazy-keep"
                     className="space-y-4"
                   >
-                    <PolicyComplianceTransitionPreview
-                      preview={policyTransitionPreview}
-                      rejection={policyTransitionRejection}
-                      presentationMode="lifecycle-edition"
-                    />
                     <PolicyCompliancePanel
                       boardId={refinement.board_id || _boardId}
                       entityType="refinement"

@@ -18,7 +18,7 @@ import type {
   CreateCardRequest,
   SpecSummary,
 } from '@/types';
-import { STATUS_LABELS, CARD_STATUSES, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
+import { STATUS_LABELS, CREATABLE_CARD_STATUSES, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
 import {
   KnowledgePropagationSelector,
 } from '@/components/shared/KnowledgePropagationSelector';
@@ -52,7 +52,9 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [status, setStatus] = useState<CardStatus>(initialStatus);
+  const [status, setStatus] = useState<CardStatus>(
+    CREATABLE_CARD_STATUSES.includes(initialStatus) ? initialStatus : 'not_started',
+  );
   const [priority, setPriority] = useState<CardPriority>('none');
   const [assigneeId, setAssigneeId] = useState('');
   const [labels, setLabels] = useState('');
@@ -219,6 +221,12 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
 
     if (!title.trim()) {
       toast.error('Title is required');
+      return;
+    }
+    if (status === 'rejected') {
+      // Defense in depth: Rejected can only be produced by an admitted
+      // server-side completion decision, never by card creation.
+      toast.error('Rejected is assigned by a failed validation and cannot be selected during creation.');
       return;
     }
     if (!selectedSpecId) {
@@ -646,7 +654,7 @@ export function CreateCardModal({ boardId, initialStatus, onClose }: CreateCardM
                   onChange={(e) => setStatus(e.target.value as CardStatus)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg dark:bg-gray-700 dark:border-gray-600"
                 >
-                  {CARD_STATUSES.map((s) => (
+                  {CREATABLE_CARD_STATUSES.map((s) => (
                     <option key={s} value={s}>{STATUS_LABELS[s]}</option>
                   ))}
                 </select>

@@ -66,6 +66,7 @@ import type {
   TechnicalRequirement,
   TestScenario,
   TestScenarioType,
+  CardStatus,
   AllowedTransition,
   BoardSettings,
   Decision,
@@ -193,10 +194,12 @@ const STATUS_COLORS: Record<SpecStatus, string> = {
   cancelled: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
 };
 
-const CARD_STATUS_COLORS: Record<string, string> = {
+const CARD_STATUS_COLORS: Record<CardStatus, string> = {
   not_started: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
   started: 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-300',
   in_progress: 'bg-indigo-100 text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-300',
+  validation: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
+  rejected: 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300',
   on_hold: 'bg-yellow-100 text-yellow-600 dark:bg-yellow-900/40 dark:text-yellow-300',
   done: 'bg-green-100 text-green-600 dark:bg-green-900/40 dark:text-green-300',
   cancelled: 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-300',
@@ -753,9 +756,7 @@ function TestScenariosTab({
                             <div className="flex items-center gap-1">
                               {card && (
                                 <span className={`text-[10px] px-1 py-0.5 rounded ${
-                                  card.status === 'done' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' :
-                                  card.status === 'in_progress' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' :
-                                  'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400'
+                                  CARD_STATUS_COLORS[card.status]
                                 }`}>
                                   {card.status.replace('_', ' ')}
                                 </span>
@@ -2262,7 +2263,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
     ...(canReadCodeTraceability
-      ? [{ id: 'evidence-matrix' as ModalTab, label: 'Evidence Matrix', icon: <Grid3X3 size={14} /> }]
+      ? [{ id: 'evidence-matrix' as ModalTab, label: 'Code Evidence Matrix', icon: <Grid3X3 size={14} /> }]
       : []),
     { id: 'tests', label: 'Tests', icon: <FlaskConical size={14} />, count: spec.test_scenarios?.length || 0 },
     { id: 'rules', label: 'Rules', icon: <Scale size={14} />, count: spec.business_rules?.length || 0 },

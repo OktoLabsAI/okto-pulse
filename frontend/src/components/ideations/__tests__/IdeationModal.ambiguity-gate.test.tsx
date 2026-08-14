@@ -115,20 +115,6 @@ vi.mock('@/components/policy-compliance', () => ({
       data-presentation-mode={presentationMode}
     />
   ),
-  PolicyComplianceTransitionPreview: ({
-    rejection,
-    presentationMode,
-  }: {
-    rejection?: { code: string } | null;
-    presentationMode?: string;
-  }) => (
-    <div
-      data-testid="policy-transition-preview"
-      data-presentation-mode={presentationMode}
-    >
-      {rejection?.code}
-    </div>
-  ),
 }));
 
 const toastMock = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
@@ -391,8 +377,8 @@ describe('IdeationModal Max ambiguity gate panel', () => {
       'lifecycle-edition',
     );
     expect(
-      screen.getByTestId('policy-transition-preview'),
-    ).toHaveAttribute('data-presentation-mode', 'lifecycle-edition');
+      screen.queryByTestId('policy-transition-preview'),
+    ).not.toBeInTheDocument();
   });
 
   it('does not expose Policy Compliance without its exact read capability', async () => {
@@ -477,8 +463,8 @@ describe('IdeationModal Max ambiguity gate panel', () => {
     fireEvent.click(
       screen.getByRole('tab', { name: 'Policy Compliance' }),
     );
-    expect(screen.getByTestId('policy-transition-preview'))
-      .toHaveTextContent('policy_compliance_blocked');
+    expect(screen.queryByTestId('policy-transition-preview'))
+      .not.toBeInTheDocument();
   });
 
   it('persists skip through the dedicated endpoint and refreshes state', async () => {

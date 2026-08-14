@@ -46,7 +46,6 @@ vi.mock('../SpecValidationHistoryPanel', async () => {
 
 vi.mock('@/components/policy-compliance', () => ({
   PolicyCompliancePanel: () => <div data-testid="policy-detail" />,
-  PolicyComplianceTransitionPreview: () => <div data-testid="policy-audit" />,
   projectPolicyTransitions: (transitions: Array<{
     policy_compliance?: boolean;
     policy_compliance_decision?: { allowed: boolean | null } | null;
@@ -214,6 +213,7 @@ describe('SpecValidationPanel lifecycle edition projection', () => {
     expect(summaryState('spec-validation-lint-summary')).toBe('not_started');
     fireEvent.click(tabs[3]);
     expect(summaryState('spec-validation-policy-summary')).toBe('needs_attention');
+    expect(screen.queryByTestId('policy-audit')).not.toBeInTheDocument();
     expect(screen.queryByText(/stale/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/receipt/i)).not.toBeInTheDocument();
     expect(apiMock.getValidationCycle).toHaveBeenCalledTimes(1);

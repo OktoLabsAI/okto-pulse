@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Eye, Grid3X3 } from 'lucide-react';
+import { ContextualHelpLink } from '@/components/help';
 import { useDashboardApi } from '@/services/api';
 import type {
   CodeTraceabilityEvidence,
@@ -10,7 +11,6 @@ import { ReceiptDetailModal } from './ReceiptDetailModal';
 import {
   TraceabilityBadge,
   TraceabilityCurrentnessBadge,
-  TraceabilityDisclosure,
   TraceabilityEmptyState,
 } from './TraceabilityDisclosure';
 import { projectedReceiptCurrentness } from './traceabilityCurrentness';
@@ -140,7 +140,7 @@ export function EvidenceMatrixPanel({ boardId, subjectId, subjectVersion }: Prop
       ));
     } catch (caught) {
       if (!signal?.aborted) {
-        setError(caught instanceof Error ? caught.message : 'Could not load evidence matrix.');
+        setError(caught instanceof Error ? caught.message : 'Could not load the Code Evidence Matrix.');
       }
     } finally {
       if (!signal?.aborted) setLoading(false);
@@ -187,12 +187,19 @@ export function EvidenceMatrixPanel({ boardId, subjectId, subjectVersion }: Prop
   return (
     <div className="space-y-4" data-testid="spec-evidence-matrix-panel">
       <div>
-        <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Evidence matrix</h2>
+        <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Code evidence matrix</h2>
         <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-          Links from immutable Refinement evidence to structured Spec entities.
+          Maps inherited Code Evidence from the parent Refinement to the structured Spec entities it supports.
         </p>
+        <ContextualHelpLink
+          sectionId="code-traceability"
+          ariaLabel="Learn how the Code Evidence Matrix works"
+          testId="code-evidence-matrix-help-link"
+          className="mt-1 text-[11px]"
+        >
+          Why this is a matrix
+        </ContextualHelpLink>
       </div>
-      <TraceabilityDisclosure />
 
       {coverage && (
         <div className="grid gap-2 sm:grid-cols-3">
@@ -200,11 +207,11 @@ export function EvidenceMatrixPanel({ boardId, subjectId, subjectVersion }: Prop
             <p className="text-lg font-semibold text-gray-900 dark:text-white">
               {coverage.addressed}/{coverage.total}
             </p>
-            <p className="text-[11px] text-gray-400">evidence receipts dispositioned</p>
+            <p className="text-[11px] text-gray-400">evidence items addressed</p>
           </div>
           <div className="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700">
             <p className="text-lg font-semibold text-amber-600 dark:text-amber-400">{coverage.pending}</p>
-            <p className="text-[11px] text-gray-400">receipt{coverage.pending === 1 ? '' : 's'} pending</p>
+            <p className="text-[11px] text-gray-400">evidence item{coverage.pending === 1 ? '' : 's'} pending</p>
           </div>
           <div className="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700">
             <p className="text-lg font-semibold text-blue-600 dark:text-blue-400">{Math.round(coverage.coveragePct)}%</p>

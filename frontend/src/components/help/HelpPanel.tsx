@@ -596,6 +596,14 @@ Click **"+ New Ideation"** in the Ideations tab and fill in:
 
 Additional status: \`cancelled\`
 
+### Ambiguity assessment lifecycle
+
+Manual ambiguity assessment is available only while the Ideation is
+**Evaluating**. In every other lifecycle state, the assessment is read-only:
+you can review the current and previous results, but cannot record a new
+manual result. Move the Ideation into **Evaluating** when a new assessment is
+required; previously recorded results remain available as history.
+
 ### Complexity and what comes next
 
 | Complexity | Next step |
@@ -652,6 +660,15 @@ From a "done" ideation, click **"Derive Spec/Refinement"**. Choose Refinement fo
 
 Additional status: \`cancelled\`
 
+### Ambiguity assessment lifecycle
+
+Manual ambiguity assessment is available only while the Refinement is
+**Approved**. In every other lifecycle state, the assessment is read-only:
+you can review the current and previous results, but cannot record a new
+manual result. Return the Refinement to the appropriate lifecycle and reach
+**Approved** when a new assessment is required; previously recorded results
+remain available as history.
+
 ### Key features
 
 - **Description & Analysis** — Detailed breakdown of the problem space
@@ -665,6 +682,67 @@ Additional status: \`cancelled\`
 ### From refinement to spec
 
 When a refinement is "done", you can derive one or more Specs from it. Each spec inherits context from the refinement. You can also derive specs directly from the refinement modal.
+`,
+    },
+    {
+      id: 'code-traceability',
+      title: 'Code Traceability',
+      icon: <GitBranch size={16} />,
+      content: `
+## Code Traceability — Preserve what the agent learned about the code
+
+Code Traceability keeps repository findings connected to the product entities
+that depend on them. Pulse stores and presents the accepted records, but it
+does **not** access, clone, scan, or resolve source code. An authenticated
+external agent checks access and capabilities in its own environment and then
+submits an **accessible**, **partial**, or **unavailable** attestation.
+
+### Code Evidence in a Refinement
+
+The **Code Evidence** tab lists immutable observations captured during a
+Refinement investigation. Each item explains the finding in human terms and
+may identify the relevant file, symbol, and line range. Its accepted receipt
+records the source state the agent actually observed.
+
+Evidence is immutable so later work can distinguish the original observation
+from a newer source state. Human governance can revoke an item, but cannot
+silently rewrite the attestation.
+
+### Why a Spec uses a Code Evidence Matrix
+
+A Spec does not create a second copy of the parent Refinement evidence. Its
+**Code Evidence Matrix** shows how inherited Code Evidence supports the Spec's
+structured requirements, acceptance criteria, rules, contracts, decisions,
+and test scenarios. Each evidence row must either be linked to the applicable
+Spec entities or receive an explicit disposition explaining why it does not
+apply.
+
+In short: **Code Evidence** is the observation; the **Code Evidence Matrix** is
+the coverage view that connects that observation to the Spec.
+
+### Technical anchors in Tasks
+
+Task **Implementation Targets** are technical anchors: mutable implementation
+intent such as the file or symbol expected to change. Before implementation,
+the external agent runs a target-bound preflight and resolves each target
+against that source state. After implementation, the agent runs a fresh
+result-state preflight and records the execution disposition: touched,
+not touched, replaced, created, deleted, or superseded.
+
+### Currentness and enforcement
+
+Currentness is evaluated against the source receipt and the entity version.
+When either moves, the earlier evidence remains visible as history but may no
+longer authorize the current lifecycle transition.
+
+- **Advisory** reports missing or outdated traceability without blocking the
+  transition. The missing trail may still force the repository investigation
+  to be repeated after source or entity drift.
+- **Blocking** prevents applicable transitions until the configured Code
+  Evidence, technical-anchor, and attestation requirements are satisfied.
+
+Use **Submission guide** in the Code Evidence or Implementation Targets view
+when you need the exact agent workflow and MCP operations.
 `,
     },
     {
@@ -760,6 +838,10 @@ Tasks are created within a spec context. Each task links back to its parent spec
 
 \`not_started\` → \`started\` → \`in_progress\` → \`validation\` → \`done\`
 
+If a governed completion decision fails for a normal Task or Bug, Pulse moves it from \`validation\` to **\`rejected\`**. Rejected means **rework is required**, not that the card is waiting for another evaluator. Its only manual exit is \`rejected\` → \`in_progress\`; after rework, a new execution report and Current technical traceability are required before returning to \`validation\`.
+
+Rejected is consequence-only: cards cannot be created, manually moved, or dragged into it. Test Cards keep their existing lifecycle and never receive Rejected.
+
 Additional statuses: \`on_hold\`, \`cancelled\`
 
 ### Card types
@@ -808,7 +890,7 @@ When the board has \`require_task_validation\` enabled, tasks pass through a **v
 | **Completeness** (0–100) | ≥ 80% |
 | **Drift** (0–100) | ≤ 50% |
 
-If the task **passes** all thresholds → moves to \`done\`. If it **fails** → returns to \`not_started\` for rework. Thresholds are configurable per board in Settings.
+If the task **passes** all thresholds → moves to \`done\`. If it **fails** → moves to \`rejected\` with the failed evaluation preserved as the current rework feedback. The executor reads that feedback, explicitly moves the card to \`in_progress\`, records a new execution attempt, and only then hands it back to \`validation\`. Thresholds are configurable per board in Settings.
 
 ### Dependencies
 
@@ -1203,7 +1285,7 @@ Every metric requires a justification. Evaluators may attach pinpoint findings t
 | **TR coverage** | Every technical requirement links to a task card |
 | **Tasks complete** | All linked tasks (non-bug) are done or cancelled |
 
-### Task Validation Gate (in_progress → done)
+### Task Validation Gate (validation → done or rejected)
 
 When \`require_task_validation\` is enabled in board settings, tasks must pass through a validation column:
 
@@ -1213,7 +1295,7 @@ When \`require_task_validation\` is enabled in board settings, tasks must pass t
 | **Completeness** | How complete is the implementation | ≥ 80% |
 | **Drift** | How much did it deviate from the plan | ≤ 50% |
 
-Pass → task moves to \`done\`. Fail → task returns to \`not_started\` for rework.
+Pass → task moves to \`done\`. An admitted failed validation or governed completion blocker → normal Task/Bug moves to \`rejected\` with one current causal feedback record. Rejected cards are executor work: move only to \`in_progress\`, address the feedback, record a new execution report and Current traceability, then submit a fresh handoff to \`validation\`. Test Cards are unchanged and never enter Rejected.
 
 ### Task → Started gates
 

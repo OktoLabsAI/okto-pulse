@@ -151,16 +151,6 @@ vi.mock('@/components/policy-compliance', () => ({
       data-presentation-mode={presentationMode}
     />
   ),
-  PolicyComplianceTransitionPreview: ({
-    presentationMode,
-  }: {
-    presentationMode?: string;
-  }) => (
-    <div
-      data-testid="policy-transition-preview"
-      data-presentation-mode={presentationMode}
-    />
-  ),
 }));
 
 function refinementWith(overrides: Partial<Refinement> = {}): Refinement {
@@ -673,8 +663,8 @@ describe('RefinementModal ambiguity gate', () => {
       'lifecycle-edition',
     );
     expect(
-      screen.getByTestId('policy-transition-preview'),
-    ).toHaveAttribute('data-presentation-mode', 'lifecycle-edition');
+      screen.queryByTestId('policy-transition-preview'),
+    ).not.toBeInTheDocument();
   });
 
   it('fails closed on approved-to-done while keeping cancellation available', async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildPreflightReportDocument,
   reportSemanticKeys,
   type ExportReportDocument,
 } from './reportDocument';
@@ -85,6 +86,33 @@ describe('canonical export report renderers', () => {
       'block:validation:2:table',
       'block:validation:3:code',
     ]);
+  });
+
+  it('renders Rejected as a human lifecycle state in canonical card reports', () => {
+    const report = buildPreflightReportDocument({
+      schema_version: 'entity-export-preflight/v1',
+      formats: ['markdown', 'html'],
+      scope: 'complete',
+      identity: {
+        entity_type: 'card',
+        entity_id: 'card-rejected-1',
+        title: 'Card requiring rework',
+        status: 'rejected',
+        version: 3,
+      },
+      snapshot_fingerprint: 'sha256:rejected',
+      sections: [],
+      complete_for_actor: true,
+      source_complete: true,
+    }, new Set());
+
+    expect(report.subtitle).toContain('Rejected');
+    const markdown = renderReportMarkdown(report);
+    const html = renderReportHtml(report);
+    expect(markdown).toContain('Status');
+    expect(markdown).toContain('Rejected');
+    expect(html).toContain('Rejected');
+    expect(() => assertPassiveStandaloneHtml(html)).not.toThrow();
   });
 
   it.each([

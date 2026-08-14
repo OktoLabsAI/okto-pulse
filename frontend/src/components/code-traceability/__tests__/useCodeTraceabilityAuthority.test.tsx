@@ -39,7 +39,7 @@ function AuthoritySurfaces({ boardId }: { boardId: string }) {
       {authority.canReadProjection && (
         <div role="tablist" aria-label="Code Traceability tabs">
           <button role="tab">Code Evidence</button>
-          <button role="tab">Evidence Matrix</button>
+          <button role="tab">Code Evidence Matrix</button>
           <button role="tab">Implementation Targets</button>
         </div>
       )}
@@ -67,7 +67,7 @@ function AuthoritySurfaces({ boardId }: { boardId: string }) {
 
 function expectSensitiveSurfacesHidden() {
   expect(screen.queryByRole('tab', { name: 'Code Evidence' })).not.toBeInTheDocument();
-  expect(screen.queryByRole('tab', { name: 'Evidence Matrix' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('tab', { name: 'Code Evidence Matrix' })).not.toBeInTheDocument();
   expect(screen.queryByRole('tab', { name: 'Implementation Targets' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Revoke receipt' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Revoke evidence' })).not.toBeInTheDocument();
@@ -135,7 +135,7 @@ describe('Code Traceability UI authority is fail-closed', () => {
     render(<AuthoritySurfaces boardId={boardId} />);
 
     expect(await screen.findByRole('tab', { name: 'Code Evidence' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Evidence Matrix' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Code Evidence Matrix' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Implementation Targets' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Revoke receipt' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Revoke evidence' })).toBeInTheDocument();

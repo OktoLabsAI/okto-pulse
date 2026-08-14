@@ -1228,6 +1228,153 @@ describe('exportMarkdown complete task family export', () => {
     qa_items: [],
   } as any;
 
+  it('describes Rejected as unfinished rework with the latest human failure cause', () => {
+    const md = exportCard({
+      id: 'rejected-card',
+      title: 'Repair validation gap',
+      status: 'rejected',
+      priority: 'high',
+      card_type: 'normal',
+      labels: [],
+      validations: [{
+        id: 'internal-validation-id',
+        confidence: 62,
+        estimated_completeness: 90,
+        estimated_drift: 4,
+        recommendation: 'reject',
+        verdict: 'fail',
+        general_justification: 'Confidence is below the evidence threshold.',
+        threshold_violations: ['Confidence 62 is below minimum 70'],
+        created_at: '2026-08-14T00:00:00Z',
+      }],
+      conclusions: [],
+      comments: [],
+      attachments: [],
+      qa_items: [],
+      screen_mockups: [],
+      architecture_designs: [],
+      knowledge_bases: [],
+    } as unknown as Parameters<typeof exportCard>[0]);
+
+    expect(md).toContain('| **Status** | Rejected |');
+    expect(md).toContain('## Rework Required');
+    expect(md).toContain('Confidence is below the evidence threshold.');
+    expect(md).toContain('Confidence 62 is below minimum 70');
+    expect(md).toContain('Move this card to In Progress');
+  });
+
+  it('resolves a task-validation rejection through the sealed record source', () => {
+    const md = exportCard({
+      id: 'rejected-card-with-history',
+      title: 'Repair the selected validation attempt',
+      status: 'rejected',
+      priority: 'high',
+      card_type: 'normal',
+      labels: [],
+      current_rejection_kind: 'task_validation',
+      current_rejection_id: 'rejection-record-current',
+      rejection_records: [{
+        kind: 'task_validation',
+        id: 'rejection-record-current',
+        code: 'task_validation_failed',
+        summary: 'The selected validation attempt requires rework.',
+        source_id: 'validation-selected',
+      }],
+      validations: [{
+        id: 'validation-selected',
+        confidence: 61,
+        estimated_completeness: 92,
+        estimated_drift: 3,
+        recommendation: 'reject',
+        verdict: 'fail',
+        general_justification: 'Selected causal validation feedback.',
+        threshold_violations: ['Confidence 61 is below minimum 70'],
+        created_at: '2026-08-13T23:00:00Z',
+      }, {
+        id: 'validation-newer-but-not-current',
+        confidence: 58,
+        estimated_completeness: 88,
+        estimated_drift: 7,
+        recommendation: 'reject',
+        verdict: 'fail',
+        general_justification: 'Newer historical feedback must not replace Current.',
+        threshold_violations: ['Confidence 58 is below minimum 70'],
+        created_at: '2026-08-14T00:00:00Z',
+      }],
+      conclusions: [],
+      comments: [],
+      attachments: [],
+      qa_items: [],
+      screen_mockups: [],
+      architecture_designs: [],
+      knowledge_bases: [],
+    } as unknown as Parameters<typeof exportCard>[0]);
+
+    expect(md).toContain('Selected causal validation feedback.');
+    expect(md).toContain('Confidence 61 is below minimum 70');
+    expect(md).not.toContain('Confidence 58 is below minimum 70');
+  });
+
+  it('explains completion-gate rejection even when the task assessment passed', () => {
+    const md = exportCard({
+      id: 'gate-rejected-card',
+      title: 'Resolve governed completion blockers',
+      status: 'rejected',
+      priority: 'high',
+      card_type: 'bug',
+      labels: [],
+      current_rejection_kind: 'completion_gate',
+      current_rejection_id: 'completion-rejection-1',
+      current_rejection_summary: 'Two completion gates require remediation.',
+      rejection_records: [{
+        kind: 'completion_gate',
+        id: 'completion-rejection-1',
+        code: 'policy_compliance_blocked',
+        summary: 'Two completion gates require remediation.',
+        source_id: 'successful-validation-1',
+      }],
+      validations: [{
+        id: 'successful-validation-1',
+        confidence: 96,
+        estimated_completeness: 94,
+        estimated_drift: 2,
+        recommendation: 'approve',
+        verdict: 'pass',
+        validation_outcome: 'success',
+        completion_outcome: 'rejected',
+        general_justification: 'The implementation assessment itself passed.',
+        completion_gate_failures: [{
+          code: 'policy_compliance_blocked',
+          summary: 'Refresh the Current policy assessment.',
+          reason_codes: ['policy_assessment_stale'],
+        }, {
+          code: 'code_traceability_blocked',
+          summary: 'Resolve the missing implementation target.',
+          reason_codes: ['target_resolution_missing'],
+        }],
+        created_at: '2026-08-14T00:00:00Z',
+        card_status: 'rejected',
+      }],
+      conclusions: [],
+      comments: [],
+      attachments: [],
+      qa_items: [],
+      screen_mockups: [],
+      architecture_designs: [],
+      knowledge_bases: [],
+    } as unknown as Parameters<typeof exportCard>[0]);
+
+    expect(md).toContain('Two completion gates require remediation.');
+    expect(md).toContain('policy_compliance_blocked');
+    expect(md).toContain('Refresh the Current policy assessment.');
+    expect(md).toContain('code_traceability_blocked');
+    expect(md).toContain('Resolve the missing implementation target.');
+    expect(md).toContain('ASSESSMENT PASSED — COMPLETION REJECTED');
+    expect(md).not.toContain('The latest governed completion attempt did not pass.');
+    expect(md).not.toContain('request_digest');
+    expect(md).not.toContain('idempotency_key');
+  });
+
   it('exports inherited spec architecture and card-owned architecture with Mermaid', () => {
     const specWithRuntimeArchitecture = {
       ...parentSpec,

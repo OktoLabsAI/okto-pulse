@@ -3,7 +3,8 @@
  */
 
 import React, { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { X, HelpCircle, Trash2, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ShieldCheck, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History, Layers, MessageCircleQuestion, MessageSquare, ListChecks, Target } from 'lucide-react';
+import { v4 as uuidv4 } from 'uuid';
+import { X, HelpCircle, Trash2, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ShieldCheck, ShieldX, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History, Layers, MessageCircleQuestion, MessageSquare, ListChecks, Target } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { EntityExportButton } from '@/components/export';
 import { useDashboardApi, type ActivityLogEntry } from '@/services/api';
@@ -15,7 +16,7 @@ import {
   useCurrentBoard,
 } from '@/store/dashboard';
 import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, Sprint, BugRegressionScenarioPreview, BugWorkflowRemediationMessage, AmendmentRevisionListResponse, ValidationEntry, ImpactEvidence } from '@/types';
-import { STATUS_LABELS, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
+import { CARD_STATUSES, STATUS_LABELS, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
 import { PathBRemediationPanel } from '@/components/kanban/PathBRemediationPanel';
 import {
   ImpactEvidenceEditor,
@@ -46,7 +47,6 @@ import {
 import { MetricScoreRing } from '@/components/shared/MetricScoreRing';
 import {
   PolicyCompliancePanel,
-  PolicyComplianceTransitionPreview,
   policyTransitionRejectionMessage,
   readPolicyTransitionRejection,
   usePolicyTransitionAuthority,
@@ -66,6 +66,7 @@ import {
   type TaskValidationThresholdSource,
 } from './taskValidationThresholds';
 import { resolveCardSemanticAnchor } from './cardSemanticAnchors';
+import { ContextualHelpLink } from '@/components/help';
 
 /** Resolve an actor ID to a display name using the members list. */
 function resolveActorName(id: string | null | undefined, members: { id: string; name: string }[]): string {
@@ -290,6 +291,10 @@ interface CardModalProps {
   boardId: string;
   onClose?: () => void;
   onEscape?: () => void;
+  onAuthoritativeStatusChange?: (
+    card: Card,
+    previousStatus: CardStatus,
+  ) => void;
 }
 
 interface TaskValidationHierarchySnapshot {
@@ -300,7 +305,12 @@ interface TaskValidationHierarchySnapshot {
   sprint: Sprint | null;
 }
 
-export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
+export function CardModal({
+  boardId,
+  onClose,
+  onEscape,
+  onAuthoritativeStatusChange,
+}: CardModalProps) {
   const api = useDashboardApi();
   const perms = usePermissions(boardId);
   const tabIdBase = useId();
@@ -309,6 +319,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   selectedCardIdRef.current = selectedCardId;
   const cardLoadGenerationRef = useRef(0);
   const cardDataGenerationRef = useRef(0);
+  const cardStatusRef = useRef<CardStatus | null>(null);
   const isOpen = useIsCardModalOpen();
   const { closeCardModal, removeCardFromColumn, updateCardInColumn } = useDashboardStore();
   const columns = useColumns();
@@ -388,12 +399,27 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const linkedScenarioIds = new Set(card?.test_scenario_ids || []);
   const linkedEvidenceScenarios = specScenarios.filter((scenario) => linkedScenarioIds.has(scenario.id));
   const evidenceProvidedCount = linkedEvidenceScenarios.filter(hasScenarioEvidence).length;
-  const canMutateCard = (action: string) => hasPermissionWithState(
-    perms.has,
-    action,
-    'card',
-    card?.status,
-  );
+  const canMutateCard = (action: string) => {
+    if (
+      card?.status === 'rejected'
+      && ![
+        'card.move.rejected_to_in_progress',
+        'card.qa.ask',
+        'card.qa.answer',
+        'card.comments.create',
+        'card.comments.create_choice',
+        'card.comments.respond_choice',
+      ].includes(action)
+    ) {
+      return false;
+    }
+    return hasPermissionWithState(
+      perms.has,
+      action,
+      'card',
+      card?.status,
+    );
+  };
   const canReadIR = perms.has('spec.integration_requirements.read');
   const canReadOR = perms.has('spec.observability_requirements.read');
   const canLinkIRTasks = perms.has('spec.integration_requirements.link_task') && canMutateCard('card.link_to.ir');
@@ -430,8 +456,10 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const canLinkTRs = canMutateCard('card.link_to.tr');
   const canSubmitValidation = canMutateCard('card.validation.submit');
   const canReadAmendmentRevisions = perms.has('amendment.revision.read');
-  const canCreateAmendment = perms.has('amendment.revision.create');
-  const canAssociateAmendment = perms.has('amendment.revision.associate');
+  const canCreateAmendment = card?.status !== 'rejected'
+    && perms.has('amendment.revision.create');
+  const canAssociateAmendment = card?.status !== 'rejected'
+    && perms.has('amendment.revision.associate');
   const canReadBoardAgents = perms.has('agent.board_access.read');
   const hasAmendmentWorkspace = Boolean(
     bugRegressionPreview?.semantic_gap_required
@@ -452,10 +480,15 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   }, []);
 
   const applyCardUpdate = useCallback((updated: Card) => {
+    const previousStatus = cardStatusRef.current;
+    cardStatusRef.current = updated.status;
     setCard(updated);
     updateCardInColumn(updated);
+    if (previousStatus && previousStatus !== updated.status) {
+      onAuthoritativeStatusChange?.(updated, previousStatus);
+    }
     notePolicySubjectChanged();
-  }, [notePolicySubjectChanged, updateCardInColumn]);
+  }, [notePolicySubjectChanged, onAuthoritativeStatusChange, updateCardInColumn]);
 
   const resetConclusionPrompt = () => {
     setConclusionDraft('');
@@ -495,7 +528,15 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     api.getCard(cardId)
       .then((data) => {
         if (!isCurrentLoad()) return;
+        const projectedStatus = CARD_STATUSES.find((status) =>
+          (columns[status] ?? []).some((candidate) => candidate.id === data.id),
+        );
+        cardStatusRef.current = data.status;
         setCard(data);
+        updateCardInColumn(data);
+        if (projectedStatus && projectedStatus !== data.status) {
+          onAuthoritativeStatusChange?.(data, projectedStatus);
+        }
         notePolicySubjectChanged();
         if (data.card_type === 'bug') {
           api.getBugRegressionScenarioCandidates(data.id, data.board_id)
@@ -629,7 +670,13 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
         const subjectChanged =
           card?.id === data.id
           && card.updated_at !== data.updated_at;
+        const previousStatus = cardStatusRef.current;
+        cardStatusRef.current = data.status;
         setCard(data);
+        updateCardInColumn(data);
+        if (previousStatus && previousStatus !== data.status) {
+          onAuthoritativeStatusChange?.(data, previousStatus);
+        }
         setTaskValidationHierarchyLoading(true);
         setTaskValidationHierarchyError(null);
         if (subjectChanged) {
@@ -741,7 +788,9 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     card?.updated_at,
     isLoading,
     notePolicySubjectChanged,
+    onAuthoritativeStatusChange,
     taskValidationHierarchyLoading,
+    updateCardInColumn,
   ]);
 
   // Path B safe actions (spec be089cd3). User-click only — NO auto-mutation on
@@ -785,6 +834,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     } else {
       cardLoadGenerationRef.current += 1;
       cardDataGenerationRef.current += 1;
+      cardStatusRef.current = null;
       setCard(null);
       setSpecKBsFull([]);
       setTaskValidationHierarchy(null);
@@ -919,6 +969,10 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
 
   const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }, cancellationReason?: string, impactEvidence?: ImpactEvidence): Promise<boolean> => {
     if (!card || status === card.status) return false;
+    // Rejected is consequence-only. Even if a rolling-upgrade server were to
+    // project a stale manual edge, the client must never invoke it.
+    if (status === 'rejected') return false;
+    if (card.status === 'rejected' && status !== 'in_progress') return false;
     if (!canMutateCard(`card.move.${card.status}_to_${status}`)) return false;
 
     // ITEM 17: cancelling requires a justification — intercept with the dialog.
@@ -1064,6 +1118,10 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
               Object.prototype.hasOwnProperty.call(STATUS_LABELS, status)
               && status !== card.status,
           )
+          .filter((status) => status !== 'rejected')
+          .filter((status) => (
+            card.status !== 'rejected' || status === 'in_progress'
+          ))
           .filter((status) => canMutateCard(
             `card.move.${card.status}_to_${status}`,
           )),
@@ -1554,6 +1612,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                     subjectId={card.id}
                     subjectVersion={card.subject_version ?? 1}
                     specVersion={fullSpec?.version}
+                    operationallyFrozen={card.status === 'rejected'}
                     onCreateDependency={canManageDependencies ? () => {
                       setActiveTab('references');
                       setReferencesTab('dependencies');
@@ -2167,6 +2226,9 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                           thresholdsLoading={taskValidationHierarchyLoading}
                           thresholdsError={taskValidationHierarchyError}
                           onRetryThresholds={() => loadCard(card.id)}
+                          canStartRework={allowedStatuses.includes('in_progress')}
+                          reworkBusy={movingStatus === 'in_progress'}
+                          onStartRework={() => handleStatusChange('in_progress')}
                         />
                       </AccessibleTabPanel>
                     )}
@@ -2179,10 +2241,6 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                         mount="lazy-keep"
                         className="space-y-4"
                       >
-                        <PolicyComplianceTransitionPreview
-                          preview={policyTransitionAuthority.preview}
-                          rejection={policyTransitionAuthority.rejection}
-                        />
                         <PolicyCompliancePanel
                           boardId={card.board_id}
                           entityType="card"
@@ -3080,6 +3138,7 @@ function DependenciesSection({
 
   const statusColor = (s: string) => {
     if (s === 'done') return 'text-green-600';
+    if (s === 'rejected') return 'text-rose-600 dark:text-rose-400';
     if (s === 'cancelled') return 'text-gray-400 dark:text-gray-500';
     return 'text-amber-600';
   };
@@ -3443,16 +3502,24 @@ function ValidationHistoryMetric({
   testId: string;
 }) {
   return (
-    <div className="flex gap-4 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900/20">
-      <MetricScoreRing
-        label={label}
-        value={value}
-        direction={direction}
-        threshold={threshold}
-        status={status}
-        testId={testId}
-      />
-      <div className="min-w-0 flex-1">
+    <div
+      className="flex h-full flex-col rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900/20"
+      data-testid={`${testId}-metric`}
+    >
+      <div className="flex justify-center">
+        <MetricScoreRing
+          label={label}
+          value={value}
+          direction={direction}
+          threshold={threshold}
+          status={status}
+          testId={testId}
+        />
+      </div>
+      <div
+        className="mt-3 min-w-0 border-t border-gray-100 pt-3 dark:border-gray-700"
+        data-testid={`${testId}-justification`}
+      >
         {thresholdSource && (
           <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
             Threshold source: {thresholdSource}
@@ -3480,6 +3547,9 @@ function ValidationsTab({
   thresholdsLoading,
   thresholdsError,
   onRetryThresholds,
+  canStartRework,
+  reworkBusy,
+  onStartRework,
 }: {
   card: Card;
   onCardChanged: (card: Card) => void;
@@ -3490,6 +3560,9 @@ function ValidationsTab({
   thresholdsLoading: boolean;
   thresholdsError: string | null;
   onRetryThresholds: () => void;
+  canStartRework: boolean;
+  reworkBusy: boolean;
+  onStartRework: () => Promise<boolean>;
 }) {
   const [confidence, setConfidence] = useState(80);
   const [completeness, setCompleteness] = useState(80);
@@ -3502,17 +3575,52 @@ function ValidationsTab({
     useState<'approve' | 'reject'>('approve');
   const [submitting, setSubmitting] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const validationIntentRef = useRef({ signature: '', idempotencyKey: '' });
+  const validations = card.validations || [];
+  const latestFailedValidation = [...validations]
+    .reverse()
+    .find((validation) => validationVerdict(validation) === 'fail') ?? null;
+  const currentRejectionRecord = card.current_rejection_id
+    ? (card.rejection_records || []).find(
+      (record) => record.id === card.current_rejection_id,
+    ) ?? null
+    : null;
+  const currentRejectionValidation = card.status === 'rejected'
+    ? [...validations].reverse().find((validation) => (
+      validation.id === card.current_rejection_id
+      || validation.id === currentRejectionRecord?.source_id
+      || validation.rejection_cause?.id === card.current_rejection_id
+      || (
+        validation.card_status === 'rejected'
+        && validation.completion_outcome === 'rejected'
+      )
+    )) ?? null
+    : null;
+  const rejectionFeedbackValidation =
+    currentRejectionValidation ?? latestFailedValidation;
+  const rejectionFeedbackValidationId = rejectionFeedbackValidation?.id ?? null;
   const formValid =
     confidenceJustification.trim().length >= 10
     && completenessJustification.trim().length >= 10
     && driftJustification.trim().length >= 10
     && generalJustification.trim().length >= 20;
 
+  useEffect(() => {
+    if (card.status === 'rejected' && rejectionFeedbackValidationId) {
+      setExpandedId(rejectionFeedbackValidationId);
+    }
+  }, [card.id, card.status, rejectionFeedbackValidationId]);
+
   const handleSubmit = async () => {
     if (!formValid || !thresholds || thresholdsLoading || thresholdsError) return;
+    if (!Number.isInteger(card.subject_version) || Number(card.subject_version) < 1) {
+      toast.error('Reload the card before submitting validation; its current version is unavailable.');
+      return;
+    }
     setSubmitting(true);
     try {
-      const data = {
+      const request = {
+        expected_subject_version: Number(card.subject_version),
         confidence,
         confidence_justification: confidenceJustification.trim(),
         estimated_completeness: completeness,
@@ -3522,14 +3630,43 @@ function ValidationsTab({
         general_justification: generalJustification.trim(),
         recommendation,
       };
+      const signature = JSON.stringify(request);
+      if (
+        validationIntentRef.current.signature !== signature
+        || !validationIntentRef.current.idempotencyKey
+      ) {
+        validationIntentRef.current = {
+          signature,
+          idempotencyKey: uuidv4(),
+        };
+      }
+      const data = {
+        ...request,
+        idempotency_key: validationIntentRef.current.idempotencyKey,
+      };
       const validation = await api.submitTaskValidation(card.id, data);
       let updatedCard: Card;
       try {
         updatedCard = await api.getCard(card.id);
       } catch {
+        const cause = validation.rejection_cause ?? null;
+        const rejected = validation.card_status === 'rejected';
         updatedCard = {
           ...card,
           status: validation.card_status || card.status,
+          subject_version: validation.subject_version ?? card.subject_version,
+          current_rejection_kind: rejected
+            ? cause?.kind ?? card.current_rejection_kind ?? null
+            : null,
+          current_rejection_id: rejected
+            ? cause?.id ?? card.current_rejection_id ?? null
+            : null,
+          current_rejection_code: rejected
+            ? cause?.code ?? card.current_rejection_code ?? null
+            : null,
+          current_rejection_summary: rejected
+            ? cause?.summary ?? card.current_rejection_summary ?? null
+            : null,
           validations: [...(card.validations || []), validation],
         };
       }
@@ -3544,6 +3681,7 @@ function ValidationsTab({
       setDriftJustification('');
       setGeneralJustification('');
       setRecommendation('approve');
+      validationIntentRef.current = { signature: '', idempotencyKey: '' };
       toast.success('Validation submitted');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to submit validation');
@@ -3552,10 +3690,87 @@ function ValidationsTab({
     }
   };
 
-  const validations = card.validations || [];
-
   return (
     <div className="space-y-6">
+      {card.status === 'rejected' && card.card_type !== 'test' && (
+        <section
+          role="alert"
+          aria-labelledby={`rejected-rework-${card.id}`}
+          data-testid="task-rejected-rework-panel"
+          className="rounded-xl border border-rose-300 bg-rose-50 p-4 text-rose-900 dark:border-rose-800 dark:bg-rose-950/25 dark:text-rose-100"
+        >
+          <div className="flex items-start gap-3">
+            <ShieldX size={20} className="mt-0.5 shrink-0 text-rose-600 dark:text-rose-300" />
+            <div className="min-w-0 flex-1">
+              <h3 id={`rejected-rework-${card.id}`} className="text-sm font-semibold">
+                Rejected — rework required
+              </h3>
+              <p className="mt-1 text-xs text-rose-800 dark:text-rose-200">
+                {card.current_rejection_summary
+                  || (rejectionFeedbackValidation
+                  ? rejectionFeedbackValidation.summary
+                    || rejectionFeedbackValidation.general_justification
+                    || 'The latest Task Validation did not pass.'
+                  : 'The latest governed completion attempt did not pass. Review the available validation, policy and activity feedback before rework.')}
+              </p>
+              {(rejectionFeedbackValidation?.threshold_violations?.length || 0) > 0 && (
+                <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-rose-800 dark:text-rose-200">
+                  {rejectionFeedbackValidation!.threshold_violations!.map((violation) => (
+                    <li key={violation}>{violation}</li>
+                  ))}
+                </ul>
+              )}
+              {(rejectionFeedbackValidation?.completion_gate_failures?.length || 0) > 0 && (
+                <div className="mt-3 rounded-md border border-rose-300/80 bg-white/55 p-3 dark:border-rose-800 dark:bg-rose-950/30">
+                  <p className="text-xs font-semibold text-rose-900 dark:text-rose-100">
+                    Completion gates requiring action
+                  </p>
+                  <ul className="mt-1.5 space-y-2 text-xs text-rose-800 dark:text-rose-200">
+                    {rejectionFeedbackValidation!.completion_gate_failures!.map((failure) => (
+                      <li key={`${failure.code}:${failure.summary}`}>
+                        <span className="font-semibold">{failure.summary}</span>
+                        {(failure.reason_codes?.length || 0) > 0 && (
+                          <span className="mt-0.5 block text-[11px] text-rose-700 dark:text-rose-300">
+                            {failure.reason_codes!.join(' · ')}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <p className="mt-2 text-xs text-rose-700 dark:text-rose-300">
+                Move to In Progress to begin a new execution attempt. A new
+                execution report and Current technical traceability are
+                required before the card can return to Validation.
+              </p>
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => { void onStartRework(); }}
+                  disabled={!canStartRework || reworkBusy}
+                  className="rounded-md bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {reworkBusy ? 'Starting rework…' : 'Move to In Progress for rework'}
+                </button>
+                <ContextualHelpLink
+                  sectionId="tasks"
+                  className="text-xs text-rose-700 dark:text-rose-200"
+                  ariaLabel="Open help about Rejected task rework"
+                >
+                  Rejected lifecycle help
+                </ContextualHelpLink>
+              </div>
+              {!canStartRework && (
+                <p className="mt-2 text-[11px] text-rose-700 dark:text-rose-300">
+                  Your current role cannot start this rework attempt.
+                </p>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Section A: Submit Validation Form — only when status === 'validation' */}
       {card.status === 'validation' && canSubmit && thresholds && (
         <div
@@ -3714,7 +3929,7 @@ function ValidationsTab({
           <div className="text-center py-8">
             <Shield size={32} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
             <p className="text-sm text-gray-500 dark:text-gray-400">No validations yet</p>
-            {card.status !== 'validation' && (
+            {card.status !== 'validation' && card.status !== 'rejected' && (
               <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
                 Move this card to "Validation" status to submit a validation
               </p>
@@ -3831,6 +4046,25 @@ function ValidationsTab({
                           <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-red-700 dark:text-red-300">
                             {v.threshold_violations!.map((violation) => (
                               <li key={violation}>{violation}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {(v.completion_gate_failures?.length || 0) > 0 && (
+                        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/20">
+                          <p className="text-xs font-semibold text-amber-800 dark:text-amber-200">
+                            Completion gate failures
+                          </p>
+                          <ul className="mt-1.5 space-y-2 text-xs text-amber-800 dark:text-amber-200">
+                            {v.completion_gate_failures!.map((failure) => (
+                              <li key={`${failure.code}:${failure.summary}`}>
+                                <span className="font-medium">{failure.summary}</span>
+                                {(failure.reason_codes?.length || 0) > 0 && (
+                                  <span className="mt-0.5 block text-[11px] text-amber-700 dark:text-amber-300">
+                                    {failure.reason_codes!.join(' · ')}
+                                  </span>
+                                )}
+                              </li>
                             ))}
                           </ul>
                         </div>

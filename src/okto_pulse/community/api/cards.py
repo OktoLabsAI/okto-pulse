@@ -97,6 +97,12 @@ from okto_pulse.core.models import (
     CardResponse,
     CardUpdate,
 )
+from okto_pulse.core.models.schemas import (
+    TaskValidationListResponse,
+    TaskValidationResponse,
+    TaskValidationSubmit,
+    project_task_validation_public,
+)
 from okto_pulse.core.models.knowledge_propagation import (
     KnowledgeAssignmentDropRequest,
     KnowledgeAssignmentRefreshRequest,
@@ -180,6 +186,8 @@ async def get_card(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
         )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     except (
         KnowledgePropagationPortError,
         KnowledgePropagationServiceError,
@@ -404,6 +412,11 @@ async def remove_dependency(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Dependency not found"
         )
+    except CardOperationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_dict(),
+        ) from exc
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
 
@@ -472,6 +485,11 @@ async def link_test_task_to_bug(
     except EntityNotFoundError as e:
         detail = "Card not found" if e.entity_type == "card" else "Test task not found"
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+    except CardOperationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_dict(),
+        ) from exc
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e)
@@ -506,6 +524,11 @@ async def unlink_test_task_from_bug(
             "Card not found" if exc.entity_type == "card" else "Test task not found"
         )
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+    except CardOperationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_dict(),
+        ) from exc
 
 
 @router.delete("/{card_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -534,22 +557,28 @@ async def delete_card(
 # ---- Task Validation Endpoints ----
 
 
-@router.post("/{card_id}/validate", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{card_id}/validate",
+    status_code=status.HTTP_201_CREATED,
+    response_model=TaskValidationResponse,
+)
 async def submit_task_validation(
     card_id: str,
-    data: dict,
+    data: TaskValidationSubmit,
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Submit a task validation for a card in 'validation' status."""
     try:
         result = await SubmitTaskValidationUseCase().execute(
-            SubmitTaskValidationCommand(card_id, data),
+            SubmitTaskValidationCommand(card_id, data.model_dump()),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
     except CommandValidationError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except CardOperationError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except GateContractError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except ResourceGateError as e:
@@ -567,10 +596,15 @@ async def submit_task_validation(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Card not found"
         )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     return result.validation
 
 
-@router.get("/{card_id}/validations")
+@router.get(
+    "/{card_id}/validations",
+    response_model=TaskValidationListResponse,
+)
 async def list_task_validations(
     card_id: str,
     user_id: str = Depends(require_user),
@@ -585,14 +619,22 @@ async def list_task_validations(
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     return {
         "card_id": card_id,
         "total": len(result.validations),
-        "validations": result.validations,
+        "validations": [
+            project_task_validation_public(item, card_id=card_id)
+            for item in result.validations
+        ],
     }
 
 
-@router.get("/{card_id}/validations/{validation_id}")
+@router.get(
+    "/{card_id}/validations/{validation_id}",
+    response_model=TaskValidationResponse,
+)
 async def get_task_validation(
     card_id: str,
     validation_id: str,
@@ -606,13 +648,17 @@ async def get_task_validation(
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except CardOperationError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     except EntityNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Validation not found"
         )
-    return result.validation
+    return project_task_validation_public(result.validation, card_id=card_id)
 
 
 @router.delete(
@@ -624,19 +670,28 @@ async def delete_task_validation(
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """Delete a validation entry."""
+    """Legacy delete surface; admitted validation history is immutable.
+
+    A missing draft-era entry remains a normal not-found response. Any
+    admitted attempt is retained as lifecycle evidence and returns the typed
+    ``task_validation_history_append_only`` conflict with its remediation.
+    """
     try:
         await DeleteTaskValidationUseCase().execute(
             DeleteTaskValidationCommand(card_id, validation_id),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except CardOperationError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except EntityNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Validation not found"
         )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
 
 
 async def _card_knowledge_error_response(
@@ -683,6 +738,11 @@ async def replace_card_knowledge_assignments(
         return project_knowledge_mutation_response(result)
     except EntityNotFoundError:
         return _card_not_found_response()
+    except CardOperationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_dict(),
+        ) from exc
     except (
         KnowledgePropagationContractError,
         KnowledgePropagationPortError,
@@ -711,6 +771,11 @@ async def drop_card_knowledge_assignments(
         return project_knowledge_mutation_response(result)
     except EntityNotFoundError:
         return _card_not_found_response()
+    except CardOperationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_dict(),
+        ) from exc
     except (
         KnowledgePropagationContractError,
         KnowledgePropagationPortError,
@@ -739,6 +804,11 @@ async def refresh_card_knowledge_assignments(
         return project_refresh_response(result)
     except EntityNotFoundError:
         return _card_not_found_response()
+    except CardOperationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_dict(),
+        ) from exc
     except (
         KnowledgePropagationContractError,
         KnowledgePropagationPortError,

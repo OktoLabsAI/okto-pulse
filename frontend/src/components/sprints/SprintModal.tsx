@@ -22,7 +22,6 @@ import {
 import { HorizontalOverflowNav } from '@/components/shared/HorizontalOverflowNav';
 import {
   PolicyCompliancePanel,
-  PolicyComplianceTransitionPreview,
   usePolicyTransitionAuthority,
 } from '@/components/policy-compliance';
 import { openLineageGraph } from '@/components/traceability';
@@ -843,7 +842,13 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
                     return (
                       <div key={c.id} className="flex items-center justify-between p-1.5 rounded hover:bg-white dark:hover:bg-gray-800">
                         <div className="flex items-center gap-2 flex-1 min-w-0">
-                          <span className={`w-2 h-2 rounded-full shrink-0 ${c.status === 'done' ? 'bg-green-500' : c.status === 'in_progress' ? 'bg-blue-500' : 'bg-gray-400'}`} />
+                          <span className={`w-2 h-2 rounded-full shrink-0 ${
+                            c.status === 'done' ? 'bg-green-500'
+                              : c.status === 'in_progress' ? 'bg-blue-500'
+                                : c.status === 'validation' ? 'bg-violet-500'
+                                  : c.status === 'rejected' ? 'bg-rose-600'
+                                    : 'bg-gray-400'
+                          }`} />
                           <span className="text-xs text-gray-800 dark:text-gray-200 truncate">{c.title}</span>
                           {cardType === 'test' && <span className="text-[9px] px-1 bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300 rounded">test</span>}
                           {cardType === 'bug' && <span className="text-[9px] px-1 bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 rounded">bug</span>}
@@ -884,6 +889,8 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
                       <span className={`w-2 h-2 rounded-full ${
                         card.status === 'done' ? 'bg-green-500' :
                         card.status === 'in_progress' ? 'bg-blue-500' :
+                        card.status === 'validation' ? 'bg-violet-500' :
+                        card.status === 'rejected' ? 'bg-rose-600' :
                         card.status === 'cancelled' ? 'bg-red-500' : 'bg-gray-400'
                       }`} />
                       <span className="text-sm text-gray-900 dark:text-white flex-1 truncate">{card.title}</span>
@@ -950,10 +957,6 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
                   mount="lazy-keep"
                   className="space-y-4"
                 >
-                  <PolicyComplianceTransitionPreview
-                    preview={transitionAuthority.preview}
-                    rejection={transitionAuthority.rejection}
-                  />
                   <PolicyCompliancePanel
                     boardId={sprint.board_id}
                     entityType="sprint"

@@ -220,6 +220,7 @@ const POST_SKB_INTRODUCED_EXACT_LEAVES = new Set([
   'sprint.tasks.assign',
   'ideation.interact_in.review',
   'ideation.interact_in.approved',
+  'card.interact_in.rejected',
 ]);
 
 const SDLC_TRANSITION_ENTITIES = new Set([

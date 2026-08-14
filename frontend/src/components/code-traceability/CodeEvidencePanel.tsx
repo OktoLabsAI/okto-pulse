@@ -9,6 +9,7 @@ import {
   ShieldX,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { ContextualHelpLink } from '@/components/help';
 import { useDashboardApi } from '@/services/api';
 import type {
   CodeTraceabilityDisposition,
@@ -19,7 +20,6 @@ import { ReceiptDetailModal } from './ReceiptDetailModal';
 import {
   TraceabilityBadge,
   TraceabilityCurrentnessBadge,
-  TraceabilityDisclosure,
   TraceabilityEmptyState,
 } from './TraceabilityDisclosure';
 import { projectedReceiptCurrentness } from './traceabilityCurrentness';
@@ -259,6 +259,14 @@ export function CodeEvidencePanel({ boardId, subjectId, subjectVersion }: Props)
           <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
             Immutable evidence accepted from authenticated external agents; human lifecycle governance stays separate.
           </p>
+          <ContextualHelpLink
+            sectionId="code-traceability"
+            ariaLabel="Learn how Code Evidence works"
+            testId="code-evidence-help-link"
+            className="mt-1 text-[11px]"
+          >
+            How Code Evidence works
+          </ContextualHelpLink>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -280,8 +288,6 @@ export function CodeEvidencePanel({ boardId, subjectId, subjectVersion }: Props)
           </button>
         </div>
       </div>
-
-      <TraceabilityDisclosure />
 
       {loading && <div className="py-10 text-center text-xs text-gray-400" role="status">Loading accepted evidence…</div>}
       {error && (

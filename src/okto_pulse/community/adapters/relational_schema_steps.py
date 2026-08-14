@@ -152,9 +152,7 @@ def _history_current_spec_edition_boundary(
         if next_edition is not None:
             observed_edition = next_edition
             boundary_at = (
-                row.get("created_at")
-                if observed_edition == current_edition
-                else None
+                row.get("created_at") if observed_edition == current_edition else None
             )
     return observed_edition == current_edition, boundary_at
 
@@ -9030,6 +9028,1103 @@ async def _migrate_heal_task_validation_field_names() -> None:
                 f"Task validation healing: patched {healed_count} card(s) with clean "
                 f"aliases and/or auto-populated conclusions."
             )
+
+
+def _decode_rejected_migration_validations(
+    raw: object,
+) -> tuple[list[object] | None, object]:
+    """Return a list when legacy JSON is structurally usable plus digest input."""
+
+    decoded = raw
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except (TypeError, ValueError):
+            return None, {"invalid_json": raw}
+    if decoded is None:
+        return [], []
+    if not isinstance(decoded, list):
+        return None, {"invalid_shape": repr(decoded)}
+    digest_input = [
+        item
+        for item in decoded
+        if not (
+            isinstance(item, Mapping)
+            and item.get("migration_contract")
+            == "card-rejected-lifecycle-quarantine/v1"
+        )
+    ]
+    return decoded, digest_input
+
+
+def _legacy_task_validation_decision(
+    *,
+    card_id: str,
+    board_id: str,
+    validations: list[object] | None,
+) -> tuple[bool | None, str | None, str, dict[str, object]]:
+    """Classify only demonstrable accepted legacy task-validation evidence.
+
+    ``True`` means the newest append-only entry is an admitted failure and can
+    safely converge to Rejected. ``False`` is an admitted non-failure and must
+    remain in Validation. ``None`` means the evidence is incomplete or
+    contradictory, so migration deliberately leaves the lifecycle untouched.
+    """
+
+    if validations is None:
+        return None, None, "validation_history_malformed", {}
+    considered = [
+        item
+        for item in validations
+        if not (
+            isinstance(item, Mapping)
+            and item.get("migration_contract")
+            == "card-rejected-lifecycle-quarantine/v1"
+        )
+    ]
+    if not considered:
+        return None, None, "validation_history_empty", {}
+    latest = considered[-1]
+    if not isinstance(latest, Mapping):
+        return None, None, "latest_validation_malformed", {}
+
+    validation_id = latest.get("id")
+    if not isinstance(validation_id, str) or not validation_id.strip():
+        return None, None, "latest_validation_id_missing", {}
+    from okto_pulse.core.domain.card_completion import REJECTION_ID_MAX_LENGTH
+
+    validation_id = validation_id.strip()
+    if len(validation_id) > REJECTION_ID_MAX_LENGTH:
+        return (
+            None,
+            None,
+            "latest_validation_id_too_long",
+            {
+                "observed_length": len(validation_id),
+                "maximum_length": REJECTION_ID_MAX_LENGTH,
+            },
+        )
+    for key, expected in (("card_id", card_id), ("board_id", board_id)):
+        observed = latest.get(key)
+        if observed is not None and str(observed) != expected:
+            return (
+                None,
+                validation_id,
+                f"latest_validation_{key}_mismatch",
+                {"observed": str(observed), "expected": expected},
+            )
+
+    outcome_raw = latest.get("outcome")
+    verdict_raw = latest.get("verdict")
+    outcome = str(outcome_raw).strip().lower() if outcome_raw is not None else None
+    verdict = str(verdict_raw).strip().lower() if verdict_raw is not None else None
+    if outcome not in {None, "success", "failed"}:
+        return None, validation_id, "latest_validation_outcome_invalid", {}
+    if verdict not in {None, "pass", "fail"}:
+        return None, validation_id, "latest_validation_verdict_invalid", {}
+    if outcome is None and verdict is None:
+        return None, validation_id, "latest_validation_result_missing", {}
+    failed_by_outcome = outcome == "failed" if outcome is not None else None
+    failed_by_verdict = verdict == "fail" if verdict is not None else None
+    if (
+        failed_by_outcome is not None
+        and failed_by_verdict is not None
+        and failed_by_outcome != failed_by_verdict
+    ):
+        return None, validation_id, "latest_validation_result_conflict", {}
+    failed = (
+        failed_by_outcome if failed_by_outcome is not None else bool(failed_by_verdict)
+    )
+    validation_outcome = str(latest.get("validation_outcome") or "").strip().lower()
+    if validation_outcome and validation_outcome not in {"success", "failed"}:
+        return None, validation_id, "latest_validation_canonical_outcome_invalid", {}
+    expected_validation_outcome = "failed" if failed else "success"
+    if validation_outcome and validation_outcome != expected_validation_outcome:
+        return None, validation_id, "latest_validation_canonical_outcome_conflict", {}
+    completion_outcome = str(latest.get("completion_outcome") or "").strip().lower()
+    if completion_outcome and completion_outcome not in {"completed", "rejected"}:
+        return None, validation_id, "latest_validation_completion_outcome_invalid", {}
+    if failed and completion_outcome and completion_outcome != "rejected":
+        return None, validation_id, "latest_validation_completion_outcome_conflict", {}
+    expected_version = latest.get("expected_subject_version")
+    if expected_version is not None and (
+        isinstance(expected_version, bool)
+        or not isinstance(expected_version, int)
+        or expected_version < 1
+    ):
+        return None, validation_id, "latest_validation_subject_version_invalid", {}
+    recommendation = str(latest.get("recommendation") or "").strip().lower()
+    if recommendation == "reject" and not failed:
+        return None, validation_id, "latest_validation_recommendation_conflict", {}
+    details: dict[str, object] = {
+        "outcome": outcome,
+        "verdict": verdict,
+        "recommendation": recommendation or None,
+        "validation_outcome": validation_outcome or None,
+        "completion_outcome": completion_outcome or None,
+    }
+    violations = latest.get("threshold_violations")
+    if isinstance(violations, list):
+        details["threshold_violations"] = [
+            str(item).strip() for item in violations if str(item).strip()
+        ]
+    return (
+        failed,
+        validation_id,
+        ("latest_validation_failed" if failed else "latest_validation_not_failed"),
+        details,
+    )
+
+
+def _legacy_task_rejection_summary(
+    validation: Mapping[str, object],
+) -> str:
+    """Project a concise human cause without leaking migration mechanics."""
+
+    from okto_pulse.core.domain.card_completion import REJECTION_SUMMARY_MAX_LENGTH
+
+    def bounded(value: str) -> str:
+        normalized = " ".join(value.split())
+        if len(normalized) <= REJECTION_SUMMARY_MAX_LENGTH:
+            return normalized
+        return normalized[: REJECTION_SUMMARY_MAX_LENGTH - 1].rstrip() + "…"
+
+    authored = validation.get("general_justification") or validation.get("summary")
+    if isinstance(authored, str) and authored.strip():
+        return bounded(authored)
+    violations = validation.get("threshold_violations")
+    readable = (
+        [str(item).strip() for item in violations if str(item).strip()]
+        if isinstance(violations, list)
+        else []
+    )
+    if readable:
+        return bounded("Task validation failed: " + "; ".join(readable))
+    if str(validation.get("recommendation") or "").strip().lower() == "reject":
+        return "The evaluator rejected the delivered work."
+    return "The delivered work did not meet the task validation criteria."
+
+
+def _legacy_task_rejection_reason_codes(
+    validation: Mapping[str, object],
+) -> list[str]:
+    """Normalize legacy validation evidence to the authored stable codes."""
+
+    resolved: list[str] = []
+    violations = validation.get("threshold_violations")
+    if isinstance(violations, list):
+        for raw in violations:
+            token = str(raw).strip().casefold()
+            code = (
+                "confidence_below"
+                if "confidence" in token
+                else "completeness_below"
+                if "completeness" in token
+                else "drift_above"
+                if "drift" in token
+                else "reject_recommendation"
+                if "recommend" in token or "verdict" in token
+                else None
+            )
+            if code is not None and code not in resolved:
+                resolved.append(code)
+    if (
+        str(validation.get("recommendation") or "").strip().casefold() == "reject"
+        and "reject_recommendation" not in resolved
+    ):
+        resolved.append("reject_recommendation")
+    return resolved
+
+
+def _decode_rejected_migration_records(raw: object) -> list[object] | None:
+    """Decode legacy completion-rejection history without discarding evidence."""
+
+    decoded = raw
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+    if decoded is None:
+        return []
+    return decoded if isinstance(decoded, list) else None
+
+
+def _valid_legacy_rejection_history_record(
+    candidate: object,
+    *,
+    row: Mapping[str, object],
+) -> bool:
+    """Validate one persisted append-only cause record without coercion."""
+
+    from okto_pulse.core.domain.card_completion import (
+        REJECTION_CODE_MAX_LENGTH,
+        REJECTION_ID_MAX_LENGTH,
+        REJECTION_REASON_CODE_MAX_COUNT,
+        REJECTION_REASON_CODE_MAX_LENGTH,
+        REJECTION_SUMMARY_MAX_LENGTH,
+    )
+
+    if not isinstance(candidate, Mapping):
+        return False
+    record_id = str(candidate.get("id") or "").strip()
+    kind = str(candidate.get("kind") or "").strip()
+    code = str(candidate.get("code") or "").strip()
+    summary = " ".join(str(candidate.get("summary") or "").split())
+    source_id = candidate.get("source_id")
+    reason_codes = candidate.get("reason_codes")
+    if (
+        not record_id
+        or len(record_id) > REJECTION_ID_MAX_LENGTH
+        or kind not in {"task_validation", "completion_gate"}
+        or not code
+        or len(code) > REJECTION_CODE_MAX_LENGTH
+        or not summary
+        or len(summary) > REJECTION_SUMMARY_MAX_LENGTH
+        or str(candidate.get("card_id") or "") != str(row["id"])
+        or str(candidate.get("board_id") or "") != str(row["board_id"])
+        or not isinstance(reason_codes, list)
+        or len(reason_codes) > REJECTION_REASON_CODE_MAX_COUNT
+        or any(not isinstance(item, str) or not item.strip() for item in reason_codes)
+        or any(
+            len(item.strip()) > REJECTION_REASON_CODE_MAX_LENGTH
+            for item in reason_codes
+            if isinstance(item, str)
+        )
+        or not str(candidate.get("created_by") or "").strip()
+        or not str(candidate.get("created_at") or "").strip()
+        or not isinstance(candidate.get("subject_version"), int)
+        or int(candidate["subject_version"]) < 1
+    ):
+        return False
+    if source_id is not None and (
+        not isinstance(source_id, str)
+        or not source_id.strip()
+        or len(source_id.strip()) > REJECTION_ID_MAX_LENGTH
+    ):
+        return False
+    return True
+
+
+def _valid_legacy_current_rejection(
+    *,
+    row: Mapping[str, object],
+    latest_failed_validation_id: str | None,
+    validations: list[object] | None,
+    rejection_records: list[object] | None,
+) -> dict[str, str] | None:
+    """Return the exact Current cause only when its target is self-consistent."""
+
+    from okto_pulse.core.domain.card_completion import (
+        REJECTION_CODE_MAX_LENGTH,
+        REJECTION_ID_MAX_LENGTH,
+        REJECTION_SUMMARY_MAX_LENGTH,
+    )
+
+    kind = str(row.get("current_rejection_kind") or "").strip()
+    cause_id = str(row.get("current_rejection_id") or "").strip()
+    code = str(row.get("current_rejection_code") or "").strip()
+    summary = " ".join(str(row.get("current_rejection_summary") or "").split())
+    if not kind or not cause_id or not code or not summary:
+        return None
+    if (
+        len(cause_id) > REJECTION_ID_MAX_LENGTH
+        or len(code) > REJECTION_CODE_MAX_LENGTH
+        or len(summary) > REJECTION_SUMMARY_MAX_LENGTH
+    ):
+        return None
+    if (
+        kind not in {"task_validation", "completion_gate"}
+        or validations is None
+        or rejection_records is None
+    ):
+        return None
+    from okto_pulse.core.domain.card_completion import (
+        resolve_current_rejection_record,
+    )
+
+    resolved = resolve_current_rejection_record(
+        {
+            "id": str(row["id"]),
+            "board_id": str(row["board_id"]),
+            "validations": validations,
+            "rejection_records": rejection_records,
+            "current_rejection_kind": kind,
+            "current_rejection_id": cause_id,
+            "current_rejection_code": code,
+            "current_rejection_summary": summary,
+        }
+    )
+    if resolved is None:
+        return None
+    if kind == "task_validation" and (
+        latest_failed_validation_id is None
+        or resolved.source_id != latest_failed_validation_id
+    ):
+        return None
+    return {"kind": kind, "id": cause_id, "code": code, "summary": summary}
+
+
+async def _migrate_card_rejected_lifecycle() -> str | None:
+    """Converge proven legacy failed validations into the Rejected lifecycle.
+
+    Only Normal/Bug cards whose newest accepted validation explicitly failed
+    are moved. Test cards and ambiguous evidence stay in Validation and receive
+    an immutable audit decision. Existing Rejected cards are audited too: an
+    unequivocal legacy validation repairs their Current cause, while an
+    unresolvable cause receives a deterministic completion-gate quarantine
+    record so the card remains explainable and administrable. Existing Rejected
+    rows keep their relative order; migrated rows append in their former
+    Validation order. Both affected columns are then densely resequenced with
+    active rows before archived rows.
+    """
+
+    from datetime import datetime, timezone
+
+    from sqlalchemy import JSON as sa_JSON
+    from sqlalchemy import bindparam
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import select as sa_select
+    from sqlalchemy import text as sa_text
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        Card,
+        CardRejectedLifecycleMigrationRow,
+    )
+    from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
+
+    engine = get_engine()
+
+    def _table_contract(sync_conn: object) -> tuple[set[str], set[str]]:
+        inspector = sa_inspect(sync_conn)
+        tables = set(inspector.get_table_names())
+        columns = (
+            {str(item["name"]) for item in inspector.get_columns("cards")}
+            if "cards" in tables
+            else set()
+        )
+        return tables, columns
+
+    changed = False
+    async with engine.begin() as conn:
+        if conn.dialect.name not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "card rejected lifecycle migration supports only SQLite and PostgreSQL"
+            )
+        tables, columns = await conn.run_sync(_table_contract)
+        if "cards" not in tables:
+            return "skipped"
+        column_ddl = {
+            "rejection_records": "JSON NOT NULL DEFAULT '[]'",
+            "current_rejection_kind": "VARCHAR(32)",
+            "current_rejection_id": "VARCHAR(128)",
+            "current_rejection_code": "VARCHAR(128)",
+            "current_rejection_summary": "TEXT",
+        }
+        for name, ddl in column_ddl.items():
+            if name in columns:
+                continue
+            await conn.execute(sa_text(f"ALTER TABLE cards ADD COLUMN {name} {ddl}"))
+            changed = True
+
+        # Deployments that briefly ran the nullable bridge must converge to
+        # the persistent append-only-list invariant before any projection is
+        # served.  The Core boundary also normalizes legacy ``NULL`` values,
+        # but storage remains authoritative and therefore cannot retain one.
+        null_history = await conn.scalar(
+            sa_text("SELECT COUNT(*) FROM cards WHERE rejection_records IS NULL")
+        )
+        if int(null_history or 0):
+            await conn.execute(
+                sa_text(
+                    "UPDATE cards SET rejection_records = '[]' "
+                    "WHERE rejection_records IS NULL"
+                )
+            )
+            changed = True
+
+        if CardRejectedLifecycleMigrationRow.__tablename__ not in tables:
+            await conn.run_sync(
+                lambda sync_conn: CardRejectedLifecycleMigrationRow.__table__.create(
+                    sync_conn, checkfirst=True
+                )
+            )
+            changed = True
+
+        audit_contract = await conn.run_sync(
+            (
+                lambda sync_conn: _sqlite_owned_table_contract(
+                    sync_conn, CardRejectedLifecycleMigrationRow.__table__
+                )
+            )
+            if conn.dialect.name == "sqlite"
+            else (
+                lambda sync_conn: _postgresql_owned_table_contract(
+                    sync_conn, CardRejectedLifecycleMigrationRow.__table__
+                )
+            )
+        )
+        if audit_contract["observed"] != audit_contract["expected"]:
+            raise RuntimeError(
+                "card rejected lifecycle migration audit has a non-canonical contract"
+            )
+        _, final_card_columns = await conn.run_sync(_table_contract)
+        missing_card_columns = set(column_ddl) - final_card_columns
+        if missing_card_columns:
+            raise RuntimeError(
+                "card rejected lifecycle migration columns are missing: "
+                + ", ".join(sorted(missing_card_columns))
+            )
+        card_contract = await conn.run_sync(
+            (lambda sync_conn: _sqlite_owned_table_contract(sync_conn, Card.__table__))
+            if conn.dialect.name == "sqlite"
+            else (
+                lambda sync_conn: _postgresql_owned_table_contract(
+                    sync_conn, Card.__table__
+                )
+            )
+        )
+        expected_rejection_columns = tuple(
+            column
+            for column in card_contract["expected"]["columns"]
+            if column[0] in column_ddl
+        )
+        observed_rejection_columns = tuple(
+            column
+            for column in card_contract["observed"]["columns"]
+            if column[0] in column_ddl
+        )
+        if observed_rejection_columns != expected_rejection_columns:
+            raise RuntimeError(
+                "card rejected lifecycle columns have a non-canonical contract"
+            )
+
+        rows = list(
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT id, board_id, card_type, status, position, archived, "
+                        "validations, rejection_records, current_rejection_kind, "
+                        "current_rejection_id, current_rejection_code, "
+                        "current_rejection_summary, created_at, updated_at, "
+                        "policy_version "
+                        "FROM cards WHERE status IN ('validation', 'rejected') "
+                        "ORDER BY board_id, status, archived, position, id DESC"
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        if not rows:
+            return None if changed else "skipped"
+
+        audit_table = CardRejectedLifecycleMigrationRow.__table__
+        migrated_ids: set[str] = set()
+        affected_boards: set[str] = set()
+
+        for row in rows:
+            card_id = str(row["id"])
+            board_id = str(row["board_id"])
+            status_value = str(row["status"])
+            card_type = str(row["card_type"] or "normal").strip().lower()
+            validations, digest_value = _decode_rejected_migration_validations(
+                row["validations"]
+            )
+            rejection_records = _decode_rejected_migration_records(
+                row["rejection_records"]
+            )
+            decision, validation_id, reason_code, evidence_details = (
+                _legacy_task_validation_decision(
+                    card_id=card_id,
+                    board_id=board_id,
+                    validations=validations,
+                )
+            )
+            validation_projection_changed = False
+            if decision is True and validations is not None and validation_id:
+                latest = validations[-1]
+                if not isinstance(latest, Mapping):
+                    raise RuntimeError(
+                        "card rejected migration classifier lost its evidence"
+                    )
+                current_record_id = str(row["current_rejection_id"] or "").strip()
+                current_record = next(
+                    (
+                        candidate
+                        for candidate in rejection_records or []
+                        if isinstance(candidate, Mapping)
+                        and candidate.get("id") == current_record_id
+                        and candidate.get("source_id") == validation_id
+                    ),
+                    None,
+                )
+                expected_subject_version = latest.get("expected_subject_version")
+                if not isinstance(expected_subject_version, int):
+                    record_version = (
+                        current_record.get("subject_version")
+                        if isinstance(current_record, Mapping)
+                        else None
+                    )
+                    expected_subject_version = (
+                        record_version
+                        if isinstance(record_version, int) and record_version >= 1
+                        else int(row["policy_version"] or 1)
+                    )
+                canonical_latest = {
+                    **latest,
+                    "card_id": card_id,
+                    "board_id": board_id,
+                    "expected_subject_version": expected_subject_version,
+                    "validation_outcome": "failed",
+                    "completion_outcome": "rejected",
+                }
+                canonical_validations = list(validations)
+                canonical_validations[-1] = canonical_latest
+                validation_projection_changed = canonical_sha256(
+                    canonical_validations
+                ) != canonical_sha256(validations)
+                validations = canonical_validations
+                digest_value = canonical_validations
+                evidence_details = {
+                    **evidence_details,
+                    "validation_outcome": "failed",
+                    "completion_outcome": "rejected",
+                }
+            source_digest = canonical_sha256(
+                {
+                    "contract": "card-rejected-lifecycle-migration/v2",
+                    "card_id": card_id,
+                    "board_id": board_id,
+                    "card_type": card_type,
+                    "validations": digest_value,
+                }
+            )
+            migrated_at = row["updated_at"] or row["created_at"]
+            if isinstance(migrated_at, str):
+                try:
+                    migrated_at = datetime.fromisoformat(
+                        migrated_at.replace("Z", "+00:00")
+                    )
+                except ValueError as exc:
+                    raise RuntimeError(
+                        "card rejected migration timestamp is invalid: " + card_id
+                    ) from exc
+            if not isinstance(migrated_at, datetime):
+                raise RuntimeError(
+                    "card rejected migration timestamp is missing: " + card_id
+                )
+            if migrated_at.tzinfo is None or migrated_at.utcoffset() is None:
+                migrated_at = migrated_at.replace(tzinfo=timezone.utc)
+
+            def _task_validation_target() -> tuple[dict[str, str], list[object]]:
+                """Return one deterministic/adopted record and its Current pointer."""
+
+                if validations is None or not validation_id:
+                    raise RuntimeError(
+                        "card rejected migration lost its task validation evidence: "
+                        + card_id
+                    )
+                if rejection_records is None:
+                    raise RuntimeError(
+                        "card rejected migration requires readable rejection history: "
+                        + card_id
+                    )
+                latest = validations[-1]
+                if not isinstance(latest, Mapping):
+                    raise RuntimeError(
+                        "card rejected migration classifier lost its evidence"
+                    )
+                summary = _legacy_task_rejection_summary(latest)
+                matching = [
+                    candidate
+                    for candidate in rejection_records
+                    if isinstance(candidate, Mapping)
+                    and _valid_legacy_rejection_history_record(candidate, row=row)
+                    and candidate.get("kind") == "task_validation"
+                    and candidate.get("source_id") == validation_id
+                    and candidate.get("code") == "task_validation_failed"
+                ]
+                if len(matching) > 1:
+                    raise RuntimeError(
+                        "card rejected migration found duplicate task causes: "
+                        + card_id
+                    )
+                if matching:
+                    record = dict(matching[0])
+                else:
+                    record_id = (
+                        "rej_mig_"
+                        + canonical_sha256(
+                            {
+                                "contract": "card-rejected-lifecycle-task-record/v2",
+                                "card_id": card_id,
+                                "board_id": board_id,
+                                "validation_id": validation_id,
+                            }
+                        )[:40]
+                    )
+                    authored_by = (
+                        latest.get("reviewer_id")
+                        or latest.get("evaluator_id")
+                        or "system:rejected-lifecycle-migration"
+                    )
+                    authored_at = latest.get("created_at") or latest.get("submitted_at")
+                    if (
+                        not isinstance(authored_at, str)
+                        or not authored_at.strip()
+                        or len(authored_at.strip()) > 64
+                    ):
+                        authored_at = migrated_at.isoformat()
+                    subject_version = latest.get("expected_subject_version")
+                    if not isinstance(subject_version, int) or subject_version < 1:
+                        subject_version = int(row["policy_version"] or 1)
+                    record = {
+                        "id": record_id,
+                        "card_id": card_id,
+                        "board_id": board_id,
+                        "kind": "task_validation",
+                        "source_id": validation_id,
+                        "code": "task_validation_failed",
+                        "summary": summary,
+                        "reason_codes": _legacy_task_rejection_reason_codes(latest),
+                        "created_by": str(authored_by).strip()
+                        or "system:rejected-lifecycle-migration",
+                        "created_at": authored_at.strip(),
+                        "subject_version": subject_version,
+                    }
+                    same_id = next(
+                        (
+                            candidate
+                            for candidate in rejection_records
+                            if isinstance(candidate, Mapping)
+                            and candidate.get("id") == record_id
+                        ),
+                        None,
+                    )
+                    if same_id is not None:
+                        if canonical_sha256(same_id) != canonical_sha256(record):
+                            raise RuntimeError(
+                                "card rejected migration task record conflict: "
+                                + card_id
+                            )
+                        record = dict(same_id)
+                target_records = list(rejection_records)
+                if not any(
+                    isinstance(candidate, Mapping)
+                    and candidate.get("id") == record["id"]
+                    for candidate in target_records
+                ):
+                    target_records.append(record)
+                return (
+                    {
+                        "kind": "task_validation",
+                        "id": str(record["id"]),
+                        "code": str(record["code"]),
+                        "summary": " ".join(str(record["summary"]).split()),
+                    },
+                    target_records,
+                )
+
+            target_cause: dict[str, str] | None = None
+            target_rejection_records: list[object] | None = None
+            requires_current_update = False
+            if status_value == "validation":
+                if card_type == "test":
+                    state = "excluded_test"
+                    audit_reason = "test_cards_never_auto_migrate"
+                elif card_type not in {"normal", "bug"}:
+                    state = "ambiguous_evidence"
+                    audit_reason = "card_type_unrecognized"
+                elif decision is True and validations is not None and validation_id:
+                    state = "migrated"
+                    audit_reason = reason_code
+                    target_cause, target_rejection_records = _task_validation_target()
+                elif decision is False:
+                    state = "not_rejected"
+                    audit_reason = reason_code
+                else:
+                    state = "ambiguous_evidence"
+                    audit_reason = reason_code
+            else:
+                affected_boards.add(board_id)
+                current_cause = _valid_legacy_current_rejection(
+                    row=row,
+                    latest_failed_validation_id=(
+                        validation_id if decision is True else None
+                    ),
+                    validations=validations,
+                    rejection_records=rejection_records,
+                )
+                if current_cause is not None and (
+                    card_type in {"normal", "bug"}
+                    or current_cause["kind"] == "completion_gate"
+                ):
+                    target_cause = current_cause
+                    state = (
+                        "quarantined"
+                        if current_cause["code"] == "legacy_rejected_cause_unresolved"
+                        else "already_rejected"
+                    )
+                    audit_reason = (
+                        "legacy_rejected_cause_unresolved"
+                        if state == "quarantined"
+                        else (
+                            reason_code
+                            if current_cause["kind"] == "task_validation"
+                            else "current_rejection_cause_valid"
+                        )
+                    )
+                    if validation_projection_changed:
+                        target_rejection_records = list(rejection_records or [])
+                        requires_current_update = True
+                elif (
+                    card_type in {"normal", "bug"}
+                    and decision is True
+                    and validations is not None
+                    and validation_id
+                ):
+                    target_cause, target_rejection_records = _task_validation_target()
+                    state = "already_rejected"
+                    audit_reason = reason_code
+                    requires_current_update = True
+                else:
+                    if rejection_records is None or validations is None:
+                        raise RuntimeError(
+                            "card rejected lifecycle quarantine requires readable "
+                            "validation and rejection histories: " + card_id
+                        )
+                    quarantine_id = canonical_sha256(
+                        {
+                            "contract": "card-rejected-lifecycle-quarantine/v1",
+                            "card_id": card_id,
+                            "source_digest": source_digest,
+                        }
+                    )
+                    quarantine_summary = (
+                        "This legacy Rejected card has no verifiable rejection "
+                        "cause. Review its validation history before starting "
+                        "rework."
+                    )
+                    quarantine_reason = (
+                        "test_card_rejected_state_unexpected"
+                        if card_type == "test"
+                        else reason_code
+                    )
+                    quarantine_subject_version = int(row["policy_version"] or 1)
+                    quarantine_validation_id = (
+                        "val_mig_"
+                        + canonical_sha256(
+                            {
+                                "contract": (
+                                    "card-rejected-lifecycle-quarantine-validation/v1"
+                                ),
+                                "card_id": card_id,
+                                "source_digest": source_digest,
+                            }
+                        )[:40]
+                    )
+                    quarantine_failure = {
+                        "code": "legacy_rejected_cause_unresolved",
+                        "summary": quarantine_summary,
+                        "reason_codes": [quarantine_reason],
+                    }
+                    quarantine_validation = {
+                        "id": quarantine_validation_id,
+                        "card_id": card_id,
+                        "board_id": board_id,
+                        "reviewer_id": "system:rejected-lifecycle-migration",
+                        "reviewer_name": "Rejected lifecycle migration",
+                        "outcome": "success",
+                        "verdict": "pass",
+                        "recommendation": "approve",
+                        "validation_outcome": "success",
+                        "completion_outcome": "rejected",
+                        "completion_gate_failures": [quarantine_failure],
+                        "general_justification": quarantine_summary,
+                        "expected_subject_version": quarantine_subject_version,
+                        "created_at": migrated_at.isoformat(),
+                        "migration_contract": ("card-rejected-lifecycle-quarantine/v1"),
+                    }
+                    existing_quarantine_validation = next(
+                        (
+                            candidate
+                            for candidate in validations
+                            if isinstance(candidate, Mapping)
+                            and candidate.get("id") == quarantine_validation_id
+                        ),
+                        None,
+                    )
+                    if existing_quarantine_validation is not None and canonical_sha256(
+                        existing_quarantine_validation
+                    ) != canonical_sha256(quarantine_validation):
+                        raise RuntimeError(
+                            "card rejected lifecycle quarantine validation conflict: "
+                            + card_id
+                        )
+                    target_validations = list(validations)
+                    if existing_quarantine_validation is None:
+                        target_validations.append(quarantine_validation)
+                    validations = target_validations
+                    quarantine_record = {
+                        "id": quarantine_id,
+                        "card_id": card_id,
+                        "board_id": board_id,
+                        "kind": "completion_gate",
+                        "source_id": quarantine_validation_id,
+                        "code": "legacy_rejected_cause_unresolved",
+                        "summary": quarantine_summary,
+                        "reason_codes": [quarantine_reason],
+                        "created_by": "system:rejected-lifecycle-migration",
+                        "created_at": migrated_at.isoformat(),
+                        "subject_version": quarantine_subject_version,
+                    }
+                    existing_quarantine = next(
+                        (
+                            candidate
+                            for candidate in rejection_records
+                            if isinstance(candidate, Mapping)
+                            and candidate.get("id") == quarantine_id
+                        ),
+                        None,
+                    )
+                    if existing_quarantine is not None and canonical_sha256(
+                        existing_quarantine
+                    ) != canonical_sha256(quarantine_record):
+                        raise RuntimeError(
+                            "card rejected lifecycle quarantine record conflict: "
+                            + card_id
+                        )
+                    target_rejection_records = list(rejection_records)
+                    if existing_quarantine is None:
+                        target_rejection_records.append(quarantine_record)
+                    target_cause = {
+                        "kind": "completion_gate",
+                        "id": quarantine_id,
+                        "code": "legacy_rejected_cause_unresolved",
+                        "summary": quarantine_summary,
+                    }
+                    state = "quarantined"
+                    audit_reason = "legacy_rejected_cause_unresolved"
+                    requires_current_update = True
+            migration_id = canonical_sha256(
+                {
+                    "contract": "card-rejected-lifecycle-migration-audit/v2",
+                    "card_id": card_id,
+                    "source_digest": source_digest,
+                }
+            )
+            audit_details = {
+                "card_type": card_type,
+                "evidence": evidence_details,
+                "cause": target_cause,
+            }
+            existing = (
+                (
+                    await conn.execute(
+                        sa_select(audit_table).where(
+                            audit_table.c.card_id == card_id,
+                            audit_table.c.source_digest == source_digest,
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                existing is not None
+                and existing["migration_state"] == "migrated"
+                and status_value == "rejected"
+                and state == "already_rejected"
+                and target_cause is not None
+                and target_cause["kind"] == "task_validation"
+            ):
+                # This is the stable replay of a row migrated from Validation
+                # during the first run, not a distinct already-Rejected input.
+                state = "migrated"
+            # This exact evidence has already been considered. In particular,
+            # do not re-reject a card that a human moved back through rework.
+            if existing is not None:
+                expected_existing = {
+                    "migration_id": migration_id,
+                    "board_id": board_id,
+                    "migration_state": state,
+                    "latest_validation_id": validation_id,
+                    "reason_code": audit_reason,
+                    "source_digest": source_digest,
+                }
+                for field_name, expected_value in expected_existing.items():
+                    if existing[field_name] != expected_value:
+                        raise RuntimeError(
+                            "card rejected lifecycle migration audit conflict: "
+                            f"{card_id}:{field_name}"
+                        )
+                if canonical_sha256(existing["details"]) != canonical_sha256(
+                    audit_details
+                ):
+                    raise RuntimeError(
+                        "card rejected lifecycle migration audit conflict: "
+                        f"{card_id}:details"
+                    )
+                if not requires_current_update:
+                    continue
+            else:
+                await conn.execute(
+                    audit_table.insert().values(
+                        migration_id=migration_id,
+                        board_id=board_id,
+                        card_id=card_id,
+                        migration_state=state,
+                        latest_validation_id=validation_id,
+                        reason_code=audit_reason,
+                        source_digest=source_digest,
+                        details=audit_details,
+                        migrated_at=migrated_at,
+                    )
+                )
+                changed = True
+
+            if status_value == "rejected":
+                if not requires_current_update or target_cause is None:
+                    continue
+                if target_rejection_records is None or validations is None:
+                    raise RuntimeError(
+                        "card rejected migration lost its causal histories: " + card_id
+                    )
+                update_values: dict[str, object] = {
+                    "card_id": card_id,
+                    "board_id": board_id,
+                    "validations": validations,
+                    "rejection_records": target_rejection_records,
+                    "kind": target_cause["kind"],
+                    "cause_id": target_cause["id"],
+                    "code": target_cause["code"],
+                    "summary": target_cause["summary"],
+                    "policy_version": int(row["policy_version"] or 1),
+                }
+                update_statement = sa_text(
+                    "UPDATE cards SET validations = :validations, "
+                    "rejection_records = :rejection_records, "
+                    "current_rejection_kind = :kind, "
+                    "current_rejection_id = :cause_id, "
+                    "current_rejection_code = :code, "
+                    "current_rejection_summary = :summary, "
+                    "policy_version = policy_version + 1 "
+                    "WHERE id = :card_id AND board_id = :board_id "
+                    "AND status = 'rejected' "
+                    "AND policy_version = :policy_version"
+                ).bindparams(
+                    bindparam("validations", type_=sa_JSON),
+                    bindparam("rejection_records", type_=sa_JSON),
+                )
+                result = await conn.execute(update_statement, update_values)
+                if result.rowcount != 1:
+                    raise RuntimeError(
+                        "card rejected migration lost its cause/version fence: "
+                        + card_id
+                    )
+                changed = True
+                continue
+
+            if state != "migrated" or validations is None or validation_id is None:
+                continue
+            latest = validations[-1]
+            if not isinstance(latest, Mapping):  # fenced by the classifier
+                raise RuntimeError("rejected migration classifier lost its evidence")
+            if target_cause is None or target_rejection_records is None:
+                raise RuntimeError(
+                    "card rejected migration lost its materialized cause: " + card_id
+                )
+            result = await conn.execute(
+                sa_text(
+                    "UPDATE cards SET status = 'rejected', "
+                    "validations = :validations, "
+                    "rejection_records = :rejection_records, "
+                    "current_rejection_kind = 'task_validation', "
+                    "current_rejection_id = :cause_id, "
+                    "current_rejection_code = 'task_validation_failed', "
+                    "current_rejection_summary = :summary, "
+                    "policy_version = policy_version + 1 "
+                    "WHERE id = :card_id AND board_id = :board_id "
+                    "AND status = 'validation' AND policy_version = :policy_version"
+                ).bindparams(
+                    bindparam("validations", type_=sa_JSON),
+                    bindparam("rejection_records", type_=sa_JSON),
+                ),
+                {
+                    "card_id": card_id,
+                    "board_id": board_id,
+                    "validations": validations,
+                    "rejection_records": target_rejection_records,
+                    "cause_id": target_cause["id"],
+                    "summary": target_cause["summary"],
+                    "policy_version": int(row["policy_version"] or 1),
+                },
+            )
+            if result.rowcount != 1:
+                raise RuntimeError(
+                    "card rejected migration lost its status/version fence: " + card_id
+                )
+            migrated_ids.add(card_id)
+            affected_boards.add(board_id)
+
+        def _canonical_order(
+            items: list[Mapping[str, object]],
+        ) -> list[Mapping[str, object]]:
+            by_id = sorted(items, key=lambda item: str(item["id"]), reverse=True)
+            return sorted(
+                by_id,
+                key=lambda item: (
+                    bool(item["archived"]),
+                    int(item["position"] or 0),
+                ),
+            )
+
+        for board_id in affected_boards:
+            board_rows = [row for row in rows if str(row["board_id"]) == board_id]
+            existing_rejected = [
+                row for row in board_rows if str(row["status"]) == "rejected"
+            ]
+            migrated = [row for row in board_rows if str(row["id"]) in migrated_ids]
+            remaining_validation = [
+                row
+                for row in board_rows
+                if str(row["status"]) == "validation"
+                and str(row["id"]) not in migrated_ids
+            ]
+
+            def _existing_then_migrated(
+                archived: bool,
+            ) -> list[Mapping[str, object]]:
+                return [
+                    *[
+                        item
+                        for item in _canonical_order(existing_rejected)
+                        if bool(item["archived"]) is archived
+                    ],
+                    *[
+                        item
+                        for item in _canonical_order(migrated)
+                        if bool(item["archived"]) is archived
+                    ],
+                ]
+
+            rejected_order = [
+                *_existing_then_migrated(False),
+                *_existing_then_migrated(True),
+            ]
+            validation_order = _canonical_order(remaining_validation)
+            for ordered in (rejected_order, validation_order):
+                for position, item in enumerate(ordered):
+                    if int(item["position"] or 0) == position:
+                        continue
+                    await conn.execute(
+                        sa_text("UPDATE cards SET position = :position WHERE id = :id"),
+                        {"id": str(item["id"]), "position": position},
+                    )
+                    changed = True
+
+    return None if changed else "skipped"
 
 
 async def _migrate_status_renames() -> None:
@@ -20533,9 +21628,7 @@ async def _migrate_spec_dependency_schema() -> str | None:
             dependency_columns = await conn.run_sync(
                 lambda sync_conn: {
                     str(column["name"])
-                    for column in sa_inspect(sync_conn).get_columns(
-                        "spec_dependencies"
-                    )
+                    for column in sa_inspect(sync_conn).get_columns("spec_dependencies")
                 }
             )
             additive_snapshot_columns = (
@@ -20591,9 +21684,9 @@ async def _migrate_spec_dependency_schema() -> str | None:
                 .all()
             )
             current_started_triggers = {
-                str(row["name"]): normalize_global_discovery_source_revision_trigger_sql(
-                    row["sql"]
-                )
+                str(
+                    row["name"]
+                ): normalize_global_discovery_source_revision_trigger_sql(row["sql"])
                 for row in current_started_trigger_rows
             }
             canonical_started_triggers = {
@@ -20709,11 +21802,15 @@ async def _migrate_spec_dependency_schema() -> str | None:
                     else None
                 )
                 can_attribute_card = int(edition) == 1 or (
-                    boundary_known and boundary_at is not None and time_column is not None
+                    boundary_known
+                    and boundary_at is not None
+                    and time_column is not None
                 )
                 if can_attribute_card:
                     time_predicate = (
-                        "" if int(edition) == 1 else f"AND {time_column} >= :boundary_at "
+                        ""
+                        if int(edition) == 1
+                        else f"AND {time_column} >= :boundary_at "
                     )
                     card_proves_started = bool(
                         (
@@ -20722,7 +21819,7 @@ async def _migrate_spec_dependency_schema() -> str | None:
                                     "SELECT COUNT(*) FROM cards "
                                     "WHERE spec_id = :spec_id "
                                     "AND status IN ('started', 'in_progress', "
-                                    "'validation', 'on_hold', 'done') "
+                                    "'validation', 'rejected', 'on_hold', 'done') "
                                     + time_predicate
                                 ),
                                 {
@@ -20746,11 +21843,7 @@ async def _migrate_spec_dependency_schema() -> str | None:
                 history_proves_started or card_proves_started
             ):
                 conservative_validated_backfill.append(str(spec_id))
-            if (
-                history_proves_started
-                or card_proves_started
-                or fail_closed_validated
-            ):
+            if history_proves_started or card_proves_started or fail_closed_validated:
                 derived_backfill = await conn.execute(
                     sa_text(
                         "UPDATE specs SET last_started_edition = edition "
@@ -21155,9 +22248,7 @@ END;"""
                 "pulse_spec_dependency_delete_guard": delete_function_body,
             }
             function_predecessors = {
-                "pulse_spec_dependency_immutable_guard": (
-                    predecessor_function_body,
-                ),
+                "pulse_spec_dependency_immutable_guard": (predecessor_function_body,),
             }
             function_rows = (
                 (
@@ -22291,6 +23382,7 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_guideline_policy_v1_schema": _migrate_guideline_policy_v1_schema,
     "_migrate_guideline_impact_v1_schema": (_migrate_guideline_impact_v1_schema),
     "_migrate_policy_compliance_v1_schema": (_migrate_policy_compliance_v1_schema),
+    "_migrate_card_rejected_lifecycle": _migrate_card_rejected_lifecycle,
     "_migrate_policy_waiver_v1_schema": _migrate_policy_waiver_v1_schema,
     "_migrate_semantic_guideline_governance_schema": (
         _migrate_semantic_guideline_governance_schema

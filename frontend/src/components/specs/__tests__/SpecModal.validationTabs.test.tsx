@@ -111,9 +111,6 @@ vi.mock('@/components/policy-compliance', () => ({
       data-subject-id={subjectId}
     />
   ),
-  PolicyComplianceTransitionPreview: () => (
-    <div data-testid="policy-transition-preview" />
-  ),
   projectPolicyTransitions: (transitions: Array<{
     to_status: string;
     label: string;

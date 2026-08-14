@@ -8,6 +8,7 @@ from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
     statement_budget,
 )
 from okto_pulse.community.api.columns_pagination import (
+    BATCH_COLUMNS_STATEMENT_BUDGET,
     KANBAN_STATUSES,
     assignee_facet_request,
     batch_type_facet_request,
@@ -48,6 +49,11 @@ from okto_pulse.core.application.use_cases import (
     CreateBoardUseCase,
     EntityNotFoundError,
     PermissionDeniedError,
+)
+from okto_pulse.core.application.use_cases.authorization import (
+    PermissionRequirement,
+    decide_authorization,
+    resolve_actor_permissions,
 )
 from okto_pulse.core.application.use_cases.boards_crud import (
     ArchiveTreeCommand,
@@ -94,6 +100,7 @@ from okto_pulse.core.models import (
     CardCreateResponse,
     CardPageItem,
     ColumnsResponseUnion,
+    redact_card_validation_projection,
 )
 from okto_pulse.core.ports.knowledge_propagation import (
     KnowledgePropagationPortError,
@@ -105,6 +112,34 @@ from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
 from okto_pulse.core.ports.authentication import Principal
 
 router = APIRouter()
+
+
+async def _can_read_card_validation(
+    *,
+    actor,
+    uow: PulseUnitOfWork,
+    board_id: str,
+) -> bool:
+    """Resolve the validation leaf once before projecting a page/board.
+
+    Board/card readability and validation readability are intentionally
+    separate capabilities.  The lifecycle status remains visible when the
+    latter is denied, while scores and the human Current rejection cause are
+    projected away through the shared Core helper.
+    """
+
+    permissions = await resolve_actor_permissions(actor, uow, board_id)
+    return decide_authorization(
+        actor,
+        PermissionRequirement("card.validation.read"),
+        permissions,
+    ).allowed
+
+
+def _project_card_validation_visibility(value, *, can_read_validation: bool):
+    if can_read_validation:
+        return value
+    return redact_card_validation_projection(value)
 
 
 @router.post("", response_model=BoardResponse, status_code=status.HTTP_201_CREATED)
@@ -281,6 +316,11 @@ async def list_board_cards(
         principal,
         board_id=board_id,
     )
+    can_read_validation = await _can_read_card_validation(
+        actor=actor,
+        uow=uow,
+        board_id=board_id,
+    )
     use_case = GetBoardColumnsUseCase()
     try:
         page = await run_paginated_list(
@@ -301,7 +341,12 @@ async def list_board_cards(
         raise permission_denied_http_error(exc) from exc
     return project_page(
         page,
-        lambda record: CardPageItem(**record.values),
+        lambda record: CardPageItem(
+            **_project_card_validation_visibility(
+                record.values,
+                can_read_validation=can_read_validation,
+            )
+        ),
     )
 
 
@@ -427,7 +472,7 @@ async def get_board_columns(
 
     if parameters is not None:
         try:
-            # Authorization happens before the productive 23/4 data budget.
+            # Authorization happens before the productive bounded data budget.
             await use_case.preflight(
                 GetBoardColumnsCommand(board_id),
                 actor=actor,
@@ -440,6 +485,12 @@ async def get_board_columns(
             )
         except PermissionDeniedError as exc:
             raise permission_denied_http_error(exc) from exc
+
+        can_read_validation = await _can_read_card_validation(
+            actor=actor,
+            uow=uow,
+            board_id=board_id,
+        )
 
         session = uow.services.cards.db
         if parameters.column is not None:
@@ -473,7 +524,13 @@ async def get_board_columns(
             return {
                 "board_id": board_id,
                 "column": parameters.column,
-                "items": [card_summary(record) for record in page.items],
+                "items": [
+                    _project_card_validation_visibility(
+                        card_summary(record),
+                        can_read_validation=can_read_validation,
+                    )
+                    for record in page.items
+                ],
                 "meta": meta,
                 "offset": parameters.offset,
                 "limit": parameters.per_column_limit,
@@ -482,14 +539,20 @@ async def get_board_columns(
                 ),
             }
 
-        async with statement_budget(session, 23) as budget:
+        async with statement_budget(session, BATCH_COLUMNS_STATEMENT_BUDGET) as budget:
             columns: dict[str, list[dict]] = {}
             columns_meta: dict[str, dict] = {}
             for card_status in KANBAN_STATUSES:
                 page = await uow.services.entity_pages.list(
                     column_page_request(board_id, card_status, parameters)
                 )
-                columns[card_status] = [card_summary(record) for record in page.items]
+                columns[card_status] = [
+                    _project_card_validation_visibility(
+                        card_summary(record),
+                        can_read_validation=can_read_validation,
+                    )
+                    for record in page.items
+                ]
                 columns_meta[card_status] = page_meta(page)
 
             type_rows = await uow.services.entity_pages.group_count(
@@ -498,10 +561,11 @@ async def get_board_columns(
             assignee_rows = await uow.services.entity_pages.group_count(
                 assignee_facet_request(board_id, parameters)
             )
-            if not 1 <= budget.used <= 23:
+            if not 1 <= budget.used <= BATCH_COLUMNS_STATEMENT_BUDGET:
                 raise RuntimeError(
                     "columns_statement_budget_mismatch: "
-                    f"batch used {budget.used}, cap 23"
+                    f"batch used {budget.used}, "
+                    f"cap {BATCH_COLUMNS_STATEMENT_BUDGET}"
                 )
 
         for row in type_rows:
@@ -542,43 +606,61 @@ async def get_board_columns(
         raise permission_denied_http_error(exc) from exc
 
     board = result.board
+    can_read_validation = await _can_read_card_validation(
+        actor=actor,
+        uow=uow,
+        board_id=board_id,
+    )
     columns = {card_status.value: [] for card_status in CardStatus}
     for card in board.cards:
         if not include_archived and getattr(card, "archived", False):
             continue
         columns[card.status.value].append(
-            {
-                "id": card.id,
-                "board_id": card.board_id,
-                "spec_id": card.spec_id,
-                "title": card.title,
-                "description": card.description,
-                "status": card.status.value,
-                "priority": card.priority.value if card.priority else "none",
-                "position": card.position,
-                "assignee_id": card.assignee_id,
-                "created_by": card.created_by,
-                "created_at": card.created_at.isoformat(),
-                "updated_at": card.updated_at.isoformat(),
-                "due_date": card.due_date.isoformat() if card.due_date else None,
-                "labels": card.labels or [],
-                "test_scenario_ids": card.test_scenario_ids,
-                "conclusions": card.conclusions,
-                "card_type": getattr(card, "card_type", "normal") or "normal",
-                "origin_task_id": getattr(card, "origin_task_id", None),
-                "severity": getattr(card, "severity", None),
-                "linked_test_task_ids": getattr(
-                    card,
-                    "linked_test_task_ids",
-                    None,
-                ),
-                "archived": getattr(card, "archived", False),
-                "open_qa_count": sum(
-                    1
-                    for question in (card.qa_items or [])
-                    if question.answered_at is None
-                ),
-            }
+            _project_card_validation_visibility(
+                {
+                    "id": card.id,
+                    "board_id": card.board_id,
+                    "spec_id": card.spec_id,
+                    "title": card.title,
+                    "description": card.description,
+                    "status": card.status.value,
+                    "priority": card.priority.value if card.priority else "none",
+                    "position": card.position,
+                    "assignee_id": card.assignee_id,
+                    "created_by": card.created_by,
+                    "created_at": card.created_at.isoformat(),
+                    "updated_at": card.updated_at.isoformat(),
+                    "due_date": card.due_date.isoformat() if card.due_date else None,
+                    "labels": card.labels or [],
+                    "test_scenario_ids": card.test_scenario_ids,
+                    "conclusions": card.conclusions,
+                    "card_type": getattr(card, "card_type", "normal") or "normal",
+                    "origin_task_id": getattr(card, "origin_task_id", None),
+                    "severity": getattr(card, "severity", None),
+                    "linked_test_task_ids": getattr(
+                        card,
+                        "linked_test_task_ids",
+                        None,
+                    ),
+                    "archived": getattr(card, "archived", False),
+                    "current_rejection_kind": getattr(
+                        card, "current_rejection_kind", None
+                    ),
+                    "current_rejection_id": getattr(card, "current_rejection_id", None),
+                    "current_rejection_code": getattr(
+                        card, "current_rejection_code", None
+                    ),
+                    "current_rejection_summary": getattr(
+                        card, "current_rejection_summary", None
+                    ),
+                    "open_qa_count": sum(
+                        1
+                        for question in (card.qa_items or [])
+                        if question.answered_at is None
+                    ),
+                },
+                can_read_validation=can_read_validation,
+            )
         )
 
     return {"board_id": board_id, "columns": columns}
@@ -611,6 +693,11 @@ async def archive_tree(
         ) from exc
     except SpecDependencyOperationError as exc:
         raise spec_dependency_http_error(exc) from exc
+    except CardOperationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_dict(),
+        ) from exc
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
@@ -641,6 +728,11 @@ async def restore_tree(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"{exc.entity_type.capitalize()} not found",
+        ) from exc
+    except CardOperationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_dict(),
         ) from exc
     except ValueError as e:
         raise HTTPException(

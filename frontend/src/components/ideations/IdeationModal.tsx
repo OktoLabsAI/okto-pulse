@@ -80,12 +80,10 @@ import { usePermissions } from '@/hooks/usePermissions';
 import { QualityPanel } from '@/components/quality';
 import {
   PolicyCompliancePanel,
-  PolicyComplianceTransitionPreview,
   isAllowedTransitionActionable,
   policyTransitionRejectionMessage,
   readPolicyTransitionRejection,
   requirePolicyTransitionEnvelope,
-  type PolicyTransitionRejection,
   type PolicyTransitionPreviewLoadState,
 } from '@/components/policy-compliance';
 import { IdeationReferencesPanel } from './IdeationReferencesPanel';
@@ -958,10 +956,6 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
     transitions: [],
     error: null,
   });
-  const [
-    policyTransitionRejection,
-    setPolicyTransitionRejection,
-  ] = useState<PolicyTransitionRejection | null>(null);
   const lastTransitionSubjectKey = useRef<string | null>(null);
   const transitionRequestId = useRef(0);
   const [savingSkip, setSavingSkip] = useState(false);
@@ -1025,7 +1019,6 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
       data.version,
       data.status,
     ].join(':');
-    setPolicyTransitionRejection(null);
     setNextStatuses([]);
     setPolicyTransitionPreview({
       status: 'loading',
@@ -1099,7 +1092,6 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
   const performMove = async (status: IdeationStatus, cancellationReason?: string) => {
     if (!ideation) return;
     setMovingTo(status);
-    setPolicyTransitionRejection(null);
     try {
       const updated = await api.moveIdeation(ideationId, {
         status,
@@ -1123,7 +1115,6 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
           : getErrorMessage(err),
       );
       await loadAllowedTransitions(ideation);
-      setPolicyTransitionRejection(rejection);
     } finally { setMovingTo(null); }
   };
 
@@ -1696,11 +1687,6 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
                   mount="lazy-keep"
                   className="space-y-4"
                 >
-                  <PolicyComplianceTransitionPreview
-                    preview={policyTransitionPreview}
-                    rejection={policyTransitionRejection}
-                    presentationMode="lifecycle-edition"
-                  />
                   <PolicyCompliancePanel
                     boardId={ideation.board_id || _boardId}
                     entityType="ideation"

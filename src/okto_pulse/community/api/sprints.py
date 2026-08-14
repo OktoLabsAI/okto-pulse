@@ -78,7 +78,7 @@ from okto_pulse.core.models.schemas import (
 )
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.services.cancellation import CancellationReasonRequiredError
-from okto_pulse.core.application.errors import SprintOperationError
+from okto_pulse.core.application.errors import CardOperationError, SprintOperationError
 
 router = APIRouter()
 
@@ -143,9 +143,7 @@ async def list_board_sprints(
                     filters=filters,
                     any_groups=search_groups(search, ("title",)),
                 ),
-                preflight=lambda: use_case.preflight(
-                    command, actor=actor, uow=uow
-                ),
+                preflight=lambda: use_case.preflight(command, actor=actor, uow=uow),
             )
         except EntityNotFoundError as exc:
             raise HTTPException(
@@ -185,7 +183,9 @@ async def list_board_sprints(
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     return result.sprints
 
 
@@ -213,7 +213,9 @@ async def create_sprint(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
     return result.sprint
@@ -252,9 +254,7 @@ async def list_sprints(
                     offset=resolved_offset,
                     limit=resolved_limit,
                 ),
-                preflight=lambda: use_case.preflight(
-                    command, actor=actor, uow=uow
-                ),
+                preflight=lambda: use_case.preflight(command, actor=actor, uow=uow),
             )
             return project_page(
                 page,
@@ -280,7 +280,9 @@ async def list_sprints(
             )
         result = await use_case.execute(command, actor=actor, uow=uow)
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     return result.sprints
 
 
@@ -298,7 +300,9 @@ async def get_sprint(
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     return result.sprint
 
 
@@ -321,7 +325,9 @@ async def update_sprint(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
     return result.sprint
@@ -350,7 +356,9 @@ async def move_sprint(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     return result.sprint
 
 
@@ -367,10 +375,14 @@ async def delete_sprint(
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except CardOperationError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except SprintOperationError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
 
@@ -394,11 +406,16 @@ async def submit_evaluation(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
     sprint = result.sprint
-    return {"success": True, "evaluation_id": sprint.evaluations[-1]["id"] if sprint.evaluations else None}
+    return {
+        "success": True,
+        "evaluation_id": sprint.evaluations[-1]["id"] if sprint.evaluations else None,
+    }
 
 
 @router.post("/sprints/{sprint_id}/assign-tasks")
@@ -411,28 +428,32 @@ async def assign_tasks(
     """Assign cards to a sprint. Cards must belong to the same spec."""
     card_ids = data.get("card_ids", [])
     if not card_ids:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="card_ids required")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="card_ids required"
+        )
     try:
         result = await AssignSprintTasksUseCase().execute(
             AssignSprintTasksCommand(sprint_id, card_ids),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except CardOperationError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except SprintOperationError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
     count = result.assigned
     sprint = result.sprint
     lane_type = sprint.lane_type.value if sprint else None
     accepted_card_types = (
-        ["bug", "test"]
-        if lane_type == "hotfix"
-        else ["normal", "test", "bug"]
+        ["bug", "test"] if lane_type == "hotfix" else ["normal", "test", "bug"]
     )
     return {
         "success": True,
@@ -453,17 +474,23 @@ async def unassign_tasks(
     """Remove cards from a sprint (set sprint_id to null)."""
     card_ids = data.get("card_ids", [])
     if not card_ids:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="card_ids required")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="card_ids required"
+        )
     try:
         result = await UnassignSprintTasksUseCase().execute(
             UnassignSprintTasksCommand(sprint_id, card_ids),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except CardOperationError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except SprintOperationError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict())
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
     return {"success": True, "unassigned": result.unassigned}
@@ -494,7 +521,9 @@ async def list_history(
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     return result.history
 
 
@@ -514,7 +543,9 @@ async def suggest_sprints(
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return {"suggestions": result.suggestions, "count": len(result.suggestions)}

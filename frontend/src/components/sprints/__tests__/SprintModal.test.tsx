@@ -4,10 +4,7 @@ import { SprintModal } from '../SprintModal';
 import { deriveSprintDisplayCounts } from '../sprintDisplayCounts';
 import type { CardSummaryForSpec, Sprint } from '@/types';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
-import type {
-  PolicyCompliancePanelProps,
-  PolicyComplianceTransitionPreviewProps,
-} from '@/components/policy-compliance';
+import type { PolicyCompliancePanelProps } from '@/components/policy-compliance';
 
 const apiMock = vi.hoisted(() => ({
   getSprint: vi.fn(),
@@ -75,17 +72,6 @@ vi.mock('@/components/policy-compliance', async (importOriginal) => {
         />
       );
     },
-    PolicyComplianceTransitionPreview: ({
-      preview,
-      rejection,
-    }: PolicyComplianceTransitionPreviewProps) => (
-      <div
-        data-testid="policy-transition-preview"
-        data-status={preview.status}
-      >
-        {rejection?.code || ''}
-      </div>
-    ),
   };
 });
 
@@ -472,7 +458,7 @@ describe('SprintModal display counts', () => {
     await renderSprint({
       cards: [
         card({ id: 'normal-1', title: 'Implement feature', status: 'done', card_type: 'normal' }),
-        card({ id: 'bug-1', title: 'Fix defect', status: 'validation', card_type: 'bug' }),
+        card({ id: 'bug-1', title: 'Fix defect', status: 'rejected', card_type: 'bug' }),
         card({ id: 'test-1', title: 'Regression test', status: 'done', card_type: 'test' }),
         card({ id: 'legacy-1', title: 'Legacy card', status: 'done', card_type: undefined }),
       ],
@@ -491,6 +477,8 @@ describe('SprintModal display counts', () => {
     expect(rows).toHaveLength(3);
     expect(screen.getByText('Implement feature')).toBeInTheDocument();
     expect(screen.getByText('Fix defect')).toBeInTheDocument();
+    const rejectedRow = rows.find((row) => within(row).queryByText('Fix defect'));
+    expect(rejectedRow?.querySelector('.bg-rose-600')).not.toBeNull();
     expect(screen.getByText('Legacy card')).toBeInTheDocument();
     expect(screen.queryByText('Regression test')).not.toBeInTheDocument();
   });
@@ -614,10 +602,10 @@ describe('SprintModal Policy Compliance', () => {
       'data-subject-id',
       'sprint-1',
     );
-    expect(screen.getByTestId('policy-transition-preview')).toHaveAttribute(
-      'data-status',
-      'ready',
+    expect(policyComponentState.panelProps?.transitionPreview).toEqual(
+      expect.objectContaining({ status: 'ready' }),
     );
+    expect(screen.queryByTestId('policy-transition-preview')).not.toBeInTheDocument();
     expect(apiMock.getAllowedTransitions).toHaveBeenCalledWith('board-1', {
       entity_type: 'sprint',
       entity_id: 'sprint-1',
@@ -712,10 +700,10 @@ describe('SprintModal Policy Compliance', () => {
     fireEvent.click(screen.getByRole('tab', {
       name: 'Policy Compliance',
     }));
-    expect(screen.getByTestId('policy-transition-preview')).toHaveAttribute(
-      'data-status',
-      'error',
+    expect(policyComponentState.panelProps?.transitionPreview).toEqual(
+      expect.objectContaining({ status: 'error' }),
     );
+    expect(screen.queryByTestId('policy-transition-preview')).not.toBeInTheDocument();
   });
 
   it('does not invent a cancellation action when the backend omits that edge', async () => {
@@ -740,7 +728,7 @@ describe('SprintModal Policy Compliance', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('persists a structured 409 rejection and refreshes transition authority', async () => {
+  it('reports a structured 409 rejection and refreshes authority without a readiness card', async () => {
     permissionState.flags = new Set(['guidelines.assessments.read']);
     apiMock.moveSprint.mockRejectedValue(structuredPolicyRejection());
     await renderSprint({ status: 'review' });
@@ -764,9 +752,7 @@ describe('SprintModal Policy Compliance', () => {
     fireEvent.click(screen.getByRole('tab', {
       name: 'Policy Compliance',
     }));
-    expect(screen.getByTestId('policy-transition-preview')).toHaveTextContent(
-      'policy_compliance_blocked',
-    );
+    expect(screen.queryByTestId('policy-transition-preview')).not.toBeInTheDocument();
   });
 
   it('refreshes evidence and lifecycle authority even when sprint.version is unchanged', async () => {

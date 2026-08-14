@@ -44,6 +44,7 @@ interface Props {
   subjectId: string;
   subjectVersion: number;
   specVersion?: number | null;
+  operationallyFrozen?: boolean;
   onCreateDependency?: () => void;
 }
 
@@ -754,6 +755,7 @@ export function ImplementationTargetsPanel({
   subjectId,
   subjectVersion,
   specVersion,
+  operationallyFrozen = false,
   onCreateDependency,
 }: Props) {
   const api = useDashboardApi();
@@ -884,7 +886,7 @@ export function ImplementationTargetsPanel({
           >
             <Clipboard size={12} /> Copy task context
           </button>
-          {canCreateTarget && (
+          {canCreateTarget && !operationallyFrozen && (
             <button
               type="button"
               onClick={() => setShowAddTarget((value) => !value)}
@@ -899,6 +901,17 @@ export function ImplementationTargetsPanel({
       </div>
 
       <TraceabilityDisclosure />
+      {operationallyFrozen && (
+        <div
+          className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] leading-5 text-rose-800 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300"
+          role="note"
+        >
+          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          <span>
+            This card is Rejected. Targets and governance records are read-only until it moves to In Progress; an authenticated agent may still renew the Current target resolution used to authorize that transition.
+          </span>
+        </div>
+      )}
       <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300" role="note">
         <AlertTriangle size={14} className="mt-0.5 shrink-0" />
         <span>Pulse cannot detect source changes until an agent submits a newer preflight receipt.</span>
@@ -907,14 +920,14 @@ export function ImplementationTargetsPanel({
       {projection && (
         <HumanWaiverSection
           waivers={projection.waivers ?? []}
-          canCreate={canCreateWaiver}
-          canClear={canClearWaiver}
+          canCreate={canCreateWaiver && !operationallyFrozen}
+          canClear={canClearWaiver && !operationallyFrozen}
           onCreate={createWaiver}
           onClear={clearWaiver}
         />
       )}
 
-      {showAddTarget && canCreateTarget && projection && (
+      {showAddTarget && canCreateTarget && !operationallyFrozen && projection && (
         <AddTargetForm
           projection={projection}
           specVersion={specVersion}
@@ -948,7 +961,7 @@ export function ImplementationTargetsPanel({
               target={target}
               projection={projection}
               onViewReceipt={setReceiptId}
-              canAcknowledgeOverlap={canAcknowledgeOverlap}
+              canAcknowledgeOverlap={canAcknowledgeOverlap && !operationallyFrozen}
               onAcknowledgeOverlap={acknowledgeOverlap}
               onCreateDependency={onCreateDependency}
             />

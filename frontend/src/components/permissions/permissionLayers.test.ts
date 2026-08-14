@@ -325,6 +325,8 @@ describe('permission layers', () => {
     'test_scenario.move.ready_to_automated',
     'test_scenario.interact_in.passed',
     'sprint.tasks.assign',
+    'card.interact_in.rejected',
+    'card.move.rejected_to_in_progress',
     'code_traceability.investigation.read',
     'code_traceability.investigation.revoke',
     'code_traceability.evidence.read',

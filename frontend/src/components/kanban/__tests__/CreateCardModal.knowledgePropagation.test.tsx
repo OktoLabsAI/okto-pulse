@@ -29,6 +29,7 @@ vi.mock('@/store/dashboard', () => ({
     started: [],
     in_progress: [],
     validation: [],
+    rejected: [],
     done: [],
     on_hold: [],
     cancelled: [],
@@ -214,6 +215,29 @@ beforeEach(() => {
 });
 
 describe('CreateCardModal selective Knowledge integration', () => {
+  it.each(['validation', 'rejected'] as const)(
+    'only offers initial lifecycle states and normalizes %s on create',
+    async (initialStatus) => {
+      render(
+        <CreateCardModal
+          boardId="board-1"
+          initialStatus={initialStatus}
+          onClose={vi.fn()}
+        />,
+      );
+
+      const statusLabel = screen.getByText('Status');
+      const statusSelect = statusLabel.parentElement?.querySelector('select');
+      if (!(statusSelect instanceof HTMLSelectElement)) {
+        throw new Error('Status selector not found');
+      }
+      expect(statusSelect).toHaveValue('not_started');
+      expect(
+        within(statusSelect).getAllByRole('option').map((option) => option.textContent),
+      ).toEqual(['Not Started', 'Started']);
+    },
+  );
+
   it('routes standard and test card types through their distinct create leaves', async () => {
     permissionState.denied = new Set(['card.entity.create']);
     render(

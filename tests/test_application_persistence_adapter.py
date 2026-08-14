@@ -132,9 +132,7 @@ async def test_card_gate_projection_keeps_history_bodies_inside_sqlite(tmp_path)
                     entity="card",
                     filters=(
                         ApplicationFilter("id", "eq", card_id),
-                        ApplicationFilter(
-                            "conclusion_actor_id", "eq", "reviewer-1"
-                        ),
+                        ApplicationFilter("conclusion_actor_id", "eq", "reviewer-1"),
                     ),
                     select_fields=("id",),
                     limit=1,
@@ -269,6 +267,115 @@ async def test_application_persistence_synchronizes_legacy_direct_commit(tmp_pat
         reloaded = await adapter.get(session, entity="board", record_id=board_id)
         assert reloaded is not None
         assert reloaded.name == "After direct commit"
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_card_rejection_cause_and_validation_receipt_round_trip(tmp_path):
+    """The causal pointer and idempotency receipt survive the ORM boundary."""
+
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'card-rejection-cause.db'}"
+    )
+    factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
+        expire_on_commit=False,
+        info={"realm_scope": RealmScope.local()},
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    adapter = CommunitySqlAlchemyApplicationPersistence()
+    board_id = str(uuid.uuid4())
+    card_id = str(uuid.uuid4())
+    exact_response = {
+        "id": "validation-1",
+        "card_id": card_id,
+        "validation_outcome": "success",
+        "completion_outcome": "rejected",
+        "replayed": False,
+        "subject_version": 12,
+    }
+    validation = {
+        "id": "validation-1",
+        "reviewer_id": "reviewer-1",
+        "reviewer_name": "Clara Reviewer",
+        "outcome": "success",
+        "idempotency_key": "attempt-1",
+        "request_digest": "a" * 64,
+        "response": exact_response,
+    }
+    rejection_id = "rejection-" + ("x" * 100)
+    rejection = {
+        "id": rejection_id,
+        "card_id": card_id,
+        "board_id": board_id,
+        "kind": "completion_gate",
+        "source_id": "validation-1",
+        "code": "required_evidence_missing",
+        "summary": "Required evidence is missing.",
+        "reason_codes": ["required_evidence_missing"],
+        "created_by": "reviewer-1",
+        "created_at": "2026-08-14T12:00:00+00:00",
+        "subject_version": 11,
+    }
+
+    async with factory() as session:
+        await adapter.add(
+            session,
+            ApplicationRecord(
+                entity="board",
+                values={
+                    "id": board_id,
+                    "name": "Rejected lifecycle persistence",
+                    "owner_id": "owner-1",
+                },
+            ),
+        )
+        await adapter.add(
+            session,
+            ApplicationRecord(
+                entity="card",
+                values={
+                    "id": card_id,
+                    "board_id": board_id,
+                    "title": "Persist the rejection cause",
+                    "created_by": "owner-1",
+                    "status": "rejected",
+                    "validations": [validation],
+                    "rejection_records": [rejection],
+                    "current_rejection_kind": "completion_gate",
+                    "current_rejection_id": rejection_id,
+                    "current_rejection_code": "required_evidence_missing",
+                    "current_rejection_summary": "Required evidence is missing.",
+                },
+            ),
+        )
+        await adapter.commit(session)
+
+    async with factory() as session:
+        card = await adapter.get(session, entity="card", record_id=card_id)
+        assert card is not None
+        assert card.validations == [validation]
+        assert card.rejection_records == [rejection]
+        assert card.current_rejection_kind == "completion_gate"
+        assert len(card.current_rejection_id) > 64
+        assert card.current_rejection_id == rejection_id
+        assert card.current_rejection_code == "required_evidence_missing"
+        assert card.current_rejection_summary == "Required evidence is missing."
+        assert await adapter.fence(
+            session,
+            entity="card",
+            record_id=card_id,
+            expected_values={
+                "board_id": board_id,
+                "status": card.status,
+                "policy_version": card.policy_version,
+            },
+        )
 
     await engine.dispose()
 
@@ -409,9 +516,7 @@ async def test_deferred_allow_audit_does_not_lock_sqlite_during_read_phase(
                     "id": board_id,
                     "name": "Deferred critical audit",
                     "owner_id": "owner-1",
-                    "settings": {
-                        "require_full_context_for_critical_actions": False
-                    },
+                    "settings": {"require_full_context_for_critical_actions": False},
                 },
             ),
         )

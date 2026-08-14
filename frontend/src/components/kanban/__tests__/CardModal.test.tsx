@@ -76,7 +76,6 @@ const permissionsMock = vi.hoisted(() => ({
 
 const policyComplianceMock = vi.hoisted(() => ({
   panelProps: vi.fn(),
-  previewProps: vi.fn(),
 }));
 
 vi.mock('@/services/api', () => ({
@@ -171,17 +170,6 @@ vi.mock('@/components/policy-compliance', async (importOriginal) => {
         </div>
       );
     },
-    PolicyComplianceTransitionPreview: (props: {
-      preview: { status: string };
-      rejection?: { code: string } | null;
-    }) => {
-      policyComplianceMock.previewProps(props);
-      return (
-        <div data-testid="policy-transition-preview">
-          {props.preview.status}:{props.rejection?.code ?? 'none'}
-        </div>
-      );
-    },
   };
 });
 
@@ -232,6 +220,7 @@ const emptyColumns = (): Record<CardStatus, CardSummary[]> => ({
   started: [],
   in_progress: [],
   validation: [],
+  rejected: [],
   on_hold: [],
   done: [],
   cancelled: [],
@@ -256,6 +245,7 @@ async function flushMicrotasks() {
 }
 
 const bugCard: Card = {
+  subject_version: 7,
   id: 'bug-1',
   board_id: 'board-1',
   spec_id: 'spec-1',
@@ -332,6 +322,7 @@ const STATUS_LABELS_FOR_TEST: Record<CardStatus, string> = {
   started: 'Started',
   in_progress: 'In Progress',
   validation: 'Validation',
+  rejected: 'Rejected',
   on_hold: 'On Hold',
   done: 'Done',
   cancelled: 'Cancelled',
@@ -693,6 +684,201 @@ describe('CardModal', () => {
     });
   });
 
+  it('shows the current failed validation and the only authorized Rejected rework exit', async () => {
+    const rejectedCard: Card = {
+      ...cardForType('normal'),
+      id: 'rejected-1',
+      status: 'rejected',
+      validations: [{
+        id: 'failed-validation-1',
+        confidence: 62,
+        estimated_completeness: 91,
+        estimated_drift: 4,
+        confidence_justification: 'The evidence cannot establish correctness.',
+        completeness_justification: 'The implementation scope is present.',
+        drift_justification: 'The implementation follows the approved scope.',
+        general_justification: 'Validation rejected because confidence is below the required threshold.',
+        recommendation: 'reject',
+        verdict: 'fail',
+        threshold_violations: ['confidence 62 is below minimum 70'],
+        resolved_thresholds: {
+          min_confidence: 70,
+          min_completeness: 80,
+          max_drift: 50,
+        },
+        evaluator_id: 'agent-1',
+        created_at: '2026-08-14T01:00:00Z',
+        card_status: 'rejected',
+      }],
+    };
+    const reworkedCard = { ...rejectedCard, status: 'in_progress' as const };
+    storeMock.selectedCardId = rejectedCard.id;
+    storeMock.columns.rejected = [rejectedCard];
+    apiMock.getCard.mockResolvedValue(rejectedCard);
+    apiMock.getAllowedTransitions.mockResolvedValue(
+      transitionEnvelope(rejectedCard.id, 'rejected', [
+        allowedTransition('in_progress'),
+        allowedTransition('done'),
+        allowedTransition('rejected'),
+      ]),
+    );
+    apiMock.moveCard.mockResolvedValue(reworkedCard);
+    const onAuthoritativeStatusChange = vi.fn();
+
+    render(
+      <CardModal
+        boardId="board-1"
+        onAuthoritativeStatusChange={onAuthoritativeStatusChange}
+      />,
+    );
+
+    expect(
+      await screen.findByRole('heading', { name: rejectedCard.title }),
+    ).toHaveAttribute('contenteditable', 'false');
+    expect(screen.queryByRole('button', { name: 'Delete' }))
+      .not.toBeInTheDocument();
+    const status = await screen.findByRole('combobox', { name: 'Card status' });
+    await waitFor(() => {
+      expect(within(status).getAllByRole('option').map((option) => option.textContent))
+        .toEqual(['Rejected', 'In Progress']);
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Task validation/ }));
+    const reworkPanel = await screen.findByTestId('task-rejected-rework-panel');
+    expect(reworkPanel).toHaveTextContent('Rejected — rework required');
+    expect(reworkPanel).toHaveTextContent(
+      'Validation rejected because confidence is below the required threshold.',
+    );
+    expect(reworkPanel).toHaveTextContent('confidence 62 is below minimum 70');
+    expect(screen.queryByRole('button', { name: /Submit Validation/i }))
+      .not.toBeInTheDocument();
+    expect(
+      screen.getByTestId('task-validation-failed-validation-1-confidence-score-metric'),
+    ).toBeVisible();
+
+    fireEvent.click(
+      within(reworkPanel).getByRole('button', {
+        name: 'Move to In Progress for rework',
+      }),
+    );
+
+    await waitFor(() => {
+      expect(apiMock.moveCard).toHaveBeenCalledWith(rejectedCard.id, {
+        status: 'in_progress',
+        conclusion: undefined,
+        completeness: undefined,
+        completeness_justification: undefined,
+        drift: undefined,
+        drift_justification: undefined,
+      });
+      expect(storeMock.updateCardInColumn).toHaveBeenLastCalledWith(reworkedCard);
+      expect(onAuthoritativeStatusChange).toHaveBeenCalledWith(
+        reworkedCard,
+        'rejected',
+      );
+    });
+  });
+
+  it('shows every governed completion gate that caused the current rejection', async () => {
+    const gateValidation = {
+      id: 'successful-assessment-1',
+      confidence: 96,
+      estimated_completeness: 94,
+      estimated_drift: 2,
+      confidence_justification: 'The implementation evidence is complete and current.',
+      completeness_justification: 'All acceptance criteria have implementation evidence.',
+      drift_justification: 'No material drift from the approved specification was found.',
+      general_justification: 'The Task Validation assessment passed before completion gates ran.',
+      recommendation: 'approve' as const,
+      verdict: 'pass' as const,
+      validation_outcome: 'success' as const,
+      completion_outcome: 'rejected' as const,
+      completion_gate_failures: [
+        {
+          code: 'policy_compliance_blocked',
+          summary: 'Refresh the required policy assessment.',
+          reason_codes: ['policy_assessment_stale'],
+        },
+        {
+          code: 'code_traceability_blocked',
+          summary: 'Resolve the missing Current implementation target.',
+          reason_codes: ['target_resolution_missing'],
+        },
+      ],
+      rejection_cause: {
+        kind: 'completion_gate' as const,
+        id: 'completion-rejection-1',
+        code: 'policy_compliance_blocked',
+        summary: 'Two governed completion gates require action.',
+      },
+      threshold_violations: [],
+      evaluator_id: 'agent-1',
+      created_at: '2026-08-14T01:00:00Z',
+      card_status: 'rejected' as const,
+    };
+    const rejectedCard: Card = {
+      ...cardForType('bug'),
+      id: 'gate-rejected-1',
+      status: 'rejected',
+      validations: [gateValidation],
+      rejection_records: [{
+        kind: 'completion_gate',
+        id: 'completion-rejection-1',
+        code: 'policy_compliance_blocked',
+        summary: 'Two governed completion gates require action.',
+        source_id: gateValidation.id,
+      }],
+      current_rejection_kind: 'completion_gate',
+      current_rejection_id: 'completion-rejection-1',
+      current_rejection_code: 'policy_compliance_blocked',
+      current_rejection_summary: 'Two governed completion gates require action.',
+    };
+    storeMock.selectedCardId = rejectedCard.id;
+    storeMock.columns.rejected = [rejectedCard];
+    apiMock.getCard.mockResolvedValue(rejectedCard);
+    apiMock.getAllowedTransitions.mockResolvedValue(
+      transitionEnvelope(rejectedCard.id, 'rejected', [
+        allowedTransition('in_progress'),
+      ]),
+    );
+
+    render(<CardModal boardId="board-1" />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Task validation/ }));
+
+    const reworkPanel = await screen.findByTestId('task-rejected-rework-panel');
+    expect(reworkPanel).toHaveTextContent('Two governed completion gates require action.');
+    expect(reworkPanel).toHaveTextContent('Refresh the required policy assessment.');
+    expect(reworkPanel).toHaveTextContent('policy_assessment_stale');
+    expect(reworkPanel).toHaveTextContent(
+      'Resolve the missing Current implementation target.',
+    );
+    expect(reworkPanel).toHaveTextContent('target_resolution_missing');
+    expect(screen.getByText('Completion gate failures')).toBeVisible();
+  });
+
+  it('fails closed when a rolling-upgrade authority projects manual inbound Rejected', async () => {
+    const taskCard = cardForType('normal');
+    storeMock.selectedCardId = taskCard.id;
+    apiMock.getCard.mockResolvedValue(taskCard);
+    apiMock.getAllowedTransitions.mockResolvedValue(
+      transitionEnvelope(taskCard.id, taskCard.status, [
+        allowedTransition('started'),
+        allowedTransition('rejected'),
+      ]),
+    );
+
+    render(<CardModal boardId="board-1" />);
+
+    const status = await screen.findByRole('combobox', { name: 'Card status' });
+    await waitFor(() => {
+      expect(within(status).queryByRole('option', { name: 'Rejected' }))
+        .not.toBeInTheDocument();
+    });
+  });
+
   it('fails closed and excludes a policy-blocked transition from the lifecycle selector', async () => {
     apiMock.getAllowedTransitions.mockResolvedValue(
       transitionEnvelope('bug-1', 'not_started', [
@@ -723,9 +909,13 @@ describe('CardModal', () => {
     fireEvent.click(
       screen.getByRole('tab', { name: /^Policy Compliance$/ }),
     );
-    expect(await screen.findByTestId('policy-transition-preview')).toHaveTextContent(
-      'ready:none',
+    expect(await screen.findByTestId('policy-compliance-panel')).toBeInTheDocument();
+    expect(policyComplianceMock.panelProps).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        transitionPreview: expect.objectContaining({ status: 'ready' }),
+      }),
     );
+    expect(screen.queryByTestId('policy-transition-preview')).not.toBeInTheDocument();
   });
 
   it('keeps lifecycle fail-closed when the canonical transition envelope is malformed', async () => {
@@ -750,12 +940,16 @@ describe('CardModal', () => {
     fireEvent.click(
       screen.getByRole('tab', { name: /^Policy Compliance$/ }),
     );
-    expect(await screen.findByTestId('policy-transition-preview')).toHaveTextContent(
-      'error:none',
+    expect(await screen.findByTestId('policy-compliance-panel')).toBeInTheDocument();
+    expect(policyComplianceMock.panelProps).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        transitionPreview: expect.objectContaining({ status: 'error' }),
+      }),
     );
+    expect(screen.queryByTestId('policy-transition-preview')).not.toBeInTheDocument();
   });
 
-  it('keeps a structured policy 409 visible after reloading transition authority', async () => {
+  it('reports a structured policy 409 and reloads transition authority without a readiness card', async () => {
     apiMock.moveCard.mockRejectedValueOnce(
       policyRejection('bug-1', 'not_started', 'started'),
     );
@@ -776,9 +970,8 @@ describe('CardModal', () => {
     fireEvent.click(
       screen.getByRole('tab', { name: /^Policy Compliance$/ }),
     );
-    await waitFor(() => expect(
-      screen.getByTestId('policy-transition-preview'),
-    ).toHaveTextContent('ready:policy_compliance_blocked'));
+    expect(await screen.findByTestId('policy-compliance-panel')).toBeInTheDocument();
+    expect(screen.queryByTestId('policy-transition-preview')).not.toBeInTheDocument();
     expect(apiMock.getAllowedTransitions.mock.calls.length).toBeGreaterThan(1);
   });
 
@@ -1101,7 +1294,9 @@ describe('CardModal', () => {
       status: 'validation',
     };
     storeMock.selectedCardId = validationCard.id;
-    apiMock.getCard.mockResolvedValue(validationCard);
+    apiMock.getCard
+      .mockResolvedValueOnce(validationCard)
+      .mockRejectedValue(new Error('refresh unavailable'));
     apiMock.submitTaskValidation.mockResolvedValue({
       id: 'validation-entry-1',
       confidence: 91,
@@ -1121,7 +1316,23 @@ describe('CardModal', () => {
         max_drift: 20,
       },
       threshold_violations: [],
-      card_status: 'done',
+      validation_outcome: 'success',
+      completion_outcome: 'rejected',
+      completion_gate_failures: [
+        {
+          code: 'policy_compliance_blocked',
+          summary: 'A required policy assessment is not current.',
+          reason_codes: ['policy_assessment_stale'],
+        },
+      ],
+      rejection_cause: {
+        kind: 'completion_gate',
+        id: 'rejection-record-1',
+        code: 'policy_compliance_blocked',
+        summary: 'Refresh policy compliance before completing this card.',
+      },
+      subject_version: 8,
+      card_status: 'rejected',
     });
 
     render(<CardModal boardId="board-1" />);
@@ -1179,6 +1390,8 @@ describe('CardModal', () => {
       expect(apiMock.submitTaskValidation).toHaveBeenCalledWith(
         validationCard.id,
         {
+          expected_subject_version: 7,
+          idempotency_key: expect.any(String),
           confidence: 91,
           confidence_justification: 'Confidence is supported by the full suite.',
           estimated_completeness: 89,
@@ -1188,6 +1401,28 @@ describe('CardModal', () => {
           general_justification: 'The implementation is ready for independent approval.',
           recommendation: 'approve',
         },
+      );
+    });
+
+    await waitFor(() => {
+      expect(storeMock.updateCardInColumn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: validationCard.id,
+          status: 'rejected',
+          subject_version: 8,
+          current_rejection_kind: 'completion_gate',
+          current_rejection_id: 'rejection-record-1',
+          current_rejection_code: 'policy_compliance_blocked',
+          current_rejection_summary:
+            'Refresh policy compliance before completing this card.',
+          validations: [
+            expect.objectContaining({
+              id: 'validation-entry-1',
+              validation_outcome: 'success',
+              completion_outcome: 'rejected',
+            }),
+          ],
+        }),
       );
     });
   });
@@ -1503,6 +1738,17 @@ describe('CardModal', () => {
     expect(
       screen.getByTestId('task-validation-validation-entry-1-confidence-score'),
     ).toHaveAttribute('data-status', 'met');
+    const confidenceMetric = screen.getByTestId(
+      'task-validation-validation-entry-1-confidence-score-metric',
+    );
+    expect(confidenceMetric).toHaveClass('flex-col');
+    expect(
+      within(
+        screen.getByTestId(
+          'task-validation-validation-entry-1-confidence-score-justification',
+        ),
+      ).getByText('The execution evidence is independently reproducible.'),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole('img', {
         name: /Confidence score 92 out of 100.*Minimum 85.*threshold met/i,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
@@ -26,6 +27,7 @@ from okto_pulse.community.api.auth_deps import (
 from okto_pulse.community.api.boards import router as boards_router
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.domain.enums import CardStatus
+from okto_pulse.core.domain.permissions import PERMISSION_REGISTRY
 from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.ports.application_persistence import (
@@ -37,6 +39,7 @@ from okto_pulse.core.ports.application_persistence import (
 
 REALM = RealmScope.local()
 STATUSES = tuple(item.value for item in CardStatus)
+DONE_INDEX = STATUSES.index("done")
 
 
 async def _build_engine(path: Path) -> AsyncEngine:
@@ -99,6 +102,26 @@ async def _build_engine(path: Path) -> AsyncEngine:
                         "card_type": card_types[position],
                         "linked_test_task_ids": json.dumps(None),
                         "archived": position == 4,
+                        "current_rejection_kind": (
+                            "task_validation"
+                            if card_status == "rejected" and position == 0
+                            else None
+                        ),
+                        "current_rejection_id": (
+                            "rejection-rejected-0"
+                            if card_status == "rejected" and position == 0
+                            else None
+                        ),
+                        "current_rejection_code": (
+                            "task_validation_failed"
+                            if card_status == "rejected" and position == 0
+                            else None
+                        ),
+                        "current_rejection_summary": (
+                            "The implementation needs rework."
+                            if card_status == "rejected" and position == 0
+                            else None
+                        ),
                     }
                 )
         await connection.execute(
@@ -106,12 +129,16 @@ async def _build_engine(path: Path) -> AsyncEngine:
                 "INSERT INTO cards "
                 "(id, board_id, spec_id, title, description, status, priority, "
                 "position, assignee_id, created_by, created_at, updated_at, labels, "
-                "test_scenario_ids, conclusions, card_type, linked_test_task_ids, archived) "
+                "test_scenario_ids, conclusions, card_type, linked_test_task_ids, archived, "
+                "current_rejection_kind, current_rejection_id, "
+                "current_rejection_code, current_rejection_summary) "
                 "VALUES (:id, :board_id, :spec_id, :title, :description, :status, "
                 ":priority, :position, :assignee_id, :created_by, "
                 "'2026-07-20 00:00:00', '2026-07-20 00:00:00', :labels, "
                 ":test_scenario_ids, :conclusions, :card_type, "
-                ":linked_test_task_ids, :archived)"
+                ":linked_test_task_ids, :archived, :current_rejection_kind, "
+                ":current_rejection_id, :current_rejection_code, "
+                ":current_rejection_summary)"
             ),
             rows,
         )
@@ -119,9 +146,10 @@ async def _build_engine(path: Path) -> AsyncEngine:
             text(
                 "INSERT INTO qa_items "
                 "(id, card_id, question, answer, asked_by, answered_at) VALUES "
-                "('q1', 'c-5-0', 'Q1', NULL, 'owner', NULL), "
-                "('q2', 'c-5-0', 'Q2', NULL, 'owner', NULL), "
-                "('q3', 'c-5-0', 'Q3', 'A3', 'owner', '2026-07-20 01:00:00')"
+                f"('q1', 'c-{DONE_INDEX}-0', 'Q1', NULL, 'owner', NULL), "
+                f"('q2', 'c-{DONE_INDEX}-0', 'Q2', NULL, 'owner', NULL), "
+                f"('q3', 'c-{DONE_INDEX}-0', 'Q3', 'A3', 'owner', "
+                "'2026-07-20 01:00:00')"
             )
         )
     return engine
@@ -163,6 +191,7 @@ def columns_client(tmp_path: Path):
             subject=x_user,
             realm_id="local",
             actor_kind="human",
+            claims={"permissions": deepcopy(PERMISSION_REGISTRY)},
         )
 
     app.dependency_overrides[require_user] = _user
@@ -212,13 +241,85 @@ def test_literal_legacy_branch_has_no_pagination_metadata(
         "linked_test_task_ids",
         "archived",
         "open_qa_count",
+        "current_rejection_kind",
+        "current_rejection_id",
+        "current_rejection_code",
+        "current_rejection_summary",
     }
+    rejected = body["columns"]["rejected"][0]
+    assert rejected["current_rejection_kind"] == "task_validation"
+    assert rejected["current_rejection_code"] == "task_validation_failed"
+    assert rejected["current_rejection_summary"] == ("The implementation needs rework.")
     canonical = json.dumps(
         body, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
     assert hashlib.sha256(canonical).hexdigest() == (
-        "4b24d002ed232350d461cdd45b51dc3ea59e27bf3124524ce493dae666c48e09"
+        "35e657b224be2bad10c858ab283a52b3801bb53bec9720d6c8fd80248f95b752"
     )
+
+
+def test_columns_keep_rejected_status_but_redact_cause_without_validation_read(
+    columns_client: TestClient,
+) -> None:
+    flags = deepcopy(PERMISSION_REGISTRY)
+    flags["card"]["validation"]["read"] = False
+    original = columns_client.app.dependency_overrides[require_principal]
+    columns_client.app.dependency_overrides[require_principal] = lambda: Principal(
+        subject="viewer",
+        realm_id="local",
+        actor_kind="human",
+        claims={"permissions": flags},
+    )
+    try:
+        legacy = columns_client.get("/api/v1/boards/b1/columns")
+        paginated = columns_client.get(
+            "/api/v1/boards/b1/columns?per_column_limit=5&column=rejected"
+        )
+    finally:
+        columns_client.app.dependency_overrides[require_principal] = original
+
+    assert legacy.status_code == paginated.status_code == 200
+    for item in (
+        legacy.json()["columns"]["rejected"][0],
+        paginated.json()["items"][0],
+    ):
+        assert item["status"] == "rejected"
+        assert item["current_rejection_kind"] is None
+        assert item["current_rejection_id"] is None
+        assert item["current_rejection_code"] is None
+        assert item["current_rejection_summary"] is None
+
+
+def test_get_board_redacts_nested_rejection_cause_for_sparse_reader(
+    columns_client: TestClient,
+) -> None:
+    flags = deepcopy(PERMISSION_REGISTRY)
+    flags["card"]["validation"]["read"] = False
+    original = columns_client.app.dependency_overrides[require_principal]
+    columns_client.app.dependency_overrides[require_principal] = lambda: Principal(
+        subject="owner",
+        realm_id="local",
+        actor_kind="human",
+        claims={"permissions": flags},
+    )
+    try:
+        response = columns_client.get("/api/v1/boards/b1")
+    finally:
+        columns_client.app.dependency_overrides[require_principal] = original
+
+    assert response.status_code == 200, response.text
+    rejected = next(
+        item
+        for item in response.json()["cards"]
+        if item["id"] == f"c-{STATUSES.index('rejected')}-0"
+    )
+    assert rejected["status"] == "rejected"
+    assert rejected["validations"] is None
+    assert rejected["rejection_records"] == []
+    assert rejected["current_rejection_kind"] is None
+    assert rejected["current_rejection_id"] is None
+    assert rejected["current_rejection_code"] is None
+    assert rejected["current_rejection_summary"] is None
 
 
 @pytest.mark.parametrize("value", ("1", "True"))
@@ -251,13 +352,13 @@ def test_batch_shape_facets_and_bounded_data_budget(columns_client: TestClient) 
         assert meta["has_more"] is True
         assert meta["facets"]["card_type"] == {"bug": 1, "normal": 2, "test": 1}
     assert body["columns_meta"]["facets"]["assignee"] == [
-        {"value": None, "count": 7},
-        {"value": "alice", "count": 14},
-        {"value": "bob", "count": 7},
+        {"value": None, "count": len(STATUSES)},
+        {"value": "alice", "count": 2 * len(STATUSES)},
+        {"value": "bob", "count": len(STATUSES)},
     ]
-    # One authorization preflight plus 16 productive statements: two per
+    # One authorization preflight plus bounded productive statements: two per
     # unfiltered column (the identical totals share one COUNT) + two facets.
-    assert len(statements) == 17
+    assert len(statements) == 1 + (2 * len(STATUSES)) + 2
 
 
 def test_column_continuation_has_no_gap_and_uses_three_data_statements(
@@ -296,7 +397,10 @@ def test_filters_and_self_excluding_type_facet(columns_client: TestClient) -> No
     )
     assert response.status_code == 200, response.text
     body = response.json()
-    assert [item["id"] for item in body["items"]] == ["c-5-0", "c-5-3"]
+    assert [item["id"] for item in body["items"]] == [
+        f"c-{DONE_INDEX}-0",
+        f"c-{DONE_INDEX}-3",
+    ]
     assert body["meta"]["total_filtered"] == 2
     # Type is self-excluded, while spec/search remain applied.
     assert body["meta"]["facets"]["card_type"] == {"bug": 1, "normal": 2}
@@ -320,7 +424,7 @@ def test_full_filter_set_facets_match_status_aware_route_oracle(
         "normal": 2
     }
     assert body["columns_meta"]["facets"]["assignee"] == [
-        {"value": "alice", "count": 14}
+        {"value": "alice", "count": 2 * len(STATUSES)}
     ]
 
 

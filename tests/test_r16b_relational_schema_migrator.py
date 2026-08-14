@@ -155,7 +155,7 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         f"missing_steps={sorted(migrate_names - ledger_migrate_ids)} "
         f"orphan_steps={sorted(ledger_migrate_ids - migrate_names)}"
     )
-    # 66 = the historical ledger plus the Code Traceability schema/guard step,
+    # 67 = the historical ledger plus the Code Traceability schema/guard step,
     # the SK-A Refinement ambiguity-skip
     # column, SK-A/C7 quality-assessment persistence schema, the curated Spec
     # checklist mode, the human-facing Spec edition counter, and SK-B's
@@ -165,11 +165,12 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
     # waiver lifecycle persistence, and SK-B3 semantic guideline authority,
     # plus the SK-B3 closure backfill of the 5-column unique authority index
     # on guideline_board_bindings (structural prerequisite of the
-    # binding-configuration composite FK on migrated databases).
-    assert len(migrate_names) == 66, (
-        f"expected 66 _migrate_*, found {len(migrate_names)}"
+    # binding-configuration composite FK on migrated databases), and the
+    # evidence-based legacy Task Validation -> Rejected convergence.
+    assert len(migrate_names) == 67, (
+        f"expected 67 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 66
+    assert len(ledger_migrate_ids) == 67
     ordered_ids = [step.step_id for step in ledger]
     assert ordered_ids.index(
         "_migrate_guideline_policy_lifecycle_substrate"
@@ -215,9 +216,7 @@ def test_postgresql_policy_materialization_trigger_matches_json_column_type():
 
     source = STEPS_PY.read_text(encoding="utf-8")
     table_ddl = str(
-        CreateTable(DomainEventRow.__table__).compile(
-            dialect=postgresql.dialect()
-        )
+        CreateTable(DomainEventRow.__table__).compile(dialect=postgresql.dialect())
     )
 
     # The mapped column is JSON (not JSONB), so every function in this trigger
@@ -502,10 +501,7 @@ def test_lifecycle_edition_migration_converges_nullable_sqlite_schema(
                 text("INSERT INTO ideations VALUES ('i-1', 'Idea', NULL)")
             )
             await connection.execute(
-                text(
-                    "INSERT INTO refinements VALUES "
-                    "('r-1', 'Refinement', NULL, NULL)"
-                )
+                text("INSERT INTO refinements VALUES ('r-1', 'Refinement', NULL, NULL)")
             )
             await connection.execute(
                 text("INSERT INTO specs VALUES ('s-1', 'Spec', 3)")
@@ -523,10 +519,14 @@ def test_lifecycle_edition_migration_converges_nullable_sqlite_schema(
             contracts = {}
             for table_name in ("ideations", "refinements", "specs"):
                 rows = (
-                    await connection.exec_driver_sql(
-                        f'PRAGMA table_info("{table_name}")'
+                    (
+                        await connection.exec_driver_sql(
+                            f'PRAGMA table_info("{table_name}")'
+                        )
                     )
-                ).mappings().all()
+                    .mappings()
+                    .all()
+                )
                 contracts[table_name] = next(
                     row for row in rows if row["name"] == "edition"
                 )
@@ -576,7 +576,10 @@ def test_lifecycle_edition_migration_converges_nullable_sqlite_schema(
     assert second == "skipped"
     assert editions == {"ideations": 1, "refinements": 1, "specs": 3}
     assert all(contract["notnull"] == 1 for contract in contracts.values())
-    assert all(str(contract["dflt_value"]).strip("'\"") == "1" for contract in contracts.values())
+    assert all(
+        str(contract["dflt_value"]).strip("'\"") == "1"
+        for contract in contracts.values()
+    )
     assert legacy_evidence_edition is None
     assert "ix_ideations_title" in owned_objects
     assert "trg_ideations_title_guard" in owned_objects
@@ -840,9 +843,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
     governed_queue_convergence_step = "_migrate_add_consolidation_work_kinds"
     delivery_convergence_step = "_migrate_global_discovery_delivery_contract"
     kb_governance_convergence_step = "_migrate_add_kb_governance_metadata"
-    human_lifecycle_convergence_step = (
-        "_migrate_add_human_lifecycle_editions"
-    )
+    human_lifecycle_convergence_step = "_migrate_add_human_lifecycle_editions"
     validation_cycle_convergence_step = "_migrate_validation_cycle_editions"
     first_run_skip_steps = {
         repair_step,
@@ -859,6 +860,9 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         "_migrate_seed_semantic_configurations_for_legacy_bindings",
         # Fresh create_all emits the complete SK-M ledger and guards.
         "_migrate_spec_dependency_schema",
+        # Fresh create_all already emits the causal rejection columns and
+        # audit table, with no legacy Validation evidence to classify.
+        "_migrate_card_rejected_lifecycle",
         # The durable v3 epoch seals an immutable receipt even when a fresh
         # database has zero revision rows to rewrite. Fresh instances then
         # observe that receipt and skip without touching fingerprints.
@@ -888,6 +892,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         "_migrate_seed_semantic_configurations_for_legacy_bindings",
         "_migrate_recompute_cognitive_source_fingerprints_v2",
         "_migrate_spec_dependency_schema",
+        "_migrate_card_rejected_lifecycle",
     }
 
     # First run: clean databases skip fixture repair and convergence steps
@@ -926,9 +931,7 @@ def test_v030_installed_schema_upgrades_to_exact_semantic_v2_and_replays(
         == V030_SCHEMA_FIXTURE_SHA256
     )
     with ZipFile(V030_SCHEMA_FIXTURE) as archive:
-        assert archive.namelist() == [
-            "okto-pulse-community-v0.3.0.sqlite3"
-        ]
+        assert archive.namelist() == ["okto-pulse-community-v0.3.0.sqlite3"]
         archive.extractall(tmp_path)
     database_path = tmp_path / archive.namelist()[0]
 
@@ -963,9 +966,7 @@ def test_v030_installed_schema_upgrades_to_exact_semantic_v2_and_replays(
             SemanticGuidelineSkipRow.__table__,
             SemanticGuidelineLegacyMigrationRow.__table__,
         )
-        _db_mod.create_database(
-            f"sqlite+aiosqlite:///{database_path.as_posix()}"
-        )
+        _db_mod.create_database(f"sqlite+aiosqlite:///{database_path.as_posix()}")
         first_migrator = make_community_relational_schema_migrator()
         first = await first_migrator.aexecute(
             first_migrator.plan(target="v0.3.0-to-semantic-v2")
@@ -984,11 +985,9 @@ def test_v030_installed_schema_upgrades_to_exact_semantic_v2_and_replays(
                     }
                 )
                 binding_contract = await connection.run_sync(
-                    lambda sync_connection: (
-                        _steps_mod._sqlite_owned_table_contract(
-                            sync_connection,
-                            GuidelineBoardBindingRow.__table__,
-                        )
+                    lambda sync_connection: _steps_mod._sqlite_owned_table_contract(
+                        sync_connection,
+                        GuidelineBoardBindingRow.__table__,
                     )
                 )
                 owned_schema = tuple(

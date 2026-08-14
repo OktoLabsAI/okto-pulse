@@ -14,7 +14,6 @@ import {
 
 import {
   PolicyCompliancePanel,
-  PolicyComplianceTransitionPreview,
   type PolicyTransitionRejection,
   type PolicyTransitionPreviewLoadState,
 } from '@/components/policy-compliance';
@@ -619,13 +618,6 @@ export function SpecValidationPanel({
             <p className="text-xs text-surface-600 dark:text-surface-300">{policyCheck?.summary || 'Applicable guideline results for the current edition.'}</p>
             <ValidationCycleStatusBadge state={policyState} />
           </div>
-          {(policyTransitionPreview.transitions.length > 0
-            || policyTransitionRejection) && (
-            <PolicyComplianceTransitionPreview
-              preview={policyTransitionPreview}
-              rejection={policyTransitionRejection}
-            />
-          )}
           <PolicyCompliancePanel
             boardId={boardId}
             entityType="spec"

@@ -9,6 +9,7 @@ import { CodeEvidencePanel } from '../CodeEvidencePanel';
 import { EvidenceMatrixPanel } from '../EvidenceMatrixPanel';
 import { ImplementationTargetsPanel } from '../ImplementationTargetsPanel';
 import { ReceiptDetailModal } from '../ReceiptDetailModal';
+import { subscribeContextualHelp } from '@/components/help/contextualHelp';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 
 const apiMock = vi.hoisted(() => ({
@@ -276,6 +277,30 @@ afterEach(() => {
 });
 
 describe('Code Traceability passive Community surfaces', () => {
+  it('replaces repeated agent-mediated notices with contextual Help links', async () => {
+    const helpListener = vi.fn();
+    const unsubscribe = subscribeContextualHelp(helpListener);
+
+    render(
+      <>
+        <CodeEvidencePanel boardId="board-1" subjectId="ref-1" subjectVersion={3} />
+        <EvidenceMatrixPanel boardId="board-1" subjectId="spec-1" subjectVersion={7} />
+      </>,
+    );
+
+    await waitFor(() => expect(apiMock.getCodeTraceabilityProjection).toHaveBeenCalledTimes(2));
+    expect(screen.queryByTestId('traceability-agent-mediated-disclosure')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Code evidence matrix' })).toBeInTheDocument();
+    expect(screen.getByText(/Maps inherited Code Evidence/i)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('code-evidence-help-link'));
+    expect(helpListener).toHaveBeenCalledWith({ sectionId: 'code-traceability' });
+
+    fireEvent.click(screen.getByTestId('code-evidence-matrix-help-link'));
+    expect(helpListener).toHaveBeenCalledTimes(2);
+    unsubscribe();
+  });
+
   it('renders accepted projections in the existing modal design without investigation controls', async () => {
     render(
       <>
@@ -351,6 +376,8 @@ describe('Code Traceability passive Community surfaces', () => {
     expect(await screen.findByText('1/2')).toBeInTheDocument();
     expect(screen.getByText('1', { selector: 'p' })).toBeInTheDocument();
     expect(screen.getByText('50%')).toBeInTheDocument();
+    expect(screen.getByText('evidence items addressed')).toBeInTheDocument();
+    expect(screen.getByText('evidence item pending')).toBeInTheDocument();
     expect(screen.queryByText('100%')).not.toBeInTheDocument();
     expect(screen.getByRole('columnheader', { name: 'IR' })).toBeInTheDocument();
     expect(screen.getByRole('columnheader', { name: 'OR' })).toBeInTheDocument();
@@ -641,6 +668,36 @@ describe('Code Traceability passive Community surfaces', () => {
         evidence_links: [],
       },
     );
+  });
+
+  it('keeps Rejected implementation targets readable while freezing human mutations', async () => {
+    permissionState.canCreateTarget = true;
+    permissionState.canCreateWaiver = true;
+    permissionState.canClearWaiver = true;
+    permissionState.canAcknowledgeOverlap = true;
+
+    render(
+      <ImplementationTargetsPanel
+        boardId="board-1"
+        subjectId="card-1"
+        subjectVersion={5}
+        specVersion={7}
+        operationallyFrozen
+        onCreateDependency={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText('Agent-attested resolution · PF-103'))
+      .toBeInTheDocument();
+    expect(screen.getByText(/This card is Rejected/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add semantic target' }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Create human waiver' }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Clear waiver' }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Acknowledge overlap' }))
+      .not.toBeInTheDocument();
   });
 
   it('records and clears a human waiver through the exact Card-scoped contracts', async () => {
