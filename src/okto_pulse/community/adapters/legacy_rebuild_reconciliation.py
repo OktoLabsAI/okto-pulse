@@ -18,10 +18,13 @@ import json
 import re
 from types import MappingProxyType
 from typing import Any
+from uuid import RFC_4122, UUID
 
 
-LEGACY_QUEUE_ONLY_SCHEMA = "legacy_manual_restore_queue_only.v1"
+LEGACY_QUEUE_ONLY_SCHEMA = "legacy_manual_restore_queue_only.v2"
 LEGACY_QUEUE_ONLY_KIND = "legacy_manual_restore_queue_only"
+LEGACY_QUEUE_ONLY_PREFIX_SCHEMA = "pre_v4_legacy"
+LEGACY_DEAD_LETTER_GUARD_SCHEMA = "dead_letter_guard/v1"
 LEGACY_QUEUE_ONLY_INTENT_EFFECT = (
     "legacy_manually_restored_blocked_after_enqueue_intent"
 )
@@ -55,6 +58,17 @@ LEGACY_QUEUE_COLUMNS = (
     "claim_timeout_at",
     "attempts",
     "next_retry_at",
+)
+LEGACY_DEAD_LETTER_COLUMNS = (
+    "id",
+    "board_id",
+    "artifact_type",
+    "artifact_id",
+    "original_queue_id",
+    "attempts",
+    "errors",
+    "dead_lettered_at",
+    "created_at",
 )
 _QUEUE_ROW_KEYS = frozenset(LEGACY_QUEUE_COLUMNS)
 _MEMBERSHIP_KEYS = frozenset(
@@ -90,11 +104,43 @@ _TOP_LEVEL_KEYS = frozenset(
         "original_quarantine",
         "manual_restore",
         "board_storage",
+        "prefix_schema",
+        "dead_letter_guard",
         "queue",
         "preapplied_actions",
         "remaining_actions",
         "evidence_digest",
         "intent_digest",
+    }
+)
+
+_DEAD_LETTER_GUARD_KEYS = frozenset(
+    {
+        "schema_version",
+        "checkpoint_started_at",
+        "columns",
+        "board_row_count",
+        "board_ids",
+        "snapshot_fingerprint",
+        "target_queue_ids",
+        "target_identities",
+        "peers",
+        "target_identities_without_peer",
+    }
+)
+_DEAD_LETTER_IDENTITY_KEYS = frozenset({"artifact_type", "artifact_id"})
+_DEAD_LETTER_PEER_KEYS = frozenset(
+    {
+        "id",
+        "artifact_type",
+        "artifact_id",
+        "original_queue_id",
+        "created_at",
+        "dead_lettered_at",
+        "row_sha256",
+        "errors_sha256",
+        "original_queue_absent",
+        "preexisting_before_checkpoint",
     }
 )
 
@@ -170,6 +216,209 @@ def legacy_queue_terminal_row(
     return result
 
 
+def build_legacy_dead_letter_guard(
+    *,
+    board_id: str,
+    checkpoint_started_at: str,
+    target_rows: Sequence[Mapping[str, Any]],
+    dlq_columns: Sequence[str],
+    dlq_rows: Sequence[Sequence[Any]],
+    present_original_queue_ids: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """Build the exact pre-v4 DLQ cut authorized by the nominal lane.
+
+    Pre-v4 enqueue receipts did not persist a DLQ baseline.  We may reconstruct
+    it only from the complete bounded board partition, and only when every
+    same-identity peer demonstrably predates the failed rebuild.  The result is
+    self-contained evidence carried by the durable intent and re-created both
+    immediately before and inside the queue CAS transaction.
+    """
+
+    _require(
+        tuple(dlq_columns) == LEGACY_DEAD_LETTER_COLUMNS,
+        "legacy_queue_only_dead_letter_schema_invalid",
+    )
+    checkpoint_time = _parse_timestamp(
+        checkpoint_started_at,
+        code="legacy_queue_only_dead_letter_checkpoint_time_invalid",
+    )
+    target_queue_ids = tuple(sorted(str(row.get("id") or "") for row in target_rows))
+    target_identities = tuple(
+        sorted(
+            {
+                (
+                    str(row.get("artifact_type") or ""),
+                    str(row.get("artifact_id") or ""),
+                )
+                for row in target_rows
+            }
+        )
+    )
+    _require(
+        len(target_queue_ids) == len(target_rows)
+        and len(set(target_queue_ids)) == len(target_rows)
+        and all(target_queue_ids)
+        and len(target_identities) == len(target_rows)
+        and all(all(identity) for identity in target_identities),
+        "legacy_queue_only_dead_letter_target_invalid",
+    )
+    normalized_rows: list[tuple[Any, ...]] = []
+    board_ids: list[str] = []
+    peers: list[dict[str, Any]] = []
+    peer_identities: set[tuple[str, str]] = set()
+    target_id_set = set(target_queue_ids)
+    target_identity_set = set(target_identities)
+    seen_dlq_ids: set[str] = set()
+    for raw in dlq_rows:
+        row = tuple(raw)
+        _require(
+            len(row) == len(LEGACY_DEAD_LETTER_COLUMNS),
+            "legacy_queue_only_dead_letter_row_invalid",
+        )
+        payload = dict(zip(LEGACY_DEAD_LETTER_COLUMNS, row, strict=True))
+        dlq_id = str(payload.get("id") or "")
+        identity = (
+            str(payload.get("artifact_type") or ""),
+            str(payload.get("artifact_id") or ""),
+        )
+        _require(
+            payload.get("board_id") == board_id
+            and _UUID_IDENTIFIER.fullmatch(dlq_id) is not None
+            and dlq_id not in seen_dlq_ids,
+            "legacy_queue_only_dead_letter_row_invalid",
+        )
+        seen_dlq_ids.add(dlq_id)
+        board_ids.append(dlq_id)
+        normalized_rows.append(row)
+        original_queue_id = str(payload.get("original_queue_id") or "")
+        _require(
+            original_queue_id not in target_id_set,
+            "legacy_queue_only_dead_letter_targets_current_queue",
+        )
+        if identity not in target_identity_set:
+            continue
+        _require(
+            _UUID_IDENTIFIER.fullmatch(original_queue_id) is not None
+            and original_queue_id not in present_original_queue_ids
+            and type(payload.get("attempts")) is int
+            and int(payload["attempts"]) > 0
+            and isinstance(payload.get("errors"), str),
+            "legacy_queue_only_dead_letter_peer_invalid",
+        )
+        created_at = _parse_timestamp(
+            payload.get("created_at"),
+            code="legacy_queue_only_dead_letter_peer_time_invalid",
+        )
+        dead_lettered_at = _parse_timestamp(
+            payload.get("dead_lettered_at"),
+            code="legacy_queue_only_dead_letter_peer_time_invalid",
+        )
+        _require(
+            created_at <= dead_lettered_at < checkpoint_time,
+            "legacy_queue_only_dead_letter_peer_not_historical",
+        )
+        try:
+            errors = json.loads(str(payload["errors"]))
+        except (TypeError, ValueError) as exc:
+            raise LegacyQueueOnlyIntentError(
+                "legacy_queue_only_dead_letter_peer_errors_invalid"
+            ) from exc
+        _require(
+            isinstance(errors, list)
+            and len(errors) == int(payload["attempts"])
+            and bool(errors),
+            "legacy_queue_only_dead_letter_peer_errors_invalid",
+        )
+        expected_error_keys = {
+            "attempt",
+            "occurred_at",
+            "error_type",
+            "message",
+            "traceback",
+            "recovery_class",
+            "reason_code",
+            "replay_safe",
+            "correlation_id",
+        }
+        seen_correlations: set[str] = set()
+        for expected_attempt, error in enumerate(errors, start=1):
+            _require(
+                isinstance(error, Mapping)
+                and set(error) == expected_error_keys
+                and type(error.get("attempt")) is int
+                and error.get("attempt") == expected_attempt
+                and isinstance(error.get("error_type"), str)
+                and bool(error.get("error_type"))
+                and isinstance(error.get("message"), str)
+                and bool(error.get("message"))
+                and error.get("traceback") is None
+                and error.get("recovery_class") == "invalid_payload"
+                and error.get("reason_code") == "kg_recovery.invalid_payload"
+                and error.get("replay_safe") is False,
+                "legacy_queue_only_dead_letter_peer_errors_invalid",
+            )
+            occurred_at = _parse_timestamp(
+                error.get("occurred_at"),
+                code="legacy_queue_only_dead_letter_peer_errors_invalid",
+            )
+            correlation_id = str(error.get("correlation_id") or "")
+            _require(
+                occurred_at < checkpoint_time
+                and _UUID_IDENTIFIER.fullmatch(correlation_id) is not None
+                and correlation_id not in seen_correlations,
+                "legacy_queue_only_dead_letter_peer_errors_invalid",
+            )
+            seen_correlations.add(correlation_id)
+        peers.append(
+            {
+                "id": dlq_id,
+                "artifact_type": identity[0],
+                "artifact_id": identity[1],
+                "original_queue_id": original_queue_id,
+                "created_at": str(payload["created_at"]),
+                "dead_lettered_at": str(payload["dead_lettered_at"]),
+                "row_sha256": canonical_evidence_hash(payload),
+                "errors_sha256": hashlib.sha256(
+                    str(payload["errors"]).encode("utf-8")
+                ).hexdigest(),
+                "original_queue_absent": True,
+                "preexisting_before_checkpoint": True,
+            }
+        )
+        peer_identities.add(identity)
+    _require(
+        board_ids == sorted(board_ids),
+        "legacy_queue_only_dead_letter_order_invalid",
+    )
+    peers.sort(key=lambda peer: str(peer["id"]))
+    identity_payload = [
+        {"artifact_type": artifact_type, "artifact_id": artifact_id}
+        for artifact_type, artifact_id in target_identities
+    ]
+    without_peer = [
+        {"artifact_type": artifact_type, "artifact_id": artifact_id}
+        for artifact_type, artifact_id in target_identities
+        if (artifact_type, artifact_id) not in peer_identities
+    ]
+    return {
+        "schema_version": LEGACY_DEAD_LETTER_GUARD_SCHEMA,
+        "checkpoint_started_at": checkpoint_started_at,
+        "columns": list(LEGACY_DEAD_LETTER_COLUMNS),
+        "board_row_count": len(normalized_rows),
+        "board_ids": board_ids,
+        "snapshot_fingerprint": canonical_evidence_hash(
+            {
+                "columns": list(LEGACY_DEAD_LETTER_COLUMNS),
+                "rows": [list(row) for row in normalized_rows],
+            }
+        ),
+        "target_queue_ids": list(target_queue_ids),
+        "target_identities": identity_payload,
+        "peers": peers,
+        "target_identities_without_peer": without_peer,
+    }
+
+
 def _require(condition: bool, code: str) -> None:
     if not condition:
         raise LegacyQueueOnlyIntentError(code)
@@ -180,6 +429,21 @@ def _is_sha256(value: object) -> bool:
         isinstance(value, str)
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _is_legacy_uuid4_report_id(value: object) -> bool:
+    if not isinstance(value, str) or not value.startswith("report_"):
+        return False
+    raw = value.removeprefix("report_")
+    try:
+        parsed = UUID(raw)
+    except (TypeError, ValueError):
+        return False
+    return (
+        parsed.version == 4
+        and parsed.variant == RFC_4122
+        and value == f"report_{parsed.hex}"
     )
 
 
@@ -498,7 +762,8 @@ def _validate_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         code="legacy_queue_only_terminal_run_invalid",
     )
     _require(
-        terminal["audit_relative"] == f"audit/{terminal_run_id}.json"
+        _is_legacy_uuid4_report_id(report_id)
+        and terminal["audit_relative"] == f"audit/{terminal_run_id}.json"
         and terminal["report_relative"] == f"reports/{report_id}.json"
         and re.fullmatch(
             rf"audit/confirmation/{re.escape(board_id)}/"
@@ -536,7 +801,8 @@ def _validate_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         prefix="q_",
     )
     _require(
-        original["manifest_relative"] == f"{original_id}/manifest.json"
+        re.fullmatch(r"q_[A-Za-z0-9_-]{22}", original_id) is not None
+        and original["manifest_relative"] == f"{original_id}/manifest.json"
         and _is_sha256(original["manifest_sha256"]),
         "legacy_queue_only_original_quarantine_invalid",
     )
@@ -570,7 +836,8 @@ def _validate_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         prefix="q_",
     )
     _require(
-        manual["source_quarantine_id"] == original_id
+        re.fullmatch(r"q_[A-Za-z0-9_-]{22}", manual_id) is not None
+        and manual["source_quarantine_id"] == original_id
         and manual["manifest_relative"] == f"{manual_id}/manifest.json"
         and manual["journal_relative"] == f"{manual_id}/restore_operation.json"
         and _is_sha256(manual["manifest_sha256"])
@@ -601,6 +868,114 @@ def _validate_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         and set(board_hashes) <= {"graph.lbug", "graph.lbug.wal"}
         and board_storage["sha256"] == canonical_evidence_hash(board_hashes),
         "legacy_queue_only_board_storage_invalid",
+    )
+
+    _require(
+        result.get("prefix_schema") == LEGACY_QUEUE_ONLY_PREFIX_SCHEMA,
+        "legacy_queue_only_prefix_schema_invalid",
+    )
+    dead_letter_guard = _exact_mapping(
+        result.get("dead_letter_guard"),
+        keys=_DEAD_LETTER_GUARD_KEYS,
+        code="legacy_queue_only_dead_letter_guard_invalid",
+    )
+    checkpoint_started_at = _parse_timestamp(
+        dead_letter_guard.get("checkpoint_started_at"),
+        code="legacy_queue_only_dead_letter_guard_invalid",
+    )
+    _require(
+        dead_letter_guard.get("schema_version") == LEGACY_DEAD_LETTER_GUARD_SCHEMA
+        and tuple(dead_letter_guard.get("columns") or ()) == LEGACY_DEAD_LETTER_COLUMNS
+        and type(dead_letter_guard.get("board_row_count")) is int
+        and 0 <= int(dead_letter_guard["board_row_count"]) <= MAX_LEGACY_QUEUE_ROWS * 4
+        and isinstance(dead_letter_guard.get("board_ids"), list)
+        and len(dead_letter_guard["board_ids"])
+        == int(dead_letter_guard["board_row_count"])
+        and dead_letter_guard["board_ids"] == sorted(dead_letter_guard["board_ids"])
+        and len(set(dead_letter_guard["board_ids"]))
+        == len(dead_letter_guard["board_ids"])
+        and all(
+            isinstance(value, str) and _UUID_IDENTIFIER.fullmatch(value) is not None
+            for value in dead_letter_guard["board_ids"]
+        )
+        and _is_sha256(dead_letter_guard.get("snapshot_fingerprint"))
+        and isinstance(dead_letter_guard.get("target_queue_ids"), list)
+        and isinstance(dead_letter_guard.get("target_identities"), list)
+        and isinstance(dead_letter_guard.get("peers"), list)
+        and isinstance(dead_letter_guard.get("target_identities_without_peer"), list),
+        "legacy_queue_only_dead_letter_guard_invalid",
+    )
+
+    def _guard_identity(raw: object) -> tuple[str, str]:
+        identity = _exact_mapping(
+            raw,
+            keys=_DEAD_LETTER_IDENTITY_KEYS,
+            code="legacy_queue_only_dead_letter_guard_invalid",
+        )
+        artifact_type = str(identity.get("artifact_type") or "")
+        artifact_id = str(identity.get("artifact_id") or "")
+        _require(
+            _SAFE_IDENTIFIER.fullmatch(artifact_type) is not None
+            and _SAFE_IDENTIFIER.fullmatch(artifact_id) is not None,
+            "legacy_queue_only_dead_letter_guard_invalid",
+        )
+        return artifact_type, artifact_id
+
+    guard_identities = tuple(
+        _guard_identity(raw) for raw in dead_letter_guard["target_identities"]
+    )
+    guard_without_peer = tuple(
+        _guard_identity(raw)
+        for raw in dead_letter_guard["target_identities_without_peer"]
+    )
+    _require(
+        guard_identities == tuple(sorted(set(guard_identities)))
+        and guard_without_peer == tuple(sorted(set(guard_without_peer))),
+        "legacy_queue_only_dead_letter_guard_invalid",
+    )
+    guard_peers: list[tuple[str, str]] = []
+    seen_peer_ids: set[str] = set()
+    for raw_peer in dead_letter_guard["peers"]:
+        peer = _exact_mapping(
+            raw_peer,
+            keys=_DEAD_LETTER_PEER_KEYS,
+            code="legacy_queue_only_dead_letter_guard_invalid",
+        )
+        peer_id = str(peer.get("id") or "")
+        identity = (
+            str(peer.get("artifact_type") or ""),
+            str(peer.get("artifact_id") or ""),
+        )
+        original_queue_id = str(peer.get("original_queue_id") or "")
+        _require(
+            _UUID_IDENTIFIER.fullmatch(peer_id) is not None
+            and peer_id in dead_letter_guard["board_ids"]
+            and peer_id not in seen_peer_ids
+            and identity in guard_identities
+            and _UUID_IDENTIFIER.fullmatch(original_queue_id) is not None
+            and original_queue_id not in dead_letter_guard["target_queue_ids"]
+            and _parse_timestamp(
+                peer.get("created_at"),
+                code="legacy_queue_only_dead_letter_guard_invalid",
+            )
+            <= _parse_timestamp(
+                peer.get("dead_lettered_at"),
+                code="legacy_queue_only_dead_letter_guard_invalid",
+            )
+            < checkpoint_started_at
+            and _is_sha256(peer.get("row_sha256"))
+            and _is_sha256(peer.get("errors_sha256"))
+            and peer.get("original_queue_absent") is True
+            and peer.get("preexisting_before_checkpoint") is True,
+            "legacy_queue_only_dead_letter_guard_invalid",
+        )
+        seen_peer_ids.add(peer_id)
+        guard_peers.append(identity)
+    _require(
+        [str(peer["id"]) for peer in dead_letter_guard["peers"]]
+        == sorted(str(peer["id"]) for peer in dead_letter_guard["peers"])
+        and set(guard_without_peer) == set(guard_identities) - set(guard_peers),
+        "legacy_queue_only_dead_letter_guard_invalid",
     )
 
     queue = _exact_mapping(
@@ -745,6 +1120,16 @@ def _validate_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     )
 
     _require(
+        dead_letter_guard["target_queue_ids"] == sorted(str(row["id"]) for row in rows)
+        and guard_identities
+        == tuple(
+            sorted((str(row["artifact_type"]), str(row["artifact_id"])) for row in rows)
+        )
+        and queue["dlq_fingerprint"] == dead_letter_guard["snapshot_fingerprint"],
+        "legacy_queue_only_dead_letter_queue_binding_invalid",
+    )
+
+    _require(
         queue["snapshot_fingerprint"]
         == canonical_evidence_hash({"rows": rows, "memberships": memberships}),
         "legacy_queue_only_queue_fingerprint_invalid",
@@ -780,15 +1165,19 @@ def _validate_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "LEGACY_DEAD_LETTER_COLUMNS",
+    "LEGACY_DEAD_LETTER_GUARD_SCHEMA",
     "LEGACY_QUEUE_ONLY_INTENT_CODE",
     "LEGACY_QUEUE_ONLY_INTENT_EFFECT",
     "LEGACY_QUEUE_ONLY_KIND",
     "LEGACY_QUEUE_ONLY_PREAPPLIED_ACTIONS",
+    "LEGACY_QUEUE_ONLY_PREFIX_SCHEMA",
     "LEGACY_QUEUE_ONLY_REMAINING_ACTIONS",
     "LEGACY_QUEUE_ONLY_SCHEMA",
     "LEGACY_QUEUE_COLUMNS",
     "LegacyManualRestoreQueueOnlyIntent",
     "LegacyQueueOnlyIntentError",
+    "build_legacy_dead_letter_guard",
     "canonical_evidence_hash",
     "legacy_queue_terminal_row",
 ]

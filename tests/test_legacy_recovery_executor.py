@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from collections.abc import Callable
 import hashlib
 import json
@@ -15,6 +16,7 @@ from okto_pulse.community.adapters.board_rebuild_ingestion import (
     CommunityBoardRebuildIngestionAdapter,
 )
 from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
+    LEGACY_DEAD_LETTER_COLUMNS,
     LEGACY_QUEUE_COLUMNS,
     LegacyManualRestoreQueueOnlyIntent,
     canonical_evidence_hash,
@@ -33,6 +35,19 @@ PREFLIGHT_HASH = "b" * 64
 SOURCE_SET_HASH = "c" * 64
 CONFIRMATION_REF = f"conf_fp_{'d' * 64}"
 MANIFEST_CREATED_AT = "2026-08-15T02:29:00+00:00"
+REPORT_ID = "report_1b4dd579136d415c9d5225ccc8654201"
+ORIGINAL_QUARANTINE_ID = f"q_{'o' * 22}"
+MANUAL_QUARANTINE_ID = f"q_{'m' * 22}"
+HISTORICAL_DLQ_ID = "08949856-fbed-4d68-8425-2d6f04725045"
+HISTORICAL_ORIGINAL_QUEUE_ID = "2626ab17-eda9-4b6b-85c9-af3c38c9650a"
+POST_LEGACY_CHECKPOINT_FIELDS = (
+    "writer_handoff_count",
+    "writer_reacquire_count",
+    "compensation_failed_state",
+    "compensation_failure_code",
+    "compensation_failure_detail",
+    "compensation_actions",
+)
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -61,7 +76,7 @@ def _receipt(
     }
 
 
-def _source_payload(index: int, *, command: bool = False) -> dict[str, str]:
+def _source_payload(index: int) -> dict[str, str]:
     artifact_id = "spec-legacy" if index == 0 else f"spec-legacy-{index:04d}"
     payload = {
         "artifact_type": "spec",
@@ -75,8 +90,6 @@ def _source_payload(index: int, *, command: bool = False) -> dict[str, str]:
         ),
         "created_at": "2026-08-01T00:00:00+00:00",
     }
-    if command:
-        payload["_rebuild_manifest_created_at"] = MANIFEST_CREATED_AT
     return payload
 
 
@@ -141,7 +154,7 @@ def _create_queue_database(path: Path) -> None:
             "CREATE TABLE consolidation_dead_letter ("
             "id TEXT PRIMARY KEY, board_id TEXT NOT NULL, artifact_type TEXT, "
             "artifact_id TEXT, original_queue_id TEXT, attempts INTEGER, "
-            "errors TEXT, dead_lettered_at TEXT)"
+            "errors TEXT, dead_lettered_at TEXT, created_at TEXT)"
         )
         placeholders = ",".join("?" for _ in LEGACY_QUEUE_COLUMNS)
         connection.execute(
@@ -159,6 +172,45 @@ def _replace_queue_row(path: Path, row: dict[str, object]) -> None:
             + ",".join(f'"{column}"=?' for column in columns)
             + " WHERE id=?",
             (*(row[column] for column in columns), row["id"]),
+        )
+
+
+def _insert_historical_target_dlq_peer(path: Path) -> None:
+    errors = json.dumps(
+        [
+            {
+                "attempt": attempt,
+                "occurred_at": f"2026-08-{attempt:02d}T02:15:52+00:00",
+                "error_type": "ValueError",
+                "message": "legacy invalid payload",
+                "traceback": None,
+                "recovery_class": "invalid_payload",
+                "reason_code": "kg_recovery.invalid_payload",
+                "replay_safe": False,
+                "correlation_id": f"00000000-0000-4000-8000-{attempt:012d}",
+            }
+            for attempt in range(1, 3)
+        ],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    row = {
+        "id": HISTORICAL_DLQ_ID,
+        "board_id": BOARD_ID,
+        "artifact_type": "spec",
+        "artifact_id": "spec-legacy",
+        "original_queue_id": HISTORICAL_ORIGINAL_QUEUE_ID,
+        "attempts": 2,
+        "errors": errors,
+        "dead_lettered_at": "2026-08-13T02:15:52+00:00",
+        "created_at": "2026-08-13T02:15:52+00:00",
+    }
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO consolidation_dead_letter "
+            f"({','.join(LEGACY_DEAD_LETTER_COLUMNS)}) VALUES "
+            f"({','.join('?' for _ in LEGACY_DEAD_LETTER_COLUMNS)})",
+            tuple(row[column] for column in LEGACY_DEAD_LETTER_COLUMNS),
         )
 
 
@@ -227,16 +279,17 @@ def _create_legacy_artifacts(
     data_home: Path,
     *,
     source_count: int = 1,
+    current_checkpoint: bool = False,
+    historical_data_home: Path | None = None,
 ) -> tuple[Path, Path, str]:
+    historical_home = historical_data_home or data_home
     rebuild = data_home / "rebuild"
     quarantine = data_home / "quarantine"
     board = data_home / "boards" / BOARD_ID
     board.mkdir(parents=True)
     (board / "graph.lbug").write_bytes(b"current-restored-graph")
 
-    source_rows = [
-        _source_payload(index, command=True) for index in range(source_count)
-    ]
+    source_rows = [_source_payload(index) for index in range(source_count)]
     snapshot_key = f"{F06_RUN_ID}:snapshot"
     quarantine_key = f"{F06_RUN_ID}:quarantine"
     enqueue_key = f"{F06_RUN_ID}:enqueue"
@@ -249,16 +302,18 @@ def _create_legacy_artifacts(
         quarantine_key: _receipt(
             quarantine_key,
             "quarantine",
-            details={"affected_files": ["graph.lbug"], "quarantine_ref": "q_original"},
+            details={
+                "affected_files": [f"board:{BOARD_ID}:artifact:0"],
+                "quarantine_ref": ORIGINAL_QUARANTINE_ID,
+            },
         ),
         enqueue_key: _receipt(
             enqueue_key,
             "enqueue",
             details={
-                "inserted": 1,
-                "queue_order_version": 4,
-                "enqueue_admission_complete": True,
-                "baseline_dead_letter_ids": [],
+                "inserted": source_count,
+                "reset_to_pending": 0,
+                "left_alone": 0,
             },
         ),
     }
@@ -293,6 +348,9 @@ def _create_legacy_artifacts(
         "compensation_actions": [],
         "receipts": prefix,
     }
+    if not current_checkpoint:
+        for field in POST_LEGACY_CHECKPOINT_FIELDS:
+            checkpoint.pop(field)
     checkpoint_id = (
         "f06-checkpoint-" + hashlib.sha256(F06_RUN_ID.encode()).hexdigest()[:24]
     )
@@ -311,7 +369,7 @@ def _create_legacy_artifacts(
                 "code": "lease_lost",
                 "promotion_allowed": False,
                 "compensation_actions": [],
-                "detail": "legacy lease lost",
+                "detail": "single-writer lease lost",
             },
         ),
     )
@@ -325,16 +383,18 @@ def _create_legacy_artifacts(
         },
     )
     run_id = "run_legacy_executor"
-    report_id = (
-        "report_" + hashlib.sha256(f"{BOARD_ID}\x1f{run_id}".encode()).hexdigest()[:32]
-    )
+    report_id = REPORT_ID
     report_path = rebuild / "reports" / f"{report_id}.json"
     _write_json(
         report_path,
         {
             "report_id": report_id,
             "persisted_at": "2026-08-15T02:45:00+00:00",
-            "summary": {"board_id": BOARD_ID, "run_id": run_id, "status": "failed"},
+            "summary": {
+                "board_id": BOARD_ID,
+                "run_id": run_id,
+                "status": "rebuild_failed",
+            },
         },
     )
     _write_json(
@@ -371,37 +431,59 @@ def _create_legacy_artifacts(
         },
     )
 
-    original = quarantine / "q_original"
+    original = quarantine / ORIGINAL_QUARANTINE_ID
     original.mkdir(parents=True)
     (original / "graph.lbug").write_bytes(b"pre-rebuild-graph")
     _write_json(
         original / "manifest.json",
         {
-            "quarantine_id": "q_original",
+            "quarantine_id": ORIGINAL_QUARANTINE_ID,
             "board_id": BOARD_ID,
             "graph_type": "board_graph",
             "reason": f"explicit_rebuild:{MANIFEST_REF}",
-            "reason_bucket": "explicit_rebuild",
-            "correlation_ids": [MANIFEST_REF],
+            "reason_bucket": "unknown",
+            "correlation_ids": [],
             "affected_paths_relative": ["graph.lbug"],
+            "affected_storage_refs": [
+                {
+                    "namespace": "community_local_graph_v1",
+                    "token": base64.urlsafe_b64encode(
+                        str(
+                            (
+                                historical_home / "boards" / BOARD_ID / "graph.lbug"
+                            ).resolve()
+                        ).encode("utf-8")
+                    )
+                    .decode("ascii")
+                    .rstrip("="),
+                }
+            ],
+            "kg_generation_id": None,
             "files_moved": 1,
+            "software_version": "0.3.2",
+            "quarantined_at": "2026-08-15T02:32:52+00:00",
+            "retention_until": "2026-09-14T02:32:52+00:00",
         },
     )
-    manual = quarantine / "q_manual"
+    manual = quarantine / MANUAL_QUARANTINE_ID
     manual.mkdir()
     (manual / "graph.lbug").write_bytes(b"failed-candidate-graph")
     (manual / "graph.lbug.wal").write_bytes(b"failed-candidate-wal")
     _write_json(
         manual / "manifest.json",
         {
-            "quarantine_id": "q_manual",
+            "quarantine_id": MANUAL_QUARANTINE_ID,
             "board_id": BOARD_ID,
             "graph_type": "board_graph",
-            "reason": "restore_backup_swap:q_original",
+            "reason": f"restore_backup_swap:{ORIGINAL_QUARANTINE_ID}",
             "reason_bucket": "operator_manual",
-            "correlation_ids": ["q_original"],
+            "correlation_ids": [ORIGINAL_QUARANTINE_ID],
             "affected_paths_relative": ["graph.lbug", "graph.lbug.wal"],
+            "kg_generation_id": None,
             "files_moved": 2,
+            "software_version": "0.3.2",
+            "quarantined_at": "2026-08-15T02:42:30+00:00",
+            "retention_until": "2026-09-14T02:42:30+00:00",
         },
     )
     _write_json(
@@ -409,9 +491,16 @@ def _create_legacy_artifacts(
         {
             "operation": "quarantine_restore",
             "compensation_run_id": None,
-            "source_quarantine_id": "q_original",
-            "backup_quarantine_id": "q_manual",
+            "source_quarantine_id": ORIGINAL_QUARANTINE_ID,
+            "source_quarantine_dir": str(
+                (historical_home / "quarantine" / ORIGINAL_QUARANTINE_ID).resolve()
+            ),
+            "backup_quarantine_id": MANUAL_QUARANTINE_ID,
+            "backup_quarantine_dir": str(
+                (historical_home / "quarantine" / MANUAL_QUARANTINE_ID).resolve()
+            ),
             "board_id": BOARD_ID,
+            "board_dir": str((historical_home / "boards" / BOARD_ID).resolve()),
             "phase": "done",
             "started_at": "2026-08-15T02:42:00+00:00",
             "finished_at": "2026-08-15T02:43:00+00:00",
@@ -425,6 +514,217 @@ def _create_legacy_artifacts(
         },
     )
     return rebuild, quarantine, checkpoint_relative
+
+
+def test_legacy_checkpoint_candidate_accepts_current_shape_exactly(
+    tmp_path: Path,
+) -> None:
+    data_home = tmp_path / "data-home"
+    _create_queue_database(data_home / "data" / "pulse.db")
+    rebuild, _quarantine, checkpoint_relative = _create_legacy_artifacts(
+        data_home,
+        current_checkpoint=True,
+    )
+    baseline = recovery._snapshot_tree_hashes(rebuild)
+    raw_checkpoint = json.loads((rebuild / checkpoint_relative).read_bytes())
+
+    candidate = recovery._legacy_checkpoint_candidate(
+        rebuild_root=rebuild,
+        rebuild_baseline=baseline,
+        board_id=BOARD_ID,
+        expected_run_id=F06_RUN_ID,
+    )
+
+    assert candidate is not None
+    assert candidate[0] == checkpoint_relative
+    assert candidate[1] == raw_checkpoint
+
+
+def test_legacy_discovery_selects_active_run_and_normalizes_exact_old_shape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okto_pulse.core.kg import rebuild_service
+
+    data_home = tmp_path / "data-home"
+    db_path = data_home / "data" / "pulse.db"
+    _create_queue_database(db_path)
+    rebuild, quarantine, checkpoint_relative = _create_legacy_artifacts(
+        data_home,
+        current_checkpoint=True,
+    )
+    checkpoint_path = rebuild / checkpoint_relative
+    target = json.loads(checkpoint_path.read_bytes())
+    for field in POST_LEGACY_CHECKPOINT_FIELDS:
+        target.pop(field)
+    _write_json(checkpoint_path, target)
+    exact_old_bytes = checkpoint_path.read_bytes()
+
+    # The audit namespace is global.  Neither an old checkpoint for another
+    # board nor a second old checkpoint for this board may divert selection
+    # from the sole WAL-aware active rebuild source.
+    for suffix, other_board in (
+        ("other_board", "5dcb7b75-466f-4d1e-8893-3899a7cfacf0"),
+        ("same_board_old_run", BOARD_ID),
+    ):
+        other = json.loads(json.dumps(target))
+        manifest_ref = f"rebuild_manifest_{suffix}"
+        run_id = f"f06:{manifest_ref}"
+        other["command"]["board_id"] = other_board
+        other["command"]["manifest_ref"] = manifest_ref
+        other["command"]["run_id"] = run_id
+        relative = (
+            "audit/f06-checkpoint-"
+            + hashlib.sha256(run_id.encode()).hexdigest()[:24]
+            + ".json"
+        )
+        _write_json(rebuild / relative, other)
+
+    # Source selection precedes inspection of the global intent namespace.
+    # A stale malformed nominal marker from another operation must not divert
+    # the exact checkpoint selected by the sole active rebuild source.
+    stale_intent_key = (
+        "f06:rebuild_manifest_stale:"
+        "legacy_manually_restored_blocked_after_enqueue_intent"
+    )
+    _write_json(
+        rebuild / _effect_relative(stale_intent_key),
+        {
+            "effect_key": stale_intent_key,
+            "effect": "legacy_manually_restored_blocked_after_enqueue_intent",
+            "ok": True,
+            "code": "legacy_manual_restore_queue_only_authorized",
+            "details": {"invalid": "stale"},
+        },
+    )
+
+    store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
+    bundle = SimpleNamespace(
+        artifact_store=store,
+        manifest_store=SimpleNamespace(
+            load_verified=lambda *_args, **_kwargs: _verified_manifest()
+        ),
+    )
+    monkeypatch.setattr(
+        rebuild_service,
+        "load_verified_rebuild_confirmation_receipt",
+        lambda **_kwargs: None,
+    )
+    plan = recovery._discover_legacy_queue_only_reconciliation(
+        bundle,
+        data_home=data_home,
+        db_path=db_path,
+        rebuild_root=rebuild,
+        rebuild_baseline=recovery._snapshot_tree_hashes(rebuild),
+        quarantine_root=quarantine,
+        quarantine_baseline=recovery._snapshot_tree_hashes(quarantine),
+        board_storage_baseline=recovery._snapshot_tree_hashes(
+            data_home / "boards" / BOARD_ID
+        ),
+        board_id=BOARD_ID,
+        recovery_actor_id="owner-1",
+        recovery_reason="governed legacy recovery",
+    )
+
+    assert plan is not None and plan.command.run_id == F06_RUN_ID
+    assert plan.checkpoint_baseline["writer_handoff_count"] == 0
+    assert plan.checkpoint_baseline["writer_reacquire_count"] == 0
+    assert plan.checkpoint_baseline["compensation_failed_state"] is None
+    assert plan.checkpoint_baseline["compensation_failure_code"] is None
+    assert plan.checkpoint_baseline["compensation_failure_detail"] is None
+    assert plan.checkpoint_baseline["compensation_actions"] == []
+    assert checkpoint_path.read_bytes() == exact_old_bytes
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    (
+        (
+            lambda checkpoint: checkpoint.pop("writer_handoff_count"),
+            "legacy_queue_only_checkpoint_shape_invalid",
+        ),
+        (
+            lambda checkpoint: (
+                [checkpoint.pop(field) for field in POST_LEGACY_CHECKPOINT_FIELDS],
+                checkpoint.pop("queue_grace_reason"),
+            ),
+            "legacy_queue_only_checkpoint_shape_invalid",
+        ),
+        (
+            lambda checkpoint: checkpoint.update(unexpected="value"),
+            "legacy_queue_only_checkpoint_shape_invalid",
+        ),
+        (
+            lambda checkpoint: (
+                [checkpoint.pop(field) for field in POST_LEGACY_CHECKPOINT_FIELDS],
+                checkpoint.update(state="compensating"),
+            ),
+            "legacy_queue_only_legacy_checkpoint_state_invalid",
+        ),
+    ),
+    ids=("hybrid", "old-missing-base", "extra", "old-nonblocked"),
+)
+def test_legacy_checkpoint_candidate_refuses_noncanonical_shapes(
+    tmp_path: Path,
+    mutation: Callable[[dict[str, object]], object],
+    error: str,
+) -> None:
+    data_home = tmp_path / "data-home"
+    _create_queue_database(data_home / "data" / "pulse.db")
+    rebuild, _quarantine, checkpoint_relative = _create_legacy_artifacts(
+        data_home,
+        current_checkpoint=True,
+    )
+    checkpoint_path = rebuild / checkpoint_relative
+    checkpoint = json.loads(checkpoint_path.read_bytes())
+    mutation(checkpoint)
+    _write_json(checkpoint_path, checkpoint)
+
+    with pytest.raises(recovery.RecoveryRefused, match=error):
+        recovery._legacy_checkpoint_candidate(
+            rebuild_root=rebuild,
+            rebuild_baseline=recovery._snapshot_tree_hashes(rebuild),
+            board_id=BOARD_ID,
+            expected_run_id=F06_RUN_ID,
+        )
+
+
+def test_legacy_run_selection_refuses_multiple_active_rebuild_sources(
+    tmp_path: Path,
+) -> None:
+    data_home = tmp_path / "data-home"
+    db_path = data_home / "data" / "pulse.db"
+    _create_queue_database(db_path)
+    rebuild, _quarantine, _checkpoint_relative = _create_legacy_artifacts(data_home)
+    with sqlite3.connect(db_path) as connection:
+        original = list(
+            connection.execute(
+                f"SELECT {','.join(LEGACY_QUEUE_COLUMNS)} "
+                "FROM consolidation_queue LIMIT 1"
+            ).fetchone()
+        )
+        original[0] = "queue-conflicting-run"
+        original[3] = "spec-conflicting-run"
+        original[9] = "rebuild:rebuild_manifest_conflicting_run"
+        original[10] = "pending"
+        for index in (12, 13, 14, 15, 16, 17, 18):
+            original[index] = None
+        connection.execute(
+            f"INSERT INTO consolidation_queue ({','.join(LEGACY_QUEUE_COLUMNS)}) "
+            f"VALUES ({','.join('?' for _ in LEGACY_QUEUE_COLUMNS)})",
+            tuple(original),
+        )
+
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="legacy_queue_only_active_rebuild_source_conflict",
+    ):
+        recovery._legacy_reconciliation_run_id(
+            db_path=db_path,
+            rebuild_root=rebuild,
+            rebuild_baseline=recovery._snapshot_tree_hashes(rebuild),
+            board_id=BOARD_ID,
+        )
 
 
 def test_legacy_executor_discovers_reconciles_and_rediscovers_adoption(
@@ -594,7 +894,7 @@ def test_legacy_executor_refuses_physical_evidence_drift(
         recovery_reason="governed legacy recovery",
     )
     assert plan is not None
-    (quarantine / "q_manual" / "graph.lbug").write_bytes(b"tampered")
+    (quarantine / MANUAL_QUARANTINE_ID / "graph.lbug").write_bytes(b"tampered")
     with pytest.raises(
         recovery.RecoveryRefused,
         match="legacy_queue_only_quarantine_evidence_changed",
@@ -655,6 +955,220 @@ def test_legacy_executor_refuses_standalone_mutating_f06_effect(
         )
 
 
+def test_legacy_executor_binds_copied_report_ref_to_explicit_source_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okto_pulse.core.kg import rebuild_service
+
+    data_home = tmp_path / "copy-home"
+    source_home = tmp_path / "source-home-not-opened"
+    db_path = data_home / "data" / "pulse.db"
+    _create_queue_database(db_path)
+    rebuild, quarantine, _checkpoint_relative = _create_legacy_artifacts(
+        data_home,
+        historical_data_home=source_home,
+    )
+    audit_path = rebuild / "audit" / "run_legacy_executor.json"
+    audit = json.loads(audit_path.read_bytes())
+    audit["report_ref"] = str(
+        source_home / "rebuild" / "reports" / f"{audit['report_id']}.json"
+    )
+    _write_json(audit_path, audit)
+    store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
+    bundle = SimpleNamespace(
+        artifact_store=store,
+        manifest_store=SimpleNamespace(
+            load_verified=lambda *_args, **_kwargs: _verified_manifest()
+        ),
+    )
+    monkeypatch.setattr(
+        rebuild_service,
+        "load_verified_rebuild_confirmation_receipt",
+        lambda **_kwargs: None,
+    )
+    kwargs = {
+        "data_home": data_home,
+        "db_path": db_path,
+        "rebuild_root": rebuild,
+        "rebuild_baseline": recovery._snapshot_tree_hashes(rebuild),
+        "quarantine_root": quarantine,
+        "quarantine_baseline": recovery._snapshot_tree_hashes(quarantine),
+        "board_storage_baseline": recovery._snapshot_tree_hashes(
+            data_home / "boards" / BOARD_ID
+        ),
+        "board_id": BOARD_ID,
+        "recovery_actor_id": "owner-1",
+        "recovery_reason": "governed legacy recovery",
+    }
+
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="legacy_queue_only_report_reference_invalid",
+    ):
+        recovery._discover_legacy_queue_only_reconciliation(bundle, **kwargs)
+
+    plan = recovery._discover_legacy_queue_only_reconciliation(
+        bundle,
+        historical_data_home=source_home,
+        historical_rebuild_root=source_home / "rebuild",
+        **kwargs,
+    )
+    assert plan is not None
+    assert plan.intent.payload["terminal_run"]["report_relative"] == (
+        f"reports/{audit['report_id']}.json"
+    )
+    assert not source_home.exists()
+
+
+@pytest.mark.parametrize(
+    ("tamper", "error"),
+    (
+        (
+            "lease_missing_detail",
+            "legacy_queue_only_lease_lost_audit_invalid",
+        ),
+        (
+            "lease_extra_detail",
+            "legacy_queue_only_lease_lost_audit_invalid",
+        ),
+        (
+            "bogus_storage_ref",
+            "legacy_queue_only_original_quarantine_storage_ref_invalid",
+        ),
+        (
+            "wrong_storage_ref",
+            "legacy_queue_only_original_quarantine_storage_ref_invalid",
+        ),
+        (
+            "original_manifest_missing_generation",
+            "legacy_queue_only_original_quarantine_invalid",
+        ),
+        (
+            "journal_reversed",
+            "legacy_queue_only_manual_restore_invalid",
+        ),
+        (
+            "journal_missing_path",
+            "legacy_queue_only_manual_restore_invalid",
+        ),
+        (
+            "manual_manifest_files_moved_string",
+            "legacy_queue_only_manual_restore_invalid",
+        ),
+        (
+            "manual_retention_before_quarantine",
+            "legacy_queue_only_manual_restore_invalid",
+        ),
+        (
+            "non_uuid4_report_id",
+            "legacy_queue_only_terminal_run_invalid",
+        ),
+    ),
+)
+def test_legacy_executor_refuses_impossible_historical_serializer_shapes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: str,
+    error: str,
+) -> None:
+    from okto_pulse.core.kg import rebuild_service
+
+    data_home = tmp_path / "data-home"
+    db_path = data_home / "data" / "pulse.db"
+    _create_queue_database(db_path)
+    rebuild, quarantine, _checkpoint_relative = _create_legacy_artifacts(data_home)
+
+    if tamper.startswith("lease_"):
+        lease_key = f"{F06_RUN_ID}:audit:lease_lost"
+        path = rebuild / _effect_relative(lease_key)
+        payload = json.loads(path.read_bytes())
+        if tamper == "lease_missing_detail":
+            payload["details"].pop("detail")
+        else:
+            payload["details"]["unexpected"] = "value"
+        _write_json(path, payload)
+    elif tamper.startswith("original_manifest") or tamper in {
+        "bogus_storage_ref",
+        "wrong_storage_ref",
+    }:
+        path = quarantine / ORIGINAL_QUARANTINE_ID / "manifest.json"
+        payload = json.loads(path.read_bytes())
+        if tamper == "bogus_storage_ref":
+            payload["affected_storage_refs"][0]["token"] = "not-a-storage-ref"
+        elif tamper == "wrong_storage_ref":
+            payload["affected_storage_refs"][0]["token"] = (
+                base64.urlsafe_b64encode(
+                    str(
+                        (data_home / "boards" / BOARD_ID / "other.lbug").resolve()
+                    ).encode("utf-8")
+                )
+                .decode("ascii")
+                .rstrip("=")
+            )
+        else:
+            payload.pop("kg_generation_id")
+        _write_json(path, payload)
+    elif tamper.startswith("journal_"):
+        path = quarantine / MANUAL_QUARANTINE_ID / "restore_operation.json"
+        payload = json.loads(path.read_bytes())
+        if tamper == "journal_reversed":
+            payload["moved_to_backup"] = ["graph.lbug.wal", "graph.lbug"]
+        else:
+            payload.pop("board_dir")
+        _write_json(path, payload)
+    elif tamper.startswith("manual_"):
+        path = quarantine / MANUAL_QUARANTINE_ID / "manifest.json"
+        payload = json.loads(path.read_bytes())
+        if tamper == "manual_manifest_files_moved_string":
+            payload["files_moved"] = "2"
+        else:
+            payload["retention_until"] = "2026-08-15T02:42:00+00:00"
+        _write_json(path, payload)
+    else:
+        audit_path = rebuild / "audit" / "run_legacy_executor.json"
+        audit = json.loads(audit_path.read_bytes())
+        old_report = rebuild / "reports" / f"{audit['report_id']}.json"
+        report = json.loads(old_report.read_bytes())
+        forged_report_id = f"report_{'a' * 32}"
+        forged_report = rebuild / "reports" / f"{forged_report_id}.json"
+        report["report_id"] = forged_report_id
+        audit["report_id"] = forged_report_id
+        audit["report_ref"] = str(forged_report.resolve())
+        _write_json(forged_report, report)
+        _write_json(audit_path, audit)
+
+    store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
+    bundle = SimpleNamespace(
+        artifact_store=store,
+        manifest_store=SimpleNamespace(
+            load_verified=lambda *_args, **_kwargs: _verified_manifest()
+        ),
+    )
+    monkeypatch.setattr(
+        rebuild_service,
+        "load_verified_rebuild_confirmation_receipt",
+        lambda **_kwargs: None,
+    )
+
+    with pytest.raises(recovery.RecoveryRefused, match=error):
+        recovery._discover_legacy_queue_only_reconciliation(
+            bundle,
+            data_home=data_home,
+            db_path=db_path,
+            rebuild_root=rebuild,
+            rebuild_baseline=recovery._snapshot_tree_hashes(rebuild),
+            quarantine_root=quarantine,
+            quarantine_baseline=recovery._snapshot_tree_hashes(quarantine),
+            board_storage_baseline=recovery._snapshot_tree_hashes(
+                data_home / "boards" / BOARD_ID
+            ),
+            board_id=BOARD_ID,
+            recovery_actor_id="owner-1",
+            recovery_reason="governed legacy recovery",
+        )
+
+
 @pytest.mark.parametrize(
     ("effect", "mutation", "error"),
     (
@@ -665,7 +1179,7 @@ def test_legacy_executor_refuses_standalone_mutating_f06_effect(
         ),
         (
             "enqueue",
-            lambda payload: payload["details"].update(enqueue_admission_complete=False),
+            lambda payload: payload["details"].update(unexpected="value"),
             "legacy_queue_only_enqueue_receipt_invalid",
         ),
         (
@@ -1300,6 +1814,8 @@ async def test_legacy_executor_lane_uses_real_core_service_and_releases_fences(
     data_home = tmp_path / "data-home"
     db_path = data_home / "data" / "pulse.db"
     _create_queue_database(db_path)
+    _insert_historical_target_dlq_peer(db_path)
+    dlq_before = recovery._dlq_snapshot(db_path)
     rebuild, quarantine, _checkpoint_relative = _create_legacy_artifacts(data_home)
     monkeypatch.setattr(
         rebuild_audit_storage,
@@ -1340,6 +1856,9 @@ async def test_legacy_executor_lane_uses_real_core_service_and_releases_fences(
         recovery_reason="governed legacy recovery",
     )
     assert plan is not None and not plan.terminal
+    assert [
+        peer["id"] for peer in plan.intent.payload["dead_letter_guard"]["peers"]
+    ] == [HISTORICAL_DLQ_ID]
 
     # Crash after the exact SQLite CAS commits but before the compensation
     # receipt is durable.  This leaves the nominal intent + COMPENSATING
@@ -1518,6 +2037,7 @@ async def test_legacy_executor_lane_uses_real_core_service_and_releases_fences(
             await lane
         assert writer.inspect(board_id=BOARD_ID) is None
         assert reservation.inspect(board_id=BOARD_ID) is None
+        assert recovery._dlq_snapshot(db_path) == dlq_before
         return
     result = await lane
 
@@ -1538,3 +2058,4 @@ async def test_legacy_executor_lane_uses_real_core_service_and_releases_fences(
     assert adoption.identities == frozenset({("spec", "spec-legacy")})
     assert recovery._snapshot_tree_hashes(quarantine) == quarantine_before
     assert recovery._snapshot_tree_hashes(board_root) == board_before
+    assert recovery._dlq_snapshot(db_path) == dlq_before

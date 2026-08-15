@@ -50,7 +50,7 @@ import sysconfig
 import threading
 import time
 from typing import Any, Callable, Iterable, Mapping, Sequence
-from uuid import UUID
+from uuid import RFC_4122, UUID
 
 
 CORE_DISTRIBUTION = "okto-pulse-core"
@@ -4650,23 +4650,114 @@ def _relative_rebuild_reference(
     reference: object,
     *,
     rebuild_root: Path,
+    historical_rebuild_root: Path | None = None,
     prefix: str,
     code: str,
 ) -> str:
     _require(isinstance(reference, str) and bool(reference), code)
+    reference_path = Path(str(reference))
+    _require(reference_path.is_absolute(), code)
     try:
-        resolved = Path(str(reference)).resolve(strict=False)
-        relative = resolved.relative_to(rebuild_root.resolve(strict=False)).as_posix()
-    except (OSError, ValueError) as exc:
+        resolved = os.path.normcase(os.path.abspath(str(reference_path)))
+    except (OSError, ValueError, TypeError) as exc:
         raise RecoveryRefused(code) from exc
+    relative: str | None = None
+    for candidate_root in (
+        rebuild_root,
+        historical_rebuild_root or rebuild_root,
+    ):
+        try:
+            normalized_root = os.path.normcase(os.path.abspath(str(candidate_root)))
+            if os.path.commonpath((resolved, normalized_root)) != normalized_root:
+                continue
+            relative = os.path.relpath(resolved, normalized_root).replace("\\", "/")
+            break
+        except (OSError, ValueError, TypeError):
+            continue
     _require(
-        relative.startswith(prefix)
+        relative is not None
+        and relative.startswith(prefix)
         and relative.endswith(".json")
         and ".." not in relative.split("/"),
         code,
-        relative,
+        relative or "outside_authorized_rebuild_roots",
     )
+    assert relative is not None
     return relative
+
+
+def _legacy_lexical_path_matches(
+    value: object,
+    *,
+    expected: Path,
+    code: str,
+) -> bool:
+    """Compare historical absolute paths without opening their source tree."""
+
+    _require(isinstance(value, str) and bool(value), code)
+    raw = str(value)
+    candidate = Path(raw)
+    _require(
+        candidate.is_absolute()
+        and os.path.normpath(raw) == raw
+        and "." not in candidate.parts
+        and ".." not in candidate.parts,
+        code,
+    )
+    try:
+        normalized = os.path.normcase(os.path.abspath(raw))
+        normalized_expected = os.path.normcase(os.path.abspath(str(expected)))
+    except (OSError, TypeError, ValueError) as exc:
+        raise RecoveryRefused(code) from exc
+    _require(normalized == normalized_expected, code)
+    return True
+
+
+def _legacy_local_storage_ref_matches(
+    value: object,
+    *,
+    expected: Path,
+    code: str,
+) -> bool:
+    """Decode one canonical local-storage token and bind it lexically."""
+
+    _require(
+        isinstance(value, str)
+        and bool(value)
+        and re.fullmatch(r"[A-Za-z0-9_-]+", value) is not None,
+        code,
+    )
+    token = str(value)
+    padding = "=" * (-len(token) % 4)
+    try:
+        raw_bytes = base64.b64decode(
+            token + padding,
+            altchars=b"-_",
+            validate=True,
+        )
+        decoded = raw_bytes.decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise RecoveryRefused(code) from exc
+    _require(
+        base64.urlsafe_b64encode(raw_bytes).decode("ascii").rstrip("=") == token,
+        code,
+    )
+    return _legacy_lexical_path_matches(decoded, expected=expected, code=code)
+
+
+def _is_legacy_uuid4_report_id(value: object) -> bool:
+    if not isinstance(value, str) or not value.startswith("report_"):
+        return False
+    raw = value.removeprefix("report_")
+    try:
+        parsed = UUID(raw)
+    except (TypeError, ValueError):
+        return False
+    return (
+        parsed.version == 4
+        and parsed.variant == RFC_4122
+        and value == f"report_{parsed.hex}"
+    )
 
 
 def _legacy_receipt_from_payload(payload: Mapping[str, Any], *, code: str) -> Any:
@@ -4763,12 +4854,13 @@ def _legacy_command_from_checkpoint(
     )
 
 
-def _assert_legacy_command_bound_to_manifest(command: Any, manifest: Any) -> None:
-    """Bind every persisted command row to the verified historical manifest."""
-
-    from okto_pulse.community.adapters.board_rebuild_ingestion import (
-        _EVIDENCE_CLOSURE_CANDIDATE,
-    )
+def _assert_legacy_command_bound_to_manifest(
+    command: Any,
+    manifest: Any,
+    *,
+    prefix_schema: str,
+) -> None:
+    """Bind the pre-v4 command projection to its verified historical manifest."""
 
     created_at = str(getattr(manifest, "created_at", "") or "")
     _require(
@@ -4784,53 +4876,21 @@ def _assert_legacy_command_bound_to_manifest(command: Any, manifest: Any) -> Non
             isinstance(row, Mapping),
             "legacy_queue_only_manifest_source_invalid",
         )
-        result = dict(row)
-        result["_rebuild_manifest_created_at"] = created_at
-        return result
+        return dict(row)
 
-    expected_base = tuple(
+    from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
+        LEGACY_QUEUE_ONLY_PREFIX_SCHEMA,
+    )
+
+    _require(
+        prefix_schema == LEGACY_QUEUE_ONLY_PREFIX_SCHEMA,
+        "legacy_queue_only_prefix_schema_invalid",
+    )
+    expected_pre_v4 = tuple(
         projected(row) for row in tuple(manifest.materializable_sources)
     )
-    closure_candidates: dict[str, dict[str, Any]] = {}
-    for raw in tuple(manifest.skipped_expired_working):
-        if (
-            getattr(raw, "artifact_type", None) != "code_evidence"
-            or getattr(raw, "source_artifact_status", None) != "superseded"
-        ):
-            continue
-        candidate = projected(raw)
-        candidate["_rebuild_dependency_closure"] = _EVIDENCE_CLOSURE_CANDIDATE
-        artifact_id = str(candidate.get("id") or "")
-        _require(
-            bool(artifact_id) and artifact_id not in closure_candidates,
-            "legacy_queue_only_manifest_closure_invalid",
-        )
-        closure_candidates[artifact_id] = candidate
-
-    command_base: list[dict[str, Any]] = []
-    command_closure: list[dict[str, Any]] = []
-    closure_ids: set[str] = set()
-    for raw in command.source_rows:
-        row = dict(raw)
-        marker = row.get("_rebuild_dependency_closure")
-        if marker is None:
-            command_base.append(row)
-            continue
-        artifact_id = str(row.get("id") or "")
-        _require(
-            marker == _EVIDENCE_CLOSURE_CANDIDATE
-            and artifact_id in closure_candidates
-            and artifact_id not in closure_ids
-            and row == closure_candidates[artifact_id],
-            "legacy_queue_only_manifest_closure_invalid",
-            artifact_id,
-        )
-        closure_ids.add(artifact_id)
-        command_closure.append(row)
     _require(
-        tuple(command_base) == expected_base
-        and command_closure
-        == [closure_candidates[artifact_id] for artifact_id in sorted(closure_ids)],
+        tuple(dict(row) for row in command.source_rows) == expected_pre_v4,
         "legacy_queue_only_manifest_command_mismatch",
     )
 
@@ -4917,22 +4977,60 @@ def _bounded_legacy_query_rows(
     return tuple(rows)
 
 
+def _legacy_exact_table_columns(
+    connection: sqlite3.Connection,
+    *,
+    table: str,
+    expected: Sequence[str],
+    code: str,
+) -> tuple[str, ...]:
+    """Prove an ordinary table with no generated/hidden schema surface."""
+
+    _require(
+        re.fullmatch(r"[a-z_][a-z0-9_]*", table) is not None,
+        f"{code}_name_invalid",
+    )
+    entries = tuple(
+        row
+        for row in connection.execute("PRAGMA table_list")
+        if str(row[0]) == "main" and str(row[1]) == table
+    )
+    _require(
+        len(entries) == 1 and str(entries[0][2]) == "table",
+        f"{code}_storage_invalid",
+    )
+    xinfo = tuple(
+        tuple(row) for row in connection.execute(f"PRAGMA table_xinfo({table})")
+    )
+    columns = tuple(str(row[1]) for row in xinfo)
+    _require(
+        columns == tuple(expected)
+        and all(len(row) >= 7 and int(row[6]) == 0 for row in xinfo),
+        f"{code}_schema_invalid",
+    )
+    return columns
+
+
 def _legacy_queue_current_evidence(
     db_path: Path,
     *,
     board_id: str,
     source: str,
     source_rows: Sequence[Mapping[str, Any]],
+    checkpoint_started_at: str,
 ) -> tuple[
     tuple[Mapping[str, Any], ...],
     tuple[Mapping[str, str], ...],
     str,
     str,
+    Mapping[str, Any],
 ]:
     """Take the WAL-aware exact active legacy row cut used by the intent."""
 
     from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
+        LEGACY_DEAD_LETTER_COLUMNS,
         LEGACY_QUEUE_COLUMNS,
+        build_legacy_dead_letter_guard,
         canonical_evidence_hash,
     )
     from okto_pulse.core.kg.board_rebuild_adapter import queue_artifact_type
@@ -4951,15 +5049,11 @@ def _legacy_queue_current_evidence(
 
     projection = ", ".join(f'"{column}"' for column in LEGACY_QUEUE_COLUMNS)
     with _sqlite_connect_readonly(db_path) as connection:
-        columns = tuple(
-            str(row[1])
-            for row in connection.execute(
-                "PRAGMA table_info(consolidation_queue)"
-            ).fetchall()
-        )
-        _require(
-            set(columns) == set(LEGACY_QUEUE_COLUMNS),
-            "legacy_queue_only_queue_schema_mismatch",
+        _legacy_exact_table_columns(
+            connection,
+            table="consolidation_queue",
+            expected=LEGACY_QUEUE_COLUMNS,
+            code="legacy_queue_only_queue",
         )
         fetched = _bounded_legacy_query_rows(
             connection.execute(
@@ -5021,37 +5115,51 @@ def _legacy_queue_current_evidence(
                 "legacy_queue_only_peer_identity_conflict",
                 f"{artifact_type}:{artifact_id}",
             )
-        dlq_columns = tuple(
-            str(row[1])
-            for row in connection.execute(
-                "PRAGMA table_info(consolidation_dead_letter)"
-            ).fetchall()
+        dlq_columns = _legacy_exact_table_columns(
+            connection,
+            table="consolidation_dead_letter",
+            expected=LEGACY_DEAD_LETTER_COLUMNS,
+            code="legacy_queue_only_dlq",
         )
-        if dlq_columns:
-            dlq_projection = ", ".join(f'"{column}"' for column in dlq_columns)
-            dlq_rows = _bounded_legacy_query_rows(
-                connection.execute(
-                    f"SELECT {dlq_projection} FROM consolidation_dead_letter "
-                    "WHERE board_id=? ORDER BY id",
-                    (board_id,),
-                ),
-                dlq_columns,
-                code="legacy_queue_only_dlq_rows",
+        dlq_projection = ", ".join(f'"{column}"' for column in dlq_columns)
+        dlq_rows = _bounded_legacy_query_rows(
+            connection.execute(
+                f"SELECT {dlq_projection} FROM consolidation_dead_letter "
+                "WHERE board_id=? ORDER BY id",
+                (board_id,),
+            ),
+            dlq_columns,
+            code="legacy_queue_only_dlq_rows",
+        )
+        target_identity_set = peer_identities
+        original_ids = {
+            str(raw[dlq_columns.index("original_queue_id")] or "")
+            for raw in dlq_rows
+            if (
+                str(raw[dlq_columns.index("artifact_type")] or ""),
+                str(raw[dlq_columns.index("artifact_id")] or ""),
             )
-            for artifact_type, artifact_id in peer_identities:
-                conflict = connection.execute(
-                    "SELECT 1 FROM consolidation_dead_letter WHERE board_id=? "
-                    "AND (artifact_type=? AND artifact_id=? OR original_queue_id IN ("
-                    + placeholders
-                    + ")) LIMIT 1",
-                    (board_id, artifact_type, artifact_id, *target_ids),
-                ).fetchone()
-                _require(
-                    conflict is None,
-                    "legacy_queue_only_dlq_identity_conflict",
-                )
-        else:
-            dlq_rows = ()
+            in target_identity_set
+        }
+        present_original_ids = frozenset(
+            original_id
+            for original_id in original_ids
+            if original_id
+            and connection.execute(
+                "SELECT 1 FROM consolidation_queue WHERE id=? LIMIT 1",
+                (original_id,),
+            ).fetchone()
+            is not None
+        )
+
+        dead_letter_guard = build_legacy_dead_letter_guard(
+            board_id=board_id,
+            checkpoint_started_at=checkpoint_started_at,
+            target_rows=rows,
+            dlq_columns=dlq_columns,
+            dlq_rows=dlq_rows,
+            present_original_queue_ids=present_original_ids,
+        )
 
     memberships: list[Mapping[str, str]] = []
     for row in rows:
@@ -5101,6 +5209,7 @@ def _legacy_queue_current_evidence(
         sorted_memberships,
         non_target_fingerprint,
         dlq_fingerprint,
+        dead_letter_guard,
     )
 
 
@@ -5109,107 +5218,197 @@ def _legacy_checkpoint_candidate(
     rebuild_root: Path,
     rebuild_baseline: Mapping[str, str],
     board_id: str,
-) -> tuple[str, dict[str, Any], Any] | None:
-    candidates: list[tuple[str, dict[str, Any], Any]] = []
+    expected_run_id: str,
+) -> tuple[str, dict[str, Any], Any, str] | None:
+    _require(
+        re.fullmatch(r"f06:rebuild_manifest_[A-Za-z0-9_-]+", expected_run_id)
+        is not None,
+        "legacy_queue_only_expected_run_id_invalid",
+    )
+    relative = (
+        "audit/f06-checkpoint-"
+        + hashlib.sha256(expected_run_id.encode("utf-8")).hexdigest()[:24]
+        + ".json"
+    )
+    if relative not in rebuild_baseline:
+        return None
+    raw_checkpoint = _read_baseline_json(
+        rebuild_root,
+        rebuild_baseline,
+        relative,
+        code="legacy_queue_only_checkpoint",
+    )
+    legacy_keys = {
+        "kind",
+        "command",
+        "state",
+        "started_at",
+        "last_progress_at",
+        "best_queue_depth",
+        "last_sequence",
+        "queue_progress_events",
+        "queue_grace_applied",
+        "queue_grace_reason",
+        "receipts",
+    }
+    compatibility_defaults: dict[str, Any] = {
+        "writer_handoff_count": 0,
+        "writer_reacquire_count": 0,
+        "compensation_failed_state": None,
+        "compensation_failure_code": None,
+        "compensation_failure_detail": None,
+        "compensation_actions": [],
+    }
+    current_keys = legacy_keys | set(compatibility_defaults)
+    if set(raw_checkpoint) == legacy_keys:
+        _require(
+            raw_checkpoint.get("state") == "blocked",
+            "legacy_queue_only_legacy_checkpoint_state_invalid",
+        )
+        checkpoint = {**raw_checkpoint, **compatibility_defaults}
+        checkpoint_schema = "pre_v4_legacy"
+    else:
+        _require(
+            set(raw_checkpoint) == current_keys,
+            "legacy_queue_only_checkpoint_shape_invalid",
+        )
+        checkpoint = dict(raw_checkpoint)
+        checkpoint_schema = "current"
+    command_payload = checkpoint.get("command")
+    _require(
+        isinstance(command_payload, Mapping)
+        and str(command_payload.get("board_id")) == board_id
+        and str(command_payload.get("run_id")) == expected_run_id,
+        "legacy_queue_only_checkpoint_binding_invalid",
+    )
+    state = str(checkpoint.get("state") or "")
+    _require(
+        state in LEGACY_QUEUE_ONLY_CHECKPOINT_STATES,
+        "legacy_queue_only_checkpoint_state_invalid",
+    )
+    _require(
+        checkpoint.get("kind") == "f06_rebuild_checkpoint",
+        "legacy_queue_only_checkpoint_kind_invalid",
+    )
+    try:
+        started_at = datetime.fromisoformat(str(checkpoint["started_at"]))
+        last_progress_at = datetime.fromisoformat(str(checkpoint["last_progress_at"]))
+    except ValueError as exc:
+        raise RecoveryRefused("legacy_queue_only_checkpoint_timestamp_invalid") from exc
+    _require(
+        started_at.tzinfo is not None
+        and last_progress_at.tzinfo is not None
+        and last_progress_at >= started_at
+        and type(checkpoint.get("best_queue_depth")) is int
+        and checkpoint.get("best_queue_depth") >= 1
+        and type(checkpoint.get("last_sequence")) is int
+        and checkpoint.get("last_sequence") >= 0
+        and type(checkpoint.get("queue_progress_events")) is int
+        and checkpoint.get("queue_progress_events") >= 0
+        and type(checkpoint.get("queue_grace_applied")) is bool
+        and (
+            checkpoint.get("queue_grace_reason") is None
+            or (
+                isinstance(checkpoint.get("queue_grace_reason"), str)
+                and bool(checkpoint.get("queue_grace_reason"))
+            )
+        ),
+        "legacy_queue_only_checkpoint_progress_invalid",
+    )
+    _require(
+        type(checkpoint.get("writer_handoff_count")) is int
+        and checkpoint.get("writer_handoff_count") == 0
+        and type(checkpoint.get("writer_reacquire_count")) is int
+        and checkpoint.get("writer_reacquire_count") == 0,
+        "legacy_queue_only_checkpoint_writer_history_invalid",
+    )
+    command = _legacy_command_from_checkpoint(checkpoint, board_id=board_id)
+    _require(
+        command.run_id == expected_run_id,
+        "legacy_queue_only_checkpoint_path_invalid",
+        relative,
+    )
+    return relative, checkpoint, command, checkpoint_schema
+
+
+def _legacy_reconciliation_run_id(
+    *,
+    db_path: Path,
+    rebuild_root: Path,
+    rebuild_baseline: Mapping[str, str],
+    board_id: str,
+) -> str | None:
+    """Select one legacy run from the WAL-aware queue or its durable intent."""
+
+    with _sqlite_connect_readonly(db_path) as connection:
+        active_sources = tuple(
+            str(row[0])
+            for row in connection.execute(
+                "SELECT DISTINCT source FROM consolidation_queue "
+                "WHERE board_id=? AND work_kind='consolidate' "
+                "AND status IN ('pending','claimed') "
+                "AND source LIKE 'rebuild:%' ORDER BY source LIMIT 2",
+                (board_id,),
+            )
+        )
+    _require(
+        len(active_sources) <= 1,
+        "legacy_queue_only_active_rebuild_source_conflict",
+    )
+    active_run_id: str | None = None
+    if active_sources:
+        manifest_ref = active_sources[0].removeprefix("rebuild:")
+        _require(
+            re.fullmatch(r"rebuild_manifest_[A-Za-z0-9_-]+", manifest_ref) is not None,
+            "legacy_queue_only_active_rebuild_source_invalid",
+        )
+        active_run_id = f"f06:{manifest_ref}"
+
+    # The WAL-aware queue is the strongest selector while work remains.  Do
+    # not let an unrelated or historical receipt in the global audit
+    # namespace divert the canonical checkpoint lookup for that live source.
+    if active_run_id is not None:
+        return active_run_id
+
+    from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
+        LEGACY_QUEUE_ONLY_INTENT_CODE,
+        LEGACY_QUEUE_ONLY_INTENT_EFFECT,
+        LegacyManualRestoreQueueOnlyIntent,
+    )
+
+    intent_runs: set[str] = set()
     for relative in sorted(rebuild_baseline):
-        if re.fullmatch(r"audit/f06-checkpoint-[0-9a-f]{24}\.json", relative) is None:
+        if re.fullmatch(r"audit/f06-effect-[0-9a-f]{24}\.json", relative) is None:
             continue
-        checkpoint = _read_baseline_json(
+        payload = _read_baseline_json(
             rebuild_root,
             rebuild_baseline,
             relative,
-            code="legacy_queue_only_checkpoint",
+            code="legacy_queue_only_intent_scan",
         )
-        _require(
-            set(checkpoint)
-            == {
-                "kind",
-                "command",
-                "state",
-                "started_at",
-                "last_progress_at",
-                "best_queue_depth",
-                "last_sequence",
-                "queue_progress_events",
-                "queue_grace_applied",
-                "queue_grace_reason",
-                "writer_handoff_count",
-                "writer_reacquire_count",
-                "compensation_failed_state",
-                "compensation_failure_code",
-                "compensation_failure_detail",
-                "compensation_actions",
-                "receipts",
-            },
-            "legacy_queue_only_checkpoint_shape_invalid",
-        )
-        command_payload = checkpoint.get("command")
-        if (
-            not isinstance(command_payload, Mapping)
-            or str(command_payload.get("board_id")) != board_id
-        ):
+        if payload.get("effect") != LEGACY_QUEUE_ONLY_INTENT_EFFECT:
             continue
-        state = str(checkpoint.get("state") or "")
-        if state not in LEGACY_QUEUE_ONLY_CHECKPOINT_STATES:
-            continue
-        _require(
-            checkpoint.get("kind") == "f06_rebuild_checkpoint",
-            "legacy_queue_only_checkpoint_kind_invalid",
+        receipt = _legacy_receipt_from_payload(
+            payload,
+            code="legacy_queue_only_intent_scan_invalid",
         )
         try:
-            started_at = datetime.fromisoformat(str(checkpoint["started_at"]))
-            last_progress_at = datetime.fromisoformat(
-                str(checkpoint["last_progress_at"])
-            )
-        except ValueError as exc:
-            raise RecoveryRefused(
-                "legacy_queue_only_checkpoint_timestamp_invalid"
-            ) from exc
+            intent = LegacyManualRestoreQueueOnlyIntent.from_payload(receipt.details)
+        except Exception as exc:
+            raise RecoveryRefused("legacy_queue_only_intent_scan_invalid") from exc
         _require(
-            started_at.tzinfo is not None
-            and last_progress_at.tzinfo is not None
-            and last_progress_at >= started_at
-            and type(checkpoint.get("best_queue_depth")) is int
-            and checkpoint.get("best_queue_depth") >= 1
-            and type(checkpoint.get("last_sequence")) is int
-            and checkpoint.get("last_sequence") >= 0
-            and type(checkpoint.get("queue_progress_events")) is int
-            and checkpoint.get("queue_progress_events") >= 0
-            and type(checkpoint.get("queue_grace_applied")) is bool
-            and (
-                checkpoint.get("queue_grace_reason") is None
-                or (
-                    isinstance(checkpoint.get("queue_grace_reason"), str)
-                    and bool(checkpoint.get("queue_grace_reason"))
-                )
-            ),
-            "legacy_queue_only_checkpoint_progress_invalid",
+            payload == _legacy_intent_receipt_payload(intent)
+            and receipt.code == LEGACY_QUEUE_ONLY_INTENT_CODE,
+            "legacy_queue_only_intent_scan_invalid",
         )
-        _require(
-            type(checkpoint.get("writer_handoff_count")) is int
-            and checkpoint.get("writer_handoff_count") == 0
-            and type(checkpoint.get("writer_reacquire_count")) is int
-            and checkpoint.get("writer_reacquire_count") == 0,
-            "legacy_queue_only_checkpoint_writer_history_invalid",
-        )
-        command = _legacy_command_from_checkpoint(checkpoint, board_id=board_id)
-        expected_relative = (
-            "audit/f06-checkpoint-"
-            + hashlib.sha256(command.run_id.encode("utf-8")).hexdigest()[:24]
-            + ".json"
-        )
-        _require(
-            relative == expected_relative,
-            "legacy_queue_only_checkpoint_path_invalid",
-            relative,
-        )
-        candidates.append((relative, checkpoint, command))
+        if intent.board_id == board_id:
+            intent_runs.add(intent.f06_run_id)
     _require(
-        len(candidates) <= 1,
-        "legacy_queue_only_checkpoint_cardinality_invalid",
-        str(len(candidates)),
+        len(intent_runs) <= 1,
+        "legacy_queue_only_intent_run_cardinality_invalid",
     )
-    return candidates[0] if candidates else None
+    intent_run_id = next(iter(intent_runs), None)
+    return intent_run_id
 
 
 def _legacy_validate_prefix_receipts(
@@ -5252,6 +5451,7 @@ def _legacy_validate_prefix_receipts(
         if label == "snapshot":
             _require(
                 receipt.code == "ok"
+                and set(details) == {"board_id", "readable", "nodes", "edges"}
                 and details.get("board_id") == command.board_id
                 and details.get("readable") is True
                 and isinstance(details.get("nodes"), list)
@@ -5263,22 +5463,34 @@ def _legacy_validate_prefix_receipts(
             quarantine_ref = details.get("quarantine_ref")
             _require(
                 receipt.code == "ok"
+                and set(details) == {"affected_files", "quarantine_ref"}
                 and isinstance(affected, list)
-                and tuple(affected) == ("graph.lbug",)
+                and bool(affected)
+                and all(isinstance(value, str) for value in affected)
+                and affected
+                == [
+                    f"board:{command.board_id}:artifact:{index}"
+                    for index in range(len(affected))
+                ]
                 and isinstance(quarantine_ref, str)
-                and re.fullmatch(r"q_[A-Za-z0-9_-]+", quarantine_ref) is not None,
+                and re.fullmatch(r"q_[A-Za-z0-9_-]{22}", quarantine_ref) is not None,
                 "legacy_queue_only_quarantine_receipt_invalid",
             )
         else:
-            baseline_ids = details.get("baseline_dead_letter_ids")
+            legacy_counter_keys = {
+                "inserted",
+                "reset_to_pending",
+                "left_alone",
+            }
             _require(
                 receipt.code == "ok"
-                and type(details.get("queue_order_version")) is int
-                and details.get("queue_order_version") == 4
-                and details.get("enqueue_admission_complete") is True
-                and isinstance(baseline_ids, list)
-                and all(isinstance(value, str) for value in baseline_ids)
-                and len(set(baseline_ids)) == len(baseline_ids),
+                and set(details) == legacy_counter_keys
+                and all(
+                    type(details.get(key)) is int and int(details[key]) >= 0
+                    for key in legacy_counter_keys
+                )
+                and sum(int(details[key]) for key in legacy_counter_keys)
+                == len(command.source_rows),
                 "legacy_queue_only_enqueue_receipt_invalid",
             )
         relative = _legacy_effect_relative(effect_key)
@@ -5312,15 +5524,25 @@ def _legacy_validate_prefix_receipts(
         audit_payload,
         code="legacy_queue_only_lease_lost_audit_invalid",
     )
+    audit_details = dict(audit_receipt.details)
     _require(
         audit_receipt.effect_key == audit_key
         and audit_receipt.effect == "audit"
         and audit_receipt.ok is True
         and audit_receipt.code == "ok"
-        and dict(audit_receipt.details).get("state") == "blocked"
-        and dict(audit_receipt.details).get("code") == "lease_lost"
-        and dict(audit_receipt.details).get("promotion_allowed") is False
-        and tuple(dict(audit_receipt.details).get("compensation_actions") or ()) == (),
+        and set(audit_details)
+        == {
+            "state",
+            "code",
+            "promotion_allowed",
+            "compensation_actions",
+            "detail",
+        }
+        and audit_details.get("state") == "blocked"
+        and audit_details.get("code") == "lease_lost"
+        and audit_details.get("promotion_allowed") is False
+        and audit_details.get("compensation_actions") == []
+        and audit_details.get("detail") == "single-writer lease lost",
         "legacy_queue_only_lease_lost_audit_invalid",
     )
     evidence["lease_lost_audit"] = {
@@ -5427,6 +5649,7 @@ def _legacy_validate_run_effect_artifacts(
 def _legacy_terminal_run_evidence(
     *,
     rebuild_root: Path,
+    historical_rebuild_root: Path | None = None,
     rebuild_baseline: Mapping[str, str],
     board_id: str,
     command: Any,
@@ -5454,20 +5677,17 @@ def _legacy_terminal_run_evidence(
     )
     audit_relative, audit = matches[0]
     run_id = str(audit.get("run_id") or "")
-    expected_report_id = (
-        "report_"
-        + hashlib.sha256(f"{board_id}\x1f{run_id}".encode("utf-8")).hexdigest()[:32]
-    )
     report_id = str(audit.get("report_id") or "")
     report_relative = _relative_rebuild_reference(
         audit.get("report_ref"),
         rebuild_root=rebuild_root,
+        historical_rebuild_root=historical_rebuild_root,
         prefix="reports/",
         code="legacy_queue_only_report_reference_invalid",
     )
     _require(
         re.fullmatch(r"run_[A-Za-z0-9_-]+", run_id) is not None
-        and report_id == expected_report_id
+        and _is_legacy_uuid4_report_id(report_id)
         and report_relative == f"reports/{report_id}.json"
         and audit_relative == f"audit/{run_id}.json"
         and audit.get("outcome") == "rebuild_failed"
@@ -5497,7 +5717,7 @@ def _legacy_terminal_run_evidence(
         and isinstance(summary, Mapping)
         and str(summary.get("board_id")) == board_id
         and str(summary.get("run_id")) == run_id
-        and str(summary.get("status")) == "failed",
+        and str(summary.get("status")) == "rebuild_failed",
         "legacy_queue_only_report_invalid",
     )
     confirmation_matches: list[tuple[str, dict[str, Any]]] = []
@@ -5559,6 +5779,7 @@ def _legacy_quarantine_evidence(
     *,
     quarantine_root: Path,
     quarantine_baseline: Mapping[str, str],
+    historical_data_home: Path,
     board_id: str,
     command: Any,
     quarantine_receipt: Any,
@@ -5566,7 +5787,7 @@ def _legacy_quarantine_evidence(
     quarantine_details = dict(quarantine_receipt.details)
     original_id = str(quarantine_details.get("quarantine_ref") or "")
     _require(
-        re.fullmatch(r"q_[A-Za-z0-9_-]+", original_id) is not None
+        re.fullmatch(r"q_[A-Za-z0-9_-]{22}", original_id) is not None
         and tuple(quarantine_details.get("affected_files") or ()),
         "legacy_queue_only_original_quarantine_receipt_invalid",
     )
@@ -5583,13 +5804,68 @@ def _legacy_quarantine_evidence(
         if relative.startswith(f"{original_id}/")
         and relative != original_manifest_relative
     }
+    original_manifest_keys = {
+        "quarantine_id",
+        "board_id",
+        "graph_type",
+        "reason",
+        "reason_bucket",
+        "correlation_ids",
+        "affected_paths_relative",
+        "affected_storage_refs",
+        "kg_generation_id",
+        "software_version",
+        "quarantined_at",
+        "retention_until",
+        "files_moved",
+    }
+    original_refs = original_manifest.get("affected_storage_refs")
+    _require(
+        set(original_manifest) == original_manifest_keys
+        and isinstance(original_refs, list)
+        and len(original_refs) == 1
+        and isinstance(original_refs[0], Mapping)
+        and set(original_refs[0]) == {"namespace", "token"},
+        "legacy_queue_only_original_quarantine_invalid",
+    )
+    assert isinstance(original_refs, list)
+    original_ref = original_refs[0]
+    assert isinstance(original_ref, Mapping)
+    original_quarantined_at = _parse_utc_timestamp(
+        original_manifest.get("quarantined_at"),
+        code="legacy_queue_only_original_quarantine_invalid",
+    )
+    original_retention_until = _parse_utc_timestamp(
+        original_manifest.get("retention_until"),
+        code="legacy_queue_only_original_quarantine_invalid",
+    )
     _require(
         set(original_storage) == {f"{original_id}/graph.lbug"}
         and original_manifest.get("quarantine_id") == original_id
         and original_manifest.get("board_id") == board_id
         and original_manifest.get("graph_type") == "board_graph"
         and original_manifest.get("reason")
-        == f"explicit_rebuild:{command.manifest_ref}",
+        == f"explicit_rebuild:{command.manifest_ref}"
+        and original_manifest.get("reason_bucket") == "unknown"
+        and tuple(original_manifest.get("correlation_ids") or ()) == ()
+        and original_manifest.get("correlation_ids") == []
+        and original_manifest.get("affected_paths_relative") == ["graph.lbug"]
+        and original_manifest.get("kg_generation_id") is None
+        and type(original_manifest.get("files_moved")) is int
+        and original_manifest.get("files_moved") == 1
+        and tuple(quarantine_details.get("affected_files") or ())
+        == (f"board:{board_id}:artifact:0",)
+        and original_ref.get("namespace") == "community_local_graph_v1"
+        and _legacy_local_storage_ref_matches(
+            original_ref.get("token"),
+            expected=historical_data_home / "boards" / board_id / "graph.lbug",
+            code="legacy_queue_only_original_quarantine_storage_ref_invalid",
+        )
+        and original_manifest.get("software_version") == EXPECTED_VERSION,
+        "legacy_queue_only_original_quarantine_invalid",
+    )
+    _require(
+        original_retention_until > original_quarantined_at,
         "legacy_queue_only_original_quarantine_invalid",
     )
 
@@ -5597,7 +5873,10 @@ def _legacy_quarantine_evidence(
         tuple[str, dict[str, Any], dict[str, Any], dict[str, str]]
     ] = []
     for relative in sorted(quarantine_baseline):
-        match = re.fullmatch(r"(q_[A-Za-z0-9_-]+)/restore_operation\.json", relative)
+        match = re.fullmatch(
+            r"(q_[A-Za-z0-9_-]{22})/restore_operation\.json",
+            relative,
+        )
         if match is None:
             continue
         manual_id = match.group(1)
@@ -5633,20 +5912,87 @@ def _legacy_quarantine_evidence(
         str(len(manual_matches)),
     )
     manual_id, journal, manual_manifest, manual_storage = manual_matches[0]
-    moved = tuple(str(value) for value in journal.get("moved_to_backup") or ())
-    copied = tuple(str(value) for value in journal.get("copied_from_snapshot") or ())
+    journal_keys = {
+        "operation",
+        "compensation_run_id",
+        "source_quarantine_id",
+        "source_quarantine_dir",
+        "backup_quarantine_id",
+        "backup_quarantine_dir",
+        "board_id",
+        "board_dir",
+        "phase",
+        "started_at",
+        "finished_at",
+        "moved_to_backup",
+        "pending_backup",
+        "copied_from_snapshot",
+        "pending_copy",
+        "open_validated",
+        "error",
+        "rollback_instruction",
+    }
+    manual_manifest_keys = {
+        "quarantine_id",
+        "board_id",
+        "graph_type",
+        "reason",
+        "reason_bucket",
+        "correlation_ids",
+        "affected_paths_relative",
+        "kg_generation_id",
+        "software_version",
+        "quarantined_at",
+        "retention_until",
+        "files_moved",
+    }
+    _require(
+        set(journal) == journal_keys and set(manual_manifest) == manual_manifest_keys,
+        "legacy_queue_only_manual_restore_invalid",
+    )
+    journal_started_at = _parse_utc_timestamp(
+        journal.get("started_at"),
+        code="legacy_queue_only_manual_restore_invalid",
+    )
+    journal_finished_at = _parse_utc_timestamp(
+        journal.get("finished_at"),
+        code="legacy_queue_only_manual_restore_invalid",
+    )
+    manual_quarantined_at = _parse_utc_timestamp(
+        manual_manifest.get("quarantined_at"),
+        code="legacy_queue_only_manual_restore_invalid",
+    )
+    manual_retention_until = _parse_utc_timestamp(
+        manual_manifest.get("retention_until"),
+        code="legacy_queue_only_manual_restore_invalid",
+    )
     _require(
         journal.get("backup_quarantine_id") == manual_id
         and journal.get("compensation_run_id") is None
+        and _legacy_lexical_path_matches(
+            journal.get("source_quarantine_dir"),
+            expected=historical_data_home / "quarantine" / original_id,
+            code="legacy_queue_only_manual_restore_path_invalid",
+        )
+        and _legacy_lexical_path_matches(
+            journal.get("backup_quarantine_dir"),
+            expected=historical_data_home / "quarantine" / manual_id,
+            code="legacy_queue_only_manual_restore_path_invalid",
+        )
+        and _legacy_lexical_path_matches(
+            journal.get("board_dir"),
+            expected=historical_data_home / "boards" / board_id,
+            code="legacy_queue_only_manual_restore_path_invalid",
+        )
         and journal.get("phase") == "done"
-        and bool(journal.get("finished_at"))
-        and tuple(journal.get("pending_backup") or ()) == ()
-        and tuple(journal.get("pending_copy") or ()) == ()
+        and journal_started_at <= journal_finished_at
+        and journal.get("moved_to_backup") == ["graph.lbug", "graph.lbug.wal"]
+        and journal.get("pending_backup") == []
+        and journal.get("copied_from_snapshot") == ["graph.lbug"]
+        and journal.get("pending_copy") == []
         and journal.get("open_validated") is True
         and journal.get("error") is None
         and journal.get("rollback_instruction") is None
-        and set(moved) == {"graph.lbug", "graph.lbug.wal"}
-        and copied == ("graph.lbug",)
         and set(manual_storage)
         == {f"{manual_id}/graph.lbug", f"{manual_id}/graph.lbug.wal"}
         and manual_manifest.get("quarantine_id") == manual_id
@@ -5654,9 +6000,21 @@ def _legacy_quarantine_evidence(
         and manual_manifest.get("graph_type") == "board_graph"
         and manual_manifest.get("reason") == f"restore_backup_swap:{original_id}"
         and manual_manifest.get("reason_bucket") == "operator_manual"
-        and tuple(manual_manifest.get("correlation_ids") or ()) == (original_id,)
-        and set(manual_manifest.get("affected_paths_relative") or ()) == set(moved)
-        and int(manual_manifest.get("files_moved") or -1) == len(moved),
+        and manual_manifest.get("correlation_ids") == [original_id]
+        and manual_manifest.get("affected_paths_relative")
+        == ["graph.lbug", "graph.lbug.wal"]
+        and manual_manifest.get("kg_generation_id") is None
+        and type(manual_manifest.get("files_moved")) is int
+        and manual_manifest.get("files_moved") == 2
+        and manual_manifest.get("software_version") == EXPECTED_VERSION,
+        "legacy_queue_only_manual_restore_invalid",
+    )
+    _require(
+        original_quarantined_at
+        <= journal_started_at
+        <= manual_quarantined_at
+        <= journal_finished_at
+        and manual_retention_until > manual_quarantined_at,
         "legacy_queue_only_manual_restore_invalid",
     )
     return (
@@ -5685,6 +6043,8 @@ def _assert_legacy_intent_evidence_semantics(
     command: Any,
     *,
     rebuild_root: Path,
+    historical_data_home: Path,
+    historical_rebuild_root: Path | None = None,
     rebuild_baseline: Mapping[str, str],
     quarantine_root: Path,
     quarantine_baseline: Mapping[str, str],
@@ -5718,6 +6078,7 @@ def _assert_legacy_intent_evidence_semantics(
     )
     terminal_run = _legacy_terminal_run_evidence(
         rebuild_root=rebuild_root,
+        historical_rebuild_root=historical_rebuild_root,
         rebuild_baseline=rebuild_baseline,
         board_id=intent.board_id,
         command=command,
@@ -5732,6 +6093,7 @@ def _assert_legacy_intent_evidence_semantics(
     original_quarantine, manual_restore = _legacy_quarantine_evidence(
         quarantine_root=quarantine_root,
         quarantine_baseline=quarantine_baseline,
+        historical_data_home=historical_data_home,
         board_id=intent.board_id,
         command=command,
         quarantine_receipt=quarantine_receipt,
@@ -5991,6 +6353,8 @@ def _build_legacy_queue_only_intent(
     *,
     bundle: ServiceBundle,
     rebuild_root: Path,
+    historical_data_home: Path | None = None,
+    historical_rebuild_root: Path | None = None,
     rebuild_baseline: Mapping[str, str],
     quarantine_root: Path,
     quarantine_baseline: Mapping[str, str],
@@ -6007,6 +6371,7 @@ def _build_legacy_queue_only_intent(
     from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
         LEGACY_QUEUE_ONLY_KIND,
         LEGACY_QUEUE_ONLY_PREAPPLIED_ACTIONS,
+        LEGACY_QUEUE_ONLY_PREFIX_SCHEMA,
         LEGACY_QUEUE_ONLY_REMAINING_ACTIONS,
         LEGACY_QUEUE_ONLY_SCHEMA,
         LegacyManualRestoreQueueOnlyIntent,
@@ -6064,10 +6429,15 @@ def _build_legacy_queue_only_intent(
         getattr(verified_manifest, "source_set_hash", None) == source_set_hash,
         "legacy_queue_only_manifest_binding_invalid",
     )
-    _assert_legacy_command_bound_to_manifest(command, verified_manifest)
+    _assert_legacy_command_bound_to_manifest(
+        command,
+        verified_manifest,
+        prefix_schema=LEGACY_QUEUE_ONLY_PREFIX_SCHEMA,
+    )
 
     terminal_run = _legacy_terminal_run_evidence(
         rebuild_root=rebuild_root,
+        historical_rebuild_root=historical_rebuild_root,
         rebuild_baseline=rebuild_baseline,
         board_id=board_id,
         command=command,
@@ -6076,6 +6446,7 @@ def _build_legacy_queue_only_intent(
     original_quarantine, manual_restore = _legacy_quarantine_evidence(
         quarantine_root=quarantine_root,
         quarantine_baseline=quarantine_baseline,
+        historical_data_home=historical_data_home or data_home,
         board_id=board_id,
         command=command,
         quarantine_receipt=prefix_receipts[f"{command.run_id}:quarantine"],
@@ -6093,13 +6464,18 @@ def _build_legacy_queue_only_intent(
         "legacy_queue_only_board_storage_invalid",
     )
     source = f"rebuild:{command.manifest_ref}"
-    rows, memberships, non_target_fingerprint, dlq_fingerprint = (
-        _legacy_queue_current_evidence(
-            db_path,
-            board_id=board_id,
-            source=source,
-            source_rows=source_rows,
-        )
+    (
+        rows,
+        memberships,
+        non_target_fingerprint,
+        dlq_fingerprint,
+        dead_letter_guard,
+    ) = _legacy_queue_current_evidence(
+        db_path,
+        board_id=board_id,
+        source=source,
+        source_rows=source_rows,
+        checkpoint_started_at=str(checkpoint["started_at"]),
     )
     evidence = {
         "schema_version": LEGACY_QUEUE_ONLY_SCHEMA,
@@ -6132,6 +6508,8 @@ def _build_legacy_queue_only_intent(
             "hashes": dict(board_storage_baseline),
             "sha256": canonical_evidence_hash(dict(board_storage_baseline)),
         },
+        "prefix_schema": LEGACY_QUEUE_ONLY_PREFIX_SCHEMA,
+        "dead_letter_guard": dead_letter_guard,
         "queue": {
             "source": source,
             "snapshot_fingerprint": canonical_evidence_hash(
@@ -6161,7 +6539,9 @@ def _legacy_queue_state_current(
     db_path: Path,
 ) -> tuple[bool, CompensatedQueueAdoption]:
     from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
+        LEGACY_DEAD_LETTER_COLUMNS,
         LEGACY_QUEUE_COLUMNS,
+        build_legacy_dead_letter_guard,
         canonical_evidence_hash,
         legacy_queue_terminal_row,
     )
@@ -6172,6 +6552,12 @@ def _legacy_queue_state_current(
     projection = ", ".join(f'"{column}"' for column in LEGACY_QUEUE_COLUMNS)
     placeholders = ",".join("?" for _ in target_ids)
     with _sqlite_connect_readonly(db_path) as connection:
+        _legacy_exact_table_columns(
+            connection,
+            table="consolidation_queue",
+            expected=LEGACY_QUEUE_COLUMNS,
+            code="legacy_queue_only_current_queue",
+        )
         current_values = _bounded_legacy_query_rows(
             connection.execute(
                 f"SELECT {projection} FROM consolidation_queue "
@@ -6225,25 +6611,45 @@ def _legacy_queue_state_current(
                 "rows": [list(raw) for raw in non_target],
             }
         )
-        dlq_columns = tuple(
-            str(row[1])
-            for row in connection.execute(
-                "PRAGMA table_info(consolidation_dead_letter)"
-            ).fetchall()
+        dlq_columns = _legacy_exact_table_columns(
+            connection,
+            table="consolidation_dead_letter",
+            expected=LEGACY_DEAD_LETTER_COLUMNS,
+            code="legacy_queue_only_current_dlq",
         )
-        if dlq_columns:
-            dlq_projection = ", ".join(f'"{column}"' for column in dlq_columns)
-            dlq_rows = _bounded_legacy_query_rows(
-                connection.execute(
-                    f"SELECT {dlq_projection} FROM consolidation_dead_letter "
-                    "WHERE board_id=? ORDER BY id",
-                    (intent.board_id,),
-                ),
-                dlq_columns,
-                code="legacy_queue_only_current_dlq_rows",
-            )
-        else:
-            dlq_rows = ()
+        dlq_projection = ", ".join(f'"{column}"' for column in dlq_columns)
+        dlq_rows = _bounded_legacy_query_rows(
+            connection.execute(
+                f"SELECT {dlq_projection} FROM consolidation_dead_letter "
+                "WHERE board_id=? ORDER BY id",
+                (intent.board_id,),
+            ),
+            dlq_columns,
+            code="legacy_queue_only_current_dlq_rows",
+        )
+        guard_evidence = dict(intent.payload["dead_letter_guard"])
+        original_queue_ids = {
+            str(dict(peer).get("original_queue_id") or "")
+            for peer in guard_evidence["peers"]
+        }
+        present_original_queue_ids = frozenset(
+            queue_id
+            for queue_id in original_queue_ids
+            if queue_id
+            and connection.execute(
+                "SELECT 1 FROM consolidation_queue WHERE id=? LIMIT 1",
+                (queue_id,),
+            ).fetchone()
+            is not None
+        )
+        current_dead_letter_guard = build_legacy_dead_letter_guard(
+            board_id=intent.board_id,
+            checkpoint_started_at=str(guard_evidence["checkpoint_started_at"]),
+            target_rows=intent.queue_rows,
+            dlq_columns=dlq_columns,
+            dlq_rows=dlq_rows,
+            present_original_queue_ids=present_original_queue_ids,
+        )
         dlq_fingerprint = canonical_evidence_hash(
             {
                 "columns": list(dlq_columns),
@@ -6253,7 +6659,8 @@ def _legacy_queue_state_current(
     queue_evidence = dict(intent.payload["queue"])
     _require(
         non_target_fingerprint == queue_evidence["board_non_target_fingerprint"]
-        and dlq_fingerprint == queue_evidence["dlq_fingerprint"],
+        and dlq_fingerprint == queue_evidence["dlq_fingerprint"]
+        and current_dead_letter_guard == dict(intent.payload["dead_letter_guard"]),
         "legacy_queue_only_protected_queue_changed",
     )
     identities = frozenset(
@@ -6285,6 +6692,8 @@ def _assert_legacy_queue_only_evidence_current(
     *,
     data_home: Path,
     db_path: Path,
+    historical_data_home: Path | None = None,
+    historical_rebuild_root: Path | None = None,
 ) -> bool:
     """Re-prove immutable/manual evidence and the exact queue cut under fences."""
 
@@ -6364,13 +6773,14 @@ def _assert_legacy_queue_only_evidence_current(
         rebuild_root=rebuild_root,
         rebuild_baseline=rebuild,
         board_id=intent.board_id,
+        expected_run_id=intent.f06_run_id,
     )
     _require(
         candidate is not None,
         "legacy_queue_only_checkpoint_missing_during_probe",
     )
     assert candidate is not None
-    checkpoint_relative, checkpoint, command = candidate
+    checkpoint_relative, checkpoint, command, _checkpoint_schema = candidate
     checkpoint_evidence = dict(payload["checkpoint"])
     from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
         canonical_evidence_hash,
@@ -6398,6 +6808,10 @@ def _assert_legacy_queue_only_evidence_current(
         intent,
         command,
         rebuild_root=rebuild_root,
+        historical_data_home=historical_data_home or data_home,
+        historical_rebuild_root=(
+            historical_rebuild_root or (historical_data_home or data_home) / "rebuild"
+        ),
         rebuild_baseline=rebuild,
         quarantine_root=quarantine_root,
         quarantine_baseline=quarantine,
@@ -6425,6 +6839,8 @@ def _discover_legacy_queue_only_reconciliation(
     data_home: Path,
     db_path: Path,
     rebuild_root: Path,
+    historical_data_home: Path | None = None,
+    historical_rebuild_root: Path | None = None,
     rebuild_baseline: Mapping[str, str],
     quarantine_root: Path,
     quarantine_baseline: Mapping[str, str],
@@ -6455,14 +6871,23 @@ def _discover_legacy_queue_only_reconciliation(
     if online_receipt is not None:
         return None
 
-    candidate = _legacy_checkpoint_candidate(
+    expected_run_id = _legacy_reconciliation_run_id(
+        db_path=db_path,
         rebuild_root=rebuild_root,
         rebuild_baseline=rebuild_baseline,
         board_id=board_id,
     )
-    if candidate is None:
+    if expected_run_id is None:
         return None
-    checkpoint_relative, checkpoint, command = candidate
+    candidate = _legacy_checkpoint_candidate(
+        rebuild_root=rebuild_root,
+        rebuild_baseline=rebuild_baseline,
+        board_id=board_id,
+        expected_run_id=expected_run_id,
+    )
+    _require(candidate is not None, "legacy_queue_only_checkpoint_missing")
+    assert candidate is not None
+    checkpoint_relative, checkpoint, command, checkpoint_schema = candidate
     prefix_receipts, _f06_evidence = _legacy_validate_prefix_receipts(
         rebuild_root=rebuild_root,
         rebuild_baseline=rebuild_baseline,
@@ -6476,12 +6901,18 @@ def _discover_legacy_queue_only_reconciliation(
     raw_checkpoint_intent = checkpoint_receipts.get(intent_key)
     if intent_relative not in rebuild_baseline:
         _require(
+            checkpoint_schema == "pre_v4_legacy",
+            "legacy_queue_only_initial_checkpoint_not_pre_v4",
+        )
+        _require(
             raw_checkpoint_intent is None,
             "legacy_queue_only_intent_artifact_missing",
         )
         intent, intent_receipt = _build_legacy_queue_only_intent(
             bundle=bundle,
             rebuild_root=rebuild_root,
+            historical_data_home=historical_data_home,
+            historical_rebuild_root=historical_rebuild_root,
             rebuild_baseline=rebuild_baseline,
             quarantine_root=quarantine_root,
             quarantine_baseline=quarantine_baseline,
@@ -6539,12 +6970,18 @@ def _discover_legacy_queue_only_reconciliation(
             == manifest_evidence["source_set_hash"],
             "legacy_queue_only_manifest_binding_invalid",
         )
-        _assert_legacy_command_bound_to_manifest(command, verified_manifest)
+        _assert_legacy_command_bound_to_manifest(
+            command,
+            verified_manifest,
+            prefix_schema=str(intent.payload["prefix_schema"]),
+        )
         _assert_legacy_intent_memberships_bound_to_command(intent, command)
     _assert_legacy_intent_evidence_semantics(
         intent,
         command,
         rebuild_root=rebuild_root,
+        historical_data_home=historical_data_home or data_home,
+        historical_rebuild_root=historical_rebuild_root,
         rebuild_baseline=rebuild_baseline,
         quarantine_root=quarantine_root,
         quarantine_baseline=quarantine_baseline,
@@ -6561,6 +6998,8 @@ def _discover_legacy_queue_only_reconciliation(
             intent,
             data_home=data_home,
             db_path=db_path,
+            historical_data_home=historical_data_home,
+            historical_rebuild_root=historical_rebuild_root,
         ),
         "legacy_queue_only_evidence_not_current",
     )
@@ -9649,6 +10088,7 @@ async def _execute_under_serve_lock(
     serve_lock: Any,
     heartbeat: ServeLockHeartbeat,
     require_fresh: bool,
+    historical_data_home: Path | None = None,
 ) -> dict[str, Any]:
     from okto_pulse.community.adapters.kg_events import (
         register_community_kg_events_reader,
@@ -9744,6 +10184,7 @@ async def _execute_under_serve_lock(
                     intent,
                     data_home=data_home,
                     db_path=db_path,
+                    historical_data_home=historical_data_home,
                 )
 
             bundle = _build_service_bundle(
@@ -9815,6 +10256,8 @@ async def _execute_under_serve_lock(
                 data_home=data_home,
                 db_path=db_path,
                 rebuild_root=rebuild_root,
+                historical_data_home=historical_data_home,
+                historical_rebuild_root=(historical_data_home or data_home) / "rebuild",
                 rebuild_baseline=rebuild_baseline,
                 quarantine_root=quarantine_root,
                 quarantine_baseline=quarantine_baseline,
@@ -10698,6 +11141,7 @@ def _execute(args: argparse.Namespace, evidence: InstallEvidence) -> int:
                         serve_lock=serve_lock,
                         heartbeat=heartbeat,
                         require_fresh=require_fresh,
+                        historical_data_home=rehearsal_source_home or data_home,
                     )
                 )
 

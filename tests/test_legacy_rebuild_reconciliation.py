@@ -14,14 +14,17 @@ from okto_pulse.community.adapters.board_rebuild_ingestion import (
     CommunityBoardRebuildIngestionAdapter,
 )
 from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
+    LEGACY_DEAD_LETTER_COLUMNS,
     LEGACY_QUEUE_ONLY_INTENT_CODE,
     LEGACY_QUEUE_ONLY_INTENT_EFFECT,
     LEGACY_QUEUE_ONLY_KIND,
     LEGACY_QUEUE_ONLY_PREAPPLIED_ACTIONS,
+    LEGACY_QUEUE_ONLY_PREFIX_SCHEMA,
     LEGACY_QUEUE_ONLY_REMAINING_ACTIONS,
     LEGACY_QUEUE_ONLY_SCHEMA,
     LegacyManualRestoreQueueOnlyIntent,
     LegacyQueueOnlyIntentError,
+    build_legacy_dead_letter_guard,
     canonical_evidence_hash,
 )
 from okto_pulse.community.adapters.rebuild_effects import CommunityRebuildEffects
@@ -38,6 +41,9 @@ from okto_pulse.core.kg.interfaces.rebuild_audit_storage import RebuildAuditKey
 BOARD_ID = "15877207-c147-4805-96d7-d53a625571df"
 MANIFEST_REF = "rebuild_manifest_legacy"
 SOURCE = f"rebuild:{MANIFEST_REF}"
+ORIGINAL_QUARANTINE_ID = f"q_{'o' * 22}"
+MANUAL_QUARANTINE_ID = f"q_{'m' * 22}"
+REPORT_ID = "report_1b4dd579136d415c9d5225ccc8654201"
 QUEUE_COLUMNS = (
     "id",
     "board_id",
@@ -61,16 +67,8 @@ QUEUE_COLUMNS = (
     "attempts",
     "next_retry_at",
 )
-DLQ_COLUMNS = (
-    "id",
-    "board_id",
-    "artifact_type",
-    "artifact_id",
-    "original_queue_id",
-    "attempts",
-    "errors",
-    "dead_lettered_at",
-)
+DLQ_COLUMNS = LEGACY_DEAD_LETTER_COLUMNS
+CHECKPOINT_STARTED_AT = "2026-08-15T02:32:51+00:00"
 
 
 def _row(
@@ -129,6 +127,57 @@ def _fingerprint(columns: tuple[str, ...], rows: list[dict[str, object]]) -> str
     )
 
 
+def _historical_errors(attempts: int) -> str:
+    return json.dumps(
+        [
+            {
+                "attempt": attempt,
+                "occurred_at": f"2026-08-{attempt:02d}T02:15:52+00:00",
+                "error_type": "ValueError",
+                "message": "legacy invalid payload",
+                "traceback": None,
+                "recovery_class": "invalid_payload",
+                "reason_code": "kg_recovery.invalid_payload",
+                "replay_safe": False,
+                "correlation_id": f"00000000-0000-4000-8000-{attempt:012d}",
+            }
+            for attempt in range(1, attempts + 1)
+        ],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _historical_peer(
+    row: dict[str, object],
+    *,
+    peer_id: str = "a6d88e39-3ad8-4a55-b6c9-15ab8afcc814",
+    original_queue_id: str = "2626ab17-eda9-4b6b-85c9-af3c38c9650a",
+    created_at: str = "2026-08-13T02:15:52+00:00",
+    dead_lettered_at: str = "2026-08-13T02:15:52+00:00",
+) -> dict[str, object]:
+    return {
+        "id": peer_id,
+        "board_id": BOARD_ID,
+        "artifact_type": row["artifact_type"],
+        "artifact_id": row["artifact_id"],
+        "original_queue_id": original_queue_id,
+        "attempts": 2,
+        "errors": _historical_errors(2),
+        "dead_lettered_at": dead_lettered_at,
+        "created_at": created_at,
+    }
+
+
+def _insert_dlq(path: Path, row: dict[str, object]) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            f"INSERT INTO consolidation_dead_letter ({','.join(DLQ_COLUMNS)}) "
+            f"VALUES ({','.join('?' for _ in DLQ_COLUMNS)})",
+            tuple(row[column] for column in DLQ_COLUMNS),
+        )
+
+
 def _effect_artifact(effect_key: str, digest: str) -> dict[str, str]:
     effect_id = hashlib.sha256(effect_key.encode("utf-8")).hexdigest()[:24]
     return {
@@ -145,6 +194,13 @@ def _intent(
     dlq_rows: list[dict[str, object]],
 ) -> LegacyManualRestoreQueueOnlyIntent:
     memberships = [_membership(row, index) for index, row in enumerate(target_rows)]
+    dead_letter_guard = build_legacy_dead_letter_guard(
+        board_id=BOARD_ID,
+        checkpoint_started_at=CHECKPOINT_STARTED_AT,
+        target_rows=target_rows,
+        dlq_columns=DLQ_COLUMNS,
+        dlq_rows=[tuple(row[column] for column in DLQ_COLUMNS) for row in dlq_rows],
+    )
     evidence = {
         "schema_version": LEGACY_QUEUE_ONLY_SCHEMA,
         "reconciliation_kind": LEGACY_QUEUE_ONLY_KIND,
@@ -180,8 +236,8 @@ def _intent(
             "run_id": "run_legacy",
             "audit_relative": "audit/run_legacy.json",
             "audit_sha256": "6" * 64,
-            "report_id": "report_legacy",
-            "report_relative": "reports/report_legacy.json",
+            "report_id": REPORT_ID,
+            "report_relative": f"reports/{REPORT_ID}.json",
             "report_sha256": "7" * 64,
             "confirmation_ref": f"conf_fp_{'8' * 64}",
             "confirmation_audit_relative": (
@@ -198,27 +254,29 @@ def _intent(
             "candidate_decision_present": False,
         },
         "original_quarantine": {
-            "quarantine_id": "q_original",
-            "manifest_relative": "q_original/manifest.json",
+            "quarantine_id": ORIGINAL_QUARANTINE_ID,
+            "manifest_relative": f"{ORIGINAL_QUARANTINE_ID}/manifest.json",
             "manifest_sha256": "a" * 64,
-            "storage_hashes": {"q_original/graph.lbug": "b" * 64},
+            "storage_hashes": {f"{ORIGINAL_QUARANTINE_ID}/graph.lbug": "b" * 64},
         },
         "manual_restore": {
-            "quarantine_id": "q_manual",
-            "manifest_relative": "q_manual/manifest.json",
+            "quarantine_id": MANUAL_QUARANTINE_ID,
+            "manifest_relative": f"{MANUAL_QUARANTINE_ID}/manifest.json",
             "manifest_sha256": "c" * 64,
-            "journal_relative": "q_manual/restore_operation.json",
+            "journal_relative": f"{MANUAL_QUARANTINE_ID}/restore_operation.json",
             "journal_sha256": "d" * 64,
-            "source_quarantine_id": "q_original",
+            "source_quarantine_id": ORIGINAL_QUARANTINE_ID,
             "storage_hashes": {
-                "q_manual/graph.lbug": "e" * 64,
-                "q_manual/graph.lbug.wal": "f" * 64,
+                f"{MANUAL_QUARANTINE_ID}/graph.lbug": "e" * 64,
+                f"{MANUAL_QUARANTINE_ID}/graph.lbug.wal": "f" * 64,
             },
         },
         "board_storage": {
             "hashes": {"graph.lbug": "0" * 64},
             "sha256": canonical_evidence_hash({"graph.lbug": "0" * 64}),
         },
+        "prefix_schema": LEGACY_QUEUE_ONLY_PREFIX_SCHEMA,
+        "dead_letter_guard": dead_letter_guard,
         "queue": {
             "source": SOURCE,
             "snapshot_fingerprint": canonical_evidence_hash(
@@ -256,7 +314,7 @@ def _database(tmp_path: Path):  # noqa: ANN202
     ]
     dlq_rows = [
         {
-            "id": "dlq-unrelated",
+            "id": "08949856-fbed-4d68-8425-2d6f04725045",
             "board_id": BOARD_ID,
             "artifact_type": "story",
             "artifact_id": "story-unrelated",
@@ -264,6 +322,7 @@ def _database(tmp_path: Path):  # noqa: ANN202
             "attempts": 5,
             "errors": "[]",
             "dead_lettered_at": "2026-08-01 00:00:00",
+            "created_at": "2026-08-01 00:00:00",
         }
     ]
     with sqlite3.connect(path) as connection:
@@ -282,7 +341,7 @@ def _database(tmp_path: Path):  # noqa: ANN202
             "CREATE TABLE consolidation_dead_letter ("
             "id TEXT PRIMARY KEY, board_id TEXT NOT NULL, artifact_type TEXT, "
             "artifact_id TEXT, original_queue_id TEXT, attempts INTEGER, "
-            "errors TEXT, dead_lettered_at TEXT)"
+            "errors TEXT, dead_lettered_at TEXT, created_at TEXT)"
         )
         placeholders = ",".join("?" for _ in QUEUE_COLUMNS)
         for row in [*target_rows, *non_target_rows]:
@@ -377,7 +436,8 @@ def test_legacy_queue_only_cas_writes_exact_v4_tombstones_and_replays(
             "SELECT * FROM consolidation_queue WHERE id='queue-unrelated'"
         ).fetchone()
         dlq = connection.execute(
-            "SELECT * FROM consolidation_dead_letter WHERE id='dlq-unrelated'"
+            "SELECT * FROM consolidation_dead_letter "
+            "WHERE id='08949856-fbed-4d68-8425-2d6f04725045'"
         ).fetchone()
     assert unrelated is not None and unrelated["status"] == "pending"
     assert dlq is not None and dlq["original_queue_id"] == "old-unrelated"
@@ -737,34 +797,214 @@ def test_legacy_queue_only_bounds_protected_partition_before_mutation(
     assert _queue_state(path) == before
 
 
-def test_legacy_queue_only_cas_rejects_dlq_identity_even_in_baseline(
+def test_legacy_queue_only_cas_preserves_guarded_historical_dlq_peer(
     tmp_path: Path,
 ) -> None:
     path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
-    alias = {
-        "id": "dlq-target-alias",
-        "board_id": BOARD_ID,
-        "artifact_type": target_rows[0]["artifact_type"],
-        "artifact_id": target_rows[0]["artifact_id"],
-        "original_queue_id": "different-queue-id",
-        "attempts": 1,
-        "errors": "[]",
-        "dead_lettered_at": "2026-08-15 11:50:00",
-    }
-    with sqlite3.connect(path) as connection:
-        connection.execute(
-            f"INSERT INTO consolidation_dead_letter ({','.join(DLQ_COLUMNS)}) "
-            f"VALUES ({','.join('?' for _ in DLQ_COLUMNS)})",
-            tuple(alias[column] for column in DLQ_COLUMNS),
-        )
+    alias = _historical_peer(target_rows[0])
+    _insert_dlq(path, alias)
     intent = _intent(
         target_rows,
         non_target_rows=non_target_rows,
         dlq_rows=[*dlq_rows, alias],
     )
+    before_dlq = _dlq_state(path)
+
+    result = CommunityBoardRebuildIngestionAdapter(
+        db_path=path
+    ).compensate_legacy_manual_restore_queue_only(
+        intent_payload=intent.to_payload(),
+        mutation_guard=lambda: True,
+    )
+
+    assert result["active_remaining"] == 0
+    assert _dlq_state(path) == before_dlq
+
+
+def test_fresh_lane_baselines_guarded_dlq_and_blocks_only_new_ids(
+    tmp_path: Path,
+) -> None:
+    path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
+    peer = _historical_peer(target_rows[0])
+    _insert_dlq(path, peer)
+    intent = _intent(
+        target_rows,
+        non_target_rows=non_target_rows,
+        dlq_rows=[*dlq_rows, peer],
+    )
+    adapter = CommunityBoardRebuildIngestionAdapter(db_path=path)
+    adapter.compensate_legacy_manual_restore_queue_only(
+        intent_payload=intent.to_payload(),
+        mutation_guard=lambda: True,
+    )
+
+    baseline = adapter.dead_letter_ids(BOARD_ID)
+    assert baseline == tuple(sorted((str(dlq_rows[0]["id"]), str(peer["id"]))))
+    assert adapter.queue_observation(
+        BOARD_ID,
+        run_id="fresh-manifest",
+        baseline_dead_letter_ids=baseline,
+    ) == (0, None)
+
+    extra = {
+        "id": "508f2f43-521d-4b3f-9b64-e99b9f3e7828",
+        "board_id": BOARD_ID,
+        "artifact_type": "story",
+        "artifact_id": "story-extra",
+        "original_queue_id": "queue-extra-old",
+        "attempts": 1,
+        "errors": "[]",
+        "dead_lettered_at": "2026-08-15T03:00:00+00:00",
+        "created_at": "2026-08-15T03:00:00+00:00",
+    }
+    _insert_dlq(path, extra)
+    assert adapter.queue_observation(
+        BOARD_ID,
+        run_id="fresh-manifest",
+        baseline_dead_letter_ids=baseline,
+    ) == (0, "rebuild_new_dead_letter")
+
+
+def test_legacy_queue_only_intent_refuses_nonhistorical_dlq_peer(
+    tmp_path: Path,
+) -> None:
+    _path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
+    late = _historical_peer(
+        target_rows[0],
+        dead_lettered_at="2026-08-15T02:32:51+00:00",
+    )
+
+    with pytest.raises(
+        LegacyQueueOnlyIntentError,
+        match="dead_letter_peer_not_historical",
+    ):
+        _intent(
+            target_rows,
+            non_target_rows=non_target_rows,
+            dlq_rows=[*dlq_rows, late],
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("missing", "tampered", "extra"),
+)
+def test_legacy_queue_only_cas_refuses_dead_letter_guard_drift(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
+    peer = _historical_peer(target_rows[0])
+    _insert_dlq(path, peer)
+    intent = _intent(
+        target_rows,
+        non_target_rows=non_target_rows,
+        dlq_rows=[*dlq_rows, peer],
+    )
+    if mutation == "missing":
+        with sqlite3.connect(path) as connection:
+            connection.execute(
+                "DELETE FROM consolidation_dead_letter WHERE id=?",
+                (peer["id"],),
+            )
+    elif mutation == "tampered":
+        with sqlite3.connect(path) as connection:
+            connection.execute(
+                "UPDATE consolidation_dead_letter SET errors='[]' WHERE id=?",
+                (peer["id"],),
+            )
+    else:
+        extra = {
+            "id": "508f2f43-521d-4b3f-9b64-e99b9f3e7828",
+            "board_id": BOARD_ID,
+            "artifact_type": "story",
+            "artifact_id": "story-extra",
+            "original_queue_id": "queue-extra-old",
+            "attempts": 1,
+            "errors": "[]",
+            "dead_lettered_at": "2026-08-01T00:00:00+00:00",
+            "created_at": "2026-08-01T00:00:00+00:00",
+        }
+        _insert_dlq(path, extra)
     before = _queue_state(path)
 
-    with pytest.raises(RuntimeError, match="dlq_identity_conflict"):
+    with pytest.raises(RuntimeError, match="dlq_(?:guard_invalid|changed)"):
+        CommunityBoardRebuildIngestionAdapter(
+            db_path=path
+        ).compensate_legacy_manual_restore_queue_only(
+            intent_payload=intent.to_payload(),
+            mutation_guard=lambda: True,
+        )
+
+    assert _queue_state(path) == before
+
+
+def test_legacy_queue_only_cas_refuses_live_original_queue_for_dlq_peer(
+    tmp_path: Path,
+) -> None:
+    path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
+    peer = _historical_peer(target_rows[0])
+    _insert_dlq(path, peer)
+    intent = _intent(
+        target_rows,
+        non_target_rows=non_target_rows,
+        dlq_rows=[*dlq_rows, peer],
+    )
+    original = _row(
+        str(peer["original_queue_id"]),
+        "story",
+        "story-other-board",
+        status="pending",
+        source="live-intent",
+    )
+    original["board_id"] = "0d7c469e-9db1-4d26-a9ea-c80a7deaa770"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            f"INSERT INTO consolidation_queue ({','.join(QUEUE_COLUMNS)}) "
+            f"VALUES ({','.join('?' for _ in QUEUE_COLUMNS)})",
+            tuple(original[column] for column in QUEUE_COLUMNS),
+        )
+    before = _queue_state(path)
+
+    with pytest.raises(RuntimeError, match="dlq_guard_invalid"):
+        CommunityBoardRebuildIngestionAdapter(
+            db_path=path
+        ).compensate_legacy_manual_restore_queue_only(
+            intent_payload=intent.to_payload(),
+            mutation_guard=lambda: True,
+        )
+
+    assert _queue_state(path) == before
+
+
+def test_legacy_queue_only_bounds_full_board_dlq_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okto_pulse.community.adapters import board_rebuild_ingestion
+
+    path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
+    extra = {
+        "id": "508f2f43-521d-4b3f-9b64-e99b9f3e7828",
+        "board_id": BOARD_ID,
+        "artifact_type": "story",
+        "artifact_id": "story-extra",
+        "original_queue_id": "queue-extra-old",
+        "attempts": 1,
+        "errors": "[]",
+        "dead_lettered_at": "2026-08-01T00:00:00+00:00",
+        "created_at": "2026-08-01T00:00:00+00:00",
+    }
+    _insert_dlq(path, extra)
+    intent = _intent(
+        target_rows,
+        non_target_rows=non_target_rows,
+        dlq_rows=[*dlq_rows, extra],
+    )
+    before = _queue_state(path)
+    monkeypatch.setattr(board_rebuild_ingestion, "_MAX_LEGACY_PROTECTED_ROWS", 1)
+
+    with pytest.raises(RuntimeError, match="before_updates_dlq_row_limit_exceeded"):
         CommunityBoardRebuildIngestionAdapter(
             db_path=path
         ).compensate_legacy_manual_restore_queue_only(
@@ -854,6 +1094,7 @@ def test_legacy_queue_only_cas_converges_from_mixed_active_and_terminal(
         (("manifest_ref",), "rebuild_manifest_x/evil", "manifest_ref"),
         (("terminal_run", "run_id"), "run_x/evil", "run_id"),
         (("terminal_run", "report_id"), "report_x/evil", "report_id"),
+        (("terminal_run", "report_id"), f"report_{'a' * 32}", "terminal_run"),
         (
             ("terminal_run", "confirmation_audit_relative"),
             f"audit/confirmation/{BOARD_ID}/nested/audit_{'d' * 32}.json",

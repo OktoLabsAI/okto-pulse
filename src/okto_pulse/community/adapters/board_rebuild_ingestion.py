@@ -60,8 +60,10 @@ from okto_pulse.community.adapters.board_source_reader import (
     resolve_pulse_db_path,
 )
 from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
+    LEGACY_DEAD_LETTER_COLUMNS,
     LEGACY_QUEUE_COLUMNS,
     LegacyManualRestoreQueueOnlyIntent,
+    build_legacy_dead_letter_guard,
     canonical_evidence_hash,
     legacy_queue_terminal_row,
 )
@@ -1043,6 +1045,7 @@ class CommunityBoardRebuildIngestionAdapter:
         memberships = {str(row["row_id"]): dict(row) for row in intent.memberships}
         expected_columns = LEGACY_QUEUE_COLUMNS
         queue_evidence = dict(intent.payload["queue"])
+        dead_letter_evidence = dict(intent.payload["dead_letter_guard"])
 
         def _guard(phase: str) -> None:
             try:
@@ -1138,6 +1141,84 @@ class CommunityBoardRebuildIngestionAdapter:
                 (str(row["artifact_type"]), str(row["artifact_id"])): row_id
                 for row_id, row in expected_rows.items()
             }
+
+            def _dead_letter_guard_current(*, phase: str) -> dict[str, object]:
+                table_entries = tuple(
+                    row
+                    for row in conn.execute("PRAGMA table_list")
+                    if str(row[0]) == "main"
+                    and str(row[1]) == "consolidation_dead_letter"
+                )
+                if len(table_entries) != 1 or str(table_entries[0][2]) != "table":
+                    raise RuntimeError(f"legacy_queue_only_dlq_storage_invalid:{phase}")
+                xinfo = tuple(
+                    tuple(column)
+                    for column in conn.execute(
+                        "PRAGMA table_xinfo(consolidation_dead_letter)"
+                    )
+                )
+                dlq_columns = tuple(str(column[1]) for column in xinfo)
+                if dlq_columns != LEGACY_DEAD_LETTER_COLUMNS or any(
+                    len(column) < 7 or int(column[6]) != 0 for column in xinfo
+                ):
+                    raise RuntimeError(f"legacy_queue_only_dlq_schema_invalid:{phase}")
+                dlq_projection = ", ".join(
+                    '"' + column.replace('"', '""') + '"' for column in dlq_columns
+                )
+                dlq_rows = _bounded_legacy_sql_rows(
+                    conn.execute(
+                        f"SELECT {dlq_projection} FROM consolidation_dead_letter "
+                        "WHERE board_id=? ORDER BY id",
+                        (board_id,),
+                    ),
+                    dlq_columns,
+                    code=f"legacy_queue_only_{phase}_dlq",
+                )
+                identity_indices = (
+                    dlq_columns.index("artifact_type"),
+                    dlq_columns.index("artifact_id"),
+                )
+                original_index = dlq_columns.index("original_queue_id")
+                original_ids = {
+                    str(row[original_index] or "")
+                    for row in dlq_rows
+                    if (
+                        str(row[identity_indices[0]] or ""),
+                        str(row[identity_indices[1]] or ""),
+                    )
+                    in expected_identities
+                }
+                present_original_ids = frozenset(
+                    original_id
+                    for original_id in original_ids
+                    if original_id
+                    and conn.execute(
+                        "SELECT 1 FROM consolidation_queue WHERE id=? LIMIT 1",
+                        (original_id,),
+                    ).fetchone()
+                    is not None
+                )
+                try:
+                    current = build_legacy_dead_letter_guard(
+                        board_id=board_id,
+                        checkpoint_started_at=str(
+                            dead_letter_evidence["checkpoint_started_at"]
+                        ),
+                        target_rows=tuple(expected_rows.values()),
+                        dlq_columns=dlq_columns,
+                        dlq_rows=dlq_rows,
+                        present_original_queue_ids=present_original_ids,
+                    )
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"legacy_queue_only_dlq_guard_invalid:{phase}"
+                    ) from exc
+                if current != dead_letter_evidence:
+                    raise RuntimeError(f"legacy_queue_only_dlq_changed:{phase}")
+                if current["snapshot_fingerprint"] != queue_evidence["dlq_fingerprint"]:
+                    raise RuntimeError(f"legacy_queue_only_dlq_changed:{phase}")
+                return current
+
             placeholders = ",".join("(?, ?)" for _ in expected_identities)
             identity_params: list[object] = [board_id]
             for artifact_type, artifact_id in expected_identities:
@@ -1158,57 +1239,7 @@ class CommunityBoardRebuildIngestionAdapter:
             ):
                 raise RuntimeError("legacy_queue_only_peer_identity_conflict")
 
-            dlq_exists = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' "
-                "AND name='consolidation_dead_letter'"
-            ).fetchone()
-            if dlq_exists is not None:
-                queue_ids = tuple(expected_rows)
-                dlq_placeholders = ",".join("?" for _ in queue_ids)
-                dlq_identity_placeholders = ",".join(
-                    "(?, ?)" for _ in expected_identities
-                )
-                dlq_identity_params: list[object] = []
-                for artifact_type, artifact_id in expected_identities:
-                    dlq_identity_params.extend((artifact_type, artifact_id))
-                dlq_peer = conn.execute(
-                    "SELECT id FROM consolidation_dead_letter WHERE board_id=? "
-                    "AND ("
-                    f"original_queue_id IN ({dlq_placeholders}) OR "
-                    f"(artifact_type, artifact_id) IN ({dlq_identity_placeholders})"
-                    ") LIMIT 1",
-                    (board_id, *queue_ids, *dlq_identity_params),
-                ).fetchone()
-                if dlq_peer is not None:
-                    raise RuntimeError("legacy_queue_only_dlq_identity_conflict")
-                dlq_columns = tuple(
-                    str(column[1])
-                    for column in conn.execute(
-                        "PRAGMA table_info(consolidation_dead_letter)"
-                    ).fetchall()
-                )
-                dlq_projection = ", ".join(
-                    '"' + column.replace('"', '""') + '"' for column in dlq_columns
-                )
-                dlq_rows = _bounded_legacy_sql_rows(
-                    conn.execute(
-                        f"SELECT {dlq_projection} FROM consolidation_dead_letter "
-                        "WHERE board_id=? ORDER BY id",
-                        (board_id,),
-                    ),
-                    dlq_columns,
-                    code="legacy_queue_only_dlq",
-                )
-                dlq_fingerprint = canonical_evidence_hash(
-                    {
-                        "columns": list(dlq_columns),
-                        "rows": [list(row) for row in dlq_rows],
-                    }
-                )
-            else:
-                dlq_fingerprint = canonical_evidence_hash({"columns": [], "rows": []})
-            if dlq_fingerprint != queue_evidence["dlq_fingerprint"]:
-                raise RuntimeError("legacy_queue_only_dlq_changed")
+            _dead_letter_guard_current(phase="before_updates")
 
             pending_compensated = 0
             claimed_compensated = 0
@@ -1322,38 +1353,7 @@ class CommunityBoardRebuildIngestionAdapter:
                 for row in terminal_peer_rows
             ):
                 raise RuntimeError("legacy_queue_only_peer_identity_conflict")
-            if dlq_exists is not None:
-                terminal_dlq_peer = conn.execute(
-                    "SELECT id FROM consolidation_dead_letter WHERE board_id=? "
-                    "AND ("
-                    f"original_queue_id IN ({dlq_placeholders}) OR "
-                    f"(artifact_type, artifact_id) IN ({dlq_identity_placeholders})"
-                    ") LIMIT 1",
-                    (board_id, *queue_ids, *dlq_identity_params),
-                ).fetchone()
-                if terminal_dlq_peer is not None:
-                    raise RuntimeError("legacy_queue_only_dlq_identity_conflict")
-                terminal_dlq_rows = _bounded_legacy_sql_rows(
-                    conn.execute(
-                        f"SELECT {dlq_projection} FROM consolidation_dead_letter "
-                        "WHERE board_id=? ORDER BY id",
-                        (board_id,),
-                    ),
-                    dlq_columns,
-                    code="legacy_queue_only_terminal_dlq",
-                )
-                terminal_dlq_fingerprint = canonical_evidence_hash(
-                    {
-                        "columns": list(dlq_columns),
-                        "rows": [list(row) for row in terminal_dlq_rows],
-                    }
-                )
-            else:
-                terminal_dlq_fingerprint = canonical_evidence_hash(
-                    {"columns": [], "rows": []}
-                )
-            if terminal_dlq_fingerprint != queue_evidence["dlq_fingerprint"]:
-                raise RuntimeError("legacy_queue_only_dlq_changed")
+            _dead_letter_guard_current(phase="before_commit")
             _guard("before_commit")
             conn.commit()
         return {
