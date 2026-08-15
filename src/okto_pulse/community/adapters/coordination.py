@@ -40,6 +40,12 @@ from okto_pulse.core.ports.coordination import (
     register_coordination_providers,
 )
 
+from .filesystem_erasure import (
+    contained_lexical_path,
+    contained_resolved_path,
+    validate_scope_id,
+)
+
 # A5R: Windows can transiently deny the writer-manifest atomic os.replace with
 # a sharing violation (PermissionError [WinError 5]) while an unrelated reader
 # briefly holds the destination open.  Only that exact replace is retried, a
@@ -47,7 +53,12 @@ from okto_pulse.core.ports.coordination import (
 # attempt (fresh recovery lock, fresh manifest read, fresh clock), so an
 # expired, replaced or foreign-token manifest can never be resurrected.  Two
 # backoffs mean three total attempts and at most 0.15s of added latency, far
-# below the shortest writer-lease TTL.
+# below the shortest writer-lease TTL.  The same bounded retry covers a busy
+# board recovery mutex during renewal and exact-token release: the
+# administrative-reservation and graph-writer heartbeats legitimately share
+# that mutex, and a transient collision is not evidence that either exact
+# token was lost.  Every retry still re-reads the manifest and current clock,
+# so an expired/replaced token can never be extended or removed.
 _SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS = 3
 _SINGLE_WRITER_RENEW_REPLACE_BACKOFF_SECONDS = (0.05, 0.1)
 
@@ -60,6 +71,11 @@ _SINGLE_WRITER_RENEW_REPLACE_BACKOFF_SECONDS = (0.05, 0.1)
 _SINGLE_WRITER_RECOVERY_MUTEX_SUFFIX = ".write.lock.recovering.mutex"
 _SINGLE_WRITER_RECOVERY_PROTOCOL = "kernel-file-lock-v1"
 _SINGLE_WRITER_RECOVERY_SCHEMA_VERSION = 1
+_WINDOWS_RESERVED_PATH_SEGMENTS = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{index}" for index in range(1, 10)}
+    | {f"LPT{index}" for index in range(1, 10)}
+)
 
 
 class _SingleWriterRecoveryMutexBusy(Exception):
@@ -187,12 +203,35 @@ class CommunityLocalWriteLockPort(WriteLockPort):
     local-first semantics without leaking them into core.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        kg_base_dir: str | os.PathLike[str] | None = None,
+    ) -> None:
         self._async_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._sync_locks: dict[tuple[str, str], threading.Lock] = {}
         self._async_handles: dict[tuple[str, str], WriteLockHandle] = {}
         self._sync_handles: dict[tuple[str, str], WriteLockHandle] = {}
         self._registry_lock = threading.Lock()
+        self._bound_kg_base_dir = self._canonical_bound_kg_base_dir(kg_base_dir)
+
+    @staticmethod
+    def _canonical_bound_kg_base_dir(
+        value: str | os.PathLike[str] | None,
+    ) -> Path | None:
+        if value is None:
+            return None
+        raw = os.fspath(value)
+        if not raw.strip() or "://" in raw:
+            raise ValueError("root-bound write lock requires a local kg_base_dir")
+        expanded = Path(raw).expanduser()
+        if not expanded.is_absolute():
+            raise ValueError("root-bound write lock requires an absolute kg_base_dir")
+        lexical = Path(os.path.abspath(expanded))
+        resolved = expanded.resolve(strict=False)
+        if os.path.normcase(str(lexical)) != os.path.normcase(str(resolved)):
+            raise ValueError("root-bound write lock refuses a kg_base_dir alias")
+        return resolved
 
     @staticmethod
     def _key(board_id: str, artifact_id: str) -> tuple[str, str]:
@@ -472,35 +511,43 @@ class CommunityLocalWriteLockPort(WriteLockPort):
         if not board_dir.is_dir():
             return False
         recovery_path = board_dir / RECOVERY_LOCK_FILENAME
-        try:
-            with self._single_writer_recovery_mutex(board_dir):
-                try:
-                    recovery_token, _ = self._claim_single_writer_recovery_marker(
-                        recovery_path=recovery_path,
-                        board_id=board_id,
-                        operation="release",
-                        owner_id="exact-token-release",
-                    )
-                except SingleWriterLockError:
-                    return False
-                if recovery_token is None:
-                    return False
-                try:
-                    manifest = self._read_single_writer_manifest(path)
-                    if manifest is None or manifest.owner_token != owner_token:
+        for attempt_index in range(_SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS):
+            if attempt_index:
+                time.sleep(
+                    _SINGLE_WRITER_RENEW_REPLACE_BACKOFF_SECONDS[attempt_index - 1]
+                )
+            try:
+                with self._single_writer_recovery_mutex(board_dir):
+                    try:
+                        recovery_token, _ = self._claim_single_writer_recovery_marker(
+                            recovery_path=recovery_path,
+                            board_id=board_id,
+                            operation="release",
+                            owner_id="exact-token-release",
+                        )
+                    except SingleWriterLockError:
+                        return False
+                    if recovery_token is None:
                         return False
                     try:
-                        path.unlink()
-                    except FileNotFoundError:
-                        return False
-                    return True
-                finally:
-                    self._release_single_writer_recovery_marker(
-                        recovery_path,
-                        recovery_token=recovery_token,
-                    )
-        except _SingleWriterRecoveryMutexBusy:
-            return False
+                        manifest = self._read_single_writer_manifest(path)
+                        if manifest is None or manifest.owner_token != owner_token:
+                            return False
+                        try:
+                            path.unlink()
+                        except FileNotFoundError:
+                            return False
+                        return True
+                    finally:
+                        self._release_single_writer_recovery_marker(
+                            recovery_path,
+                            recovery_token=recovery_token,
+                        )
+            except _SingleWriterRecoveryMutexBusy:
+                if attempt_index + 1 == _SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS:
+                    return False
+                continue
+        raise AssertionError("bounded exact-token release loop did not terminate")
 
     def renew_single_writer_sync(
         self,
@@ -539,13 +586,11 @@ class CommunityLocalWriteLockPort(WriteLockPort):
             try:
                 with self._single_writer_recovery_mutex(board_dir):
                     try:
-                        recovery_token, _ = (
-                            self._claim_single_writer_recovery_marker(
-                                recovery_path=recovery_path,
-                                board_id=board_id,
-                                operation="renew",
-                                owner_id="exact-token-renewal",
-                            )
+                        recovery_token, _ = self._claim_single_writer_recovery_marker(
+                            recovery_path=recovery_path,
+                            board_id=board_id,
+                            operation="renew",
+                            owner_id="exact-token-renewal",
                         )
                     except SingleWriterLockError:
                         return False
@@ -563,7 +608,9 @@ class CommunityLocalWriteLockPort(WriteLockPort):
                             recovery_token=recovery_token,
                         )
             except _SingleWriterRecoveryMutexBusy:
-                return False
+                if attempt_index + 1 == _SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS:
+                    return False
+                continue
             except _SingleWriterRenewReplaceDenied as denied:
                 last_denial = denied.original
         assert last_denial is not None
@@ -789,6 +836,21 @@ class CommunityLocalWriteLockPort(WriteLockPort):
         base_dir_hint: str | None,
         board_dir_resolver: Any | None,
     ) -> Path:
+        board_id = validate_scope_id(board_id)
+        bound_root = self._bound_kg_base_dir
+        if bound_root is not None:
+            self._validate_root_bound_board_segment(board_id)
+            if base_dir_hint is not None or board_dir_resolver is not None:
+                raise ValueError("root-bound write lock refuses caller path overrides")
+            locks_root = contained_lexical_path(bound_root, bound_root / "locks")
+            board_dir = contained_lexical_path(
+                bound_root,
+                locks_root / board_id,
+            )
+            resolved = contained_resolved_path(bound_root, board_dir)
+            if os.path.normcase(str(board_dir)) != os.path.normcase(str(resolved)):
+                raise ValueError("root-bound write lock refuses a board path alias")
+            return board_dir
         if board_dir_resolver is not None:
             return Path(board_dir_resolver(board_id))
         if base_dir_hint:
@@ -798,6 +860,21 @@ class CommunityLocalWriteLockPort(WriteLockPort):
         )
 
         return default_community_rebuild_base_dir() / "locks" / board_id
+
+    @staticmethod
+    def _validate_root_bound_board_segment(board_id: str) -> None:
+        """Reject Windows filename aliases before resolving a recovery path."""
+
+        stem = board_id.split(".", 1)[0].upper()
+        if (
+            board_id[-1] in {" ", "."}
+            or ":" in board_id
+            or any(
+                character in '<>"|?*' or ord(character) < 32 for character in board_id
+            )
+            or stem in _WINDOWS_RESERVED_PATH_SEGMENTS
+        ):
+            raise ValueError("root-bound write lock refuses a board path alias")
 
     @staticmethod
     def _single_writer_path(board_dir: Path, artifact_id: str) -> Path:
@@ -934,6 +1011,19 @@ class CommunityRuntimeSettingsProvider(RuntimeSettingsProvider, ConfigValidation
         type(configured)(**current)
 
 
+def build_root_bound_community_write_lock_port(
+    kg_base_dir: str | os.PathLike[str],
+) -> CommunityLocalWriteLockPort:
+    """Capture one canonical KG root for recovery threads.
+
+    Core heartbeat workers are raw threads and deliberately do not inherit the
+    runtime-provider ContextVar.  A recovery bundle therefore owns this
+    explicitly rooted port instead of consulting a registry after composition.
+    """
+
+    return CommunityLocalWriteLockPort(kg_base_dir=kg_base_dir)
+
+
 _lease_provider = CommunityLocalLeaseProvider()
 _write_lock_port = CommunityLocalWriteLockPort()
 _claim_repository = CommunitySqlAlchemyClaimRepository()
@@ -1003,6 +1093,7 @@ __all__ = [
     "CommunityLocalWriteLockPort",
     "CommunityRuntimeSettingsProvider",
     "CommunitySqlAlchemyClaimRepository",
+    "build_root_bound_community_write_lock_port",
     "community_global_discovery_writer_fence",
     "register_community_coordination_providers",
 ]

@@ -385,6 +385,36 @@ def _create_queue_database(path: Path) -> None:
         _install_source_revision_guard(connection)
 
 
+def _insert_second_legacy_target(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        values = connection.execute(
+            "SELECT " + ",".join(LEGACY_QUEUE_COLUMNS) + " "
+            "FROM consolidation_queue WHERE id='queue-legacy-spec'"
+        ).fetchone()
+        assert values is not None
+        row = dict(zip(LEGACY_QUEUE_COLUMNS, values, strict=True))
+        row.update(
+            {
+                "id": "queue-legacy-pending-0001",
+                "artifact_id": "spec-legacy-0001",
+                "status": "pending",
+                "claimed_by_session_id": None,
+                "claim_token": None,
+                "claimed_at": None,
+                "worker_id": None,
+                "claim_timeout_at": None,
+            }
+        )
+        connection.execute(
+            "INSERT INTO consolidation_queue ("
+            + ",".join(LEGACY_QUEUE_COLUMNS)
+            + ") VALUES ("
+            + ",".join("?" for _ in LEGACY_QUEUE_COLUMNS)
+            + ")",
+            tuple(row[column] for column in LEGACY_QUEUE_COLUMNS),
+        )
+
+
 def _replace_queue_row(path: Path, row: dict[str, object]) -> None:
     columns = tuple(column for column in LEGACY_QUEUE_COLUMNS if column != "id")
     with sqlite3.connect(path) as connection:
@@ -2995,6 +3025,271 @@ def test_legacy_executor_retries_exact_compensation_failed_phase(
 
 
 @pytest.mark.asyncio
+async def test_root_bound_service_retries_copy_like_mid_cas_fence_loss(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+
+    from okto_pulse.community.adapters.coordination import (
+        build_root_bound_community_write_lock_port,
+    )
+    from okto_pulse.core.kg import rebuild_service
+    from okto_pulse.core.kg.rebuild_service import KGRebuildService
+    from okto_pulse.core.kg.single_writer_lock import (
+        KGAdministrativeOperationReservation,
+        KGSingleWriterLock,
+    )
+
+    data_home = tmp_path / "data-home"
+    db_path = data_home / "data" / "pulse.db"
+    _create_queue_database(db_path)
+    _insert_second_legacy_target(db_path)
+    rebuild, quarantine, _checkpoint_relative = _create_legacy_artifacts(
+        data_home,
+        source_count=2,
+    )
+    store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
+    discovery_bundle = SimpleNamespace(
+        artifact_store=store,
+        manifest_store=_manifest_store(data_home),
+    )
+    monkeypatch.setattr(
+        rebuild_service,
+        "load_verified_rebuild_confirmation_receipt",
+        lambda **_kwargs: None,
+    )
+    quarantine_before = recovery._snapshot_tree_hashes(quarantine)
+    board_root = data_home / "boards" / BOARD_ID
+    board_before = recovery._snapshot_tree_hashes(board_root)
+    plan = recovery._discover_legacy_queue_only_reconciliation(
+        discovery_bundle,
+        data_home=data_home,
+        db_path=db_path,
+        rebuild_root=rebuild,
+        rebuild_baseline=recovery._snapshot_tree_hashes(rebuild),
+        quarantine_root=quarantine,
+        quarantine_baseline=quarantine_before,
+        board_storage_baseline=board_before,
+        board_id=BOARD_ID,
+        recovery_actor_id="owner-1",
+        recovery_reason="governed legacy recovery",
+    )
+    assert plan is not None and not plan.terminal
+    assert len(plan.intent.queue_rows) == 2
+    queue_before = recovery._full_queue_snapshot(db_path)
+    source_revision_before = dict(
+        plan.intent.payload["source_revision_guard"]["baseline"]
+    )
+    original_compensate = CommunityBoardRebuildIngestionAdapter.compensate_legacy_manual_restore_queue_only
+    fence_live = True
+
+    def lose_fence_before_second_update(self, **kwargs):  # noqa: ANN001, ANN202
+        nonlocal fence_live
+        guard_calls = 0
+        outer_guard = kwargs["mutation_guard"]
+
+        def fail_closed_guard() -> bool:
+            nonlocal guard_calls, fence_live
+            guard_calls += 1
+            if guard_calls == 4:
+                fence_live = False
+                return False
+            return bool(outer_guard())
+
+        kwargs["mutation_guard"] = fail_closed_guard
+        return original_compensate(self, **kwargs)
+
+    with monkeypatch.context() as injected_loss:
+        injected_loss.setattr(
+            CommunityBoardRebuildIngestionAdapter,
+            "compensate_legacy_manual_restore_queue_only",
+            lose_fence_before_second_update,
+        )
+        failed_adapter = CommunityBoardRebuildIngestionAdapter(
+            db_path=db_path,
+            artifact_store=store,
+        ).build_legacy_manual_restore_queue_only_adapter(
+            evidence_probe=lambda intent: (
+                recovery._assert_legacy_queue_only_evidence_current(
+                    intent,
+                    manifest_store=discovery_bundle.manifest_store,
+                    data_home=data_home,
+                    db_path=db_path,
+                )
+            )
+        )
+        failed = failed_adapter(
+            SimpleNamespace(
+                board_id=BOARD_ID,
+                intent_id=plan.intent.evidence_digest,
+                actor_id="owner-1",
+                reason="governed legacy recovery",
+                command=plan.command,
+                intent_receipt=plan.intent_receipt,
+                owner_token="lost-writer-token",
+                lease_renew=lambda: fence_live,
+                orchestration_renew=lambda: fence_live,
+                mutation_guard=lambda: True,
+            )
+        )
+    assert failed.state.value == "compensation_failed"
+    assert recovery._full_queue_snapshot(db_path) == queue_before
+    with sqlite3.connect(db_path) as connection:
+        assert read_legacy_source_revision_state(connection) == source_revision_before
+    checkpoint = json.loads(
+        (rebuild / plan.checkpoint_relative).read_text(encoding="utf-8")
+    )
+    failed_receipt = checkpoint["receipts"][f"{F06_RUN_ID}:compensate"]
+    second_row_id = sorted(str(row["id"]) for row in plan.intent.queue_rows)[1]
+    assert failed_receipt["code"] == (
+        "RuntimeError:legacy_queue_only_mutation_guard_lost:"
+        f"before_update:{second_row_id}"
+    )
+    assert not (
+        rebuild / recovery._legacy_effect_relative(f"{F06_RUN_ID}:compensate")
+    ).exists()
+
+    retry_baseline = recovery._snapshot_tree_hashes(rebuild)
+    retry_plan = recovery._discover_legacy_queue_only_reconciliation(
+        discovery_bundle,
+        data_home=data_home,
+        db_path=db_path,
+        rebuild_root=rebuild,
+        rebuild_baseline=retry_baseline,
+        quarantine_root=quarantine,
+        quarantine_baseline=quarantine_before,
+        board_storage_baseline=board_before,
+        board_id=BOARD_ID,
+        recovery_actor_id="owner-1",
+        recovery_reason="ignored after durable intent",
+    )
+    assert retry_plan is not None and not retry_plan.terminal
+
+    probe_errors: list[str] = []
+
+    def slow_evidence_probe(intent):  # noqa: ANN001, ANN202
+        time.sleep(0.12)
+        try:
+            return recovery._assert_legacy_queue_only_evidence_current(
+                intent,
+                manifest_store=discovery_bundle.manifest_store,
+                data_home=data_home,
+                db_path=db_path,
+            )
+        except BaseException as exc:
+            probe_errors.append(f"{type(exc).__name__}:{exc}")
+            raise
+
+    nominal_adapter = CommunityBoardRebuildIngestionAdapter(
+        db_path=db_path,
+        artifact_store=store,
+    ).build_legacy_manual_restore_queue_only_adapter(evidence_probe=slow_evidence_probe)
+    port = build_root_bound_community_write_lock_port(data_home)
+    renew_observations: list[tuple[str, bool, str]] = []
+    real_port_renew = port.renew_single_writer_sync
+
+    def observed_port_renew(**kwargs):  # noqa: ANN003, ANN202
+        renewed = real_port_renew(**kwargs)
+        renew_observations.append(
+            (
+                str(kwargs["artifact_id"]),
+                renewed,
+                threading.current_thread().name,
+            )
+        )
+        return renewed
+
+    monkeypatch.setattr(port, "renew_single_writer_sync", observed_port_renew)
+    writer = KGSingleWriterLock(write_lock_port=port)
+    reservation = KGAdministrativeOperationReservation(write_lock_port=port)
+
+    class Poison:
+        def __getattr__(self, name: str):
+            raise AssertionError(f"queue-only lane touched forbidden dependency:{name}")
+
+    service = KGRebuildService(
+        base_dir=data_home,
+        single_writer_lock=writer,
+        safe_write_lifecycle=Poison(),
+        quarantine_service=Poison(),
+        confirmation_store=Poison(),
+        manifest_store=Poison(),
+        source_enumerator=Poison(),
+        generation_repository=Poison(),
+        promotion_guard=Poison(),
+        report_store=Poison(),
+        terminal_state_guard=Poison(),
+        event_emitter=Poison(),
+        orphan_scan_provider=Poison(),
+        operation_reservation=reservation,
+        artifact_store=store,
+        legacy_manual_restore_queue_only_adapter=nominal_adapter,
+        lock_ttl_seconds=30,
+        lease_heartbeat_interval_seconds=0.2,
+    )
+
+    class Workers:
+        active_families = ()
+        families = ()
+
+        @staticmethod
+        def start_count(_family: object) -> int:
+            return 0
+
+    monkeypatch.setattr(
+        recovery,
+        "_snapshot_closed_board_storage",
+        lambda **kwargs: recovery._snapshot_tree_hashes(kwargs["board_storage_root"]),
+    )
+    result = await recovery._run_legacy_queue_only_lane(
+        retry_plan,
+        bundle=SimpleNamespace(
+            service=service,
+            single_writer_lock=writer,
+            operation_reservation=reservation,
+        ),
+        composition=SimpleNamespace(worker_registry=Workers()),
+        db_path=db_path,
+        schema_fingerprint=recovery._sqlite_schema_fingerprint(db_path),
+        rebuild_root=rebuild,
+        rebuild_baseline=retry_baseline,
+        quarantine_root=quarantine,
+        quarantine_baseline=quarantine_before,
+        board_storage_root=board_root,
+        board_storage_baseline=board_before,
+        actor_id="owner-1",
+        cancel_event=threading.Event(),
+        lifetime_probe=lambda: True,
+        timeout_seconds=10.0,
+    )
+
+    assert result["_recovery_phase"] == "reconciled"
+    assert probe_errors == []
+    terminal, _adoption = recovery._legacy_queue_state_current(
+        retry_plan.intent,
+        db_path=db_path,
+    )
+    assert terminal is True
+    with sqlite3.connect(db_path) as connection:
+        source_revision_after = read_legacy_source_revision_state(connection)
+    assert source_revision_after["revision"] == (
+        int(source_revision_before["revision"]) + len(retry_plan.intent.queue_rows)
+    )
+    assert (
+        source_revision_after["mutation_nonce"]
+        != (source_revision_before["mutation_nonce"])
+    )
+    assert writer.inspect(board_id=BOARD_ID) is None
+    assert reservation.inspect(board_id=BOARD_ID) is None
+    assert renew_observations and all(
+        result for _artifact, result, _thread in renew_observations
+    )
+    assert recovery._snapshot_tree_hashes(quarantine) == quarantine_before
+    assert recovery._snapshot_tree_hashes(board_root) == board_before
+
+
+@pytest.mark.asyncio
 async def test_legacy_lane_validates_source_guard_before_logical_exclusion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3360,3 +3655,211 @@ async def test_legacy_executor_lane_uses_real_core_service_and_releases_fences(
         assert (
             read_legacy_source_revision_state(connection) == source_revision_after_crash
         )
+
+
+def test_real_service_bundle_heartbeats_keep_root_without_runtime_context(
+    tmp_path: Path,
+) -> None:
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    source_root = Path(recovery.__file__).resolve().parents[2]
+    workspace_root = source_root.parent.parent
+    core_source_root = workspace_root / "okto_labs_pulse_core" / "src"
+    if not core_source_root.is_dir():
+        core_source_root = workspace_root / "okto-pulse-core" / "src"
+    child_home = tmp_path / "bundle-heartbeat-child"
+    script = textwrap.dedent(
+        """
+        import asyncio
+        from pathlib import Path
+        import sys
+        import threading
+        import time
+
+        from okto_pulse.community import kg_recovery_only as recovery
+
+        async def main():
+            home = Path(sys.argv[1]).resolve()
+            for relative in ('data', 'rebuild', 'quarantine'):
+                (home / relative).mkdir(parents=True, exist_ok=True)
+            recovery._configure_explicit_environment(home)
+
+            from okto_pulse.community.main import create_community_app
+            from okto_pulse.core.composition import runtime_composition_scope
+            from okto_pulse.core.kg.rebuild_service import _RebuildLeaseHeartbeat
+            from okto_pulse.core.services.application_kg import (
+                get_current_provider_registry,
+            )
+
+            app = create_community_app()
+            composition = app.state.runtime_composition
+            transaction = app.state.mcp_cold_start_transaction
+            board_id = '11111111-1111-4111-8111-111111111111'
+            reservation_token = None
+            writer_token = None
+            bundle = None
+            try:
+                with runtime_composition_scope(composition):
+                    bundle = recovery._build_service_bundle(kg_base_dir=home)
+                    bundle.single_writer_lock.bind_write_lock_port()
+                    bundle.operation_reservation.bind_write_lock_port()
+                    reservation = bundle.operation_reservation.acquire(
+                        board_id=board_id,
+                        operation='root-bound-reservation',
+                        owner_id='owner-1',
+                        ttl_seconds=30,
+                        admin_lane=True,
+                    )
+                    writer = bundle.single_writer_lock.acquire(
+                        board_id=board_id,
+                        operation='root-bound-writer',
+                        owner_id='owner-1',
+                        ttl_seconds=30,
+                        admin_lane=True,
+                    )
+                    assert reservation.acquired and reservation.owner_token
+                    assert writer.acquired and writer.owner_token
+                    reservation_token = reservation.owner_token
+                    writer_token = writer.owner_token
+
+                registry_probe = []
+                def probe_empty_thread_context():
+                    try:
+                        get_current_provider_registry()
+                    except BaseException:
+                        registry_probe.append('absent')
+                    else:
+                        registry_probe.append('present')
+                probe = threading.Thread(target=probe_empty_thread_context)
+                probe.start()
+                probe.join(timeout=5)
+                assert registry_probe == ['absent']
+
+                reservation_heartbeat = _RebuildLeaseHeartbeat(
+                    lambda: bundle.operation_reservation.renew(
+                        board_id=board_id,
+                        owner_token=reservation_token,
+                        ttl_seconds=30,
+                    ),
+                    board_id=board_id,
+                    interval_seconds=0.1,
+                )
+                writer_heartbeat = _RebuildLeaseHeartbeat(
+                    lambda: bundle.single_writer_lock.renew(
+                        board_id=board_id,
+                        owner_token=writer_token,
+                        ttl_seconds=30,
+                    ),
+                    board_id=board_id,
+                    interval_seconds=0.1,
+                )
+                reservation_heartbeat.start()
+                writer_heartbeat.start()
+                time.sleep(1.2)
+                assert reservation_heartbeat.renew_now()
+                assert writer_heartbeat.renew_now()
+                assert reservation_heartbeat.renew_now() and writer_heartbeat.renew_now()
+                writer_heartbeat.stop()
+                assert bundle.single_writer_lock.release(
+                    board_id=board_id,
+                    owner_token=writer_token,
+                )
+                writer_token = None
+                reservation_heartbeat.stop()
+                assert bundle.operation_reservation.release(
+                    board_id=board_id,
+                    owner_token=reservation_token,
+                )
+                reservation_token = None
+                assert bundle.single_writer_lock.inspect(board_id=board_id) is None
+                assert bundle.operation_reservation.inspect(board_id=board_id) is None
+                lock_root = home / 'locks' / board_id
+                assert not (lock_root / '.write.lock').exists()
+                assert not (
+                    lock_root / '.kg_administrative_operation_reservation_v1.lock'
+                ).exists()
+
+                expired_board = '22222222-2222-4222-8222-222222222222'
+                expiring = bundle.single_writer_lock.acquire(
+                    board_id=expired_board,
+                    operation='root-bound-expiry-probe',
+                    owner_id='owner-1',
+                    ttl_seconds=1,
+                    admin_lane=True,
+                )
+                assert expiring.acquired and expiring.owner_token
+                lifecycle = bundle.service.safe_write_lifecycle
+                assert lifecycle._owner_probe.is_active_owner(
+                    expired_board, expiring.owner_token
+                )
+                assert not lifecycle._owner_probe.is_active_owner(
+                    expired_board, 'foreign-token'
+                )
+                time.sleep(1.1)
+                assert not lifecycle._owner_probe.is_active_owner(
+                    expired_board, expiring.owner_token
+                )
+                steps = []
+                lifecycle._step = lambda *_args: steps.append(_args)
+                try:
+                    lifecycle.apply(
+                        board_id=expired_board,
+                        graph_type='board_graph',
+                        operation='root-bound-expired-owner',
+                        owner_token=expiring.owner_token,
+                        mutation_ref='expired-owner-proof',
+                        required_steps=('checkpoint',),
+                    )
+                except BaseException as exc:
+                    assert type(exc).__name__ == 'SafeWriteLifecycleError'
+                else:
+                    raise AssertionError('expired owner reached lifecycle step')
+                assert steps == []
+                assert bundle.single_writer_lock.release(
+                    board_id=expired_board,
+                    owner_token=expiring.owner_token,
+                )
+                assert bundle.single_writer_lock.inspect(
+                    board_id=expired_board
+                ) is None
+            finally:
+                if bundle is not None and writer_token is not None:
+                    bundle.single_writer_lock.release(
+                        board_id=board_id,
+                        owner_token=writer_token,
+                    )
+                if bundle is not None and reservation_token is not None:
+                    bundle.operation_reservation.release(
+                        board_id=board_id,
+                        owner_token=reservation_token,
+                    )
+                with runtime_composition_scope(composition):
+                    await recovery._shutdown_composed_runtime(composition, None)
+                transaction.rollback()
+            print('root_bound_raw_heartbeats_ok')
+
+        asyncio.run(main())
+        """
+    )
+    env = os.environ.copy()
+    python_paths = [str(source_root)]
+    if core_source_root.is_dir():
+        python_paths.append(str(core_source_root))
+    if env.get("PYTHONPATH"):
+        python_paths.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(python_paths)
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(child_home)],
+        cwd=source_root.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "root_bound_raw_heartbeats_ok" in completed.stdout

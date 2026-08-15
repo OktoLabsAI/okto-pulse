@@ -4781,6 +4781,7 @@ def _resolve_event_cognitive_sources(
 
 def _build_service_bundle(
     *,
+    kg_base_dir: Path,
     legacy_evidence_probe: Callable[[Any], bool] | None = None,
     legacy_db_path: Path | None = None,
 ) -> ServiceBundle:
@@ -4822,20 +4823,26 @@ def _build_service_bundle(
         KGAdministrativeOperationReservation,
         KGSingleWriterLock,
     )
+    from okto_pulse.community.adapters.coordination import (
+        build_root_bound_community_write_lock_port,
+    )
 
     artifact_store = require_rebuild_audit_artifact_store()
     manifest_store = KGRebuildSourceManifest(artifact_store=artifact_store)
     source_enumerator = RebuildSourceEnumerator(source_store=build_source_store())
-    single_writer_lock = KGSingleWriterLock()
-    operation_reservation = KGAdministrativeOperationReservation()
-
-    def is_owner(board_id: str, owner_token: str) -> bool:
-        manifest = single_writer_lock.inspect(board_id=board_id)
-        return manifest is not None and manifest.owner_token == owner_token
+    _require(
+        isinstance(kg_base_dir, Path) and kg_base_dir.is_absolute(),
+        "recovery_kg_base_dir_invalid",
+    )
+    write_lock_port = build_root_bound_community_write_lock_port(kg_base_dir)
+    single_writer_lock = KGSingleWriterLock(write_lock_port=write_lock_port)
+    operation_reservation = KGAdministrativeOperationReservation(
+        write_lock_port=write_lock_port
+    )
 
     safe_lifecycle = KGSafeWriteLifecycle(
         step_adapter=resolve_graph_lifecycle().apply_step,
-        owner_probe=LockOwnerProbe(is_active_owner=is_owner),
+        owner_probe=LockOwnerProbe(is_active_owner=single_writer_lock.is_owner),
         health_probe=HealthProbe(classify=lambda _b, _g, _s, _step: "at_risk"),
     )
     audit_recorder = ConfirmationConsumptionAuditRecorder(artifact_store=artifact_store)
@@ -11106,6 +11113,7 @@ async def _execute_under_serve_lock(
                 )
 
             bundle = _build_service_bundle(
+                kg_base_dir=data_home,
                 legacy_evidence_probe=legacy_evidence_probe,
                 legacy_db_path=db_path,
             )
