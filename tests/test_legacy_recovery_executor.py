@@ -32,7 +32,6 @@ F06_RUN_ID = f"f06:{MANIFEST_REF}"
 CANDIDATE_ID = "c1acd7b9-2a50-4f72-a228-633470389c66"
 CONTENT_HASH = "a" * 64
 PREFLIGHT_HASH = "b" * 64
-SOURCE_SET_HASH = "c" * 64
 CONFIRMATION_REF = f"conf_fp_{'d' * 64}"
 MANIFEST_CREATED_AT = "2026-08-15T02:29:00+00:00"
 REPORT_ID = "report_1b4dd579136d415c9d5225ccc8654201"
@@ -40,6 +39,10 @@ ORIGINAL_QUARANTINE_ID = f"q_{'o' * 22}"
 MANUAL_QUARANTINE_ID = f"q_{'m' * 22}"
 HISTORICAL_DLQ_ID = "08949856-fbed-4d68-8425-2d6f04725045"
 HISTORICAL_ORIGINAL_QUEUE_ID = "2626ab17-eda9-4b6b-85c9-af3c38c9650a"
+COGNITIVE_SOURCE_ID = "11111111-1111-4111-8111-111111111111"
+COGNITIVE_REVISION_ID = "22222222-2222-4222-8222-222222222222"
+COGNITIVE_LATE_REVISION_ID = "33333333-3333-4333-8333-333333333333"
+COGNITIVE_NODE_ID = "decision_legacy_manifest_fixture"
 POST_LEGACY_CHECKPOINT_FIELDS = (
     "writer_handoff_count",
     "writer_reacquire_count",
@@ -76,7 +79,7 @@ def _receipt(
     }
 
 
-def _source_payload(index: int) -> dict[str, str]:
+def _source_payload(index: int) -> dict[str, object]:
     artifact_id = "spec-legacy" if index == 0 else f"spec-legacy-{index:04d}"
     payload = {
         "artifact_type": "spec",
@@ -89,27 +92,107 @@ def _source_payload(index: int) -> dict[str, str]:
             else hashlib.sha256(artifact_id.encode()).hexdigest()
         ),
         "created_at": "2026-08-01T00:00:00+00:00",
+        "source_artifact_status": "active",
+        "graph_layer": "canonical",
+        "maturity_status": "canonical_eligible",
+        "disposition": "canonical",
+        "reason_code": "",
+        "expires_at": None,
     }
     return payload
 
 
-def _verified_manifest(source_count: int = 1) -> SimpleNamespace:
-    rows = tuple(
-        SimpleNamespace(
-            **payload,
-            source_artifact_status="",
-            to_dict=lambda current=payload: dict(current),
-        )
-        for payload in (_source_payload(index) for index in range(source_count))
+def _cognitive_record(
+    *,
+    payload: dict[str, object],
+    committed_at: str,
+    source_revision: int,
+) -> dict[str, object]:
+    from okto_pulse.core.ports.kg_cognitive_source import (
+        canonical_cognitive_source_fingerprint,
     )
-    return SimpleNamespace(
+
+    evidence_refs = ("spec:legacy-manifest",)
+    fingerprint = canonical_cognitive_source_fingerprint(
+        board_id=BOARD_ID,
+        node_id=COGNITIVE_NODE_ID,
+        node_type="Decision",
+        generation=0,
+        payload=payload,
+        evidence_refs=evidence_refs,
+    )
+    return {
+        "board_id": BOARD_ID,
+        "node_id": COGNITIVE_NODE_ID,
+        "node_type": "Decision",
+        "generation": 0,
+        "payload": payload,
+        "evidence_refs": evidence_refs,
+        "committed_at": committed_at,
+        "source_revision": source_revision,
+        "record_fingerprint": fingerprint if source_revision else "",
+    }
+
+
+def _historical_cognitive_records() -> tuple[dict[str, object], ...]:
+    return (
+        _cognitive_record(
+            payload={"title": "base"},
+            committed_at="2026-08-15T02:27:00.000000",
+            source_revision=0,
+        ),
+        _cognitive_record(
+            payload={"title": "historical"},
+            committed_at="2026-08-15T02:28:00.000000",
+            source_revision=1,
+        ),
+    )
+
+
+def _manifest_fixture(source_count: int = 1):  # noqa: ANN202
+    from okto_pulse.core.kg.rebuild_sources import (
+        RebuildSourceManifest,
+        RebuildSourceRow,
+        RebuildSourceSet,
+        _compose_source_set_hash,
+        cognitive_durable_digest_from_rows,
+    )
+
+    rows = tuple(
+        RebuildSourceRow(**_source_payload(index)) for index in range(source_count)
+    )
+    cognitive_digest = cognitive_durable_digest_from_rows(
+        _historical_cognitive_records()
+    )
+    source_set = RebuildSourceSet(
+        board_id=BOARD_ID,
+        sources=rows,
+        skipped_cancelled_count=0,
+        has_non_deterministic_inputs=False,
+        generated_at=MANIFEST_CREATED_AT,
+        cognitive_durable_digest=cognitive_digest,
+    )
+    manifest = RebuildSourceManifest(
         manifest_ref=MANIFEST_REF,
         board_id=BOARD_ID,
+        source_set_hash=_compose_source_set_hash(source_set),
         preflight_hash=PREFLIGHT_HASH,
-        source_set_hash=SOURCE_SET_HASH,
+        sources=rows,
+        skipped_cancelled_count=0,
+        has_non_deterministic_inputs=False,
         created_at=MANIFEST_CREATED_AT,
-        materializable_sources=rows,
-        skipped_expired_working=(),
+        manifest_schema_version=3,
+    )
+    payload = manifest.to_dict()
+    payload.pop("payload_digest", None)
+    return manifest, payload
+
+
+def _manifest_store(data_home: Path):  # noqa: ANN202
+    from okto_pulse.core.kg.rebuild_sources import KGRebuildSourceManifest
+
+    return KGRebuildSourceManifest(
+        artifact_store=CommunityFileSystemRebuildAuditArtifactStore(data_home)
     )
 
 
@@ -162,6 +245,76 @@ def _create_queue_database(path: Path) -> None:
             f"VALUES ({placeholders})",
             tuple(row[column] for column in LEGACY_QUEUE_COLUMNS),
         )
+        connection.execute(
+            "CREATE TABLE kg_cognitive_sources ("
+            "id VARCHAR(36) PRIMARY KEY NOT NULL, board_id VARCHAR(36) NOT NULL, "
+            "node_id VARCHAR(64) NOT NULL, node_type VARCHAR(50) NOT NULL, "
+            "generation INTEGER NOT NULL DEFAULT 0, payload JSON NOT NULL, "
+            "evidence_refs JSON NOT NULL, source_session_id VARCHAR(36), "
+            "committed_at DATETIME NOT NULL)"
+        )
+        connection.execute(
+            "CREATE TABLE kg_cognitive_source_revisions ("
+            "id VARCHAR(36) PRIMARY KEY NOT NULL, "
+            "cognitive_source_id VARCHAR(36) NOT NULL, "
+            "source_revision INTEGER NOT NULL, "
+            "record_fingerprint VARCHAR(64) NOT NULL, payload JSON NOT NULL, "
+            "evidence_refs JSON NOT NULL, source_session_id VARCHAR(36), "
+            "committed_at DATETIME NOT NULL)"
+        )
+        historical = _historical_cognitive_records()
+        base = historical[0]
+        connection.execute(
+            "INSERT INTO kg_cognitive_sources "
+            "(id,board_id,node_id,node_type,generation,payload,evidence_refs,"
+            "source_session_id,committed_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                COGNITIVE_SOURCE_ID,
+                BOARD_ID,
+                COGNITIVE_NODE_ID,
+                "Decision",
+                0,
+                json.dumps(base["payload"], sort_keys=True, separators=(",", ":")),
+                json.dumps(base["evidence_refs"], separators=(",", ":")),
+                "kgses_1111111111111111",
+                "2026-08-15 02:27:00.000000",
+            ),
+        )
+        late = _cognitive_record(
+            payload={"title": "late"},
+            committed_at="2026-08-15T02:31:00.000000",
+            source_revision=2,
+        )
+        for revision_id, record, committed_at in (
+            (
+                COGNITIVE_REVISION_ID,
+                historical[1],
+                "2026-08-15 02:28:00.000000",
+            ),
+            (
+                COGNITIVE_LATE_REVISION_ID,
+                late,
+                "2026-08-15 02:31:00.000000",
+            ),
+        ):
+            connection.execute(
+                "INSERT INTO kg_cognitive_source_revisions "
+                "(id,cognitive_source_id,source_revision,record_fingerprint,"
+                "payload,evidence_refs,source_session_id,committed_at) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    revision_id,
+                    COGNITIVE_SOURCE_ID,
+                    record["source_revision"],
+                    record["record_fingerprint"],
+                    json.dumps(
+                        record["payload"], sort_keys=True, separators=(",", ":")
+                    ),
+                    json.dumps(record["evidence_refs"], separators=(",", ":")),
+                    "kgses_2222222222222222",
+                    committed_at,
+                ),
+            )
 
 
 def _replace_queue_row(path: Path, row: dict[str, object]) -> None:
@@ -275,6 +428,44 @@ def test_legacy_outer_sqlite_snapshots_refuse_unbounded_global_rows(
             recovery._sqlite_schema_fingerprint(db_path)
 
 
+def test_legacy_logical_fingerprint_has_nominal_cognitive_byte_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "pulse.db"
+    _create_queue_database(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE kg_cognitive_source_revisions SET payload=? WHERE id=?",
+            (json.dumps({"title": "x" * 4096}), COGNITIVE_LATE_REVISION_ID),
+        )
+
+    excluded = frozenset({"consolidation_queue", "consolidation_dead_letter"})
+    with monkeypatch.context() as bounded:
+        bounded.setattr(recovery, "MAX_LEGACY_PROTECTED_QUEUE_BYTES", 1024)
+        bounded.setattr(recovery, "MAX_LEGACY_COGNITIVE_LEDGER_BYTES", 16_384)
+        fingerprints = recovery._sqlite_logical_fingerprints(
+            db_path,
+            exclude_tables=excluded,
+        )
+        assert "kg_cognitive_source_revisions" in fingerprints
+
+        with sqlite3.connect(db_path) as connection:
+            connection.execute("CREATE TABLE unrelated_large (payload TEXT NOT NULL)")
+            connection.execute(
+                "INSERT INTO unrelated_large (payload) VALUES (?)",
+                ("x" * 4096,),
+            )
+        with pytest.raises(
+            recovery.RecoveryRefused,
+            match="sqlite_logical_table_unrelated_large_byte_limit_exceeded",
+        ):
+            recovery._sqlite_logical_fingerprints(
+                db_path,
+                exclude_tables=excluded,
+            )
+
+
 def _create_legacy_artifacts(
     data_home: Path,
     *,
@@ -373,14 +564,10 @@ def _create_legacy_artifacts(
             },
         ),
     )
+    _manifest, manifest_payload = _manifest_fixture(source_count)
     _write_json(
         rebuild / "manifests" / f"{MANIFEST_REF}.json",
-        {
-            "manifest_ref": MANIFEST_REF,
-            "board_id": BOARD_ID,
-            "preflight_hash": PREFLIGHT_HASH,
-            "source_set_hash": SOURCE_SET_HASH,
-        },
+        manifest_payload,
     )
     run_id = "run_legacy_executor"
     report_id = REPORT_ID
@@ -516,6 +703,322 @@ def _create_legacy_artifacts(
     return rebuild, quarantine, checkpoint_relative
 
 
+def test_legacy_predigest_real_manifest_store_uses_historical_cognitive_cut(
+    tmp_path: Path,
+) -> None:
+    from okto_pulse.core.kg.rebuild_sources import (
+        RebuildSourceManifestIntegrityError,
+        cognitive_durable_digest_from_rows,
+    )
+
+    data_home = tmp_path / "data-home"
+    db_path = data_home / "data" / "pulse.db"
+    _create_queue_database(db_path)
+    rebuild, _quarantine, _checkpoint_relative = _create_legacy_artifacts(data_home)
+    manifest_path = rebuild / "manifests" / f"{MANIFEST_REF}.json"
+    raw_manifest = json.loads(manifest_path.read_bytes())
+    cut = recovery._legacy_predigest_cognitive_cut(
+        db_path,
+        board_id=BOARD_ID,
+        manifest_created_at=MANIFEST_CREATED_AT,
+    )
+    historical_digest = cognitive_durable_digest_from_rows(
+        _historical_cognitive_records()
+    )
+    late = _cognitive_record(
+        payload={"title": "late"},
+        committed_at="2026-08-15T02:31:00.000000",
+        source_revision=2,
+    )
+    current_digest = cognitive_durable_digest_from_rows(
+        (*_historical_cognitive_records(), late)
+    )
+    ledger_fingerprint = cut.pop("ledger_fingerprint")
+    assert recovery._is_sha256(ledger_fingerprint)
+    assert cut == {
+        "cutoff": MANIFEST_CREATED_AT,
+        "base_row_count": 1,
+        "revision_row_count": 1,
+        "count": 1,
+        "digest": historical_digest["digest"],
+    }
+    assert current_digest != historical_digest
+
+    store = _manifest_store(data_home)
+    verified = store.load_verified_legacy_predigest_v3(
+        MANIFEST_REF,
+        expected_board_id=BOARD_ID,
+        expected_preflight_hash=PREFLIGHT_HASH,
+        expected_canonical_payload_sha256=recovery._canonical_json_hash(raw_manifest),
+        cognitive_digest=historical_digest,
+    )
+    assert verified.source_set_hash == raw_manifest["source_set_hash"]
+    with pytest.raises(RebuildSourceManifestIntegrityError):
+        store.load_verified(
+            MANIFEST_REF,
+            expected_board_id=BOARD_ID,
+            expected_preflight_hash=PREFLIGHT_HASH,
+            cognitive_digest=current_digest,
+        )
+    with pytest.raises(RebuildSourceManifestIntegrityError):
+        store.load_verified_legacy_predigest_v3(
+            MANIFEST_REF,
+            expected_board_id=BOARD_ID,
+            expected_preflight_hash=PREFLIGHT_HASH,
+            expected_canonical_payload_sha256=recovery._canonical_json_hash(
+                raw_manifest
+            ),
+            cognitive_digest=current_digest,
+        )
+
+
+@pytest.mark.parametrize(
+    "cutoff",
+    (
+        None,
+        "2026-08-15T02:29:00",
+        "2026-08-15T02:29:00Z",
+        "2026-08-15T02:29:00.000000+01:00",
+    ),
+    ids=("missing", "naive", "noncanonical-z", "non-utc"),
+)
+def test_legacy_predigest_cognitive_cut_refuses_invalid_cutoff(
+    tmp_path: Path,
+    cutoff: object,
+) -> None:
+    data_home = tmp_path / "data-home"
+    db_path = data_home / "data" / "pulse.db"
+    _create_queue_database(db_path)
+    with pytest.raises(recovery.RecoveryRefused, match="manifest_created_at"):
+        recovery._legacy_predigest_cognitive_cut(
+            db_path,
+            board_id=BOARD_ID,
+            manifest_created_at=cutoff,
+        )
+
+
+@pytest.mark.parametrize(
+    "revision_id",
+    (COGNITIVE_REVISION_ID, COGNITIVE_LATE_REVISION_ID),
+    ids=("historical", "late"),
+)
+def test_legacy_predigest_cognitive_cut_refuses_tampered_revision(
+    tmp_path: Path,
+    revision_id: str,
+) -> None:
+    data_home = tmp_path / "data-home"
+    db_path = data_home / "data" / "pulse.db"
+    _create_queue_database(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE kg_cognitive_source_revisions SET record_fingerprint=? WHERE id=?",
+            ("0" * 64, revision_id),
+        )
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="legacy_predigest_cognitive_ledger_invalid",
+    ):
+        recovery._legacy_predigest_cognitive_cut(
+            db_path,
+            board_id=BOARD_ID,
+            manifest_created_at=MANIFEST_CREATED_AT,
+        )
+
+
+def test_legacy_predigest_cognitive_cut_refuses_orphan_revision(
+    tmp_path: Path,
+) -> None:
+    data_home = tmp_path / "data-home"
+    db_path = data_home / "data" / "pulse.db"
+    _create_queue_database(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "INSERT INTO kg_cognitive_source_revisions "
+            "(id,cognitive_source_id,source_revision,record_fingerprint,"
+            "payload,evidence_refs,source_session_id,committed_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (
+                "44444444-4444-4444-8444-444444444444",
+                "55555555-5555-4555-8555-555555555555",
+                1,
+                "0" * 64,
+                json.dumps({"title": "orphan"}),
+                "[]",
+                None,
+                "2026-08-15 02:28:30.000000",
+            ),
+        )
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="legacy_predigest_cognitive_revision_parent_missing",
+    ):
+        recovery._legacy_predigest_cognitive_cut(
+            db_path,
+            board_id=BOARD_ID,
+            manifest_created_at=MANIFEST_CREATED_AT,
+        )
+
+
+def test_legacy_predigest_cognitive_cut_refuses_duplicate_semantic_base(
+    tmp_path: Path,
+) -> None:
+    data_home = tmp_path / "data-home"
+    db_path = data_home / "data" / "pulse.db"
+    _create_queue_database(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "INSERT INTO kg_cognitive_sources "
+            "(id,board_id,node_id,node_type,generation,payload,evidence_refs,"
+            "source_session_id,committed_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                "66666666-6666-4666-8666-666666666666",
+                BOARD_ID,
+                COGNITIVE_NODE_ID,
+                "Learning",
+                0,
+                json.dumps({"title": "duplicate semantic key"}),
+                "[]",
+                None,
+                "2026-08-15 02:27:30.000000",
+            ),
+        )
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="legacy_predigest_cognitive_semantic_key_duplicate",
+    ):
+        recovery._legacy_predigest_cognitive_cut(
+            db_path,
+            board_id=BOARD_ID,
+            manifest_created_at=MANIFEST_CREATED_AT,
+        )
+
+
+@pytest.mark.parametrize("tamper", ("ordinal_gap", "reversed_time", "missing_first"))
+def test_legacy_predigest_cognitive_cut_refuses_broken_revision_history(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    data_home = tmp_path / "data-home"
+    db_path = data_home / "data" / "pulse.db"
+    _create_queue_database(db_path)
+    with sqlite3.connect(db_path) as connection:
+        if tamper == "ordinal_gap":
+            connection.execute(
+                "UPDATE kg_cognitive_source_revisions SET source_revision=3 WHERE id=?",
+                (COGNITIVE_LATE_REVISION_ID,),
+            )
+        elif tamper == "reversed_time":
+            connection.execute(
+                "UPDATE kg_cognitive_source_revisions SET committed_at=? WHERE id=?",
+                ("2026-08-15 02:32:00.000000", COGNITIVE_REVISION_ID),
+            )
+        else:
+            connection.execute(
+                "DELETE FROM kg_cognitive_source_revisions WHERE id=?",
+                (COGNITIVE_REVISION_ID,),
+            )
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="legacy_predigest_cognitive_revision_sequence_invalid",
+    ):
+        recovery._legacy_predigest_cognitive_cut(
+            db_path,
+            board_id=BOARD_ID,
+            manifest_created_at=MANIFEST_CREATED_AT,
+        )
+
+
+def test_legacy_predigest_cognitive_cut_refuses_missing_or_oversize_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_home = tmp_path / "data-home"
+    db_path = data_home / "data" / "pulse.db"
+    _create_queue_database(db_path)
+    with monkeypatch.context() as bounded:
+        bounded.setattr(recovery, "MAX_LEGACY_COGNITIVE_LEDGER_BYTES", 1)
+        with pytest.raises(
+            recovery.RecoveryRefused,
+            match="cognitive_ledger_byte_limit_exceeded",
+        ):
+            recovery._legacy_predigest_cognitive_cut(
+                db_path,
+                board_id=BOARD_ID,
+                manifest_created_at=MANIFEST_CREATED_AT,
+            )
+    with monkeypatch.context() as bounded:
+        bounded.setattr(recovery, "MAX_LEGACY_COGNITIVE_LEDGER_ROWS", 2)
+        with pytest.raises(
+            recovery.RecoveryRefused,
+            match="cognitive_ledger_row_limit_exceeded",
+        ):
+            recovery._legacy_predigest_cognitive_cut(
+                db_path,
+                board_id=BOARD_ID,
+                manifest_created_at=MANIFEST_CREATED_AT,
+            )
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("DROP TABLE kg_cognitive_source_revisions")
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="legacy_predigest_cognitive_revision_storage_invalid",
+    ):
+        recovery._legacy_predigest_cognitive_cut(
+            db_path,
+            board_id=BOARD_ID,
+            manifest_created_at=MANIFEST_CREATED_AT,
+        )
+
+
+@pytest.mark.parametrize("tamper", ("extra", "cutoff"))
+def test_legacy_predigest_discovery_refuses_manifest_envelope_or_cut_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: str,
+) -> None:
+    from okto_pulse.core.kg import rebuild_service
+
+    data_home = tmp_path / "data-home"
+    db_path = data_home / "data" / "pulse.db"
+    _create_queue_database(db_path)
+    rebuild, quarantine, _checkpoint_relative = _create_legacy_artifacts(data_home)
+    manifest_path = rebuild / "manifests" / f"{MANIFEST_REF}.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    if tamper == "extra":
+        manifest["unexpected"] = "unbound"
+    else:
+        manifest["created_at"] = "2026-08-15T02:32:00+00:00"
+    _write_json(manifest_path, manifest)
+    bundle = SimpleNamespace(
+        artifact_store=CommunityFileSystemRebuildAuditArtifactStore(data_home),
+        manifest_store=_manifest_store(data_home),
+    )
+    monkeypatch.setattr(
+        rebuild_service,
+        "load_verified_rebuild_confirmation_receipt",
+        lambda **_kwargs: None,
+    )
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="legacy_queue_only_manifest_integrity_invalid",
+    ):
+        recovery._discover_legacy_queue_only_reconciliation(
+            bundle,
+            data_home=data_home,
+            db_path=db_path,
+            rebuild_root=rebuild,
+            rebuild_baseline=recovery._snapshot_tree_hashes(rebuild),
+            quarantine_root=quarantine,
+            quarantine_baseline=recovery._snapshot_tree_hashes(quarantine),
+            board_storage_baseline=recovery._snapshot_tree_hashes(
+                data_home / "boards" / BOARD_ID
+            ),
+            board_id=BOARD_ID,
+            recovery_actor_id="owner-1",
+            recovery_reason="governed legacy recovery",
+        )
+
+
 def test_legacy_checkpoint_candidate_accepts_current_shape_exactly(
     tmp_path: Path,
 ) -> None:
@@ -601,9 +1104,7 @@ def test_legacy_discovery_selects_active_run_and_normalizes_exact_old_shape(
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
     bundle = SimpleNamespace(
         artifact_store=store,
-        manifest_store=SimpleNamespace(
-            load_verified=lambda *_args, **_kwargs: _verified_manifest()
-        ),
+        manifest_store=_manifest_store(data_home),
     )
     monkeypatch.setattr(
         rebuild_service,
@@ -739,12 +1240,10 @@ def test_legacy_executor_discovers_reconciles_and_rediscovers_adoption(
     rebuild, quarantine, checkpoint_relative = _create_legacy_artifacts(data_home)
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
 
-    class ManifestStore:
-        @staticmethod
-        def load_verified(*_args, **_kwargs):  # noqa: ANN202
-            return _verified_manifest()
-
-    bundle = SimpleNamespace(artifact_store=store, manifest_store=ManifestStore())
+    bundle = SimpleNamespace(
+        artifact_store=store,
+        manifest_store=_manifest_store(data_home),
+    )
     monkeypatch.setattr(
         rebuild_service,
         "load_verified_rebuild_confirmation_receipt",
@@ -778,6 +1277,7 @@ def test_legacy_executor_discovers_reconciles_and_rediscovers_adoption(
         evidence_probe=lambda intent: (
             recovery._assert_legacy_queue_only_evidence_current(
                 intent,
+                manifest_store=bundle.manifest_store,
                 data_home=data_home,
                 db_path=db_path,
             )
@@ -869,9 +1369,7 @@ def test_legacy_executor_refuses_physical_evidence_drift(
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
     bundle = SimpleNamespace(
         artifact_store=store,
-        manifest_store=SimpleNamespace(
-            load_verified=lambda *_args, **_kwargs: _verified_manifest()
-        ),
+        manifest_store=_manifest_store(data_home),
     )
     monkeypatch.setattr(
         rebuild_service,
@@ -901,6 +1399,7 @@ def test_legacy_executor_refuses_physical_evidence_drift(
     ):
         recovery._assert_legacy_queue_only_evidence_current(
             plan.intent,
+            manifest_store=bundle.manifest_store,
             data_home=data_home,
             db_path=db_path,
         )
@@ -924,9 +1423,7 @@ def test_legacy_executor_refuses_standalone_mutating_f06_effect(
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
     bundle = SimpleNamespace(
         artifact_store=store,
-        manifest_store=SimpleNamespace(
-            load_verified=lambda *_args, **_kwargs: _verified_manifest()
-        ),
+        manifest_store=_manifest_store(data_home),
     )
     monkeypatch.setattr(
         rebuild_service,
@@ -978,9 +1475,7 @@ def test_legacy_executor_binds_copied_report_ref_to_explicit_source_root(
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
     bundle = SimpleNamespace(
         artifact_store=store,
-        manifest_store=SimpleNamespace(
-            load_verified=lambda *_args, **_kwargs: _verified_manifest()
-        ),
+        manifest_store=_manifest_store(data_home),
     )
     monkeypatch.setattr(
         rebuild_service,
@@ -1141,9 +1636,7 @@ def test_legacy_executor_refuses_impossible_historical_serializer_shapes(
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
     bundle = SimpleNamespace(
         artifact_store=store,
-        manifest_store=SimpleNamespace(
-            load_verified=lambda *_args, **_kwargs: _verified_manifest()
-        ),
+        manifest_store=_manifest_store(data_home),
     )
     monkeypatch.setattr(
         rebuild_service,
@@ -1212,9 +1705,7 @@ def test_legacy_executor_refuses_semantically_invalid_prefix_receipt(
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
     bundle = SimpleNamespace(
         artifact_store=store,
-        manifest_store=SimpleNamespace(
-            load_verified=lambda *_args, **_kwargs: _verified_manifest()
-        ),
+        manifest_store=_manifest_store(data_home),
     )
     monkeypatch.setattr(
         rebuild_service,
@@ -1249,23 +1740,15 @@ def test_legacy_executor_refuses_checkpoint_manifest_projection_mismatch(
     data_home = tmp_path / "data-home"
     db_path = data_home / "data" / "pulse.db"
     _create_queue_database(db_path)
-    rebuild, quarantine, _checkpoint_relative = _create_legacy_artifacts(data_home)
-    verified = _verified_manifest()
-    original_row = verified.materializable_sources[0]
-    forged_payload = original_row.to_dict()
-    forged_payload["content_hash"] = "f" * 64
-    forged_row = SimpleNamespace(
-        **forged_payload,
-        source_artifact_status="",
-        to_dict=lambda: dict(forged_payload),
-    )
-    verified.materializable_sources = (forged_row,)
+    rebuild, quarantine, checkpoint_relative = _create_legacy_artifacts(data_home)
+    checkpoint_path = rebuild / checkpoint_relative
+    checkpoint = json.loads(checkpoint_path.read_bytes())
+    checkpoint["command"]["source_rows"][0]["content_hash"] = "f" * 64
+    _write_json(checkpoint_path, checkpoint)
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
     bundle = SimpleNamespace(
         artifact_store=store,
-        manifest_store=SimpleNamespace(
-            load_verified=lambda *_args, **_kwargs: verified
-        ),
+        manifest_store=_manifest_store(data_home),
     )
     monkeypatch.setattr(
         rebuild_service,
@@ -1317,9 +1800,7 @@ def test_legacy_executor_reconstructs_semantics_of_existing_intent(
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
     bundle = SimpleNamespace(
         artifact_store=store,
-        manifest_store=SimpleNamespace(
-            load_verified=lambda *_args, **_kwargs: _verified_manifest()
-        ),
+        manifest_store=_manifest_store(data_home),
     )
     monkeypatch.setattr(
         rebuild_service,
@@ -1408,9 +1889,7 @@ def test_legacy_executor_accepts_realistic_large_checkpoint_but_bounds_artifacts
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
     bundle = SimpleNamespace(
         artifact_store=store,
-        manifest_store=SimpleNamespace(
-            load_verified=lambda *_args, **_kwargs: _verified_manifest(404)
-        ),
+        manifest_store=_manifest_store(data_home),
     )
     monkeypatch.setattr(
         rebuild_service,
@@ -1462,9 +1941,7 @@ def test_legacy_executor_refuses_terminal_checkpoint_artifact_queue_split_brain(
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
     bundle = SimpleNamespace(
         artifact_store=store,
-        manifest_store=SimpleNamespace(
-            load_verified=lambda *_args, **_kwargs: _verified_manifest()
-        ),
+        manifest_store=_manifest_store(data_home),
     )
     monkeypatch.setattr(
         rebuild_service,
@@ -1497,6 +1974,7 @@ def test_legacy_executor_refuses_terminal_checkpoint_artifact_queue_split_brain(
         evidence_probe=lambda intent: (
             recovery._assert_legacy_queue_only_evidence_current(
                 intent,
+                manifest_store=bundle.manifest_store,
                 data_home=data_home,
                 db_path=db_path,
             )
@@ -1571,9 +2049,7 @@ def test_legacy_executor_retries_exact_compensation_failed_phase(
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
     bundle = SimpleNamespace(
         artifact_store=store,
-        manifest_store=SimpleNamespace(
-            load_verified=lambda *_args, **_kwargs: _verified_manifest()
-        ),
+        manifest_store=_manifest_store(data_home),
     )
     monkeypatch.setattr(
         rebuild_service,
@@ -1618,6 +2094,7 @@ def test_legacy_executor_retries_exact_compensation_failed_phase(
             evidence_probe=lambda intent: (
                 recovery._assert_legacy_queue_only_evidence_current(
                     intent,
+                    manifest_store=bundle.manifest_store,
                     data_home=data_home,
                     db_path=db_path,
                 )
@@ -1672,6 +2149,7 @@ def test_legacy_executor_retries_exact_compensation_failed_phase(
             evidence_probe=lambda intent: (
                 recovery._assert_legacy_queue_only_evidence_current(
                     intent,
+                    manifest_store=bundle.manifest_store,
                     data_home=data_home,
                     db_path=db_path,
                 )
@@ -1721,6 +2199,7 @@ def test_legacy_executor_retries_exact_compensation_failed_phase(
                 evidence_probe=lambda intent: (
                     recovery._assert_legacy_queue_only_evidence_current(
                         intent,
+                        manifest_store=bundle.manifest_store,
                         data_home=data_home,
                         db_path=db_path,
                     )
@@ -1759,6 +2238,7 @@ def test_legacy_executor_retries_exact_compensation_failed_phase(
         evidence_probe=lambda intent: (
             recovery._assert_legacy_queue_only_evidence_current(
                 intent,
+                manifest_store=bundle.manifest_store,
                 data_home=data_home,
                 db_path=db_path,
             )
@@ -1824,14 +2304,9 @@ async def test_legacy_executor_lane_uses_real_core_service_and_releases_fences(
     )
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
 
-    class ManifestStore:
-        @staticmethod
-        def load_verified(*_args, **_kwargs):  # noqa: ANN202
-            return _verified_manifest()
-
     discovery_bundle = SimpleNamespace(
         artifact_store=store,
-        manifest_store=ManifestStore(),
+        manifest_store=_manifest_store(data_home),
     )
     monkeypatch.setattr(
         rebuild_service,
@@ -1872,6 +2347,7 @@ async def test_legacy_executor_lane_uses_real_core_service_and_releases_fences(
             evidence_probe=lambda intent: (
                 recovery._assert_legacy_queue_only_evidence_current(
                     intent,
+                    manifest_store=discovery_bundle.manifest_store,
                     data_home=data_home,
                     db_path=db_path,
                 )
@@ -1944,6 +2420,7 @@ async def test_legacy_executor_lane_uses_real_core_service_and_releases_fences(
         evidence_probe=lambda intent: (
             recovery._assert_legacy_queue_only_evidence_current(
                 intent,
+                manifest_store=discovery_bundle.manifest_store,
                 data_home=data_home,
                 db_path=db_path,
             )

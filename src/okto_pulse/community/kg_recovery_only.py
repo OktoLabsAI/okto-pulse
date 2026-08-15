@@ -29,7 +29,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
-from contextlib import ExitStack, contextmanager, suppress
+from contextlib import ExitStack, closing, contextmanager, suppress
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
@@ -85,6 +85,8 @@ MAX_COGNITIVE_BASELINE_RECORD_BYTES = 16 * 1024 * 1024
 MAX_GOVERNED_REBUILD_ARTIFACT_BYTES = 16 * 1024 * 1024
 MAX_LEGACY_PROTECTED_QUEUE_ROWS = 16_384
 MAX_LEGACY_PROTECTED_QUEUE_BYTES = 32 * 1024 * 1024
+MAX_LEGACY_COGNITIVE_LEDGER_ROWS = 16_384
+MAX_LEGACY_COGNITIVE_LEDGER_BYTES = 64 * 1024 * 1024
 MAX_RECOVERY_SQLITE_TABLES = 512
 MAX_RECOVERY_SQLITE_SCHEMA_OBJECTS = 4_096
 CHECKPOINT_STATE_DRAINING = "draining"
@@ -138,6 +140,30 @@ REQUIRED_RECOVERY_COLUMNS: Mapping[str, frozenset[str]] = {
 EXPECTED_APP_SETTINGS_TABLE_INFO = (
     ("key", "VARCHAR(64)", 1, None, 1),
     ("value", "VARCHAR(64)", 1, None, 0),
+)
+LEGACY_COGNITIVE_BASE_COLUMNS = (
+    "id",
+    "board_id",
+    "node_id",
+    "node_type",
+    "generation",
+    "payload",
+    "evidence_refs",
+    "source_session_id",
+    "committed_at",
+)
+LEGACY_COGNITIVE_REVISION_COLUMNS = (
+    "id",
+    "cognitive_source_id",
+    "source_revision",
+    "record_fingerprint",
+    "payload",
+    "evidence_refs",
+    "source_session_id",
+    "committed_at",
+)
+LEGACY_COGNITIVE_NODE_TYPES = frozenset(
+    {"Decision", "Learning", "Alternative", "Assumption"}
 )
 
 
@@ -1306,7 +1332,7 @@ def _sqlite_logical_fingerprints(
     """Fingerprint every user table in one read transaction, independent of WAL bytes."""
 
     result: dict[str, str] = {}
-    with _sqlite_connect_readonly(db_path) as connection:
+    with closing(_sqlite_connect_readonly(db_path)) as connection:
         connection.execute("BEGIN")
         table_name_rows = _bounded_sqlite_snapshot_rows(
             connection.execute(
@@ -1334,6 +1360,15 @@ def _sqlite_logical_fingerprints(
                 _bounded_sqlite_snapshot_rows(
                     connection.execute(f"SELECT {quoted_columns} FROM {quoted_table}"),
                     code=f"sqlite_logical_table_{table_name}",
+                    max_bytes=(
+                        MAX_LEGACY_COGNITIVE_LEDGER_BYTES
+                        if table_name
+                        in {
+                            "kg_cognitive_sources",
+                            "kg_cognitive_source_revisions",
+                        }
+                        else MAX_LEGACY_PROTECTED_QUEUE_BYTES
+                    ),
                 )
             )
             rows.sort(
@@ -1348,7 +1383,7 @@ def _sqlite_logical_fingerprints(
 
 def _table_columns(db_path: Path, table: str) -> tuple[str, ...]:
     _require(table.replace("_", "").isalnum(), "unsafe_table_name", table)
-    with _sqlite_connect_readonly(db_path) as connection:
+    with closing(_sqlite_connect_readonly(db_path)) as connection:
         return tuple(
             str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")
         )
@@ -1361,7 +1396,7 @@ def _table_info(
     """Return the bounded SQLite column contract without importing the ORM."""
 
     _require(table.replace("_", "").isalnum(), "unsafe_table_name", table)
-    with _sqlite_connect_readonly(db_path) as connection:
+    with closing(_sqlite_connect_readonly(db_path)) as connection:
         return tuple(
             (
                 str(row[1]),
@@ -1377,7 +1412,7 @@ def _table_info(
 def _sqlite_schema_fingerprint(db_path: Path) -> str:
     """Fingerprint the complete existing SQLite DDL without changing it."""
 
-    with _sqlite_connect_readonly(db_path) as connection:
+    with closing(_sqlite_connect_readonly(db_path)) as connection:
         schema_rows = _bounded_sqlite_snapshot_rows(
             connection.execute(
                 "SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_master "
@@ -2102,7 +2137,7 @@ def _register_live_consumption(
 def _assert_required_recovery_schema(db_path: Path) -> None:
     """Read-only, version-pinned prerequisite check; never repairs/migrates."""
 
-    with _sqlite_connect_readonly(db_path) as connection:
+    with closing(_sqlite_connect_readonly(db_path)) as connection:
         user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         schema_version = int(connection.execute("PRAGMA schema_version").fetchone()[0])
         foreign_key_violation = connection.execute(
@@ -2158,7 +2193,7 @@ def _assert_schema_unchanged(db_path: Path, expected_fingerprint: str) -> None:
         _sqlite_schema_fingerprint(db_path) == expected_fingerprint,
         "relational_schema_changed_during_recovery",
     )
-    with _sqlite_connect_readonly(db_path) as connection:
+    with closing(_sqlite_connect_readonly(db_path)) as connection:
         violation = connection.execute("PRAGMA foreign_key_check").fetchone()
     _require(
         violation is None,
@@ -2172,7 +2207,7 @@ def _snapshot_query(
     query: str,
     parameters: Sequence[Any] = (),
 ) -> QueueSnapshot:
-    with _sqlite_connect_readonly(db_path) as connection:
+    with closing(_sqlite_connect_readonly(db_path)) as connection:
         cursor = connection.execute(query, tuple(parameters))
         columns = tuple(str(item[0]) for item in (cursor.description or ()))
         rows = _bounded_sqlite_snapshot_rows(cursor, code="sqlite_snapshot")
@@ -2186,7 +2221,7 @@ def _assert_database_preflight(
     _require(db_path.is_file(), "pulse_database_missing", str(db_path))
     _assert_required_recovery_schema(db_path)
     schema_fingerprint = _sqlite_schema_fingerprint(db_path)
-    with _sqlite_connect_readonly(db_path) as connection:
+    with closing(_sqlite_connect_readonly(db_path)) as connection:
         integrity = connection.execute("PRAGMA integrity_check").fetchone()
         _require(
             integrity is not None and str(integrity[0]).lower() == "ok",
@@ -5011,6 +5046,395 @@ def _legacy_exact_table_columns(
     return columns
 
 
+def _legacy_cognitive_sqlite_timestamp(
+    value: object,
+    *,
+    code: str,
+) -> tuple[datetime, str]:
+    """Parse the exact naive-UTC representation emitted by SQLAlchemy/SQLite."""
+
+    _require(
+        isinstance(value, str)
+        and re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}", value)
+        is not None,
+        code,
+    )
+    try:
+        naive = datetime.strptime(value, "%Y-%m-%d %H:%M:%S.%f")
+    except ValueError as exc:
+        raise RecoveryRefused(code) from exc
+    return naive.replace(tzinfo=timezone.utc), naive.isoformat(timespec="microseconds")
+
+
+def _legacy_cognitive_uuid(value: object, *, code: str) -> str:
+    _require(isinstance(value, str), code)
+    try:
+        parsed = UUID(value)
+    except (TypeError, ValueError) as exc:
+        raise RecoveryRefused(code) from exc
+    canonical = str(parsed)
+    _require(value == canonical, code)
+    return canonical
+
+
+def _legacy_cognitive_payload(value: object, *, code: str) -> dict[str, Any]:
+    _require(isinstance(value, str), code)
+    return _strict_json_mapping(value.encode("utf-8"), code=code)
+
+
+def _legacy_cognitive_evidence_refs(
+    value: object,
+    *,
+    code: str,
+) -> tuple[str, ...]:
+    _require(isinstance(value, str), code)
+    try:
+        decoded = json.loads(
+            value,
+            parse_constant=lambda item: (_ for _ in ()).throw(
+                ValueError(f"non-finite JSON number: {item}")
+            ),
+        )
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise RecoveryRefused(code) from exc
+    _require(
+        isinstance(decoded, list)
+        and all(isinstance(item, str) and bool(item) for item in decoded),
+        code,
+    )
+    return tuple(decoded)
+
+
+def _legacy_predigest_cognitive_cut(
+    db_path: Path,
+    *,
+    board_id: str,
+    manifest_created_at: object,
+) -> dict[str, Any]:
+    """Reconstruct the durable cognitive digest at one pre-9b manifest cut.
+
+    The historical v3 serializer included this digest in ``source_set_hash``
+    but did not persist it in the manifest envelope.  The ledger is append-only,
+    so a WAL-aware, read-only snapshot can reproduce the exact historical cut
+    without consulting a mutable graph or the live data-home.
+    """
+
+    cutoff = _parse_utc_timestamp(
+        manifest_created_at,
+        code="legacy_predigest_manifest_created_at_invalid",
+    )
+    _require(
+        manifest_created_at == cutoff.isoformat(),
+        "legacy_predigest_manifest_created_at_noncanonical",
+    )
+    _legacy_cognitive_uuid(board_id, code="legacy_predigest_board_id_invalid")
+
+    base_projection = (
+        "id, board_id, node_id, node_type, generation, payload, evidence_refs, "
+        "source_session_id, committed_at"
+    )
+    revision_projection = (
+        "r.id, r.cognitive_source_id, b.board_id, b.node_id, b.node_type, "
+        "b.generation, r.source_revision, r.record_fingerprint, r.payload, "
+        "r.evidence_refs, r.source_session_id, r.committed_at"
+    )
+    total_rows = 0
+    total_bytes = 0
+
+    def bounded_row(raw: Sequence[object], *, code: str) -> str:
+        nonlocal total_rows, total_bytes
+        _require(
+            total_rows < MAX_LEGACY_COGNITIVE_LEDGER_ROWS,
+            "legacy_predigest_cognitive_ledger_row_limit_exceeded",
+        )
+        encoded = _canonical_json_bytes(
+            [_normalize_sqlite_value(value) for value in raw]
+        )
+        total_rows += 1
+        total_bytes += len(encoded)
+        _require(
+            total_bytes <= MAX_LEGACY_COGNITIVE_LEDGER_BYTES,
+            "legacy_predigest_cognitive_ledger_byte_limit_exceeded",
+        )
+        _require(bool(code), "legacy_predigest_cognitive_internal_code_missing")
+        return hashlib.sha256(encoded).hexdigest()
+
+    all_records: list[dict[str, Any]] = []
+    cut_records: list[dict[str, Any]] = []
+    cut_fingerprints: list[tuple[str, str, str]] = []
+    base_times: dict[str, datetime] = {}
+    base_semantic_keys: set[tuple[str, int]] = set()
+    revision_high_water: dict[str, int] = {}
+    revision_times: dict[str, datetime] = {}
+    revision_ids: set[str] = set()
+    base_cut_count = 0
+    revision_cut_count = 0
+    prior_base_order: tuple[datetime, str, int, str] | None = None
+    prior_revision_order: tuple[datetime, str, int, int, str] | None = None
+
+    with closing(_sqlite_connect_readonly(db_path)) as connection:
+        connection.execute("BEGIN")
+        _legacy_exact_table_columns(
+            connection,
+            table="kg_cognitive_sources",
+            expected=LEGACY_COGNITIVE_BASE_COLUMNS,
+            code="legacy_predigest_cognitive_base",
+        )
+        _legacy_exact_table_columns(
+            connection,
+            table="kg_cognitive_source_revisions",
+            expected=LEGACY_COGNITIVE_REVISION_COLUMNS,
+            code="legacy_predigest_cognitive_revision",
+        )
+        orphan_revision = connection.execute(
+            "SELECT r.id FROM kg_cognitive_source_revisions AS r "
+            "LEFT JOIN kg_cognitive_sources AS b ON b.id=r.cognitive_source_id "
+            "WHERE b.id IS NULL LIMIT 1"
+        ).fetchone()
+        _require(
+            orphan_revision is None,
+            "legacy_predigest_cognitive_revision_parent_missing",
+        )
+        base_cursor = connection.execute(
+            f"SELECT {base_projection} FROM kg_cognitive_sources "
+            "WHERE board_id=? ORDER BY committed_at, node_id, generation, id",
+            (board_id,),
+        )
+        for raw in base_cursor:
+            row_hash = bounded_row(raw, code="legacy_predigest_cognitive_base")
+            (
+                source_id,
+                raw_board_id,
+                node_id,
+                node_type,
+                generation,
+                raw_payload,
+                raw_evidence_refs,
+                source_session_id,
+                raw_committed_at,
+            ) = raw
+            source_id = _legacy_cognitive_uuid(
+                source_id,
+                code="legacy_predigest_cognitive_source_id_invalid",
+            )
+            _require(
+                raw_board_id == board_id,
+                "legacy_predigest_cognitive_board_mismatch",
+            )
+            _require(
+                isinstance(node_id, str) and 0 < len(node_id) <= 64,
+                "legacy_predigest_cognitive_node_id_invalid",
+            )
+            _require(
+                node_type in LEGACY_COGNITIVE_NODE_TYPES,
+                "legacy_predigest_cognitive_node_type_invalid",
+            )
+            _require(
+                type(generation) is int and generation >= 0,
+                "legacy_predigest_cognitive_generation_invalid",
+            )
+            semantic_key = (node_id, generation)
+            _require(
+                semantic_key not in base_semantic_keys,
+                "legacy_predigest_cognitive_semantic_key_duplicate",
+            )
+            base_semantic_keys.add(semantic_key)
+            _require(
+                source_session_id is None
+                or (
+                    isinstance(source_session_id, str)
+                    and 0 < len(source_session_id) <= 36
+                ),
+                "legacy_predigest_cognitive_session_invalid",
+            )
+            observed_at, committed_at = _legacy_cognitive_sqlite_timestamp(
+                raw_committed_at,
+                code="legacy_predigest_cognitive_committed_at_invalid",
+            )
+            order = (observed_at, node_id, generation, source_id)
+            _require(
+                prior_base_order is None or order > prior_base_order,
+                "legacy_predigest_cognitive_base_order_invalid",
+            )
+            prior_base_order = order
+            _require(
+                source_id not in base_times,
+                "legacy_predigest_cognitive_source_id_duplicate",
+            )
+            base_times[source_id] = observed_at
+            record = {
+                "board_id": board_id,
+                "node_id": node_id,
+                "node_type": node_type,
+                "generation": generation,
+                "payload": _legacy_cognitive_payload(
+                    raw_payload,
+                    code="legacy_predigest_cognitive_payload_invalid",
+                ),
+                "evidence_refs": _legacy_cognitive_evidence_refs(
+                    raw_evidence_refs,
+                    code="legacy_predigest_cognitive_evidence_refs_invalid",
+                ),
+                "committed_at": committed_at,
+                "source_revision": 0,
+                "record_fingerprint": "",
+            }
+            all_records.append(record)
+            if observed_at <= cutoff:
+                base_cut_count += 1
+                cut_records.append(record)
+                cut_fingerprints.append(("base", source_id, row_hash))
+
+        revision_cursor = connection.execute(
+            f"SELECT {revision_projection} "
+            "FROM kg_cognitive_source_revisions AS r "
+            "JOIN kg_cognitive_sources AS b ON b.id=r.cognitive_source_id "
+            "WHERE b.board_id=? "
+            "ORDER BY r.committed_at, b.node_id, b.generation, "
+            "r.source_revision, r.id",
+            (board_id,),
+        )
+        for raw in revision_cursor:
+            row_hash = bounded_row(raw, code="legacy_predigest_cognitive_revision")
+            (
+                revision_id,
+                source_id,
+                raw_board_id,
+                node_id,
+                node_type,
+                generation,
+                source_revision,
+                record_fingerprint,
+                raw_payload,
+                raw_evidence_refs,
+                source_session_id,
+                raw_committed_at,
+            ) = raw
+            revision_id = _legacy_cognitive_uuid(
+                revision_id,
+                code="legacy_predigest_cognitive_revision_id_invalid",
+            )
+            _require(
+                revision_id not in revision_ids,
+                "legacy_predigest_cognitive_revision_id_duplicate",
+            )
+            revision_ids.add(revision_id)
+            source_id = _legacy_cognitive_uuid(
+                source_id,
+                code="legacy_predigest_cognitive_parent_id_invalid",
+            )
+            _require(
+                raw_board_id == board_id and source_id in base_times,
+                "legacy_predigest_cognitive_revision_parent_invalid",
+            )
+            _require(
+                isinstance(node_id, str) and 0 < len(node_id) <= 64,
+                "legacy_predigest_cognitive_node_id_invalid",
+            )
+            _require(
+                node_type in LEGACY_COGNITIVE_NODE_TYPES,
+                "legacy_predigest_cognitive_node_type_invalid",
+            )
+            _require(
+                type(generation) is int and generation >= 0,
+                "legacy_predigest_cognitive_generation_invalid",
+            )
+            _require(
+                type(source_revision) is int and source_revision > 0,
+                "legacy_predigest_cognitive_revision_invalid",
+            )
+            _require(
+                source_revision == revision_high_water.get(source_id, 0) + 1,
+                "legacy_predigest_cognitive_revision_sequence_invalid",
+            )
+            _require(
+                _is_sha256(record_fingerprint),
+                "legacy_predigest_cognitive_fingerprint_invalid",
+            )
+            _require(
+                source_session_id is None
+                or (
+                    isinstance(source_session_id, str)
+                    and 0 < len(source_session_id) <= 36
+                ),
+                "legacy_predigest_cognitive_session_invalid",
+            )
+            observed_at, committed_at = _legacy_cognitive_sqlite_timestamp(
+                raw_committed_at,
+                code="legacy_predigest_cognitive_committed_at_invalid",
+            )
+            _require(
+                observed_at >= revision_times.get(source_id, base_times[source_id]),
+                "legacy_predigest_cognitive_revision_before_parent",
+            )
+            revision_high_water[source_id] = source_revision
+            revision_times[source_id] = observed_at
+            order = (
+                observed_at,
+                node_id,
+                generation,
+                source_revision,
+                revision_id,
+            )
+            _require(
+                prior_revision_order is None or order > prior_revision_order,
+                "legacy_predigest_cognitive_revision_order_invalid",
+            )
+            prior_revision_order = order
+            record = {
+                "board_id": board_id,
+                "node_id": node_id,
+                "node_type": node_type,
+                "generation": generation,
+                "payload": _legacy_cognitive_payload(
+                    raw_payload,
+                    code="legacy_predigest_cognitive_payload_invalid",
+                ),
+                "evidence_refs": _legacy_cognitive_evidence_refs(
+                    raw_evidence_refs,
+                    code="legacy_predigest_cognitive_evidence_refs_invalid",
+                ),
+                "committed_at": committed_at,
+                "source_revision": source_revision,
+                "record_fingerprint": record_fingerprint,
+            }
+            all_records.append(record)
+            if observed_at <= cutoff:
+                revision_cut_count += 1
+                cut_records.append(record)
+                cut_fingerprints.append(("revision", revision_id, row_hash))
+        connection.rollback()
+
+    from okto_pulse.core.kg.rebuild_sources import (
+        cognitive_durable_digest_from_rows,
+    )
+    from okto_pulse.core.ports.kg_cognitive_source import CognitiveSourceError
+
+    # Validate the complete current append-only ledger as well as the historical
+    # cut.  A corrupt late revision must not be hidden merely because lane A
+    # predates it; lane B will need that revision immediately afterwards.
+    try:
+        cognitive_durable_digest_from_rows(all_records)
+        digest = cognitive_durable_digest_from_rows(cut_records)
+    except (CognitiveSourceError, TypeError, ValueError, RuntimeError) as exc:
+        raise RecoveryRefused("legacy_predigest_cognitive_ledger_invalid") from exc
+    _require(
+        set(digest) == {"count", "digest"}
+        and type(digest.get("count")) is int
+        and int(digest["count"]) > 0
+        and _is_sha256(digest.get("digest")),
+        "legacy_predigest_cognitive_digest_invalid",
+    )
+    return {
+        "cutoff": cutoff.isoformat(),
+        "base_row_count": base_cut_count,
+        "revision_row_count": revision_cut_count,
+        "count": int(digest["count"]),
+        "digest": str(digest["digest"]),
+        "ledger_fingerprint": _canonical_json_hash(cut_fingerprints),
+    }
+
+
 def _legacy_queue_current_evidence(
     db_path: Path,
     *,
@@ -5048,7 +5472,7 @@ def _legacy_queue_current_evidence(
         membership_sources[identity] = row
 
     projection = ", ".join(f'"{column}"' for column in LEGACY_QUEUE_COLUMNS)
-    with _sqlite_connect_readonly(db_path) as connection:
+    with closing(_sqlite_connect_readonly(db_path)) as connection:
         _legacy_exact_table_columns(
             connection,
             table="consolidation_queue",
@@ -5340,7 +5764,7 @@ def _legacy_reconciliation_run_id(
 ) -> str | None:
     """Select one legacy run from the WAL-aware queue or its durable intent."""
 
-    with _sqlite_connect_readonly(db_path) as connection:
+    with closing(_sqlite_connect_readonly(db_path)) as connection:
         active_sources = tuple(
             str(row[0])
             for row in connection.execute(
@@ -6349,6 +6773,64 @@ def _assert_legacy_queue_only_phase_consistency(
         _assert_legacy_queue_only_terminal_checkpoint(intent, checkpoint)
 
 
+def _load_verified_legacy_predigest_manifest(
+    *,
+    manifest_store: Any,
+    manifest_ref: str,
+    board_id: str,
+    manifest_payload: Mapping[str, Any],
+    db_path: Path,
+) -> tuple[Any, dict[str, Any], str]:
+    """Use Core's nominal pre-9b verifier with a governed relational cut."""
+
+    _require(
+        manifest_payload.get("manifest_ref") == manifest_ref
+        and manifest_payload.get("board_id") == board_id,
+        "legacy_predigest_manifest_binding_invalid",
+    )
+    preflight_hash = manifest_payload.get("preflight_hash")
+    _require(
+        _is_sha256(preflight_hash),
+        "legacy_predigest_manifest_preflight_invalid",
+    )
+    canonical_payload_sha256 = _canonical_json_hash(dict(manifest_payload))
+    cognitive_cut = _legacy_predigest_cognitive_cut(
+        db_path,
+        board_id=board_id,
+        manifest_created_at=manifest_payload.get("created_at"),
+    )
+    loader = getattr(
+        manifest_store,
+        "load_verified_legacy_predigest_v3",
+        None,
+    )
+    _require(
+        callable(loader),
+        "legacy_predigest_manifest_verifier_unavailable",
+    )
+    try:
+        verified = loader(
+            manifest_ref,
+            expected_board_id=board_id,
+            expected_preflight_hash=str(preflight_hash),
+            expected_canonical_payload_sha256=canonical_payload_sha256,
+            cognitive_digest={
+                "count": cognitive_cut["count"],
+                "digest": cognitive_cut["digest"],
+            },
+        )
+    except Exception as exc:
+        raise RecoveryRefused("legacy_queue_only_manifest_integrity_invalid") from exc
+    _require(
+        getattr(verified, "manifest_ref", None) == manifest_ref
+        and getattr(verified, "board_id", None) == board_id
+        and getattr(verified, "preflight_hash", None) == preflight_hash
+        and getattr(verified, "created_at", None) == cognitive_cut["cutoff"],
+        "legacy_predigest_manifest_verifier_binding_invalid",
+    )
+    return verified, cognitive_cut, canonical_payload_sha256
+
+
 def _build_legacy_queue_only_intent(
     *,
     bundle: ServiceBundle,
@@ -6417,14 +6899,17 @@ def _build_legacy_queue_only_intent(
         and re.fullmatch(r"[0-9a-f]{64}", source_set_hash) is not None,
         "legacy_queue_only_manifest_binding_invalid",
     )
-    try:
-        verified_manifest = bundle.manifest_store.load_verified(
-            command.manifest_ref,
-            expected_board_id=board_id,
-            expected_preflight_hash=preflight_hash,
-        )
-    except Exception as exc:
-        raise RecoveryRefused("legacy_queue_only_manifest_integrity_invalid") from exc
+    (
+        verified_manifest,
+        cognitive_cut,
+        canonical_manifest_sha256,
+    ) = _load_verified_legacy_predigest_manifest(
+        manifest_store=bundle.manifest_store,
+        manifest_ref=command.manifest_ref,
+        board_id=board_id,
+        manifest_payload=manifest_payload,
+        db_path=db_path,
+    )
     _require(
         getattr(verified_manifest, "source_set_hash", None) == source_set_hash,
         "legacy_queue_only_manifest_binding_invalid",
@@ -6498,8 +6983,11 @@ def _build_legacy_queue_only_intent(
         "manifest": {
             "relative": manifest_relative,
             "sha256": rebuild_baseline[manifest_relative],
+            "canonical_payload_sha256": canonical_manifest_sha256,
             "preflight_hash": preflight_hash,
             "source_set_hash": source_set_hash,
+            "created_at": cognitive_cut["cutoff"],
+            "cognitive_cut": cognitive_cut,
         },
         "terminal_run": terminal_run,
         "original_quarantine": original_quarantine,
@@ -6551,7 +7039,7 @@ def _legacy_queue_state_current(
     target_ids = tuple(sorted(expected_rows))
     projection = ", ".join(f'"{column}"' for column in LEGACY_QUEUE_COLUMNS)
     placeholders = ",".join("?" for _ in target_ids)
-    with _sqlite_connect_readonly(db_path) as connection:
+    with closing(_sqlite_connect_readonly(db_path)) as connection:
         _legacy_exact_table_columns(
             connection,
             table="consolidation_queue",
@@ -6690,6 +7178,7 @@ def _legacy_queue_state_current(
 def _assert_legacy_queue_only_evidence_current(
     intent: Any,
     *,
+    manifest_store: Any,
     data_home: Path,
     db_path: Path,
     historical_data_home: Path | None = None,
@@ -6705,8 +7194,10 @@ def _assert_legacy_queue_only_evidence_current(
     payload = intent.to_payload()
 
     immutable_rebuild: dict[str, str] = {}
-    manifest = dict(payload["manifest"])
-    immutable_rebuild[str(manifest["relative"])] = str(manifest["sha256"])
+    manifest_evidence = dict(payload["manifest"])
+    immutable_rebuild[str(manifest_evidence["relative"])] = str(
+        manifest_evidence["sha256"]
+    )
     for artifact in dict(payload["f06_artifacts"]).values():
         artifact = dict(artifact)
         immutable_rebuild[str(artifact["relative"])] = str(artifact["sha256"])
@@ -6723,6 +7214,34 @@ def _assert_legacy_queue_only_evidence_current(
             for relative, digest in immutable_rebuild.items()
         ),
         "legacy_queue_only_rebuild_evidence_changed",
+    )
+    manifest_payload = _read_baseline_json(
+        rebuild_root,
+        rebuild,
+        str(manifest_evidence["relative"]),
+        code="legacy_queue_only_manifest",
+    )
+    (
+        verified_manifest,
+        cognitive_cut,
+        canonical_manifest_sha256,
+    ) = _load_verified_legacy_predigest_manifest(
+        manifest_store=manifest_store,
+        manifest_ref=intent.manifest_ref,
+        board_id=intent.board_id,
+        manifest_payload=manifest_payload,
+        db_path=db_path,
+    )
+    _require(
+        manifest_evidence["source_set_hash"]
+        == getattr(verified_manifest, "source_set_hash", None)
+        and manifest_evidence["preflight_hash"]
+        == getattr(verified_manifest, "preflight_hash", None)
+        and manifest_evidence["created_at"]
+        == getattr(verified_manifest, "created_at", None)
+        and manifest_evidence["canonical_payload_sha256"] == canonical_manifest_sha256
+        and dict(manifest_evidence["cognitive_cut"]) == cognitive_cut,
+        "legacy_queue_only_manifest_changed_during_probe",
     )
 
     expected_quarantine: dict[str, str] = {}
@@ -6798,6 +7317,11 @@ def _assert_legacy_queue_only_evidence_current(
         "legacy_queue_only_checkpoint_changed_during_probe",
     )
     _assert_legacy_intent_memberships_bound_to_command(intent, command)
+    _assert_legacy_command_bound_to_manifest(
+        command,
+        verified_manifest,
+        prefix_schema=str(payload["prefix_schema"]),
+    )
     prefix_receipts, _prefix_evidence = _legacy_validate_prefix_receipts(
         rebuild_root=rebuild_root,
         rebuild_baseline=rebuild,
@@ -6955,19 +7479,33 @@ def _discover_legacy_queue_only_reconciliation(
             "legacy_queue_only_existing_intent_binding_invalid",
         )
         manifest_evidence = dict(intent.payload["manifest"])
-        try:
-            verified_manifest = bundle.manifest_store.load_verified(
-                command.manifest_ref,
-                expected_board_id=board_id,
-                expected_preflight_hash=str(manifest_evidence["preflight_hash"]),
-            )
-        except Exception as exc:
-            raise RecoveryRefused(
-                "legacy_queue_only_manifest_integrity_invalid"
-            ) from exc
+        manifest_payload = _read_baseline_json(
+            rebuild_root,
+            rebuild_baseline,
+            str(manifest_evidence["relative"]),
+            code="legacy_queue_only_manifest",
+        )
+        (
+            verified_manifest,
+            cognitive_cut,
+            canonical_manifest_sha256,
+        ) = _load_verified_legacy_predigest_manifest(
+            manifest_store=bundle.manifest_store,
+            manifest_ref=command.manifest_ref,
+            board_id=board_id,
+            manifest_payload=manifest_payload,
+            db_path=db_path,
+        )
         _require(
             getattr(verified_manifest, "source_set_hash", None)
-            == manifest_evidence["source_set_hash"],
+            == manifest_evidence["source_set_hash"]
+            and manifest_evidence["preflight_hash"]
+            == getattr(verified_manifest, "preflight_hash", None)
+            and manifest_evidence["created_at"]
+            == getattr(verified_manifest, "created_at", None)
+            and manifest_evidence["canonical_payload_sha256"]
+            == canonical_manifest_sha256
+            and dict(manifest_evidence["cognitive_cut"]) == cognitive_cut,
             "legacy_queue_only_manifest_binding_invalid",
         )
         _assert_legacy_command_bound_to_manifest(
@@ -6996,6 +7534,7 @@ def _discover_legacy_queue_only_reconciliation(
     _require(
         _assert_legacy_queue_only_evidence_current(
             intent,
+            manifest_store=bundle.manifest_store,
             data_home=data_home,
             db_path=db_path,
             historical_data_home=historical_data_home,
@@ -7999,7 +8538,7 @@ def _production_ordered_source_rows(
         _ordered_rebuild_sources,
     )
 
-    with _sqlite_connect_readonly(db_path) as connection:
+    with closing(_sqlite_connect_readonly(db_path)) as connection:
         ordered = _ordered_rebuild_sources(
             connection,
             board_id=board_id,
@@ -10182,6 +10721,7 @@ async def _execute_under_serve_lock(
             def legacy_evidence_probe(intent: Any) -> bool:
                 return _assert_legacy_queue_only_evidence_current(
                     intent,
+                    manifest_store=bundle.manifest_store,
                     data_home=data_home,
                     db_path=db_path,
                     historical_data_home=historical_data_home,

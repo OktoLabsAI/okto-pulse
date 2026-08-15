@@ -21,7 +21,7 @@ from typing import Any
 from uuid import RFC_4122, UUID
 
 
-LEGACY_QUEUE_ONLY_SCHEMA = "legacy_manual_restore_queue_only.v2"
+LEGACY_QUEUE_ONLY_SCHEMA = "legacy_manual_restore_queue_only.v3"
 LEGACY_QUEUE_ONLY_KIND = "legacy_manual_restore_queue_only"
 LEGACY_QUEUE_ONLY_PREFIX_SCHEMA = "pre_v4_legacy"
 LEGACY_DEAD_LETTER_GUARD_SCHEMA = "dead_letter_guard/v1"
@@ -717,15 +717,57 @@ def _validate_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
 
     manifest = _exact_mapping(
         result.get("manifest"),
-        keys=frozenset({"relative", "sha256", "preflight_hash", "source_set_hash"}),
+        keys=frozenset(
+            {
+                "relative",
+                "sha256",
+                "canonical_payload_sha256",
+                "preflight_hash",
+                "source_set_hash",
+                "created_at",
+                "cognitive_cut",
+            }
+        ),
         code="legacy_queue_only_manifest_invalid",
+    )
+    cognitive_cut = _exact_mapping(
+        manifest["cognitive_cut"],
+        keys=frozenset(
+            {
+                "cutoff",
+                "base_row_count",
+                "revision_row_count",
+                "count",
+                "digest",
+                "ledger_fingerprint",
+            }
+        ),
+        code="legacy_queue_only_manifest_cognitive_cut_invalid",
+    )
+    cutoff = _parse_timestamp(
+        cognitive_cut["cutoff"],
+        code="legacy_queue_only_manifest_cognitive_cut_invalid",
     )
     _require(
         manifest["relative"] == f"manifests/{manifest_ref}.json"
         and _is_sha256(manifest["sha256"])
+        and _is_sha256(manifest["canonical_payload_sha256"])
         and _is_sha256(manifest["preflight_hash"])
         and _is_sha256(manifest["source_set_hash"]),
         "legacy_queue_only_manifest_invalid",
+    )
+    _require(
+        manifest["created_at"] == cutoff.isoformat()
+        and cognitive_cut["cutoff"] == cutoff.isoformat()
+        and type(cognitive_cut["base_row_count"]) is int
+        and cognitive_cut["base_row_count"] > 0
+        and type(cognitive_cut["revision_row_count"]) is int
+        and cognitive_cut["revision_row_count"] >= 0
+        and type(cognitive_cut["count"]) is int
+        and cognitive_cut["count"] == cognitive_cut["base_row_count"]
+        and _is_sha256(cognitive_cut["digest"])
+        and _is_sha256(cognitive_cut["ledger_fingerprint"]),
+        "legacy_queue_only_manifest_cognitive_cut_invalid",
     )
 
     terminal = _exact_mapping(

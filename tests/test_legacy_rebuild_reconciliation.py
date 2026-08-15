@@ -229,8 +229,18 @@ def _intent(
         "manifest": {
             "relative": f"manifests/{MANIFEST_REF}.json",
             "sha256": "3" * 64,
+            "canonical_payload_sha256": "a" * 64,
             "preflight_hash": "4" * 64,
             "source_set_hash": "5" * 64,
+            "created_at": "2026-08-15T02:29:00+00:00",
+            "cognitive_cut": {
+                "cutoff": "2026-08-15T02:29:00+00:00",
+                "base_row_count": 1,
+                "revision_row_count": 1,
+                "count": 1,
+                "digest": "b" * 64,
+                "ledger_fingerprint": "c" * 64,
+            },
         },
         "terminal_run": {
             "run_id": "run_legacy",
