@@ -17,6 +17,7 @@ from okto_pulse.core.application.rebuild_processor import (
     RebuildCommand,
     RebuildEffectReceipt,
     RebuildOutcome,
+    RebuildOutcomeCode,
     RebuildState,
 )
 from okto_pulse.core.kg.interfaces.rebuild_audit_storage import (
@@ -92,9 +93,7 @@ def _policy_projection_details(
     active_count = int(getattr(result, "active_count"))
     activated_count = int(getattr(result, "activated_count"))
     ended_count = int(getattr(result, "ended_count"))
-    unadopted_active_count = int(
-        getattr(result, "unadopted_active_count")
-    )
+    unadopted_active_count = int(getattr(result, "unadopted_active_count"))
     node_ids = tuple(str(value) for value in getattr(result, "node_ids"))
     if (
         getattr(result, "board_id", None) != board_id
@@ -198,6 +197,23 @@ class CommunityRebuildEffects:
             queue_progress_events=int(payload.get("queue_progress_events", 0)),
             queue_grace_applied=bool(payload.get("queue_grace_applied", False)),
             queue_grace_reason=payload.get("queue_grace_reason"),
+            writer_handoff_count=int(payload.get("writer_handoff_count", 0)),
+            writer_reacquire_count=int(payload.get("writer_reacquire_count", 0)),
+            compensation_failed_state=(
+                RebuildState(str(payload["compensation_failed_state"]))
+                if payload.get("compensation_failed_state")
+                else None
+            ),
+            compensation_failure_code=(
+                RebuildOutcomeCode(str(payload["compensation_failure_code"]))
+                if payload.get("compensation_failure_code")
+                else None
+            ),
+            compensation_failure_detail=payload.get("compensation_failure_detail"),
+            compensation_actions=tuple(
+                CompensationAction(str(value))
+                for value in payload.get("compensation_actions", ())
+            ),
             receipts=receipts,
         )
         self._owner._rebuild_checkpoint_cache[run_id] = checkpoint
@@ -222,6 +238,22 @@ class CommunityRebuildEffects:
                 "queue_progress_events": checkpoint.queue_progress_events,
                 "queue_grace_applied": checkpoint.queue_grace_applied,
                 "queue_grace_reason": checkpoint.queue_grace_reason,
+                "writer_handoff_count": checkpoint.writer_handoff_count,
+                "writer_reacquire_count": checkpoint.writer_reacquire_count,
+                "compensation_failed_state": (
+                    checkpoint.compensation_failed_state.value
+                    if checkpoint.compensation_failed_state is not None
+                    else None
+                ),
+                "compensation_failure_code": (
+                    checkpoint.compensation_failure_code.value
+                    if checkpoint.compensation_failure_code is not None
+                    else None
+                ),
+                "compensation_failure_detail": (checkpoint.compensation_failure_detail),
+                "compensation_actions": [
+                    action.value for action in checkpoint.compensation_actions
+                ],
                 "receipts": {
                     key: _receipt_payload(receipt)
                     for key, receipt in checkpoint.receipts.items()
@@ -338,13 +370,112 @@ class CommunityRebuildEffects:
             )
         return self._store_receipt(command, receipt)
 
-    def enqueue(
-        self, command: RebuildCommand, *, effect_key: str
-    ) -> RebuildEffectReceipt:
+    def prepare_enqueue_resume_baseline(
+        self,
+        command: RebuildCommand,
+        *,
+        effect_key: str,
+        prior_receipt: RebuildEffectReceipt | None,
+        prior_admission_possible: bool,
+    ) -> RebuildEffectReceipt | None:
+        """Restore or conservatively seed a pre-v4 enqueue receipt.
+
+        A legacy checkpoint may survive while its separately persisted effect
+        receipt does not.  Once quarantine completed, absence of that receipt
+        is ambiguous: enqueue may have committed before the crash.  An empty
+        baseline is the only safe recovery cut because it cannot absorb a DLQ
+        produced by that earlier admission.
+        """
+
         existing = self._load_receipt(command, effect_key)
         if existing is not None:
             return existing
+        if prior_receipt is not None:
+            if (
+                prior_receipt.effect_key != effect_key
+                or prior_receipt.effect != "enqueue"
+            ):
+                raise ValueError("rebuild_enqueue_resume_receipt_identity_invalid")
+            return self._store_receipt(command, prior_receipt)
+        if not prior_admission_possible:
+            return None
+
+        from okto_pulse.community.adapters.board_rebuild_ingestion import (
+            REBUILD_QUEUE_ORDER_VERSION,
+        )
+
+        return self._store_receipt(
+            command,
+            RebuildEffectReceipt(
+                effect_key,
+                "enqueue",
+                True,
+                details={
+                    "queue_order_version": REBUILD_QUEUE_ORDER_VERSION,
+                    "enqueue_admission_complete": False,
+                    "baseline_dead_letter_ids": [],
+                    "baseline_recovery": "legacy_admission_unknown_fail_closed",
+                },
+            ),
+        )
+
+    def enqueue(
+        self, command: RebuildCommand, *, effect_key: str
+    ) -> RebuildEffectReceipt:
+        from okto_pulse.community.adapters.board_rebuild_ingestion import (
+            REBUILD_QUEUE_ORDER_VERSION,
+        )
+
+        existing = self._load_receipt(command, effect_key)
+        if (
+            existing is not None
+            and int(dict(existing.details).get("queue_order_version", 0))
+            >= REBUILD_QUEUE_ORDER_VERSION
+            and "baseline_dead_letter_ids" in dict(existing.details)
+            and bool(dict(existing.details).get("enqueue_admission_complete", False))
+        ):
+            return existing
+        existing_details = dict(existing.details) if existing is not None else {}
+        baseline_present = "baseline_dead_letter_ids" in existing_details
+        if existing is not None and not baseline_present:
+            # An older/partial enqueue receipt proves queue admission may have
+            # happened, but not which DLQs predated it. Resampling would absorb
+            # this run's own dead letter and could authorize a partial graph.
+            return self._store_receipt(
+                command,
+                RebuildEffectReceipt(
+                    effect_key,
+                    "enqueue",
+                    False,
+                    code="rebuild_enqueue_baseline_missing_requires_new_manifest",
+                    details={
+                        "queue_order_version": REBUILD_QUEUE_ORDER_VERSION,
+                        "enqueue_admission_complete": False,
+                    },
+                ),
+            )
+        baseline_dead_letter_ids = tuple(
+            str(value) for value in existing_details.get("baseline_dead_letter_ids", ())
+        )
         try:
+            if not baseline_present:
+                baseline_dead_letter_ids = self._owner.dead_letter_ids(command.board_id)
+            if not baseline_present:
+                # Persist the DLQ cut before queue admission/signal. A crash
+                # after this point replays against the same baseline.
+                self._store_receipt(
+                    command,
+                    RebuildEffectReceipt(
+                        effect_key,
+                        "enqueue",
+                        True,
+                        details={
+                            "queue_order_version": REBUILD_QUEUE_ORDER_VERSION,
+                            "enqueue_admission_complete": False,
+                            "baseline_dead_letter_ids": list(baseline_dead_letter_ids),
+                        },
+                    ),
+                )
             counts = self._owner.enqueue_sources(
                 board_id=command.board_id,
                 run_id=command.manifest_ref or command.run_id,
@@ -359,7 +490,12 @@ class CommunityRebuildEffects:
                 effect_key,
                 "enqueue",
                 True,
-                details=dict(counts),
+                details={
+                    **dict(counts),
+                    "queue_order_version": REBUILD_QUEUE_ORDER_VERSION,
+                    "enqueue_admission_complete": True,
+                    "baseline_dead_letter_ids": list(baseline_dead_letter_ids),
+                },
             )
         except Exception as exc:
             receipt = RebuildEffectReceipt(
@@ -367,7 +503,12 @@ class CommunityRebuildEffects:
                 "enqueue",
                 False,
                 code=f"enqueue_failed:{type(exc).__name__}",
-                details={"error": str(exc)},
+                details={
+                    "error": str(exc),
+                    "queue_order_version": REBUILD_QUEUE_ORDER_VERSION,
+                    "enqueue_admission_complete": False,
+                    "baseline_dead_letter_ids": list(baseline_dead_letter_ids),
+                },
             )
         return self._store_receipt(command, receipt)
 
@@ -380,7 +521,26 @@ class CommunityRebuildEffects:
     ) -> QueueObservation:
         if max_wait_seconds > 0:
             time.sleep(max_wait_seconds)
-        depth, blocking_reason = self._owner.queue_observation(command.board_id)
+        enqueue_receipt = self._load_receipt(
+            command,
+            f"{command.run_id}:enqueue",
+        )
+        baseline_dead_letter_ids = tuple(
+            str(value)
+            for value in (
+                dict(enqueue_receipt.details).get(
+                    "baseline_dead_letter_ids",
+                    (),
+                )
+                if enqueue_receipt is not None
+                else ()
+            )
+        )
+        depth, blocking_reason = self._owner.queue_observation(
+            command.board_id,
+            run_id=command.manifest_ref or command.run_id,
+            baseline_dead_letter_ids=baseline_dead_letter_ids,
+        )
         return QueueObservation(
             depth=depth,
             observed_at=datetime.now(timezone.utc),
@@ -510,17 +670,50 @@ class CommunityRebuildEffects:
     ) -> RebuildEffectReceipt:
         rebuild_command = self._checkpoint_command(command.run_id)
         existing = self._load_receipt(rebuild_command, effect_key)
-        if existing is not None:
+        if existing is not None and existing.ok:
             return existing
         details: dict[str, object] = {
             "actions": [action.value for action in command.actions]
         }
+
+        def _mutation_allowed(action: str) -> bool:
+            guard = command.mutation_guard
+            if guard is None:
+                return True
+            try:
+                allowed = bool(guard())
+            except Exception as exc:
+                details["mutation_guard"] = {
+                    "status": "lost",
+                    "before_action": action,
+                    "failure_type": type(exc).__name__,
+                }
+                return False
+            if not allowed:
+                details["mutation_guard"] = {
+                    "status": "lost",
+                    "before_action": action,
+                }
+            return allowed
+
+        def _guard_failure() -> RebuildEffectReceipt:
+            return self._store_receipt(
+                rebuild_command,
+                RebuildEffectReceipt(
+                    effect_key,
+                    "compensate",
+                    False,
+                    code="administrative_fence_lost",
+                    details=details,
+                ),
+            )
+
         ok = True
-        had_previous_graph = self._quarantine_had_affected_files(
-            rebuild_command
-        )
+        had_previous_graph = self._quarantine_had_affected_files(rebuild_command)
         queue_fenced = True
         if CompensationAction.CANCEL_ENQUEUED_SOURCES in command.actions:
+            if not _mutation_allowed("cancel_enqueued_sources"):
+                return _guard_failure()
             queue_result = self._owner.compensate_pending_sources(
                 board_id=command.board_id,
                 run_id=rebuild_command.manifest_ref or rebuild_command.run_id,
@@ -535,31 +728,26 @@ class CommunityRebuildEffects:
             }
 
         wants_discard = (
-            CompensationAction.DISCARD_CANDIDATE_GENERATION
-            in command.actions
+            CompensationAction.DISCARD_CANDIDATE_GENERATION in command.actions
         )
         restored: dict[str, object] | None = None
         if wants_discard and not had_previous_graph and queue_fenced:
+            if not _mutation_allowed("discard_candidate_generation"):
+                return _guard_failure()
             # A fresh board has no predecessor to restore.  Discard and prove
             # physical absence before the no-op restore phase.
             discarded = self._discard_fresh_candidate(rebuild_command)
             details["candidate_discard"] = discarded
-            ok = ok and bool(
-                discarded.get("status")
-                in {"already_absent", "discarded"}
-            )
+            ok = ok and bool(discarded.get("status") in {"already_absent", "discarded"})
         elif wants_discard and not queue_fenced:
             details["candidate_discard"] = {
                 "status": "blocked_by_active_queue",
-                "candidate_generation_id": (
-                    rebuild_command.candidate_generation_id
-                ),
+                "candidate_generation_id": (rebuild_command.candidate_generation_id),
             }
 
-        if (
-            CompensationAction.RESTORE_QUARANTINE in command.actions
-            and queue_fenced
-        ):
+        if CompensationAction.RESTORE_QUARANTINE in command.actions and queue_fenced:
+            if not _mutation_allowed("restore_quarantine"):
+                return _guard_failure()
             restored = self._restore_latest_quarantine(rebuild_command)
             details["quarantine_restore"] = restored
             ok = ok and bool(restored.get("ok", False))
@@ -575,11 +763,7 @@ class CommunityRebuildEffects:
             # predecessor is copied back and open-validated.  Expose that
             # DISCARD→RESTORE evidence explicitly; a second purge here would
             # destroy the restored predecessor.
-            report = (
-                dict(restored.get("report", {}))
-                if restored is not None
-                else {}
-            )
+            report = dict(restored.get("report", {})) if restored is not None else {}
             backup_quarantine_id = report.get("backup_quarantine_id")
             atomic_ok = bool(
                 restored is not None
@@ -592,9 +776,7 @@ class CommunityRebuildEffects:
                     if atomic_ok
                     else "atomic_backup_swap_unconfirmed"
                 ),
-                "candidate_generation_id": (
-                    rebuild_command.candidate_generation_id
-                ),
+                "candidate_generation_id": (rebuild_command.candidate_generation_id),
                 "candidate_quarantine_id": backup_quarantine_id,
                 "live_candidate_absent_before_restore": atomic_ok,
             }
@@ -633,20 +815,15 @@ class CommunityRebuildEffects:
                     get_current_provider_registry,
                 )
 
-                restore = (
-                    get_current_provider_registry().require_quarantine_restore()
-                )
+                restore = get_current_provider_registry().require_quarantine_restore()
                 self._quarantine_restore = restore
             except Exception as exc:
                 return {
                     "status": "discard_failed",
                     "code": (
-                        "rebuild_candidate_discard_unavailable:"
-                        f"{type(exc).__name__}"
+                        f"rebuild_candidate_discard_unavailable:{type(exc).__name__}"
                     ),
-                    "candidate_generation_id": (
-                        command.candidate_generation_id
-                    ),
+                    "candidate_generation_id": (command.candidate_generation_id),
                 }
         discard = getattr(restore, "discard_rebuild_candidate", None)
         if not callable(discard):
@@ -679,9 +856,7 @@ class CommunityRebuildEffects:
                 "code": f"rebuild_candidate_discard_failed:{type(exc).__name__}",
                 "candidate_generation_id": command.candidate_generation_id,
             }
-        result["candidate_generation_id"] = (
-            command.candidate_generation_id
-        )
+        result["candidate_generation_id"] = command.candidate_generation_id
         return result
 
     def _checkpoint_command(self, run_id: str) -> RebuildCommand:
@@ -793,9 +968,7 @@ class CommunityRebuildEffects:
         restored_files = tuple(
             str(value) for value in getattr(report, "restored_files", ())
         )
-        backup_quarantine_id = str(
-            getattr(report, "backup_quarantine_id", "") or ""
-        )
+        backup_quarantine_id = str(getattr(report, "backup_quarantine_id", "") or "")
         report_ok = bool(
             getattr(report, "applied", False)
             and getattr(report, "open_validated", False)
@@ -817,9 +990,7 @@ class CommunityRebuildEffects:
                 "backup_quarantine_id": backup_quarantine_id or None,
                 "restored_files": list(restored_files),
                 "restored_count": len(restored_files),
-                "open_validated": bool(
-                    getattr(report, "open_validated", False)
-                ),
+                "open_validated": bool(getattr(report, "open_validated", False)),
             },
         }
 

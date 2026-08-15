@@ -7,7 +7,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import JSON, exists, func, literal, select, update
+from sqlalchemy import JSON, case, exists, func, literal, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ArtifactDeletionTombstone,
@@ -145,6 +147,27 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
             if upsert.payload is None
             else literal(dict(upsert.payload), type_=JSON)
         )
+        rebuild_source = ConsolidationQueue.source.like("rebuild:%")
+        deferred_live_payload = literal(
+            {
+                "_rebuild_deferred_live": {
+                    "source": upsert.source,
+                    "triggered_by_event": upsert.triggered_by_event,
+                    "payload": (
+                        dict(upsert.payload) if upsert.payload is not None else None
+                    ),
+                }
+            },
+            type_=JSON,
+        )
+        source_expression = case(
+            (rebuild_source, ConsolidationQueue.source),
+            else_=upsert.source,
+        )
+        update_payload_expression = case(
+            (rebuild_source, deferred_live_payload),
+            else_=payload_expression,
+        )
         admitted_values = select(
             literal(candidate_id),
             literal(upsert.board_id),
@@ -194,10 +217,25 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
                     "status": "pending",
                     "attempts": 0,
                     "last_error": None,
-                    "priority": upsert.priority,
-                    "source": upsert.source,
-                    "triggered_by_event": upsert.triggered_by_event,
-                    "payload": upsert.payload,
+                    "priority": case(
+                        (rebuild_source, ConsolidationQueue.priority),
+                        else_=upsert.priority,
+                    ),
+                    # A live event racing rebuild membership is never a
+                    # duplicate no-op.  It revokes a stale claim and leaves a
+                    # distinct durable live intent.  The exact rebuild source
+                    # remains until ACK so drain membership cannot disappear;
+                    # ACK atomically re-pends the preserved live intent, which
+                    # the reservation-aware worker then defers until release.
+                    "source": source_expression,
+                    "triggered_by_event": case(
+                        (
+                            rebuild_source,
+                            ConsolidationQueue.triggered_by_event,
+                        ),
+                        else_=upsert.triggered_by_event,
+                    ),
+                    "payload": update_payload_expression,
                     "claimed_by_session_id": None,
                     "claim_token": None,
                     "claimed_at": None,
@@ -212,7 +250,10 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
                 # The Core worker's final claim fence and compare-and-delete
                 # ACK then either abort before graph commit or compensate its
                 # deferred graph mutation after losing the ACK CAS.
-                where=ConsolidationQueue.status != "pending",
+                where=or_(
+                    ConsolidationQueue.status != "pending",
+                    rebuild_source,
+                ),
             )
             .returning(ConsolidationQueue.id)
         )
@@ -307,10 +348,17 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
 
 
 def _upsert_insert_for_session(session: Any):
-    del session
-    from sqlalchemy.dialects.sqlite import insert
-
-    return insert
+    get_bind = getattr(session, "get_bind", None)
+    bind = get_bind() if callable(get_bind) else getattr(session, "bind", None)
+    dialect_name = str(getattr(getattr(bind, "dialect", None), "name", ""))
+    if dialect_name == "sqlite":
+        return sqlite_insert
+    if dialect_name == "postgresql":
+        return postgresql_insert
+    raise RuntimeError(
+        "community_relational_effects_upsert_dialect_unsupported:"
+        f"{dialect_name or 'unknown'}"
+    )
 
 
 _relational_effects = CommunitySqlAlchemyRelationalEffects()

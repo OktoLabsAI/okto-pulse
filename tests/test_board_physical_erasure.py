@@ -151,6 +151,15 @@ def test_rebuild_artifact_purge_covers_partitioned_shared_and_quarantine_state(
         _write(
             store,
             RebuildAuditKey(
+                namespace="rebuild_confirmation_receipt",
+                board_id=target,
+                artifact_id="receipt-target",
+            ),
+            {"board_id": target, "run_id": "run-target"},
+        ),
+        _write(
+            store,
+            RebuildAuditKey(
                 namespace="generation_current",
                 board_id=target,
                 artifact_id="current",
@@ -193,6 +202,15 @@ def test_rebuild_artifact_purge_covers_partitioned_shared_and_quarantine_state(
             artifact_id="event-other",
         ),
         {"board_id": other},
+    )
+    other_receipt = _write(
+        store,
+        RebuildAuditKey(
+            namespace="rebuild_confirmation_receipt",
+            board_id=other,
+            artifact_id="receipt-other",
+        ),
+        {"board_id": other, "run_id": "run-other"},
     )
 
     shared_specs = [
@@ -307,6 +325,7 @@ def test_rebuild_artifact_purge_covers_partitioned_shared_and_quarantine_state(
     for key in [*target_keys, *shared_target_keys]:
         assert not store.exists(key)
     assert store.exists(other_partitioned)
+    assert store.exists(other_receipt)
     assert store.exists(other_shared)
     assert not target_quarantine.exists()
     assert other_quarantine.exists()
@@ -314,6 +333,217 @@ def test_rebuild_artifact_purge_covers_partitioned_shared_and_quarantine_state(
     assert not wal_only.exists()
     assert not global_recovery.exists()
     assert store.purge_board_artifacts(target)["status"] == "not_found"
+
+
+@pytest.mark.parametrize(
+    ("crash_cut", "expected_active", "expected_histories"),
+    (
+        ("before_receipts", True, {"run-a.json", "run-b.json"}),
+        ("between_histories", True, {"run-b.json"}),
+        ("before_active", True, set()),
+        ("after_active", False, set()),
+    ),
+)
+def test_rebuild_artifact_purge_deletes_receipt_active_last(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    crash_cut: str,
+    expected_active: bool,
+    expected_histories: set[str],
+) -> None:
+    from okto_pulse.community.adapters import rebuild_audit_storage as storage_module
+
+    store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
+    board_id = "board-target"
+    ordinary_key = _write(
+        store,
+        RebuildAuditKey(
+            namespace="event_audit",
+            board_id=board_id,
+            artifact_id="event-before-receipts",
+        ),
+        {"board_id": board_id},
+    )
+    for run_id in ("run-a", "run-b"):
+        _write(
+            store,
+            RebuildAuditKey(
+                namespace="rebuild_confirmation_receipt",
+                board_id=board_id,
+                artifact_id=run_id,
+            ),
+            {"board_id": board_id, "run_id": run_id},
+        )
+    active_key = _write(
+        store,
+        RebuildAuditKey(
+            namespace="rebuild_confirmation_receipt",
+            board_id=board_id,
+            artifact_id="active",
+        ),
+        {"board_id": board_id, "run_id": "run-b"},
+    )
+
+    original_remove = storage_module.remove_contained_tree
+
+    def _crash_at_boundary(path: Path, *, base_dir: Path) -> tuple[int, int]:
+        name = Path(path).name
+        if crash_cut == "before_receipts" and name == "run-a.json":
+            raise RuntimeError("injected crash before receipt phase")
+        if crash_cut == "between_histories" and name == "run-b.json":
+            raise RuntimeError("injected crash between receipt histories")
+        if crash_cut == "before_active" and name == "active.json":
+            raise RuntimeError("injected crash before active sentinel")
+        result = original_remove(path, base_dir=base_dir)
+        if crash_cut == "after_active" and name == "active.json":
+            raise RuntimeError("injected crash after active sentinel")
+        return result
+
+    monkeypatch.setattr(storage_module, "remove_contained_tree", _crash_at_boundary)
+    with pytest.raises(RuntimeError, match="injected crash"):
+        store.purge_board_artifacts(board_id)
+
+    # The receipt phase starts only after every other board artifact is gone.
+    assert not store.exists(ordinary_key)
+    assert store.exists(active_key) is expected_active
+    receipt_dir = tmp_path / "rebuild" / "audit" / "confirmation_receipts" / board_id
+    remaining_histories = {
+        path.name for path in receipt_dir.glob("*.json") if path.name != "active.json"
+    }
+    assert remaining_histories == expected_histories
+
+
+def test_rebuild_artifact_purge_removes_all_other_targets_before_receipt_active(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okto_pulse.community.adapters import rebuild_audit_storage as storage_module
+
+    store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
+    board_id = "board-target"
+    event_key = _write(
+        store,
+        RebuildAuditKey(
+            namespace="event_audit",
+            board_id=board_id,
+            artifact_id="event",
+        ),
+        {"board_id": board_id},
+    )
+    history_key = _write(
+        store,
+        RebuildAuditKey(
+            namespace="rebuild_confirmation_receipt",
+            board_id=board_id,
+            artifact_id="run-history",
+        ),
+        {"board_id": board_id, "run_id": "run-history"},
+    )
+    active_key = _write(
+        store,
+        RebuildAuditKey(
+            namespace="rebuild_confirmation_receipt",
+            board_id=board_id,
+            artifact_id="active",
+        ),
+        {"board_id": board_id, "run_id": "run-history"},
+    )
+    original_remove = storage_module.remove_contained_tree
+    observed: list[str] = []
+    event_path = Path(store.reference(event_key))
+
+    def _observe_order(path: Path, *, base_dir: Path) -> tuple[int, int]:
+        name = Path(path).name
+        if name in {"run-history.json", "active.json"}:
+            observed.append(name)
+            assert not event_path.exists()
+        return original_remove(path, base_dir=base_dir)
+
+    monkeypatch.setattr(storage_module, "remove_contained_tree", _observe_order)
+    assert store.purge_board_artifacts(board_id)["status"] == "purged"
+
+    assert observed == ["run-history.json", "active.json"]
+    assert not store.exists(event_key)
+    assert not store.exists(history_key)
+    assert not store.exists(active_key)
+
+
+@pytest.mark.parametrize("alias_kind", ("root", "active", "history"))
+def test_rebuild_artifact_purge_preflights_receipt_symlinks_before_mutation(
+    tmp_path: Path,
+    alias_kind: str,
+) -> None:
+    base_dir = tmp_path / "kg"
+    store = CommunityFileSystemRebuildAuditArtifactStore(base_dir)
+    board_id = "board-target"
+    ordinary_key = _write(
+        store,
+        RebuildAuditKey(
+            namespace="event_audit",
+            board_id=board_id,
+            artifact_id="must-survive-failed-preflight",
+        ),
+        {"board_id": board_id},
+    )
+    receipt_dir = base_dir / "rebuild" / "audit" / "confirmation_receipts" / board_id
+    outside = tmp_path / f"outside-{alias_kind}"
+    if alias_kind == "root":
+        outside.mkdir()
+        receipt_dir.parent.mkdir(parents=True, exist_ok=True)
+        link_path = receipt_dir
+        target_is_directory = True
+    else:
+        receipt_dir.mkdir(parents=True)
+        outside.write_text("{}", encoding="utf-8")
+        link_path = receipt_dir / (
+            "active.json" if alias_kind == "active" else "run-history.json"
+        )
+        target_is_directory = False
+    try:
+        os.symlink(outside, link_path, target_is_directory=target_is_directory)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is unavailable")
+
+    with pytest.raises(RuntimeError, match="rebuild confirmation receipt"):
+        store.purge_board_artifacts(board_id)
+
+    assert store.exists(ordinary_key)
+    assert link_path.exists()
+    assert outside.exists()
+
+
+@pytest.mark.parametrize("artifact_name", ("active.json", "run-history.json"))
+def test_rebuild_artifact_purge_preflights_receipt_hardlinks_before_mutation(
+    tmp_path: Path,
+    artifact_name: str,
+) -> None:
+    store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
+    board_id = "board-target"
+    ordinary_key = _write(
+        store,
+        RebuildAuditKey(
+            namespace="event_audit",
+            board_id=board_id,
+            artifact_id="must-survive-hardlink-preflight",
+        ),
+        {"board_id": board_id},
+    )
+    receipt_dir = tmp_path / "rebuild" / "audit" / "confirmation_receipts" / board_id
+    receipt_dir.mkdir(parents=True)
+    outside = tmp_path / f"outside-{artifact_name}"
+    outside.write_text("{}", encoding="utf-8")
+    alias = receipt_dir / artifact_name
+    try:
+        os.link(outside, alias)
+    except (OSError, NotImplementedError):
+        pytest.skip("hardlink creation is unavailable")
+
+    with pytest.raises(RuntimeError, match="private regular JSON"):
+        store.purge_board_artifacts(board_id)
+
+    assert store.exists(ordinary_key)
+    assert alias.exists()
+    assert outside.exists()
 
 
 def test_rebuild_artifact_purge_preflights_unreadable_shared_state(

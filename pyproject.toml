@@ -66,6 +66,7 @@ content-type = "text/markdown"
 
 [project.scripts]
 okto-pulse = "okto_pulse.community.cli:main"
+okto-pulse-kg-recovery-only = "okto_pulse.community.kg_recovery_only:main"
 okto-pulse-saas-closure = "okto_pulse.community.saas_closure:main"
 
 [build-system]

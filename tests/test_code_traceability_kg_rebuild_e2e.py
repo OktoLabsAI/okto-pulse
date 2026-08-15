@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from okto_pulse.community.adapters.board_rebuild_ingestion import (
     CommunityBoardRebuildIngestionAdapter,
+    _resolve_evidence_dependency_closure,
 )
 from okto_pulse.community.adapters.board_source_reader import (
     CommunityBoardSourceReader,
@@ -26,6 +27,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.core.application.processors.consolidation import (
     _run_deterministic_worker,
 )
+from okto_pulse.core.kg.rebuild_sources import RebuildSourceEnumerator
 
 
 NOW = datetime(2026, 8, 9, 18, 0, tzinfo=timezone.utc)
@@ -287,6 +289,98 @@ async def seed_complete_traceability_source(connection) -> None:
     )
 
 
+async def seed_superseded_evidence_chain(connection) -> None:
+    """Extend the canonical fixture with active -> superseded -> superseded."""
+
+    table = Base.metadata.tables["code_evidence"]
+    common = {
+        "board_id": "board-1",
+        "investigation_receipt_id": "receipt-1",
+        "source_ref": "source-opaque-1",
+        "parent_type": "card",
+        "card_id": "card-1",
+        "parent_version": 1,
+        "evidence_type": "structure",
+        "declared_revision": "revision-1",
+        "workspace_state_id": "workspace-1",
+        "declared_dirty": False,
+        "reproducibility_claim": "committed",
+        "selector_kind": "file",
+        "relative_path": "src/module.py",
+        "language": "python",
+        "declared_file_blob_sha256": SHA_A,
+        "declared_source_content_sha256": SHA_A,
+        "attestation_state": "agent_attested",
+        "attestation_basis": "authenticated_agent_receipt",
+        "lifecycle_status": "superseded",
+        "submitted_by": "agent-1",
+        "payload_sha256": SHA_B,
+    }
+    await connection.execute(
+        table.insert(),
+        [
+            {
+                **common,
+                "id": "evidence-y",
+                "claim": "Historical root evidence.",
+                "supersedes_evidence_id": None,
+                "received_at": NOW - timedelta(seconds=2),
+                "idempotency_key": "evidence-idempotency-y",
+            },
+            {
+                **common,
+                "id": "evidence-z",
+                "claim": "Historical successor evidence.",
+                "supersedes_evidence_id": "evidence-y",
+                "received_at": NOW - timedelta(seconds=1),
+                "idempotency_key": "evidence-idempotency-z",
+            },
+            {
+                **common,
+                "id": "evidence-unrelated",
+                "claim": "Unrelated historical evidence.",
+                "supersedes_evidence_id": None,
+                "received_at": NOW - timedelta(seconds=3),
+                "idempotency_key": "evidence-idempotency-unrelated",
+            },
+        ],
+    )
+    await connection.execute(
+        table.update()
+        .where(table.c.id == "evidence-1")
+        .values(supersedes_evidence_id="evidence-z")
+    )
+
+
+def _closure_source(
+    evidence_id: str,
+    *,
+    status: str,
+    predecessor: str | None,
+    content_hash: str,
+    candidate: bool = False,
+) -> dict[str, object]:
+    row: dict[str, object] = {
+        "artifact_type": "code_evidence",
+        "id": evidence_id,
+        "source_ref": f"code_evidence:{evidence_id}",
+        "source_version": "1",
+        "content_hash": content_hash,
+        "status": status,
+        "source_artifact_status": status,
+        "supersedes_evidence_id": predecessor,
+        "_rebuild_manifest_created_at": "2026-08-15T00:00:00+00:00",
+    }
+    if candidate:
+        row.update(
+            {
+                "disposition": "skipped_expired_working",
+                "_rebuild_dependency_closure_candidate": ("code_evidence_supersedence"),
+            }
+        )
+    return row
+
+
 def endpoint_is_materialized(
     endpoint: str,
     *,
@@ -303,13 +397,209 @@ def endpoint_is_materialized(
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
+async def test_rebuild_closes_historical_evidence_chain_without_counting_it_as_canonical(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "evidence-closure.sqlite3"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path.as_posix()}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+        await seed_complete_traceability_source(connection)
+        await seed_superseded_evidence_chain(connection)
+
+    snapshot = CommunityBoardSourceReader(database_path).fetch("board-1")
+    assert snapshot.complete is True
+    source_set = RebuildSourceEnumerator(
+        source_store=lambda _board_id: list(snapshot.rows),
+        now=NOW + timedelta(days=1),
+    ).enumerate(board_id="board-1")
+    assert {
+        row.id
+        for row in source_set.skipped_expired_working
+        if row.artifact_type == "code_evidence"
+    } == {"evidence-unrelated", "evidence-y", "evidence-z"}
+
+    sources = [row.to_dict() for row in source_set.materializable_sources]
+    for source in sources:
+        source["_rebuild_manifest_created_at"] = NOW.isoformat()
+    for row in source_set.skipped_expired_working:
+        if row.artifact_type != "code_evidence":
+            continue
+        candidate = row.to_dict()
+        candidate["_rebuild_manifest_created_at"] = NOW.isoformat()
+        candidate["_rebuild_dependency_closure_candidate"] = (
+            "code_evidence_supersedence"
+        )
+        sources.append(candidate)
+
+    resolved, closure_count = _resolve_evidence_dependency_closure(
+        db_path=database_path,
+        board_id="board-1",
+        sources=sources,
+    )
+    closure = {
+        row["id"]: row for row in resolved if row.get("_rebuild_dependency_closure")
+    }
+    assert closure_count == 2
+    assert set(closure) == {"evidence-y", "evidence-z"}
+    assert {
+        (row["graph_layer"], row["maturity_status"], row["disposition"])
+        for row in closure.values()
+    } == {("working", "working_superseded", "skipped_expired_working")}
+
+    ingestion = CommunityBoardRebuildIngestionAdapter(db_path=database_path)
+    first = ingestion.enqueue_sources(
+        board_id="board-1",
+        run_id="evidence-closure-run",
+        sources=resolved,
+    )
+    second = ingestion.enqueue_sources(
+        board_id="board-1",
+        run_id="evidence-closure-run",
+        sources=resolved,
+    )
+    assert first["inserted"] > 0
+    assert second["inserted"] == 0
+
+    with sqlite3.connect(database_path) as connection:
+        ordered_evidence = [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT artifact_id FROM consolidation_queue "
+                "WHERE board_id=? AND artifact_type='code_evidence' "
+                "AND source=? ORDER BY priority, triggered_at, id",
+                ("board-1", "rebuild:evidence-closure-run"),
+            ).fetchall()
+        ]
+    assert ordered_evidence == ["evidence-y", "evidence-z", "evidence-1"]
+
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    persistence = CommunitySqlAlchemyConsolidationPersistence()
+    results = []
+    async with sessions() as session:
+        for evidence_id in ordered_evidence:
+            artifact = await persistence.load_artifact(
+                session,
+                artifact_type="code_evidence",
+                artifact_id=evidence_id,
+            )
+            assert artifact is not None
+            results.append(
+                _run_deterministic_worker(
+                    SimpleNamespace(artifact_type="code_evidence"),
+                    artifact,
+                )
+            )
+
+    nodes = [node for result in results for node in result.nodes]
+    edges = [edge for result in results for edge in result.edges]
+    evidence_refs = {
+        node.source_artifact_ref for node in nodes if node.kind_of == "code_evidence"
+    }
+    assert evidence_refs == {
+        "code_evidence:evidence-y",
+        "code_evidence:evidence-z",
+        "code_evidence:evidence-1",
+    }
+    assert {
+        (edge.from_candidate_id, edge.to_candidate_id)
+        for edge in edges
+        if edge.edge_type == "supersedes"
+    } == {
+        (
+            "code_evidence_evidence-z_entity",
+            "kgref:Entity:code_evidence:evidence-y",
+        ),
+        (
+            "code_evidence_evidence-1_entity",
+            "kgref:Entity:code_evidence:evidence-z",
+        ),
+    }
+    await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_error"),
+    (
+        ("missing", "rebuild_evidence_predecessor_missing"),
+        ("hash_drift", "rebuild_evidence_predecessor_identity_drift"),
+        ("cycle", "rebuild_evidence_supersedence_cycle"),
+        ("cross_board", "rebuild_evidence_predecessor_cross_board"),
+    ),
+)
+def test_evidence_dependency_closure_fails_closed_for_invalid_manifest_chain(
+    monkeypatch,
+    tmp_path,
+    case: str,
+    expected_error: str,
+) -> None:
+    active = _closure_source(
+        "evidence-a",
+        status="active",
+        predecessor="evidence-b",
+        content_hash=SHA_A,
+    )
+    predecessor = _closure_source(
+        "evidence-b",
+        status="superseded",
+        predecessor=("foreign-evidence" if case == "cross_board" else "evidence-c"),
+        content_hash=SHA_B,
+        candidate=True,
+    )
+    oldest = _closure_source(
+        "evidence-c",
+        status="superseded",
+        predecessor=("evidence-a" if case == "cycle" else None),
+        content_hash="c" * 64,
+        candidate=True,
+    )
+    current = [dict(active), dict(predecessor), dict(oldest)]
+    for row in current:
+        row.pop("_rebuild_dependency_closure_candidate", None)
+        row.pop("disposition", None)
+
+    sources = [active, predecessor]
+    if case != "missing" and case != "cross_board":
+        sources.append(oldest)
+    if case == "hash_drift":
+        sources[-1] = {**sources[-1], "content_hash": "d" * 64}
+
+    database_path = tmp_path / f"closure-{case}.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "CREATE TABLE code_evidence (id TEXT PRIMARY KEY, board_id TEXT NOT NULL)"
+        )
+        if case == "cross_board":
+            connection.execute(
+                "INSERT INTO code_evidence(id, board_id) VALUES (?, ?)",
+                ("foreign-evidence", "board-2"),
+            )
+        connection.commit()
+
+    monkeypatch.setattr(
+        CommunityBoardSourceReader,
+        "fetch",
+        lambda _self, _board_id: SimpleNamespace(
+            complete=True,
+            cause=None,
+            rows=tuple(current),
+        ),
+    )
+    with pytest.raises(RuntimeError, match=expected_error):
+        _resolve_evidence_dependency_closure(
+            db_path=database_path,
+            board_id="board-1",
+            sources=sources,
+        )
+
+
+@pytest.mark.e2e
+@pytest.mark.asyncio
 async def test_full_rebuild_materializes_traceability_with_zero_orphan_endpoints(
     tmp_path,
 ) -> None:
     database_path = tmp_path / "traceability-rebuild.sqlite3"
-    engine = create_async_engine(
-        f"sqlite+aiosqlite:///{database_path.as_posix()}"
-    )
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path.as_posix()}")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
         await seed_complete_traceability_source(connection)
@@ -321,9 +611,7 @@ async def test_full_rebuild_materializes_traceability_with_zero_orphan_endpoints
         for source in snapshot.rows
         if source["artifact_type"] in TRACEABILITY_TYPES
     )
-    assert {
-        source["source_ref"] for source in traceability_sources
-    } == {
+    assert {source["source_ref"] for source in traceability_sources} == {
         "code_investigation_receipt:receipt-1",
         "code_evidence:evidence-1",
         "implementation_target:target-1",
@@ -410,7 +698,8 @@ async def test_full_rebuild_materializes_traceability_with_zero_orphan_endpoints
     traceability_nodes = {
         node.kind_of: node
         for node in nodes
-        if node.kind_of in {
+        if node.kind_of
+        in {
             "code_investigation_receipt",
             "code_evidence",
             "implementation_target",
@@ -423,8 +712,7 @@ async def test_full_rebuild_materializes_traceability_with_zero_orphan_endpoints
     }
     for node in traceability_nodes.values():
         assert any(
-            node.candidate_id
-            in {edge.from_candidate_id, edge.to_candidate_id}
+            node.candidate_id in {edge.from_candidate_id, edge.to_candidate_id}
             for edge in edges
         )
 
@@ -433,8 +721,7 @@ async def test_full_rebuild_materializes_traceability_with_zero_orphan_endpoints
     assert any(
         edge.edge_type == "supports"
         and edge.from_candidate_id == evidence_node.candidate_id
-        and edge.to_candidate_id
-        == "kgref:Requirement:spec:spec-1:fr:fr-1"
+        and edge.to_candidate_id == "kgref:Requirement:spec:spec-1:fr:fr-1"
         for edge in edges
     )
     assert any(

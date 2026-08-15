@@ -84,6 +84,7 @@ _CROSS_EDITION_CONTRACT_EXPECTATION: tuple[str, ...] = (
     "okto_pulse.core.kg.orphan_integrity",
     "okto_pulse.core.kg.primitives",
     "okto_pulse.core.kg.quarantine",
+    "okto_pulse.core.kg.recovery_execution",
     "okto_pulse.core.kg.rebuild_audit",
     "okto_pulse.core.kg.rebuild_confirmation",
     "okto_pulse.core.kg.rebuild_deterministic",
@@ -171,12 +172,9 @@ _EXPECTED_CORE_CONTRACT_SURFACES = tuple(
     for item in _CROSS_EDITION_CONTRACT_EXPECTATION
     if item.startswith("okto_pulse.core.")
 )
-if (
-    len(_EXPECTED_CORE_CONTRACT_SURFACES)
-    != len(CORE_PUBLIC_CORE_CONTRACT_SURFACES)
-    or set(_EXPECTED_CORE_CONTRACT_SURFACES)
-    != set(CORE_PUBLIC_CORE_CONTRACT_SURFACES)
-):
+if len(_EXPECTED_CORE_CONTRACT_SURFACES) != len(
+    CORE_PUBLIC_CORE_CONTRACT_SURFACES
+) or set(_EXPECTED_CORE_CONTRACT_SURFACES) != set(CORE_PUBLIC_CORE_CONTRACT_SURFACES):
     raise RuntimeError(
         "public_core_contract_manifest_mismatch: Community was built against a "
         "different Core public-contract manifest "
@@ -203,15 +201,11 @@ PRIVATE_CORE_IMPLEMENTATION_SURFACES: tuple[str, ...] = (
 )
 
 
-COMMUNITY_ADAPTER_PROVENANCE_REGISTRY: tuple[
-    AdapterProvenanceRegistration, ...
-] = (
+COMMUNITY_ADAPTER_PROVENANCE_REGISTRY: tuple[AdapterProvenanceRegistration, ...] = (
     AdapterProvenanceRegistration(
         adapter_key="community_sqlalchemy_uow",
         owner="okto-pulse-community/relational",
-        implementation_module=(
-            "okto_pulse.community.adapters.sqlalchemy_unit_of_work"
-        ),
+        implementation_module=("okto_pulse.community.adapters.sqlalchemy_unit_of_work"),
         implementation_symbol="CommunityUnitOfWork",
         port_module="okto_pulse.core.repositories.interfaces.unit_of_work",
         port_symbol="PulseUnitOfWork",
@@ -256,7 +250,11 @@ COMMUNITY_ADAPTER_PROVENANCE_REGISTRY: tuple[
 def audit_community_adapter_provenance(
     source_root: str | Path | None = None,
 ) -> dict[str, object]:
-    root = Path(source_root) if source_root is not None else Path(__file__).resolve().parents[4]
+    root = (
+        Path(source_root)
+        if source_root is not None
+        else Path(__file__).resolve().parents[4]
+    )
     return audit_adapter_provenance(
         root,
         public_core_surfaces=PUBLIC_CORE_CONTRACT_SURFACES,

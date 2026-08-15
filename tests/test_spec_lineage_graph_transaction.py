@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from okto_pulse.community.adapters import kg_runtime
+from okto_pulse.community.adapters import kuzu_graph_transaction as graph_transaction
 from okto_pulse.community.adapters.kuzu_graph_transaction import (
     CommunityKuzuGraphTransaction,
 )
@@ -23,6 +24,7 @@ BOARD_ROOT_ID = "board-root"
 
 IDEATION_RULE = "belongs_to/spec_to_ideation@1.0"
 REFINEMENT_RULE = "belongs_to/spec_to_refinement@1.0"
+REFINEMENT_TO_IDEATION_RULE = "belongs_to/refinement_to_ideation@1.0"
 BOARD_RULE = "belongs_to/spec_to_board@1.0"
 
 
@@ -82,6 +84,30 @@ def _outgoing_edges(board_id: str) -> list[tuple[str, str]]:
             return rows
         finally:
             result.close()
+
+
+def test_lineage_delete_statement_is_source_bound_without_opening_kuzu() -> None:
+    scope = object.__new__(graph_transaction._KuzuTransactionScope)  # noqa: SLF001
+    statements: list[str] = []
+
+    def execute(statement, _params=None):  # noqa: ANN001, ANN201
+        statements.append(statement)
+        return GraphStatementResult()
+
+    scope.execute = execute
+    scope._delete_spec_lineage_edge(  # noqa: SLF001
+        SpecLineageEdgeSnapshot(
+            source_id=SPEC_ID,
+            target_id=IDEATION_ID,
+            rule_id=IDEATION_RULE,
+            attrs=_edge_attrs(IDEATION_RULE, "session-old"),
+        )
+    )
+
+    delete_statement = statements[0]
+    assert "(target:Entity {id: $target_id})" not in delete_statement
+    assert "(target:Entity)" in delete_statement
+    assert "target.id = $target_id" in delete_statement
 
 
 @pytest.mark.asyncio
@@ -245,7 +271,7 @@ async def test_real_adapter_partial_delete_and_restore_failure_carries_receipt(
 
 
 @pytest.mark.asyncio
-async def test_real_adapter_fails_closed_on_directional_metadata_inconsistency(
+async def test_real_adapter_fails_closed_on_duplicate_lineage_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -256,29 +282,14 @@ async def test_real_adapter_fails_closed_on_directional_metadata_inconsistency(
     try:
         kg_runtime.bootstrap_board_graph(board_id)
         scope = await _seed_scope(board_id)
-        original_execute = scope.execute
-
-        def _inconsistent_endpoint_read(statement, params=None):
-            result = original_execute(statement, params)
-            if (
-                "(target:Entity {id: $target_id})" in statement
-                and "RETURN target.id" in statement
-                and (params or {}).get("target_id") == IDEATION_ID
-            ):
-                rows = []
-                for row in result.rows:
-                    changed = list(row)
-                    changed[4] = "legacy"
-                    changed[5] = "belongs_to/semantic_guideline_lineage@1.0"
-                    rows.append(tuple(changed))
-                return GraphStatementResult(
-                    rows=tuple(rows),
-                    columns=result.columns,
-                    affected_count=result.affected_count,
-                )
-            return result
-
-        scope.execute = _inconsistent_endpoint_read  # type: ignore[method-assign]
+        assert scope.create_edge(
+            "belongs_to",
+            "Entity",
+            "Entity",
+            SPEC_ID,
+            IDEATION_ID,
+            _edge_attrs(IDEATION_RULE, "session-duplicate"),
+        )
 
         with pytest.raises(SpecLineageReconciliationError) as excinfo:
             scope.reconcile_spec_lineage_parent(
@@ -293,6 +304,55 @@ async def test_real_adapter_fails_closed_on_directional_metadata_inconsistency(
         assert _outgoing_edges(board_id) == [
             (BOARD_ROOT_ID, BOARD_RULE),
             (IDEATION_ID, IDEATION_RULE),
+            (IDEATION_ID, IDEATION_RULE),
+        ]
+    finally:
+        kg_runtime.close_all_connections(board_id)
+
+
+@pytest.mark.asyncio
+async def test_real_adapter_never_uses_endpoint_anchored_lineage_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board_id = f"spec-lineage-canonical-read-{uuid4().hex}"
+    monkeypatch.setattr(kg_runtime, "_kg_base_dir", lambda: tmp_path / "kg")
+    kg_runtime.reset_bootstrap_cache_for_tests()
+
+    try:
+        kg_runtime.bootstrap_board_graph(board_id)
+        scope = await _seed_scope(board_id)
+        # Reproduce the live topology that exposed Ladybug's bad endpoint
+        # plan: the intended target also owns an outgoing belongs_to edge
+        # with different provenance metadata.
+        assert scope.create_edge(
+            "belongs_to",
+            "Entity",
+            "Entity",
+            REFINEMENT_ID,
+            IDEATION_ID,
+            _edge_attrs(REFINEMENT_TO_IDEATION_RULE, "session-refinement"),
+        )
+        original_execute = scope.execute
+
+        def _reject_endpoint_anchored_plan(statement, params=None):
+            if "(target:Entity {id: $target_id})" in statement:
+                raise AssertionError("unsafe endpoint-anchored lineage plan")
+            return original_execute(statement, params)
+
+        scope.execute = _reject_endpoint_anchored_plan  # type: ignore[method-assign]
+        receipt = scope.reconcile_spec_lineage_parent(
+            SPEC_ID,
+            REFINEMENT_ID,
+            _edge_attrs(REFINEMENT_RULE, "session-new"),
+        )
+        await scope.commit()
+
+        assert receipt.new_edge_created is True
+        assert len(receipt.removed_edges) == 1
+        assert _outgoing_edges(board_id) == [
+            (BOARD_ROOT_ID, BOARD_RULE),
+            (REFINEMENT_ID, REFINEMENT_RULE),
         ]
     finally:
         kg_runtime.close_all_connections(board_id)
@@ -314,7 +374,8 @@ async def test_real_adapter_preserves_replacement_when_delete_is_silent_noop(
 
         def _silent_delete(statement, params=None):
             if (
-                "WHERE r.rule_id = $rule_id DELETE r" in statement
+                "r.rule_id = $rule_id" in statement
+                and "DELETE r" in statement
                 and (params or {}).get("rule_id") == IDEATION_RULE
             ):
                 return GraphStatementResult()

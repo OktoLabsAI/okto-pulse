@@ -7,9 +7,9 @@ without reimplementing materialization. Strategy is **enqueue-then-wake**:
 2. This adapter receives the source set already enumerated by
    the BoardSourceReader port (KG-02.2 ``RebuildSourceEnumerator`` passes
    it forward through ``sources_payload``).
-3. For each source row we UPSERT into ``ConsolidationQueue`` with the
-   same dedup semantics as ``ConsolidationEnqueuer`` (insert if new,
-   reset terminal rows to pending, leave pending/claimed alone). Rows use
+3. For each source row we UPSERT into ``ConsolidationQueue`` with an explicit
+   rebuild fence (insert if new; reset/resequence pending and terminal rows;
+   revoke any stale claimed token before the admin lease is delegated). Rows use
    high priority because explicit recovery must not sit behind unrelated
    corrupt-board backlog.
 4. We signal the consolidation worker so it picks up the new rows
@@ -34,12 +34,15 @@ Trade-off documented:
 
 from __future__ import annotations
 
+import heapq
+import json
 import logging
 import sqlite3
 import time
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -48,12 +51,441 @@ from okto_pulse.core.kg.board_rebuild_adapter import (
     DETERMINISTIC_SOURCE_ARTIFACT_TYPES,
     expected_layers_from_sources,
     queue_artifact_type,
+    rebuild_source_order_key,
 )
 from okto_pulse.core.kg.interfaces.graph_lifecycle import PurgeReport
 
-from okto_pulse.community.adapters.board_source_reader import resolve_pulse_db_path
+from okto_pulse.community.adapters.board_source_reader import (
+    CommunityBoardSourceReader,
+    resolve_pulse_db_path,
+)
 
 logger = logging.getLogger("okto_pulse.community.board_rebuild_ingestion")
+REBUILD_QUEUE_ORDER_VERSION = 4
+_EVIDENCE_CLOSURE_CANDIDATE = "code_evidence_supersedence"
+_MAX_EVIDENCE_CLOSURE_DEPTH = 256
+_REBUILD_SOURCE_OPERATIONAL_MARKERS = frozenset(
+    {
+        "_rebuild_manifest_created_at",
+        "_rebuild_dependency_closure",
+    }
+)
+_REBUILD_CHECKPOINT_UPGRADE_STATES = frozenset(
+    {
+        "planned",
+        "snapshotted",
+        "quarantined",
+        "enqueued",
+        "draining",
+    }
+)
+
+
+def _manifest_cut(rows: Sequence[Mapping[str, Any]]) -> str | None:
+    """Return one non-empty manifest cut shared by every supplied row."""
+
+    cuts = {str(row.get("_rebuild_manifest_created_at") or "").strip() for row in rows}
+    if len(cuts) != 1 or "" in cuts:
+        return None
+    return next(iter(cuts))
+
+
+def _source_upgrade_identity(row: Mapping[str, Any]) -> tuple[str, ...]:
+    return tuple(
+        str(row.get(field) or "")
+        for field in (
+            "artifact_type",
+            "id",
+            "source_ref",
+            "source_version",
+            "content_hash",
+        )
+    )
+
+
+def _normalized_upgrade_source(row: Mapping[str, Any]) -> str:
+    return json.dumps(
+        {
+            key: value
+            for key, value in dict(row).items()
+            if key not in _REBUILD_SOURCE_OPERATIONAL_MARKERS
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _checkpoint_source_upgrade_allowed(
+    checkpoint: Any,
+    sources: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Prove a bounded pre-v4 command upgrade without changing its cut.
+
+    The persisted denominator must be byte-equivalent after removing only
+    operational markers.  Current extras may only be resolver-validated
+    historical Evidence closure rows.  Snapshot/quarantine receipts stay
+    authoritative and the old enqueue receipt is replayed once at v4.
+    """
+
+    if str(getattr(checkpoint.state, "value", checkpoint.state)) not in (
+        _REBUILD_CHECKPOINT_UPGRADE_STATES
+    ):
+        return False
+    receipts = tuple(checkpoint.receipts.values())
+    if any(
+        receipt.effect in {"restore", "promote", "compensate"} for receipt in receipts
+    ):
+        return False
+    enqueue = next(
+        (receipt for receipt in receipts if receipt.effect == "enqueue"),
+        None,
+    )
+    if (
+        enqueue is not None
+        and int(dict(enqueue.details).get("queue_order_version", 0))
+        >= REBUILD_QUEUE_ORDER_VERSION
+    ):
+        return False
+    if enqueue is not None and "baseline_dead_letter_ids" not in dict(enqueue.details):
+        return False
+
+    old_rows = tuple(dict(row) for row in checkpoint.command.source_rows)
+    new_denominator = tuple(
+        dict(row) for row in sources if not row.get("_rebuild_dependency_closure")
+    )
+    closure = tuple(
+        dict(row) for row in sources if row.get("_rebuild_dependency_closure")
+    )
+    if any(
+        row.get("_rebuild_dependency_closure") != _EVIDENCE_CLOSURE_CANDIDATE
+        or row.get("artifact_type") != "code_evidence"
+        or row.get("source_artifact_status") != "superseded"
+        or row.get("disposition") != "skipped_expired_working"
+        for row in closure
+    ):
+        return False
+    denominator_cut = _manifest_cut(new_denominator)
+    if denominator_cut is None or (
+        closure and _manifest_cut(closure) != denominator_cut
+    ):
+        return False
+
+    denominator_evidence = {
+        str(row.get("id") or ""): row
+        for row in new_denominator
+        if row.get("artifact_type") == "code_evidence" and row.get("id")
+    }
+    closure_by_id = {str(row.get("id") or ""): row for row in closure if row.get("id")}
+    reachable_closure: set[str] = set()
+    frontier = [
+        str(row.get("supersedes_evidence_id") or "")
+        for row in denominator_evidence.values()
+        if row.get("supersedes_evidence_id")
+    ]
+    traversed: set[str] = set()
+    while frontier:
+        evidence_id = frontier.pop()
+        if evidence_id in traversed:
+            continue
+        traversed.add(evidence_id)
+        historical = closure_by_id.get(evidence_id)
+        if historical is None:
+            continue
+        reachable_closure.add(evidence_id)
+        predecessor = str(historical.get("supersedes_evidence_id") or "")
+        if predecessor:
+            frontier.append(predecessor)
+    if reachable_closure != set(closure_by_id):
+        return False
+
+    def indexed(rows: Sequence[Mapping[str, Any]]) -> dict[tuple[str, ...], str] | None:
+        result: dict[tuple[str, ...], str] = {}
+        for row in rows:
+            identity = _source_upgrade_identity(row)
+            if not all(identity) or identity in result:
+                return None
+            result[identity] = _normalized_upgrade_source(row)
+        return result
+
+    old_index = indexed(old_rows)
+    current_index = indexed(new_denominator)
+    return old_index is not None and old_index == current_index
+
+
+def _source_identity(row: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(row.get("source_ref") or ""),
+        str(row.get("source_version") or ""),
+        str(row.get("content_hash") or ""),
+        str(row.get("source_artifact_status") or row.get("status") or ""),
+    )
+
+
+def _resolve_evidence_dependency_closure(
+    *,
+    db_path: Path,
+    board_id: str,
+    sources: Sequence[Mapping[str, Any]],
+) -> tuple[tuple[dict[str, Any], ...], int]:
+    """Select the manifest-bound historical evidence closure.
+
+    Candidates are never trusted as payload authority.  The current Community
+    source projection must match their immutable manifest identity exactly;
+    only recursively referenced ``superseded`` predecessors are admitted.
+    They remain working historical roots and are marked separately so report
+    denominators exclude them while structural/source hashes still bind them.
+    """
+
+    base_rows: list[dict[str, Any]] = []
+    candidates: dict[str, dict[str, Any]] = {}
+    for raw in sources:
+        row = dict(raw)
+        marker = row.pop("_rebuild_dependency_closure_candidate", None)
+        if marker is None:
+            base_rows.append(row)
+            continue
+        if marker != _EVIDENCE_CLOSURE_CANDIDATE:
+            raise RuntimeError("rebuild_dependency_closure_candidate_invalid")
+        evidence_id = str(row.get("id") or "")
+        if (
+            not evidence_id
+            or row.get("artifact_type") != "code_evidence"
+            or row.get("source_artifact_status") != "superseded"
+            or row.get("disposition") != "skipped_expired_working"
+            or evidence_id in candidates
+        ):
+            raise RuntimeError("rebuild_evidence_closure_candidate_invalid")
+        candidates[evidence_id] = row
+
+    if candidates:
+        denominator_cut = _manifest_cut(base_rows)
+        if (
+            denominator_cut is None
+            or _manifest_cut(tuple(candidates.values())) != denominator_cut
+        ):
+            raise RuntimeError("rebuild_evidence_closure_manifest_drift")
+
+    evidence_bases = {
+        str(row.get("id")): row
+        for row in base_rows
+        if row.get("artifact_type") == "code_evidence" and row.get("id")
+    }
+    if not evidence_bases:
+        return tuple(base_rows), 0
+
+    snapshot = CommunityBoardSourceReader(db_path=db_path).fetch(board_id)
+    if not snapshot.complete:
+        raise RuntimeError(
+            f"rebuild_evidence_closure_source_unavailable:{snapshot.cause or 'unknown'}"
+        )
+    current = {
+        str(row.get("id")): dict(row)
+        for row in snapshot.rows
+        if row.get("artifact_type") == "code_evidence" and row.get("id")
+    }
+
+    # Materializable manifest identities are revalidated by the outer service,
+    # but proving them here keeps this closure fail-closed when the adapter is
+    # invoked directly or a relational mutation races command construction.
+    for evidence_id, manifest_row in evidence_bases.items():
+        live = current.get(evidence_id)
+        if live is None or _source_identity(live) != _source_identity(manifest_row):
+            raise RuntimeError("rebuild_evidence_source_identity_drift")
+
+    selected: dict[str, dict[str, Any]] = {}
+    for starting_id in sorted(evidence_bases):
+        cursor = starting_id
+        path: set[str] = {starting_id}
+        for _depth in range(_MAX_EVIDENCE_CLOSURE_DEPTH):
+            live = current.get(cursor)
+            if live is None:
+                raise RuntimeError("rebuild_evidence_source_missing")
+            predecessor = str(live.get("supersedes_evidence_id") or "")
+            if not predecessor:
+                break
+            if predecessor in path:
+                raise RuntimeError("rebuild_evidence_supersedence_cycle")
+            path.add(predecessor)
+            if predecessor in evidence_bases:
+                cursor = predecessor
+                continue
+            candidate = candidates.get(predecessor)
+            predecessor_live = current.get(predecessor)
+            if candidate is None or predecessor_live is None:
+                with sqlite3.connect(str(db_path), timeout=5.0) as conn:
+                    other_board = conn.execute(
+                        "SELECT board_id FROM code_evidence WHERE id=?",
+                        (predecessor,),
+                    ).fetchone()
+                if other_board is not None and str(other_board[0]) != board_id:
+                    raise RuntimeError("rebuild_evidence_predecessor_cross_board")
+                raise RuntimeError("rebuild_evidence_predecessor_missing")
+            if (
+                predecessor_live.get("artifact_type") != "code_evidence"
+                or str(predecessor_live.get("source_artifact_status") or "")
+                != "superseded"
+                or _source_identity(predecessor_live) != _source_identity(candidate)
+            ):
+                raise RuntimeError("rebuild_evidence_predecessor_identity_drift")
+            closure = dict(candidate)
+            closure["_rebuild_dependency_closure"] = _EVIDENCE_CLOSURE_CANDIDATE
+            selected[predecessor] = closure
+            cursor = predecessor
+        else:
+            raise RuntimeError("rebuild_evidence_closure_depth_exceeded")
+
+    return tuple(base_rows + [selected[key] for key in sorted(selected)]), len(selected)
+
+
+def _spec_topological_positions(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    spec_ids: set[str],
+) -> dict[str, int]:
+    if not spec_ids:
+        return {}
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='spec_dependencies'"
+    ).fetchone()
+    if table_exists is None:
+        return {spec_id: index for index, spec_id in enumerate(sorted(spec_ids))}
+
+    dependencies: dict[str, set[str]] = {spec_id: set() for spec_id in spec_ids}
+    dependents: dict[str, set[str]] = {spec_id: set() for spec_id in spec_ids}
+    rows = conn.execute(
+        "SELECT dependent_spec_id, "
+        "COALESCE(prerequisite_spec_id, prerequisite_spec_ref) "
+        "FROM spec_dependencies WHERE board_id=? AND active=1",
+        (board_id,),
+    ).fetchall()
+    for dependent_raw, prerequisite_raw in rows:
+        dependent = str(dependent_raw or "")
+        prerequisite = str(prerequisite_raw or "")
+        if dependent not in spec_ids:
+            continue
+        if prerequisite not in spec_ids:
+            raise RuntimeError("rebuild_spec_dependency_prerequisite_missing")
+        if prerequisite in dependencies[dependent]:
+            continue
+        dependencies[dependent].add(prerequisite)
+        dependents[prerequisite].add(dependent)
+
+    ready = [spec_id for spec_id, parents in dependencies.items() if not parents]
+    heapq.heapify(ready)
+    ordered: list[str] = []
+    while ready:
+        current = heapq.heappop(ready)
+        ordered.append(current)
+        for dependent in sorted(dependents[current]):
+            dependencies[dependent].discard(current)
+            if not dependencies[dependent]:
+                heapq.heappush(ready, dependent)
+    if len(ordered) != len(spec_ids):
+        raise RuntimeError("rebuild_spec_dependency_cycle")
+    return {spec_id: index for index, spec_id in enumerate(ordered)}
+
+
+def _evidence_topological_positions(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    evidence_ids: set[str],
+) -> dict[str, int]:
+    """Order immutable evidence predecessors before their successors."""
+
+    if not evidence_ids:
+        return {}
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='code_evidence'"
+    ).fetchone()
+    if table_exists is None:
+        return {
+            evidence_id: index for index, evidence_id in enumerate(sorted(evidence_ids))
+        }
+
+    dependencies: dict[str, set[str]] = {
+        evidence_id: set() for evidence_id in evidence_ids
+    }
+    dependents: dict[str, set[str]] = {
+        evidence_id: set() for evidence_id in evidence_ids
+    }
+    rows = conn.execute(
+        "SELECT id, supersedes_evidence_id FROM code_evidence "
+        "WHERE board_id=? AND id IN (" + ",".join("?" for _ in evidence_ids) + ")",
+        (board_id, *sorted(evidence_ids)),
+    ).fetchall()
+    if {str(row[0]) for row in rows} != evidence_ids:
+        raise RuntimeError("rebuild_evidence_source_missing")
+    for successor_raw, predecessor_raw in rows:
+        successor = str(successor_raw or "")
+        predecessor = str(predecessor_raw or "")
+        if not predecessor:
+            continue
+        if predecessor not in evidence_ids:
+            raise RuntimeError("rebuild_evidence_predecessor_missing")
+        dependencies[successor].add(predecessor)
+        dependents[predecessor].add(successor)
+
+    ready = [
+        evidence_id
+        for evidence_id, predecessors in dependencies.items()
+        if not predecessors
+    ]
+    heapq.heapify(ready)
+    ordered: list[str] = []
+    while ready:
+        current = heapq.heappop(ready)
+        ordered.append(current)
+        for successor in sorted(dependents[current]):
+            dependencies[successor].discard(current)
+            if not dependencies[successor]:
+                heapq.heappush(ready, successor)
+    if len(ordered) != len(evidence_ids):
+        raise RuntimeError("rebuild_evidence_supersedence_cycle")
+    return {evidence_id: index for index, evidence_id in enumerate(ordered)}
+
+
+def _ordered_rebuild_sources(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    sources: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    spec_ids = {
+        str(row.get("id", ""))
+        for row in sources
+        if str(row.get("artifact_type", "")) == "spec" and row.get("id")
+    }
+    spec_positions = _spec_topological_positions(
+        conn,
+        board_id=board_id,
+        spec_ids=spec_ids,
+    )
+    evidence_ids = {
+        str(row.get("id", ""))
+        for row in sources
+        if str(row.get("artifact_type", "")) == "code_evidence" and row.get("id")
+    }
+    evidence_positions = _evidence_topological_positions(
+        conn,
+        board_id=board_id,
+        evidence_ids=evidence_ids,
+    )
+
+    def _key(row: Mapping[str, Any]) -> tuple[int, int, str, str]:
+        dependency_rank, artifact_type, artifact_id = rebuild_source_order_key(row)
+        source_type = str(row.get("artifact_type", ""))
+        if source_type == "spec":
+            within_type = spec_positions.get(artifact_id, 0)
+        elif source_type == "code_evidence":
+            within_type = evidence_positions.get(artifact_id, 0)
+        else:
+            within_type = 0
+        return dependency_rank, within_type, artifact_type, artifact_id
+
+    return sorted(sources, key=_key)
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,19 +603,29 @@ class CommunityBoardRebuildIngestionAdapter:
     ) -> dict[str, int]:
         """UPSERT one ConsolidationQueue row per source. Returns counts
         bucketed by (inserted | reset_to_pending | left_alone). Pending and
-        claimed rows are left alone, preserving attempts, errors, retry and
-        claim ownership fields; terminal/retryable rows are reset to pending.
-        This supersedes older behavior that reset pending/claimed rows; active
-        rows now intentionally count as ``left_alone``. Uses
+        Pending rows are safely adopted and re-enqueued with the current
+        deterministic order and fresh retry budget. Claimed rows have their
+        exact claim token revoked while the rebuild still owns the exclusive
+        admin writer lease, so a stale worker fails its pre-commit CAS instead
+        of writing after quarantine. Terminal/retryable rows are reset to
+        pending. Uses
         ``priority='high'`` because an explicit rebuild is an operator recovery
         action; it must preempt unrelated backlog from other boards that may
         themselves be corrupt."""
 
-        counts = {"inserted": 0, "reset_to_pending": 0, "left_alone": 0}
-        if not sources:
-            return counts
-
+        counts = {
+            "inserted": 0,
+            "reset_to_pending": 0,
+            "reordered_pending": 0,
+            "fenced_claimed": 0,
+            "deferred_unrelated": 0,
+            "preserved_live_intent": 0,
+            "left_alone": 0,
+        }
         with sqlite3.connect(str(self._path()), timeout=10.0) as conn:
+            # Reserve the writer before the first queue read so the complete
+            # SELECT-to-UPSERT adoption is one atomic cut with live events.
+            conn.execute("BEGIN IMMEDIATE")
             conn.row_factory = sqlite3.Row
             queue_columns = {
                 str(column["name"])
@@ -194,7 +636,55 @@ class CommunityBoardRebuildIngestionAdapter:
             claim_token_reset = (
                 "claim_token=NULL, " if "claim_token" in queue_columns else ""
             )
-            for row in sources:
+            triggered_event_projection = (
+                "triggered_by_event"
+                if "triggered_by_event" in queue_columns
+                else "NULL AS triggered_by_event"
+            )
+            ordered_sources = _ordered_rebuild_sources(
+                conn,
+                board_id=board_id,
+                sources=sources,
+            )
+            target_keys = {
+                (
+                    queue_artifact_type(str(row.get("artifact_type", ""))),
+                    str(row.get("id", "")),
+                )
+                for row in ordered_sources
+                if row.get("id")
+                and str(row.get("artifact_type", ""))
+                in DETERMINISTIC_SOURCE_ARTIFACT_TYPES
+            }
+            # A worker may have claimed unrelated live/delete work just before
+            # the admin reservation was acquired.  Revoke every such claim
+            # while writer A is still held.  Rows outside this manifest remain
+            # durable and are ineligible under the exact reservation source;
+            # they resume normally after the reservation is released.
+            active_board_rows = conn.execute(
+                "SELECT id, artifact_type, artifact_id, work_kind, source "
+                "FROM consolidation_queue WHERE board_id=? "
+                "AND status IN ('pending', 'claimed')",
+                (board_id,),
+            ).fetchall()
+            for active in active_board_rows:
+                key = (str(active["artifact_type"]), str(active["artifact_id"]))
+                if str(active["work_kind"]) == "consolidate" and key in target_keys:
+                    continue
+                source = str(active["source"] or "state_transition")
+                if source.startswith("rebuild:"):
+                    source = f"deferred_admin:{run_id}"
+                conn.execute(
+                    "UPDATE consolidation_queue SET status='pending', "
+                    "claimed_by_session_id=NULL, "
+                    f"{claim_token_reset}claimed_at=NULL, worker_id=NULL, "
+                    "claim_timeout_at=NULL, next_retry_at=NULL, source=? "
+                    "WHERE id=?",
+                    (source, str(active["id"])),
+                )
+                counts["deferred_unrelated"] += 1
+            triggered_at_base = datetime.now(timezone.utc).replace(tzinfo=None)
+            for ordinal, row in enumerate(ordered_sources):
                 artifact_type = str(row.get("artifact_type", ""))
                 artifact_id = str(row.get("id", ""))
                 if artifact_type not in DETERMINISTIC_SOURCE_ARTIFACT_TYPES:
@@ -203,12 +693,59 @@ class CommunityBoardRebuildIngestionAdapter:
                 if not artifact_id:
                     continue
                 queue_id = str(uuid.uuid4())
+                triggered_at = (
+                    triggered_at_base + timedelta(microseconds=ordinal)
+                ).strftime("%Y-%m-%d %H:%M:%S.%f")
+                existing = conn.execute(
+                    "SELECT id, status, source, payload, "
+                    f"{triggered_event_projection} FROM consolidation_queue "
+                    "WHERE board_id=? AND artifact_type=? AND artifact_id=? "
+                    "AND work_kind='consolidate'",
+                    (board_id, queued_artifact_type, artifact_id),
+                ).fetchone()
+                membership_payload: dict[str, Any] = {
+                    "_rebuild_membership": {
+                        "run_id": run_id,
+                        "source_ref": str(row.get("source_ref") or ""),
+                        "source_version": str(row.get("source_version") or ""),
+                        "content_hash": str(row.get("content_hash") or ""),
+                    }
+                }
+                if existing is not None:
+                    existing_payload = existing["payload"]
+                    if isinstance(existing_payload, str) and existing_payload:
+                        try:
+                            existing_payload = json.loads(existing_payload)
+                        except (TypeError, ValueError):
+                            existing_payload = None
+                    existing_source = str(existing["source"] or "state_transition")
+                    if existing_source.startswith("rebuild:"):
+                        if isinstance(existing_payload, Mapping) and isinstance(
+                            existing_payload.get("_rebuild_deferred_live"),
+                            Mapping,
+                        ):
+                            membership_payload["_rebuild_deferred_live"] = dict(
+                                existing_payload["_rebuild_deferred_live"]
+                            )
+                            counts["preserved_live_intent"] += 1
+                    elif str(existing["status"]) in {"pending", "claimed"}:
+                        membership_payload["_rebuild_deferred_live"] = {
+                            "source": existing_source,
+                            "triggered_by_event": existing["triggered_by_event"],
+                            "payload": (
+                                dict(existing_payload)
+                                if isinstance(existing_payload, Mapping)
+                                else None
+                            ),
+                        }
+                        counts["preserved_live_intent"] += 1
                 written = conn.execute(
                     "INSERT INTO consolidation_queue "
                     "(id, board_id, artifact_type, artifact_id, priority, "
-                    "source, status, triggered_at, attempts, work_kind, generation) "
-                    "VALUES (?, ?, ?, ?, ?, ?, 'pending', datetime('now'), 0, "
-                    "'consolidate', 0) "
+                    "source, status, triggered_at, attempts, work_kind, generation, "
+                    "payload) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, 0, "
+                    "'consolidate', 0, ?) "
                     "ON CONFLICT(board_id, artifact_type, artifact_id) "
                     "WHERE work_kind='consolidate' "
                     "DO UPDATE SET "
@@ -217,9 +754,8 @@ class CommunityBoardRebuildIngestionAdapter:
                     f"{claim_token_reset}claimed_at=NULL, "
                     "worker_id=NULL, claim_timeout_at=NULL, "
                     "next_retry_at=NULL, priority=excluded.priority, "
-                    "source=excluded.source "
-                    "WHERE consolidation_queue.status NOT IN "
-                    "('pending', 'claimed') "
+                    "source=excluded.source, triggered_at=excluded.triggered_at, "
+                    "payload=excluded.payload "
                     "RETURNING id",
                     (
                         queue_id,
@@ -228,21 +764,42 @@ class CommunityBoardRebuildIngestionAdapter:
                         artifact_id,
                         "high",
                         f"rebuild:{run_id}",
+                        triggered_at,
+                        json.dumps(
+                            membership_payload,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
                     ),
                 ).fetchone()
                 if written is None:
                     counts["left_alone"] += 1
-                elif written["id"] == queue_id:
+                elif existing is None:
                     counts["inserted"] += 1
+                elif str(existing["status"]) == "pending":
+                    counts["reordered_pending"] += 1
+                elif str(existing["status"]) == "claimed":
+                    counts["fenced_claimed"] += 1
                 else:
                     counts["reset_to_pending"] += 1
             conn.commit()
         return counts
 
-    def queue_observation(self, board_id: str) -> tuple[int, str | None]:
-        """Return queue depth plus a typed reason for an actively blocked row."""
+    def queue_observation(
+        self,
+        board_id: str,
+        *,
+        run_id: str | None = None,
+        baseline_dead_letter_ids: Sequence[str] = (),
+    ) -> tuple[int, str | None]:
+        """Return active depth for one rebuild fence (or the legacy board view)."""
 
         with sqlite3.connect(str(self._path()), timeout=5.0) as conn:
+            scope_sql = ""
+            params: tuple[object, ...] = (board_id,)
+            if run_id is not None:
+                scope_sql = " AND work_kind='consolidate' AND source=?"
+                params = (board_id, f"rebuild:{run_id}")
             row = conn.execute(
                 "SELECT COUNT(*), "
                 "MAX(CASE "
@@ -253,14 +810,51 @@ class CommunityBoardRebuildIngestionAdapter:
                 "'graph_memory_pressure:%') "
                 "THEN 1 ELSE 0 END) "
                 "FROM consolidation_queue "
-                "WHERE board_id=? AND status IN ('pending', 'claimed')",
-                (board_id,),
+                "WHERE board_id=? AND status IN ('pending', 'claimed')"
+                f"{scope_sql}",
+                params,
             ).fetchone()
+            new_dead_letter = False
+            if run_id is not None:
+                dlq_exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='consolidation_dead_letter'"
+                ).fetchone()
+                if dlq_exists is not None:
+                    current_dlq_ids = {
+                        str(item[0])
+                        for item in conn.execute(
+                            "SELECT id FROM consolidation_dead_letter WHERE board_id=?",
+                            (board_id,),
+                        ).fetchall()
+                    }
+                    new_dead_letter = bool(
+                        current_dlq_ids - set(baseline_dead_letter_ids)
+                    )
         depth = int(row[0]) if row else 0
         blocking_reason = (
-            "graph_memory_pressure" if row is not None and bool(row[1]) else None
+            "rebuild_new_dead_letter"
+            if new_dead_letter
+            else ("graph_memory_pressure" if row is not None and bool(row[1]) else None)
         )
         return depth, blocking_reason
+
+    def dead_letter_ids(self, board_id: str) -> tuple[str, ...]:
+        with sqlite3.connect(str(self._path()), timeout=5.0) as conn:
+            exists_row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='consolidation_dead_letter'"
+            ).fetchone()
+            if exists_row is None:
+                return ()
+            return tuple(
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT id FROM consolidation_dead_letter "
+                    "WHERE board_id=? ORDER BY id",
+                    (board_id,),
+                ).fetchall()
+            )
 
     def queue_depth(self, board_id: str) -> int:
         """Return the queue depth while preserving the original adapter contract."""
@@ -273,6 +867,19 @@ class CommunityBoardRebuildIngestionAdapter:
         """Fence every active row from this rebuild before graph compensation."""
 
         with sqlite3.connect(str(self._path()), timeout=10.0) as conn:
+            # Deferred-live marker reads and their restore/fail writes share
+            # one writer reservation; a live retag cannot interleave here.
+            conn.execute("BEGIN IMMEDIATE")
+            conn.row_factory = sqlite3.Row
+            queue_columns = {
+                str(column[1])
+                for column in conn.execute(
+                    "PRAGMA table_info(consolidation_queue)"
+                ).fetchall()
+            }
+            claim_token_reset = (
+                "claim_token=NULL, " if "claim_token" in queue_columns else ""
+            )
             before = conn.execute(
                 "SELECT "
                 "SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END), "
@@ -282,10 +889,76 @@ class CommunityBoardRebuildIngestionAdapter:
                 "AND status IN ('pending', 'claimed')",
                 (board_id, f"rebuild:{run_id}"),
             ).fetchone()
+            active_rows = conn.execute(
+                "SELECT id, payload FROM consolidation_queue "
+                "WHERE board_id=? AND source=? "
+                "AND status IN ('pending', 'claimed')",
+                (board_id, f"rebuild:{run_id}"),
+            ).fetchall()
+            live_restored = 0
+            for active in active_rows:
+                payload: Any = active["payload"]
+                if isinstance(payload, str) and payload:
+                    try:
+                        payload = json.loads(payload)
+                    except (TypeError, ValueError):
+                        payload = None
+                marker = (
+                    payload.get("_rebuild_deferred_live")
+                    if isinstance(payload, Mapping)
+                    else None
+                )
+                if not isinstance(marker, Mapping):
+                    continue
+                live_source = str(marker.get("source") or "").strip()
+                live_payload = marker.get("payload")
+                if (
+                    not live_source
+                    or live_source.startswith("rebuild:")
+                    or (
+                        live_payload is not None
+                        and not isinstance(live_payload, Mapping)
+                    )
+                ):
+                    raise RuntimeError("rebuild_deferred_live_marker_invalid")
+                triggered_update = (
+                    "triggered_by_event=?, "
+                    if "triggered_by_event" in queue_columns
+                    else ""
+                )
+                params: list[Any] = []
+                if triggered_update:
+                    params.append(marker.get("triggered_by_event"))
+                params.extend(
+                    [
+                        live_source,
+                        (
+                            json.dumps(
+                                dict(live_payload),
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            )
+                            if live_payload is not None
+                            else None
+                        ),
+                        str(active["id"]),
+                    ]
+                )
+                conn.execute(
+                    "UPDATE consolidation_queue SET status='pending', "
+                    "attempts=0, last_error=NULL, next_retry_at=NULL, "
+                    "claimed_by_session_id=NULL, "
+                    f"{claim_token_reset}claimed_at=NULL, worker_id=NULL, "
+                    f"claim_timeout_at=NULL, {triggered_update}source=?, payload=?, "
+                    "triggered_at=datetime('now') WHERE id=?",
+                    tuple(params),
+                )
+                live_restored += 1
             cursor = conn.execute(
                 "UPDATE consolidation_queue SET status='failed', "
                 "last_error='rebuild_compensated', next_retry_at=NULL, "
-                "claimed_by_session_id=NULL, claimed_at=NULL, "
+                "claimed_by_session_id=NULL, "
+                f"{claim_token_reset}claimed_at=NULL, "
                 "worker_id=NULL, claim_timeout_at=NULL "
                 "WHERE board_id=? AND source=? "
                 "AND status IN ('pending', 'claimed')",
@@ -304,6 +977,7 @@ class CommunityBoardRebuildIngestionAdapter:
             "pending_compensated": int((before or (0, 0))[0] or 0),
             "claimed_compensated": int((before or (0, 0))[1] or 0),
             "active_remaining": remaining,
+            "live_intents_restored": live_restored,
             "total_compensated": max(0, int(cursor.rowcount or 0)),
         }
 
@@ -324,48 +998,239 @@ class CommunityBoardRebuildIngestionAdapter:
         )
         from okto_pulse.core.kg.rebuild_service import RebuildStepResult
 
-        deterministic = DeterministicStructuralRebuilder().as_rebuild_step_adapter(
-            source_resolver=source_resolver,
-        )
-
         def _adapter(req):
-            base_result = deterministic(req)
+            run_id = f"f06:{req.manifest_ref or req.candidate_kg_generation_id or req.board_id}"
+            self._rebuild_run_boards[run_id] = req.board_id
+            effects = CommunityRebuildEffects(self, artifact_store=self.artifact_store)
+            checkpoint = effects.load_checkpoint(run_id)
+
+            def _processor() -> RebuildProcessor:
+                return RebuildProcessor(
+                    effects,
+                    plan=RebuildPlan(
+                        stall_timeout_seconds=self.drain_timeout_seconds,
+                        hard_timeout_seconds=self.drain_hard_timeout_seconds,
+                        observation_wait_seconds=self.drain_poll_interval_seconds,
+                        final_grace_seconds=self.drain_final_grace_seconds,
+                        low_depth_threshold=self.drain_low_depth_threshold,
+                    ),
+                    cancel_requested=getattr(req, "cancel_requested", None),
+                    lease_renew=getattr(req, "lease_renew", None),
+                    orchestration_renew=getattr(req, "orchestration_renew", None),
+                    release_writer_for_drain=getattr(
+                        req,
+                        "release_writer_for_drain",
+                        None,
+                    ),
+                    reacquire_writer_after_drain=getattr(
+                        req,
+                        "reacquire_writer_after_drain",
+                        None,
+                    ),
+                    source_revalidate=getattr(req, "source_revalidate", None),
+                    receipt_replay_required=(
+                        lambda effect_name, receipt: (
+                            effect_name == "enqueue"
+                            and (
+                                int(
+                                    dict(receipt.details).get(
+                                        "queue_order_version",
+                                        0,
+                                    )
+                                )
+                                < REBUILD_QUEUE_ORDER_VERSION
+                                or not bool(
+                                    dict(receipt.details).get(
+                                        "enqueue_admission_complete",
+                                        False,
+                                    )
+                                )
+                                or "baseline_dead_letter_ids"
+                                not in dict(receipt.details)
+                            )
+                        )
+                    ),
+                )
+
+            recovery_failure_code = getattr(req, "recovery_failure_code", None)
+            if recovery_failure_code is not None:
+                if checkpoint is None:
+                    return RebuildStepResult(
+                        ok=False,
+                        detail=(
+                            "manifest_drift:recovery_checkpoint_missing_before_mutation"
+                        ),
+                    )
+                persisted = checkpoint.command
+                if (
+                    persisted.board_id != req.board_id
+                    or persisted.manifest_ref != req.manifest_ref
+                    or persisted.operation != req.operation
+                ):
+                    return RebuildStepResult(
+                        ok=False,
+                        detail="lease_lost:recovery_checkpoint_binding_mismatch",
+                    )
+                command = replace(
+                    persisted,
+                    owner_token=req.owner_token,
+                    salvage_pending=False,
+                )
+                try:
+                    failure_code = RebuildOutcomeCode(str(recovery_failure_code))
+                except ValueError:
+                    return RebuildStepResult(
+                        ok=False,
+                        detail="lease_lost:recovery_failure_code_invalid",
+                    )
+                outcome = _processor().fail_existing(
+                    command,
+                    code=failure_code,
+                    detail=(
+                        getattr(req, "recovery_failure_detail", None)
+                        or failure_code.value
+                    ),
+                )
+                by_effect = {receipt.effect: receipt for receipt in outcome.receipts}
+                quarantine = by_effect.get("quarantine")
+                compensate = by_effect.get("compensate")
+                affected_files = tuple(
+                    dict(quarantine.details).get("affected_files", ())
+                    if quarantine is not None
+                    else ()
+                )
+                cleanup_complete = bool(
+                    outcome.state.value == "failed"
+                    and (compensate is None or compensate.ok)
+                )
+                return RebuildStepResult(
+                    ok=False,
+                    detail=(
+                        f"manifest_drift:{outcome.detail or failure_code.value}"
+                        if cleanup_complete
+                        else f"lease_lost:{outcome.detail or outcome.code.value}"
+                    ),
+                    affected_files=affected_files,
+                    previous_kg_generation_id=command.previous_generation_id,
+                    current_kg_generation_id=command.previous_generation_id,
+                    drilldown={
+                        "rebuild_processor": {
+                            "state": outcome.state.value,
+                            "code": outcome.code.value,
+                            "promotion_allowed": outcome.promotion_allowed,
+                            "compensation_actions": [
+                                action.value for action in outcome.compensation_actions
+                            ],
+                        }
+                    },
+                )
+
+            sources, dependency_closure_count = _resolve_evidence_dependency_closure(
+                db_path=self._path(),
+                board_id=req.board_id,
+                sources=tuple(dict(row) for row in source_resolver(req)),
+            )
+            denominator_sources = tuple(
+                row for row in sources if not row.get("_rebuild_dependency_closure")
+            )
+            deterministic = DeterministicStructuralRebuilder().as_rebuild_step_adapter(
+                source_resolver=lambda _request: sources,
+            )
+            salvage_pending = (
+                bool(self.salvage_pending_provider(req.board_id))
+                if self.salvage_pending_provider is not None
+                else False
+            )
+            if checkpoint is not None:
+                persisted = checkpoint.command
+                if (
+                    persisted.board_id != req.board_id
+                    or persisted.manifest_ref != req.manifest_ref
+                    or persisted.operation != req.operation
+                ):
+                    raise RuntimeError("rebuild_resume_command_drift")
+                if persisted.source_rows != sources:
+                    if not _checkpoint_source_upgrade_allowed(
+                        checkpoint,
+                        sources,
+                    ):
+                        # Do not advertise a fresh-run boundary while the old
+                        # checkpoint may still own quarantine/candidate state.
+                        # An operator must reconcile or compensate this drift.
+                        return RebuildStepResult(
+                            ok=False,
+                            detail=(
+                                "rebuild_resume_command_drift_requires_"
+                                "operator_recovery"
+                            ),
+                            previous_kg_generation_id=(req.previous_kg_generation_id),
+                            current_kg_generation_id=(req.previous_kg_generation_id),
+                            drilldown={
+                                "rebuild_processor": {
+                                    "state": "blocked",
+                                    "code": "rebuild_resume_command_drift",
+                                    "promotion_allowed": False,
+                                    "compensation_actions": [],
+                                }
+                            },
+                        )
+                    # Strict pre-v4 compatibility upgrade: the denominator is
+                    # identical and only resolver-proven historical closure was
+                    # added. Persist the command before replaying enqueue so a
+                    # crash cannot leave a v4 receipt bound to v3 source rows.
+                    persisted = replace(persisted, source_rows=sources)
+                    checkpoint = replace(checkpoint, command=persisted)
+                    effects.save_checkpoint(checkpoint)
+                # The manifest-scoped F06 run is resumable. Its original
+                # candidate generation remains the durable identity even when
+                # the outer service invocation generated a fresh provisional
+                # candidate; only the live writer token and salvage fence are
+                # rebound.
+                command = replace(
+                    persisted,
+                    owner_token=req.owner_token,
+                    salvage_pending=salvage_pending,
+                )
+                effective_req = replace(
+                    req,
+                    previous_kg_generation_id=command.previous_generation_id,
+                    candidate_kg_generation_id=command.candidate_generation_id,
+                )
+            else:
+                command = RebuildCommand(
+                    run_id=run_id,
+                    board_id=req.board_id,
+                    manifest_ref=req.manifest_ref,
+                    operation=req.operation,
+                    actor_id=req.actor_id,
+                    reason=f"explicit_rebuild:{req.manifest_ref or req.operation}",
+                    source_rows=sources,
+                    previous_generation_id=req.previous_kg_generation_id,
+                    candidate_generation_id=req.candidate_kg_generation_id,
+                    owner_token=req.owner_token,
+                    salvage_pending=salvage_pending,
+                )
+                effective_req = req
+
+            base_result = deterministic(effective_req)
             if not base_result.ok:
                 return base_result
 
-            sources = tuple(dict(row) for row in source_resolver(req))
-            run_id = f"f06:{req.manifest_ref or req.candidate_kg_generation_id or req.board_id}"
-            self._rebuild_run_boards[run_id] = req.board_id
-            command = RebuildCommand(
-                run_id=run_id,
-                board_id=req.board_id,
-                manifest_ref=req.manifest_ref,
-                operation=req.operation,
-                actor_id=req.actor_id,
-                reason=f"explicit_rebuild:{req.manifest_ref or req.operation}",
-                source_rows=sources,
-                previous_generation_id=req.previous_kg_generation_id,
-                candidate_generation_id=req.candidate_kg_generation_id,
-                owner_token=req.owner_token,
-                salvage_pending=(
-                    bool(self.salvage_pending_provider(req.board_id))
-                    if self.salvage_pending_provider is not None
-                    else False
-                ),
-            )
-            effects = CommunityRebuildEffects(self, artifact_store=self.artifact_store)
-            outcome = RebuildProcessor(
-                effects,
-                plan=RebuildPlan(
-                    stall_timeout_seconds=self.drain_timeout_seconds,
-                    hard_timeout_seconds=self.drain_hard_timeout_seconds,
-                    observation_wait_seconds=self.drain_poll_interval_seconds,
-                    final_grace_seconds=self.drain_final_grace_seconds,
-                    low_depth_threshold=self.drain_low_depth_threshold,
-                ),
-                cancel_requested=getattr(req, "cancel_requested", None),
-                lease_renew=getattr(req, "lease_renew", None),
-            ).execute(command)
+            if checkpoint is not None:
+                enqueue_effect_key = f"{command.run_id}:enqueue"
+                prior_enqueue_receipt = checkpoint.receipts.get(enqueue_effect_key)
+                quarantine_completed = any(
+                    receipt.effect == "quarantine" and receipt.ok
+                    for receipt in checkpoint.receipts.values()
+                )
+                effects.prepare_enqueue_resume_baseline(
+                    command,
+                    effect_key=enqueue_effect_key,
+                    prior_receipt=prior_enqueue_receipt,
+                    prior_admission_possible=quarantine_completed,
+                )
+
+            outcome = _processor().execute(command)
 
             by_effect = {receipt.effect: receipt for receipt in outcome.receipts}
             quarantine = by_effect.get("quarantine")
@@ -380,20 +1245,24 @@ class CommunityBoardRebuildIngestionAdapter:
             enqueue_counts = dict(enqueue.details) if enqueue is not None else {}
             merged_counts = {
                 **base_result.counts,
+                "sources": len(denominator_sources),
+                "dependency_closure_sources": dependency_closure_count,
                 "enqueue_inserted": int(enqueue_counts.get("inserted", 0)),
                 "enqueue_reset_to_pending": int(
                     enqueue_counts.get("reset_to_pending", 0)
                 ),
+                "enqueue_reordered_pending": int(
+                    enqueue_counts.get("reordered_pending", 0)
+                ),
+                "enqueue_fenced_claimed": int(enqueue_counts.get("fenced_claimed", 0)),
                 "enqueue_left_alone": int(enqueue_counts.get("left_alone", 0)),
-                "expected_by_layer": expected_layers_from_sources(sources),
+                "expected_by_layer": expected_layers_from_sources(denominator_sources),
             }
             policy_projection = dict(
                 dict(promotion.details).get(
                     "policy_constraint_projection",
                     {
-                        "configured": (
-                            self.policy_constraint_rebuild is not None
-                        ),
+                        "configured": (self.policy_constraint_rebuild is not None),
                         "status": "not_executed",
                     },
                 )
@@ -442,6 +1311,12 @@ class CommunityBoardRebuildIngestionAdapter:
                 ),
                 "final_grace_seconds": self.drain_final_grace_seconds,
                 "low_depth_threshold": self.drain_low_depth_threshold,
+                "writer_handoff_count": (
+                    checkpoint.writer_handoff_count if checkpoint is not None else 0
+                ),
+                "writer_reacquire_count": (
+                    checkpoint.writer_reacquire_count if checkpoint is not None else 0
+                ),
             }
             drilldown = {
                 **base_result.drilldown,
@@ -489,9 +1364,7 @@ class CommunityBoardRebuildIngestionAdapter:
                     # as current, but the outer generation repository promotes
                     # only after this adapter returns ``ok=True``.  Every
                     # failure therefore leaves the previous generation current.
-                    current_kg_generation_id=(
-                        base_result.previous_kg_generation_id
-                    ),
+                    current_kg_generation_id=(base_result.previous_kg_generation_id),
                     previous_kg_generation_id=base_result.previous_kg_generation_id,
                     affected_files=tuple(base_result.affected_files) + affected_files,
                     structural_hash=base_result.structural_hash,
@@ -616,4 +1489,5 @@ BoardRebuildIngestionAdapter = CommunityBoardRebuildIngestionAdapter
 __all__ = [
     "BoardRebuildIngestionAdapter",
     "CommunityBoardRebuildIngestionAdapter",
+    "REBUILD_QUEUE_ORDER_VERSION",
 ]

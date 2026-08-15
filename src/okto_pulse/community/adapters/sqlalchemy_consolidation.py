@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import datetime
-from typing import Any, Sequence
+from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import and_, case, delete, exists, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -183,6 +184,7 @@ def _queue_record(row: Any) -> ConsolidationQueueRecord:
         claimed_by_session_id=row.claimed_by_session_id,
         triggered_at=row.triggered_at,
         priority=str(getattr(row.priority, "value", row.priority)),
+        source=str(getattr(row, "source", None) or "state_transition"),
         work_kind=str(row.work_kind),
         generation=int(row.generation or 0),
         payload=row.payload,
@@ -190,6 +192,28 @@ def _queue_record(row: Any) -> ConsolidationQueueRecord:
         claim_token=row.claim_token,
         triggered_by_event=row.triggered_by_event,
     )
+
+
+def _deferred_rebuild_live_intent(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, Mapping):
+        return None
+    candidate = payload.get("_rebuild_deferred_live")
+    if not isinstance(candidate, Mapping):
+        return None
+    source = str(candidate.get("source") or "").strip()
+    if not source or source.startswith("rebuild:"):
+        raise RuntimeError("rebuild_deferred_live_source_invalid")
+    live_payload = candidate.get("payload")
+    if live_payload is not None and not isinstance(live_payload, Mapping):
+        raise RuntimeError("rebuild_deferred_live_payload_invalid")
+    triggered_by_event = candidate.get("triggered_by_event")
+    return {
+        "source": source,
+        "triggered_by_event": (
+            str(triggered_by_event) if triggered_by_event is not None else None
+        ),
+        "payload": dict(live_payload) if live_payload is not None else None,
+    }
 
 
 async def _stage_intent_created_transition(
@@ -354,9 +378,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
             "selector_kind": evidence.selector_kind,
             "snapshot_line_start": evidence.snapshot_line_start,
             "snapshot_line_end": evidence.snapshot_line_end,
-            "declared_source_content_sha256": (
-                evidence.declared_source_content_sha256
-            ),
+            "declared_source_content_sha256": (evidence.declared_source_content_sha256),
             "evidence_type": evidence.evidence_type,
             "claim": evidence.claim,
             "supersedes_evidence_id": evidence.supersedes_evidence_id,
@@ -417,9 +439,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
             (
                 await context.execute(
                     select(ImplementationTargetEvidenceLinkRow)
-                    .where(
-                        ImplementationTargetEvidenceLinkRow.target_id == target.id
-                    )
+                    .where(ImplementationTargetEvidenceLinkRow.target_id == target.id)
                     .order_by(ImplementationTargetEvidenceLinkRow.id)
                 )
             )
@@ -497,16 +517,12 @@ class CommunitySqlAlchemyConsolidationPersistence:
             payload.update(
                 {
                     "resolution_state": resolution.state,
-                    "investigation_receipt_id": (
-                        resolution.investigation_receipt_id
-                    ),
+                    "investigation_receipt_id": (resolution.investigation_receipt_id),
                     "declared_revision": resolution.declared_revision,
                     "workspace_state_id": resolution.workspace_state_id,
                     "selector_fingerprint": resolution.selector_fingerprint,
                     "resolved_relative_path": resolution.resolved_relative_path,
-                    "resolved_qualified_symbol": (
-                        resolution.resolved_qualified_symbol
-                    ),
+                    "resolved_qualified_symbol": (resolution.resolved_qualified_symbol),
                     "resolved_symbol_kind": resolution.resolved_symbol_kind,
                     "resolved_line_start": resolution.resolved_line_start,
                     "resolved_line_end": resolution.resolved_line_end,
@@ -652,9 +668,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
                     taxonomy_digest=receipt.taxonomy_digest,
                     policy_digest=receipt.policy_digest,
                     input_digest=receipt.input_digest,
-                    canonicalization_version=(
-                        receipt.canonicalization_version
-                    ),
+                    canonicalization_version=(receipt.canonicalization_version),
                 )
                 currentness = evaluate_quality_projection_currentness(
                     board_id=board_id,
@@ -729,9 +743,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
                     taxonomy_digest=receipt.taxonomy_digest,
                     policy_digest=receipt.policy_digest,
                     input_digest=receipt.input_digest,
-                    canonicalization_version=(
-                        receipt.canonicalization_version
-                    ),
+                    canonicalization_version=(receipt.canonicalization_version),
                     ruleset_version=receipt.ruleset_version,
                     taxonomy_version=receipt.taxonomy_version,
                     analyzer_version=receipt.analyzer_version,
@@ -751,8 +763,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
                     select(SpecDependency, prerequisite)
                     .join(
                         prerequisite,
-                        prerequisite.id
-                        == SpecDependency.prerequisite_spec_id,
+                        prerequisite.id == SpecDependency.prerequisite_spec_id,
                     )
                     .where(
                         SpecDependency.board_id == board_id,
@@ -775,9 +786,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
                     or str(target.board_id) != board_id
                     or str(dependency.dependent_spec_id) != artifact_id
                 ):
-                    raise RuntimeError(
-                        "spec_dependency_projection_scope_mismatch"
-                    )
+                    raise RuntimeError("spec_dependency_projection_scope_mismatch")
                 dependencies.append(
                     CurrentSpecDependencyProjection(
                         dependency_id=str(dependency.id),
@@ -825,9 +834,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
         research_decisions: list[CurrentResearchDecisionSummary] = []
         for head, entry in research_rows:
             if entry is None:
-                raise RuntimeError(
-                    "research_decision_projection_head_dangling"
-                )
+                raise RuntimeError("research_decision_projection_head_dangling")
             if (
                 entry.id != head.current_entry_id
                 or entry.ledger_id != head.ledger_id
@@ -836,9 +843,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
                 or entry.refinement_version != head.refinement_version
                 or entry.status != head.status
             ):
-                raise RuntimeError(
-                    "research_decision_projection_scope_mismatch"
-                )
+                raise RuntimeError("research_decision_projection_scope_mismatch")
             evidence_refs = tuple(str(value) for value in entry.evidence_refs or ())
             alternatives = tuple(str(value) for value in entry.alternatives or ())
             fingerprint_payload = {
@@ -890,9 +895,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
                     created_at=entry.created_at,
                     updated_at=head.updated_at,
                     projection_fingerprint=(
-                        research_decision_current_head_fingerprint(
-                            fingerprint_payload
-                        )
+                        research_decision_current_head_fingerprint(fingerprint_payload)
                     ),
                 )
             )
@@ -976,14 +979,11 @@ class CommunitySqlAlchemyConsolidationPersistence:
                     select(ConsolidationQueue)
                     .where(
                         ConsolidationQueue.status == "pending",
-                        or_(
-                            ConsolidationQueue.next_retry_at.is_(None),
-                            ConsolidationQueue.next_retry_at <= now,
-                        ),
                     )
                     .order_by(
                         ConsolidationQueue.priority.asc(),
                         ConsolidationQueue.triggered_at.asc(),
+                        ConsolidationQueue.id.asc(),
                     )
                 )
             )
@@ -991,6 +991,175 @@ class CommunitySqlAlchemyConsolidationPersistence:
             .all()
         )
         return tuple(_queue_record(row) for row in rows)
+
+    async def list_ready_pending_exact(
+        self,
+        context: Any,
+        *,
+        now,
+        board_id: str,
+        source: str,
+        work_kind: str,
+    ) -> tuple[ConsolidationQueueRecord, ...]:
+        """List one recovery fence without exposing unrelated ready work."""
+
+        row = (
+            (
+                await context.execute(
+                    select(ConsolidationQueue)
+                    .where(
+                        ConsolidationQueue.status.in_(("pending", "claimed")),
+                        ConsolidationQueue.board_id == board_id,
+                        ConsolidationQueue.source == source,
+                        ConsolidationQueue.work_kind == work_kind,
+                    )
+                    .order_by(
+                        ConsolidationQueue.priority.asc(),
+                        ConsolidationQueue.triggered_at.asc(),
+                        ConsolidationQueue.id.asc(),
+                    )
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if row is None or row.status != "pending":
+            return ()
+        comparable_now = now
+        if row.next_retry_at is not None:
+            if row.next_retry_at.tzinfo is None and now.tzinfo is not None:
+                comparable_now = now.replace(tzinfo=None)
+            if row.next_retry_at > comparable_now:
+                return ()
+        return (_queue_record(row),)
+
+    async def list_claimed_exact(
+        self,
+        context: Any,
+        *,
+        board_id: str,
+        source: str,
+        work_kind: str,
+    ) -> tuple[ConsolidationQueueRecord, ...]:
+        """List claimed membership for one offline recovery reservation."""
+
+        rows = (
+            (
+                await context.execute(
+                    select(ConsolidationQueue)
+                    .where(
+                        ConsolidationQueue.status == "claimed",
+                        ConsolidationQueue.board_id == board_id,
+                        ConsolidationQueue.source == source,
+                        ConsolidationQueue.work_kind == work_kind,
+                    )
+                    .order_by(
+                        ConsolidationQueue.priority.asc(),
+                        ConsolidationQueue.triggered_at.asc(),
+                        ConsolidationQueue.id.asc(),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return tuple(_queue_record(row) for row in rows)
+
+    async def claim_ready_pending_exact(
+        self,
+        context: Any,
+        *,
+        entry_id: str,
+        board_id: str,
+        source: str,
+        work_kind: str,
+        generation: int,
+        now,
+        claim_timeout_at,
+        worker_id: str,
+        claim_token: str,
+    ) -> ConsolidationQueueRecord | None:
+        """CAS an exact recovery head after listing and before graph work."""
+
+        active_head_id = (
+            select(ConsolidationQueue.id)
+            .where(
+                ConsolidationQueue.status.in_(("pending", "claimed")),
+                ConsolidationQueue.board_id == board_id,
+                ConsolidationQueue.source == source,
+                ConsolidationQueue.work_kind == work_kind,
+            )
+            .order_by(
+                ConsolidationQueue.priority.asc(),
+                ConsolidationQueue.triggered_at.asc(),
+                ConsolidationQueue.id.asc(),
+            )
+            .limit(1)
+            .scalar_subquery()
+        )
+        row = (
+            await context.execute(
+                update(ConsolidationQueue)
+                .where(
+                    ConsolidationQueue.id == entry_id,
+                    ConsolidationQueue.id == active_head_id,
+                    ConsolidationQueue.status == "pending",
+                    ConsolidationQueue.board_id == board_id,
+                    ConsolidationQueue.source == source,
+                    ConsolidationQueue.work_kind == work_kind,
+                    ConsolidationQueue.generation == generation,
+                    or_(
+                        ConsolidationQueue.next_retry_at.is_(None),
+                        ConsolidationQueue.next_retry_at <= now,
+                    ),
+                )
+                .values(
+                    status="claimed",
+                    claimed_at=now,
+                    claim_timeout_at=claim_timeout_at,
+                    worker_id=worker_id,
+                    claimed_by_session_id=worker_id,
+                    claim_token=claim_token,
+                )
+                .returning(ConsolidationQueue)
+                .execution_options(synchronize_session=False)
+            )
+        ).scalar_one_or_none()
+        return _queue_record(row) if row is not None else None
+
+    async def board_administrative_rebuild_source(
+        self,
+        context: Any,
+        *,
+        board_id: str,
+    ) -> str | None:
+        """Read the canonical reservation used by rebuild and erasure.
+
+        ``context`` is intentionally accepted for the Core persistence seam;
+        the reservation itself is owned by the configured coordination port,
+        not by the relational transaction.
+        """
+
+        del context
+        from okto_pulse.core.kg.single_writer_lock import (
+            KGAdministrativeOperationReservation,
+        )
+
+        reservation = KGAdministrativeOperationReservation().inspect(board_id=board_id)
+        if (
+            reservation is None
+            or reservation.expires_at_epoch <= datetime.now(timezone.utc).timestamp()
+        ):
+            return None
+        prefix = "kg02_rebuild_reservation:"
+        if reservation.operation.startswith(prefix):
+            manifest_ref = reservation.operation.removeprefix(prefix)
+            if manifest_ref:
+                return f"rebuild:{manifest_ref}"
+        # A different/invalid administrative operation still reserves the
+        # board, but authorizes no queue membership.
+        return ""
 
     async def get_queue_entry(
         self, context: Any, *, entry_id: str
@@ -1008,6 +1177,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
         artifact_type: str,
         artifact_id: str,
         work_kind: str,
+        source: str,
         generation: int,
         delete_event_id: str | None,
     ) -> bool:
@@ -1024,6 +1194,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
             ConsolidationQueue.artifact_type == artifact_type,
             ConsolidationQueue.artifact_id == artifact_id,
             ConsolidationQueue.work_kind == work_kind,
+            ConsolidationQueue.source == source,
             ConsolidationQueue.generation == generation,
             (
                 ConsolidationQueue.delete_event_id.is_(None)
@@ -1086,6 +1257,9 @@ class CommunitySqlAlchemyConsolidationPersistence:
         *,
         entry_id: str,
         claim_token: str,
+        board_id: str,
+        source: str,
+        work_kind: str,
         generation: int,
         delete_event_id: str | None,
     ) -> bool:
@@ -1098,14 +1272,106 @@ class CommunitySqlAlchemyConsolidationPersistence:
             if delete_event_id is None
             else ConsolidationQueue.delete_event_id == delete_event_id
         )
+        claim_predicates = (
+            ConsolidationQueue.id == entry_id,
+            ConsolidationQueue.status == "claimed",
+            ConsolidationQueue.claim_token == claim_token,
+            ConsolidationQueue.board_id == board_id,
+            ConsolidationQueue.source == source,
+            ConsolidationQueue.work_kind == work_kind,
+            ConsolidationQueue.generation == generation,
+            delete_event_predicate,
+        )
+        claimed = (
+            await context.execute(
+                select(ConsolidationQueue).where(*claim_predicates).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if claimed is None:
+            return False
+        deferred_live = (
+            _deferred_rebuild_live_intent(claimed.payload)
+            if source.startswith("rebuild:")
+            else None
+        )
+        if deferred_live is not None:
+            result = await context.execute(
+                update(ConsolidationQueue)
+                .where(*claim_predicates)
+                .values(
+                    status="pending",
+                    attempts=0,
+                    last_error=None,
+                    next_retry_at=None,
+                    source=deferred_live["source"],
+                    triggered_by_event=deferred_live["triggered_by_event"],
+                    payload=deferred_live["payload"],
+                    triggered_at=func.now(),
+                    claimed_by_session_id=None,
+                    claim_token=None,
+                    claimed_at=None,
+                    worker_id=None,
+                    claim_timeout_at=None,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            return int(result.rowcount or 0) == 1
         result = await context.execute(
             delete(ConsolidationQueue).where(
                 ConsolidationQueue.id == entry_id,
                 ConsolidationQueue.status == "claimed",
                 ConsolidationQueue.claim_token == claim_token,
+                ConsolidationQueue.board_id == board_id,
+                ConsolidationQueue.source == source,
+                ConsolidationQueue.work_kind == work_kind,
                 ConsolidationQueue.generation == generation,
                 delete_event_predicate,
             )
+        )
+        return int(result.rowcount or 0) == 1
+
+    async def repend_claimed_queue_entry(
+        self,
+        context: Any,
+        *,
+        entry_id: str,
+        claim_token: str,
+        board_id: str,
+        source: str,
+        work_kind: str,
+        generation: int,
+        delete_event_id: str | None,
+    ) -> bool:
+        """Release one exact claim without changing its durable work intent."""
+
+        if not entry_id or not claim_token:
+            return False
+        delete_event_predicate = (
+            ConsolidationQueue.delete_event_id.is_(None)
+            if delete_event_id is None
+            else ConsolidationQueue.delete_event_id == delete_event_id
+        )
+        result = await context.execute(
+            update(ConsolidationQueue)
+            .where(
+                ConsolidationQueue.id == entry_id,
+                ConsolidationQueue.status == "claimed",
+                ConsolidationQueue.claim_token == claim_token,
+                ConsolidationQueue.board_id == board_id,
+                ConsolidationQueue.source == source,
+                ConsolidationQueue.work_kind == work_kind,
+                ConsolidationQueue.generation == generation,
+                delete_event_predicate,
+            )
+            .values(
+                status="pending",
+                claimed_by_session_id=None,
+                claim_token=None,
+                claimed_at=None,
+                worker_id=None,
+                claim_timeout_at=None,
+            )
+            .execution_options(synchronize_session=False)
         )
         return int(result.rowcount or 0) == 1
 
