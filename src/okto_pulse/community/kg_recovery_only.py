@@ -86,6 +86,7 @@ MAX_GOVERNED_REBUILD_ARTIFACT_BYTES = 16 * 1024 * 1024
 MAX_LEGACY_PROTECTED_QUEUE_ROWS = 16_384
 MAX_LEGACY_PROTECTED_QUEUE_BYTES = 32 * 1024 * 1024
 MAX_RECOVERY_SQLITE_TABLES = 512
+MAX_RECOVERY_SQLITE_SCHEMA_OBJECTS = 4_096
 CHECKPOINT_STATE_DRAINING = "draining"
 CHECKPOINT_STATE_COMPLETED = "completed"
 POST_DRAIN_CHECKPOINT_STATES = frozenset({"restored", "promoted", "completed"})
@@ -1383,7 +1384,7 @@ def _sqlite_schema_fingerprint(db_path: Path) -> str:
                 "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
             ),
             code="sqlite_schema_inventory",
-            max_rows=MAX_RECOVERY_SQLITE_TABLES,
+            max_rows=MAX_RECOVERY_SQLITE_SCHEMA_OBJECTS,
             max_bytes=MAX_LEGACY_PROTECTED_QUEUE_BYTES,
         )
         pragmas = {

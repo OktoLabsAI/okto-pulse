@@ -190,28 +190,37 @@ def test_legacy_outer_sqlite_snapshots_refuse_unbounded_global_rows(
             (("first", "one"), ("second", "two")),
         )
 
-    monkeypatch.setattr(recovery, "MAX_LEGACY_PROTECTED_QUEUE_ROWS", 1)
-    with pytest.raises(
-        recovery.RecoveryRefused,
-        match="sqlite_snapshot_row_limit_exceeded",
-    ):
-        recovery._full_queue_snapshot(db_path)
-    with pytest.raises(
-        recovery.RecoveryRefused,
-        match="sqlite_logical_table_app_settings_row_limit_exceeded",
-    ):
-        recovery._sqlite_logical_fingerprints(
-            db_path,
-            exclude_tables=frozenset(
-                {"consolidation_queue", "consolidation_dead_letter"}
-            ),
-        )
-    monkeypatch.setattr(recovery, "MAX_RECOVERY_SQLITE_TABLES", 1)
-    with pytest.raises(
-        recovery.RecoveryRefused,
-        match="sqlite_schema_inventory_row_limit_exceeded",
-    ):
-        recovery._sqlite_schema_fingerprint(db_path)
+    with monkeypatch.context() as row_limit:
+        row_limit.setattr(recovery, "MAX_LEGACY_PROTECTED_QUEUE_ROWS", 1)
+        with pytest.raises(
+            recovery.RecoveryRefused,
+            match="sqlite_snapshot_row_limit_exceeded",
+        ):
+            recovery._full_queue_snapshot(db_path)
+        with pytest.raises(
+            recovery.RecoveryRefused,
+            match="sqlite_logical_table_app_settings_row_limit_exceeded",
+        ):
+            recovery._sqlite_logical_fingerprints(
+                db_path,
+                exclude_tables=frozenset(
+                    {"consolidation_queue", "consolidation_dead_letter"}
+                ),
+            )
+    with monkeypatch.context() as object_limit:
+        object_limit.setattr(recovery, "MAX_RECOVERY_SQLITE_SCHEMA_OBJECTS", 1)
+        with pytest.raises(
+            recovery.RecoveryRefused,
+            match="sqlite_schema_inventory_row_limit_exceeded",
+        ):
+            recovery._sqlite_schema_fingerprint(db_path)
+    with monkeypatch.context() as byte_limit:
+        byte_limit.setattr(recovery, "MAX_LEGACY_PROTECTED_QUEUE_BYTES", 1)
+        with pytest.raises(
+            recovery.RecoveryRefused,
+            match="sqlite_schema_inventory_byte_limit_exceeded",
+        ):
+            recovery._sqlite_schema_fingerprint(db_path)
 
 
 def _create_legacy_artifacts(
