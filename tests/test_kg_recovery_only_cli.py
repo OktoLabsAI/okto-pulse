@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+import hashlib
 import inspect
 import json
 import os
@@ -40,6 +42,7 @@ EXECUTION_CONTRACT = {
 
 
 def _terminal(source_home: Path) -> dict[str, object]:
+    board_storage_post_teardown = {"graph.lbug": "a" * 64}
     return {
         "run_id": "run_0123456789abcdef01234567",
         "manifest_ref": "manifest_rehearsal",
@@ -56,6 +59,10 @@ def _terminal(source_home: Path) -> dict[str, object]:
         "graph_schema_version": "1",
         "sqlite_storage_before": SOURCE_STORAGE,
         "sqlite_storage_after": {"pulse.db": "8" * 64},
+        "board_storage_post_teardown": board_storage_post_teardown,
+        "board_storage_post_teardown_sha256": recovery._canonical_json_hash(
+            board_storage_post_teardown
+        ),
         "rehearsal_source_unchanged": True,
         "rehearsal_source_home": str(source_home),
     }
@@ -701,16 +708,21 @@ def test_preexisting_rebuild_temp_is_refused_before_plan_or_artifact_read(
     source = inspect.getsource(recovery._execute_under_serve_lock)
     snapshot_offset = source.index("rebuild_baseline = _snapshot_tree_hashes")
     refusal_offset = source.index("_assert_no_rebuild_transients(rebuild_baseline)")
+    graph_snapshot_offset = source.index(
+        "board_storage_baseline = _snapshot_tree_hashes"
+    )
     composition_offset = source.index("app = create_community_app()")
-    health_offset = source.index("raw_health = await _real_health")
+    health_offset = source.index("raw_health = _offline_cold_graph_health")
     plan_offset = source.index("plan = _select_recovery_run_plan")
     assert (
         snapshot_offset
         < refusal_offset
+        < graph_snapshot_offset
         < composition_offset
         < health_offset
         < plan_offset
     )
+    assert "raw_health = await _real_health" not in source
 
 
 def _make_dangling_directory_alias(path: Path) -> None:
@@ -835,6 +847,369 @@ def test_snapshot_refuses_unverifiable_root_lstat(
         match="recovery_artifact_alias_refused_unverifiable",
     ):
         recovery._snapshot_tree_hashes(root)
+
+
+def test_snapshot_read_denial_reports_only_safe_relative_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "boards" / BOARD_ID
+    root.mkdir(parents=True)
+    graph = root / "graph.lbug"
+    graph.write_bytes(b"native graph bytes")
+    original_open = recovery._open_snapshot_file_exclusive
+
+    @contextmanager
+    def guarded_open(path: Path):  # noqa: ANN202
+        if path == graph:
+            error = PermissionError(13, "simulated Ladybug sharing violation")
+            error.winerror = 32
+            raise error
+        with original_open(path) as handle:
+            yield handle
+
+    monkeypatch.setattr(recovery, "_open_snapshot_file_exclusive", guarded_open)
+    with pytest.raises(recovery.RecoveryRefused) as captured:
+        recovery._snapshot_tree_hashes(root)
+
+    message = str(captured.value)
+    assert "recovery_artifact_read_failed" in message
+    assert "relative='graph.lbug'" in message
+    assert "type=regular" in message
+    assert "attrs=" in message
+    assert "errno=13" in message
+    assert "winerror=32" in message
+    assert str(tmp_path) not in message
+
+
+def test_snapshot_enumeration_denial_is_typed_and_path_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "boards" / BOARD_ID
+    root.mkdir(parents=True)
+    original_scandir = os.scandir
+
+    def guarded_scandir(path):  # noqa: ANN001, ANN202
+        if Path(path) == root:
+            error = PermissionError(13, "simulated enumeration denial")
+            error.winerror = 5
+            raise error
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", guarded_scandir)
+    with pytest.raises(recovery.RecoveryRefused) as captured:
+        recovery._snapshot_tree_hashes(root)
+
+    message = str(captured.value)
+    assert "recovery_artifact_enumeration_failed" in message
+    assert "relative_dir='.'" in message
+    assert "errno=13" in message
+    assert "winerror=5" in message
+    assert str(tmp_path) not in message
+
+
+def test_snapshot_refuses_file_inserted_between_structural_passes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "rebuild"
+    root.mkdir()
+    original = root / "a.json"
+    original.write_bytes(b"stable baseline")
+    late = root / "late.tmp"
+    real_open = recovery._open_snapshot_file_exclusive
+    inserted = False
+
+    @contextmanager
+    def inserting_open(path: Path):  # noqa: ANN202
+        nonlocal inserted
+        if path == original and not inserted:
+            late.write_bytes(b"crash evidence inserted during snapshot")
+            inserted = True
+        with real_open(path) as handle:
+            yield handle
+
+    monkeypatch.setattr(recovery, "_open_snapshot_file_exclusive", inserting_open)
+
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="recovery_artifact_tree_changed_while_hashing",
+    ):
+        recovery._snapshot_tree_hashes(root)
+
+    assert late.read_bytes() == b"crash evidence inserted during snapshot"
+
+
+def test_snapshot_refuses_nested_file_inserted_during_second_hash_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "rebuild"
+    nested = root / "audit"
+    nested.mkdir(parents=True)
+    original = nested / "a.json"
+    original.write_bytes(b"stable baseline")
+    late = nested / "late.tmp"
+    real_open = recovery._open_snapshot_file_exclusive
+    open_count = 0
+
+    @contextmanager
+    def inserting_open(path: Path):  # noqa: ANN202
+        nonlocal open_count
+        if path == original:
+            open_count += 1
+            if open_count == 2:
+                late.write_bytes(b"inserted after second-pass enumeration")
+        with real_open(path) as handle:
+            yield handle
+
+    monkeypatch.setattr(recovery, "_open_snapshot_file_exclusive", inserting_open)
+
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="recovery_artifact_tree_changed_while_hashing",
+    ):
+        recovery._snapshot_tree_hashes(root)
+
+    assert open_count == 2
+    assert late.read_bytes() == b"inserted after second-pass enumeration"
+
+
+def test_snapshot_nested_tree_uses_authoritative_lstat_identity(tmp_path: Path) -> None:
+    root = tmp_path / "rebuild"
+    nested = root / "audit" / "board"
+    nested.mkdir(parents=True)
+    artifact = nested / "a.json"
+    artifact.write_bytes(b"nested artifact")
+
+    assert recovery._snapshot_tree_hashes(root) == {
+        "audit/board/a.json": hashlib.sha256(b"nested artifact").hexdigest()
+    }
+
+
+def test_offline_cold_health_is_conservative_and_snapshot_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okto_pulse.community.adapters import kuzu_graph_path_resolver
+
+    root = tmp_path / "boards" / BOARD_ID
+    root.mkdir(parents=True)
+    graph = root / "graph.lbug"
+    graph.write_bytes(b"closed graph")
+    state = SimpleNamespace(
+        path=graph,
+        exists=True,
+        locked=False,
+        quarantined=False,
+        sidecars=(),
+    )
+    monkeypatch.setattr(
+        kuzu_graph_path_resolver.CommunityKuzuGraphPathResolver,
+        "storage_state",
+        lambda _self, _board_id: state,
+    )
+    bundle = SimpleNamespace(
+        generation_repository=SimpleNamespace(
+            get_current=lambda _board_id: "generation-current"
+        )
+    )
+
+    health = recovery._offline_cold_graph_health(
+        bundle,
+        board_id=BOARD_ID,
+        board_storage_root=root,
+        board_storage_snapshot={"graph.lbug": "a" * 64},
+    )
+
+    assert health == {
+        "graph_state": "recovery_needed",
+        "metric_status": "unavailable",
+        "current_kg_generation_id": "generation-current",
+        "graph_storage_exists": True,
+        "graph_storage_locked": False,
+    }
+
+    state.sidecars = ("graph.lbug.wal",)
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="cold_graph_sidecar_snapshot_drift",
+    ):
+        recovery._offline_cold_graph_health(
+            bundle,
+            board_id=BOARD_ID,
+            board_storage_root=root,
+            board_storage_snapshot={"graph.lbug": "a" * 64},
+        )
+
+
+def test_post_teardown_board_snapshot_requires_one_closed_graph(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph_hash = "a" * 64
+    monkeypatch.setattr(
+        recovery,
+        "_snapshot_tree_hashes",
+        lambda _root: {"graph.lbug": graph_hash},
+    )
+
+    snapshot, digest = recovery._capture_post_teardown_board_storage(
+        data_home=tmp_path,
+        board_id=BOARD_ID,
+    )
+
+    assert snapshot == {"graph.lbug": graph_hash}
+    assert digest == recovery._canonical_json_hash(snapshot)
+
+    monkeypatch.setattr(
+        recovery,
+        "_snapshot_tree_hashes",
+        lambda _root: {
+            "graph.lbug": graph_hash,
+            "graph.lbug.wal": "b" * 64,
+        },
+    )
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="post_teardown_board_storage_invalid",
+    ):
+        recovery._capture_post_teardown_board_storage(
+            data_home=tmp_path,
+            board_id=BOARD_ID,
+        )
+
+
+def test_closed_board_snapshot_refuses_drain_timeout_before_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okto_pulse.community.adapters import kg_runtime
+
+    @contextmanager
+    def blocked_window(*_args, **_kwargs):  # noqa: ANN202
+        raise TimeoutError("simulated graph reader did not drain")
+        yield
+
+    monkeypatch.setattr(kg_runtime, "board_storage_mutation_window", blocked_window)
+    monkeypatch.setattr(
+        recovery,
+        "_snapshot_tree_hashes",
+        lambda _root: pytest.fail("hashed before reader drain completed"),
+    )
+
+    with pytest.raises(recovery.RecoveryRefused) as captured:
+        recovery._snapshot_closed_board_storage(
+            board_id=BOARD_ID,
+            board_storage_root=tmp_path / "boards" / BOARD_ID,
+            phase="unit-timeout",
+            drain_timeout_seconds=0.01,
+        )
+
+    assert "board_graph_close_before_snapshot_failed" in str(captured.value)
+    assert "phase='unit-timeout'" in str(captured.value)
+    assert "type=TimeoutError" in str(captured.value)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Ladybug handle contract")
+def test_real_ladybug_close_releases_hash_handle_and_allows_explicit_reopen(
+    tmp_path: Path,
+) -> None:
+    import textwrap
+
+    source_root = Path(recovery.__file__).resolve().parents[2]
+    child_home = tmp_path / "native-child"
+    script = textwrap.dedent(
+        """
+        import asyncio
+        from pathlib import Path
+        import sys
+        from okto_pulse.community import kg_recovery_only as recovery
+
+        async def main():
+            home = Path(sys.argv[1]).resolve()
+            for relative in ('data', 'rebuild', 'quarantine'):
+                (home / relative).mkdir(parents=True, exist_ok=True)
+            recovery._configure_explicit_environment(home)
+            from okto_pulse.community.main import create_community_app
+            from okto_pulse.community.adapters.kuzu_graph_store import (
+                CommunityKuzuGraphStore,
+            )
+            from okto_pulse.core.application.kg_runtime_access import (
+                resolve_graph_lifecycle,
+            )
+            from okto_pulse.core.composition import runtime_composition_scope
+
+            app = create_community_app()
+            composition = app.state.runtime_composition
+            transaction = app.state.mcp_cold_start_transaction
+            board_id = '11111111-1111-4111-8111-111111111111'
+            try:
+                with runtime_composition_scope(composition):
+                    lifecycle = resolve_graph_lifecycle()
+                    store = CommunityKuzuGraphStore()
+                    assert (await lifecycle.open(board_id)).opened
+                    assert store.get_schema_version(board_id)
+                    from okto_pulse.community.adapters.kg_runtime import (
+                        BoardConnection,
+                    )
+                    held_reader = BoardConnection(board_id)
+                    try:
+                        try:
+                            recovery._snapshot_closed_board_storage(
+                                board_id=board_id,
+                                board_storage_root=home / 'boards' / board_id,
+                                phase='native-proof-held-reader',
+                                drain_timeout_seconds=0.05,
+                            )
+                        except recovery.RecoveryRefused as exc:
+                            assert 'board_graph_close_before_snapshot_failed' in str(exc)
+                        else:
+                            raise AssertionError('active native reader was not refused')
+                    finally:
+                        held_reader.close()
+                    first = recovery._snapshot_closed_board_storage(
+                        board_id=board_id,
+                        board_storage_root=home / 'boards' / board_id,
+                        phase='native-proof-first'
+                    )
+                    assert set(first) == {'graph.lbug'}
+                    assert (await lifecycle.open(board_id)).opened
+                    assert store.get_schema_version(board_id)
+                    second = recovery._snapshot_closed_board_storage(
+                        board_id=board_id,
+                        board_storage_root=home / 'boards' / board_id,
+                        phase='native-proof-second'
+                    )
+                    assert set(second) == {'graph.lbug'}
+            finally:
+                with runtime_composition_scope(composition):
+                    await recovery._shutdown_composed_runtime(composition, None)
+                transaction.rollback()
+            post_teardown = recovery._snapshot_tree_hashes(
+                home / 'boards' / board_id
+            )
+            assert set(post_teardown) == {'graph.lbug'}
+            print('native_close_hash_reopen_teardown_ok')
+
+        asyncio.run(main())
+        """
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(source_root)
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(child_home)],
+        cwd=source_root.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "native_close_hash_reopen_teardown_ok" in completed.stdout
 
 
 def test_windows_reparse_flag_is_classified_as_filesystem_alias() -> None:
@@ -2339,11 +2714,14 @@ async def test_execute_under_lock_runs_archive_lane_with_exact_gate_contract(
     monkeypatch.setattr(recovery, "_authorize_governed_rebuild", noop_async)
     monkeypatch.setattr(
         recovery,
-        "_real_health",
-        lambda *_args, **_kwargs: __import__("asyncio").sleep(
-            0,
-            result={"graph_state": "healthy", "current_kg_generation_id": None},
-        ),
+        "_offline_cold_graph_health",
+        lambda *_args, **_kwargs: {
+            "graph_state": "recovery_needed",
+            "metric_status": "unavailable",
+            "current_kg_generation_id": None,
+            "graph_storage_exists": False,
+            "graph_storage_locked": False,
+        },
     )
     monkeypatch.setattr(recovery, "_build_service_bundle", lambda: bundle)
     monkeypatch.setattr(recovery, "_select_recovery_run_plan", lambda *_a, **_k: plan)
@@ -3874,6 +4252,71 @@ def test_live_receipt_is_consumed_then_revalidated_under_lock_before_db_probe() 
 
     assert consume_offset < lock_offset < locked_revalidation_offset
     assert locked_revalidation_offset < database_probe_offset
+
+
+def test_post_teardown_board_snapshot_is_bound_before_attestation_and_completion() -> (
+    None
+):
+    source = inspect.getsource(recovery._execute)
+    lock_offset = source.index("with acquire_serve_lock(settings) as serve_lock:")
+    lanes_offset = source.index("terminal = _run_bounded_recovery_lanes(")
+    snapshot_offset = source.index("_capture_post_teardown_board_storage(")
+    attach_offset = source.index('terminal["board_storage_post_teardown"]')
+    heartbeat_stop_offset = source.index("heartbeat.stop()")
+    attestation_offset = source.index("attestation = _build_rehearsal_attestation(")
+    completion_offset = source.index('_emit("offline_recovery_completed"')
+
+    assert (
+        lock_offset
+        < lanes_offset
+        < snapshot_offset
+        < attach_offset
+        < heartbeat_stop_offset
+        < attestation_offset
+        < completion_offset
+    )
+
+
+def test_terminal_evidence_requires_exact_post_teardown_board_snapshot(
+    tmp_path: Path,
+) -> None:
+    source_home = tmp_path / "live"
+    source_home.mkdir()
+    terminal = _terminal(source_home)
+
+    validated = recovery._validate_rehearsal_terminal_evidence(
+        terminal,
+        source_home=source_home,
+        source_storage=SOURCE_STORAGE,
+    )
+    assert validated["board_storage_post_teardown"] == {"graph.lbug": "a" * 64}
+
+    with_sidecar = dict(terminal)
+    with_sidecar["board_storage_post_teardown"] = {
+        "graph.lbug": "a" * 64,
+        "graph.lbug.wal": "b" * 64,
+    }
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="rehearsal_terminal_board_storage_invalid",
+    ):
+        recovery._validate_rehearsal_terminal_evidence(
+            with_sidecar,
+            source_home=source_home,
+            source_storage=SOURCE_STORAGE,
+        )
+
+    digest_mismatch = dict(terminal)
+    digest_mismatch["board_storage_post_teardown_sha256"] = "f" * 64
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="rehearsal_terminal_board_storage_digest_mismatch",
+    ):
+        recovery._validate_rehearsal_terminal_evidence(
+            digest_mismatch,
+            source_home=source_home,
+            source_storage=SOURCE_STORAGE,
+        )
 
 
 def test_attestation_is_path_bound_and_consumed_before_crash_cut(

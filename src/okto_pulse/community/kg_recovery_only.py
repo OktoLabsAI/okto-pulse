@@ -29,7 +29,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
-from contextlib import ExitStack, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
@@ -1697,6 +1697,21 @@ def _validate_storage_hashes(value: Any, *, code: str) -> dict[str, str]:
     return normalized
 
 
+def _validate_board_storage_hashes(value: Any, *, code: str) -> dict[str, str]:
+    _require(isinstance(value, Mapping), code)
+    _require(
+        all(
+            isinstance(key, str) and isinstance(item, str)
+            for key, item in value.items()
+        ),
+        code,
+    )
+    normalized = dict(value)
+    _require(set(normalized) == {"graph.lbug"}, code)
+    _require(_is_sha256(normalized["graph.lbug"]), code)
+    return normalized
+
+
 _REHEARSAL_TERMINAL_FIELDS = frozenset(
     {
         "run_id",
@@ -1714,6 +1729,8 @@ _REHEARSAL_TERMINAL_FIELDS = frozenset(
         "graph_schema_version",
         "sqlite_storage_before",
         "sqlite_storage_after",
+        "board_storage_post_teardown",
+        "board_storage_post_teardown_sha256",
         "rehearsal_source_unchanged",
         "rehearsal_source_home",
     }
@@ -1777,6 +1794,15 @@ def _validate_rehearsal_terminal_evidence(
     _validate_storage_hashes(
         evidence.get("sqlite_storage_after"),
         code="rehearsal_terminal_storage_after_invalid",
+    )
+    board_storage_post_teardown = _validate_board_storage_hashes(
+        evidence.get("board_storage_post_teardown"),
+        code="rehearsal_terminal_board_storage_invalid",
+    )
+    _require(
+        evidence.get("board_storage_post_teardown_sha256")
+        == _canonical_json_hash(board_storage_post_teardown),
+        "rehearsal_terminal_board_storage_digest_mismatch",
     )
     _require(
         storage_before == dict(source_storage),
@@ -2525,6 +2551,241 @@ def _active_rebuild_queue_depth(db_path: Path, *, board_id: str) -> int:
     return int(snapshot.rows[0][0])
 
 
+@contextmanager
+def _open_snapshot_file_exclusive(path: Path):  # noqa: ANN201
+    """Open one snapshot file while refusing a concurrent native handle."""
+
+    if os.name != "nt":
+        flags = os.O_RDONLY | int(getattr(os, "O_NOFOLLOW", 0))
+        fd = os.open(path, flags)
+        try:
+            with os.fdopen(fd, "rb", closefd=True) as handle:
+                fd = -1
+                yield handle
+        finally:
+            if fd >= 0:
+                os.close(fd)
+        return
+
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    create_file = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    close_handle = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    generic_read = 0x80000000
+    open_existing = 3
+    sequential_scan = 0x08000000
+    open_reparse_point = 0x00200000
+    native_handle = create_file(
+        os.path.abspath(path),
+        generic_read,
+        0,  # No FILE_SHARE_* flags: an extant native handle is a refusal.
+        None,
+        open_existing,
+        sequential_scan | open_reparse_point,
+        None,
+    )
+    invalid_handle = wintypes.HANDLE(-1).value
+    if native_handle == invalid_handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    fd: int | None = None
+    try:
+        fd = msvcrt.open_osfhandle(int(native_handle), os.O_RDONLY)
+        native_handle = None
+        with os.fdopen(fd, "rb", closefd=True) as handle:
+            fd = None
+            yield handle
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if native_handle not in (None, invalid_handle):
+            close_handle(native_handle)
+
+
+def _enumerate_snapshot_entries(root: Path) -> tuple[tuple[Path, os.stat_result], ...]:
+    """Enumerate without ``Path.rglob`` suppressing subtree access failures."""
+
+    pending = [root]
+    entries: list[tuple[Path, os.stat_result]] = []
+    while pending:
+        directory = pending.pop()
+        relative_directory = (
+            "." if directory == root else directory.relative_to(root).as_posix()
+        )
+        try:
+            directory_details = directory.lstat()
+            if directory.is_symlink() or _stat_is_filesystem_alias(directory_details):
+                raise RecoveryRefused(
+                    f"recovery_artifact_alias_refused:relative={relative_directory!r}"
+                )
+            if not stat.S_ISDIR(directory_details.st_mode):
+                raise RecoveryRefused(
+                    f"recovery_artifact_type_refused:relative={relative_directory!r}"
+                )
+            with os.scandir(directory) as iterator:
+                scanned = sorted(iterator, key=lambda entry: entry.name)
+        except RecoveryRefused:
+            raise
+        except OSError as exc:
+            raise RecoveryRefused(
+                "recovery_artifact_enumeration_failed:"
+                f"relative_dir={relative_directory!r};"
+                f"errno={getattr(exc, 'errno', None)!r};"
+                f"winerror={getattr(exc, 'winerror', None)!r}"
+            ) from exc
+        for entry in scanned:
+            path = Path(entry.path)
+            relative = path.relative_to(root).as_posix()
+            try:
+                details = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise RecoveryRefused(
+                    "recovery_artifact_unverifiable:"
+                    f"relative={relative!r};"
+                    f"errno={getattr(exc, 'errno', None)!r};"
+                    f"winerror={getattr(exc, 'winerror', None)!r}"
+                ) from exc
+            _require(
+                not entry.is_symlink() and not _stat_is_filesystem_alias(details),
+                "recovery_artifact_alias_refused",
+                relative,
+            )
+            _require(
+                stat.S_ISDIR(details.st_mode) or stat.S_ISREG(details.st_mode),
+                "recovery_artifact_type_refused",
+                relative,
+            )
+            entries.append((path, details))
+            if stat.S_ISDIR(details.st_mode):
+                pending.append(path)
+    return tuple(sorted(entries, key=lambda item: item[0].relative_to(root).as_posix()))
+
+
+def _snapshot_stat_identity(details: os.stat_result) -> tuple[int, ...]:
+    return tuple(
+        int(getattr(details, field))
+        for field in (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_size",
+            "st_mtime_ns",
+            "st_nlink",
+        )
+    )
+
+
+def _snapshot_authoritative_entries(
+    root: Path,
+) -> tuple[tuple[Path, os.stat_result], ...]:
+    authoritative: list[tuple[Path, os.stat_result]] = []
+    for path, details in _enumerate_snapshot_entries(root):
+        relative = path.relative_to(root).as_posix()
+        try:
+            baseline = path.lstat()
+        except OSError as exc:
+            raise RecoveryRefused(
+                "recovery_artifact_unverifiable:"
+                f"relative={relative!r};"
+                f"errno={getattr(exc, 'errno', None)!r};"
+                f"winerror={getattr(exc, 'winerror', None)!r}"
+            ) from exc
+        _require(
+            not path.is_symlink() and not _stat_is_filesystem_alias(baseline),
+            "recovery_artifact_alias_refused",
+            relative,
+        )
+        _require(
+            stat.S_ISDIR(baseline.st_mode) or stat.S_ISREG(baseline.st_mode),
+            "recovery_artifact_type_refused",
+            relative,
+        )
+        # Windows' DirEntry.stat can expose placeholder identity fields and a
+        # stale directory mtime even without a concurrent mutation.  Use it
+        # only to classify the entry during traversal; lstat is authoritative.
+        _require(
+            stat.S_IFMT(details.st_mode) == stat.S_IFMT(baseline.st_mode),
+            "recovery_artifact_type_changed_before_hashing",
+            relative,
+        )
+        authoritative.append((path, baseline))
+    return tuple(authoritative)
+
+
+def _snapshot_tree_identities(root: Path) -> dict[str, tuple[int, ...]]:
+    return {
+        path.relative_to(root).as_posix(): _snapshot_stat_identity(details)
+        for path, details in _snapshot_authoritative_entries(root)
+    }
+
+
+def _snapshot_tree_hashes_once(
+    root: Path,
+) -> tuple[dict[str, str], dict[str, tuple[int, ...]]]:
+    result: dict[str, str] = {}
+    identities: dict[str, tuple[int, ...]] = {}
+    for path, baseline in _snapshot_authoritative_entries(root):
+        relative = path.relative_to(root).as_posix()
+        identities[relative] = _snapshot_stat_identity(baseline)
+        if stat.S_ISREG(baseline.st_mode):
+            diagnostic = (
+                f"relative={relative!r};type=regular;size={int(baseline.st_size)};"
+                f"mode={int(baseline.st_mode):#o};"
+                f"attrs={getattr(baseline, 'st_file_attributes', None)!r};"
+                f"reparse_tag={getattr(baseline, 'st_reparse_tag', None)!r}"
+            )
+            digest = hashlib.sha256()
+            try:
+                with _open_snapshot_file_exclusive(path) as handle:
+                    opened_before = os.fstat(handle.fileno())
+                    _require(
+                        stat.S_ISREG(opened_before.st_mode),
+                        "recovery_artifact_type_changed_while_opening",
+                        diagnostic,
+                    )
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                    opened_after = os.fstat(handle.fileno())
+                after = path.lstat()
+            except RecoveryRefused:
+                raise
+            except OSError as exc:
+                errno = getattr(exc, "errno", None)
+                winerror = getattr(exc, "winerror", None)
+                raise RecoveryRefused(
+                    "recovery_artifact_read_failed:"
+                    f"{diagnostic};errno={errno!r};winerror={winerror!r}"
+                ) from exc
+            _require(
+                not path.is_symlink() and not _stat_is_filesystem_alias(after),
+                "recovery_artifact_alias_changed_while_hashing",
+                diagnostic,
+            )
+            _require(
+                _snapshot_stat_identity(baseline)
+                == _snapshot_stat_identity(opened_before)
+                == _snapshot_stat_identity(opened_after)
+                == _snapshot_stat_identity(after),
+                "recovery_artifact_changed_while_hashing",
+                diagnostic,
+            )
+            result[relative] = digest.hexdigest()
+    return result, identities
+
+
 def _snapshot_tree_hashes(root: Path) -> dict[str, str]:
     _assert_no_symlink_components(root, "recovery_artifact_alias_refused")
     try:
@@ -2543,27 +2804,46 @@ def _snapshot_tree_hashes(root: Path) -> dict[str, str]:
         "recovery_artifact_root_not_directory",
         str(root),
     )
-    result: dict[str, str] = {}
-    for path in sorted(root.rglob("*")):
-        try:
-            details = path.lstat()
-        except OSError as exc:
-            raise RecoveryRefused(f"recovery_artifact_unverifiable:{path}") from exc
-        _require(
-            not path.is_symlink() and not _stat_is_filesystem_alias(details),
-            "recovery_artifact_alias_refused",
-            str(path),
-        )
-        _require(
-            stat.S_ISDIR(details.st_mode) or stat.S_ISREG(details.st_mode),
-            "recovery_artifact_type_refused",
-            str(path),
-        )
-        if stat.S_ISREG(details.st_mode):
-            result[path.relative_to(root).as_posix()] = hashlib.sha256(
-                path.read_bytes()
-            ).hexdigest()
-    return result
+    root_identity = _snapshot_stat_identity(root_details)
+    first_hashes, first_identities = _snapshot_tree_hashes_once(root)
+    second_hashes, second_identities = _snapshot_tree_hashes_once(root)
+    terminal_identities = _snapshot_tree_identities(root)
+    try:
+        terminal_root_details = root.lstat()
+    except OSError as exc:
+        raise RecoveryRefused("recovery_artifact_root_changed_while_hashing") from exc
+    _require(
+        not root.is_symlink()
+        and not _stat_is_filesystem_alias(terminal_root_details)
+        and stat.S_ISDIR(terminal_root_details.st_mode)
+        and root_identity == _snapshot_stat_identity(terminal_root_details)
+        and first_identities == second_identities
+        and second_identities == terminal_identities
+        and first_hashes == second_hashes,
+        "recovery_artifact_tree_changed_while_hashing",
+    )
+    return second_hashes
+
+
+def _capture_post_teardown_board_storage(
+    *,
+    data_home: Path,
+    board_id: str,
+) -> tuple[dict[str, str], str]:
+    """Prove the final native handle is closed and bind its physical bytes."""
+
+    snapshot = _validate_board_storage_hashes(
+        _snapshot_tree_hashes(data_home / "boards" / board_id),
+        code="post_teardown_board_storage_invalid",
+    )
+    digest = _canonical_json_hash(snapshot)
+    _emit(
+        "post_teardown_board_storage_captured",
+        board_id=board_id,
+        file_count=len(snapshot),
+        snapshot_sha256=digest,
+    )
+    return snapshot, digest
 
 
 def _assert_no_rebuild_transients(baseline: Mapping[str, str]) -> None:
@@ -3911,6 +4191,97 @@ async def _real_health(composition: Any, board_id: str) -> dict[str, Any]:
         )
 
 
+def _offline_cold_graph_health(
+    bundle: ServiceBundle,
+    *,
+    board_id: str,
+    board_storage_root: Path,
+    board_storage_snapshot: Mapping[str, str],
+) -> dict[str, Any]:
+    """Build only the health fields needed before admission without opening Ladybug.
+
+    Opening an embedded Ladybug database is not physically read-only: on Windows
+    it both retains an exclusive cached ``Database`` handle and may normalize
+    native pages.  Preflight therefore consumes a conservative cold projection.
+    It never claims the graph is healthy; terminal queryability is proved later,
+    under the governed recovery capability, by :func:`_real_health`.
+    """
+
+    from okto_pulse.community.adapters.kuzu_graph_path_resolver import (
+        CommunityKuzuGraphPathResolver,
+    )
+
+    state = CommunityKuzuGraphPathResolver().storage_state(board_id)
+    expected_path = board_storage_root / "graph.lbug"
+    _require(
+        state.path.resolve(strict=False) == expected_path.resolve(strict=False),
+        "cold_graph_storage_path_mismatch",
+    )
+    graph_present = "graph.lbug" in board_storage_snapshot
+    _require(
+        bool(state.exists) == graph_present,
+        "cold_graph_storage_snapshot_drift",
+        board_id,
+    )
+    snapshot_sidecars = {
+        relative
+        for relative in board_storage_snapshot
+        if "/" not in relative
+        and relative != "graph.lbug"
+        and relative.startswith("graph.lbug")
+    }
+    _require(
+        set(state.sidecars) == snapshot_sidecars,
+        "cold_graph_sidecar_snapshot_drift",
+        board_id,
+    )
+    return {
+        # ``recovery_needed`` is deliberately conservative: no native graph
+        # query has run, so this projection must never manufacture ``healthy``.
+        "graph_state": "quarantined" if state.quarantined else "recovery_needed",
+        "metric_status": "unavailable",
+        "current_kg_generation_id": bundle.generation_repository.get_current(board_id),
+        "graph_storage_exists": bool(state.exists),
+        "graph_storage_locked": bool(state.locked),
+    }
+
+
+def _snapshot_closed_board_storage(
+    *,
+    board_id: str,
+    board_storage_root: Path,
+    phase: str,
+    drain_timeout_seconds: float = 30.0,
+) -> dict[str, str]:
+    """Drain readers, close the native DB cache, and hash inside that fence."""
+
+    from okto_pulse.community.adapters.kg_runtime import (
+        board_storage_mutation_window,
+    )
+
+    try:
+        with board_storage_mutation_window(
+            board_id,
+            phase=f"recovery_snapshot:{phase}",
+            drain_timeout=drain_timeout_seconds,
+        ):
+            snapshot = _snapshot_tree_hashes(board_storage_root)
+    except RecoveryRefused:
+        raise
+    except BaseException as exc:
+        raise RecoveryRefused(
+            f"board_graph_close_before_snapshot_failed:phase={phase!r};"
+            f"type={type(exc).__name__}"
+        ) from exc
+    _emit(
+        "board_graph_closed_snapshot_captured",
+        board_id=board_id,
+        phase=phase,
+        file_count=len(snapshot),
+    )
+    return snapshot
+
+
 def _resolve_event_cognitive_sources(
     *,
     binding: EventManifestBinding,
@@ -4920,8 +5291,8 @@ def _assert_closed_operation_baseline_safe(
     )
     if expected_board_storage:
         _require(
-            str(raw_health.get("graph_state") or "") == "healthy",
-            "terminal_reconciliation_required:closed_compensation_graph_unhealthy",
+            bool(raw_health.get("graph_storage_exists")),
+            "terminal_reconciliation_required:closed_compensation_graph_unresolved",
             run_id,
         )
     else:
@@ -6292,21 +6663,31 @@ async def _assert_manifest_compensation_reconciliation(
         if compensation_applied
         else dict(board_storage_baseline)
     )
+    terminal_board_storage = _snapshot_closed_board_storage(
+        board_id=board_id,
+        board_storage_root=board_storage_root,
+        phase="manifest_compensation_terminal",
+    )
     _require(
-        _snapshot_tree_hashes(board_storage_root) == expected_terminal_board_storage,
+        terminal_board_storage == expected_terminal_board_storage,
         "manifest_compensation_board_storage_mismatch",
     )
-    post_health = await _real_health(composition, board_id)
+    post_health = _offline_cold_graph_health(
+        bundle,
+        board_id=board_id,
+        board_storage_root=board_storage_root,
+        board_storage_snapshot=terminal_board_storage,
+    )
     _require(
         post_health.get("current_kg_generation_id")
         == baseline_health.get("current_kg_generation_id"),
         "manifest_compensation_generation_pointer_changed",
     )
-    graph_files = _snapshot_tree_hashes(board_storage_root)
+    graph_files = terminal_board_storage
     if graph_files:
         _require(
-            str(post_health.get("graph_state") or "") == "healthy",
-            "manifest_compensation_graph_not_healthy",
+            bool(post_health.get("graph_storage_exists")),
+            "manifest_compensation_graph_storage_unresolved",
         )
     else:
         _require(
@@ -6485,15 +6866,25 @@ async def _await_closed_archive_reconciliation(
         _sqlite_logical_fingerprints(db_path) == dict(logical_database_baseline),
         "logical_database_changed_during_closed_receipt_archive",
     )
+    terminal_board_storage = _snapshot_closed_board_storage(
+        board_id=board_id,
+        board_storage_root=board_storage_root,
+        phase="archive_closed_terminal",
+    )
     _require(
-        _snapshot_tree_hashes(board_storage_root) == dict(board_storage_baseline),
+        terminal_board_storage == dict(board_storage_baseline),
         "board_storage_changed_during_closed_receipt_archive",
     )
     _require(
         _snapshot_tree_hashes(quarantine_root) == dict(quarantine_baseline),
         "quarantine_changed_during_closed_receipt_archive",
     )
-    post_health = await _real_health(composition, board_id)
+    post_health = _offline_cold_graph_health(
+        bundle,
+        board_id=board_id,
+        board_storage_root=board_storage_root,
+        board_storage_snapshot=terminal_board_storage,
+    )
     _require(
         all(
             post_health.get(field) == baseline_health.get(field)
@@ -6948,6 +7339,11 @@ async def _execute_under_serve_lock(
         rebuild_root = data_home / "rebuild"
         rebuild_baseline = _snapshot_tree_hashes(rebuild_root)
         _assert_no_rebuild_transients(rebuild_baseline)
+        # Capture the graph bytes before Community composition and, critically,
+        # before any native health/open call. Ladybug open is not physically
+        # read-only and keeps a Windows file handle in the Database cache.
+        board_storage_root = data_home / "boards" / args.board_id
+        board_storage_baseline = _snapshot_tree_hashes(board_storage_root)
         app = create_community_app()
         composition = app.state.runtime_composition
         transaction = app.state.mcp_cold_start_transaction
@@ -6998,12 +7394,17 @@ async def _execute_under_serve_lock(
                 actor_id=owner_id,
             )
             _require(lifetime_probe(), "offline_lifetime_lost_during_authorization")
-            raw_health = await _real_health(composition, args.board_id)
+            bundle = _build_service_bundle()
+            raw_health = _offline_cold_graph_health(
+                bundle,
+                board_id=args.board_id,
+                board_storage_root=board_storage_root,
+                board_storage_snapshot=board_storage_baseline,
+            )
             _require(
                 str(raw_health.get("graph_state") or "") != "quarantined",
                 "rebuild_health_quarantined",
             )
-            bundle = _build_service_bundle()
             _require(
                 bundle.single_writer_lock.inspect(board_id=args.board_id) is None,
                 "preexisting_writer_lock_present",
@@ -7055,8 +7456,6 @@ async def _execute_under_serve_lock(
             quarantine_root = data_home / "quarantine"
             quarantine_baseline = _snapshot_tree_hashes(quarantine_root)
             quarantine_baseline_ids = _quarantine_ids(quarantine_root)
-            board_storage_root = data_home / "boards" / args.board_id
-            board_storage_baseline = _snapshot_tree_hashes(board_storage_root)
             plan = _select_recovery_run_plan(
                 bundle,
                 board_id=args.board_id,
@@ -7913,6 +8312,17 @@ def _execute(args: argparse.Namespace, evidence: InstallEvidence) -> int:
             terminal = _run_bounded_recovery_lanes(
                 run_lane,
                 validate_reconciliation_boundary=validate_reconciliation_boundary,
+            )
+            (
+                board_storage_post_teardown,
+                board_storage_post_teardown_sha256,
+            ) = _capture_post_teardown_board_storage(
+                data_home=data_home,
+                board_id=args.board_id,
+            )
+            terminal["board_storage_post_teardown"] = board_storage_post_teardown
+            terminal["board_storage_post_teardown_sha256"] = (
+                board_storage_post_teardown_sha256
             )
             sqlite_storage_after = _sqlite_storage_fingerprints(db_path)
             terminal["sqlite_storage_before"] = sqlite_storage_before
