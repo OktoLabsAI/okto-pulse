@@ -21,10 +21,16 @@ from typing import Any
 from uuid import RFC_4122, UUID
 
 
-LEGACY_QUEUE_ONLY_SCHEMA = "legacy_manual_restore_queue_only.v3"
+LEGACY_QUEUE_ONLY_SCHEMA = "legacy_manual_restore_queue_only.v4"
 LEGACY_QUEUE_ONLY_KIND = "legacy_manual_restore_queue_only"
 LEGACY_QUEUE_ONLY_PREFIX_SCHEMA = "pre_v4_legacy"
 LEGACY_DEAD_LETTER_GUARD_SCHEMA = "dead_letter_guard/v1"
+LEGACY_SOURCE_REVISION_GUARD_SCHEMA = "source_revision_guard/v1"
+LEGACY_SOURCE_REVISION_QUEUE_TABLE = "consolidation_queue"
+LEGACY_SOURCE_REVISION_TABLE = "global_discovery_source_revision"
+LEGACY_SOURCE_REVISION_SCOPE_ID = "_global"
+LEGACY_SOURCE_REVISION_FENCE_VERSION = "gdsr-fence-v2"
+LEGACY_SOURCE_REVISION_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v7"
 LEGACY_QUEUE_ONLY_INTENT_EFFECT = (
     "legacy_manually_restored_blocked_after_enqueue_intent"
 )
@@ -35,6 +41,123 @@ LEGACY_QUEUE_ONLY_PREAPPLIED_ACTIONS = (
 )
 LEGACY_QUEUE_ONLY_REMAINING_ACTIONS = ("cancel_enqueued_sources",)
 MAX_LEGACY_QUEUE_ROWS = 4_096
+
+
+def _parse_legacy_trigger_sql(raw: object) -> tuple[tuple[str, str], ...]:
+    """Tokenize the narrow owned SQLite trigger grammar without collisions.
+
+    Whitespace and bare-word case are representation-only.  Quoted identifier
+    and string-literal contents remain byte-significant, comments and alternate
+    quoting forms are rejected, and every punctuation token is retained.  The
+    resulting typed token stream can therefore be compared or hashed without
+    the ambiguity of deleting characters with a regular expression.
+    """
+
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("legacy_source_revision_trigger_sql_invalid")
+    tokens: list[tuple[str, str]] = []
+    index = 0
+    length = len(raw)
+    while index < length:
+        character = raw[index]
+        if character.isspace():
+            index += 1
+            continue
+        if character == '"':
+            index += 1
+            value: list[str] = []
+            while index < length:
+                if raw[index] != '"':
+                    value.append(raw[index])
+                    index += 1
+                    continue
+                if index + 1 < length and raw[index + 1] == '"':
+                    value.append('"')
+                    index += 2
+                    continue
+                index += 1
+                break
+            else:
+                raise ValueError("legacy_source_revision_trigger_sql_invalid")
+            tokens.append(("quoted_identifier", "".join(value)))
+            continue
+        if character == "'":
+            index += 1
+            value = []
+            while index < length:
+                if raw[index] != "'":
+                    value.append(raw[index])
+                    index += 1
+                    continue
+                if index + 1 < length and raw[index + 1] == "'":
+                    value.append("'")
+                    index += 2
+                    continue
+                index += 1
+                break
+            else:
+                raise ValueError("legacy_source_revision_trigger_sql_invalid")
+            tokens.append(("string", "".join(value)))
+            continue
+        if character.isascii() and (character.isalpha() or character == "_"):
+            end = index + 1
+            while (
+                end < length
+                and raw[end].isascii()
+                and (raw[end].isalnum() or raw[end] in {"_", "$"})
+            ):
+                end += 1
+            tokens.append(("word", raw[index:end].lower()))
+            index = end
+            continue
+        if character.isascii() and character.isdigit():
+            end = index + 1
+            while end < length and raw[end].isascii() and raw[end].isdigit():
+                end += 1
+            tokens.append(("number", raw[index:end]))
+            index = end
+            continue
+        pair = raw[index : index + 2]
+        if pair in {"<>", "<=", ">=", "!=", "||"}:
+            tokens.append(("symbol", pair))
+            index += 2
+            continue
+        if character in {"(", ")", ",", "=", "+", "-", "*", "/", ".", ";"}:
+            tokens.append(("symbol", character))
+            index += 1
+            continue
+        raise ValueError("legacy_source_revision_trigger_sql_invalid")
+    if tokens and tokens[-1] == ("symbol", ";"):
+        tokens.pop()
+    if not tokens:
+        raise ValueError("legacy_source_revision_trigger_sql_invalid")
+    return tuple(tokens)
+
+
+def canonical_legacy_source_revision_trigger_sql_sha256(raw: object) -> str:
+    """Hash one unambiguous parsed trigger token stream."""
+
+    encoded = json.dumps(
+        _parse_legacy_trigger_sql(raw),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _source_revision_queue_trigger_sql(*, name: str, operation: str) -> str:
+    return f'''CREATE TRIGGER "{name}"
+AFTER {operation} ON "{LEGACY_SOURCE_REVISION_QUEUE_TABLE}"
+BEGIN
+    UPDATE "{LEGACY_SOURCE_REVISION_TABLE}"
+    SET revision = revision + 1,
+        mutation_nonce = lower(hex(randomblob(32))),
+        updated_at = CURRENT_TIMESTAMP
+    WHERE scope_id = '{LEGACY_SOURCE_REVISION_SCOPE_ID}';
+    SELECT CASE WHEN changes() <> 1
+        THEN RAISE(ABORT, 'global_discovery_source_revision_missing') END;
+END'''
+
 
 LEGACY_QUEUE_COLUMNS = (
     "id",
@@ -70,6 +193,91 @@ LEGACY_DEAD_LETTER_COLUMNS = (
     "dead_lettered_at",
     "created_at",
 )
+LEGACY_SOURCE_REVISION_TABLE_XINFO = (
+    (0, "scope_id", "VARCHAR(64)", 1, None, 1, 0),
+    (1, "fence_version", "VARCHAR(64)", 1, None, 0, 0),
+    (2, "trigger_manifest_version", "VARCHAR(64)", 1, None, 0, 0),
+    (3, "incarnation_id", "VARCHAR(64)", 1, None, 0, 0),
+    (4, "revision", "BIGINT", 1, "0", 0, 0),
+    (5, "mutation_nonce", "VARCHAR(64)", 1, None, 0, 0),
+    (6, "updated_at", "DATETIME", 1, "CURRENT_TIMESTAMP", 0, 0),
+)
+LEGACY_SOURCE_REVISION_TABLE_SQL = """CREATE TABLE global_discovery_source_revision (
+    scope_id VARCHAR(64) NOT NULL,
+    fence_version VARCHAR(64) NOT NULL,
+    trigger_manifest_version VARCHAR(64) NOT NULL,
+    incarnation_id VARCHAR(64) NOT NULL,
+    revision BIGINT DEFAULT 0 NOT NULL,
+    mutation_nonce VARCHAR(64) NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    PRIMARY KEY (scope_id),
+    CONSTRAINT ck_global_discovery_source_revision_global_scope
+        CHECK (scope_id = '_global'),
+    CONSTRAINT ck_global_discovery_source_revision_nonnegative
+        CHECK (revision >= 0)
+)"""
+LEGACY_SOURCE_REVISION_TABLE_SQL_SHA256 = (
+    "79f1808bafea418f5a2a0fee717f75ba379ced15d0718ab900e35f6c656c038d"
+)
+LEGACY_SOURCE_REVISION_TABLE_INDEXES = (
+    (
+        "sqlite_autoindex_global_discovery_source_revision_1",
+        1,
+        "pk",
+        0,
+        (
+            (0, 0, "scope_id", 0, "BINARY", 1),
+            (1, -1, None, 0, "BINARY", 0),
+        ),
+    ),
+    (
+        "uq_global_discovery_source_revision_scope",
+        1,
+        "c",
+        0,
+        (
+            (0, 0, "scope_id", 0, "BINARY", 1),
+            (1, -1, None, 0, "BINARY", 0),
+        ),
+    ),
+)
+LEGACY_SOURCE_REVISION_QUEUE_TRIGGERS = (
+    (
+        ("trg_global_discovery_source_revision_consolidation_queue_delete"),
+        LEGACY_SOURCE_REVISION_QUEUE_TABLE,
+        "AFTER",
+        "DELETE",
+        "cb8df61df201b9ed569aa66f81b72334a355b56d20f3da555d25c135a78f98d5",
+    ),
+    (
+        ("trg_global_discovery_source_revision_consolidation_queue_insert"),
+        LEGACY_SOURCE_REVISION_QUEUE_TABLE,
+        "AFTER",
+        "INSERT",
+        "8c2daeff59bf1bc72cf2cd8b9ccb4d916eab8b8bea36228a99b6167cb9ac4d8e",
+    ),
+    (
+        ("trg_global_discovery_source_revision_consolidation_queue_update"),
+        LEGACY_SOURCE_REVISION_QUEUE_TABLE,
+        "AFTER",
+        "UPDATE",
+        "44a982e3d05eec7864554260475da19418b912f535f4b3bb368d9168303a3e92",
+    ),
+)
+LEGACY_SOURCE_REVISION_SINGLETON_TRIGGERS = (
+    "trg_global_discovery_source_revision_singleton_delete_guard",
+    "trg_global_discovery_source_revision_scope_update_guard",
+)
+if canonical_legacy_source_revision_trigger_sql_sha256(
+    LEGACY_SOURCE_REVISION_TABLE_SQL
+) != LEGACY_SOURCE_REVISION_TABLE_SQL_SHA256 or any(
+    canonical_legacy_source_revision_trigger_sql_sha256(
+        _source_revision_queue_trigger_sql(name=str(row[0]), operation=str(row[3]))
+    )
+    != row[4]
+    for row in LEGACY_SOURCE_REVISION_QUEUE_TRIGGERS
+):
+    raise RuntimeError("legacy_source_revision_frozen_sql_contract_invalid")
 _QUEUE_ROW_KEYS = frozenset(LEGACY_QUEUE_COLUMNS)
 _MEMBERSHIP_KEYS = frozenset(
     {
@@ -106,12 +314,62 @@ _TOP_LEVEL_KEYS = frozenset(
         "board_storage",
         "prefix_schema",
         "dead_letter_guard",
+        "source_revision_guard",
         "queue",
         "preapplied_actions",
         "remaining_actions",
         "evidence_digest",
         "intent_digest",
     }
+)
+
+_SOURCE_REVISION_GUARD_KEYS = frozenset(
+    {
+        "schema_version",
+        "queue_table",
+        "revision_table",
+        "revision_table_xinfo",
+        "revision_table_sql_sha256",
+        "revision_table_indexes",
+        "queue_triggers",
+        "queue_trigger_set_sha256",
+        "expected_transition_count",
+        "baseline",
+    }
+)
+_SOURCE_REVISION_BASELINE_KEYS = frozenset(
+    {
+        "scope_id",
+        "fence_version",
+        "trigger_manifest_version",
+        "incarnation_id",
+        "revision",
+        "mutation_nonce",
+        "updated_at",
+    }
+)
+_SOURCE_REVISION_XINFO_FIELDS = (
+    "cid",
+    "name",
+    "type",
+    "notnull",
+    "default",
+    "pk",
+    "hidden",
+)
+_SOURCE_REVISION_TRIGGER_FIELDS = (
+    "name",
+    "table",
+    "timing",
+    "operation",
+    "normalized_sql_sha256",
+)
+_SOURCE_REVISION_INDEX_FIELDS = (
+    "name",
+    "unique",
+    "origin",
+    "partial",
+    "xinfo",
 )
 
 _DEAD_LETTER_GUARD_KEYS = frozenset(
@@ -477,6 +735,190 @@ def _parse_timestamp(value: object, *, code: str) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _parse_sqlite_utc_timestamp(value: object, *, code: str) -> datetime:
+    """Parse the exact UTC representation written by SQLite CURRENT_TIMESTAMP."""
+
+    _require(
+        isinstance(value, str)
+        and re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}", value
+        )
+        is not None,
+        code,
+    )
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    except ValueError as exc:
+        raise LegacyQueueOnlyIntentError(code) from exc
+    return parsed.replace(tzinfo=timezone.utc)
+
+
+def _source_revision_xinfo_payload() -> list[dict[str, object]]:
+    return [
+        dict(zip(_SOURCE_REVISION_XINFO_FIELDS, row, strict=True))
+        for row in LEGACY_SOURCE_REVISION_TABLE_XINFO
+    ]
+
+
+def _source_revision_trigger_payload() -> list[dict[str, str]]:
+    return [
+        {
+            key: str(value)
+            for key, value in zip(_SOURCE_REVISION_TRIGGER_FIELDS, row, strict=True)
+        }
+        for row in LEGACY_SOURCE_REVISION_QUEUE_TRIGGERS
+    ]
+
+
+def _source_revision_index_payload() -> list[dict[str, object]]:
+    return [
+        {
+            key: ([list(item) for item in value] if key == "xinfo" else value)
+            for key, value in zip(
+                _SOURCE_REVISION_INDEX_FIELDS,
+                row,
+                strict=True,
+            )
+        }
+        for row in LEGACY_SOURCE_REVISION_TABLE_INDEXES
+    ]
+
+
+def _validate_source_revision_singleton(
+    value: object,
+    *,
+    code: str,
+) -> dict[str, object]:
+    singleton = _exact_mapping(
+        value,
+        keys=_SOURCE_REVISION_BASELINE_KEYS,
+        code=code,
+    )
+    _require(
+        singleton.get("scope_id") == LEGACY_SOURCE_REVISION_SCOPE_ID
+        and singleton.get("fence_version") == LEGACY_SOURCE_REVISION_FENCE_VERSION
+        and singleton.get("trigger_manifest_version")
+        == LEGACY_SOURCE_REVISION_TRIGGER_MANIFEST_VERSION
+        and _is_sha256(singleton.get("incarnation_id"))
+        and type(singleton.get("revision")) is int
+        and int(singleton["revision"]) >= 0
+        and _is_sha256(singleton.get("mutation_nonce")),
+        code,
+    )
+    _parse_sqlite_utc_timestamp(singleton.get("updated_at"), code=code)
+    return singleton
+
+
+def _validate_source_revision_guard(
+    value: object,
+    *,
+    expected_transition_count: int | None = None,
+) -> dict[str, object]:
+    code = "legacy_queue_only_source_revision_guard_invalid"
+    guard = _exact_mapping(value, keys=_SOURCE_REVISION_GUARD_KEYS, code=code)
+    expected_xinfo = _source_revision_xinfo_payload()
+    expected_indexes = _source_revision_index_payload()
+    expected_triggers = _source_revision_trigger_payload()
+    transition_count = guard.get("expected_transition_count")
+    _require(
+        guard.get("schema_version") == LEGACY_SOURCE_REVISION_GUARD_SCHEMA
+        and guard.get("queue_table") == LEGACY_SOURCE_REVISION_QUEUE_TABLE
+        and guard.get("revision_table") == LEGACY_SOURCE_REVISION_TABLE
+        and _canonical_bytes(guard.get("revision_table_xinfo"))
+        == _canonical_bytes(expected_xinfo)
+        and guard.get("revision_table_sql_sha256")
+        == LEGACY_SOURCE_REVISION_TABLE_SQL_SHA256
+        and _canonical_bytes(guard.get("revision_table_indexes"))
+        == _canonical_bytes(expected_indexes)
+        and _canonical_bytes(guard.get("queue_triggers"))
+        == _canonical_bytes(expected_triggers)
+        and guard.get("queue_trigger_set_sha256")
+        == canonical_evidence_hash(expected_triggers)
+        and type(transition_count) is int
+        and 0 < int(transition_count) <= MAX_LEGACY_QUEUE_ROWS
+        and (
+            expected_transition_count is None
+            or int(transition_count) == expected_transition_count
+        ),
+        code,
+    )
+    guard["baseline"] = _validate_source_revision_singleton(
+        guard.get("baseline"),
+        code=code,
+    )
+    return guard
+
+
+def build_legacy_source_revision_guard(
+    *,
+    baseline: Mapping[str, object],
+    expected_transition_count: int,
+) -> dict[str, object]:
+    """Build the immutable queue-trigger/singleton cut persisted in v4 intent."""
+
+    triggers = _source_revision_trigger_payload()
+    guard = {
+        "schema_version": LEGACY_SOURCE_REVISION_GUARD_SCHEMA,
+        "queue_table": LEGACY_SOURCE_REVISION_QUEUE_TABLE,
+        "revision_table": LEGACY_SOURCE_REVISION_TABLE,
+        "revision_table_xinfo": _source_revision_xinfo_payload(),
+        "revision_table_sql_sha256": (LEGACY_SOURCE_REVISION_TABLE_SQL_SHA256),
+        "revision_table_indexes": _source_revision_index_payload(),
+        "queue_triggers": triggers,
+        "queue_trigger_set_sha256": canonical_evidence_hash(triggers),
+        "expected_transition_count": expected_transition_count,
+        "baseline": dict(baseline),
+    }
+    return json.loads(
+        _canonical_bytes(
+            _validate_source_revision_guard(
+                guard,
+                expected_transition_count=expected_transition_count,
+            )
+        )
+    )
+
+
+def validate_legacy_source_revision_phase(
+    guard_payload: Mapping[str, object],
+    *,
+    current: Mapping[str, object],
+    terminal_count: int,
+) -> str:
+    """Prove the singleton is exactly baseline or the N-update terminal cut."""
+
+    code = "legacy_queue_only_source_revision_transition_invalid"
+    guard = _validate_source_revision_guard(guard_payload)
+    expected_count = int(guard["expected_transition_count"])
+    _require(
+        type(terminal_count) is int and terminal_count in {0, expected_count},
+        code,
+    )
+    observed = _validate_source_revision_singleton(current, code=code)
+    baseline = dict(guard["baseline"])
+    if terminal_count == 0:
+        _require(observed == baseline, code)
+        return "baseline"
+
+    _require(
+        all(
+            observed[key] == baseline[key]
+            for key in (
+                "scope_id",
+                "fence_version",
+                "trigger_manifest_version",
+                "incarnation_id",
+            )
+        )
+        and int(observed["revision"]) == int(baseline["revision"]) + expected_count
+        and observed["mutation_nonce"] != baseline["mutation_nonce"]
+        and _parse_sqlite_utc_timestamp(observed["updated_at"], code=code)
+        >= _parse_sqlite_utc_timestamp(baseline["updated_at"], code=code),
+        code,
+    )
+    return "terminal"
 
 
 def _effect_relative(effect_key: str) -> str:
@@ -916,6 +1358,10 @@ def _validate_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         result.get("prefix_schema") == LEGACY_QUEUE_ONLY_PREFIX_SCHEMA,
         "legacy_queue_only_prefix_schema_invalid",
     )
+    source_revision_guard = _validate_source_revision_guard(
+        result.get("source_revision_guard")
+    )
+    result["source_revision_guard"] = source_revision_guard
     dead_letter_guard = _exact_mapping(
         result.get("dead_letter_guard"),
         keys=_DEAD_LETTER_GUARD_KEYS,
@@ -1160,6 +1606,10 @@ def _validate_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         [str(row["id"]) for row in rows] == sorted(str(row["id"]) for row in rows),
         "legacy_queue_only_queue_order_invalid",
     )
+    _validate_source_revision_guard(
+        source_revision_guard,
+        expected_transition_count=len(rows),
+    )
 
     _require(
         dead_letter_guard["target_queue_ids"] == sorted(str(row["id"]) for row in rows)
@@ -1217,9 +1667,24 @@ __all__ = [
     "LEGACY_QUEUE_ONLY_REMAINING_ACTIONS",
     "LEGACY_QUEUE_ONLY_SCHEMA",
     "LEGACY_QUEUE_COLUMNS",
+    "LEGACY_SOURCE_REVISION_FENCE_VERSION",
+    "LEGACY_SOURCE_REVISION_GUARD_SCHEMA",
+    "LEGACY_SOURCE_REVISION_QUEUE_TABLE",
+    "LEGACY_SOURCE_REVISION_QUEUE_TRIGGERS",
+    "LEGACY_SOURCE_REVISION_SCOPE_ID",
+    "LEGACY_SOURCE_REVISION_SINGLETON_TRIGGERS",
+    "LEGACY_SOURCE_REVISION_TABLE",
+    "LEGACY_SOURCE_REVISION_TABLE_INDEXES",
+    "LEGACY_SOURCE_REVISION_TABLE_SQL",
+    "LEGACY_SOURCE_REVISION_TABLE_SQL_SHA256",
+    "LEGACY_SOURCE_REVISION_TABLE_XINFO",
+    "LEGACY_SOURCE_REVISION_TRIGGER_MANIFEST_VERSION",
     "LegacyManualRestoreQueueOnlyIntent",
     "LegacyQueueOnlyIntentError",
     "build_legacy_dead_letter_guard",
+    "build_legacy_source_revision_guard",
+    "canonical_legacy_source_revision_trigger_sql_sha256",
     "canonical_evidence_hash",
     "legacy_queue_terminal_row",
+    "validate_legacy_source_revision_phase",
 ]

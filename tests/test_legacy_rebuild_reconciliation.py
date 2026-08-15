@@ -12,6 +12,7 @@ import pytest
 
 from okto_pulse.community.adapters.board_rebuild_ingestion import (
     CommunityBoardRebuildIngestionAdapter,
+    read_legacy_source_revision_state,
 )
 from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
     LEGACY_DEAD_LETTER_COLUMNS,
@@ -22,10 +23,26 @@ from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
     LEGACY_QUEUE_ONLY_PREFIX_SCHEMA,
     LEGACY_QUEUE_ONLY_REMAINING_ACTIONS,
     LEGACY_QUEUE_ONLY_SCHEMA,
+    LEGACY_SOURCE_REVISION_GUARD_SCHEMA,
+    LEGACY_SOURCE_REVISION_QUEUE_TRIGGERS,
+    LEGACY_SOURCE_REVISION_TABLE_SQL_SHA256,
+    LEGACY_SOURCE_REVISION_TABLE_XINFO,
     LegacyManualRestoreQueueOnlyIntent,
     LegacyQueueOnlyIntentError,
     build_legacy_dead_letter_guard,
+    build_legacy_source_revision_guard,
+    canonical_legacy_source_revision_trigger_sql_sha256,
     canonical_evidence_hash,
+    validate_legacy_source_revision_phase,
+)
+from okto_pulse.community.adapters.relational_schema_steps import (
+    global_discovery_source_revision_trigger_manifest,
+)
+from okto_pulse.community.adapters.sqlalchemy_models import (
+    GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION,
+    GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES,
+    GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID,
+    GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION,
 )
 from okto_pulse.community.adapters.rebuild_effects import CommunityRebuildEffects
 from okto_pulse.core.application.rebuild_processor import (
@@ -187,7 +204,64 @@ def _effect_artifact(effect_key: str, digest: str) -> dict[str, str]:
     }
 
 
+def _install_source_revision_guard(connection: sqlite3.Connection) -> None:
+    """Install the exact production GDSR manifest over the bounded fixture."""
+
+    connection.execute(
+        "CREATE TABLE global_discovery_source_revision ("
+        "scope_id VARCHAR(64) NOT NULL, "
+        "fence_version VARCHAR(64) NOT NULL, "
+        "trigger_manifest_version VARCHAR(64) NOT NULL, "
+        "incarnation_id VARCHAR(64) NOT NULL, "
+        "revision BIGINT DEFAULT 0 NOT NULL, "
+        "mutation_nonce VARCHAR(64) NOT NULL, "
+        "updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+        "PRIMARY KEY (scope_id), "
+        "CONSTRAINT ck_global_discovery_source_revision_global_scope "
+        "CHECK (scope_id = '_global'), "
+        "CONSTRAINT ck_global_discovery_source_revision_nonnegative "
+        "CHECK (revision >= 0))"
+    )
+    connection.execute(
+        "CREATE UNIQUE INDEX uq_global_discovery_source_revision_scope "
+        "ON global_discovery_source_revision (scope_id)"
+    )
+    for table_name in GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES:
+        exists = connection.execute(
+            "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name=?",
+            (table_name,),
+        ).fetchone()
+        if exists is None:
+            if table_name == "app_settings":
+                connection.execute(
+                    "CREATE TABLE app_settings ("
+                    "key VARCHAR(64) NOT NULL PRIMARY KEY, "
+                    "value VARCHAR(64) NOT NULL)"
+                )
+            else:
+                connection.execute(f'CREATE TABLE "{table_name}" (id TEXT)')
+    connection.execute(
+        "INSERT INTO global_discovery_source_revision "
+        "(scope_id,fence_version,trigger_manifest_version,incarnation_id,"
+        "revision,mutation_nonce,updated_at) VALUES (?,?,?,?,?,?,?)",
+        (
+            GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID,
+            GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION,
+            GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION,
+            "1" * 64,
+            100,
+            "2" * 64,
+            "2026-08-15 11:38:48",
+        ),
+    )
+    for _name, (_table_name, sql) in sorted(
+        global_discovery_source_revision_trigger_manifest().items()
+    ):
+        connection.execute(sql)
+
+
 def _intent(
+    db_path: Path,
     target_rows: list[dict[str, object]],
     *,
     non_target_rows: list[dict[str, object]],
@@ -201,6 +275,11 @@ def _intent(
         dlq_columns=DLQ_COLUMNS,
         dlq_rows=[tuple(row[column] for column in DLQ_COLUMNS) for row in dlq_rows],
     )
+    with sqlite3.connect(db_path) as connection:
+        source_revision_guard = build_legacy_source_revision_guard(
+            baseline=read_legacy_source_revision_state(connection),
+            expected_transition_count=len(target_rows),
+        )
     evidence = {
         "schema_version": LEGACY_QUEUE_ONLY_SCHEMA,
         "reconciliation_kind": LEGACY_QUEUE_ONLY_KIND,
@@ -287,6 +366,7 @@ def _intent(
         },
         "prefix_schema": LEGACY_QUEUE_ONLY_PREFIX_SCHEMA,
         "dead_letter_guard": dead_letter_guard,
+        "source_revision_guard": source_revision_guard,
         "queue": {
             "source": SOURCE,
             "snapshot_fingerprint": canonical_evidence_hash(
@@ -367,6 +447,7 @@ def _database(tmp_path: Path):  # noqa: ANN202
                 f"VALUES ({dlq_placeholders})",
                 tuple(row[column] for column in DLQ_COLUMNS),
             )
+        _install_source_revision_guard(connection)
     return path, target_rows, non_target_rows, dlq_rows
 
 
@@ -383,6 +464,44 @@ def _dlq_state(path: Path) -> list[tuple[object, ...]]:
             f"SELECT {','.join(DLQ_COLUMNS)} "
             "FROM consolidation_dead_letter ORDER BY board_id, id"
         ).fetchall()
+
+
+def _source_revision_state(path: Path) -> dict[str, object]:
+    with sqlite3.connect(path) as connection:
+        return read_legacy_source_revision_state(connection)
+
+
+def _raw_source_revision_state(path: Path) -> tuple[object, ...]:
+    with sqlite3.connect(path) as connection:
+        return tuple(
+            connection.execute(
+                "SELECT scope_id,fence_version,trigger_manifest_version,"
+                "incarnation_id,revision,mutation_nonce,updated_at "
+                "FROM global_discovery_source_revision"
+            ).fetchone()
+        )
+
+
+def _restore_source_revision_baseline(
+    path: Path,
+    intent: LegacyManualRestoreQueueOnlyIntent,
+) -> None:
+    baseline = dict(intent.payload["source_revision_guard"]["baseline"])
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE global_discovery_source_revision SET "
+            "fence_version=?,trigger_manifest_version=?,incarnation_id=?,"
+            "revision=?,mutation_nonce=?,updated_at=? WHERE scope_id=?",
+            (
+                baseline["fence_version"],
+                baseline["trigger_manifest_version"],
+                baseline["incarnation_id"],
+                baseline["revision"],
+                baseline["mutation_nonce"],
+                baseline["updated_at"],
+                baseline["scope_id"],
+            ),
+        )
 
 
 class _ArtifactStore:
@@ -413,12 +532,14 @@ def test_legacy_queue_only_cas_writes_exact_v4_tombstones_and_replays(
 ) -> None:
     path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
     intent = _intent(
+        path,
         target_rows,
         non_target_rows=non_target_rows,
         dlq_rows=dlq_rows,
     )
     adapter = CommunityBoardRebuildIngestionAdapter(db_path=path)
     guard_calls: list[int] = []
+    revision_before = _source_revision_state(path)
 
     first = adapter.compensate_legacy_manual_restore_queue_only(
         intent_payload=intent.to_payload(),
@@ -436,6 +557,10 @@ def test_legacy_queue_only_cas_writes_exact_v4_tombstones_and_replays(
         "live_intents_restored": 0,
         "total_compensated": 2,
     }
+    revision_after = _source_revision_state(path)
+    assert revision_after["revision"] == int(revision_before["revision"]) + 2
+    assert revision_after["mutation_nonce"] != revision_before["mutation_nonce"]
+    assert str(revision_after["updated_at"]) >= str(revision_before["updated_at"])
     with sqlite3.connect(path) as connection:
         connection.row_factory = sqlite3.Row
         rows = connection.execute(
@@ -487,11 +612,155 @@ def test_legacy_queue_only_cas_writes_exact_v4_tombstones_and_replays(
     assert replay["already_compensated"] == 2
     assert replay["total_compensated"] == 0
     assert _queue_state(path) == terminal_state
+    assert _source_revision_state(path) == revision_after
+
+
+def test_source_revision_guard_v1_binds_exact_contract_and_row_cardinality(
+    tmp_path: Path,
+) -> None:
+    path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
+    intent = _intent(
+        path,
+        target_rows,
+        non_target_rows=non_target_rows,
+        dlq_rows=dlq_rows,
+    )
+    payload = intent.to_payload()
+    guard = dict(payload["source_revision_guard"])
+
+    assert payload["schema_version"] == "legacy_manual_restore_queue_only.v4"
+    assert guard["schema_version"] == LEGACY_SOURCE_REVISION_GUARD_SCHEMA
+    assert (
+        guard["expected_transition_count"]
+        == len(target_rows)
+        == len(intent.memberships)
+    )
+    assert guard["revision_table_xinfo"] == [
+        {
+            key: value
+            for key, value in zip(
+                ("cid", "name", "type", "notnull", "default", "pk", "hidden"),
+                row,
+                strict=True,
+            )
+        }
+        for row in LEGACY_SOURCE_REVISION_TABLE_XINFO
+    ]
+    assert guard["revision_table_sql_sha256"] == (
+        LEGACY_SOURCE_REVISION_TABLE_SQL_SHA256
+    )
+    assert [
+        (
+            trigger["name"],
+            trigger["table"],
+            trigger["timing"],
+            trigger["operation"],
+            trigger["normalized_sql_sha256"],
+        )
+        for trigger in guard["queue_triggers"]
+    ] == list(LEGACY_SOURCE_REVISION_QUEUE_TRIGGERS)
+    manifest = global_discovery_source_revision_trigger_manifest()
+    assert all(
+        canonical_legacy_source_revision_trigger_sql_sha256(manifest[name][1]) == digest
+        for name, _table, _timing, _operation, digest in (
+            LEGACY_SOURCE_REVISION_QUEUE_TRIGGERS
+        )
+    )
+
+    mutations = (
+        lambda value: value["source_revision_guard"].__setitem__(
+            "expected_transition_count", True
+        ),
+        lambda value: value["source_revision_guard"].__setitem__(
+            "expected_transition_count", 1
+        ),
+        lambda value: value["source_revision_guard"]["revision_table_xinfo"][
+            0
+        ].__setitem__("cid", False),
+        lambda value: value["source_revision_guard"]["revision_table_indexes"][
+            0
+        ].__setitem__("unique", True),
+        lambda value: value["source_revision_guard"]["queue_triggers"][2].__setitem__(
+            "operation", "INSERT"
+        ),
+        lambda value: value["source_revision_guard"].__setitem__(
+            "revision_table_sql_sha256", "0" * 64
+        ),
+    )
+    for mutate in mutations:
+        tampered = copy.deepcopy(payload)
+        mutate(tampered)
+        with pytest.raises(
+            LegacyQueueOnlyIntentError,
+            match="source_revision_guard_invalid",
+        ):
+            LegacyManualRestoreQueueOnlyIntent.from_payload(tampered)
+
+
+def test_source_revision_guard_phase_matrix_is_exact(tmp_path: Path) -> None:
+    path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
+    intent = _intent(
+        path,
+        target_rows,
+        non_target_rows=non_target_rows,
+        dlq_rows=dlq_rows,
+    )
+    guard = dict(intent.payload["source_revision_guard"])
+    baseline = dict(guard["baseline"])
+    expected_count = len(target_rows)
+    assert (
+        validate_legacy_source_revision_phase(
+            guard,
+            current=baseline,
+            terminal_count=0,
+        )
+        == "baseline"
+    )
+    terminal = dict(baseline)
+    terminal["revision"] = int(baseline["revision"]) + expected_count
+    terminal["mutation_nonce"] = "3" * 64
+    assert (
+        validate_legacy_source_revision_phase(
+            guard,
+            current=terminal,
+            terminal_count=expected_count,
+        )
+        == "terminal"
+    )
+
+    invalid: list[tuple[dict[str, object], int]] = []
+    invalid.append((dict(baseline), 1))
+    drift_at_baseline = dict(baseline)
+    drift_at_baseline["revision"] = int(baseline["revision"]) + 1
+    invalid.append((drift_at_baseline, 0))
+    wrong_revision = dict(terminal)
+    wrong_revision["revision"] = int(terminal["revision"]) - 1
+    invalid.append((wrong_revision, expected_count))
+    same_nonce = dict(terminal)
+    same_nonce["mutation_nonce"] = baseline["mutation_nonce"]
+    invalid.append((same_nonce, expected_count))
+    earlier = dict(terminal)
+    earlier["updated_at"] = "2026-08-15 11:38:47"
+    invalid.append((earlier, expected_count))
+    wrong_incarnation = dict(terminal)
+    wrong_incarnation["incarnation_id"] = "4" * 64
+    invalid.append((wrong_incarnation, expected_count))
+    for current, terminal_count in invalid:
+        with pytest.raises(
+            LegacyQueueOnlyIntentError,
+            match="source_revision_transition_invalid",
+        ):
+            validate_legacy_source_revision_phase(
+                guard,
+                current=current,
+                terminal_count=terminal_count,
+            )
 
 
 def test_legacy_queue_only_cas_drift_rolls_back_every_target(tmp_path: Path) -> None:
     path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
     intent = _intent(
+        path,
         target_rows,
         non_target_rows=non_target_rows,
         dlq_rows=dlq_rows,
@@ -501,6 +770,7 @@ def test_legacy_queue_only_cas_drift_rolls_back_every_target(tmp_path: Path) -> 
             "UPDATE consolidation_queue SET priority='low' WHERE id='queue-claimed'"
         )
     before = _queue_state(path)
+    revision_before = _source_revision_state(path)
 
     with pytest.raises(RuntimeError, match="row_cas_conflict"):
         CommunityBoardRebuildIngestionAdapter(
@@ -511,25 +781,33 @@ def test_legacy_queue_only_cas_drift_rolls_back_every_target(tmp_path: Path) -> 
         )
 
     assert _queue_state(path) == before
+    assert _source_revision_state(path) == revision_before
     assert all(row[10] in {"pending", "claimed"} for row in before[:2])
 
 
-def test_legacy_queue_only_guard_loss_before_commit_rolls_back(tmp_path: Path) -> None:
+def test_legacy_queue_only_guard_loss_before_second_update_rolls_back(
+    tmp_path: Path,
+) -> None:
     path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
     intent = _intent(
+        path,
         target_rows,
         non_target_rows=non_target_rows,
         dlq_rows=dlq_rows,
     )
     before = _queue_state(path)
+    revision_before = _source_revision_state(path)
     calls = 0
 
     def guard() -> bool:
         nonlocal calls
         calls += 1
-        return calls < 5
+        return calls < 4
 
-    with pytest.raises(RuntimeError, match="mutation_guard_lost:before_commit"):
+    with pytest.raises(
+        RuntimeError,
+        match="mutation_guard_lost:before_update:queue-pending",
+    ):
         CommunityBoardRebuildIngestionAdapter(
             db_path=path
         ).compensate_legacy_manual_restore_queue_only(
@@ -538,6 +816,157 @@ def test_legacy_queue_only_guard_loss_before_commit_rolls_back(tmp_path: Path) -
         )
 
     assert _queue_state(path) == before
+    assert _source_revision_state(path) == revision_before
+
+
+def test_source_revision_reader_accepts_tuple_connection_and_restores_factory(
+    tmp_path: Path,
+) -> None:
+    path, _target_rows, _non_target_rows, _dlq_rows = _database(tmp_path)
+    with sqlite3.connect(path) as connection:
+        assert connection.row_factory is None
+        state = read_legacy_source_revision_state(connection)
+        assert connection.row_factory is None
+    assert state == {
+        "scope_id": GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID,
+        "fence_version": GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION,
+        "trigger_manifest_version": GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION,
+        "incarnation_id": "1" * 64,
+        "revision": 100,
+        "mutation_nonce": "2" * 64,
+        "updated_at": "2026-08-15 11:38:48",
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "missing_queue_trigger",
+        "missing_owned_peer_trigger",
+        "string_literal_case_collision",
+        "case_variant_attached_trigger",
+        "revision_table_extra_column",
+        "revision_table_missing_index",
+    ),
+)
+def test_source_revision_catalog_or_schema_drift_refuses_before_cas(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
+    intent = _intent(
+        path,
+        target_rows,
+        non_target_rows=non_target_rows,
+        dlq_rows=dlq_rows,
+    )
+    manifest = global_discovery_source_revision_trigger_manifest()
+    update_name = "trg_global_discovery_source_revision_consolidation_queue_update"
+    with sqlite3.connect(path) as connection:
+        if mutation == "missing_queue_trigger":
+            connection.execute(f'DROP TRIGGER "{update_name}"')
+        elif mutation == "missing_owned_peer_trigger":
+            connection.execute(
+                'DROP TRIGGER "trg_global_discovery_source_revision_boards_insert"'
+            )
+        elif mutation == "string_literal_case_collision":
+            connection.execute(f'DROP TRIGGER "{update_name}"')
+            connection.execute(
+                manifest[update_name][1].replace("'_global'", "'_GLOBAL'")
+            )
+        elif mutation == "case_variant_attached_trigger":
+            connection.execute(
+                "CREATE TRIGGER case_variant_queue_side_effect AFTER UPDATE ON "
+                '"Consolidation_Queue" BEGIN SELECT 1; END'
+            )
+        elif mutation == "revision_table_extra_column":
+            connection.execute(
+                "ALTER TABLE global_discovery_source_revision "
+                "ADD COLUMN unexpected TEXT"
+            )
+        else:
+            connection.execute("DROP INDEX uq_global_discovery_source_revision_scope")
+    before_queue = _queue_state(path)
+    before_revision = _raw_source_revision_state(path)
+
+    with pytest.raises(RuntimeError, match="source_revision_guard_invalid"):
+        CommunityBoardRebuildIngestionAdapter(
+            db_path=path
+        ).compensate_legacy_manual_restore_queue_only(
+            intent_payload=intent.to_payload(),
+            mutation_guard=lambda: True,
+        )
+
+    assert _queue_state(path) == before_queue
+    assert _raw_source_revision_state(path) == before_revision
+
+
+def test_source_revision_rejects_chained_singleton_trigger_before_side_effect(
+    tmp_path: Path,
+) -> None:
+    path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO app_settings (key,value) VALUES ('mode','safe')"
+        )
+    intent = _intent(
+        path,
+        target_rows,
+        non_target_rows=non_target_rows,
+        dlq_rows=dlq_rows,
+    )
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TRIGGER mutate_app_settings_from_revision "
+            "AFTER UPDATE ON global_discovery_source_revision BEGIN "
+            "UPDATE app_settings SET value='unsafe' WHERE key='mode'; END"
+        )
+    before_queue = _queue_state(path)
+    before_revision = _raw_source_revision_state(path)
+
+    with pytest.raises(RuntimeError, match="source_revision_guard_invalid"):
+        CommunityBoardRebuildIngestionAdapter(
+            db_path=path
+        ).compensate_legacy_manual_restore_queue_only(
+            intent_payload=intent.to_payload(),
+            mutation_guard=lambda: True,
+        )
+
+    assert _queue_state(path) == before_queue
+    assert _raw_source_revision_state(path) == before_revision
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT value FROM app_settings WHERE key='mode'"
+        ).fetchone() == ("safe",)
+
+
+def test_source_revision_singleton_drift_refuses_before_cas(tmp_path: Path) -> None:
+    path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
+    intent = _intent(
+        path,
+        target_rows,
+        non_target_rows=non_target_rows,
+        dlq_rows=dlq_rows,
+    )
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE global_discovery_source_revision SET "
+            "revision=revision+1,mutation_nonce=?",
+            ("4" * 64,),
+        )
+    before_queue = _queue_state(path)
+    before_revision = _raw_source_revision_state(path)
+
+    with pytest.raises(RuntimeError, match="source_revision_transition_invalid"):
+        CommunityBoardRebuildIngestionAdapter(
+            db_path=path
+        ).compensate_legacy_manual_restore_queue_only(
+            intent_payload=intent.to_payload(),
+            mutation_guard=lambda: True,
+        )
+
+    assert _queue_state(path) == before_queue
+    assert _raw_source_revision_state(path) == before_revision
 
 
 def test_legacy_queue_only_refuses_cross_board_queue_update_trigger(
@@ -558,6 +987,13 @@ def test_legacy_queue_only_refuses_cross_board_queue_update_trigger(
             f"VALUES ({','.join('?' for _ in QUEUE_COLUMNS)})",
             tuple(other[column] for column in QUEUE_COLUMNS),
         )
+    intent = _intent(
+        path,
+        target_rows,
+        non_target_rows=non_target_rows,
+        dlq_rows=dlq_rows,
+    )
+    with sqlite3.connect(path) as connection:
         connection.execute(
             "CREATE TRIGGER mutate_other_board_queue "
             "AFTER UPDATE ON consolidation_queue "
@@ -565,14 +1001,9 @@ def test_legacy_queue_only_refuses_cross_board_queue_update_trigger(
             "UPDATE consolidation_queue SET priority='low' "
             "WHERE id='queue-other-board'; END"
         )
-    intent = _intent(
-        target_rows,
-        non_target_rows=non_target_rows,
-        dlq_rows=dlq_rows,
-    )
     before = _queue_state(path)
 
-    with pytest.raises(RuntimeError, match="queue_trigger_present"):
+    with pytest.raises(RuntimeError, match="source_revision_guard_invalid"):
         CommunityBoardRebuildIngestionAdapter(
             db_path=path
         ).compensate_legacy_manual_restore_queue_only(
@@ -587,6 +1018,12 @@ def test_legacy_queue_only_refuses_cross_board_dlq_insert_trigger(
     tmp_path: Path,
 ) -> None:
     path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
+    intent = _intent(
+        path,
+        target_rows,
+        non_target_rows=non_target_rows,
+        dlq_rows=dlq_rows,
+    )
     with sqlite3.connect(path) as connection:
         connection.execute(
             "CREATE TRIGGER mutate_other_board_dlq "
@@ -599,15 +1036,10 @@ def test_legacy_queue_only_refuses_cross_board_dlq_insert_trigger(
             "'spec','spec-other-board','queue-other-board',1,'[]',"
             "'2026-08-15 12:00:00'); END"
         )
-    intent = _intent(
-        target_rows,
-        non_target_rows=non_target_rows,
-        dlq_rows=dlq_rows,
-    )
     before_queue = _queue_state(path)
     before_dlq = _dlq_state(path)
 
-    with pytest.raises(RuntimeError, match="queue_trigger_present"):
+    with pytest.raises(RuntimeError, match="source_revision_guard_invalid"):
         CommunityBoardRebuildIngestionAdapter(
             db_path=path
         ).compensate_legacy_manual_restore_queue_only(
@@ -625,24 +1057,23 @@ def test_legacy_queue_only_refuses_trigger_side_effect_in_unrelated_table(
     path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
     with sqlite3.connect(path) as connection:
         connection.execute(
-            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        connection.execute(
             "INSERT INTO app_settings (key, value) VALUES ('mode', 'safe')"
         )
+    intent = _intent(
+        path,
+        target_rows,
+        non_target_rows=non_target_rows,
+        dlq_rows=dlq_rows,
+    )
+    with sqlite3.connect(path) as connection:
         connection.execute(
             "CREATE TRIGGER mutate_app_settings "
             "AFTER UPDATE ON consolidation_queue "
             "WHEN NEW.id='queue-pending' BEGIN "
             "UPDATE app_settings SET value='unsafe' WHERE key='mode'; END"
         )
-    intent = _intent(
-        target_rows,
-        non_target_rows=non_target_rows,
-        dlq_rows=dlq_rows,
-    )
 
-    with pytest.raises(RuntimeError, match="queue_trigger_present"):
+    with pytest.raises(RuntimeError, match="source_revision_guard_invalid"):
         CommunityBoardRebuildIngestionAdapter(
             db_path=path
         ).compensate_legacy_manual_restore_queue_only(
@@ -660,6 +1091,12 @@ def test_legacy_queue_only_refuses_virtual_queue_and_preserves_shadow_tables(
     tmp_path: Path,
 ) -> None:
     path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
+    intent = _intent(
+        path,
+        target_rows,
+        non_target_rows=non_target_rows,
+        dlq_rows=dlq_rows,
+    )
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TABLE consolidation_queue")
         try:
@@ -691,11 +1128,6 @@ def test_legacy_queue_only_refuses_virtual_queue_and_preserves_shadow_tables(
                 for name in names
             }
 
-    intent = _intent(
-        target_rows,
-        non_target_rows=non_target_rows,
-        dlq_rows=dlq_rows,
-    )
     before = shadow_state()
 
     with pytest.raises(RuntimeError, match="queue_storage_invalid"):
@@ -714,6 +1146,12 @@ def test_legacy_queue_only_refuses_generated_queue_column_before_mutation(
 ) -> None:
     path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
     projection = ",".join(QUEUE_COLUMNS)
+    intent = _intent(
+        path,
+        target_rows,
+        non_target_rows=non_target_rows,
+        dlq_rows=dlq_rows,
+    )
     with sqlite3.connect(path) as connection:
         connection.execute("ALTER TABLE consolidation_queue RENAME TO old_queue")
         connection.execute(
@@ -734,11 +1172,6 @@ def test_legacy_queue_only_refuses_generated_queue_column_before_mutation(
             f"SELECT {projection} FROM old_queue"
         )
         connection.execute("DROP TABLE old_queue")
-    intent = _intent(
-        target_rows,
-        non_target_rows=non_target_rows,
-        dlq_rows=dlq_rows,
-    )
 
     def generated_state() -> list[tuple[object, ...]]:
         with sqlite3.connect(path) as connection:
@@ -789,6 +1222,7 @@ def test_legacy_queue_only_bounds_protected_partition_before_mutation(
             tuple(second[column] for column in QUEUE_COLUMNS),
         )
     intent = _intent(
+        path,
         target_rows,
         non_target_rows=[*non_target_rows, second],
         dlq_rows=dlq_rows,
@@ -814,6 +1248,7 @@ def test_legacy_queue_only_cas_preserves_guarded_historical_dlq_peer(
     alias = _historical_peer(target_rows[0])
     _insert_dlq(path, alias)
     intent = _intent(
+        path,
         target_rows,
         non_target_rows=non_target_rows,
         dlq_rows=[*dlq_rows, alias],
@@ -838,6 +1273,7 @@ def test_fresh_lane_baselines_guarded_dlq_and_blocks_only_new_ids(
     peer = _historical_peer(target_rows[0])
     _insert_dlq(path, peer)
     intent = _intent(
+        path,
         target_rows,
         non_target_rows=non_target_rows,
         dlq_rows=[*dlq_rows, peer],
@@ -889,6 +1325,7 @@ def test_legacy_queue_only_intent_refuses_nonhistorical_dlq_peer(
         match="dead_letter_peer_not_historical",
     ):
         _intent(
+            _path,
             target_rows,
             non_target_rows=non_target_rows,
             dlq_rows=[*dlq_rows, late],
@@ -907,6 +1344,7 @@ def test_legacy_queue_only_cas_refuses_dead_letter_guard_drift(
     peer = _historical_peer(target_rows[0])
     _insert_dlq(path, peer)
     intent = _intent(
+        path,
         target_rows,
         non_target_rows=non_target_rows,
         dlq_rows=[*dlq_rows, peer],
@@ -936,6 +1374,7 @@ def test_legacy_queue_only_cas_refuses_dead_letter_guard_drift(
             "created_at": "2026-08-01T00:00:00+00:00",
         }
         _insert_dlq(path, extra)
+    _restore_source_revision_baseline(path, intent)
     before = _queue_state(path)
 
     with pytest.raises(RuntimeError, match="dlq_(?:guard_invalid|changed)"):
@@ -956,6 +1395,7 @@ def test_legacy_queue_only_cas_refuses_live_original_queue_for_dlq_peer(
     peer = _historical_peer(target_rows[0])
     _insert_dlq(path, peer)
     intent = _intent(
+        path,
         target_rows,
         non_target_rows=non_target_rows,
         dlq_rows=[*dlq_rows, peer],
@@ -974,6 +1414,7 @@ def test_legacy_queue_only_cas_refuses_live_original_queue_for_dlq_peer(
             f"VALUES ({','.join('?' for _ in QUEUE_COLUMNS)})",
             tuple(original[column] for column in QUEUE_COLUMNS),
         )
+    _restore_source_revision_baseline(path, intent)
     before = _queue_state(path)
 
     with pytest.raises(RuntimeError, match="dlq_guard_invalid"):
@@ -1007,6 +1448,7 @@ def test_legacy_queue_only_bounds_full_board_dlq_before_mutation(
     }
     _insert_dlq(path, extra)
     intent = _intent(
+        path,
         target_rows,
         non_target_rows=non_target_rows,
         dlq_rows=[*dlq_rows, extra],
@@ -1043,6 +1485,7 @@ def test_legacy_queue_only_cas_rejects_peer_identity_even_in_baseline(
             tuple(peer[column] for column in QUEUE_COLUMNS),
         )
     intent = _intent(
+        path,
         target_rows,
         non_target_rows=[*non_target_rows, peer],
         dlq_rows=dlq_rows,
@@ -1060,11 +1503,12 @@ def test_legacy_queue_only_cas_rejects_peer_identity_even_in_baseline(
     assert _queue_state(path) == before
 
 
-def test_legacy_queue_only_cas_converges_from_mixed_active_and_terminal(
+def test_legacy_queue_only_cas_refuses_impossible_mixed_active_and_terminal(
     tmp_path: Path,
 ) -> None:
     path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
     intent = _intent(
+        path,
         target_rows,
         non_target_rows=non_target_rows,
         dlq_rows=dlq_rows,
@@ -1086,15 +1530,17 @@ def test_legacy_queue_only_cas_converges_from_mixed_active_and_terminal(
                 restored["id"],
             ),
         )
+    before = _queue_state(path)
+    revision_before = _source_revision_state(path)
 
-    result = adapter.compensate_legacy_manual_restore_queue_only(
-        intent_payload=intent.to_payload(),
-        mutation_guard=lambda: True,
-    )
+    with pytest.raises(RuntimeError, match="source_revision_transition_invalid"):
+        adapter.compensate_legacy_manual_restore_queue_only(
+            intent_payload=intent.to_payload(),
+            mutation_guard=lambda: True,
+        )
 
-    assert result["already_compensated"] == 1
-    assert result["claimed_compensated"] == 1
-    assert result["total_compensated"] == 1
+    assert _queue_state(path) == before
+    assert _source_revision_state(path) == revision_before
 
 
 @pytest.mark.parametrize(
@@ -1129,6 +1575,7 @@ def test_legacy_queue_only_intent_rejects_unsafe_refs_and_row_shape(
 ) -> None:
     _db_path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
     payload = _intent(
+        _db_path,
         target_rows,
         non_target_rows=non_target_rows,
         dlq_rows=dlq_rows,
@@ -1148,6 +1595,7 @@ def test_legacy_queue_only_adapter_persists_intent_before_exact_queue_cas(
 ) -> None:
     path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
     intent = _intent(
+        path,
         target_rows,
         non_target_rows=non_target_rows,
         dlq_rows=dlq_rows,
@@ -1258,6 +1706,7 @@ def test_legacy_queue_only_terminal_receipt_requires_live_fences_after_commit(
 ) -> None:
     path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
     intent = _intent(
+        path,
         target_rows,
         non_target_rows=non_target_rows,
         dlq_rows=dlq_rows,
@@ -1352,6 +1801,7 @@ def test_legacy_queue_only_intent_rejects_tampering(
 ) -> None:
     _db_path, target_rows, non_target_rows, dlq_rows = _database(tmp_path)
     payload = _intent(
+        _db_path,
         target_rows,
         non_target_rows=non_target_rows,
         dlq_rows=dlq_rows,

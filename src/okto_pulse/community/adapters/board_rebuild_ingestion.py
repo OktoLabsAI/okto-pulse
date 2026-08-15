@@ -62,10 +62,21 @@ from okto_pulse.community.adapters.board_source_reader import (
 from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
     LEGACY_DEAD_LETTER_COLUMNS,
     LEGACY_QUEUE_COLUMNS,
+    LEGACY_SOURCE_REVISION_QUEUE_TABLE,
+    LEGACY_SOURCE_REVISION_QUEUE_TRIGGERS,
+    LEGACY_SOURCE_REVISION_SCOPE_ID,
+    LEGACY_SOURCE_REVISION_SINGLETON_TRIGGERS,
+    LEGACY_SOURCE_REVISION_TABLE,
+    LEGACY_SOURCE_REVISION_TABLE_INDEXES,
+    LEGACY_SOURCE_REVISION_TABLE_SQL_SHA256,
+    LEGACY_SOURCE_REVISION_TABLE_XINFO,
     LegacyManualRestoreQueueOnlyIntent,
     build_legacy_dead_letter_guard,
+    build_legacy_source_revision_guard,
+    canonical_legacy_source_revision_trigger_sql_sha256,
     canonical_evidence_hash,
     legacy_queue_terminal_row,
+    validate_legacy_source_revision_phase,
 )
 
 logger = logging.getLogger("okto_pulse.community.board_rebuild_ingestion")
@@ -121,6 +132,209 @@ def _bounded_legacy_sql_rows(
             raise RuntimeError(f"{code}_byte_limit_exceeded")
         rows.append(values)
     return tuple(rows)
+
+
+def read_legacy_source_revision_state(
+    connection: sqlite3.Connection,
+) -> dict[str, object]:
+    """Read the exact canonical GDSR queue-trigger and singleton cut.
+
+    The caller owns a transaction.  This helper validates the full owned GDSR
+    manifest through the existing recovery fence oracle, then narrows the
+    queue-attached trigger set to the three known side effects authorized by
+    the nominal legacy CAS.  Timing/operation come from the frozen contract;
+    observed SQL is never heuristically parsed.
+    """
+
+    from okto_pulse.community.adapters.global_discovery_recovery import (
+        CommunityRelationalRecoverySnapshotFingerprint,
+    )
+    from okto_pulse.community.adapters.relational_schema_steps import (
+        global_discovery_source_revision_trigger_manifest,
+    )
+
+    code = "legacy_queue_only_source_revision_guard_invalid"
+    previous_row_factory = connection.row_factory
+    connection.row_factory = sqlite3.Row
+    try:
+        table_entries = tuple(
+            connection.execute(
+                f"PRAGMA main.table_list('{LEGACY_SOURCE_REVISION_TABLE}')"
+            )
+        )
+        if (
+            len(table_entries) != 1
+            or str(table_entries[0][0]) != "main"
+            or str(table_entries[0][1]) != LEGACY_SOURCE_REVISION_TABLE
+            or str(table_entries[0][2]) != "table"
+            or int(table_entries[0][3]) != len(LEGACY_SOURCE_REVISION_TABLE_XINFO)
+            or int(table_entries[0][4]) != 0
+            or int(table_entries[0][5]) != 0
+        ):
+            raise RuntimeError(code)
+        xinfo = tuple(
+            (
+                int(row[0]),
+                str(row[1]),
+                str(row[2]),
+                int(row[3]),
+                row[4],
+                int(row[5]),
+                int(row[6]),
+            )
+            for row in connection.execute(
+                f"PRAGMA main.table_xinfo('{LEGACY_SOURCE_REVISION_TABLE}')"
+            )
+        )
+        if xinfo != LEGACY_SOURCE_REVISION_TABLE_XINFO:
+            raise RuntimeError(code)
+        table_sql_rows = tuple(
+            connection.execute(
+                "SELECT sql FROM main.sqlite_master "
+                "WHERE type='table' AND name=? LIMIT 2",
+                (LEGACY_SOURCE_REVISION_TABLE,),
+            )
+        )
+        if (
+            len(table_sql_rows) != 1
+            or canonical_legacy_source_revision_trigger_sql_sha256(table_sql_rows[0][0])
+            != LEGACY_SOURCE_REVISION_TABLE_SQL_SHA256
+        ):
+            raise RuntimeError(code)
+        index_payloads: list[tuple[object, ...]] = []
+        for row in connection.execute(
+            f"PRAGMA main.index_list('{LEGACY_SOURCE_REVISION_TABLE}')"
+        ):
+            if len(index_payloads) >= len(LEGACY_SOURCE_REVISION_TABLE_INDEXES):
+                raise RuntimeError(code)
+            index_name = str(row[1])
+            index_xinfo: list[tuple[object, ...]] = []
+            for item in connection.execute(
+                "PRAGMA main.index_xinfo('" + index_name.replace("'", "''") + "')"
+            ):
+                if len(index_xinfo) >= 2:
+                    raise RuntimeError(code)
+                index_xinfo.append(
+                    (
+                        int(item[0]),
+                        int(item[1]),
+                        item[2],
+                        int(item[3]),
+                        str(item[4]),
+                        int(item[5]),
+                    )
+                )
+            index_payloads.append(
+                (
+                    index_name,
+                    int(row[2]),
+                    str(row[3]),
+                    int(row[4]),
+                    tuple(index_xinfo),
+                )
+            )
+        index_rows = tuple(sorted(index_payloads))
+        if index_rows != LEGACY_SOURCE_REVISION_TABLE_INDEXES:
+            raise RuntimeError(code)
+
+        expected_queue_triggers = {
+            str(row[0]): row for row in LEGACY_SOURCE_REVISION_QUEUE_TRIGGERS
+        }
+        full_manifest = global_discovery_source_revision_trigger_manifest()
+        expected_attached_names = set(expected_queue_triggers) | set(
+            LEGACY_SOURCE_REVISION_SINGLETON_TRIGGERS
+        )
+        if set(expected_queue_triggers) != {
+            name
+            for name, (table_name, _sql) in full_manifest.items()
+            if table_name == LEGACY_SOURCE_REVISION_QUEUE_TABLE
+        } or set(LEGACY_SOURCE_REVISION_SINGLETON_TRIGGERS) != {
+            name
+            for name, (table_name, _sql) in full_manifest.items()
+            if table_name == LEGACY_SOURCE_REVISION_TABLE
+        }:
+            raise RuntimeError(code)
+        expected_attached = {
+            name: full_manifest[name] for name in expected_attached_names
+        }
+        trigger_rows = tuple(
+            connection.execute(
+                "SELECT name,tbl_name,sql FROM main.sqlite_master "
+                "WHERE type='trigger' AND tbl_name COLLATE NOCASE IN (?,?) "
+                "ORDER BY name LIMIT ?",
+                (
+                    LEGACY_SOURCE_REVISION_QUEUE_TABLE,
+                    LEGACY_SOURCE_REVISION_TABLE,
+                    len(expected_attached) + 1,
+                ),
+            )
+        )
+        actual_names = tuple(str(row[0]) for row in trigger_rows)
+        if actual_names != tuple(sorted(expected_attached)):
+            raise RuntimeError(code)
+        for row in trigger_rows:
+            trigger_name = str(row[0])
+            expected_table, expected_sql = expected_attached[trigger_name]
+            if str(
+                row[1]
+            ) != expected_table or canonical_legacy_source_revision_trigger_sql_sha256(
+                row[2]
+            ) != canonical_legacy_source_revision_trigger_sql_sha256(expected_sql):
+                raise RuntimeError(code)
+            if trigger_name in expected_queue_triggers and (
+                canonical_legacy_source_revision_trigger_sql_sha256(row[2])
+                != str(expected_queue_triggers[trigger_name][4])
+            ):
+                raise RuntimeError(code)
+
+        fence = (
+            CommunityRelationalRecoverySnapshotFingerprint.read_fence_from_connection(
+                connection
+            )
+        )
+        singleton_rows = tuple(
+            connection.execute(
+                "SELECT scope_id,fence_version,trigger_manifest_version,"
+                "incarnation_id,revision,mutation_nonce,updated_at "
+                f'FROM main."{LEGACY_SOURCE_REVISION_TABLE}" LIMIT 2'
+            )
+        )
+        if len(singleton_rows) != 1:
+            raise RuntimeError(code)
+        singleton = singleton_rows[0]
+        result: dict[str, object] = {
+            "scope_id": singleton[0],
+            "fence_version": singleton[1],
+            "trigger_manifest_version": singleton[2],
+            "incarnation_id": singleton[3],
+            "revision": singleton[4],
+            "mutation_nonce": singleton[5],
+            "updated_at": singleton[6],
+        }
+        if (
+            result["scope_id"] != LEGACY_SOURCE_REVISION_SCOPE_ID
+            or result["scope_id"] != fence.scope_id
+            or result["fence_version"] != fence.fence_version
+            or result["trigger_manifest_version"] != fence.trigger_manifest_version
+            or result["incarnation_id"] != fence.incarnation_id
+            or result["revision"] != fence.revision
+            or result["mutation_nonce"] != fence.mutation_nonce
+        ):
+            raise RuntimeError(code)
+        # Reuse the portable validator for exact types, versions, digests and
+        # SQLite timestamp representation without exposing a partially proved
+        # singleton to either the discovery or mutation lane.
+        build_legacy_source_revision_guard(
+            baseline=result,
+            expected_transition_count=1,
+        )
+        return result
+    except RuntimeError:
+        raise
+    except (IndexError, sqlite3.Error, TypeError, ValueError) as exc:
+        raise RuntimeError(code) from exc
+    finally:
+        connection.row_factory = previous_row_factory
 
 
 def _manifest_cut(rows: Sequence[Mapping[str, Any]]) -> str | None:
@@ -1046,6 +1260,7 @@ class CommunityBoardRebuildIngestionAdapter:
         expected_columns = LEGACY_QUEUE_COLUMNS
         queue_evidence = dict(intent.payload["queue"])
         dead_letter_evidence = dict(intent.payload["dead_letter_guard"])
+        source_revision_evidence = dict(intent.payload["source_revision_guard"])
 
         def _guard(phase: str) -> None:
             try:
@@ -1083,18 +1298,7 @@ class CommunityBoardRebuildIngestionAdapter:
                 len(column) < 7 or int(column[6]) != 0 for column in queue_xinfo
             ):
                 raise RuntimeError("legacy_queue_only_schema_mismatch")
-            queue_trigger = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='trigger' "
-                "AND tbl_name='consolidation_queue' ORDER BY name LIMIT 1"
-            ).fetchone()
-            if queue_trigger is not None:
-                # A target-row UPDATE trigger can mutate any table (including
-                # another board) inside this transaction.  The nominal lane is
-                # authorized to change only the exact queue rows in the
-                # intent, so no trigger on the target table is admissible.
-                # BEGIN IMMEDIATE prevents a schema writer from installing one
-                # after this check and before commit.
-                raise RuntimeError("legacy_queue_only_queue_trigger_present")
+            source_revision_before = read_legacy_source_revision_state(conn)
             projection = ", ".join(
                 '"' + column.replace('"', '""') + '"' for column in expected_columns
             )
@@ -1116,6 +1320,24 @@ class CommunityBoardRebuildIngestionAdapter:
             }
             if set(current_rows) != set(expected_rows):
                 raise RuntimeError("legacy_queue_only_row_set_conflict")
+            initial_terminal_count = 0
+            for row_id, expected in expected_rows.items():
+                terminal = legacy_queue_terminal_row(expected, memberships[row_id])
+                current = current_rows[row_id]
+                if current == terminal:
+                    initial_terminal_count += 1
+                elif current != expected:
+                    raise RuntimeError(f"legacy_queue_only_row_cas_conflict:{row_id}")
+            try:
+                validate_legacy_source_revision_phase(
+                    source_revision_evidence,
+                    current=source_revision_before,
+                    terminal_count=initial_terminal_count,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "legacy_queue_only_source_revision_transition_invalid"
+                ) from exc
 
             target_ids = tuple(sorted(expected_rows))
             target_placeholders = ",".join("?" for _ in target_ids)
@@ -1314,10 +1536,10 @@ class CommunityBoardRebuildIngestionAdapter:
             }:
                 raise RuntimeError("legacy_queue_only_terminal_rows_unproved")
 
-            # A persistent UPDATE trigger was refused before any mutation and
-            # BEGIN IMMEDIATE excludes concurrent writers. Re-prove the
-            # bounded board cut and identity exclusivity immediately before
-            # the final fence/commit.
+            # The exact canonical queue UPDATE trigger advances only the
+            # singleton source-revision fence. BEGIN IMMEDIATE excludes a
+            # schema/concurrent writer; re-prove every separately protected
+            # cut and the exact N-update fence immediately before commit.
             terminal_non_target_rows = _bounded_legacy_sql_rows(
                 conn.execute(
                     f"SELECT {projection} FROM consolidation_queue WHERE board_id=? "
@@ -1354,6 +1576,17 @@ class CommunityBoardRebuildIngestionAdapter:
             ):
                 raise RuntimeError("legacy_queue_only_peer_identity_conflict")
             _dead_letter_guard_current(phase="before_commit")
+            source_revision_after = read_legacy_source_revision_state(conn)
+            try:
+                validate_legacy_source_revision_phase(
+                    source_revision_evidence,
+                    current=source_revision_after,
+                    terminal_count=len(expected_rows),
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "legacy_queue_only_source_revision_transition_invalid"
+                ) from exc
             _guard("before_commit")
             conn.commit()
         return {
@@ -1980,4 +2213,5 @@ __all__ = [
     "BoardRebuildIngestionAdapter",
     "CommunityBoardRebuildIngestionAdapter",
     "REBUILD_QUEUE_ORDER_VERSION",
+    "read_legacy_source_revision_state",
 ]

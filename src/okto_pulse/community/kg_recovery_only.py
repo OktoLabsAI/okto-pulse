@@ -5778,6 +5778,7 @@ def _legacy_queue_current_evidence(
     str,
     str,
     Mapping[str, Any],
+    Mapping[str, Any],
 ]:
     """Take the WAL-aware exact active legacy row cut used by the intent."""
 
@@ -5785,7 +5786,11 @@ def _legacy_queue_current_evidence(
         LEGACY_DEAD_LETTER_COLUMNS,
         LEGACY_QUEUE_COLUMNS,
         build_legacy_dead_letter_guard,
+        build_legacy_source_revision_guard,
         canonical_evidence_hash,
+    )
+    from okto_pulse.community.adapters.board_rebuild_ingestion import (
+        read_legacy_source_revision_state,
     )
     from okto_pulse.core.kg.board_rebuild_adapter import queue_artifact_type
 
@@ -5803,6 +5808,7 @@ def _legacy_queue_current_evidence(
 
     projection = ", ".join(f'"{column}"' for column in LEGACY_QUEUE_COLUMNS)
     with closing(_sqlite_connect_readonly(db_path)) as connection:
+        connection.execute("BEGIN")
         _legacy_exact_table_columns(
             connection,
             table="consolidation_queue",
@@ -5914,6 +5920,11 @@ def _legacy_queue_current_evidence(
             dlq_rows=dlq_rows,
             present_original_queue_ids=present_original_ids,
         )
+        source_revision_guard = build_legacy_source_revision_guard(
+            baseline=read_legacy_source_revision_state(connection),
+            expected_transition_count=len(rows),
+        )
+        connection.rollback()
 
     memberships: list[Mapping[str, str]] = []
     for row in rows:
@@ -5964,6 +5975,7 @@ def _legacy_queue_current_evidence(
         non_target_fingerprint,
         dlq_fingerprint,
         dead_letter_guard,
+        source_revision_guard,
     )
 
 
@@ -7285,6 +7297,7 @@ def _build_legacy_queue_only_intent(
         non_target_fingerprint,
         dlq_fingerprint,
         dead_letter_guard,
+        source_revision_guard,
     ) = _legacy_queue_current_evidence(
         db_path,
         board_id=board_id,
@@ -7328,6 +7341,7 @@ def _build_legacy_queue_only_intent(
         },
         "prefix_schema": LEGACY_QUEUE_ONLY_PREFIX_SCHEMA,
         "dead_letter_guard": dead_letter_guard,
+        "source_revision_guard": source_revision_guard,
         "queue": {
             "source": source,
             "snapshot_fingerprint": canonical_evidence_hash(
@@ -7362,6 +7376,10 @@ def _legacy_queue_state_current(
         build_legacy_dead_letter_guard,
         canonical_evidence_hash,
         legacy_queue_terminal_row,
+        validate_legacy_source_revision_phase,
+    )
+    from okto_pulse.community.adapters.board_rebuild_ingestion import (
+        read_legacy_source_revision_state,
     )
 
     expected_rows = {str(row["id"]): dict(row) for row in intent.queue_rows}
@@ -7370,6 +7388,7 @@ def _legacy_queue_state_current(
     projection = ", ".join(f'"{column}"' for column in LEGACY_QUEUE_COLUMNS)
     placeholders = ",".join("?" for _ in target_ids)
     with closing(_sqlite_connect_readonly(db_path)) as connection:
+        connection.execute("BEGIN")
         _legacy_exact_table_columns(
             connection,
             table="consolidation_queue",
@@ -7474,6 +7493,8 @@ def _legacy_queue_state_current(
                 "rows": [list(raw) for raw in dlq_rows],
             }
         )
+        source_revision_state = read_legacy_source_revision_state(connection)
+        connection.rollback()
     queue_evidence = dict(intent.payload["queue"])
     _require(
         non_target_fingerprint == queue_evidence["board_non_target_fingerprint"]
@@ -7481,6 +7502,16 @@ def _legacy_queue_state_current(
         and current_dead_letter_guard == dict(intent.payload["dead_letter_guard"]),
         "legacy_queue_only_protected_queue_changed",
     )
+    try:
+        validate_legacy_source_revision_phase(
+            dict(intent.payload["source_revision_guard"]),
+            current=source_revision_state,
+            terminal_count=terminal_count,
+        )
+    except Exception as exc:
+        raise RecoveryRefused(
+            "legacy_queue_only_source_revision_transition_invalid"
+        ) from exc
     identities = frozenset(
         (str(row["artifact_type"]), str(row["artifact_id"]))
         for row in intent.queue_rows
@@ -7706,6 +7737,7 @@ def _discover_legacy_queue_only_reconciliation(
     from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
         LEGACY_QUEUE_ONLY_INTENT_EFFECT,
         LegacyManualRestoreQueueOnlyIntent,
+        LegacyQueueOnlyIntentError,
         canonical_evidence_hash,
     )
     from okto_pulse.core.kg.rebuild_service import (
@@ -7791,7 +7823,12 @@ def _discover_legacy_queue_only_reconciliation(
             raw_intent,
             code="legacy_queue_only_intent_receipt_invalid",
         )
-        intent = LegacyManualRestoreQueueOnlyIntent.from_payload(intent_receipt.details)
+        try:
+            intent = LegacyManualRestoreQueueOnlyIntent.from_payload(
+                intent_receipt.details
+            )
+        except LegacyQueueOnlyIntentError as exc:
+            raise RecoveryRefused("legacy_queue_only_intent_receipt_invalid") from exc
         _require(
             intent_receipt.effect_key == intent_key
             and intent.board_id == board_id
@@ -9683,9 +9720,18 @@ async def _run_legacy_queue_only_lane(
     )
 
     _require(not reconciliation.terminal, "legacy_queue_only_lane_already_terminal")
+    # Validate the separately governed queue-trigger side effect before it is
+    # excluded from the generic logical snapshot.  The same proof is repeated
+    # under BEGIN IMMEDIATE by the adapter and again after the service returns.
+    _legacy_queue_state_current(
+        reconciliation.intent,
+        db_path=db_path,
+    )
     logical_before = _sqlite_logical_fingerprints(
         db_path,
-        exclude_tables=frozenset({"consolidation_queue"}),
+        exclude_tables=frozenset(
+            {"consolidation_queue", "global_discovery_source_revision"}
+        ),
     )
     queue_before = _full_queue_snapshot(db_path)
     dlq_before = _dlq_snapshot(db_path)
@@ -9739,10 +9785,17 @@ async def _run_legacy_queue_only_lane(
             dlq_before,
             "legacy_queue_only_dlq_changed",
         )
+        terminal_rows, adoption = _legacy_queue_state_current(
+            reconciliation.intent,
+            db_path=db_path,
+        )
+        _require(terminal_rows, "legacy_queue_only_rows_not_terminal")
         _require(
             _sqlite_logical_fingerprints(
                 db_path,
-                exclude_tables=frozenset({"consolidation_queue"}),
+                exclude_tables=frozenset(
+                    {"consolidation_queue", "global_discovery_source_revision"}
+                ),
             )
             == logical_before,
             "legacy_queue_only_unrelated_database_changed",
@@ -9765,11 +9818,6 @@ async def _run_legacy_queue_only_lane(
             rebuild_root=rebuild_root,
             rebuild_baseline=rebuild_baseline,
         )
-        terminal_rows, adoption = _legacy_queue_state_current(
-            reconciliation.intent,
-            db_path=db_path,
-        )
-        _require(terminal_rows, "legacy_queue_only_rows_not_terminal")
         _require(
             bundle.single_writer_lock.inspect(board_id=reconciliation.intent.board_id)
             is None

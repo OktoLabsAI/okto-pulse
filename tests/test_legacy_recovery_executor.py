@@ -16,6 +16,7 @@ import pytest
 from okto_pulse.community import kg_recovery_only as recovery
 from okto_pulse.community.adapters.board_rebuild_ingestion import (
     CommunityBoardRebuildIngestionAdapter,
+    read_legacy_source_revision_state,
 )
 from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
     LEGACY_DEAD_LETTER_COLUMNS,
@@ -23,8 +24,17 @@ from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
     LegacyManualRestoreQueueOnlyIntent,
     canonical_evidence_hash,
 )
+from okto_pulse.community.adapters.relational_schema_steps import (
+    global_discovery_source_revision_trigger_manifest,
+)
 from okto_pulse.community.adapters.rebuild_audit_storage import (
     CommunityFileSystemRebuildAuditArtifactStore,
+)
+from okto_pulse.community.adapters.sqlalchemy_models import (
+    GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION,
+    GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES,
+    GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID,
+    GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION,
 )
 
 
@@ -199,6 +209,60 @@ def _manifest_store(data_home: Path):  # noqa: ANN202
     )
 
 
+def _install_source_revision_guard(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        "CREATE TABLE global_discovery_source_revision ("
+        "scope_id VARCHAR(64) NOT NULL, "
+        "fence_version VARCHAR(64) NOT NULL, "
+        "trigger_manifest_version VARCHAR(64) NOT NULL, "
+        "incarnation_id VARCHAR(64) NOT NULL, "
+        "revision BIGINT DEFAULT 0 NOT NULL, "
+        "mutation_nonce VARCHAR(64) NOT NULL, "
+        "updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+        "PRIMARY KEY (scope_id), "
+        "CONSTRAINT ck_global_discovery_source_revision_global_scope "
+        "CHECK (scope_id = '_global'), "
+        "CONSTRAINT ck_global_discovery_source_revision_nonnegative "
+        "CHECK (revision >= 0))"
+    )
+    connection.execute(
+        "CREATE UNIQUE INDEX uq_global_discovery_source_revision_scope "
+        "ON global_discovery_source_revision (scope_id)"
+    )
+    for table_name in GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES:
+        exists = connection.execute(
+            "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name=?",
+            (table_name,),
+        ).fetchone()
+        if exists is None:
+            if table_name == "app_settings":
+                connection.execute(
+                    "CREATE TABLE app_settings ("
+                    "key VARCHAR(64) NOT NULL PRIMARY KEY, "
+                    "value VARCHAR(64) NOT NULL)"
+                )
+            else:
+                connection.execute(f'CREATE TABLE "{table_name}" (id TEXT)')
+    connection.execute(
+        "INSERT INTO global_discovery_source_revision "
+        "(scope_id,fence_version,trigger_manifest_version,incarnation_id,"
+        "revision,mutation_nonce,updated_at) VALUES (?,?,?,?,?,?,?)",
+        (
+            GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID,
+            GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION,
+            GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION,
+            "1" * 64,
+            100,
+            "2" * 64,
+            "2026-08-15 11:38:48",
+        ),
+    )
+    for _name, (_table_name, sql) in sorted(
+        global_discovery_source_revision_trigger_manifest().items()
+    ):
+        connection.execute(sql)
+
+
 def _create_queue_database(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     row = {
@@ -318,6 +382,7 @@ def _create_queue_database(path: Path) -> None:
                     committed_at,
                 ),
             )
+        _install_source_revision_guard(connection)
 
 
 def _replace_queue_row(path: Path, row: dict[str, object]) -> None:
@@ -328,6 +393,39 @@ def _replace_queue_row(path: Path, row: dict[str, object]) -> None:
             + ",".join(f'"{column}"=?' for column in columns)
             + " WHERE id=?",
             (*(row[column] for column in columns), row["id"]),
+        )
+
+
+def _restore_source_revision_baseline(
+    path: Path,
+    intent: LegacyManualRestoreQueueOnlyIntent,
+) -> None:
+    baseline = dict(intent.payload["source_revision_guard"]["baseline"])
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE global_discovery_source_revision SET "
+            "fence_version=?,trigger_manifest_version=?,incarnation_id=?,"
+            "revision=?,mutation_nonce=?,updated_at=? WHERE scope_id=?",
+            (
+                baseline["fence_version"],
+                baseline["trigger_manifest_version"],
+                baseline["incarnation_id"],
+                baseline["revision"],
+                baseline["mutation_nonce"],
+                baseline["updated_at"],
+                baseline["scope_id"],
+            ),
+        )
+
+
+def _raw_source_revision_state(path: Path) -> tuple[object, ...]:
+    with sqlite3.connect(path) as connection:
+        return tuple(
+            connection.execute(
+                "SELECT scope_id,fence_version,trigger_manifest_version,"
+                "incarnation_id,revision,mutation_nonce,updated_at "
+                "FROM global_discovery_source_revision"
+            ).fetchone()
         )
 
 
@@ -370,6 +468,47 @@ def _insert_historical_target_dlq_peer(path: Path) -> None:
         )
 
 
+def test_legacy_queue_evidence_uses_one_wal_snapshot_for_revision_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okto_pulse.community.adapters import board_rebuild_ingestion
+
+    db_path = tmp_path / "pulse.db"
+    _create_queue_database(db_path)
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    original = board_rebuild_ingestion.read_legacy_source_revision_state
+    interleaved: list[bool] = []
+
+    def read_after_concurrent_commit(connection):  # noqa: ANN001, ANN202
+        with sqlite3.connect(db_path, timeout=5.0) as writer:
+            writer.execute(
+                "UPDATE global_discovery_source_revision SET "
+                "revision=revision+1,mutation_nonce=?",
+                ("4" * 64,),
+            )
+        interleaved.append(True)
+        return original(connection)
+
+    monkeypatch.setattr(
+        board_rebuild_ingestion,
+        "read_legacy_source_revision_state",
+        read_after_concurrent_commit,
+    )
+    evidence = recovery._legacy_queue_current_evidence(
+        db_path,
+        board_id=BOARD_ID,
+        source=f"rebuild:{MANIFEST_REF}",
+        source_rows=(_source_payload(0),),
+        checkpoint_started_at="2026-08-15T02:32:51+00:00",
+    )
+
+    assert interleaved == [True]
+    assert evidence[-1]["baseline"]["revision"] == 100
+    assert _raw_source_revision_state(db_path)[4] == 101
+
+
 def test_legacy_outer_sqlite_snapshots_refuse_unbounded_global_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -389,9 +528,6 @@ def test_legacy_outer_sqlite_snapshots_refuse_unbounded_global_rows(
             f"INSERT INTO consolidation_queue ({','.join(LEGACY_QUEUE_COLUMNS)}) "
             f"VALUES ({','.join('?' for _ in LEGACY_QUEUE_COLUMNS)})",
             tuple(row),
-        )
-        connection.execute(
-            "CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
         connection.executemany(
             "INSERT INTO app_settings (key, value) VALUES (?, ?)",
@@ -2371,6 +2507,88 @@ def test_legacy_executor_reconstructs_semantics_of_existing_intent(
         )
 
 
+def test_legacy_executor_refuses_persisted_v3_intent_without_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okto_pulse.core.kg import rebuild_service
+
+    data_home = tmp_path / "data-home"
+    db_path = data_home / "data" / "pulse.db"
+    _create_queue_database(db_path)
+    rebuild, quarantine, _checkpoint_relative = _create_legacy_artifacts(data_home)
+    store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
+    bundle = SimpleNamespace(
+        artifact_store=store,
+        manifest_store=_manifest_store(data_home),
+    )
+    monkeypatch.setattr(
+        rebuild_service,
+        "load_verified_rebuild_confirmation_receipt",
+        lambda **_kwargs: None,
+    )
+    discovery = dict(
+        data_home=data_home,
+        db_path=db_path,
+        rebuild_root=rebuild,
+        quarantine_root=quarantine,
+        board_id=BOARD_ID,
+        recovery_actor_id="owner-1",
+        recovery_reason="governed legacy recovery",
+    )
+    plan = recovery._discover_legacy_queue_only_reconciliation(
+        bundle,
+        rebuild_baseline=recovery._snapshot_tree_hashes(rebuild),
+        quarantine_baseline=recovery._snapshot_tree_hashes(quarantine),
+        board_storage_baseline=recovery._snapshot_tree_hashes(
+            data_home / "boards" / BOARD_ID
+        ),
+        **discovery,
+    )
+    assert plan is not None
+    v3 = plan.intent.to_payload()
+    v3["schema_version"] = "legacy_manual_restore_queue_only.v3"
+    del v3["source_revision_guard"]
+    for key in ("recovery_run_id", "evidence_digest", "intent_digest"):
+        v3.pop(key)
+    digest = canonical_evidence_hash(v3)
+    v3["recovery_run_id"] = f"legacy_reconcile_{digest[:24]}"
+    v3["evidence_digest"] = digest
+    v3["intent_digest"] = digest
+    persisted = {
+        "effect_key": plan.intent_receipt.effect_key,
+        "effect": plan.intent_receipt.effect,
+        "ok": True,
+        "code": plan.intent_receipt.code,
+        "details": v3,
+    }
+    intent_path = rebuild / str(v3["intent_ref"])
+    _write_json(intent_path, persisted)
+    intent_bytes = intent_path.read_bytes()
+    queue_before = recovery._full_queue_snapshot(db_path)
+    source_revision_before = _raw_source_revision_state(db_path)
+    rebuild_baseline = recovery._snapshot_tree_hashes(rebuild)
+
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="legacy_queue_only_intent_receipt_invalid",
+    ):
+        recovery._discover_legacy_queue_only_reconciliation(
+            bundle,
+            rebuild_baseline=rebuild_baseline,
+            quarantine_baseline=recovery._snapshot_tree_hashes(quarantine),
+            board_storage_baseline=recovery._snapshot_tree_hashes(
+                data_home / "boards" / BOARD_ID
+            ),
+            **discovery,
+        )
+
+    assert intent_path.read_bytes() == intent_bytes
+    assert recovery._snapshot_tree_hashes(rebuild) == rebuild_baseline
+    assert recovery._full_queue_snapshot(db_path) == queue_before
+    assert _raw_source_revision_state(db_path) == source_revision_before
+
+
 def test_legacy_executor_accepts_realistic_large_checkpoint_but_bounds_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2521,6 +2739,7 @@ def test_legacy_executor_refuses_terminal_checkpoint_artifact_queue_split_brain(
     compensation_path.write_bytes(compensation_bytes)
     audit_path.write_bytes(audit_bytes)
     _replace_queue_row(db_path, dict(plan.intent.queue_rows[0]))
+    _restore_source_revision_baseline(db_path, plan.intent)
     invalid_baseline = recovery._snapshot_tree_hashes(rebuild)
     with pytest.raises(
         recovery.RecoveryRefused,
@@ -2775,6 +2994,95 @@ def test_legacy_executor_retries_exact_compensation_failed_phase(
     assert terminal is not None and terminal.terminal
 
 
+@pytest.mark.asyncio
+async def test_legacy_lane_validates_source_guard_before_logical_exclusion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okto_pulse.core.kg import rebuild_service
+
+    data_home = tmp_path / "data-home"
+    db_path = data_home / "data" / "pulse.db"
+    _create_queue_database(db_path)
+    rebuild, quarantine, _checkpoint_relative = _create_legacy_artifacts(data_home)
+    store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
+    discovery_bundle = SimpleNamespace(
+        artifact_store=store,
+        manifest_store=_manifest_store(data_home),
+    )
+    monkeypatch.setattr(
+        rebuild_service,
+        "load_verified_rebuild_confirmation_receipt",
+        lambda **_kwargs: None,
+    )
+    rebuild_baseline = recovery._snapshot_tree_hashes(rebuild)
+    quarantine_baseline = recovery._snapshot_tree_hashes(quarantine)
+    board_root = data_home / "boards" / BOARD_ID
+    board_baseline = recovery._snapshot_tree_hashes(board_root)
+    plan = recovery._discover_legacy_queue_only_reconciliation(
+        discovery_bundle,
+        data_home=data_home,
+        db_path=db_path,
+        rebuild_root=rebuild,
+        rebuild_baseline=rebuild_baseline,
+        quarantine_root=quarantine,
+        quarantine_baseline=quarantine_baseline,
+        board_storage_baseline=board_baseline,
+        board_id=BOARD_ID,
+        recovery_actor_id="owner-1",
+        recovery_reason="governed legacy recovery",
+    )
+    assert plan is not None and not plan.terminal
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE global_discovery_source_revision SET "
+            "revision=revision+1,mutation_nonce=?",
+            ("4" * 64,),
+        )
+    queue_before = recovery._full_queue_snapshot(db_path)
+    source_revision_before = _raw_source_revision_state(db_path)
+    logical_calls: list[bool] = []
+    service_calls: list[bool] = []
+
+    def unexpected_logical(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        logical_calls.append(True)
+        raise AssertionError("logical exclusion ran before source guard")
+
+    class Service:
+        @staticmethod
+        def legacy_manual_restore_queue_only(**_kwargs):  # noqa: ANN202
+            service_calls.append(True)
+            raise AssertionError("service ran before source guard")
+
+    monkeypatch.setattr(recovery, "_sqlite_logical_fingerprints", unexpected_logical)
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="legacy_queue_only_source_revision_transition_invalid",
+    ):
+        await recovery._run_legacy_queue_only_lane(
+            plan,
+            bundle=SimpleNamespace(service=Service()),
+            composition=SimpleNamespace(),
+            db_path=db_path,
+            schema_fingerprint="unused",
+            rebuild_root=rebuild,
+            rebuild_baseline=rebuild_baseline,
+            quarantine_root=quarantine,
+            quarantine_baseline=quarantine_baseline,
+            board_storage_root=board_root,
+            board_storage_baseline=board_baseline,
+            actor_id="owner-1",
+            cancel_event=threading.Event(),
+            lifetime_probe=lambda: True,
+            timeout_seconds=1.0,
+        )
+
+    assert logical_calls == []
+    assert service_calls == []
+    assert recovery._full_queue_snapshot(db_path) == queue_before
+    assert _raw_source_revision_state(db_path) == source_revision_before
+
+
 @pytest.mark.parametrize("mutate_schema", (False, True))
 @pytest.mark.asyncio
 async def test_legacy_executor_lane_uses_real_core_service_and_releases_fences(
@@ -2890,6 +3198,18 @@ async def test_legacy_executor_lane_uses_real_core_service_and_releases_fences(
         db_path=db_path,
     )
     assert queue_terminal is True
+    source_revision_baseline = dict(
+        plan.intent.payload["source_revision_guard"]["baseline"]
+    )
+    with sqlite3.connect(db_path) as connection:
+        source_revision_after_crash = read_legacy_source_revision_state(connection)
+    assert source_revision_after_crash["revision"] == (
+        int(source_revision_baseline["revision"]) + len(plan.intent.queue_rows)
+    )
+    assert (
+        source_revision_after_crash["mutation_nonce"]
+        != (source_revision_baseline["mutation_nonce"])
+    )
     assert not (rebuild / "audit" / f"{compensation_effect_id}.json").exists()
 
     rebuild_before = recovery._snapshot_tree_hashes(rebuild)
@@ -3036,3 +3356,7 @@ async def test_legacy_executor_lane_uses_real_core_service_and_releases_fences(
     assert recovery._snapshot_tree_hashes(quarantine) == quarantine_before
     assert recovery._snapshot_tree_hashes(board_root) == board_before
     assert recovery._dlq_snapshot(db_path) == dlq_before
+    with sqlite3.connect(db_path) as connection:
+        assert (
+            read_legacy_source_revision_state(connection) == source_revision_after_crash
+        )
