@@ -2129,6 +2129,213 @@ def _create_queue_db(path: Path) -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_drain_waiter_requires_durable_writer_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    checkpoint: dict[str, object] = {
+        "state": "draining",
+        "writer_handoff_count": 0,
+        "writer_reacquire_count": 0,
+    }
+    release_entered = asyncio.Event()
+    release_allowed = asyncio.Event()
+    service_finish = asyncio.Event()
+    handoff_zero_observed = asyncio.Event()
+    depth_reads: list[str] = []
+
+    async def service_run() -> object:
+        release_entered.set()
+        await release_allowed.wait()
+        checkpoint["writer_handoff_count"] = 1
+        await service_finish.wait()
+        return SimpleNamespace(outcome="completed", reason="test")
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    def load_checkpoint(*_args, **_kwargs) -> dict[str, object]:  # noqa: ANN002, ANN003
+        snapshot = dict(checkpoint)
+        if snapshot["writer_handoff_count"] == 0:
+            handoff_zero_observed.set()
+        return snapshot
+
+    monkeypatch.setattr(recovery, "_load_checkpoint", load_checkpoint)
+
+    def active_depth(*_args, **_kwargs) -> int:  # noqa: ANN002, ANN003
+        depth_reads.append("read")
+        return 2
+
+    monkeypatch.setattr(recovery, "_active_exact_queue_depth", active_depth)
+    service_task = asyncio.create_task(service_run())
+    waiter = asyncio.create_task(
+        recovery._wait_for_admission_or_post_drain(
+            service_task,
+            SimpleNamespace(),
+            board_id=BOARD_ID,
+            manifest_ref="manifest_handoff",
+            timeout_seconds=1.0,
+            poll_seconds=0.001,
+        )
+    )
+    try:
+        await asyncio.wait_for(release_entered.wait(), timeout=1.0)
+        await asyncio.wait_for(handoff_zero_observed.wait(), timeout=1.0)
+        await asyncio.sleep(0)
+        assert not waiter.done()
+        assert depth_reads == []
+
+        release_allowed.set()
+        observed, early_result, requires_claims = await asyncio.wait_for(
+            waiter,
+            timeout=1.0,
+        )
+
+        assert observed["writer_handoff_count"] == 1
+        assert observed["writer_reacquire_count"] == 0
+        assert early_result is None
+        assert requires_claims is True
+        assert depth_reads
+    finally:
+        release_allowed.set()
+        service_finish.set()
+        await asyncio.gather(service_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_drain_waiter_refuses_service_done_after_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    checkpoint = {
+        "state": "draining",
+        "writer_handoff_count": 1,
+        "writer_reacquire_count": 0,
+    }
+
+    async def service_run() -> object:
+        return SimpleNamespace(outcome="failed", reason="release failed")
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        recovery,
+        "_load_checkpoint",
+        lambda *_args, **_kwargs: checkpoint,
+    )
+    monkeypatch.setattr(
+        recovery,
+        "_active_exact_queue_depth",
+        lambda *_args, **_kwargs: pytest.fail("queue depth read before handoff"),
+    )
+    service_task = asyncio.create_task(service_run())
+    await service_task
+
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="rebuild_terminated_before_drain_admission",
+    ):
+        await recovery._wait_for_admission_or_post_drain(
+            service_task,
+            SimpleNamespace(),
+            board_id=BOARD_ID,
+            manifest_ref="manifest_handoff",
+            timeout_seconds=1.0,
+            poll_seconds=0.001,
+        )
+
+
+@pytest.mark.asyncio
+async def test_drain_waiter_propagates_service_cancellation_after_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    checkpoint = {
+        "state": "draining",
+        "writer_handoff_count": 1,
+        "writer_reacquire_count": 0,
+    }
+
+    async def service_run() -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        recovery,
+        "_load_checkpoint",
+        lambda *_args, **_kwargs: checkpoint,
+    )
+    monkeypatch.setattr(
+        recovery,
+        "_active_exact_queue_depth",
+        lambda *_args, **_kwargs: pytest.fail("queue depth read before handoff"),
+    )
+    service_task = asyncio.create_task(service_run())
+    service_task.cancel()
+    await asyncio.gather(service_task, return_exceptions=True)
+
+    with pytest.raises(asyncio.CancelledError):
+        await recovery._wait_for_admission_or_post_drain(
+            service_task,
+            SimpleNamespace(),
+            board_id=BOARD_ID,
+            manifest_ref="manifest_handoff",
+            timeout_seconds=1.0,
+            poll_seconds=0.001,
+        )
+
+
+@pytest.mark.asyncio
+async def test_drain_waiter_times_out_while_handoff_is_uncommitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    checkpoint = {
+        "state": "draining",
+        "writer_handoff_count": 0,
+        "writer_reacquire_count": 0,
+    }
+
+    async def service_run() -> None:
+        await asyncio.Event().wait()
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        recovery,
+        "_load_checkpoint",
+        lambda *_args, **_kwargs: checkpoint,
+    )
+    monkeypatch.setattr(
+        recovery,
+        "_active_exact_queue_depth",
+        lambda *_args, **_kwargs: pytest.fail("queue depth read before handoff"),
+    )
+    service_task = asyncio.create_task(service_run())
+    try:
+        with pytest.raises(
+            recovery.RecoveryRefused,
+            match="rebuild_admission_timeout",
+        ):
+            await recovery._wait_for_admission_or_post_drain(
+                service_task,
+                SimpleNamespace(),
+                board_id=BOARD_ID,
+                manifest_ref="manifest_handoff",
+                timeout_seconds=0.01,
+                poll_seconds=0.001,
+            )
+    finally:
+        service_task.cancel()
+        await asyncio.gather(service_task, return_exceptions=True)
+
+
 class _CheckpointArtifactStore:
     def __init__(self, checkpoint: Mapping[str, object] | None = None) -> None:
         self.checkpoint = checkpoint

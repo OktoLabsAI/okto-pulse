@@ -9856,20 +9856,6 @@ async def _wait_for_admission_or_post_drain(
     source = f"rebuild:{manifest_ref}"
     while True:
         checkpoint = _load_checkpoint(bundle, board_id, manifest_ref)
-        if isinstance(checkpoint, Mapping):
-            state = _checkpoint_state(checkpoint)
-            if state == CHECKPOINT_STATE_DRAINING:
-                if (
-                    _active_exact_queue_depth(
-                        Path(os.environ["DATA_DIR"]) / "data" / "pulse.db",
-                        board_id=board_id,
-                        source=source,
-                    )
-                    > 0
-                ):
-                    return checkpoint, None, True
-            elif state in POST_DRAIN_CHECKPOINT_STATES:
-                return checkpoint, None, False
         if service_task.done():
             result = await service_task
             checkpoint = _load_checkpoint(bundle, board_id, manifest_ref)
@@ -9883,6 +9869,24 @@ async def _wait_for_admission_or_post_drain(
                 f"outcome={getattr(result, 'outcome', None)} "
                 f"reason={getattr(result, 'reason', None)}"
             )
+        if isinstance(checkpoint, Mapping):
+            state = _checkpoint_state(checkpoint)
+            if state == CHECKPOINT_STATE_DRAINING:
+                if (
+                    type(checkpoint.get("writer_handoff_count")) is int
+                    and checkpoint.get("writer_handoff_count") == 1
+                    and type(checkpoint.get("writer_reacquire_count")) is int
+                    and checkpoint.get("writer_reacquire_count") == 0
+                    and _active_exact_queue_depth(
+                        Path(os.environ["DATA_DIR"]) / "data" / "pulse.db",
+                        board_id=board_id,
+                        source=source,
+                    )
+                    > 0
+                ):
+                    return checkpoint, None, True
+            elif state in POST_DRAIN_CHECKPOINT_STATES:
+                return checkpoint, None, False
         _require(
             asyncio.get_running_loop().time() < deadline,
             "rebuild_admission_timeout",
