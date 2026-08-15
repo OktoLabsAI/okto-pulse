@@ -5,12 +5,12 @@
 import { useEffect, useState } from 'react';
 import {
   X, ChevronRight, ChevronUp, ChevronDown, ArrowRight, FileText, Link2, History, MessageCircleQuestion,
-  FlaskConical, Scale, RefreshCw, Maximize2, Minimize2, GitBranch, Ban,
+  FlaskConical, Scale, RefreshCw, Maximize2, Minimize2, GitBranch, Ban, CheckCircle2,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
 import { EntityExportButton } from '@/components/export';
-import type { Sprint, SprintStatus } from '@/types';
+import type { Sprint, SprintQAItem, SprintStatus } from '@/types';
 import { SPRINT_STATUS_LABELS, SPRINT_STATUS_COLORS } from '@/types';
 import { ValidationGateOverride } from '@/components/shared/ValidationGateOverride';
 import { EditableField } from '@/components/shared/EditableField';
@@ -65,6 +65,44 @@ function formatChangeValue(val: unknown): string {
   }
   if (typeof val === 'object') return JSON.stringify(val, null, 2);
   return String(val);
+}
+
+function SprintChoiceOptionsDisplay({
+  choices,
+  selected,
+}: {
+  choices: SprintQAItem['choices'];
+  selected: string[] | null;
+}) {
+  if (!choices) return null;
+
+  return (
+    <div className="mt-1 space-y-1">
+      {choices.map((option) => {
+        const isSelected = selected?.includes(option.id) ?? false;
+        return (
+          <div
+            key={option.id}
+            data-selected={isSelected ? 'true' : 'false'}
+            className={`flex items-center gap-2 rounded px-2 py-1 text-sm ${
+              isSelected
+                ? 'bg-blue-100 font-medium text-blue-800 dark:bg-blue-900/40 dark:text-blue-300'
+                : 'text-gray-600 dark:text-gray-400'
+            }`}
+          >
+            <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 ${
+              isSelected
+                ? 'border-blue-500 bg-blue-500'
+                : 'border-gray-300 dark:border-gray-600'
+            }`}>
+              {isSelected && <CheckCircle2 size={12} className="text-white" aria-hidden="true" />}
+            </span>
+            {option.label}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function SprintHistoryTab({ sprintId, api }: { sprintId: string; api: ReturnType<typeof useDashboardApi> }) {
@@ -981,16 +1019,44 @@ export function SprintModal({ sprintId, onClose, onEscape }: SprintModalProps) {
           {activeTab === 'qa' && (
             <div className="space-y-3">
               {sprint.qa_items && sprint.qa_items.length > 0 ? (
-                sprint.qa_items.map(qa => (
-                  <div key={qa.id} className="p-3 bg-gray-50 dark:bg-gray-700/50 rounded-lg">
-                    <p className="text-sm font-medium text-gray-900 dark:text-white">{qa.question}</p>
-                    {qa.answer ? (
-                      <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">{qa.answer}</p>
-                    ) : (
-                      <p className="text-xs text-amber-500 mt-1">Awaiting answer</p>
-                    )}
-                  </div>
-                ))
+                sprint.qa_items.map((qa) => {
+                  const answeredAt = qa.answered_at;
+                  const isAnswered = answeredAt != null;
+                  return (
+                    <div key={qa.id} className="rounded-lg bg-gray-50 p-3 dark:bg-gray-700/50">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-medium text-gray-900 dark:text-white">{qa.question}</p>
+                        {qa.question_type !== 'text' && (
+                          <span className="rounded bg-blue-100 px-1 py-0.5 text-[10px] text-blue-600 dark:bg-blue-900/40 dark:text-blue-300">
+                            {qa.question_type === 'multi_choice' ? 'multi' : 'choice'}
+                          </span>
+                        )}
+                      </div>
+                      {isAnswered ? (
+                        <div
+                          className="mt-2 border-l-2 border-green-300 pl-3 dark:border-green-600"
+                          data-testid={`sprint-qa-answer-${qa.id}`}
+                        >
+                          {qa.question_type !== 'text' && (
+                            <SprintChoiceOptionsDisplay
+                              choices={qa.choices}
+                              selected={qa.selected}
+                            />
+                          )}
+                          {qa.answer && (
+                            <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">{qa.answer}</p>
+                          )}
+                          <span className="mt-1 block text-[10px] text-gray-400">
+                            Answered by {qa.answered_by?.slice(0, 12)}... &middot;{' '}
+                            {new Date(answeredAt).toLocaleDateString()}
+                          </span>
+                        </div>
+                      ) : (
+                        <p className="mt-1 text-xs text-amber-500">Awaiting answer</p>
+                      )}
+                    </div>
+                  );
+                })
               ) : (
                 <p className="text-sm text-gray-400 text-center py-6">No Q&A items</p>
               )}

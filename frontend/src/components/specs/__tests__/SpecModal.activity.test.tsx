@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SpecModal } from '../SpecModal';
 import { persistTestScenariosWithWriteGuard } from '../scenarioWriteGuard';
-import type { Spec, SpecHistoryEntry, TestScenario } from '@/types';
+import type { Spec, SpecHistoryEntry, SprintSummary, TestScenario } from '@/types';
 
 type ValidationGateOverrideProps = {
   title?: string;
@@ -14,6 +14,11 @@ const apiMock = vi.hoisted(() => ({
   getAllowedTransitions: vi.fn(),
   getEffectiveResources: vi.fn(),
   listSprints: vi.fn(),
+  getSprint: vi.fn(),
+  listSpecQA: vi.fn(),
+  createSpecQuestion: vi.fn(),
+  answerSpecQuestion: vi.fn(),
+  deleteSpecQuestion: vi.fn(),
   listSpecHistory: vi.fn(),
   listSpecKnowledge: vi.fn(),
   updateSpec: vi.fn(),
@@ -104,6 +109,24 @@ vi.mock('@/components/shared/EditableField', () => ({
   EditableField: () => <div />,
 }));
 
+vi.mock('@/components/shared/MentionInput', () => ({
+  MentionInput: ({
+    value,
+    onChange,
+    placeholder,
+  }: {
+    value: string;
+    onChange: (value: string) => void;
+    placeholder?: string;
+  }) => (
+    <input
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={placeholder}
+    />
+  ),
+}));
+
 vi.mock('react-hot-toast', () => ({
   default: { error: vi.fn(), success: vi.fn() },
 }));
@@ -161,6 +184,35 @@ const historyEntry: SpecHistoryEntry = {
   ],
 };
 
+function sprintSummary(overrides: Partial<SprintSummary> = {}): SprintSummary {
+  return {
+    id: 'sprint-1',
+    spec_id: spec.id,
+    board_id: spec.board_id,
+    title: 'Spec sprint',
+    description: null,
+    objective: null,
+    expected_outcome: null,
+    status: 'active',
+    lane_type: 'normal',
+    origin_sprint_id: null,
+    origin_bug_id: null,
+    normal_sprint_created: false,
+    spec_version: spec.version,
+    start_date: null,
+    end_date: null,
+    test_scenario_ids: [],
+    business_rule_ids: [],
+    version: 1,
+    labels: [],
+    created_by: 'user-1',
+    created_at: '2026-05-29T10:00:00Z',
+    updated_at: '2026-05-29T10:00:00Z',
+    archived: false,
+    ...overrides,
+  };
+}
+
 describe('SpecModal Activity tab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -168,6 +220,8 @@ describe('SpecModal Activity tab', () => {
     apiMock.getSpec.mockResolvedValue(spec);
     apiMock.getAllowedTransitions.mockResolvedValue({ allowed_transitions: [] });
     apiMock.listSprints.mockResolvedValue([]);
+    apiMock.getSprint.mockResolvedValue({ cards: [] });
+    apiMock.listSpecQA.mockResolvedValue([]);
     apiMock.listSpecHistory.mockResolvedValue([historyEntry]);
     apiMock.updateSpec.mockResolvedValue(spec);
     apiMock.getEffectiveResources.mockResolvedValue({
@@ -310,6 +364,94 @@ describe('SpecModal Activity tab', () => {
     expect(
       within(tabList).queryByRole('tab', { name: 'Cards' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('shows only positive open Q&A counts in the linked-sprints list', async () => {
+    apiMock.listSprints.mockResolvedValue([
+      sprintSummary({ id: 'sprint-open', title: 'Sprint with questions', open_qa_count: 2 }),
+      sprintSummary({ id: 'sprint-clear', title: 'Sprint without questions', open_qa_count: 0 }),
+    ]);
+    apiMock.getSprint.mockImplementation((sprintId: string) => Promise.resolve({
+      id: sprintId,
+      cards: [],
+    }));
+
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: /^Sprints/ }));
+
+    await screen.findByText('Sprint without questions');
+    expect(screen.getAllByTestId('qa-open-badge')).toHaveLength(1);
+    expect(screen.getByLabelText('2 unanswered questions')).toHaveTextContent('2 open Q&A');
+  });
+
+  it('notifies the board list exactly once after asking and answering Q&A', async () => {
+    const openQuestion = {
+      id: 'qa-open',
+      spec_id: spec.id,
+      question: 'Which rollout window?',
+      question_type: 'text',
+      choices: null,
+      allow_free_text: false,
+      answer: null,
+      selected: null,
+      asked_by: 'agent-1',
+      answered_by: null,
+      created_at: '2026-08-14T10:00:00Z',
+      answered_at: null,
+    };
+    const answeredQuestion = {
+      ...openQuestion,
+      answer: 'Tonight',
+      answered_by: 'user-1',
+      answered_at: '2026-08-14T11:00:00Z',
+    };
+    apiMock.listSpecQA
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([openQuestion])
+      .mockResolvedValueOnce([answeredQuestion]);
+    apiMock.createSpecQuestion.mockResolvedValue(openQuestion);
+    apiMock.answerSpecQuestion.mockResolvedValue(answeredQuestion);
+    const onChanged = vi.fn();
+
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={onChanged}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Q&A' }));
+    onChanged.mockClear();
+
+    fireEvent.change(
+      await screen.findByPlaceholderText('Ask a question... (type @ to mention)'),
+      { target: { value: openQuestion.question } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    fireEvent.click(await screen.findByRole('button', { name: 'Answer this question' }));
+    fireEvent.change(
+      screen.getByPlaceholderText('Type your answer... (@ to mention)'),
+      { target: { value: 'Tonight' } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Answer' }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(2));
+    expect(apiMock.createSpecQuestion).toHaveBeenCalledTimes(1);
+    expect(apiMock.answerSpecQuestion).toHaveBeenCalledTimes(1);
   });
 
   it('persists the same-version Draft-only Code Evidence coverage skip from its own tab', async () => {

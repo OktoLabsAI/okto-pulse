@@ -59,6 +59,7 @@ import type {
   ObservabilityRequirement,
   Spec,
   SpecStatus,
+  SprintSummary,
   SpecQAItem,
   SpecHistoryEntry,
   SpecStructuredEntityOperation,
@@ -137,6 +138,7 @@ import {
 } from '@/components/code-traceability';
 import { SpecDependenciesTab } from './SpecDependenciesTab';
 import type { SpecDependencyDirection } from '@/types/spec-dependencies';
+import { QABadge } from '@/components/shared/QABadge';
 
 interface SpecModalProps {
   specId: string;
@@ -1022,7 +1024,15 @@ function ChoiceAnswerForm({
   );
 }
 
-function QATab({ specId, mentionables }: { specId: string; mentionables: Mentionable[] }) {
+function QATab({
+  specId,
+  mentionables,
+  onChanged,
+}: {
+  specId: string;
+  mentionables: Mentionable[];
+  onChanged: () => void;
+}) {
   const api = useDashboardApi();
   const [items, setItems] = useState<SpecQAItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1053,6 +1063,7 @@ function QATab({ specId, mentionables }: { specId: string; mentionables: Mention
       setNewQuestion('');
       toast.success('Question posted');
       await load();
+      onChanged();
     } catch { toast.error('Failed to post question'); }
   };
 
@@ -1070,6 +1081,7 @@ function QATab({ specId, mentionables }: { specId: string; mentionables: Mention
       setNewQuestion(''); setNewOptions(''); setNewMulti(false); setNewAllowFreeText(false);
       toast.success('Choice question posted');
       await load();
+      onChanged();
     } catch { toast.error('Failed to post choice question'); }
   };
 
@@ -1080,6 +1092,7 @@ function QATab({ specId, mentionables }: { specId: string; mentionables: Mention
       setAnswerDraft('');
       toast.success('Answer posted');
       await load();
+      onChanged();
     } catch { toast.error('Failed to post answer'); }
   };
 
@@ -1093,6 +1106,7 @@ function QATab({ specId, mentionables }: { specId: string; mentionables: Mention
     try {
       await api.deleteSpecQuestion(specId, qaId);
       await load();
+      onChanged();
     } catch { toast.error('Failed to delete'); }
   };
 
@@ -1281,7 +1295,7 @@ function QATab({ specId, mentionables }: { specId: string; mentionables: Mention
   );
 }
 
-function SpecSprintsTab({ sprints, api }: { sprints: any[]; api: ReturnType<typeof useDashboardApi> }) {
+function SpecSprintsTab({ sprints, api }: { sprints: SprintSummary[]; api: ReturnType<typeof useDashboardApi> }) {
   const [details, setDetails] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
 
@@ -1301,7 +1315,7 @@ function SpecSprintsTab({ sprints, api }: { sprints: any[]; api: ReturnType<type
 
   return (
     <div className="space-y-3">
-      {sprints.map((sprint: any) => {
+      {sprints.map((sprint) => {
         const detail = details[sprint.id];
         const cards = detail?.cards || [];
         const total = cards.length;
@@ -1318,6 +1332,7 @@ function SpecSprintsTab({ sprints, api }: { sprints: any[]; api: ReturnType<type
                   sprint.status === 'cancelled' ? 'bg-red-500' : 'bg-gray-500'
                 }`}>{sprint.status}</span>
                 <span className="text-sm font-medium text-gray-900 dark:text-white">{sprint.title}</span>
+                <QABadge count={sprint.open_qa_count} />
               </div>
               <span className="text-xs font-bold text-gray-600 dark:text-gray-300">{pct}%</span>
             </div>
@@ -1598,7 +1613,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const [validateResult, setValidateResult] = useState<{ success: boolean; error: string | null }>({ success: false, error: null });
   const [validating, setValidating] = useState(false);
   const [sprintSuggestions, setSprintSuggestions] = useState<any[] | null>(null);
-  const [linkedSprints, setLinkedSprints] = useState<any[]>([]);
+  const [linkedSprints, setLinkedSprints] = useState<SprintSummary[]>([]);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [validationHistoryRefreshKey, setValidationHistoryRefreshKey] =
     useState(0);
@@ -3134,7 +3149,13 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
             <KGValidationTab boardId={spec.board_id} specId={specId} />
           )}
           {activeTab === 'activity' && <HistoryTab specId={specId} />}
-          {activeTab === 'qa' && <QATab specId={specId} mentionables={mentionables} />}
+          {activeTab === 'qa' && (
+            <QATab
+              specId={specId}
+              mentionables={mentionables}
+              onChanged={onChanged}
+            />
+          )}
 
           {activeTab === 'sprints' && (
             <SpecSprintsTab sprints={linkedSprints} api={api} />

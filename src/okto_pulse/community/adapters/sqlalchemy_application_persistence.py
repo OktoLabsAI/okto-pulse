@@ -434,15 +434,29 @@ def _projection_expression(model: Any, field_name: str) -> Any:
             .scalar_subquery()
             .label(field_name)
         )
-    if model is models.Card and field_name == "open_qa_count":
+    open_qa_binding = {
+        models.Card: (models.QAItem, models.QAItem.card_id),
+        models.Ideation: (
+            models.IdeationQAItem,
+            models.IdeationQAItem.ideation_id,
+        ),
+        models.Refinement: (
+            models.RefinementQAItem,
+            models.RefinementQAItem.refinement_id,
+        ),
+        models.Spec: (models.SpecQAItem, models.SpecQAItem.spec_id),
+        models.Sprint: (models.SprintQAItem, models.SprintQAItem.sprint_id),
+    }.get(model)
+    if field_name == "open_qa_count" and open_qa_binding is not None:
+        qa_model, parent_id = open_qa_binding
         return (
             select(func.count())
-            .select_from(models.QAItem)
+            .select_from(qa_model)
             .where(
-                models.QAItem.card_id == models.Card.id,
-                models.QAItem.answered_at.is_(None),
+                parent_id == model.id,
+                qa_model.answered_at.is_(None),
             )
-            .correlate(models.Card)
+            .correlate(model)
             .scalar_subquery()
             .label(field_name)
         )
@@ -792,9 +806,7 @@ class CommunitySqlAlchemyApplicationPersistence:
             return resolve_effective_permissions(None, None, None)
         permission_flags, legacy_permissions, preset_id, board_overrides = row
         agent_flags = (
-            copy.deepcopy(permission_flags)
-            if permission_flags is not None
-            else None
+            copy.deepcopy(permission_flags) if permission_flags is not None else None
         )
         owner_review_required, review_reason = direct_permission_review(
             agent_flags,

@@ -11,6 +11,9 @@ const apiMock = vi.hoisted(() => ({
   listIdeationKnowledge: vi.fn(),
   listIdeationHistory: vi.fn(),
   listIdeationQA: vi.fn(),
+  createIdeationQuestion: vi.fn(),
+  answerIdeationQuestion: vi.fn(),
+  deleteIdeationQuestion: vi.fn(),
   getAllowedTransitions: vi.fn(),
   moveIdeation: vi.fn(),
   deleteIdeation: vi.fn(),
@@ -72,7 +75,21 @@ vi.mock('@/components/specs/MockupsTab', () => ({
 }));
 
 vi.mock('@/components/shared/MentionInput', () => ({
-  MentionInput: () => <div />,
+  MentionInput: ({
+    value,
+    onChange,
+    placeholder,
+  }: {
+    value: string;
+    onChange: (value: string) => void;
+    placeholder?: string;
+  }) => (
+    <input
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={placeholder}
+    />
+  ),
 }));
 
 vi.mock('@/components/shared/MarkdownContent', () => ({
@@ -235,6 +252,67 @@ describe('IdeationModal report export', () => {
     await screen.findByText('My Ideation');
     const qaTab = screen.getByRole('tab', { name: /Q&A/ });
     expect(within(qaTab).getByText('1')).toHaveClass(expectedClass);
+  });
+
+  it('notifies the board list exactly once after asking and answering Q&A', async () => {
+    const openQuestion = {
+      id: 'qa-open',
+      ideation_id: 'ideation-1',
+      question: 'Which rollout window?',
+      question_type: 'text',
+      choices: null,
+      allow_free_text: false,
+      answer: null,
+      selected: null,
+      asked_by: 'agent-1',
+      answered_by: null,
+      created_at: '2026-08-14T10:00:00Z',
+      answered_at: null,
+    };
+    const answeredQuestion = {
+      ...openQuestion,
+      answer: 'Tonight',
+      answered_by: 'user-1',
+      answered_at: '2026-08-14T11:00:00Z',
+    };
+    apiMock.listIdeationQA
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([openQuestion])
+      .mockResolvedValueOnce([answeredQuestion]);
+    apiMock.createIdeationQuestion.mockResolvedValue(openQuestion);
+    apiMock.answerIdeationQuestion.mockResolvedValue(answeredQuestion);
+    const onChanged = vi.fn();
+
+    render(
+      <IdeationModal
+        ideationId="ideation-1"
+        boardId="board-1"
+        onClose={vi.fn()}
+        onChanged={onChanged}
+      />,
+    );
+
+    await screen.findByText('My Ideation');
+    fireEvent.click(screen.getByRole('tab', { name: /Q&A/ }));
+    onChanged.mockClear();
+
+    fireEvent.change(
+      await screen.findByPlaceholderText('Ask a question... (type @ to mention)'),
+      { target: { value: openQuestion.question } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    fireEvent.click(await screen.findByRole('button', { name: 'Answer this question' }));
+    fireEvent.change(
+      screen.getByPlaceholderText('Type your answer... (@ to mention)'),
+      { target: { value: 'Tonight' } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Answer' }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(2));
+    expect(apiMock.createIdeationQuestion).toHaveBeenCalledTimes(1);
+    expect(apiMock.answerIdeationQuestion).toHaveBeenCalledTimes(1);
   });
 
   it('renders move actions from the allowed_transitions contract', async () => {

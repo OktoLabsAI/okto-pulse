@@ -76,6 +76,7 @@ import type {
   AllowedTransitionsResponse,
   Spec,
   Sprint,
+  SprintSummary,
   SpecStructuredEntityMutationRequest,
   SpecStructuredEntityMutationResult,
   SpecStructuredEntityOperation,
@@ -258,6 +259,7 @@ export interface SprintPageItem {
   created_at: string;
   updated_at: string;
   archived: boolean;
+  open_qa_count?: number | null;
 }
 
 function isCardCreateKnowledgeMutationResponse(
@@ -2457,17 +2459,17 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     },
 
     // ---- Sprints ----
-    async listSprints(boardId: string, specId: string): Promise<any[]> {
-      return apiClient.fetchJson(`/boards/${boardId}/specs/${specId}/sprints`);
+    async listSprints(boardId: string, specId: string): Promise<SprintSummary[]> {
+      return apiClient.fetchJson<SprintSummary[]>(`/boards/${boardId}/specs/${specId}/sprints`);
     },
 
-    async listBoardSprints(boardId: string, status?: string, specId?: string, includeArchived?: boolean): Promise<any[]> {
+    async listBoardSprints(boardId: string, status?: string, specId?: string, includeArchived?: boolean): Promise<SprintSummary[]> {
       const params = new URLSearchParams();
       if (status) params.set('status', status);
       if (specId) params.set('spec_id', specId);
       if (includeArchived) params.set('include_archived', 'true');
       const qs = params.toString();
-      return apiClient.fetchJson(`/boards/${boardId}/sprints${qs ? `?${qs}` : ''}`);
+      return apiClient.fetchJson<SprintSummary[]>(`/boards/${boardId}/sprints${qs ? `?${qs}` : ''}`);
     },
 
     async listBoardSprintsPage(boardId: string, options: PageWindow & {

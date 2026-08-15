@@ -89,6 +89,19 @@ function cardTypeLabel(card: Pick<Card, 'card_type'> | null | undefined): string
   return 'Task';
 }
 
+function preserveProjectedOpenQACount(
+  updated: Card,
+  existing: Pick<Card, 'open_qa_count'> | undefined,
+): Card {
+  if (
+    updated.open_qa_count !== undefined
+    || existing?.open_qa_count === undefined
+  ) {
+    return updated;
+  }
+  return { ...updated, open_qa_count: existing.open_qa_count };
+}
+
 type CardTestsTab = Extract<
   CardModalSubtab,
   'regression' | 'coverage' | 'amendment' | 'scenarios' | 'evidence'
@@ -479,16 +492,29 @@ export function CardModal({
     setPolicyAuthorityRefreshKey((current) => current + 1);
   }, []);
 
+  const withPreservedOpenQACount = useCallback((updated: Card) => {
+    if (!canReadQA || updated.open_qa_count !== undefined) return updated;
+    const localCard = card?.id === updated.id && card.open_qa_count !== undefined
+      ? card
+      : undefined;
+    const projectedCard = localCard
+      ?? CARD_STATUSES
+        .map((status) => (columns[status] ?? []).find((candidate) => candidate.id === updated.id))
+        .find((candidate) => candidate?.open_qa_count !== undefined);
+    return preserveProjectedOpenQACount(updated, projectedCard);
+  }, [canReadQA, card, columns]);
+
   const applyCardUpdate = useCallback((updated: Card) => {
+    const reconciled = withPreservedOpenQACount(updated);
     const previousStatus = cardStatusRef.current;
-    cardStatusRef.current = updated.status;
-    setCard(updated);
-    updateCardInColumn(updated);
-    if (previousStatus && previousStatus !== updated.status) {
-      onAuthoritativeStatusChange?.(updated, previousStatus);
+    cardStatusRef.current = reconciled.status;
+    setCard(reconciled);
+    updateCardInColumn(reconciled);
+    if (previousStatus && previousStatus !== reconciled.status) {
+      onAuthoritativeStatusChange?.(reconciled, previousStatus);
     }
     notePolicySubjectChanged();
-  }, [notePolicySubjectChanged, onAuthoritativeStatusChange, updateCardInColumn]);
+  }, [notePolicySubjectChanged, onAuthoritativeStatusChange, updateCardInColumn, withPreservedOpenQACount]);
 
   const resetConclusionPrompt = () => {
     setConclusionDraft('');
@@ -528,14 +554,15 @@ export function CardModal({
     api.getCard(cardId)
       .then((data) => {
         if (!isCurrentLoad()) return;
+        const reconciled = withPreservedOpenQACount(data);
         const projectedStatus = CARD_STATUSES.find((status) =>
           (columns[status] ?? []).some((candidate) => candidate.id === data.id),
         );
-        cardStatusRef.current = data.status;
-        setCard(data);
-        updateCardInColumn(data);
-        if (projectedStatus && projectedStatus !== data.status) {
-          onAuthoritativeStatusChange?.(data, projectedStatus);
+        cardStatusRef.current = reconciled.status;
+        setCard(reconciled);
+        updateCardInColumn(reconciled);
+        if (projectedStatus && projectedStatus !== reconciled.status) {
+          onAuthoritativeStatusChange?.(reconciled, projectedStatus);
         }
         notePolicySubjectChanged();
         if (data.card_type === 'bug') {
@@ -667,15 +694,16 @@ export function CardModal({
     api.getCard(cardId)
       .then((data) => {
         if (!isCurrentRefresh()) return;
+        const reconciled = withPreservedOpenQACount(data);
         const subjectChanged =
           card?.id === data.id
           && card.updated_at !== data.updated_at;
         const previousStatus = cardStatusRef.current;
-        cardStatusRef.current = data.status;
-        setCard(data);
-        updateCardInColumn(data);
-        if (previousStatus && previousStatus !== data.status) {
-          onAuthoritativeStatusChange?.(data, previousStatus);
+        cardStatusRef.current = reconciled.status;
+        setCard(reconciled);
+        updateCardInColumn(reconciled);
+        if (previousStatus && previousStatus !== reconciled.status) {
+          onAuthoritativeStatusChange?.(reconciled, previousStatus);
         }
         setTaskValidationHierarchyLoading(true);
         setTaskValidationHierarchyError(null);
@@ -791,6 +819,7 @@ export function CardModal({
     onAuthoritativeStatusChange,
     taskValidationHierarchyLoading,
     updateCardInColumn,
+    withPreservedOpenQACount,
   ]);
 
   // Path B safe actions (spec be089cd3). User-click only — NO auto-mutation on
@@ -2110,8 +2139,9 @@ export function CardModal({
                     canUploadAttachments={canUploadAttachments}
                     canDeleteAttachments={canDeleteAttachments}
                     onCardChanged={(updated) => {
-                      setCard(updated);
-                      updateCardInColumn(updated);
+                      const reconciled = withPreservedOpenQACount(updated);
+                      setCard(reconciled);
+                      updateCardInColumn(reconciled);
                     }}
                     onSubjectChanged={notePolicySubjectChanged}
                     onBusyChange={setKnowledgeMutationBusy}
@@ -2128,7 +2158,7 @@ export function CardModal({
                 >
                 <QATab
                   card={card}
-                  setCard={setCard}
+                  onCardChanged={applyCardUpdate}
                   api={api}
                   members={boardMembers}
                   seenStatus={seenStatus}
@@ -3271,7 +3301,7 @@ function SeenByIndicator({ itemId, seenStatus }: { itemId: string; seenStatus: S
 
 function QATab({
   card,
-  setCard,
+  onCardChanged,
   api,
   members,
   seenStatus,
@@ -3279,7 +3309,7 @@ function QATab({
   canAnswer,
 }: {
   card: Card;
-  setCard: (c: Card) => void;
+  onCardChanged: (card: Card) => void;
   api: ReturnType<typeof useDashboardApi>;
   members: { id: string; name: string }[];
   seenStatus: SeenMap;
@@ -3289,12 +3319,20 @@ function QATab({
   const [newQuestion, setNewQuestion] = useState('');
   const [answerInput, setAnswerInput] = useState<Record<string, string>>({});
 
+  const reconcileQAItems = (qaItems: Card['qa_items']) => {
+    onCardChanged({
+      ...card,
+      qa_items: qaItems,
+      open_qa_count: qaItems.filter((qa) => qa.answered_at == null).length,
+    });
+  };
+
   const handleAskQuestion = async () => {
     if (!newQuestion.trim()) return;
 
     try {
       const qa = await api.createQuestion(card.id, { question: newQuestion });
-      setCard({ ...card, qa_items: [...card.qa_items, qa] });
+      reconcileQAItems([...card.qa_items, qa]);
       setNewQuestion('');
       toast.success('Question added');
     } catch {
@@ -3308,10 +3346,9 @@ function QATab({
 
     try {
       const updated = await api.answerQuestion(qaId, { answer });
-      setCard({
-        ...card,
-        qa_items: card.qa_items.map((q) => (q.id === qaId ? updated : q)),
-      });
+      reconcileQAItems(
+        card.qa_items.map((q) => (q.id === qaId ? updated : q)),
+      );
       setAnswerInput({ ...answerInput, [qaId]: '' });
       toast.success('Answer saved');
     } catch {

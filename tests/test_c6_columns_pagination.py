@@ -290,6 +290,35 @@ def test_columns_keep_rejected_status_but_redact_cause_without_validation_read(
         assert item["current_rejection_summary"] is None
 
 
+def test_columns_omit_open_qa_count_without_card_qa_read(
+    columns_client: TestClient,
+) -> None:
+    flags = deepcopy(PERMISSION_REGISTRY)
+    flags["card"]["qa"]["read"] = False
+    original = columns_client.app.dependency_overrides[require_principal]
+    columns_client.app.dependency_overrides[require_principal] = lambda: Principal(
+        subject="viewer",
+        realm_id="local",
+        actor_kind="human",
+        claims={"permissions": flags},
+    )
+    try:
+        legacy = columns_client.get("/api/v1/boards/b1/columns")
+        paginated = columns_client.get(
+            "/api/v1/boards/b1/columns?per_column_limit=5&column=done"
+        )
+    finally:
+        columns_client.app.dependency_overrides[require_principal] = original
+
+    assert legacy.status_code == paginated.status_code == 200
+    assert all(
+        "open_qa_count" not in item
+        for column in legacy.json()["columns"].values()
+        for item in column
+    )
+    assert all("open_qa_count" not in item for item in paginated.json()["items"])
+
+
 def test_get_board_redacts_nested_rejection_cause_for_sparse_reader(
     columns_client: TestClient,
 ) -> None:

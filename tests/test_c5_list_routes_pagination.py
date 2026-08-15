@@ -74,7 +74,8 @@ async def _build_engine(path: Path) -> AsyncEngine:
                 "INSERT INTO board_shares "
                 "(id, board_id, user_id, realm_id, permission, shared_by) VALUES "
                 "('share-v', 'b1', 'v', 'local', 'viewer', 'u'), "
-                "('share-blocked', 'b1', 'blocked', 'local', 'viewer', 'u')"
+                "('share-blocked', 'b1', 'blocked', 'local', 'viewer', 'u'), "
+                "('share-qa-denied', 'b1', 'qa-denied', 'local', 'viewer', 'u')"
             )
         )
         await conn.execute(
@@ -86,6 +87,28 @@ async def _build_engine(path: Path) -> AsyncEngine:
                 "'blocked-key-hash', 1, :flags, 'blocked')"
             ),
             {"flags": json.dumps({"story": {"entity": {"read": False}}})},
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO agents "
+                "(id, board_id, name, api_key, api_key_hash, is_active, "
+                "permission_flags, created_by) VALUES "
+                "('a-qa-denied', 'b1', 'QA denied', 'qa-denied-key-marker', "
+                "'qa-denied-key-hash', 1, :flags, 'qa-denied')"
+            ),
+            {
+                "flags": json.dumps(
+                    {
+                        entity: {"qa": {"read": False}}
+                        for entity in (
+                            "ideation",
+                            "refinement",
+                            "spec",
+                            "sprint",
+                        )
+                    }
+                )
+            },
         )
         await conn.execute(
             text(
@@ -205,16 +228,10 @@ async def _build_engine(path: Path) -> AsyncEngine:
             ],
         )
         await conn.execute(
-            text(
-                "UPDATE ideations SET edition = 4, version = 41 "
-                "WHERE id = 'i00'"
-            )
+            text("UPDATE ideations SET edition = 4, version = 41 WHERE id = 'i00'")
         )
         await conn.execute(
-            text(
-                "UPDATE refinements SET edition = 5, version = 43 "
-                "WHERE id = 'r00'"
-            )
+            text("UPDATE refinements SET edition = 5, version = 43 WHERE id = 'r00'")
         )
         await conn.execute(
             text(
@@ -257,6 +274,24 @@ async def _build_engine(path: Path) -> AsyncEngine:
                 },
             ],
         )
+        for table, parent_field, parent_id in (
+            ("ideation_qa_items", "ideation_id", "i00"),
+            ("refinement_qa_items", "refinement_id", "r00"),
+            ("spec_qa_items", "spec_id", "p00"),
+            ("sprint_qa_items", "sprint_id", "q00"),
+        ):
+            await conn.execute(
+                text(
+                    f"INSERT INTO {table} "
+                    f"(id, {parent_field}, question, question_type, answer, selected, "
+                    "asked_by, answered_at) VALUES "
+                    f"('{table}-open', :parent_id, 'Open?', 'text', NULL, NULL, "
+                    "'u', NULL), "
+                    f"('{table}-choice', :parent_id, 'Choice?', 'choice', "
+                    "NULL, '[\"a\"]', 'u', '2026-07-20 08:00:00')"
+                ),
+                {"parent_id": parent_id},
+            )
         mockups = json.dumps(
             [{"id": "m1", "title": "Mockup", "html_content": "<div>big</div>"}] * 3
         )
@@ -467,9 +502,7 @@ def test_consumer_search_is_applied_before_the_window(
 def test_spec_page_projects_human_edition_and_technical_revision(
     client: TestClient,
 ) -> None:
-    response = client.get(
-        "/api/v1/boards/b1/specs?offset=0&limit=25&search=spec%200"
-    )
+    response = client.get("/api/v1/boards/b1/specs?offset=0&limit=25&search=spec%200")
 
     assert response.status_code == 200, response.text
     item = response.json()["items"][0]
@@ -505,11 +538,91 @@ def test_ideation_and_refinement_pages_project_lifecycle_edition(
     response = client.get(path)
 
     assert response.status_code == 200, response.text
-    item = next(
-        item for item in response.json()["items"] if item["id"] == expected_id
-    )
+    item = next(item for item in response.json()["items"] if item["id"] == expected_id)
     assert item["edition"] == edition
     assert item["version"] == version
+
+
+@pytest.mark.parametrize(
+    ("path", "positive_id", "zero_id"),
+    (
+        ("/api/v1/boards/b1/ideations?offset=0&limit=25", "i00", "i01"),
+        ("/api/v1/ideations/i00/refinements?offset=0&limit=25", "r00", "r01"),
+        ("/api/v1/boards/b1/refinements?offset=0&limit=25", "r00", "r01"),
+        ("/api/v1/boards/b1/specs?offset=0&limit=25", "p00", "p01"),
+        ("/api/v1/boards/b1/sprints?offset=0&limit=25", "q00", "q01"),
+        (
+            "/api/v1/boards/b1/specs/p00/sprints?offset=0&limit=25",
+            "q00",
+            "q01",
+        ),
+    ),
+)
+def test_paginated_qa_parent_routes_project_positive_and_zero_open_counts(
+    client: TestClient,
+    path: str,
+    positive_id: str,
+    zero_id: str,
+) -> None:
+    response = client.get(path)
+
+    assert response.status_code == 200, response.text
+    items = {item["id"]: item for item in response.json()["items"]}
+    assert items[positive_id]["open_qa_count"] == 1
+    assert items[zero_id]["open_qa_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "/api/v1/boards/b1/ideations?offset=0&limit=25",
+        "/api/v1/ideations/i00/refinements?offset=0&limit=25",
+        "/api/v1/boards/b1/refinements?offset=0&limit=25",
+        "/api/v1/boards/b1/specs?offset=0&limit=25",
+        "/api/v1/boards/b1/sprints?offset=0&limit=25",
+        "/api/v1/boards/b1/specs/p00/sprints?offset=0&limit=25",
+    ),
+)
+def test_paginated_qa_parent_routes_omit_counts_without_qa_read(
+    client: TestClient,
+    path: str,
+) -> None:
+    original = client.app.dependency_overrides[require_user]
+    client.app.dependency_overrides[require_user] = lambda: "qa-denied"
+    try:
+        response = client.get(path)
+    finally:
+        client.app.dependency_overrides[require_user] = original
+
+    assert response.status_code == 200, response.text
+    assert response.json()["items"]
+    assert all("open_qa_count" not in item for item in response.json()["items"])
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "/api/v1/boards/b1/ideations",
+        "/api/v1/ideations/i00/refinements",
+        "/api/v1/boards/b1/specs",
+        "/api/v1/boards/b1/sprints",
+        "/api/v1/boards/b1/specs/p00/sprints",
+    ),
+)
+def test_legacy_qa_parent_routes_omit_counts_without_qa_read(
+    client: TestClient,
+    path: str,
+) -> None:
+    original = client.app.dependency_overrides[require_user]
+    client.app.dependency_overrides[require_user] = lambda: "qa-denied"
+    try:
+        response = client.get(path)
+    finally:
+        client.app.dependency_overrides[require_user] = original
+
+    assert response.status_code == 200, response.text
+    assert response.json()
+    assert all("open_qa_count" not in item for item in response.json())
 
 
 def test_ideation_derivation_pending_is_server_side_and_null_safe(
@@ -806,11 +919,13 @@ def test_shared_reader_is_authorized_within_the_bounded_statement_cap(
         "/api/v1/boards/b1/ideations?offset=0&limit=25": 6,
         "/api/v1/ideations/i00/refinements?offset=0&limit=25": 7,
         "/api/v1/boards/b1/specs?offset=0&limit=25": 6,
+        "/api/v1/boards/b1/sprints?offset=0&limit=25&spec_id=p00": 7,
     }
     if path in quality_projection_counts:
         # The shared-reader fixture resolves its custom preset lineage before
-        # the single lifecycle-summary batch read. Nested refinements keep
-        # one additional leaf-resolution statement; both paths remain bounded.
+        # the single lifecycle-summary batch read. Nested refinements and the
+        # sprint Q&A projection keep one additional leaf-resolution statement
+        # outside the productive list budget; every path remains fixed-size.
         assert len(statements) == quality_projection_counts[path], statements
     else:
         assert 3 <= len(statements) <= 6, statements

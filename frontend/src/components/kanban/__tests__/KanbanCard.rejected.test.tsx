@@ -50,6 +50,32 @@ function renderCard(value: CardSummary) {
 }
 
 describe('KanbanCard Rejected projection', () => {
+  it('shows only positive open Q&A counts with an accessible compact label', () => {
+    const view = renderCard(card({ open_qa_count: 2 }));
+
+    expect(screen.getByLabelText('2 unanswered questions')).toHaveTextContent('2');
+
+    const clearCard = card({ open_qa_count: 0 });
+    view.rerender(
+      <DndContext>
+        <SortableContext items={[clearCard.id]}>
+          <KanbanCard card={clearCard} onClick={vi.fn()} nameMap={{}} />
+        </SortableContext>
+      </DndContext>,
+    );
+    expect(screen.queryByTestId('qa-open-badge')).not.toBeInTheDocument();
+
+    const omittedCard = card({ open_qa_count: undefined });
+    view.rerender(
+      <DndContext>
+        <SortableContext items={[omittedCard.id]}>
+          <KanbanCard card={omittedCard} onClick={vi.fn()} nameMap={{}} />
+        </SortableContext>
+      </DndContext>,
+    );
+    expect(screen.queryByTestId('qa-open-badge')).not.toBeInTheDocument();
+  });
+
   it('labels unfinished rework and reports the failed attempt without color alone', () => {
     renderCard(card());
 

@@ -23,10 +23,11 @@ export function QABadge({ count, compact = false }: QABadgeProps) {
     return (
       <span
         title={title}
+        aria-label={title}
         data-testid="qa-open-badge"
         className="inline-flex items-center gap-0.5 shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
       >
-        <MessageCircleQuestion size={11} className="shrink-0" />
+        <MessageCircleQuestion size={11} className="shrink-0" aria-hidden="true" />
         {count}
       </span>
     );
@@ -35,10 +36,11 @@ export function QABadge({ count, compact = false }: QABadgeProps) {
   return (
     <span
       title={title}
+      aria-label={title}
       data-testid="qa-open-badge"
       className="inline-flex items-center gap-1 shrink-0 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
     >
-      <MessageCircleQuestion size={12} className="shrink-0" />
+      <MessageCircleQuestion size={12} className="shrink-0" aria-hidden="true" />
       {count} open Q&amp;A
     </span>
   );

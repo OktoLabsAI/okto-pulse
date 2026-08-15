@@ -27,6 +27,11 @@ from okto_pulse.community.api.pagination import (
 from okto_pulse.community.api.permission_errors import (
     permission_denied_http_error,
 )
+from okto_pulse.community.api.qa_count_projection import (
+    project_open_qa_count,
+    redact_open_qa_count_records,
+    resolve_board_projection_permissions,
+)
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     PageRequest,
@@ -117,6 +122,7 @@ async def list_board_sprints(
     With ``offset``/``limit``: paginated envelope (spec 8b33f9a8); without:
     legacy shape unchanged (DR9).
     """
+    actor = RESTAdapterContract.actor(user_id, board_id=board_id)
     if pagination_requested(offset, limit):
         command = ListBoardSprintsCommand(
             board_id,
@@ -124,7 +130,6 @@ async def list_board_sprints(
             spec_id=spec_id,
             include_archived=include_archived,
         )
-        actor = RESTAdapterContract.actor(user_id, board_id=board_id)
         use_case = ListBoardSprintsUseCase()
         try:
             resolved_offset, resolved_limit = resolve_window(offset, limit)
@@ -149,25 +154,39 @@ async def list_board_sprints(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
             )
+        projection_permissions = (
+            await resolve_board_projection_permissions(
+                actor=actor,
+                uow=uow,
+                board_id=board_id,
+                permission_leaves=("sprint.qa.read",),
+            )
+            if page.items
+            else {}
+        )
         return project_page(
             page,
             lambda record: SprintPageItem(
-                **record_fields(
-                    record,
-                    (
-                        "id",
-                        "spec_id",
-                        "board_id",
-                        "title",
-                        "description",
-                        "objective",
-                        "expected_outcome",
-                        "status",
-                        "created_by",
-                        "created_at",
-                        "updated_at",
-                        "archived",
+                **project_open_qa_count(
+                    record_fields(
+                        record,
+                        (
+                            "id",
+                            "spec_id",
+                            "board_id",
+                            "title",
+                            "description",
+                            "objective",
+                            "expected_outcome",
+                            "status",
+                            "created_by",
+                            "created_at",
+                            "updated_at",
+                            "archived",
+                            "open_qa_count",
+                        ),
                     ),
+                    can_read_qa=projection_permissions.get("sprint.qa.read", False),
                 )
             ),
         )
@@ -179,12 +198,23 @@ async def list_board_sprints(
                 spec_id=spec_id,
                 include_archived=include_archived,
             ),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            actor=actor,
             uow=uow,
         )
     except EntityNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
+    if result.sprints:
+        projection_permissions = await resolve_board_projection_permissions(
+            actor=actor,
+            uow=uow,
+            board_id=board_id,
+            permission_leaves=("sprint.qa.read",),
+        )
+        redact_open_qa_count_records(
+            result.sprints,
+            can_read_qa=projection_permissions["sprint.qa.read"],
         )
     return result.sprints
 
@@ -256,25 +286,39 @@ async def list_sprints(
                 ),
                 preflight=lambda: use_case.preflight(command, actor=actor, uow=uow),
             )
+            projection_permissions = (
+                await resolve_board_projection_permissions(
+                    actor=actor,
+                    uow=uow,
+                    board_id=board_id,
+                    permission_leaves=("sprint.qa.read",),
+                )
+                if page.items
+                else {}
+            )
             return project_page(
                 page,
                 lambda record: SprintPageItem(
-                    **record_fields(
-                        record,
-                        (
-                            "id",
-                            "spec_id",
-                            "board_id",
-                            "title",
-                            "description",
-                            "objective",
-                            "expected_outcome",
-                            "status",
-                            "created_by",
-                            "created_at",
-                            "updated_at",
-                            "archived",
+                    **project_open_qa_count(
+                        record_fields(
+                            record,
+                            (
+                                "id",
+                                "spec_id",
+                                "board_id",
+                                "title",
+                                "description",
+                                "objective",
+                                "expected_outcome",
+                                "status",
+                                "created_by",
+                                "created_at",
+                                "updated_at",
+                                "archived",
+                                "open_qa_count",
+                            ),
                         ),
+                        can_read_qa=projection_permissions.get("sprint.qa.read", False),
                     )
                 ),
             )
@@ -282,6 +326,17 @@ async def list_sprints(
     except EntityNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
+    if result.sprints:
+        projection_permissions = await resolve_board_projection_permissions(
+            actor=actor,
+            uow=uow,
+            board_id=board_id,
+            permission_leaves=("sprint.qa.read",),
+        )
+        redact_open_qa_count_records(
+            result.sprints,
+            can_read_qa=projection_permissions["sprint.qa.read"],
         )
     return result.sprints
 

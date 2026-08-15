@@ -36,6 +36,10 @@ from okto_pulse.community.api.knowledge_propagation import (
 from okto_pulse.community.api.permission_errors import (
     permission_denied_http_error,
 )
+from okto_pulse.community.api.qa_count_projection import (
+    project_open_qa_count,
+    resolve_board_projection_permissions,
+)
 from okto_pulse.community.api.spec_dependency_errors import (
     spec_dependency_http_error,
 )
@@ -49,11 +53,6 @@ from okto_pulse.core.application.use_cases import (
     CreateBoardUseCase,
     EntityNotFoundError,
     PermissionDeniedError,
-)
-from okto_pulse.core.application.use_cases.authorization import (
-    PermissionRequirement,
-    decide_authorization,
-    resolve_actor_permissions,
 )
 from okto_pulse.core.application.use_cases.boards_crud import (
     ArchiveTreeCommand,
@@ -114,32 +113,25 @@ from okto_pulse.core.ports.authentication import Principal
 router = APIRouter()
 
 
-async def _can_read_card_validation(
-    *,
-    actor,
-    uow: PulseUnitOfWork,
-    board_id: str,
-) -> bool:
-    """Resolve the validation leaf once before projecting a page/board.
-
-    Board/card readability and validation readability are intentionally
-    separate capabilities.  The lifecycle status remains visible when the
-    latter is denied, while scores and the human Current rejection cause are
-    projected away through the shared Core helper.
-    """
-
-    permissions = await resolve_actor_permissions(actor, uow, board_id)
-    return decide_authorization(
-        actor,
-        PermissionRequirement("card.validation.read"),
-        permissions,
-    ).allowed
-
-
 def _project_card_validation_visibility(value, *, can_read_validation: bool):
     if can_read_validation:
         return value
     return redact_card_validation_projection(value)
+
+
+def _project_card_list_visibility(
+    value,
+    *,
+    can_read_validation: bool,
+    can_read_qa: bool,
+):
+    return project_open_qa_count(
+        _project_card_validation_visibility(
+            value,
+            can_read_validation=can_read_validation,
+        ),
+        can_read_qa=can_read_qa,
+    )
 
 
 @router.post("", response_model=BoardResponse, status_code=status.HTTP_201_CREATED)
@@ -316,11 +308,6 @@ async def list_board_cards(
         principal,
         board_id=board_id,
     )
-    can_read_validation = await _can_read_card_validation(
-        actor=actor,
-        uow=uow,
-        board_id=board_id,
-    )
     use_case = GetBoardColumnsUseCase()
     try:
         page = await run_paginated_list(
@@ -339,12 +326,19 @@ async def list_board_cards(
         )
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
+    projection_permissions = await resolve_board_projection_permissions(
+        actor=actor,
+        uow=uow,
+        board_id=board_id,
+        permission_leaves=("card.validation.read", "card.qa.read"),
+    )
     return project_page(
         page,
         lambda record: CardPageItem(
-            **_project_card_validation_visibility(
+            **_project_card_list_visibility(
                 record.values,
-                can_read_validation=can_read_validation,
+                can_read_validation=projection_permissions["card.validation.read"],
+                can_read_qa=projection_permissions["card.qa.read"],
             )
         ),
     )
@@ -486,10 +480,11 @@ async def get_board_columns(
         except PermissionDeniedError as exc:
             raise permission_denied_http_error(exc) from exc
 
-        can_read_validation = await _can_read_card_validation(
+        projection_permissions = await resolve_board_projection_permissions(
             actor=actor,
             uow=uow,
             board_id=board_id,
+            permission_leaves=("card.validation.read", "card.qa.read"),
         )
 
         session = uow.services.cards.db
@@ -525,9 +520,12 @@ async def get_board_columns(
                 "board_id": board_id,
                 "column": parameters.column,
                 "items": [
-                    _project_card_validation_visibility(
+                    _project_card_list_visibility(
                         card_summary(record),
-                        can_read_validation=can_read_validation,
+                        can_read_validation=projection_permissions[
+                            "card.validation.read"
+                        ],
+                        can_read_qa=projection_permissions["card.qa.read"],
                     )
                     for record in page.items
                 ],
@@ -547,9 +545,12 @@ async def get_board_columns(
                     column_page_request(board_id, card_status, parameters)
                 )
                 columns[card_status] = [
-                    _project_card_validation_visibility(
+                    _project_card_list_visibility(
                         card_summary(record),
-                        can_read_validation=can_read_validation,
+                        can_read_validation=projection_permissions[
+                            "card.validation.read"
+                        ],
+                        can_read_qa=projection_permissions["card.qa.read"],
                     )
                     for record in page.items
                 ]
@@ -606,17 +607,18 @@ async def get_board_columns(
         raise permission_denied_http_error(exc) from exc
 
     board = result.board
-    can_read_validation = await _can_read_card_validation(
+    projection_permissions = await resolve_board_projection_permissions(
         actor=actor,
         uow=uow,
         board_id=board_id,
+        permission_leaves=("card.validation.read", "card.qa.read"),
     )
     columns = {card_status.value: [] for card_status in CardStatus}
     for card in board.cards:
         if not include_archived and getattr(card, "archived", False):
             continue
         columns[card.status.value].append(
-            _project_card_validation_visibility(
+            _project_card_list_visibility(
                 {
                     "id": card.id,
                     "board_id": card.board_id,
@@ -659,7 +661,8 @@ async def get_board_columns(
                         if question.answered_at is None
                     ),
                 },
-                can_read_validation=can_read_validation,
+                can_read_validation=projection_permissions["card.validation.read"],
+                can_read_qa=projection_permissions["card.qa.read"],
             )
         )
 

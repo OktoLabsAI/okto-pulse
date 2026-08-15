@@ -27,6 +27,11 @@ from okto_pulse.community.api.quality_summary_projection import (
     load_quality_summaries_for_page,
     quality_summary_field,
 )
+from okto_pulse.community.api.qa_count_projection import (
+    project_open_qa_count,
+    redact_open_qa_count_records,
+    resolve_board_projection_permissions,
+)
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     PageRequest,
@@ -165,13 +170,13 @@ async def list_ideations(
     With ``offset``/``limit``: paginated envelope (spec 8b33f9a8); without:
     legacy shape unchanged (DR9).
     """
+    actor = RESTAdapterContract.actor(user_id, board_id=board_id)
     if pagination_requested(offset, limit):
         command = ListIdeationsCommand(
             board_id,
             status_filter=status_filter,
             include_archived=include_archived,
         )
-        actor = RESTAdapterContract.actor(user_id, board_id=board_id)
         use_case = ListIdeationsUseCase()
         try:
             resolved_offset, resolved_limit = resolve_window(offset, limit)
@@ -197,46 +202,61 @@ async def list_ideations(
                     filters=filters,
                     any_groups=search_groups(search, ("title", "description")),
                 ),
-                preflight=lambda: use_case.preflight(
-                    command, actor=actor, uow=uow
-                ),
+                preflight=lambda: use_case.preflight(command, actor=actor, uow=uow),
             )
         except EntityNotFoundError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
             )
+        subject_ids = tuple(str(record.values["id"]) for record in page.items)
+        projection_permissions = (
+            await resolve_board_projection_permissions(
+                actor=actor,
+                uow=uow,
+                board_id=board_id,
+                permission_leaves=(
+                    "ideation.qa.read",
+                    "ideation.quality.read",
+                ),
+            )
+            if subject_ids
+            else {}
+        )
         quality_summaries = await load_quality_summaries_for_page(
             uow=uow,
             user_id=user_id,
             board_id=board_id,
             subject_type="ideation",
-            subject_ids=tuple(
-                str(record.values["id"]) for record in page.items
-            ),
+            subject_ids=subject_ids,
+            can_read_quality=projection_permissions.get("ideation.quality.read"),
         )
         return project_page(
             page,
             lambda record: IdeationPageItem(
-                **record_fields(
-                    record,
-                    (
-                        "id",
-                        "board_id",
-                        "title",
-                        "description",
-                        "problem_statement",
-                        "complexity",
-                        "status",
-                        "edition",
-                        "version",
-                        "assignee_id",
-                        "created_by",
-                        "created_at",
-                        "updated_at",
-                        "labels",
-                        "archived",
-                        "scope_assessment",
+                **project_open_qa_count(
+                    record_fields(
+                        record,
+                        (
+                            "id",
+                            "board_id",
+                            "title",
+                            "description",
+                            "problem_statement",
+                            "complexity",
+                            "status",
+                            "edition",
+                            "version",
+                            "assignee_id",
+                            "created_by",
+                            "created_at",
+                            "updated_at",
+                            "labels",
+                            "archived",
+                            "scope_assessment",
+                            "open_qa_count",
+                        ),
                     ),
+                    can_read_qa=projection_permissions.get("ideation.qa.read", False),
                 ),
                 **quality_summary_field(
                     str(record.values["id"]),
@@ -249,11 +269,24 @@ async def list_ideations(
             ListIdeationsCommand(
                 board_id, status_filter=status_filter, include_archived=include_archived
             ),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            actor=actor,
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Board not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
+    if result.ideations:
+        projection_permissions = await resolve_board_projection_permissions(
+            actor=actor,
+            uow=uow,
+            board_id=board_id,
+            permission_leaves=("ideation.qa.read",),
+        )
+        redact_open_qa_count_records(
+            result.ideations,
+            can_read_qa=projection_permissions["ideation.qa.read"],
+        )
     return result.ideations
 
 
@@ -318,7 +351,9 @@ async def get_ideation(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found"
+        )
     return result.ideation
 
 
@@ -337,7 +372,9 @@ async def update_ideation(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found"
+        )
     except SubjectEditRequiresDraftError as exc:
         raise RESTAdapterContract.http_error(exc) from exc
     return result.ideation
@@ -361,17 +398,23 @@ async def move_ideation(
             uow=uow,
         )
     except CancellationReasonRequiredError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict()) from e
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict()
+        ) from e
     except PolicyTransitionRejected as e:
         raise RESTAdapterContract.http_error(e) from e
     except LifecycleTransitionConflictError as e:
         raise RESTAdapterContract.http_error(e) from e
     except (AmbiguityGateError, EntityNotFoundError) as e:
-        raise RESTAdapterContract.http_error(e, not_found_detail="Ideation not found") from e
+        raise RESTAdapterContract.http_error(
+            e, not_found_detail="Ideation not found"
+        ) from e
     return result.ideation
 
 
-@router.patch("/ideations/{ideation_id}/ambiguity-gate-skip", response_model=IdeationResponse)
+@router.patch(
+    "/ideations/{ideation_id}/ambiguity-gate-skip", response_model=IdeationResponse
+)
 async def set_ideation_ambiguity_gate_skip(
     ideation_id: str,
     data: IdeationAmbiguityGateSkipUpdate,
@@ -407,7 +450,8 @@ async def set_ideation_ambiguity_gate_skip(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "error_code": error_code,
-                    "retryable": error_code != "ideation_ambiguity_skip_status_conflict",
+                    "retryable": error_code
+                    != "ideation_ambiguity_skip_status_conflict",
                 },
             ) from e
         raise HTTPException(
@@ -415,7 +459,9 @@ async def set_ideation_ambiguity_gate_skip(
             detail={"error_code": error_code, "retryable": False},
         ) from e
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found"
+        )
     return result.ideation
 
 
@@ -433,7 +479,9 @@ async def delete_ideation(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found"
+        )
 
 
 @router.post("/ideations/{ideation_id}/evaluate", response_model=IdeationResponse)
@@ -452,7 +500,9 @@ async def evaluate_complexity(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found"
+        )
     except IdeationScopeValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -477,11 +527,15 @@ async def derive_spec(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found"
+        )
     return result.spec
 
 
-@router.get("/ideations/{ideation_id}/snapshots", response_model=list[IdeationSnapshotSummary])
+@router.get(
+    "/ideations/{ideation_id}/snapshots", response_model=list[IdeationSnapshotSummary]
+)
 async def list_ideation_snapshots(
     ideation_id: str,
     user_id: str = Depends(require_user),
@@ -501,7 +555,10 @@ async def list_ideation_snapshots(
     return result.snapshots
 
 
-@router.get("/ideations/{ideation_id}/snapshots/{version}", response_model=IdeationSnapshotResponse)
+@router.get(
+    "/ideations/{ideation_id}/snapshots/{version}",
+    response_model=IdeationSnapshotResponse,
+)
 async def get_ideation_snapshot(
     ideation_id: str,
     version: int,
@@ -517,12 +574,15 @@ async def get_ideation_snapshot(
         )
     except EntityNotFoundError:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"Snapshot v{version} not found"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Snapshot v{version} not found",
         )
     return result.snapshot
 
 
-@router.get("/ideations/{ideation_id}/history", response_model=list[IdeationHistoryResponse])
+@router.get(
+    "/ideations/{ideation_id}/history", response_model=list[IdeationHistoryResponse]
+)
 async def list_ideation_history(
     ideation_id: str,
     limit: int = Query(50, ge=1, le=200),
@@ -546,7 +606,9 @@ async def list_ideation_history(
 # ==================== IDEATION KNOWLEDGE BASE ====================
 
 
-@router.get("/ideations/{ideation_id}/knowledge", response_model=list[IdeationKnowledgeSummary])
+@router.get(
+    "/ideations/{ideation_id}/knowledge", response_model=list[IdeationKnowledgeSummary]
+)
 async def list_ideation_knowledge(
     ideation_id: str,
     user_id: str = Depends(require_user),
@@ -566,7 +628,10 @@ async def list_ideation_knowledge(
     return result.items
 
 
-@router.get("/ideations/{ideation_id}/knowledge/{knowledge_id}", response_model=IdeationKnowledgeResponse)
+@router.get(
+    "/ideations/{ideation_id}/knowledge/{knowledge_id}",
+    response_model=IdeationKnowledgeResponse,
+)
 async def get_ideation_knowledge(
     ideation_id: str,
     knowledge_id: str,
@@ -581,7 +646,10 @@ async def get_ideation_knowledge(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge base item not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Knowledge base item not found",
+        )
     return result.knowledge
 
 
@@ -604,7 +672,9 @@ async def create_ideation_knowledge(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found"
+        )
     except SubjectEditRequiresDraftError as exc:
         raise RESTAdapterContract.http_error(exc) from exc
     except KnowledgeGovernanceInvalidMetadata as exc:
@@ -612,7 +682,10 @@ async def create_ideation_knowledge(
     return result.knowledge
 
 
-@router.delete("/ideations/{ideation_id}/knowledge/{knowledge_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/ideations/{ideation_id}/knowledge/{knowledge_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
 async def delete_ideation_knowledge(
     ideation_id: str,
     knowledge_id: str,
@@ -627,7 +700,10 @@ async def delete_ideation_knowledge(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Knowledge base item not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Knowledge base item not found",
+        )
     except SubjectEditRequiresDraftError as exc:
         raise RESTAdapterContract.http_error(exc) from exc
 
@@ -655,7 +731,11 @@ async def list_ideation_qa(
     return result.items
 
 
-@router.post("/ideations/{ideation_id}/qa", response_model=IdeationQAResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/ideations/{ideation_id}/qa",
+    response_model=IdeationQAResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_ideation_question(
     ideation_id: str,
     data: IdeationQACreate,
@@ -670,13 +750,17 @@ async def create_ideation_question(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found"
+        )
     except SubjectEditRequiresDraftError as exc:
         raise RESTAdapterContract.http_error(exc) from exc
     return result.qa
 
 
-@router.post("/ideations/{ideation_id}/qa/{qa_id}/answer", response_model=IdeationQAResponse)
+@router.post(
+    "/ideations/{ideation_id}/qa/{qa_id}/answer", response_model=IdeationQAResponse
+)
 async def answer_ideation_question(
     ideation_id: str,
     qa_id: str,
@@ -702,13 +786,17 @@ async def answer_ideation_question(
             detail=exc.to_error_dict(),
         ) from exc
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Q&A item not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Q&A item not found"
+        )
     except SubjectEditRequiresDraftError as exc:
         raise RESTAdapterContract.http_error(exc) from exc
     return result.qa
 
 
-@router.delete("/ideations/{ideation_id}/qa/{qa_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/ideations/{ideation_id}/qa/{qa_id}", status_code=status.HTTP_204_NO_CONTENT
+)
 async def delete_ideation_question(
     ideation_id: str,
     qa_id: str,
@@ -723,6 +811,8 @@ async def delete_ideation_question(
             uow=uow,
         )
     except EntityNotFoundError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Q&A item not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Q&A item not found"
+        )
     except SubjectEditRequiresDraftError as exc:
         raise RESTAdapterContract.http_error(exc) from exc

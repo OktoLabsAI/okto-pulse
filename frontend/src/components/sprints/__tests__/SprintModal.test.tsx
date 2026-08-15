@@ -432,6 +432,70 @@ describe('SprintModal display counts', () => {
     expect(screen.queryByText('Regression two')).not.toBeInTheDocument();
   });
 
+  it('uses answered_at as Q&A state and renders selected choices plus free text', async () => {
+    await renderSprint({
+      qa_items: [
+        {
+          id: 'qa-choice',
+          sprint_id: 'sprint-1',
+          question: 'Which database?',
+          question_type: 'choice',
+          choices: [
+            { id: 'postgres', label: 'PostgreSQL' },
+            { id: 'mysql', label: 'MySQL' },
+          ],
+          allow_free_text: false,
+          answer: null,
+          selected: ['postgres'],
+          asked_by: 'agent-1',
+          answered_by: 'user-1',
+          created_at: '2026-05-28T10:00:00Z',
+          answered_at: '2026-05-28T11:00:00Z',
+        },
+        {
+          id: 'qa-multi',
+          sprint_id: 'sprint-1',
+          question: 'Which deployment modes?',
+          question_type: 'multi_choice',
+          choices: [
+            { id: 'primary', label: 'Primary' },
+            { id: 'replica', label: 'Replica' },
+          ],
+          allow_free_text: true,
+          answer: 'Prefer a managed service',
+          selected: ['primary', 'replica'],
+          asked_by: 'agent-1',
+          answered_by: 'user-1',
+          created_at: '2026-05-28T10:00:00Z',
+          answered_at: '2026-05-28T11:00:00Z',
+        },
+        {
+          id: 'qa-open',
+          sprint_id: 'sprint-1',
+          question: 'Still open?',
+          question_type: 'text',
+          choices: null,
+          allow_free_text: false,
+          answer: 'Legacy value without canonical timestamp',
+          selected: null,
+          asked_by: 'agent-1',
+          answered_by: null,
+          created_at: '2026-05-28T10:00:00Z',
+          answered_at: null,
+        },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Q&A/ }));
+
+    expect(screen.getByTestId('sprint-qa-answer-qa-choice')).toBeInTheDocument();
+    expect(screen.getByText('PostgreSQL').closest('[data-selected]')).toHaveAttribute('data-selected', 'true');
+    expect(screen.getByText('MySQL').closest('[data-selected]')).toHaveAttribute('data-selected', 'false');
+    expect(screen.getByText('Prefer a managed service')).toBeInTheDocument();
+    expect(screen.getAllByText('Awaiting answer')).toHaveLength(1);
+    expect(screen.getByText('Still open?')).toBeInTheDocument();
+  });
+
   it('counts bug cards separately from Tasks while still rendering them in Cards', async () => {
     await renderSprint({
       cards: [

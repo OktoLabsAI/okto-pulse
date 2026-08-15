@@ -400,6 +400,30 @@ def test_card_page_redacts_validation_aggregates_for_sparse_reader(
     assert item["first_pass_drift"] is None
 
 
+def test_card_page_omits_open_qa_count_without_qa_read(
+    cards_client: TestClient,
+) -> None:
+    flags = deepcopy(PERMISSION_REGISTRY)
+    flags["card"]["qa"]["read"] = False
+    original = cards_client.app.dependency_overrides[require_principal]
+    cards_client.app.dependency_overrides[require_principal] = lambda: Principal(
+        subject="owner",
+        realm_id="local",
+        actor_kind="human",
+        claims={"permissions": flags},
+    )
+    try:
+        response = cards_client.get(
+            "/api/v1/boards/b1/cards?status=in_progress&include_archived=true&limit=25"
+        )
+    finally:
+        cards_client.app.dependency_overrides[require_principal] = original
+
+    assert response.status_code == 200, response.text
+    assert response.json()["items"]
+    assert all("open_qa_count" not in item for item in response.json()["items"])
+
+
 def test_archived_toggle_drives_both_totals(cards_client: TestClient) -> None:
     response = cards_client.get("/api/v1/boards/b1/cards?status=in_progress&limit=25")
     assert response.status_code == 200, response.text

@@ -2320,6 +2320,7 @@ export interface Card {
   conclusions: ConclusionEntry[] | null;
   attachments: Attachment[];
   qa_items: QAItem[];
+  open_qa_count?: number | null;
   comments: Comment[];
   architecture_designs?: ArchitectureDesignSummary[];
   // Bug card fields (optional for backwards compat with existing cards)
@@ -2478,7 +2479,7 @@ export type TaskValidationResponse = ValidationEntry;
 // Card for column view (simplified)
 export interface CardSummary {
   id: string;
-  open_qa_count?: number;
+  open_qa_count?: number | null;
   board_id: string;
   spec_id: string | null;
   title: string;

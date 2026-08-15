@@ -509,7 +509,15 @@ function ChoiceAnswerForm({
   );
 }
 
-function QATab({ refinementId, mentionables }: { refinementId: string; mentionables: Mentionable[] }) {
+function QATab({
+  refinementId,
+  mentionables,
+  onChanged,
+}: {
+  refinementId: string;
+  mentionables: Mentionable[];
+  onChanged: () => void;
+}) {
   const api = useDashboardApi();
   const [items, setItems] = useState<RefinementQAItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -540,6 +548,7 @@ function QATab({ refinementId, mentionables }: { refinementId: string; mentionab
       setNewQuestion('');
       toast.success('Question posted');
       await load();
+      onChanged();
     } catch { toast.error('Failed to post question'); }
   };
 
@@ -557,6 +566,7 @@ function QATab({ refinementId, mentionables }: { refinementId: string; mentionab
       setNewQuestion(''); setNewOptions(''); setNewMulti(false); setNewAllowFreeText(false);
       toast.success('Choice question posted');
       await load();
+      onChanged();
     } catch { toast.error('Failed to post choice question'); }
   };
 
@@ -567,6 +577,7 @@ function QATab({ refinementId, mentionables }: { refinementId: string; mentionab
       setAnswerDraft('');
       toast.success('Answer posted');
       await load();
+      onChanged();
     } catch { toast.error('Failed to post answer'); }
   };
 
@@ -580,6 +591,7 @@ function QATab({ refinementId, mentionables }: { refinementId: string; mentionab
     try {
       await api.deleteRefinementQuestion(refinementId, qaId);
       await load();
+      onChanged();
     } catch { toast.error('Failed to delete'); }
   };
 
@@ -1598,7 +1610,11 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
             value={activeTab}
             mount="lazy-keep"
           >
-            <QATab refinementId={refinementId} mentionables={mentionables} />
+            <QATab
+              refinementId={refinementId}
+              mentionables={mentionables}
+              onChanged={onChanged}
+            />
           </AccessibleTabPanel>
           <AccessibleTabPanel
             idBase={`refinement-${refinement.id}`}

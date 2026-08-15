@@ -617,7 +617,15 @@ function ChoiceAnswerForm({
   );
 }
 
-function QATab({ ideationId, mentionables }: { ideationId: string; mentionables: Mentionable[] }) {
+function QATab({
+  ideationId,
+  mentionables,
+  onChanged,
+}: {
+  ideationId: string;
+  mentionables: Mentionable[];
+  onChanged: () => void;
+}) {
   const api = useDashboardApi();
   const [items, setItems] = useState<IdeationQAItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -648,6 +656,7 @@ function QATab({ ideationId, mentionables }: { ideationId: string; mentionables:
       setNewQuestion('');
       toast.success('Question posted');
       await load();
+      onChanged();
     } catch { toast.error('Failed to post question'); }
   };
 
@@ -665,6 +674,7 @@ function QATab({ ideationId, mentionables }: { ideationId: string; mentionables:
       setNewQuestion(''); setNewOptions(''); setNewMulti(false); setNewAllowFreeText(false);
       toast.success('Choice question posted');
       await load();
+      onChanged();
     } catch { toast.error('Failed to post choice question'); }
   };
 
@@ -675,6 +685,7 @@ function QATab({ ideationId, mentionables }: { ideationId: string; mentionables:
       setAnswerDraft('');
       toast.success('Answer posted');
       await load();
+      onChanged();
     } catch { toast.error('Failed to post answer'); }
   };
 
@@ -688,6 +699,7 @@ function QATab({ ideationId, mentionables }: { ideationId: string; mentionables:
     try {
       await api.deleteIdeationQuestion(ideationId, qaId);
       await load();
+      onChanged();
     } catch { toast.error('Failed to delete'); }
   };
 
@@ -1708,7 +1720,13 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
             </div>
           )}
 
-          {activeTab === 'qa' && <QATab ideationId={ideationId} mentionables={mentionables} />}
+          {activeTab === 'qa' && (
+            <QATab
+              ideationId={ideationId}
+              mentionables={mentionables}
+              onChanged={onChanged}
+            />
+          )}
           {activeTab === 'references' && <IdeationReferencesPanel ideation={ideation} />}
           {activeTab === 'versions' && <VersionsTab ideationId={ideationId} />}
           {activeTab === 'activity' && <HistoryTab ideationId={ideationId} />}

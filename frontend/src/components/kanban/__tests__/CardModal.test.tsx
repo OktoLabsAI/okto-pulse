@@ -41,6 +41,8 @@ const apiMock = vi.hoisted(() => ({
   deleteAttachment: vi.fn(),
   unlinkTestTaskFromBug: vi.fn(),
   submitTaskValidation: vi.fn(),
+  createQuestion: vi.fn(),
+  answerQuestion: vi.fn(),
 }));
 
 const storeMock = vi.hoisted(() => ({
@@ -1186,6 +1188,114 @@ describe('CardModal', () => {
     ).not.toBeInTheDocument();
     expect(screen.getByText('Disabled')).toBeInTheDocument();
     expect(apiMock.updateCard).not.toHaveBeenCalled();
+  });
+
+  it('reconciles the Kanban open Q&A count after asking and answering the last question', async () => {
+    const qaOpen = {
+      id: 'qa-open',
+      card_id: bugCard.id,
+      question: 'Which rollout window?',
+      answer: null,
+      asked_by: 'agent-1',
+      answered_by: null,
+      created_at: '2026-08-14T10:00:00Z',
+      answered_at: null,
+    };
+    const qaAnswered = {
+      ...qaOpen,
+      answer: 'Tonight',
+      answered_by: 'user-1',
+      answered_at: '2026-08-14T11:00:00Z',
+    };
+    apiMock.getCard.mockResolvedValue({
+      ...bugCard,
+      qa_items: [],
+      open_qa_count: 0,
+    });
+    apiMock.createQuestion.mockResolvedValue(qaOpen);
+    apiMock.answerQuestion.mockResolvedValue(qaAnswered);
+
+    render(<CardModal boardId="board-1" />);
+
+    const qaTab = await screen.findByRole('tab', { name: /^Q&A/ });
+    storeMock.updateCardInColumn.mockClear();
+    fireEvent.click(qaTab);
+    fireEvent.change(
+      screen.getByPlaceholderText('Add a question... (use @ to mention)'),
+      { target: { value: qaOpen.question } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }));
+
+    await waitFor(() => {
+      expect(storeMock.updateCardInColumn).toHaveBeenCalledTimes(1);
+      expect(storeMock.updateCardInColumn).toHaveBeenLastCalledWith(
+        expect.objectContaining({ open_qa_count: 1 }),
+      );
+    });
+
+    fireEvent.change(
+      await screen.findByPlaceholderText('Answer...'),
+      { target: { value: 'Tonight' } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Answer' }));
+
+    await waitFor(() => {
+      expect(storeMock.updateCardInColumn).toHaveBeenCalledTimes(2);
+      expect(storeMock.updateCardInColumn).toHaveBeenLastCalledWith(
+        expect.objectContaining({ open_qa_count: 0 }),
+      );
+    });
+    expect(apiMock.createQuestion).toHaveBeenCalledTimes(1);
+    expect(apiMock.answerQuestion).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the projected open Q&A count when full-card loads omit it', async () => {
+    vi.useFakeTimers();
+    const refreshedCard: Card = {
+      ...bugCard,
+      updated_at: '2026-08-14T12:00:00Z',
+    };
+    storeMock.columns.not_started = [{ ...bugCard, open_qa_count: 2 }];
+    apiMock.getCard
+      .mockResolvedValueOnce({ ...bugCard })
+      .mockResolvedValueOnce(refreshedCard);
+
+    const view = render(<CardModal boardId="board-1" />);
+    try {
+      await flushMicrotasks();
+      expect(storeMock.updateCardInColumn).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: bugCard.id, open_qa_count: 2 }),
+      );
+
+      storeMock.updateCardInColumn.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      await flushMicrotasks();
+
+      expect(apiMock.getCard).toHaveBeenCalledTimes(2);
+      expect(storeMock.updateCardInColumn).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: bugCard.id, open_qa_count: 2 }),
+      );
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not restore a projected Q&A count when card.qa.read is denied', async () => {
+    permissionsMock.has.mockImplementation(
+      (permission: string) => permission !== 'card.qa.read',
+    );
+    storeMock.columns.not_started = [{ ...bugCard, open_qa_count: 2 }];
+    apiMock.getCard.mockResolvedValue({ ...bugCard });
+
+    render(<CardModal boardId="board-1" />);
+
+    await waitFor(() => expect(storeMock.updateCardInColumn).toHaveBeenCalled());
+    expect(storeMock.updateCardInColumn).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({ open_qa_count: expect.anything() }),
+    );
   });
 
   it('disables only assignment when card.entity.assign is false', async () => {

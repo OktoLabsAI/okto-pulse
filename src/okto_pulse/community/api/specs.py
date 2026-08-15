@@ -40,6 +40,11 @@ from okto_pulse.community.api.quality_summary_projection import (
     load_quality_summaries_for_page,
     quality_summary_field,
 )
+from okto_pulse.community.api.qa_count_projection import (
+    project_open_qa_count,
+    redact_open_qa_count_records,
+    resolve_board_projection_permissions,
+)
 from okto_pulse.community.api.spec_dependency_errors import (
     spec_dependency_http_error as _spec_dependency_error,
     spec_dependency_permission_denied_http_error,
@@ -908,13 +913,13 @@ async def list_specs(
     With ``offset``/``limit``: paginated envelope (spec 8b33f9a8); without:
     legacy shape unchanged (DR9).
     """
+    actor = RESTAdapterContract.actor(user_id, board_id=board_id)
     if pagination_requested(offset, limit):
         command = ListSpecsCommand(
             board_id,
             status_filter=status_filter,
             include_archived=include_archived,
         )
-        actor = RESTAdapterContract.actor(user_id)
         use_case = ListSpecsUseCase()
         try:
             resolved_offset, resolved_limit = resolve_window(offset, limit)
@@ -937,35 +942,51 @@ async def list_specs(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
             )
+        subject_ids = tuple(str(record.values["id"]) for record in page.items)
+        projection_permissions = (
+            await resolve_board_projection_permissions(
+                actor=actor,
+                uow=uow,
+                board_id=board_id,
+                permission_leaves=("spec.qa.read", "spec.quality.read"),
+            )
+            if subject_ids
+            else {}
+        )
         quality_summaries = await load_quality_summaries_for_page(
             uow=uow,
             user_id=user_id,
             board_id=board_id,
             subject_type="spec",
-            subject_ids=tuple(str(record.values["id"]) for record in page.items),
+            subject_ids=subject_ids,
+            can_read_quality=projection_permissions.get("spec.quality.read"),
         )
         return project_page(
             page,
             lambda record: SpecPageItem(
-                **record_fields(
-                    record,
-                    (
-                        "id",
-                        "board_id",
-                        "ideation_id",
-                        "refinement_id",
-                        "title",
-                        "description",
-                        "status",
-                        "edition",
-                        "version",
-                        "assignee_id",
-                        "created_by",
-                        "created_at",
-                        "updated_at",
-                        "labels",
-                        "archived",
+                **project_open_qa_count(
+                    record_fields(
+                        record,
+                        (
+                            "id",
+                            "board_id",
+                            "ideation_id",
+                            "refinement_id",
+                            "title",
+                            "description",
+                            "status",
+                            "edition",
+                            "version",
+                            "assignee_id",
+                            "created_by",
+                            "created_at",
+                            "updated_at",
+                            "labels",
+                            "archived",
+                            "open_qa_count",
+                        ),
                     ),
+                    can_read_qa=projection_permissions.get("spec.qa.read", False),
                 ),
                 **quality_summary_field(
                     str(record.values["id"]),
@@ -978,12 +999,23 @@ async def list_specs(
             ListSpecsCommand(
                 board_id, status_filter=status_filter, include_archived=include_archived
             ),
-            actor=RESTAdapterContract.actor(user_id),
+            actor=actor,
             uow=uow,
         )
     except EntityNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        )
+    if result.specs:
+        projection_permissions = await resolve_board_projection_permissions(
+            actor=actor,
+            uow=uow,
+            board_id=board_id,
+            permission_leaves=("spec.qa.read",),
+        )
+        redact_open_qa_count_records(
+            result.specs,
+            can_read_qa=projection_permissions["spec.qa.read"],
         )
     return result.specs
 

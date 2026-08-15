@@ -76,6 +76,7 @@ async def load_quality_summaries_for_page(
     board_id: str,
     subject_type: QualitySubjectType,
     subject_ids: tuple[str, ...],
+    can_read_quality: bool | None = None,
 ) -> QualitySummaryMap | None:
     """Resolve the read leaf and batch-project current Quality heads.
 
@@ -87,20 +88,20 @@ async def load_quality_summaries_for_page(
     started = perf_counter()
     query_count = 0
     try:
-        ordered_ids = tuple(
-            dict.fromkeys(item for item in subject_ids if item)
-        )
+        ordered_ids = tuple(dict.fromkeys(item for item in subject_ids if item))
         if not ordered_ids:
             summaries: QualitySummaryMap | None = {}
         else:
-            permission_set = await uow.services.resolve_user_permissions(
-                user_id,
-                board_id,
-            )
-            if check_permission(
-                permission_set,
-                f"{subject_type}.quality.read",
-            ):
+            if can_read_quality is None:
+                permission_set = await uow.services.resolve_user_permissions(
+                    user_id,
+                    board_id,
+                )
+                can_read_quality = not check_permission(
+                    permission_set,
+                    f"{subject_type}.quality.read",
+                )
+            if not can_read_quality:
                 summaries = None
             else:
                 query_count = 1
@@ -167,16 +168,14 @@ async def _load_quality_summaries(
             .scalar_subquery()
         )
         head_join = and_(
-            QualityAssessmentHeadRow.board_id
-            == QualityAssessmentReceiptRow.board_id,
+            QualityAssessmentHeadRow.board_id == QualityAssessmentReceiptRow.board_id,
             QualityAssessmentHeadRow.subject_type
             == QualityAssessmentReceiptRow.subject_type,
             QualityAssessmentHeadRow.subject_id
             == QualityAssessmentReceiptRow.subject_id,
             QualityAssessmentHeadRow.assessment_kind
             == QualityAssessmentReceiptRow.assessment_kind,
-            QualityAssessmentHeadRow.receipt_id
-            == QualityAssessmentReceiptRow.id,
+            QualityAssessmentHeadRow.receipt_id == QualityAssessmentReceiptRow.id,
         )
 
         def current_value(column: Any) -> Any:
@@ -203,21 +202,20 @@ async def _load_quality_summaries(
                 current_value(QualityAssessmentReceiptRow.scale_kind).label(
                     f"{assessment_kind}_current_scale_kind"
                 ),
-                current_value(
-                    QualityAssessmentReceiptRow.scale_minimum
-                ).label(f"{assessment_kind}_current_scale_minimum"),
-                current_value(
-                    QualityAssessmentReceiptRow.scale_maximum
-                ).label(f"{assessment_kind}_current_scale_maximum"),
-                current_value(
-                    QualityAssessmentReceiptRow.scale_direction
-                ).label(f"{assessment_kind}_current_scale_direction"),
+                current_value(QualityAssessmentReceiptRow.scale_minimum).label(
+                    f"{assessment_kind}_current_scale_minimum"
+                ),
+                current_value(QualityAssessmentReceiptRow.scale_maximum).label(
+                    f"{assessment_kind}_current_scale_maximum"
+                ),
+                current_value(QualityAssessmentReceiptRow.scale_direction).label(
+                    f"{assessment_kind}_current_scale_direction"
+                ),
             )
         )
     rows = (
         await session.execute(
-            select(*columns)
-            .where(
+            select(*columns).where(
                 binding.model.id.in_(subject_ids),
                 binding.model.board_id == board_id,
             )
@@ -230,9 +228,7 @@ async def _load_quality_summaries(
         current_edition = int(row.edition)
         subject_summaries = summaries.setdefault(subject_id, {})
         for assessment_kind in _SUBJECT_ASSESSMENT_KINDS[subject_type]:
-            total_count = int(
-                getattr(row, f"{assessment_kind}_total_count")
-            )
+            total_count = int(getattr(row, f"{assessment_kind}_total_count"))
             current_score = getattr(
                 row,
                 f"{assessment_kind}_current_score",
