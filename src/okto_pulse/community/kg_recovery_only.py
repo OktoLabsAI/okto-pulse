@@ -88,7 +88,7 @@ POST_DRAIN_CHECKPOINT_STATES = frozenset({"restored", "promoted", "completed"})
 EXPECTED_SQLITE_USER_VERSION = 0
 REQUIRED_RECOVERY_COLUMNS: Mapping[str, frozenset[str]] = {
     "boards": frozenset({"id", "owner_id", "settings"}),
-    "app_settings": frozenset({"id"}),
+    "app_settings": frozenset({"key", "value"}),
     "consolidation_queue": frozenset(
         {
             "id",
@@ -126,6 +126,10 @@ REQUIRED_RECOVERY_COLUMNS: Mapping[str, frozenset[str]] = {
         }
     ),
 }
+EXPECTED_APP_SETTINGS_TABLE_INFO = (
+    ("key", "VARCHAR(64)", 1, None, 1),
+    ("value", "VARCHAR(64)", 1, None, 0),
+)
 
 
 class RecoveryRefused(RuntimeError):
@@ -1296,6 +1300,26 @@ def _table_columns(db_path: Path, table: str) -> tuple[str, ...]:
         )
 
 
+def _table_info(
+    db_path: Path,
+    table: str,
+) -> tuple[tuple[str, str, int, str | None, int], ...]:
+    """Return the bounded SQLite column contract without importing the ORM."""
+
+    _require(table.replace("_", "").isalnum(), "unsafe_table_name", table)
+    with _sqlite_connect_readonly(db_path) as connection:
+        return tuple(
+            (
+                str(row[1]),
+                str(row[2]).upper(),
+                int(row[3]),
+                None if row[4] is None else str(row[4]),
+                int(row[5]),
+            )
+            for row in connection.execute(f"PRAGMA table_info({table})")
+        )
+
+
 def _sqlite_schema_fingerprint(db_path: Path) -> str:
     """Fingerprint the complete existing SQLite DDL without changing it."""
 
@@ -2006,6 +2030,12 @@ def _assert_required_recovery_schema(db_path: Path) -> None:
         actual = frozenset(_table_columns(db_path, table))
         missing = sorted(required - actual)
         _require(not missing, "recovery_schema_columns_missing", f"{table}:{missing}")
+    app_settings_info = _table_info(db_path, "app_settings")
+    _require(
+        app_settings_info == EXPECTED_APP_SETTINGS_TABLE_INFO,
+        "recovery_app_settings_schema_mismatch",
+        f"expected={EXPECTED_APP_SETTINGS_TABLE_INFO!r} actual={app_settings_info!r}",
+    )
 
 
 def _assert_full_orm_schema_present(db_path: Path) -> None:

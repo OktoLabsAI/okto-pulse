@@ -588,6 +588,100 @@ def test_module_has_no_online_or_global_recovery_startup_calls() -> None:
     assert "create_community_app" in called_names
 
 
+def _create_app_settings_db(path: Path, ddl: str) -> None:
+    import sqlite3
+
+    with sqlite3.connect(path) as connection:
+        connection.execute(ddl)
+
+
+def test_required_recovery_schema_accepts_canonical_app_settings_key_value(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "pulse.db"
+    _create_app_settings_db(
+        db_path,
+        'CREATE TABLE app_settings ("key" VARCHAR(64) NOT NULL, '
+        'value VARCHAR(64) NOT NULL, PRIMARY KEY ("key"))',
+    )
+    monkeypatch.setattr(
+        recovery,
+        "REQUIRED_RECOVERY_COLUMNS",
+        {"app_settings": frozenset({"key", "value"})},
+    )
+
+    recovery._assert_required_recovery_schema(db_path)
+
+
+def test_app_settings_precomposition_pin_matches_installed_orm_model() -> None:
+    from okto_pulse.community.adapters.sqlalchemy_models import AppSetting
+
+    actual = tuple(
+        (
+            str(column.name),
+            str(column.type).upper(),
+            int(not column.nullable),
+            None if column.server_default is None else str(column.server_default.arg),
+            int(column.primary_key),
+        )
+        for column in AppSetting.__table__.columns
+    )
+
+    assert actual == recovery.EXPECTED_APP_SETTINGS_TABLE_INFO
+
+
+@pytest.mark.parametrize(
+    ("ddl", "error"),
+    (
+        (
+            "CREATE TABLE app_settings (id TEXT PRIMARY KEY, value VARCHAR(64) NOT NULL)",
+            "recovery_schema_columns_missing.*app_settings.*key",
+        ),
+        (
+            'CREATE TABLE app_settings ("key" VARCHAR(64) NOT NULL PRIMARY KEY)',
+            "recovery_schema_columns_missing.*app_settings.*value",
+        ),
+        (
+            'CREATE TABLE app_settings ("key" VARCHAR(64) NOT NULL, '
+            "value VARCHAR(64) NOT NULL)",
+            "recovery_app_settings_schema_mismatch",
+        ),
+        (
+            'CREATE TABLE app_settings ("key" VARCHAR(64) NOT NULL, '
+            'value VARCHAR(64), PRIMARY KEY ("key"))',
+            "recovery_app_settings_schema_mismatch",
+        ),
+        (
+            'CREATE TABLE app_settings ("key" TEXT NOT NULL, '
+            'value VARCHAR(64) NOT NULL, PRIMARY KEY ("key"))',
+            "recovery_app_settings_schema_mismatch",
+        ),
+        (
+            'CREATE TABLE app_settings ("key" VARCHAR(64) NOT NULL, '
+            'value VARCHAR(64) NOT NULL, id TEXT, PRIMARY KEY ("key"))',
+            "recovery_app_settings_schema_mismatch",
+        ),
+    ),
+)
+def test_required_recovery_schema_refuses_app_settings_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ddl: str,
+    error: str,
+) -> None:
+    db_path = tmp_path / "pulse.db"
+    _create_app_settings_db(db_path, ddl)
+    monkeypatch.setattr(
+        recovery,
+        "REQUIRED_RECOVERY_COLUMNS",
+        {"app_settings": frozenset({"key", "value"})},
+    )
+
+    with pytest.raises(recovery.RecoveryRefused, match=error):
+        recovery._assert_required_recovery_schema(db_path)
+
+
 def test_preexisting_rebuild_temp_is_refused_before_plan_or_artifact_read(
     tmp_path: Path,
 ) -> None:
