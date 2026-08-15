@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tomllib
 from types import SimpleNamespace
 from typing import Mapping
@@ -199,6 +201,11 @@ def test_process_oracle_detects_real_launchers_but_not_ancestor_shells() -> None
         "python.exe",
         "python -m okto_pulse.community.kg_recovery_only --inspect-install",
     )
+    assert recovery._is_pulse_runtime_process(
+        "okto-pulse-kg-recovery-only.exe",
+        "",
+    )
+    assert recovery._is_pulse_runtime_process("okto-pulse.exe", "")
     assert not recovery._is_pulse_runtime_process(
         "powershell.exe",
         "powershell -Command python okto-pulse-kg-recovery-only.py",
@@ -208,6 +215,307 @@ def test_process_oracle_detects_real_launchers_but_not_ancestor_shells() -> None
         "cmd /c okto-pulse.exe serve",
     )
     assert not recovery._is_pulse_runtime_process("python.exe", "python worker.py")
+
+
+def test_windows_process_oracle_denies_dedicated_names_without_command_line() -> None:
+    rows = (
+        {
+            "ProcessId": 1,
+            "ParentProcessId": 0,
+            "CreationDate": "2026-08-15T10:00:00+00:00",
+            "Name": "python.exe",
+            "ExecutablePath": str(Path(sys.executable).resolve()),
+            "CommandLine": "python harmless.py",
+        },
+        {
+            "ProcessId": 2,
+            "ParentProcessId": 0,
+            "CreationDate": "2026-08-15T10:00:00+00:00",
+            "Name": "okto-pulse.exe",
+            "ExecutablePath": None,
+            "CommandLine": None,
+        },
+        {
+            "ProcessId": 3,
+            "ParentProcessId": 0,
+            "CreationDate": "2026-08-15T10:00:00+00:00",
+            "Name": "okto-pulse-kg-recovery-only.exe",
+            "ExecutablePath": None,
+            "CommandLine": "",
+        },
+    )
+
+    assert recovery._windows_pulse_process_candidates(
+        rows,
+        current_pid=1,
+        launcher_paths=frozenset(),
+    ) == (
+        {"pid": 2, "name": "okto-pulse.exe"},
+        {"pid": 3, "name": "okto-pulse-kg-recovery-only.exe"},
+    )
+
+
+def test_windows_process_oracle_excludes_only_exact_direct_self_launcher(
+    tmp_path: Path,
+) -> None:
+    launcher = tmp_path / "okto-pulse-kg-recovery-only.exe"
+    launcher.write_bytes(b"test launcher identity")
+    rows = (
+        {
+            "ProcessId": 200,
+            "ParentProcessId": 100,
+            "CreationDate": "2026-08-15T10:00:00.300000+00:00",
+            "Name": "python.exe",
+            "ExecutablePath": str(Path(sys.executable).resolve()),
+            "CommandLine": "python child-runtime.py",
+        },
+        {
+            "ProcessId": 100,
+            "ParentProcessId": 50,
+            "CreationDate": "2026-08-15T10:00:00.100000+00:00",
+            "Name": launcher.name,
+            "ExecutablePath": str(launcher.resolve()),
+            "CommandLine": f'"{launcher.resolve()}" --data-home D:/copy',
+        },
+        {
+            "ProcessId": 300,
+            "ParentProcessId": 50,
+            "CreationDate": "2026-08-15T10:00:00.200000+00:00",
+            "Name": launcher.name,
+            "ExecutablePath": str(launcher.resolve()),
+            "CommandLine": f'"{launcher.resolve()}" --data-home D:/other-copy',
+        },
+        {
+            "ProcessId": 400,
+            "ParentProcessId": 50,
+            "CreationDate": "2026-08-15T10:00:00.200000+00:00",
+            "Name": "python.exe",
+            "ExecutablePath": str(Path(sys.executable).resolve()),
+            "CommandLine": (r"python.exe C:\Python313\Scripts\okto-pulse.exe serve"),
+        },
+    )
+
+    candidates = recovery._windows_pulse_process_candidates(
+        rows,
+        current_pid=200,
+        launcher_paths=frozenset({launcher.resolve()}),
+    )
+
+    assert candidates == (
+        {"pid": 300, "name": launcher.name},
+        {"pid": 400, "name": "python.exe"},
+    )
+
+
+def test_windows_process_oracle_allows_exact_distlib_launcher_chain(
+    tmp_path: Path,
+) -> None:
+    launcher = tmp_path / "venv" / "Scripts" / "okto-pulse-kg-recovery-only.exe"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_bytes(b"installed launcher")
+    shim = launcher.parent / "python.exe"
+    shim.write_bytes(b"venv interpreter shim")
+    base_python = tmp_path / "base-python.exe"
+    base_python.write_bytes(b"base interpreter")
+    command_line = f'"{shim.resolve()}" "{launcher.resolve()}" --execute'
+    rows = (
+        {
+            "ProcessId": 300,
+            "ParentProcessId": 200,
+            "CreationDate": "2026-08-15T10:00:00.300000+00:00",
+            "Name": "python.exe",
+            "ExecutablePath": str(base_python.resolve()),
+            "CommandLine": command_line,
+        },
+        {
+            "ProcessId": 200,
+            "ParentProcessId": 100,
+            "CreationDate": "2026-08-15T10:00:00.200000+00:00",
+            "Name": "python.exe",
+            "ExecutablePath": str(shim.resolve()),
+            "CommandLine": command_line,
+        },
+        {
+            "ProcessId": 100,
+            "ParentProcessId": 50,
+            "CreationDate": "2026-08-15T10:00:00.100000+00:00",
+            "Name": launcher.name,
+            "ExecutablePath": str(launcher.resolve()),
+            "CommandLine": f'"{launcher.resolve()}" --execute',
+        },
+    )
+
+    assert (
+        recovery._windows_pulse_process_candidates(
+            rows,
+            current_pid=300,
+            launcher_paths=frozenset({launcher.resolve()}),
+        )
+        == ()
+    )
+
+
+@pytest.mark.parametrize(
+    "parent_kind",
+    ("different_launcher", "python_module", "pulse_serve"),
+)
+def test_windows_process_oracle_never_exempts_unbound_recovery_parent(
+    tmp_path: Path,
+    parent_kind: str,
+) -> None:
+    installed_launcher = tmp_path / "installed" / "okto-pulse-kg-recovery-only.exe"
+    installed_launcher.parent.mkdir()
+    installed_launcher.write_bytes(b"installed launcher")
+    different_launcher = tmp_path / "other" / "okto-pulse-kg-recovery-only.exe"
+    different_launcher.parent.mkdir()
+    different_launcher.write_bytes(b"other launcher")
+    if parent_kind == "different_launcher":
+        parent = {
+            "ProcessId": 100,
+            "ParentProcessId": 50,
+            "CreationDate": "2026-08-15T10:00:00.100000+00:00",
+            "Name": different_launcher.name,
+            "ExecutablePath": str(different_launcher.resolve()),
+            "CommandLine": f'"{different_launcher.resolve()}" --execute',
+        }
+    elif parent_kind == "python_module":
+        parent = {
+            "ProcessId": 100,
+            "ParentProcessId": 50,
+            "CreationDate": "2026-08-15T10:00:00.100000+00:00",
+            "Name": "python.exe",
+            "ExecutablePath": str(Path(sys.executable).resolve()),
+            "CommandLine": "python -m okto_pulse.community.kg_recovery_only",
+        }
+    else:
+        parent = {
+            "ProcessId": 100,
+            "ParentProcessId": 50,
+            "CreationDate": "2026-08-15T10:00:00.100000+00:00",
+            "Name": "python.exe",
+            "ExecutablePath": str(Path(sys.executable).resolve()),
+            "CommandLine": (r"python.exe C:\Python313\Scripts\okto-pulse.exe serve"),
+        }
+    rows = (
+        {
+            "ProcessId": 200,
+            "ParentProcessId": 100,
+            "CreationDate": "2026-08-15T10:00:00.200000+00:00",
+            "Name": "python.exe",
+            "ExecutablePath": str(Path(sys.executable).resolve()),
+            "CommandLine": "python child-runtime.py",
+        },
+        parent,
+    )
+
+    candidates = recovery._windows_pulse_process_candidates(
+        rows,
+        current_pid=200,
+        launcher_paths=frozenset({installed_launcher.resolve()}),
+    )
+
+    assert candidates == ({"pid": 100, "name": parent["Name"]},)
+
+
+def test_windows_process_oracle_refuses_reused_parent_pid_created_after_child(
+    tmp_path: Path,
+) -> None:
+    launcher = tmp_path / "okto-pulse-kg-recovery-only.exe"
+    launcher.write_bytes(b"installed launcher")
+    rows = (
+        {
+            "ProcessId": 200,
+            "ParentProcessId": 100,
+            "CreationDate": "2026-08-15T10:00:00.100000+00:00",
+            "Name": "python.exe",
+            "ExecutablePath": str(Path(sys.executable).resolve()),
+            "CommandLine": "python child-runtime.py",
+        },
+        {
+            "ProcessId": 100,
+            "ParentProcessId": 50,
+            # A process created after the child cannot be its true parent;
+            # this models Win32 PID reuse in a stale ParentProcessId field.
+            "CreationDate": "2026-08-15T10:00:01.000000+00:00",
+            "Name": launcher.name,
+            "ExecutablePath": str(launcher.resolve()),
+            "CommandLine": f'"{launcher.resolve()}" --execute',
+        },
+    )
+
+    assert recovery._windows_pulse_process_candidates(
+        rows,
+        current_pid=200,
+        launcher_paths=frozenset({launcher.resolve()}),
+    ) == ({"pid": 100, "name": launcher.name},)
+
+
+@pytest.mark.parametrize("outer_kind", ("pulse_serve", "outer_recovery"))
+def test_windows_process_oracle_does_not_hide_pulse_above_exact_launcher_chain(
+    tmp_path: Path,
+    outer_kind: str,
+) -> None:
+    launcher = tmp_path / "venv" / "Scripts" / "okto-pulse-kg-recovery-only.exe"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_bytes(b"installed launcher")
+    shim = launcher.parent / "python.exe"
+    shim.write_bytes(b"venv interpreter shim")
+    base_python = tmp_path / "base-python.exe"
+    base_python.write_bytes(b"base interpreter")
+    command_line = f'"{shim.resolve()}" "{launcher.resolve()}" --execute'
+    if outer_kind == "pulse_serve":
+        outer = {
+            "ProcessId": 50,
+            "ParentProcessId": 10,
+            "CreationDate": "2026-08-15T10:00:00.010000+00:00",
+            "Name": "python.exe",
+            "ExecutablePath": str(Path(sys.executable).resolve()),
+            "CommandLine": (r"python.exe C:\Python313\Scripts\okto-pulse.exe serve"),
+        }
+    else:
+        outer = {
+            "ProcessId": 50,
+            "ParentProcessId": 10,
+            "CreationDate": "2026-08-15T10:00:00.010000+00:00",
+            "Name": "python.exe",
+            "ExecutablePath": str(Path(sys.executable).resolve()),
+            "CommandLine": "python -m okto_pulse.community.kg_recovery_only",
+        }
+    rows = (
+        {
+            "ProcessId": 300,
+            "ParentProcessId": 200,
+            "CreationDate": "/Date(1786788000300)/",
+            "Name": "python.exe",
+            "ExecutablePath": str(base_python.resolve()),
+            "CommandLine": command_line,
+        },
+        {
+            "ProcessId": 200,
+            "ParentProcessId": 100,
+            "CreationDate": "/Date(1786788000200)/",
+            "Name": "python.exe",
+            "ExecutablePath": str(shim.resolve()),
+            "CommandLine": command_line,
+        },
+        {
+            "ProcessId": 100,
+            "ParentProcessId": 50,
+            "CreationDate": "/Date(1786788000100)/",
+            "Name": launcher.name,
+            "ExecutablePath": str(launcher.resolve()),
+            "CommandLine": f'"{launcher.resolve()}" --execute',
+        },
+        outer,
+    )
+
+    candidates = recovery._windows_pulse_process_candidates(
+        rows,
+        current_pid=300,
+        launcher_paths=frozenset({launcher.resolve()}),
+    )
+
+    assert candidates == ({"pid": 50, "name": outer["Name"]},)
 
 
 @pytest.mark.parametrize(
@@ -3642,3 +3950,141 @@ def test_pyproject_publishes_recovery_console_script() -> None:
     assert config["project"]["scripts"]["okto-pulse-kg-recovery-only"] == (
         "okto_pulse.community.kg_recovery_only:main"
     )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows launcher ancestry regression")
+def test_installed_wheel_launcher_allows_self_and_denies_second_launcher(
+    tmp_path: Path,
+) -> None:
+    """Exercise the real distlib launcher without reaching a storage write."""
+
+    import ctypes
+
+    project_root = Path(__file__).resolve().parents[1]
+    dist_dir = tmp_path / "dist"
+    venv_dir = tmp_path / "venv"
+    data_home = tmp_path / "copy"
+    dist_dir.mkdir()
+    data_home.mkdir()
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "build",
+            "--wheel",
+            "--no-isolation",
+            "--outdir",
+            str(dist_dir),
+            ".",
+        ],
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--system-site-packages", str(venv_dir)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    venv_python = venv_dir / "Scripts" / "python.exe"
+    launcher = venv_dir / "Scripts" / "okto-pulse-kg-recovery-only.exe"
+    wheel = next(dist_dir.glob("*.whl"))
+    subprocess.run(
+        [
+            str(venv_python),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            "--force-reinstall",
+            "--disable-pip-version-check",
+            str(wheel),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert launcher.is_file()
+    common = [
+        str(launcher),
+        "--data-home",
+        str(data_home),
+        "--board-id",
+        BOARD_ID,
+    ]
+    inspected = subprocess.run(
+        [*common, "--inspect-install"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    fingerprint = str(json.loads(inspected.stdout)["install_fingerprint"])
+    receipt_path = tmp_path / "receipt.json"
+    safe_rehearsal = [
+        *common,
+        "--rehearsal-copy-of",
+        str(data_home),
+        "--rehearsal-receipt-out",
+        str(receipt_path),
+        "--expected-install-fingerprint",
+        fingerprint,
+        "--offline-port",
+        "65529",
+    ]
+
+    self_only = subprocess.run(
+        safe_rehearsal,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert self_only.returncode == 2
+    assert "rehearsal_source_equals_target" in self_only.stdout
+    assert "offline_pulse_process_detected" not in self_only.stdout
+    assert not receipt_path.exists()
+
+    blocker = subprocess.Popen(
+        [*common, "--inspect-install"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=0x08000000 | 0x00000004,  # NO_WINDOW | CREATE_SUSPENDED
+    )
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    ntdll = ctypes.WinDLL("ntdll")
+    kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_int
+    ntdll.NtResumeProcess.argtypes = [ctypes.c_void_p]
+    ntdll.NtResumeProcess.restype = ctypes.c_long
+    process_handle = kernel32.OpenProcess(0x0800 | 0x1000, False, blocker.pid)
+    assert process_handle
+    suspended = True
+    try:
+        denied = subprocess.run(
+            safe_rehearsal,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert denied.returncode == 2
+        assert "offline_pulse_process_detected" in denied.stdout
+        assert str(blocker.pid) in denied.stdout
+        assert not receipt_path.exists()
+    finally:
+        if suspended:
+            ntdll.NtResumeProcess(process_handle)
+        kernel32.CloseHandle(process_handle)
+        try:
+            blocker.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            blocker.kill()
+            blocker.wait(timeout=10)

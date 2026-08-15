@@ -32,6 +32,7 @@ import base64
 from contextlib import ExitStack, suppress
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 import hashlib
 from importlib import metadata
 import json
@@ -65,6 +66,13 @@ AIOSQLITE_DISTRIBUTION = "aiosqlite"
 EXPECTED_AIOSQLITE_VERSION = "0.22.1"
 RECOVERY_ENTRYPOINT = (
     "okto-pulse-kg-recovery-only = okto_pulse.community.kg_recovery_only:main"
+)
+RECOVERY_LAUNCHER_NAMES = frozenset(
+    {
+        "okto-pulse-kg-recovery-only",
+        "okto-pulse-kg-recovery-only.exe",
+        "okto-pulse-kg-recovery-only-script.py",
+    }
 )
 REHEARSAL_RECEIPT_SCHEMA = "pulse_kg_recovery_rehearsal.v1"
 REHEARSAL_RECEIPT_TTL_SECONDS = 7_200
@@ -567,15 +575,11 @@ def _hash_recovery_entrypoint_metadata() -> str:
         "recovery_entrypoint_metadata_ambiguous",
         repr(tuple(str(item) for item in metadata_candidates)),
     )
-    launcher_names = {
-        "okto-pulse-kg-recovery-only",
-        "okto-pulse-kg-recovery-only.exe",
-        "okto-pulse-kg-recovery-only-script.py",
-    }
     launcher_candidates = tuple(
         relative
         for relative in (dist.files or ())
-        if Path(str(relative).replace("\\", "/")).name.lower() in launcher_names
+        if Path(str(relative).replace("\\", "/")).name.lower()
+        in RECOVERY_LAUNCHER_NAMES
     )
     _require(
         bool(launcher_candidates),
@@ -594,6 +598,44 @@ def _hash_recovery_entrypoint_metadata() -> str:
         digest.update(f"{relative_text}\0".encode("utf-8"))
         digest.update(hashlib.sha256(resolved.read_bytes()).digest())
     return digest.hexdigest()
+
+
+@lru_cache(maxsize=1)
+def _installed_recovery_launcher_paths() -> frozenset[Path]:
+    """Resolve the exact installed console launchers eligible as self-parent."""
+
+    try:
+        dist = metadata.distribution(COMMUNITY_DISTRIBUTION)
+    except metadata.PackageNotFoundError as exc:
+        raise RecoveryRefused(
+            f"installed_distribution_missing:{COMMUNITY_DISTRIBUTION}"
+        ) from exc
+    candidates = tuple(
+        relative
+        for relative in (dist.files or ())
+        if Path(str(relative).replace("\\", "/")).name.lower()
+        in RECOVERY_LAUNCHER_NAMES
+    )
+    _require(bool(candidates), "recovery_entrypoint_launcher_missing")
+    resolved: set[Path] = set()
+    for relative in candidates:
+        path = Path(dist.locate_file(relative))
+        _assert_no_symlink_components(
+            path,
+            "recovery_entrypoint_file_alias_refused",
+        )
+        _require(
+            not _is_filesystem_alias(path),
+            "recovery_entrypoint_file_alias_refused",
+        )
+        launcher = path.resolve(strict=True)
+        _require(
+            launcher.is_file(),
+            "recovery_entrypoint_file_missing",
+            str(launcher),
+        )
+        resolved.add(launcher)
+    return frozenset(resolved)
 
 
 def _resolve_explicit_data_home(raw_value: str, *, require_existing: bool) -> Path:
@@ -860,6 +902,12 @@ def _is_pulse_runtime_process(name: str, command_line: str) -> bool:
         or executable in {"okto-pulse", "okto-pulse-kg-recovery-only", "uvicorn"}
     ):
         return False
+    # Dedicated Pulse launchers are authoritative process identities even
+    # when CIM/procfs cannot expose their command line (for example an
+    # elevated peer). Self-exemption below remains stricter and requires the
+    # exact command/path/ancestry binding, so missing details fail closed.
+    if executable in {"okto-pulse", "okto-pulse-kg-recovery-only"}:
+        return True
 
     normalized = " ".join(
         command_line.lower()
@@ -885,6 +933,215 @@ def _is_pulse_runtime_process(name: str, command_line: str) -> bool:
     return launcher_serve is not None or module_runtime
 
 
+def _windows_command_prefix(
+    command_line: str,
+    *,
+    limit: int = 2,
+) -> tuple[str, ...]:
+    """Parse only the simple quoted executable prefix emitted by Win32 CIM."""
+
+    raw = command_line
+    tokens: list[str] = []
+    offset = 0
+    while len(tokens) < limit:
+        while offset < len(raw) and raw[offset].isspace():
+            offset += 1
+        if offset >= len(raw):
+            break
+        if raw[offset] in {'"', "'"}:
+            quote = raw[offset]
+            closing = raw.find(quote, offset + 1)
+            if closing <= offset + 1:
+                return ()
+            tokens.append(raw[offset + 1 : closing])
+            offset = closing + 1
+            continue
+        closing = offset
+        while closing < len(raw) and not raw[closing].isspace():
+            closing += 1
+        tokens.append(raw[offset:closing])
+        offset = closing
+    return tuple(tokens)
+
+
+def _same_process_image_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(str(left)) == os.path.normcase(str(right))
+
+
+def _windows_process_created_at(row: Mapping[str, Any]) -> datetime | None:
+    raw = str(row.get("CreationDate") or "")
+    legacy_match = re.fullmatch(r"/Date\((-?[0-9]+)(?:[+-][0-9]{4})?\)/", raw)
+    if legacy_match is not None:
+        try:
+            return datetime.fromtimestamp(
+                int(legacy_match.group(1)) / 1000,
+                tz=timezone.utc,
+            )
+        except (OverflowError, OSError, ValueError):
+            return None
+    try:
+        observed = datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return None
+    if observed.tzinfo is None:
+        return None
+    return observed.astimezone(timezone.utc)
+
+
+def _resolved_process_path(value: Any) -> Path | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return Path(raw).resolve(strict=True)
+    except OSError:
+        return None
+
+
+def _windows_exact_recovery_launcher_row(
+    row: Mapping[str, Any],
+    *,
+    launcher_paths: frozenset[Path],
+) -> Path | None:
+    name = Path(str(row.get("Name") or "").strip().lower()).name
+    command_line = str(row.get("CommandLine") or "")
+    if name not in RECOVERY_LAUNCHER_NAMES or not _is_pulse_runtime_process(
+        name, command_line
+    ):
+        return None
+    executable = _resolved_process_path(row.get("ExecutablePath"))
+    prefix = _windows_command_prefix(command_line, limit=1)
+    if executable is None or len(prefix) != 1:
+        return None
+    if not any(
+        _same_process_image_path(executable, launcher) for launcher in launcher_paths
+    ):
+        return None
+    argv0 = _resolved_process_path(prefix[0])
+    if argv0 is None or not _same_process_image_path(argv0, executable):
+        return None
+    return executable
+
+
+def _windows_self_recovery_ancestor_pids(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    current_pid: int,
+    launcher_paths: frozenset[Path],
+) -> frozenset[int]:
+    """Allow only the exact launcher/shim ancestry that owns this Python."""
+
+    by_pid: dict[int, Mapping[str, Any]] = {}
+    for row in rows:
+        try:
+            pid = int(row.get("ProcessId") or 0)
+        except (TypeError, ValueError):
+            continue
+        if pid > 0:
+            by_pid[pid] = row
+    current = by_pid.get(current_pid)
+    if current is None:
+        return frozenset()
+    current_created = _windows_process_created_at(current)
+    if current_created is None:
+        return frozenset()
+    try:
+        parent_pid = int(current.get("ParentProcessId") or 0)
+    except (TypeError, ValueError):
+        return frozenset()
+    parent = by_pid.get(parent_pid)
+    if parent is None:
+        return frozenset()
+    parent_created = _windows_process_created_at(parent)
+    if parent_created is None or parent_created > current_created:
+        return frozenset()
+
+    # Some launchers directly host Python; the installed launcher is then the
+    # immediate parent and no interpreter shim needs to be exempted.
+    direct_launcher = _windows_exact_recovery_launcher_row(
+        parent,
+        launcher_paths=launcher_paths,
+    )
+    if direct_launcher is not None:
+        return frozenset({parent_pid})
+
+    # pip/distlib on Windows normally creates:
+    # launcher.exe -> venv/Scripts/python.exe -> base python.exe (current).
+    # Exempt the middle interpreter only when its own parent is the exact
+    # installed launcher and both Python command lines name that launcher as
+    # argv[1]. This does not exempt a nested ``python -m`` recovery process.
+    parent_name = Path(str(parent.get("Name") or "").strip().lower()).name
+    if not parent_name.startswith("python"):
+        return frozenset()
+    try:
+        launcher_pid = int(parent.get("ParentProcessId") or 0)
+    except (TypeError, ValueError):
+        return frozenset()
+    launcher_row = by_pid.get(launcher_pid)
+    if launcher_row is None:
+        return frozenset()
+    launcher_created = _windows_process_created_at(launcher_row)
+    launcher_path = _windows_exact_recovery_launcher_row(
+        launcher_row,
+        launcher_paths=launcher_paths,
+    )
+    if (
+        launcher_created is None
+        or launcher_created > parent_created
+        or launcher_path is None
+    ):
+        return frozenset()
+    parent_prefix = _windows_command_prefix(
+        str(parent.get("CommandLine") or ""), limit=2
+    )
+    current_prefix = _windows_command_prefix(
+        str(current.get("CommandLine") or ""), limit=2
+    )
+    if len(parent_prefix) != 2 or len(current_prefix) != 2:
+        return frozenset()
+    parent_interpreter = _resolved_process_path(parent.get("ExecutablePath"))
+    parent_argv0 = _resolved_process_path(parent_prefix[0])
+    parent_launcher_arg = _resolved_process_path(parent_prefix[1])
+    current_launcher_arg = _resolved_process_path(current_prefix[1])
+    if (
+        parent_interpreter is None
+        or parent_argv0 is None
+        or parent_launcher_arg is None
+        or current_launcher_arg is None
+        or not _same_process_image_path(parent_interpreter, parent_argv0)
+        or not _same_process_image_path(parent_launcher_arg, launcher_path)
+        or not _same_process_image_path(current_launcher_arg, launcher_path)
+    ):
+        return frozenset()
+    return frozenset({parent_pid, launcher_pid})
+
+
+def _windows_pulse_process_candidates(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    current_pid: int,
+    launcher_paths: frozenset[Path],
+) -> tuple[dict[str, Any], ...]:
+    self_ancestor_pids = _windows_self_recovery_ancestor_pids(
+        rows,
+        current_pid=current_pid,
+        launcher_paths=launcher_paths,
+    )
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            pid = int(row.get("ProcessId") or 0)
+        except (TypeError, ValueError):
+            continue
+        command_line = str(row.get("CommandLine") or "").lower()
+        name = str(row.get("Name") or "")
+        if pid == current_pid or pid in self_ancestor_pids:
+            continue
+        if _is_pulse_runtime_process(name, command_line):
+            candidates.append({"pid": pid, "name": name})
+    return tuple(candidates)
+
+
 def _pulse_process_candidates() -> tuple[dict[str, Any], ...]:
     """Return other likely Pulse server processes without exposing commands."""
 
@@ -894,7 +1151,9 @@ def _pulse_process_candidates() -> tuple[dict[str, Any], ...]:
     if os.name == "nt":
         command = (
             "Get-CimInstance Win32_Process | "
-            "Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress"
+            "Select-Object ProcessId,ParentProcessId,CreationDate,Name,"
+            "ExecutablePath,CommandLine | "
+            "ConvertTo-Json -Compress"
         )
         completed = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
@@ -913,15 +1172,12 @@ def _pulse_process_candidates() -> tuple[dict[str, Any], ...]:
         except json.JSONDecodeError as exc:
             raise RecoveryRefused("offline_process_scan_invalid") from exc
         rows = payload if isinstance(payload, list) else [payload]
-        for row in rows:
-            if not isinstance(row, Mapping):
-                continue
-            pid = int(row.get("ProcessId") or 0)
-            command_line = str(row.get("CommandLine") or "").lower()
-            name = str(row.get("Name") or "")
-            if pid != current_pid and _is_pulse_runtime_process(name, command_line):
-                candidates.append({"pid": pid, "name": name})
-        return tuple(candidates)
+        valid_rows = tuple(row for row in rows if isinstance(row, Mapping))
+        return _windows_pulse_process_candidates(
+            valid_rows,
+            current_pid=current_pid,
+            launcher_paths=_installed_recovery_launcher_paths(),
+        )
 
     proc_root = Path("/proc")
     _require(proc_root.is_dir(), "offline_process_scan_unavailable")
