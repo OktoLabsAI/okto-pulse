@@ -2723,7 +2723,16 @@ async def test_execute_under_lock_runs_archive_lane_with_exact_gate_contract(
             "graph_storage_locked": False,
         },
     )
-    monkeypatch.setattr(recovery, "_build_service_bundle", lambda: bundle)
+    monkeypatch.setattr(
+        recovery,
+        "_build_service_bundle",
+        lambda **_kwargs: bundle,
+    )
+    monkeypatch.setattr(
+        recovery,
+        "_discover_legacy_queue_only_reconciliation",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(recovery, "_select_recovery_run_plan", lambda *_a, **_k: plan)
     monkeypatch.setattr(
         recovery,

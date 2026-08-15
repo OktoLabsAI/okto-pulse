@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import time
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +24,14 @@ from okto_pulse.core.application.rebuild_processor import (
 from okto_pulse.core.kg.interfaces.rebuild_audit_storage import (
     RebuildAuditArtifactStore,
     RebuildAuditKey,
+)
+
+from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
+    LEGACY_QUEUE_ONLY_INTENT_CODE,
+    LEGACY_QUEUE_ONLY_INTENT_EFFECT,
+    LEGACY_QUEUE_ONLY_KIND,
+    LEGACY_QUEUE_ONLY_REMAINING_ACTIONS,
+    LegacyManualRestoreQueueOnlyIntent,
 )
 
 if TYPE_CHECKING:
@@ -288,6 +297,65 @@ class CommunityRebuildEffects:
                 _receipt_payload(receipt),
             )
         return receipt
+
+    def persist_legacy_manual_restore_queue_only_intent(
+        self,
+        command: RebuildCommand,
+        *,
+        intent_payload: Mapping[str, Any],
+        mutation_guard: Callable[[], bool],
+    ) -> RebuildEffectReceipt:
+        """Persist one exact nominal intent before any legacy queue CAS."""
+
+        intent = LegacyManualRestoreQueueOnlyIntent.from_payload(intent_payload)
+        if (
+            intent.board_id != command.board_id
+            or intent.manifest_ref != command.manifest_ref
+            or intent.f06_run_id != command.run_id
+        ):
+            raise RuntimeError("legacy_queue_only_intent_command_mismatch")
+        effect_key = f"{command.run_id}:{LEGACY_QUEUE_ONLY_INTENT_EFFECT}"
+        receipt = RebuildEffectReceipt(
+            effect_key=effect_key,
+            effect=LEGACY_QUEUE_ONLY_INTENT_EFFECT,
+            ok=True,
+            code=LEGACY_QUEUE_ONLY_INTENT_CODE,
+            details=intent.to_payload(),
+        )
+        expected = _receipt_payload(receipt)
+
+        def _guard(phase: str) -> None:
+            try:
+                live = bool(mutation_guard())
+            except BaseException as exc:
+                raise RuntimeError(
+                    f"legacy_queue_only_intent_guard_error:{phase}"
+                ) from exc
+            if not live:
+                raise RuntimeError(f"legacy_queue_only_intent_guard_lost:{phase}")
+
+        _guard("before_write")
+        if self._artifact_store is not None:
+            key = self._key(command, self._effect_id(effect_key))
+
+            def _persist_exact(
+                current: dict[str, Any] | None,
+            ) -> dict[str, Any]:
+                _guard("during_write")
+                if current not in (None, expected):
+                    raise RuntimeError("legacy_queue_only_intent_receipt_conflict")
+                return dict(expected)
+
+            persisted = self._artifact_store.replace_json(key, _persist_exact)
+            if persisted != expected:
+                raise RuntimeError("legacy_queue_only_intent_receipt_mismatch")
+        _guard("after_write")
+        # Never retain the caller's mutable mapping. Revalidate the canonical
+        # payload after the artifact callback before it enters checkpoint state.
+        persisted_receipt = _receipt_from_payload(dict(expected))
+        LegacyManualRestoreQueueOnlyIntent.from_payload(persisted_receipt.details)
+        self._owner._rebuild_effect_cache[effect_key] = persisted_receipt
+        return persisted_receipt
 
     def snapshot(
         self, command: RebuildCommand, *, effect_key: str
@@ -670,6 +738,149 @@ class CommunityRebuildEffects:
     ) -> RebuildEffectReceipt:
         rebuild_command = self._checkpoint_command(command.run_id)
         existing = self._load_receipt(rebuild_command, effect_key)
+        checkpoint = self._owner._rebuild_checkpoint_cache.get(command.run_id)
+        intent_receipts = tuple(
+            receipt
+            for receipt in (
+                tuple(checkpoint.receipts.values()) if checkpoint is not None else ()
+            )
+            if receipt.effect == LEGACY_QUEUE_ONLY_INTENT_EFFECT
+        )
+        if intent_receipts:
+            if len(intent_receipts) != 1:
+                raise RuntimeError("legacy_queue_only_intent_cardinality_invalid")
+            intent_receipt = intent_receipts[0]
+            expected_intent_key = f"{command.run_id}:{LEGACY_QUEUE_ONLY_INTENT_EFFECT}"
+            if (
+                intent_receipt.effect_key != expected_intent_key
+                or intent_receipt.code != LEGACY_QUEUE_ONLY_INTENT_CODE
+                or not intent_receipt.ok
+                or expected_intent_key not in command.receipt_keys
+                or tuple(action.value for action in command.actions)
+                != LEGACY_QUEUE_ONLY_REMAINING_ACTIONS
+            ):
+                raise RuntimeError("legacy_queue_only_compensation_binding_invalid")
+            intent = LegacyManualRestoreQueueOnlyIntent.from_payload(
+                intent_receipt.details
+            )
+            expected_row_count = len(intent.queue_rows)
+            expected_pending_count = sum(
+                1 for row in intent.queue_rows if row["status"] == "pending"
+            )
+            expected_claimed_count = sum(
+                1 for row in intent.queue_rows if row["status"] == "claimed"
+            )
+            expected_details = {
+                "actions": list(LEGACY_QUEUE_ONLY_REMAINING_ACTIONS),
+                "reconciliation_kind": LEGACY_QUEUE_ONLY_KIND,
+                "intent_digest": intent.evidence_digest,
+                "queue": {
+                    "source": intent.queue_source,
+                    "expected_row_count": expected_row_count,
+                    "terminal_fingerprint": intent.terminal_queue_fingerprint,
+                    "pending_compensated": expected_pending_count,
+                    "claimed_compensated": expected_claimed_count,
+                    "already_compensated": 0,
+                    "active_remaining": 0,
+                    "live_intents_restored": 0,
+                    "total_compensated": expected_row_count,
+                    "evidence_digest": intent.evidence_digest,
+                },
+            }
+            if existing is not None:
+                if (
+                    existing.effect_key != effect_key
+                    or existing.effect != "compensate"
+                    or not existing.ok
+                    or existing.code != "legacy_manual_restore_queue_only_reconciled"
+                    or dict(existing.details) != expected_details
+                ):
+                    raise RuntimeError("legacy_queue_only_terminal_receipt_conflict")
+                return existing
+            guard = command.mutation_guard
+            if not callable(guard):
+                raise RuntimeError("legacy_queue_only_mutation_guard_required")
+
+            def _guard(phase: str) -> None:
+                try:
+                    live = bool(guard())
+                except BaseException as exc:
+                    raise RuntimeError(
+                        f"legacy_queue_only_terminal_guard_error:{phase}"
+                    ) from exc
+                if not live:
+                    raise RuntimeError(f"legacy_queue_only_terminal_guard_lost:{phase}")
+
+            result = self._owner.compensate_legacy_manual_restore_queue_only(
+                intent_payload=intent.to_payload(),
+                mutation_guard=guard,
+            )
+            expected_result_keys = {
+                "reconciliation_kind",
+                "evidence_digest",
+                "queue_source",
+                "pending_compensated",
+                "claimed_compensated",
+                "already_compensated",
+                "active_remaining",
+                "live_intents_restored",
+                "total_compensated",
+            }
+            if (
+                not isinstance(result, Mapping)
+                or set(result) != expected_result_keys
+                or result.get("reconciliation_kind") != LEGACY_QUEUE_ONLY_KIND
+                or result.get("evidence_digest") != intent.evidence_digest
+                or result.get("queue_source") != intent.queue_source
+                or result.get("active_remaining") != 0
+                or result.get("live_intents_restored") != 0
+                or any(
+                    type(result.get(key)) is not int or int(result[key]) < 0
+                    for key in (
+                        "pending_compensated",
+                        "claimed_compensated",
+                        "already_compensated",
+                        "total_compensated",
+                    )
+                )
+                or int(result["pending_compensated"])
+                + int(result["claimed_compensated"])
+                != int(result["total_compensated"])
+                or int(result["total_compensated"]) + int(result["already_compensated"])
+                != expected_row_count
+            ):
+                raise RuntimeError("legacy_queue_only_terminal_proof_invalid")
+            _guard("after_queue_commit")
+            receipt = RebuildEffectReceipt(
+                effect_key=effect_key,
+                effect="compensate",
+                ok=True,
+                code="legacy_manual_restore_queue_only_reconciled",
+                details=expected_details,
+            )
+            expected_terminal = _receipt_payload(receipt)
+            if self._artifact_store is not None:
+                key = self._key(rebuild_command, self._effect_id(effect_key))
+
+                def _persist_terminal(
+                    current: dict[str, Any] | None,
+                ) -> dict[str, Any]:
+                    _guard("during_terminal_receipt")
+                    if current not in (None, expected_terminal):
+                        raise RuntimeError(
+                            "legacy_queue_only_terminal_receipt_conflict"
+                        )
+                    return dict(expected_terminal)
+
+                persisted = self._artifact_store.replace_json(
+                    key,
+                    _persist_terminal,
+                )
+                if persisted != expected_terminal:
+                    raise RuntimeError("legacy_queue_only_terminal_receipt_mismatch")
+            _guard("after_terminal_receipt")
+            self._owner._rebuild_effect_cache[effect_key] = receipt
+            return receipt
         if existing is not None and existing.ok:
             return existing
         details: dict[str, object] = {

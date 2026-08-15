@@ -59,11 +59,19 @@ from okto_pulse.community.adapters.board_source_reader import (
     CommunityBoardSourceReader,
     resolve_pulse_db_path,
 )
+from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
+    LEGACY_QUEUE_COLUMNS,
+    LegacyManualRestoreQueueOnlyIntent,
+    canonical_evidence_hash,
+    legacy_queue_terminal_row,
+)
 
 logger = logging.getLogger("okto_pulse.community.board_rebuild_ingestion")
 REBUILD_QUEUE_ORDER_VERSION = 4
 _EVIDENCE_CLOSURE_CANDIDATE = "code_evidence_supersedence"
 _MAX_EVIDENCE_CLOSURE_DEPTH = 256
+_MAX_LEGACY_PROTECTED_ROWS = 16_384
+_MAX_LEGACY_PROTECTED_BYTES = 32 * 1024 * 1024
 _REBUILD_SOURCE_OPERATIONAL_MARKERS = frozenset(
     {
         "_rebuild_manifest_created_at",
@@ -79,6 +87,38 @@ _REBUILD_CHECKPOINT_UPGRADE_STATES = frozenset(
         "draining",
     }
 )
+
+
+def _bounded_legacy_sql_rows(
+    cursor: sqlite3.Cursor,
+    columns: Sequence[str],
+    *,
+    code: str,
+    max_rows: int | None = None,
+) -> tuple[tuple[object, ...], ...]:
+    """Materialize one SQL evidence cut under explicit row/byte limits."""
+
+    rows: list[tuple[object, ...]] = []
+    total_bytes = 0
+    row_limit = _MAX_LEGACY_PROTECTED_ROWS if max_rows is None else max_rows
+    for raw in cursor:
+        if len(rows) >= row_limit:
+            raise RuntimeError(f"{code}_row_limit_exceeded")
+        values = tuple(raw[column] for column in columns)
+        try:
+            encoded = json.dumps(
+                values,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"{code}_noncanonical") from exc
+        total_bytes += len(encoded)
+        if total_bytes > _MAX_LEGACY_PROTECTED_BYTES:
+            raise RuntimeError(f"{code}_byte_limit_exceeded")
+        rows.append(values)
+    return tuple(rows)
 
 
 def _manifest_cut(rows: Sequence[Mapping[str, Any]]) -> str | None:
@@ -980,6 +1020,456 @@ class CommunityBoardRebuildIngestionAdapter:
             "live_intents_restored": live_restored,
             "total_compensated": max(0, int(cursor.rowcount or 0)),
         }
+
+    def compensate_legacy_manual_restore_queue_only(
+        self,
+        *,
+        intent_payload: Mapping[str, Any],
+        mutation_guard: Callable[[], bool],
+    ) -> dict[str, object]:
+        """CAS exactly the residual rows authorized by one legacy intent.
+
+        The historical graph restore is already durable and must not be
+        repeated.  This transaction therefore changes queue rows only.  It
+        compares every current column against the intent snapshot, rejects
+        extras/peers/DLQ aliases, and writes the v4 membership required for a
+        later fresh admission to adopt the resulting tombstones safely.
+        """
+
+        intent = LegacyManualRestoreQueueOnlyIntent.from_payload(intent_payload)
+        board_id = intent.board_id
+        source = intent.queue_source
+        expected_rows = {str(row["id"]): dict(row) for row in intent.queue_rows}
+        memberships = {str(row["row_id"]): dict(row) for row in intent.memberships}
+        expected_columns = LEGACY_QUEUE_COLUMNS
+        queue_evidence = dict(intent.payload["queue"])
+
+        def _guard(phase: str) -> None:
+            try:
+                live = bool(mutation_guard())
+            except BaseException as exc:
+                raise RuntimeError(
+                    f"legacy_queue_only_mutation_guard_error:{phase}"
+                ) from exc
+            if not live:
+                raise RuntimeError(f"legacy_queue_only_mutation_guard_lost:{phase}")
+
+        _guard("before_transaction")
+        with sqlite3.connect(str(self._path()), timeout=10.0) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("BEGIN IMMEDIATE")
+            queue_table_entries = tuple(
+                row
+                for row in conn.execute("PRAGMA table_list")
+                if str(row[0]) == "main" and str(row[1]) == "consolidation_queue"
+            )
+            if (
+                len(queue_table_entries) != 1
+                or str(queue_table_entries[0][2]) != "table"
+            ):
+                # A virtual table can expose the exact declared columns while
+                # mutating SQLite-owned shadow tables on UPDATE.  The nominal
+                # lane is authorized to change only ordinary queue rows.
+                raise RuntimeError("legacy_queue_only_queue_storage_invalid")
+            queue_xinfo = tuple(
+                tuple(column)
+                for column in conn.execute("PRAGMA table_xinfo(consolidation_queue)")
+            )
+            queue_columns = tuple(str(column[1]) for column in queue_xinfo)
+            if queue_columns != expected_columns or any(
+                len(column) < 7 or int(column[6]) != 0 for column in queue_xinfo
+            ):
+                raise RuntimeError("legacy_queue_only_schema_mismatch")
+            queue_trigger = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='trigger' "
+                "AND tbl_name='consolidation_queue' ORDER BY name LIMIT 1"
+            ).fetchone()
+            if queue_trigger is not None:
+                # A target-row UPDATE trigger can mutate any table (including
+                # another board) inside this transaction.  The nominal lane is
+                # authorized to change only the exact queue rows in the
+                # intent, so no trigger on the target table is admissible.
+                # BEGIN IMMEDIATE prevents a schema writer from installing one
+                # after this check and before commit.
+                raise RuntimeError("legacy_queue_only_queue_trigger_present")
+            projection = ", ".join(
+                '"' + column.replace('"', '""') + '"' for column in expected_columns
+            )
+            current_values = _bounded_legacy_sql_rows(
+                conn.execute(
+                    f"SELECT {projection} FROM consolidation_queue "
+                    "WHERE board_id=? AND source=? ORDER BY id",
+                    (board_id, source),
+                ),
+                expected_columns,
+                code="legacy_queue_only_target_queue",
+                max_rows=len(expected_rows),
+            )
+            current_rows = {
+                str(row[0]): {
+                    column: row[index] for index, column in enumerate(expected_columns)
+                }
+                for row in current_values
+            }
+            if set(current_rows) != set(expected_rows):
+                raise RuntimeError("legacy_queue_only_row_set_conflict")
+
+            target_ids = tuple(sorted(expected_rows))
+            target_placeholders = ",".join("?" for _ in target_ids)
+            non_target_rows = _bounded_legacy_sql_rows(
+                conn.execute(
+                    f"SELECT {projection} FROM consolidation_queue WHERE board_id=? "
+                    f"AND id NOT IN ({target_placeholders}) ORDER BY id",
+                    (board_id, *target_ids),
+                ),
+                expected_columns,
+                code="legacy_queue_only_non_target_queue",
+            )
+            non_target_fingerprint = canonical_evidence_hash(
+                {
+                    "columns": list(expected_columns),
+                    "rows": [list(row) for row in non_target_rows],
+                }
+            )
+            if non_target_fingerprint != queue_evidence["board_non_target_fingerprint"]:
+                raise RuntimeError("legacy_queue_only_non_target_queue_changed")
+
+            expected_identities = {
+                (str(row["artifact_type"]), str(row["artifact_id"])): row_id
+                for row_id, row in expected_rows.items()
+            }
+            placeholders = ",".join("(?, ?)" for _ in expected_identities)
+            identity_params: list[object] = [board_id]
+            for artifact_type, artifact_id in expected_identities:
+                identity_params.extend((artifact_type, artifact_id))
+            peer_rows = conn.execute(
+                "SELECT id, artifact_type, artifact_id FROM consolidation_queue "
+                "WHERE board_id=? AND work_kind='consolidate' AND "
+                f"(artifact_type, artifact_id) IN ({placeholders}) ORDER BY id "
+                "LIMIT ?",
+                (*identity_params, len(expected_rows) + 1),
+            ).fetchall()
+            if len(peer_rows) != len(expected_rows) or any(
+                expected_identities.get(
+                    (str(row["artifact_type"]), str(row["artifact_id"]))
+                )
+                != str(row["id"])
+                for row in peer_rows
+            ):
+                raise RuntimeError("legacy_queue_only_peer_identity_conflict")
+
+            dlq_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='consolidation_dead_letter'"
+            ).fetchone()
+            if dlq_exists is not None:
+                queue_ids = tuple(expected_rows)
+                dlq_placeholders = ",".join("?" for _ in queue_ids)
+                dlq_identity_placeholders = ",".join(
+                    "(?, ?)" for _ in expected_identities
+                )
+                dlq_identity_params: list[object] = []
+                for artifact_type, artifact_id in expected_identities:
+                    dlq_identity_params.extend((artifact_type, artifact_id))
+                dlq_peer = conn.execute(
+                    "SELECT id FROM consolidation_dead_letter WHERE board_id=? "
+                    "AND ("
+                    f"original_queue_id IN ({dlq_placeholders}) OR "
+                    f"(artifact_type, artifact_id) IN ({dlq_identity_placeholders})"
+                    ") LIMIT 1",
+                    (board_id, *queue_ids, *dlq_identity_params),
+                ).fetchone()
+                if dlq_peer is not None:
+                    raise RuntimeError("legacy_queue_only_dlq_identity_conflict")
+                dlq_columns = tuple(
+                    str(column[1])
+                    for column in conn.execute(
+                        "PRAGMA table_info(consolidation_dead_letter)"
+                    ).fetchall()
+                )
+                dlq_projection = ", ".join(
+                    '"' + column.replace('"', '""') + '"' for column in dlq_columns
+                )
+                dlq_rows = _bounded_legacy_sql_rows(
+                    conn.execute(
+                        f"SELECT {dlq_projection} FROM consolidation_dead_letter "
+                        "WHERE board_id=? ORDER BY id",
+                        (board_id,),
+                    ),
+                    dlq_columns,
+                    code="legacy_queue_only_dlq",
+                )
+                dlq_fingerprint = canonical_evidence_hash(
+                    {
+                        "columns": list(dlq_columns),
+                        "rows": [list(row) for row in dlq_rows],
+                    }
+                )
+            else:
+                dlq_fingerprint = canonical_evidence_hash({"columns": [], "rows": []})
+            if dlq_fingerprint != queue_evidence["dlq_fingerprint"]:
+                raise RuntimeError("legacy_queue_only_dlq_changed")
+
+            pending_compensated = 0
+            claimed_compensated = 0
+            already_compensated = 0
+            _guard("before_updates")
+            for row_id in sorted(expected_rows):
+                expected = expected_rows[row_id]
+                membership = memberships[row_id]
+                terminal = legacy_queue_terminal_row(expected, membership)
+                current = current_rows[row_id]
+                if current == terminal:
+                    already_compensated += 1
+                    continue
+                if current != expected:
+                    raise RuntimeError(f"legacy_queue_only_row_cas_conflict:{row_id}")
+                if expected["status"] == "claimed":
+                    raw_timeout = expected["claim_timeout_at"]
+                    try:
+                        timeout_at = datetime.fromisoformat(str(raw_timeout))
+                    except (TypeError, ValueError) as exc:
+                        raise RuntimeError(
+                            f"legacy_queue_only_claim_timeout_invalid:{row_id}"
+                        ) from exc
+                    if timeout_at.tzinfo is None:
+                        timeout_at = timeout_at.replace(tzinfo=timezone.utc)
+                    if timeout_at.astimezone(timezone.utc) >= datetime.now(
+                        timezone.utc
+                    ):
+                        raise RuntimeError(
+                            f"legacy_queue_only_claim_not_expired:{row_id}"
+                        )
+                    claimed_compensated += 1
+                else:
+                    pending_compensated += 1
+                _guard(f"before_update:{row_id}")
+                cursor = conn.execute(
+                    "UPDATE consolidation_queue SET status='failed', "
+                    "payload=?, claimed_by_session_id=NULL, claim_token=NULL, "
+                    "claimed_at=NULL, last_error='rebuild_compensated', "
+                    "worker_id=NULL, claim_timeout_at=NULL, next_retry_at=NULL "
+                    "WHERE id=? AND board_id=? AND source=? AND status=?",
+                    (
+                        terminal["payload"],
+                        row_id,
+                        board_id,
+                        source,
+                        expected["status"],
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise RuntimeError(f"legacy_queue_only_row_cas_lost:{row_id}")
+
+            after_values = _bounded_legacy_sql_rows(
+                conn.execute(
+                    f"SELECT {projection} FROM consolidation_queue "
+                    "WHERE board_id=? AND source=? ORDER BY id",
+                    (board_id, source),
+                ),
+                expected_columns,
+                code="legacy_queue_only_terminal_target_queue",
+                max_rows=len(expected_rows),
+            )
+            after_rows = {
+                str(row[0]): {
+                    column: row[index] for index, column in enumerate(expected_columns)
+                }
+                for row in after_values
+            }
+            if after_rows != {
+                row_id: legacy_queue_terminal_row(row, memberships[row_id])
+                for row_id, row in expected_rows.items()
+            }:
+                raise RuntimeError("legacy_queue_only_terminal_rows_unproved")
+
+            # A persistent UPDATE trigger was refused before any mutation and
+            # BEGIN IMMEDIATE excludes concurrent writers. Re-prove the
+            # bounded board cut and identity exclusivity immediately before
+            # the final fence/commit.
+            terminal_non_target_rows = _bounded_legacy_sql_rows(
+                conn.execute(
+                    f"SELECT {projection} FROM consolidation_queue WHERE board_id=? "
+                    f"AND id NOT IN ({target_placeholders}) ORDER BY id",
+                    (board_id, *target_ids),
+                ),
+                expected_columns,
+                code="legacy_queue_only_terminal_non_target_queue",
+            )
+            terminal_non_target_fingerprint = canonical_evidence_hash(
+                {
+                    "columns": list(expected_columns),
+                    "rows": [list(row) for row in terminal_non_target_rows],
+                }
+            )
+            if (
+                terminal_non_target_fingerprint
+                != queue_evidence["board_non_target_fingerprint"]
+            ):
+                raise RuntimeError("legacy_queue_only_non_target_queue_changed")
+            terminal_peer_rows = conn.execute(
+                "SELECT id, artifact_type, artifact_id FROM consolidation_queue "
+                "WHERE board_id=? AND work_kind='consolidate' AND "
+                f"(artifact_type, artifact_id) IN ({placeholders}) ORDER BY id "
+                "LIMIT ?",
+                (*identity_params, len(expected_rows) + 1),
+            ).fetchall()
+            if len(terminal_peer_rows) != len(expected_rows) or any(
+                expected_identities.get(
+                    (str(row["artifact_type"]), str(row["artifact_id"]))
+                )
+                != str(row["id"])
+                for row in terminal_peer_rows
+            ):
+                raise RuntimeError("legacy_queue_only_peer_identity_conflict")
+            if dlq_exists is not None:
+                terminal_dlq_peer = conn.execute(
+                    "SELECT id FROM consolidation_dead_letter WHERE board_id=? "
+                    "AND ("
+                    f"original_queue_id IN ({dlq_placeholders}) OR "
+                    f"(artifact_type, artifact_id) IN ({dlq_identity_placeholders})"
+                    ") LIMIT 1",
+                    (board_id, *queue_ids, *dlq_identity_params),
+                ).fetchone()
+                if terminal_dlq_peer is not None:
+                    raise RuntimeError("legacy_queue_only_dlq_identity_conflict")
+                terminal_dlq_rows = _bounded_legacy_sql_rows(
+                    conn.execute(
+                        f"SELECT {dlq_projection} FROM consolidation_dead_letter "
+                        "WHERE board_id=? ORDER BY id",
+                        (board_id,),
+                    ),
+                    dlq_columns,
+                    code="legacy_queue_only_terminal_dlq",
+                )
+                terminal_dlq_fingerprint = canonical_evidence_hash(
+                    {
+                        "columns": list(dlq_columns),
+                        "rows": [list(row) for row in terminal_dlq_rows],
+                    }
+                )
+            else:
+                terminal_dlq_fingerprint = canonical_evidence_hash(
+                    {"columns": [], "rows": []}
+                )
+            if terminal_dlq_fingerprint != queue_evidence["dlq_fingerprint"]:
+                raise RuntimeError("legacy_queue_only_dlq_changed")
+            _guard("before_commit")
+            conn.commit()
+        return {
+            "reconciliation_kind": "legacy_manual_restore_queue_only",
+            "evidence_digest": intent.evidence_digest,
+            "queue_source": source,
+            "pending_compensated": pending_compensated,
+            "claimed_compensated": claimed_compensated,
+            "already_compensated": already_compensated,
+            "active_remaining": 0,
+            "live_intents_restored": 0,
+            "total_compensated": pending_compensated + claimed_compensated,
+        }
+
+    def build_legacy_manual_restore_queue_only_adapter(
+        self,
+        *,
+        evidence_probe: Callable[[LegacyManualRestoreQueueOnlyIntent], bool],
+    ) -> Callable[[Any], Any]:
+        """Compose the nominal Core lane over the exact Community CAS.
+
+        The caller owns the physical evidence oracle because only the offline
+        executor has the closed-graph/quarantine snapshots.  This adapter owns
+        the durable F06 intent receipt and queue transaction.  No ordinary
+        rebuild step, graph lifecycle, quarantine or report/event primitive is
+        reachable from this closure.
+        """
+
+        if not callable(evidence_probe):
+            raise TypeError("legacy_queue_only_evidence_probe_required")
+
+        from okto_pulse.community.adapters.rebuild_effects import (
+            CommunityRebuildEffects,
+        )
+        from okto_pulse.core.application.rebuild_processor import (
+            RebuildProcessor,
+        )
+
+        def _adapter(request: Any) -> Any:
+            intent = LegacyManualRestoreQueueOnlyIntent.from_payload(
+                request.intent_receipt.details
+            )
+            expected_key = (
+                f"{intent.f06_run_id}:"
+                "legacy_manually_restored_blocked_after_enqueue_intent"
+            )
+            if (
+                str(request.board_id) != intent.board_id
+                or str(request.intent_id) != intent.evidence_digest
+                or str(request.actor_id) != str(intent.payload["recovery_actor_id"])
+                or str(request.reason) != str(intent.payload["recovery_reason"])
+                or request.command.board_id != intent.board_id
+                or request.command.manifest_ref != intent.manifest_ref
+                or request.command.run_id != intent.f06_run_id
+                or request.intent_receipt.effect_key != expected_key
+                or request.intent_receipt.effect
+                != "legacy_manually_restored_blocked_after_enqueue_intent"
+                or not request.intent_receipt.ok
+                or request.intent_receipt.code
+                != "legacy_manual_restore_queue_only_authorized"
+                or not isinstance(request.owner_token, str)
+                or not request.owner_token
+                or not callable(request.lease_renew)
+                or not callable(request.orchestration_renew)
+                or not callable(request.mutation_guard)
+            ):
+                raise RuntimeError("legacy_queue_only_adapter_binding_invalid")
+
+            command = replace(request.command, owner_token=request.owner_token)
+            self._rebuild_run_boards[command.run_id] = command.board_id
+            effects = CommunityRebuildEffects(
+                self,
+                artifact_store=self.artifact_store,
+            )
+            persisted_intent = effects.persist_legacy_manual_restore_queue_only_intent(
+                command,
+                intent_payload=intent.to_payload(),
+                mutation_guard=request.mutation_guard,
+            )
+            if persisted_intent != request.intent_receipt:
+                raise RuntimeError("legacy_queue_only_intent_receipt_mismatch")
+
+            def _probe(probe_command: Any, probe_receipt: Any) -> bool:
+                try:
+                    if (
+                        probe_command.board_id != intent.board_id
+                        or probe_command.manifest_ref != intent.manifest_ref
+                        or probe_command.run_id != intent.f06_run_id
+                        or probe_receipt != persisted_intent
+                        or not bool(request.mutation_guard())
+                    ):
+                        return False
+                    current = LegacyManualRestoreQueueOnlyIntent.from_payload(
+                        probe_receipt.details
+                    )
+                    return bool(
+                        current.evidence_digest == intent.evidence_digest
+                        and evidence_probe(current)
+                    )
+                except BaseException:
+                    return False
+
+            processor = RebuildProcessor(
+                effects,
+                lease_renew=request.lease_renew,
+                orchestration_renew=request.orchestration_renew,
+                legacy_blocked_intent_probe=_probe,
+            )
+            return processor.reconcile_manually_restored_blocked_after_enqueue(
+                command,
+                intent_receipt=persisted_intent,
+                recovery_actor_id=str(request.actor_id),
+                recovery_reason=str(request.reason),
+            )
+
+        return _adapter
 
     def build_step_adapter(self, source_resolver):
         """Compose Local First effects behind the Core rebuild state machine."""
