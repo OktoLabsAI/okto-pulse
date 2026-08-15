@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Callable
+from dataclasses import replace
 import hashlib
 import json
+import re
 import sqlite3
 import threading
 from pathlib import Path
@@ -51,6 +53,7 @@ POST_LEGACY_CHECKPOINT_FIELDS = (
     "compensation_failure_detail",
     "compensation_actions",
 )
+STREAMING_LOGICAL_TABLES = tuple(recovery.SQLITE_LOGICAL_STREAMING_POLICIES)
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -260,7 +263,7 @@ def _create_queue_database(path: Path) -> None:
             "source_revision INTEGER NOT NULL, "
             "record_fingerprint VARCHAR(64) NOT NULL, payload JSON NOT NULL, "
             "evidence_refs JSON NOT NULL, source_session_id VARCHAR(36), "
-            "committed_at DATETIME NOT NULL)"
+            "committed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"
         )
         historical = _historical_cognitive_records()
         base = historical[0]
@@ -443,7 +446,12 @@ def test_legacy_logical_fingerprint_has_nominal_cognitive_byte_cap(
     excluded = frozenset({"consolidation_queue", "consolidation_dead_letter"})
     with monkeypatch.context() as bounded:
         bounded.setattr(recovery, "MAX_LEGACY_PROTECTED_QUEUE_BYTES", 1024)
-        bounded.setattr(recovery, "MAX_LEGACY_COGNITIVE_LEDGER_BYTES", 16_384)
+        policies = dict(recovery.SQLITE_LOGICAL_STREAMING_POLICIES)
+        policies["kg_cognitive_source_revisions"] = replace(
+            policies["kg_cognitive_source_revisions"],
+            max_bytes=16_384,
+        )
+        bounded.setattr(recovery, "SQLITE_LOGICAL_STREAMING_POLICIES", policies)
         fingerprints = recovery._sqlite_logical_fingerprints(
             db_path,
             exclude_tables=excluded,
@@ -464,6 +472,498 @@ def test_legacy_logical_fingerprint_has_nominal_cognitive_byte_cap(
                 db_path,
                 exclude_tables=excluded,
             )
+
+
+def _streaming_policy_create_sql(
+    table_name: str,
+    policy: recovery.SQLiteLogicalStreamingPolicy,
+    *,
+    primary_key: tuple[str, ...] | None = None,
+) -> str:
+    selected_primary_key = policy.primary_key if primary_key is None else primary_key
+    assert len(selected_primary_key) == 1
+    definitions: list[str] = []
+    for name, declared_type, not_null, default, _pk, _hidden in policy.schema:
+        definition = f'"{name}" {declared_type}'
+        if not_null:
+            definition += " NOT NULL"
+        if default is not None:
+            definition += f" DEFAULT {default}"
+        if name in selected_primary_key:
+            definition += " PRIMARY KEY"
+        definitions.append(definition)
+    return f'CREATE TABLE "{table_name}" ({", ".join(definitions)})'
+
+
+def _streaming_policy_row(
+    policy: recovery.SQLiteLogicalStreamingPolicy,
+    index: int,
+) -> tuple[object, ...]:
+    values: list[object] = []
+    for name, declared_type, _not_null, _default, pk, _hidden in policy.schema:
+        if pk:
+            value: object = f"{index:064x}"
+        elif name == "board_id" or name == "anchor_board_id":
+            value = BOARD_ID if index % 2 else "5dcb7b75-466f-4d1e-8893-3899a7cfacf0"
+        elif declared_type in {"INTEGER", "BOOLEAN"}:
+            value = index + 1
+        elif declared_type == "FLOAT":
+            value = float(index) + 0.25
+        elif declared_type == "JSON":
+            value = json.dumps(
+                {"index": index, "column": name},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        elif declared_type in {"DATETIME", "TIMESTAMP"}:
+            value = f"2026-08-{index + 1:02d} 00:00:00.000000"
+        elif name.endswith("digest") or name in {
+            "record_fingerprint",
+            "excerpt_hash",
+        }:
+            value = hashlib.sha256(f"{name}:{index}".encode()).hexdigest()
+        else:
+            value = f"{name}-{index}"
+        values.append(value)
+    return tuple(values)
+
+
+def _quoted_columns(columns: tuple[str, ...]) -> str:
+    return ",".join('"' + column + '"' for column in columns)
+
+
+def _create_streaming_policy_database(
+    path: Path,
+    table_name: str,
+    *,
+    row_order: tuple[int, ...] = (1, 2),
+    primary_key: tuple[str, ...] | None = None,
+) -> tuple[tuple[object, ...], ...]:
+    policy = recovery.SQLITE_LOGICAL_STREAMING_POLICIES[table_name]
+    rows = tuple(_streaming_policy_row(policy, index) for index in row_order)
+    columns = tuple(column[0] for column in policy.schema)
+    placeholders = ",".join("?" for _ in columns)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            _streaming_policy_create_sql(
+                table_name,
+                policy,
+                primary_key=primary_key,
+            )
+        )
+        connection.executemany(
+            f'INSERT INTO "{table_name}" '
+            f"({_quoted_columns(columns)}) "
+            f"VALUES ({placeholders})",
+            rows,
+        )
+    return rows
+
+
+@pytest.mark.parametrize("table_name", STREAMING_LOGICAL_TABLES)
+def test_streaming_logical_fingerprint_is_order_invariant_and_detects_each_row(
+    tmp_path: Path,
+    table_name: str,
+) -> None:
+    first_db = tmp_path / f"{table_name}-first.db"
+    second_db = tmp_path / f"{table_name}-second.db"
+    rows = _create_streaming_policy_database(
+        first_db,
+        table_name,
+        row_order=(2, 1),
+    )
+    _create_streaming_policy_database(
+        second_db,
+        table_name,
+        row_order=(1, 2),
+    )
+    baseline = recovery._sqlite_logical_fingerprints(first_db)[table_name]
+    assert recovery._sqlite_logical_fingerprints(second_db)[table_name] == baseline
+    with sqlite3.connect(second_db) as connection:
+        connection.execute("VACUUM")
+    assert recovery._sqlite_logical_fingerprints(second_db)[table_name] == baseline
+
+    policy = recovery.SQLITE_LOGICAL_STREAMING_POLICIES[table_name]
+    columns = tuple(column[0] for column in policy.schema)
+    mutable_index = next(
+        index for index, column in enumerate(policy.schema) if column[4] == 0
+    )
+    primary_key_index = columns.index(policy.primary_key[0])
+    with sqlite3.connect(second_db) as connection:
+        connection.execute(
+            f'UPDATE "{table_name}" SET "{columns[mutable_index]}"=? '
+            f'WHERE "{policy.primary_key[0]}"=?',
+            (
+                _streaming_policy_row(policy, 99)[mutable_index],
+                rows[0][primary_key_index],
+            ),
+        )
+    target_changed = recovery._sqlite_logical_fingerprints(second_db)[table_name]
+    assert target_changed != baseline
+
+    with sqlite3.connect(second_db) as connection:
+        connection.execute(
+            f'UPDATE "{table_name}" SET "{columns[mutable_index]}"=? '
+            f'WHERE "{policy.primary_key[0]}"=?',
+            (
+                _streaming_policy_row(policy, 100)[mutable_index],
+                rows[1][primary_key_index],
+            ),
+        )
+    assert recovery._sqlite_logical_fingerprints(second_db)[table_name] not in {
+        baseline,
+        target_changed,
+    }
+
+
+@pytest.mark.parametrize("table_name", STREAMING_LOGICAL_TABLES)
+def test_streaming_logical_fingerprint_refuses_schema_and_primary_key_drift(
+    tmp_path: Path,
+    table_name: str,
+) -> None:
+    schema_db = tmp_path / f"{table_name}-schema.db"
+    _create_streaming_policy_database(schema_db, table_name, row_order=(1,))
+    with sqlite3.connect(schema_db) as connection:
+        connection.execute(f'ALTER TABLE "{table_name}" ADD COLUMN unexpected TEXT')
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match=rf"sqlite_logical_table_{table_name}_schema_invalid",
+    ):
+        recovery._sqlite_logical_fingerprints(schema_db)
+
+    policy = recovery.SQLITE_LOGICAL_STREAMING_POLICIES[table_name]
+    replacement_primary_key = next(
+        column[0]
+        for column in policy.schema
+        if column[0] not in policy.primary_key and column[2] == 1
+    )
+    primary_key_db = tmp_path / f"{table_name}-primary-key.db"
+    _create_streaming_policy_database(
+        primary_key_db,
+        table_name,
+        row_order=(1,),
+        primary_key=(replacement_primary_key,),
+    )
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match=rf"sqlite_logical_table_{table_name}_primary_key_invalid",
+    ):
+        recovery._sqlite_logical_fingerprints(primary_key_db)
+
+
+@pytest.mark.parametrize("table_name", STREAMING_LOGICAL_TABLES)
+def test_streaming_logical_fingerprint_enforces_exact_row_and_byte_caps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    table_name: str,
+) -> None:
+    db_path = tmp_path / f"{table_name}.db"
+    rows = _create_streaming_policy_database(
+        db_path,
+        table_name,
+        row_order=(1, 2, 3),
+    )
+    policy = recovery.SQLITE_LOGICAL_STREAMING_POLICIES[table_name]
+    with monkeypatch.context() as exact_rows:
+        exact_rows.setattr(
+            recovery,
+            "SQLITE_LOGICAL_STREAMING_POLICIES",
+            {table_name: replace(policy, max_rows=3)},
+        )
+        assert table_name in recovery._sqlite_logical_fingerprints(db_path)
+    with monkeypatch.context() as bounded_rows:
+        bounded_rows.setattr(
+            recovery,
+            "SQLITE_LOGICAL_STREAMING_POLICIES",
+            {table_name: replace(policy, max_rows=2)},
+        )
+        with pytest.raises(
+            recovery.RecoveryRefused,
+            match=rf"sqlite_logical_table_{table_name}_row_limit_exceeded",
+        ):
+            recovery._sqlite_logical_fingerprints(db_path)
+
+    exact_byte_count = sum(
+        len(
+            recovery._canonical_json_bytes(
+                [recovery._normalize_sqlite_value(value) for value in row]
+            )
+        )
+        for row in rows
+    )
+    with monkeypatch.context() as exact_bytes:
+        exact_bytes.setattr(
+            recovery,
+            "SQLITE_LOGICAL_STREAMING_POLICIES",
+            {table_name: replace(policy, max_bytes=exact_byte_count)},
+        )
+        assert table_name in recovery._sqlite_logical_fingerprints(db_path)
+    with monkeypatch.context() as bounded_bytes:
+        bounded_bytes.setattr(
+            recovery,
+            "SQLITE_LOGICAL_STREAMING_POLICIES",
+            {table_name: replace(policy, max_bytes=exact_byte_count - 1)},
+        )
+        with pytest.raises(
+            recovery.RecoveryRefused,
+            match=rf"sqlite_logical_table_{table_name}_byte_limit_exceeded",
+        ):
+            recovery._sqlite_logical_fingerprints(db_path)
+
+
+def test_streaming_logical_policy_limits_keep_defaults_and_headroom_explicit() -> None:
+    assert recovery.MAX_LEGACY_PROTECTED_QUEUE_ROWS == 16_384
+    assert recovery.MAX_LEGACY_PROTECTED_QUEUE_BYTES == 32 * 1024 * 1024
+    assert {
+        table: (policy.primary_key, policy.max_rows, policy.max_bytes)
+        for table, policy in recovery.SQLITE_LOGICAL_STREAMING_POLICIES.items()
+    } == {
+        "quality_findings": (("id",), 131_072, 128 * 1024 * 1024),
+        "domain_events": (("id",), 131_072, 64 * 1024 * 1024),
+        "domain_event_handler_executions": (
+            ("id",),
+            131_072,
+            32 * 1024 * 1024,
+        ),
+        "activity_logs": (("id",), 131_072, 128 * 1024 * 1024),
+        "semantic_subject_version_events": (
+            ("event_id",),
+            131_072,
+            128 * 1024 * 1024,
+        ),
+        "spec_history": (("id",), 65_536, 256 * 1024 * 1024),
+        "kg_cognitive_source_revisions": (
+            ("id",),
+            32_768,
+            256 * 1024 * 1024,
+        ),
+    }
+
+
+def test_streaming_logical_policy_headroom_matches_canonical_inventory() -> None:
+    # Read-only inventory from the 2026-08-15 canonical rehearsal fixture:
+    # (row count, canonical row bytes, August rows through day 15).
+    observed = {
+        "quality_findings": (21_983, 18_193_982, 12_384),
+        "domain_events": (16_688, 7_653_834, 11_424),
+        "domain_event_handler_executions": (20_524, 3_242_860, 13_371),
+        "activity_logs": (10_525, 13_428_387, 6_491),
+        "semantic_subject_version_events": (9_182, 5_008_614, 9_182),
+        "spec_history": (4_564, 32_495_214, 2_860),
+        "kg_cognitive_source_revisions": (5_111, 52_148_992, 1_439),
+    }
+    for table_name, (row_count, byte_count, august_rows) in observed.items():
+        policy = recovery.SQLITE_LOGICAL_STREAMING_POLICIES[table_name]
+        average_row_bytes = byte_count / row_count
+        daily_rows = august_rows / 15
+        row_headroom_days = (policy.max_rows - row_count) / daily_rows
+        byte_headroom_days = (
+            (policy.max_bytes - byte_count) / average_row_bytes / daily_rows
+        )
+        assert min(row_headroom_days, byte_headroom_days) >= 117
+
+
+def test_streaming_logical_fingerprint_has_stable_framing_and_never_materializes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "golden.db"
+    _create_streaming_policy_database(
+        db_path,
+        "domain_events",
+        row_order=(1,),
+    )
+    monkeypatch.setattr(
+        recovery,
+        "_fingerprint_rows",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("streaming policy must not materialize rows")
+        ),
+    )
+    assert (
+        recovery._sqlite_logical_fingerprints(db_path)["domain_events"]
+        == "a0279aa68a25af0da69d1c1412f345d9669d43d395e53e0b539b5ca011928cd8"
+    )
+
+
+def test_streaming_execution_policy_accepts_observed_20524_row_fixture(
+    tmp_path: Path,
+) -> None:
+    table_name = "domain_event_handler_executions"
+    policy = recovery.SQLITE_LOGICAL_STREAMING_POLICIES[table_name]
+    columns = tuple(column[0] for column in policy.schema)
+    db_path = tmp_path / "current-like.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(_streaming_policy_create_sql(table_name, policy))
+        connection.executemany(
+            f'INSERT INTO "{table_name}" '
+            f"({_quoted_columns(columns)}) "
+            f"VALUES ({','.join('?' for _ in columns)})",
+            (_streaming_policy_row(policy, index) for index in range(20_524)),
+        )
+    fingerprint = recovery._sqlite_logical_fingerprints(db_path)[table_name]
+    assert re.fullmatch(r"[0-9a-f]{64}", fingerprint)
+
+
+@pytest.mark.parametrize(
+    ("ddl_transform", "error_code"),
+    (
+        (
+            lambda ddl: ddl.replace(
+                '"event_type" VARCHAR(100) NOT NULL',
+                '"event_type" TEXT NOT NULL',
+            ),
+            "schema_invalid",
+        ),
+        (
+            lambda ddl: ddl.replace(
+                "\"actor_type\" VARCHAR(20) NOT NULL DEFAULT 'user'",
+                "\"actor_type\" VARCHAR(20) NOT NULL DEFAULT 'agent'",
+            ),
+            "schema_invalid",
+        ),
+        (
+            lambda ddl: ddl.replace(
+                '"event_type" VARCHAR(100) NOT NULL',
+                '"event_type" VARCHAR(100)',
+            ),
+            "schema_invalid",
+        ),
+        (
+            lambda ddl: (
+                ddl[:-1]
+                + ', "generated_shadow" TEXT GENERATED ALWAYS AS ("event_type") STORED)'
+            ),
+            "schema_invalid",
+        ),
+    ),
+)
+def test_streaming_logical_fingerprint_refuses_exact_schema_variants(
+    tmp_path: Path,
+    ddl_transform: Callable[[str], str],
+    error_code: str,
+) -> None:
+    table_name = "domain_events"
+    policy = recovery.SQLITE_LOGICAL_STREAMING_POLICIES[table_name]
+    db_path = tmp_path / f"{error_code}.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            ddl_transform(_streaming_policy_create_sql(table_name, policy))
+        )
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match=rf"sqlite_logical_table_{table_name}_{error_code}",
+    ):
+        recovery._sqlite_logical_fingerprints(db_path)
+
+
+def test_streaming_logical_fingerprint_refuses_virtual_table_and_invalid_pk_values(
+    tmp_path: Path,
+) -> None:
+    virtual_db = tmp_path / "virtual.db"
+    with sqlite3.connect(virtual_db) as connection:
+        connection.execute(
+            "CREATE VIRTUAL TABLE domain_events USING fts5("
+            "id,event_type,board_id,actor_id,actor_type,payload_json,occurred_at)"
+        )
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="sqlite_logical_table_domain_events_storage_type_invalid",
+    ):
+        recovery._sqlite_logical_fingerprints(virtual_db)
+
+    policy = recovery.SQLITE_LOGICAL_STREAMING_POLICIES["domain_events"]
+    columns = tuple(column[0] for column in policy.schema)
+    primary_key_index = columns.index("id")
+    for label, invalid_value in (("null", None), ("empty", "")):
+        db_path = tmp_path / f"{label}.db"
+        row = list(_streaming_policy_row(policy, 1))
+        row[primary_key_index] = invalid_value
+        with sqlite3.connect(db_path) as connection:
+            connection.execute(_streaming_policy_create_sql("domain_events", policy))
+            connection.execute(
+                'INSERT INTO "domain_events" '
+                f"({_quoted_columns(columns)}) "
+                f"VALUES ({','.join('?' for _ in columns)})",
+                tuple(row),
+            )
+        with pytest.raises(
+            recovery.RecoveryRefused,
+            match="sqlite_logical_table_domain_events_primary_key_value_invalid",
+        ):
+            recovery._sqlite_logical_fingerprints(db_path)
+
+
+def test_streaming_logical_fingerprint_uses_one_wal_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    table_name = "domain_events"
+    db_path = tmp_path / "wal.db"
+    _create_streaming_policy_database(db_path, table_name, row_order=(1,))
+    with sqlite3.connect(db_path) as connection:
+        assert str(connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]) == "wal"
+    baseline = recovery._sqlite_logical_fingerprints(db_path)[table_name]
+    policy = recovery.SQLITE_LOGICAL_STREAMING_POLICIES[table_name]
+    columns = tuple(column[0] for column in policy.schema)
+    original = recovery._stream_sqlite_logical_table_fingerprint
+    injected = False
+
+    def _inject_after_inventory(connection, *, table_name, policy):  # noqa: ANN001
+        nonlocal injected
+        if not injected:
+            injected = True
+            with sqlite3.connect(db_path) as writer:
+                writer.execute(
+                    f'INSERT INTO "{table_name}" '
+                    f"({_quoted_columns(columns)}) "
+                    f"VALUES ({','.join('?' for _ in columns)})",
+                    _streaming_policy_row(policy, 2),
+                )
+        return original(connection, table_name=table_name, policy=policy)
+
+    with monkeypatch.context() as concurrent:
+        concurrent.setattr(
+            recovery,
+            "_stream_sqlite_logical_table_fingerprint",
+            _inject_after_inventory,
+        )
+        during_commit = recovery._sqlite_logical_fingerprints(db_path)[table_name]
+    assert injected is True
+    assert during_commit == baseline
+    assert recovery._sqlite_logical_fingerprints(db_path)[table_name] != baseline
+
+
+def test_streaming_logical_lane_terminal_gate_still_checks_foreign_keys(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "foreign-key.db"
+    parent_policy = recovery.SQLITE_LOGICAL_STREAMING_POLICIES["domain_events"]
+    child_policy = recovery.SQLITE_LOGICAL_STREAMING_POLICIES[
+        "domain_event_handler_executions"
+    ]
+    parent_ddl = _streaming_policy_create_sql("domain_events", parent_policy)
+    child_ddl = _streaming_policy_create_sql(
+        "domain_event_handler_executions",
+        child_policy,
+    )
+    child_ddl = child_ddl[:-1] + ", FOREIGN KEY(event_id) REFERENCES domain_events(id))"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(parent_ddl)
+        connection.execute(child_ddl)
+        columns = tuple(column[0] for column in child_policy.schema)
+        connection.execute(
+            'INSERT INTO "domain_event_handler_executions" '
+            f"({_quoted_columns(columns)}) "
+            f"VALUES ({','.join('?' for _ in columns)})",
+            _streaming_policy_row(child_policy, 1),
+        )
+    schema_fingerprint = recovery._sqlite_schema_fingerprint(db_path)
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="terminal_sqlite_foreign_key_check_failed",
+    ):
+        recovery._assert_schema_unchanged(db_path, schema_fingerprint)
 
 
 def _create_legacy_artifacts(

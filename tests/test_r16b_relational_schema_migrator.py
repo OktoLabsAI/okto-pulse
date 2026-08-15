@@ -1068,6 +1068,14 @@ def test_v030_installed_schema_upgrades_to_exact_semantic_v2_and_replays(
     fingerprint = recovery._sqlite_schema_fingerprint(database_path)
     assert len(fingerprint) == 64
     assert fingerprint == recovery._sqlite_schema_fingerprint(database_path)
+    logical_fingerprints = recovery._sqlite_logical_fingerprints(database_path)
+    assert set(recovery.SQLITE_LOGICAL_STREAMING_POLICIES).issubset(
+        logical_fingerprints
+    )
+    assert all(
+        len(logical_fingerprints[table_name]) == 64
+        for table_name in recovery.SQLITE_LOGICAL_STREAMING_POLICIES
+    )
 
 
 # ===========================================================================

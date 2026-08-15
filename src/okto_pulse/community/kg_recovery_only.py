@@ -89,6 +89,158 @@ MAX_LEGACY_COGNITIVE_LEDGER_ROWS = 16_384
 MAX_LEGACY_COGNITIVE_LEDGER_BYTES = 64 * 1024 * 1024
 MAX_RECOVERY_SQLITE_TABLES = 512
 MAX_RECOVERY_SQLITE_SCHEMA_OBJECTS = 4_096
+
+
+@dataclass(frozen=True)
+class SQLiteLogicalStreamingPolicy:
+    """Exact bounded policy for a legitimate high-cardinality ledger table."""
+
+    schema: tuple[tuple[str, str, int, str | None, int, int], ...]
+    primary_key: tuple[str, ...]
+    max_rows: int
+    max_bytes: int
+
+
+# These seven tables are durable history/ledger surfaces with no ordinary TTL.
+# The table-specific limits preserve at least roughly four months of headroom at
+# the observed August 2026 growth rate of the canonical Community fixture.  They
+# are deliberately not defaults: every other logical table remains bounded by
+# 16,384 rows / 32 MiB.  Exact schema and PK checks fence the streaming path.
+SQLITE_LOGICAL_STREAMING_POLICIES: Mapping[str, SQLiteLogicalStreamingPolicy] = {
+    "quality_findings": SQLiteLogicalStreamingPolicy(
+        schema=(
+            ("id", "VARCHAR(64)", 1, None, 1, 0),
+            ("receipt_id", "VARCHAR(64)", 1, None, 0, 0),
+            ("board_id", "VARCHAR(36)", 1, None, 0, 0),
+            ("subject_type", "VARCHAR(24)", 1, None, 0, 0),
+            ("subject_id", "VARCHAR(64)", 1, None, 0, 0),
+            ("assessment_kind", "VARCHAR(32)", 1, None, 0, 0),
+            ("finding_key", "VARCHAR(512)", 1, None, 0, 0),
+            ("category_code", "VARCHAR(128)", 1, None, 0, 0),
+            ("taxonomy_version", "VARCHAR(128)", 1, None, 0, 0),
+            ("severity", "VARCHAR(24)", 1, None, 0, 0),
+            ("confidence", "FLOAT", 1, None, 0, 0),
+            ("deterministic", "BOOLEAN", 1, None, 0, 0),
+            ("blocking_eligible", "BOOLEAN", 1, None, 0, 0),
+            ("title", "TEXT", 1, None, 0, 0),
+            ("detail", "TEXT", 1, None, 0, 0),
+            ("anchor_board_id", "VARCHAR(36)", 1, None, 0, 0),
+            ("anchor_subject_type", "VARCHAR(24)", 1, None, 0, 0),
+            ("anchor_subject_id", "VARCHAR(64)", 1, None, 0, 0),
+            ("anchor_subject_version", "INTEGER", 1, None, 0, 0),
+            ("anchor_input_digest", "VARCHAR(64)", 1, None, 0, 0),
+            ("anchor_type", "VARCHAR(32)", 1, None, 0, 0),
+            ("anchor_ref", "VARCHAR(512)", 0, None, 0, 0),
+            ("excerpt_hash", "VARCHAR(64)", 0, None, 0, 0),
+            ("evidence_refs", "JSON", 1, None, 0, 0),
+            ("lifecycle", "VARCHAR(24)", 1, None, 0, 0),
+            ("created_at", "DATETIME", 1, None, 0, 0),
+            ("remediation", "TEXT", 0, None, 0, 0),
+            ("rule_code", "VARCHAR(128)", 0, None, 0, 0),
+        ),
+        primary_key=("id",),
+        max_rows=131_072,
+        max_bytes=128 * 1024 * 1024,
+    ),
+    "domain_events": SQLiteLogicalStreamingPolicy(
+        schema=(
+            ("id", "VARCHAR(36)", 0, None, 1, 0),
+            ("event_type", "VARCHAR(100)", 1, None, 0, 0),
+            ("board_id", "VARCHAR(36)", 1, None, 0, 0),
+            ("actor_id", "VARCHAR(36)", 0, None, 0, 0),
+            ("actor_type", "VARCHAR(20)", 1, "'user'", 0, 0),
+            ("payload_json", "JSON", 1, None, 0, 0),
+            ("occurred_at", "TIMESTAMP", 1, "CURRENT_TIMESTAMP", 0, 0),
+        ),
+        primary_key=("id",),
+        max_rows=131_072,
+        max_bytes=64 * 1024 * 1024,
+    ),
+    "domain_event_handler_executions": SQLiteLogicalStreamingPolicy(
+        schema=(
+            ("id", "VARCHAR(36)", 0, None, 1, 0),
+            ("event_id", "VARCHAR(36)", 1, None, 0, 0),
+            ("handler_name", "VARCHAR(100)", 1, None, 0, 0),
+            ("status", "VARCHAR(20)", 1, "'pending'", 0, 0),
+            ("attempts", "INTEGER", 1, "0", 0, 0),
+            ("last_error", "VARCHAR(500)", 0, None, 0, 0),
+            ("processed_at", "TIMESTAMP", 0, None, 0, 0),
+            ("next_attempt_at", "TIMESTAMP", 0, None, 0, 0),
+        ),
+        primary_key=("id",),
+        max_rows=131_072,
+        max_bytes=32 * 1024 * 1024,
+    ),
+    "activity_logs": SQLiteLogicalStreamingPolicy(
+        schema=(
+            ("id", "VARCHAR(36)", 1, None, 1, 0),
+            ("board_id", "VARCHAR(36)", 1, None, 0, 0),
+            ("card_id", "VARCHAR(36)", 0, None, 0, 0),
+            ("action", "VARCHAR(100)", 1, None, 0, 0),
+            ("actor_type", "VARCHAR(50)", 1, None, 0, 0),
+            ("actor_id", "VARCHAR(255)", 1, None, 0, 0),
+            ("actor_name", "VARCHAR(255)", 1, None, 0, 0),
+            ("details", "JSON", 0, None, 0, 0),
+            ("created_at", "DATETIME", 1, "CURRENT_TIMESTAMP", 0, 0),
+        ),
+        primary_key=("id",),
+        max_rows=131_072,
+        max_bytes=128 * 1024 * 1024,
+    ),
+    "semantic_subject_version_events": SQLiteLogicalStreamingPolicy(
+        schema=(
+            ("event_id", "VARCHAR(64)", 1, None, 1, 0),
+            ("predecessor_event_id", "VARCHAR(64)", 0, None, 0, 0),
+            ("board_id", "VARCHAR(36)", 1, None, 0, 0),
+            ("subject_type", "VARCHAR(24)", 1, None, 0, 0),
+            ("subject_id", "VARCHAR(64)", 1, None, 0, 0),
+            ("subject_version", "INTEGER", 1, None, 0, 0),
+            ("content_digest", "VARCHAR(64)", 1, None, 0, 0),
+            ("last_semantic_editor_id", "VARCHAR(255)", 1, None, 0, 0),
+            ("editor_source", "VARCHAR(24)", 1, None, 0, 0),
+            ("event_type", "VARCHAR(32)", 1, None, 0, 0),
+            ("head_revision", "INTEGER", 1, None, 0, 0),
+            ("changed_at", "DATETIME", 1, None, 0, 0),
+            ("idempotency_key", "VARCHAR(255)", 1, None, 0, 0),
+            ("request_digest", "VARCHAR(64)", 1, None, 0, 0),
+        ),
+        primary_key=("event_id",),
+        max_rows=131_072,
+        max_bytes=128 * 1024 * 1024,
+    ),
+    "spec_history": SQLiteLogicalStreamingPolicy(
+        schema=(
+            ("id", "VARCHAR(36)", 1, None, 1, 0),
+            ("spec_id", "VARCHAR(36)", 1, None, 0, 0),
+            ("action", "VARCHAR(100)", 1, None, 0, 0),
+            ("actor_type", "VARCHAR(50)", 1, None, 0, 0),
+            ("actor_id", "VARCHAR(255)", 1, None, 0, 0),
+            ("actor_name", "VARCHAR(255)", 1, None, 0, 0),
+            ("changes", "JSON", 0, None, 0, 0),
+            ("summary", "TEXT", 0, None, 0, 0),
+            ("version", "INTEGER", 0, None, 0, 0),
+            ("created_at", "DATETIME", 1, "CURRENT_TIMESTAMP", 0, 0),
+        ),
+        primary_key=("id",),
+        max_rows=65_536,
+        max_bytes=256 * 1024 * 1024,
+    ),
+    "kg_cognitive_source_revisions": SQLiteLogicalStreamingPolicy(
+        schema=(
+            ("id", "VARCHAR(36)", 1, None, 1, 0),
+            ("cognitive_source_id", "VARCHAR(36)", 1, None, 0, 0),
+            ("source_revision", "INTEGER", 1, None, 0, 0),
+            ("record_fingerprint", "VARCHAR(64)", 1, None, 0, 0),
+            ("payload", "JSON", 1, None, 0, 0),
+            ("evidence_refs", "JSON", 1, None, 0, 0),
+            ("source_session_id", "VARCHAR(36)", 0, None, 0, 0),
+            ("committed_at", "DATETIME", 1, "CURRENT_TIMESTAMP", 0, 0),
+        ),
+        primary_key=("id",),
+        max_rows=32_768,
+        max_bytes=256 * 1024 * 1024,
+    ),
+}
 CHECKPOINT_STATE_DRAINING = "draining"
 CHECKPOINT_STATE_COMPLETED = "completed"
 POST_DRAIN_CHECKPOINT_STATES = frozenset({"restored", "promoted", "completed"})
@@ -1324,6 +1476,176 @@ def _fingerprint_rows(columns: Sequence[str], rows: Sequence[Sequence[Any]]) -> 
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _stream_sqlite_logical_table_fingerprint(
+    connection: sqlite3.Connection,
+    *,
+    table_name: str,
+    policy: SQLiteLogicalStreamingPolicy,
+) -> str:
+    """Fingerprint one exact high-cardinality ledger in constant row memory."""
+
+    _require(
+        0 < policy.max_rows < 2**64 and 0 < policy.max_bytes < 2**64,
+        f"sqlite_logical_table_{table_name}_policy_bounds_invalid",
+    )
+    policy_columns = tuple(column[0] for column in policy.schema)
+    _require(
+        bool(policy_columns)
+        and len(policy_columns) == len(set(policy_columns))
+        and all(
+            re.fullmatch(r"[a-z][a-z0-9_]*", column) is not None
+            for column in policy_columns
+        ),
+        f"sqlite_logical_table_{table_name}_policy_columns_invalid",
+    )
+    _require(
+        bool(policy.primary_key)
+        and len(policy.primary_key) == len(set(policy.primary_key))
+        and set(policy.primary_key).issubset(policy_columns),
+        f"sqlite_logical_table_{table_name}_policy_primary_key_invalid",
+    )
+    policy_primary_key = tuple(
+        name
+        for _position, name in sorted(
+            (primary_key_position, name)
+            for name, _type, _not_null, _default, primary_key_position, hidden in (
+                policy.schema
+            )
+            if primary_key_position > 0 and hidden == 0
+        )
+    )
+    _require(
+        policy_primary_key == policy.primary_key,
+        f"sqlite_logical_table_{table_name}_policy_primary_key_invalid",
+    )
+    table_list_rows = tuple(
+        tuple(row)
+        for row in connection.execute(f'PRAGMA main.table_list("{table_name}")')
+    )
+    _require(
+        len(table_list_rows) == 1
+        and table_list_rows[0][0:3] == ("main", table_name, "table")
+        and table_list_rows[0][4:6] == (0, 0),
+        f"sqlite_logical_table_{table_name}_storage_type_invalid",
+    )
+    quoted_table = '"' + table_name.replace('"', '""') + '"'
+    table_xinfo = tuple(
+        tuple(row)
+        for row in connection.execute(f"PRAGMA main.table_xinfo({quoted_table})")
+    )
+    _require(
+        tuple(int(row[0]) for row in table_xinfo) == tuple(range(len(table_xinfo))),
+        f"sqlite_logical_table_{table_name}_column_order_invalid",
+    )
+    actual_schema = tuple(
+        (
+            str(row[1]),
+            str(row[2]),
+            int(row[3]),
+            None if row[4] is None else str(row[4]),
+            int(row[5]),
+            int(row[6]),
+        )
+        for row in table_xinfo
+    )
+    actual_primary_key = tuple(
+        name
+        for _position, name in sorted(
+            (primary_key_position, name)
+            for name, _type, _not_null, _default, primary_key_position, _hidden in (
+                actual_schema
+            )
+            if primary_key_position > 0
+        )
+    )
+    _require(
+        actual_primary_key == policy.primary_key,
+        f"sqlite_logical_table_{table_name}_primary_key_invalid",
+    )
+    _require(
+        actual_schema == policy.schema,
+        f"sqlite_logical_table_{table_name}_schema_invalid",
+    )
+
+    columns = policy_columns
+    quoted_columns = ", ".join(
+        '"' + column.replace('"', '""') + '"' for column in columns
+    )
+    order_by = ", ".join(
+        '"' + column.replace('"', '""') + '" COLLATE BINARY'
+        for column in policy.primary_key
+    )
+    cursor = connection.execute(
+        f"SELECT {quoted_columns} FROM main.{quoted_table} ORDER BY {order_by}"
+    )
+    _require(
+        tuple(str(item[0]) for item in (cursor.description or ())) == columns,
+        f"sqlite_logical_table_{table_name}_projection_invalid",
+    )
+    primary_key_indexes = tuple(columns.index(column) for column in policy.primary_key)
+    header = _canonical_json_bytes(
+        {
+            "domain": "okto-pulse.sqlite-logical-stream.v1",
+            "table": table_name,
+            "columns": columns,
+            "schema": policy.schema,
+            "primary_key": policy.primary_key,
+            "policy": {
+                "max_rows": policy.max_rows,
+                "max_bytes": policy.max_bytes,
+            },
+            "order": tuple(
+                {
+                    "column": column,
+                    "collation": "BINARY",
+                    "direction": "ASC",
+                    "nulls": "refuse",
+                }
+                for column in policy.primary_key
+            ),
+        }
+    )
+    digest = hashlib.sha256()
+    digest.update(b"okto-pulse.sqlite-logical-stream.v1\0H")
+    digest.update(len(header).to_bytes(8, "big"))
+    digest.update(header)
+    row_count = 0
+    byte_count = 0
+    previous_primary_key: tuple[str, ...] | None = None
+    for raw_row in cursor:
+        _require(
+            row_count < policy.max_rows,
+            f"sqlite_logical_table_{table_name}_row_limit_exceeded",
+        )
+        row = tuple(raw_row)
+        primary_key = tuple(row[index] for index in primary_key_indexes)
+        _require(
+            all(isinstance(value, str) and bool(value) for value in primary_key),
+            f"sqlite_logical_table_{table_name}_primary_key_value_invalid",
+        )
+        _require(
+            previous_primary_key is None or previous_primary_key < primary_key,
+            f"sqlite_logical_table_{table_name}_primary_key_order_invalid",
+        )
+        previous_primary_key = primary_key
+        encoded = _canonical_json_bytes(
+            [_normalize_sqlite_value(value) for value in row]
+        )
+        byte_count += len(encoded)
+        _require(
+            byte_count <= policy.max_bytes,
+            f"sqlite_logical_table_{table_name}_byte_limit_exceeded",
+        )
+        digest.update(b"R")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+        row_count += 1
+    digest.update(b"T")
+    digest.update(row_count.to_bytes(8, "big"))
+    digest.update(byte_count.to_bytes(8, "big"))
+    return digest.hexdigest()
+
+
 def _sqlite_logical_fingerprints(
     db_path: Path,
     *,
@@ -1336,7 +1658,7 @@ def _sqlite_logical_fingerprints(
         connection.execute("BEGIN")
         table_name_rows = _bounded_sqlite_snapshot_rows(
             connection.execute(
-                "SELECT name FROM sqlite_master "
+                "SELECT name FROM main.sqlite_master "
                 "WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
             ),
             code="sqlite_logical_table_inventory",
@@ -1346,6 +1668,14 @@ def _sqlite_logical_fingerprints(
         table_names = tuple(str(row[0]) for row in table_name_rows)
         for table_name in table_names:
             if table_name in exclude_tables:
+                continue
+            streaming_policy = SQLITE_LOGICAL_STREAMING_POLICIES.get(table_name)
+            if streaming_policy is not None:
+                result[table_name] = _stream_sqlite_logical_table_fingerprint(
+                    connection,
+                    table_name=table_name,
+                    policy=streaming_policy,
+                )
                 continue
             quoted_table = '"' + table_name.replace('"', '""') + '"'
             columns = tuple(
