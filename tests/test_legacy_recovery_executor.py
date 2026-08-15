@@ -426,6 +426,74 @@ def _replace_queue_row(path: Path, row: dict[str, object]) -> None:
         )
 
 
+def _insert_unrelated_stale_sweep(
+    path: Path,
+    *,
+    status: str = "pending",
+    source: str = "kg_tick",
+    claim_residue: str | None = None,
+) -> None:
+    row: dict[str, object] = {
+        "id": "stale-sweep-retry",
+        "board_id": BOARD_ID,
+        "artifact_type": "board",
+        "artifact_id": BOARD_ID,
+        "work_kind": "stale_sweep",
+        "generation": 0,
+        "payload": json.dumps({"cursor": "", "budget": 50, "attempt": 0}),
+        "delete_event_id": None,
+        "priority": "low",
+        "source": source,
+        "status": status,
+        "triggered_at": "2026-08-14 10:25:25.938510",
+        "triggered_by_event": "stale-sweep:stale-sweep-retry",
+        "claimed_by_session_id": None,
+        "claim_token": None,
+        "claimed_at": None,
+        "last_error": "realm_incomplete",
+        "worker_id": None,
+        "claim_timeout_at": None,
+        "attempts": 1,
+        "next_retry_at": "2026-08-15 10:25:31.620614",
+    }
+    if claim_residue is not None:
+        residue_values: dict[str, object] = {
+            "claimed_by_session_id": "residue-session",
+            "claim_token": "residue-token",
+            "claimed_at": "2026-08-15 10:25:32.000000",
+            "worker_id": "residue-worker",
+            "claim_timeout_at": "2026-08-15 10:30:32.000000",
+        }
+        row[claim_residue] = residue_values[claim_residue]
+    if status == "claimed":
+        row.update(
+            {
+                "claimed_by_session_id": "stale-sweep-session",
+                "claim_token": "stale-sweep-token",
+                "claimed_at": "2026-08-15 10:25:32.000000",
+                "worker_id": "stale-sweep-worker",
+                "claim_timeout_at": "2026-08-15 10:30:32.000000",
+            }
+        )
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            f"INSERT INTO consolidation_queue ({','.join(LEGACY_QUEUE_COLUMNS)}) "
+            f"VALUES ({','.join('?' for _ in LEGACY_QUEUE_COLUMNS)})",
+            tuple(row[column] for column in LEGACY_QUEUE_COLUMNS),
+        )
+
+
+def _queue_row_tuple(path: Path, row_id: str) -> tuple[object, ...]:
+    with sqlite3.connect(path) as connection:
+        row = connection.execute(
+            f"SELECT {','.join(LEGACY_QUEUE_COLUMNS)} "
+            "FROM consolidation_queue WHERE id=?",
+            (row_id,),
+        ).fetchone()
+    assert row is not None
+    return tuple(row)
+
+
 def _restore_source_revision_baseline(
     path: Path,
     intent: LegacyManualRestoreQueueOnlyIntent,
@@ -1892,6 +1960,122 @@ def test_legacy_run_selection_refuses_multiple_active_rebuild_sources(
             rebuild_baseline=recovery._snapshot_tree_hashes(rebuild),
             board_id=BOARD_ID,
         )
+
+
+def test_recovery_admission_preserves_unrelated_pending_stale_sweep_backoff(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "pulse.db"
+    _create_queue_database(db_path)
+    _insert_unrelated_stale_sweep(db_path)
+    before = _queue_row_tuple(db_path, "stale-sweep-retry")
+    admitted_identities = {("spec", "spec-legacy")}
+    protected_before = recovery._protected_queue_snapshot(
+        db_path,
+        board_id=BOARD_ID,
+        admitted_identities=admitted_identities,
+    )
+
+    recovery._assert_protected_admission_is_noop(
+        db_path,
+        board_id=BOARD_ID,
+        admitted_identities=admitted_identities,
+        authorized_rebuild_source=f"rebuild:{MANIFEST_REF}",
+    )
+
+    assert _queue_row_tuple(db_path, "stale-sweep-retry") == before
+    assert (
+        recovery._protected_queue_snapshot(
+            db_path,
+            board_id=BOARD_ID,
+            admitted_identities=admitted_identities,
+        )
+        == protected_before
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "source", "claim_residue", "error"),
+    (
+        (
+            "claimed",
+            "kg_tick",
+            None,
+            "unrelated_claim_requires_external_reconciliation",
+        ),
+        (
+            "pending",
+            "rebuild:other-manifest",
+            None,
+            "unrelated_rebuild_row_requires_external_reconciliation",
+        ),
+        (
+            "pending",
+            "kg_tick",
+            "claimed_by_session_id",
+            "unrelated_queue_row_would_be_mutated_by_admission",
+        ),
+        (
+            "pending",
+            "kg_tick",
+            "claim_token",
+            "unrelated_queue_row_would_be_mutated_by_admission",
+        ),
+        (
+            "pending",
+            "kg_tick",
+            "claimed_at",
+            "unrelated_queue_row_would_be_mutated_by_admission",
+        ),
+        (
+            "pending",
+            "kg_tick",
+            "worker_id",
+            "unrelated_queue_row_would_be_mutated_by_admission",
+        ),
+        (
+            "pending",
+            "kg_tick",
+            "claim_timeout_at",
+            "unrelated_queue_row_would_be_mutated_by_admission",
+        ),
+    ),
+    ids=(
+        "claimed",
+        "foreign-rebuild",
+        "claimed-by-session-residue",
+        "claim-token-residue",
+        "claimed-at-residue",
+        "worker-id-residue",
+        "claim-timeout-residue",
+    ),
+)
+def test_recovery_admission_refuses_unsafe_unrelated_active_rows(
+    tmp_path: Path,
+    status: str,
+    source: str,
+    claim_residue: str | None,
+    error: str,
+) -> None:
+    db_path = tmp_path / "pulse.db"
+    _create_queue_database(db_path)
+    _insert_unrelated_stale_sweep(
+        db_path,
+        status=status,
+        source=source,
+        claim_residue=claim_residue,
+    )
+    before = _queue_row_tuple(db_path, "stale-sweep-retry")
+
+    with pytest.raises(recovery.RecoveryRefused, match=error):
+        recovery._assert_protected_admission_is_noop(
+            db_path,
+            board_id=BOARD_ID,
+            admitted_identities={("spec", "spec-legacy")},
+            authorized_rebuild_source=f"rebuild:{MANIFEST_REF}",
+        )
+
+    assert _queue_row_tuple(db_path, "stale-sweep-retry") == before
 
 
 def test_legacy_executor_discovers_reconciles_and_rediscovers_adoption(

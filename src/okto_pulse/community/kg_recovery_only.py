@@ -2946,7 +2946,6 @@ def _assert_protected_admission_is_noop(
                     "claimed_at",
                     "worker_id",
                     "claim_timeout_at",
-                    "next_retry_at",
                 )
             ),
             "unrelated_queue_row_would_be_mutated_by_admission",

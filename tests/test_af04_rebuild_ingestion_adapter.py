@@ -180,10 +180,11 @@ def test_empty_manifest_releases_preclaimed_board_work(tmp_path: Path) -> None:
             "INSERT INTO consolidation_queue "
             "(id, board_id, artifact_type, artifact_id, priority, source, status, "
             "attempts, claimed_by_session_id, claim_token, claimed_at, worker_id, "
-            "claim_timeout_at) VALUES "
+            "claim_timeout_at, next_retry_at) VALUES "
             "('preclaimed-live', 'board-1', 'story', 'story-live', 'high', "
             "'event:story.updated', 'claimed', 2, 'session-old', 'token-old', "
-            "datetime('now'), 'worker-old', datetime('now', '+5 minutes'))"
+            "datetime('now'), 'worker-old', datetime('now', '+5 minutes'), "
+            "datetime('now', '+1 day'))"
         )
         conn.commit()
 
@@ -208,6 +209,61 @@ def test_empty_manifest_releases_preclaimed_board_work(tmp_path: Path) -> None:
     assert row["claimed_at"] is None
     assert row["worker_id"] is None
     assert row["claim_timeout_at"] is None
+    assert row["next_retry_at"] is None
+
+
+def test_enqueue_preserves_unrelated_pending_stale_sweep_backoff_exactly(
+    tmp_path: Path,
+) -> None:
+    db_path = _queue_db(tmp_path)
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "INSERT INTO consolidation_queue "
+            "(id, board_id, artifact_type, artifact_id, priority, source, status, "
+            "triggered_at, attempts, last_error, next_retry_at, work_kind, "
+            "generation, payload) VALUES "
+            "('stale-sweep-retry', 'board-1', 'board', 'board-1', 'low', "
+            "'kg_tick', 'pending', '2026-08-14 10:25:25.938510', 1, "
+            "'realm_incomplete', '2026-08-15 10:25:31.620614', "
+            "'stale_sweep', 0, "
+            '\'{"cursor": "", "budget": 50, "attempt": 0}\')'
+        )
+        conn.execute("CREATE TABLE update_probe (count INTEGER NOT NULL)")
+        conn.execute("INSERT INTO update_probe (count) VALUES (0)")
+        conn.execute(
+            "CREATE TRIGGER probe_unrelated_pending_update "
+            "AFTER UPDATE ON consolidation_queue "
+            "WHEN OLD.id='stale-sweep-retry' BEGIN "
+            "UPDATE update_probe SET count=count+1; END"
+        )
+        before = conn.execute(
+            "SELECT * FROM consolidation_queue WHERE id='stale-sweep-retry'"
+        ).fetchone()
+        conn.commit()
+    assert before is not None
+
+    counts = CommunityBoardRebuildIngestionAdapter(db_path=db_path).enqueue_sources(
+        board_id="board-1",
+        run_id="new-manifest",
+        sources=({"artifact_type": "story", "id": "story-new"},),
+    )
+
+    assert counts == {
+        "inserted": 1,
+        "reset_to_pending": 0,
+        "reordered_pending": 0,
+        "fenced_claimed": 0,
+        "deferred_unrelated": 0,
+        "preserved_live_intent": 0,
+        "left_alone": 0,
+    }
+    with sqlite3.connect(str(db_path)) as conn:
+        after = conn.execute(
+            "SELECT * FROM consolidation_queue WHERE id='stale-sweep-retry'"
+        ).fetchone()
+        update_count = conn.execute("SELECT count FROM update_probe").fetchone()
+    assert after == before
+    assert update_count == (0,)
 
 
 def test_queue_observation_scopes_depth_to_active_rows_and_board(

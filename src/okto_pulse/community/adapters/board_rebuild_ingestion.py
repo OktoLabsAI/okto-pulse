@@ -914,11 +914,13 @@ class CommunityBoardRebuildIngestionAdapter:
             }
             # A worker may have claimed unrelated live/delete work just before
             # the admin reservation was acquired.  Revoke every such claim
-            # while writer A is still held.  Rows outside this manifest remain
-            # durable and are ineligible under the exact reservation source;
-            # they resume normally after the reservation is released.
+            # while writer A is still held.  Pending non-rebuild work already
+            # has no worker authority to fence, so preserve its retry schedule
+            # and every other column byte-for-byte.  Rows outside this manifest
+            # remain durable and are ineligible under the exact reservation
+            # source; they resume normally after the reservation is released.
             active_board_rows = conn.execute(
-                "SELECT id, artifact_type, artifact_id, work_kind, source "
+                "SELECT id, artifact_type, artifact_id, work_kind, source, status "
                 "FROM consolidation_queue WHERE board_id=? "
                 "AND status IN ('pending', 'claimed')",
                 (board_id,),
@@ -928,6 +930,10 @@ class CommunityBoardRebuildIngestionAdapter:
                 if str(active["work_kind"]) == "consolidate" and key in target_keys:
                     continue
                 source = str(active["source"] or "state_transition")
+                if str(active["status"]) == "pending" and not source.startswith(
+                    "rebuild:"
+                ):
+                    continue
                 if source.startswith("rebuild:"):
                     source = f"deferred_admin:{run_id}"
                 conn.execute(
