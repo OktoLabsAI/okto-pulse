@@ -6,7 +6,7 @@ import hashlib
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy import and_, case, delete, exists, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -1034,6 +1034,44 @@ class CommunitySqlAlchemyConsolidationPersistence:
                 return ()
         return (_queue_record(row),)
 
+    async def list_pending_exact(
+        self,
+        context: Any,
+        *,
+        board_id: str,
+        source: str,
+        work_kind: str,
+    ) -> tuple[ConsolidationQueueRecord, ...]:
+        """List every pending member of one exact recovery fence.
+
+        Unlike the ready-head listing, this inventory deliberately includes
+        delayed rows.  Core uses it to replay durable exact dispositions
+        before attempting another claim, so order must match the claim head
+        order and no unrelated board/source may be exposed.
+        """
+
+        rows = (
+            (
+                await context.execute(
+                    select(ConsolidationQueue)
+                    .where(
+                        ConsolidationQueue.status == "pending",
+                        ConsolidationQueue.board_id == board_id,
+                        ConsolidationQueue.source == source,
+                        ConsolidationQueue.work_kind == work_kind,
+                    )
+                    .order_by(
+                        ConsolidationQueue.priority.asc(),
+                        ConsolidationQueue.triggered_at.asc(),
+                        ConsolidationQueue.id.asc(),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return tuple(_queue_record(row) for row in rows)
+
     async def list_claimed_exact(
         self,
         context: Any,
@@ -1374,6 +1412,152 @@ class CommunitySqlAlchemyConsolidationPersistence:
             .execution_options(synchronize_session=False)
         )
         return int(result.rowcount or 0) == 1
+
+    async def save_exact_rebuild_disposition(
+        self,
+        context: Any,
+        *,
+        entry_id: str,
+        claim_token: str,
+        board_id: str,
+        artifact_type: str,
+        artifact_id: str,
+        source: str,
+        work_kind: str,
+        generation: int,
+        delete_event_id: str | None,
+        expected_attempts: int,
+        expected_last_error: str | None,
+        expected_next_retry_at: datetime | None,
+        expected_payload: dict[str, Any],
+        reservation_authority_probe: Callable[[], bool],
+        payload: dict[str, Any],
+        attempts: int,
+        last_error: str,
+        next_retry_at: datetime | None,
+    ) -> ConsolidationQueueRecord | None:
+        """Persist one typed exact disposition by full-state CAS.
+
+        The administrative reservation is re-read immediately before the
+        conditional UPDATE.  The caller's claim, immutable queue identity,
+        prior failure state and complete JSON payload must all still match;
+        otherwise this is a neutral ownership/fence loss and no column is
+        changed.
+        """
+
+        required_strings = (
+            entry_id,
+            claim_token,
+            board_id,
+            artifact_type,
+            artifact_id,
+            source,
+            work_kind,
+            last_error,
+        )
+        if (
+            any(type(value) is not str or not value for value in required_strings)
+            or type(generation) is not int
+            or generation < 0
+            or (
+                delete_event_id is not None
+                and (type(delete_event_id) is not str or not delete_event_id)
+            )
+            or type(expected_attempts) is not int
+            or expected_attempts < 0
+            or type(attempts) is not int
+            or attempts != expected_attempts + 1
+            or (
+                expected_last_error is not None and type(expected_last_error) is not str
+            )
+            or (
+                expected_next_retry_at is not None
+                and type(expected_next_retry_at) is not datetime
+            )
+            or (next_retry_at is not None and type(next_retry_at) is not datetime)
+            or type(expected_payload) is not dict
+            or type(payload) is not dict
+            or payload == expected_payload
+            or type(payload.get("_exact_rebuild_disposition")) is not dict
+            or not callable(reservation_authority_probe)
+        ):
+            raise TypeError("exact_rebuild_disposition_transition_invalid")
+
+        try:
+            authority_live = reservation_authority_probe() is True
+        except BaseException:
+            authority_live = False
+        if not authority_live:
+            return None
+
+        reserved_source = await self.board_administrative_rebuild_source(
+            context,
+            board_id=board_id,
+        )
+        if reserved_source != source:
+            return None
+
+        try:
+            authority_live = reservation_authority_probe() is True
+        except BaseException:
+            authority_live = False
+        if not authority_live:
+            return None
+
+        delete_event_predicate = (
+            ConsolidationQueue.delete_event_id.is_(None)
+            if delete_event_id is None
+            else ConsolidationQueue.delete_event_id == delete_event_id
+        )
+        prior_error_predicate = (
+            ConsolidationQueue.last_error.is_(None)
+            if expected_last_error is None
+            else ConsolidationQueue.last_error == expected_last_error
+        )
+        prior_retry_predicate = (
+            ConsolidationQueue.next_retry_at.is_(None)
+            if expected_next_retry_at is None
+            else ConsolidationQueue.next_retry_at == expected_next_retry_at
+        )
+        row = (
+            await context.execute(
+                update(ConsolidationQueue)
+                .where(
+                    ConsolidationQueue.id == entry_id,
+                    ConsolidationQueue.status == "claimed",
+                    ConsolidationQueue.claim_token == claim_token,
+                    ConsolidationQueue.board_id == board_id,
+                    ConsolidationQueue.artifact_type == artifact_type,
+                    ConsolidationQueue.artifact_id == artifact_id,
+                    ConsolidationQueue.source == source,
+                    ConsolidationQueue.work_kind == work_kind,
+                    ConsolidationQueue.generation == generation,
+                    delete_event_predicate,
+                    ConsolidationQueue.attempts == expected_attempts,
+                    prior_error_predicate,
+                    prior_retry_predicate,
+                    ConsolidationQueue.payload == expected_payload,
+                )
+                .values(
+                    status="pending",
+                    payload=payload,
+                    attempts=attempts,
+                    last_error=last_error,
+                    next_retry_at=next_retry_at,
+                    claimed_by_session_id=None,
+                    claim_token=None,
+                    claimed_at=None,
+                    worker_id=None,
+                    claim_timeout_at=None,
+                )
+                .returning(ConsolidationQueue)
+                .execution_options(
+                    synchronize_session=False,
+                    populate_existing=True,
+                )
+            )
+        ).scalar_one_or_none()
+        return _queue_record(row) if row is not None else None
 
     async def save_queue_entries(
         self, context: Any, entries: Sequence[ConsolidationQueueRecord]

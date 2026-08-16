@@ -2129,6 +2129,1048 @@ def _create_queue_db(path: Path) -> None:
         )
 
 
+_EXACT_QUEUE_COLUMNS = (
+    "id",
+    "artifact_type",
+    "artifact_id",
+    "status",
+    "priority",
+    "attempts",
+    "last_error",
+    "next_retry_at",
+    "claimed_at",
+    "claim_timeout_at",
+    "worker_id",
+    "claimed_by_session_id",
+    "claim_token",
+    "generation",
+    "delete_event_id",
+    "work_kind",
+    "source",
+    "triggered_at",
+    "payload",
+)
+
+
+def _exact_source_row() -> dict[str, object]:
+    return {
+        "artifact_type": "spec",
+        "id": "exact-spec",
+        "source_ref": "spec:exact-spec",
+        "source_version": "7",
+        "content_hash": "a" * 64,
+    }
+
+
+def _exact_membership(manifest_ref: str) -> dict[str, object]:
+    source_row = _exact_source_row()
+    return {
+        "run_id": manifest_ref,
+        "source_ref": source_row["source_ref"],
+        "source_version": source_row["source_version"],
+        "content_hash": source_row["content_hash"],
+    }
+
+
+def _exact_marker(
+    *,
+    manifest_ref: str,
+    reservation_lineage_id: str,
+    disposition: str = "retry_scheduled",
+    attempt_ordinal: int = 1,
+) -> dict[str, object]:
+    retry_at = "2026-08-15T12:00:01+00:00" if disposition == "retry_scheduled" else None
+    return {
+        "schema_version": 1,
+        "queue_id": "exact-row",
+        "board_id": BOARD_ID,
+        "source": f"rebuild:{manifest_ref}",
+        "reservation_lineage_id": reservation_lineage_id,
+        "work_kind": "consolidate",
+        "artifact_type": "spec",
+        "artifact_id": "exact-spec",
+        "generation": 0,
+        "membership_source_ref": "spec:exact-spec",
+        "membership_source_version": "7",
+        "membership_content_hash": "a" * 64,
+        "attempt_ordinal": attempt_ordinal,
+        "queue_attempts": attempt_ordinal,
+        "disposition": disposition,
+        "retryable": disposition == "retry_scheduled",
+        "mutation_state": "unchanged",
+        "error_code": "connectivity_constraint_violated",
+        "error_message": "deterministic exact failure",
+        "next_retry_at": retry_at,
+        "diagnostic_json": None,
+    }
+
+
+def _exact_queue_snapshot(
+    *,
+    manifest_ref: str,
+    marker: Mapping[str, object] | None,
+    status: str = "pending",
+) -> recovery.QueueSnapshot:
+    retry_at = marker.get("next_retry_at") if marker is not None else None
+    attempts = marker.get("attempt_ordinal") if marker is not None else 0
+    payload: dict[str, object] = {
+        "_rebuild_membership": _exact_membership(manifest_ref)
+    }
+    if marker is not None:
+        payload["_exact_rebuild_disposition"] = dict(marker)
+    claimed = status == "claimed"
+    row = (
+        "exact-row",
+        "spec",
+        "exact-spec",
+        status,
+        "high",
+        attempts,
+        (
+            "connectivity_constraint_violated:deterministic exact failure"
+            if marker is not None
+            else None
+        ),
+        retry_at,
+        "2026-08-15T12:00:00+00:00" if claimed else None,
+        "2026-08-15T12:05:00+00:00" if claimed else None,
+        "worker-exact" if claimed else None,
+        "worker-exact" if claimed else None,
+        "1" * 32 if claimed else None,
+        0,
+        None,
+        "consolidate",
+        f"rebuild:{manifest_ref}",
+        "2026-08-15T11:59:00+00:00",
+        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+    )
+    return recovery.QueueSnapshot(_EXACT_QUEUE_COLUMNS, (row,), "exact-cut")
+
+
+def test_exact_disposition_admission_binds_verified_lineage_and_resume_shape() -> None:
+    manifest_ref = "manifest-exact-lineage"
+    confirmation_ref = f"conf_fp_{'b' * 64}"
+    lineage_id = recovery._exact_reservation_lineage_id(
+        board_id=BOARD_ID,
+        manifest_ref=manifest_ref,
+        f06_run_id=f"f06:{manifest_ref}",
+        confirmation_ref=confirmation_ref,
+    )
+    marker = _exact_marker(
+        manifest_ref=manifest_ref,
+        reservation_lineage_id=lineage_id,
+    )
+    pending = _exact_queue_snapshot(manifest_ref=manifest_ref, marker=marker)
+
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="rebuild_queue_exact_disposition_not_authorized",
+    ):
+        recovery._assert_exact_queue_admission(
+            pending,
+            board_id=BOARD_ID,
+            manifest_ref=manifest_ref,
+            reservation_lineage_id=lineage_id,
+            source_rows=(_exact_source_row(),),
+            ordered_source_rows=(_exact_source_row(),),
+        )
+
+    assert (
+        recovery._assert_exact_queue_admission(
+            pending,
+            board_id=BOARD_ID,
+            manifest_ref=manifest_ref,
+            reservation_lineage_id=lineage_id,
+            source_rows=(_exact_source_row(),),
+            ordered_source_rows=(_exact_source_row(),),
+            allow_consumed_prefix=True,
+            allow_durable_dispositions=True,
+        )
+        == 0
+    )
+    claimed = _exact_queue_snapshot(
+        manifest_ref=manifest_ref,
+        marker=marker,
+        status="claimed",
+    )
+    assert (
+        recovery._assert_exact_queue_admission(
+            claimed,
+            board_id=BOARD_ID,
+            manifest_ref=manifest_ref,
+            reservation_lineage_id=lineage_id,
+            source_rows=(_exact_source_row(),),
+            ordered_source_rows=(_exact_source_row(),),
+            allow_consumed_prefix=True,
+            allow_claimed_recovery=True,
+            allow_durable_dispositions=True,
+        )
+        == 1
+    )
+    neutral_claim = _exact_queue_snapshot(
+        manifest_ref=manifest_ref,
+        marker=None,
+        status="claimed",
+    )
+    assert (
+        recovery._assert_exact_queue_admission(
+            neutral_claim,
+            board_id=BOARD_ID,
+            manifest_ref=manifest_ref,
+            reservation_lineage_id=lineage_id,
+            source_rows=(_exact_source_row(),),
+            ordered_source_rows=(_exact_source_row(),),
+            allow_consumed_prefix=True,
+            allow_claimed_recovery=True,
+            allow_durable_dispositions=True,
+        )
+        == 1
+    )
+
+    tampered = dict(marker)
+    tampered["reservation_lineage_id"] = "c" * 64
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="rebuild_queue_exact_disposition_binding_invalid",
+    ):
+        recovery._assert_exact_queue_admission(
+            _exact_queue_snapshot(manifest_ref=manifest_ref, marker=tampered),
+            board_id=BOARD_ID,
+            manifest_ref=manifest_ref,
+            reservation_lineage_id=lineage_id,
+            source_rows=(_exact_source_row(),),
+            ordered_source_rows=(_exact_source_row(),),
+            allow_consumed_prefix=True,
+            allow_durable_dispositions=True,
+        )
+
+
+def test_exact_batch_result_is_bijective_with_durable_marker() -> None:
+    from okto_pulse.core.ports.consolidation import (
+        ConsolidationClaimScope,
+        ExactConsolidationBatchResult,
+        ExactConsolidationDisposition,
+        ExactConsolidationMutationState,
+        ExactConsolidationResultOrigin,
+        ExactConsolidationRowResult,
+    )
+
+    manifest_ref = "manifest-exact-result"
+    lineage_id = recovery._exact_reservation_lineage_id(
+        board_id=BOARD_ID,
+        manifest_ref=manifest_ref,
+        f06_run_id=f"f06:{manifest_ref}",
+        confirmation_ref=f"conf_fp_{'d' * 64}",
+    )
+    scope = ConsolidationClaimScope(
+        board_id=BOARD_ID,
+        source=f"rebuild:{manifest_ref}",
+        reservation_lineage_id=lineage_id,
+    )
+    marker = _exact_marker(
+        manifest_ref=manifest_ref,
+        reservation_lineage_id=lineage_id,
+        disposition="terminal_failure",
+    )
+    row = ExactConsolidationRowResult(
+        queue_id="exact-row",
+        board_id=BOARD_ID,
+        source=scope.source,
+        reservation_lineage_id=lineage_id,
+        work_kind="consolidate",
+        artifact_type="spec",
+        artifact_id="exact-spec",
+        generation=0,
+        membership_source_ref="spec:exact-spec",
+        membership_source_version="7",
+        membership_content_hash="a" * 64,
+        attempt_ordinal=1,
+        disposition=ExactConsolidationDisposition.TERMINAL_FAILURE,
+        origin=ExactConsolidationResultOrigin.NEW,
+        mutation_state=ExactConsolidationMutationState.UNCHANGED,
+        error_code="connectivity_constraint_violated",
+        error_message="deterministic exact failure",
+    )
+    result = ExactConsolidationBatchResult(claim_scope=scope, rows=(row,))
+    before = _exact_queue_snapshot(manifest_ref=manifest_ref, marker=None)
+    after = _exact_queue_snapshot(manifest_ref=manifest_ref, marker=marker)
+    processor = SimpleNamespace(last_attempted_count=1)
+
+    assert recovery._assert_exact_batch_result(
+        result,
+        processor,
+        scope,
+        before,
+        after,
+        board_id=BOARD_ID,
+        source_rows=(_exact_source_row(),),
+    ) == (row,)
+
+    tampered = dict(marker)
+    tampered["error_message"] = "forged terminal meaning"
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="exact_processor_disposition_result_mismatch",
+    ):
+        recovery._assert_exact_batch_result(
+            result,
+            processor,
+            scope,
+            before,
+            _exact_queue_snapshot(manifest_ref=manifest_ref, marker=tampered),
+            board_id=BOARD_ID,
+            source_rows=(_exact_source_row(),),
+        )
+
+
+@pytest.mark.parametrize("source_artifact_type", ("task", "test", "bug"))
+def test_exact_batch_preserves_card_source_ref_alias(
+    source_artifact_type: str,
+) -> None:
+    from dataclasses import replace
+
+    from okto_pulse.core.ports.consolidation import (
+        ConsolidationClaimScope,
+        ExactConsolidationBatchResult,
+        ExactConsolidationDisposition,
+        ExactConsolidationMutationState,
+        ExactConsolidationResultOrigin,
+        ExactConsolidationRowResult,
+    )
+
+    manifest_ref = f"manifest-exact-{source_artifact_type}"
+    source = f"rebuild:{manifest_ref}"
+    lineage_id = "7" * 64
+    source_row = {
+        "artifact_type": source_artifact_type,
+        "id": "card-source",
+        "source_ref": f"{source_artifact_type}:card-source",
+        "source_version": "2",
+        "content_hash": "6" * 64,
+    }
+    payload = {
+        "_rebuild_membership": {
+            "run_id": manifest_ref,
+            "source_ref": source_row["source_ref"],
+            "source_version": source_row["source_version"],
+            "content_hash": source_row["content_hash"],
+        }
+    }
+    before_row = (
+        "card-row",
+        "card",
+        "card-source",
+        "pending",
+        "high",
+        0,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        0,
+        None,
+        "consolidate",
+        source,
+        "2026-08-15T11:59:00+00:00",
+        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+    )
+    before = recovery.QueueSnapshot(_EXACT_QUEUE_COLUMNS, (before_row,), "card-cut")
+    after = recovery.QueueSnapshot(_EXACT_QUEUE_COLUMNS, (), "card-acked")
+    scope = ConsolidationClaimScope(
+        board_id=BOARD_ID,
+        source=source,
+        reservation_lineage_id=lineage_id,
+    )
+    ack = ExactConsolidationRowResult(
+        queue_id="card-row",
+        board_id=BOARD_ID,
+        source=source,
+        reservation_lineage_id=lineage_id,
+        work_kind="consolidate",
+        artifact_type="card",
+        artifact_id="card-source",
+        generation=0,
+        membership_source_ref=str(source_row["source_ref"]),
+        membership_source_version="2",
+        membership_content_hash="6" * 64,
+        attempt_ordinal=1,
+        disposition=ExactConsolidationDisposition.ACKED,
+        origin=ExactConsolidationResultOrigin.NEW,
+        mutation_state=ExactConsolidationMutationState.COMMITTED,
+    )
+
+    assert recovery._assert_exact_batch_result(
+        ExactConsolidationBatchResult(claim_scope=scope, rows=(ack,)),
+        SimpleNamespace(last_attempted_count=1),
+        scope,
+        before,
+        after,
+        board_id=BOARD_ID,
+        source_rows=(source_row,),
+    ) == (ack,)
+    with pytest.raises(ValueError, match="exact_consolidation_row_binding_invalid"):
+        replace(ack, membership_source_ref="spec:card-source")
+
+
+@pytest.mark.asyncio
+async def test_exact_drain_retries_typed_marker_then_cancels_on_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from okto_pulse.core.ports.consolidation import (
+        ConsolidationClaimScope,
+        ExactConsolidationBatchResult,
+        ExactConsolidationDisposition,
+        ExactConsolidationMutationState,
+        ExactConsolidationResultOrigin,
+        ExactConsolidationRowResult,
+    )
+
+    manifest_ref = "manifest-exact-drain"
+    source = f"rebuild:{manifest_ref}"
+    lineage_id = recovery._exact_reservation_lineage_id(
+        board_id=BOARD_ID,
+        manifest_ref=manifest_ref,
+        f06_run_id=f"f06:{manifest_ref}",
+        confirmation_ref=f"conf_fp_{'e' * 64}",
+    )
+    scope = ConsolidationClaimScope(
+        board_id=BOARD_ID,
+        source=source,
+        reservation_lineage_id=lineage_id,
+    )
+    retry_marker = _exact_marker(
+        manifest_ref=manifest_ref,
+        reservation_lineage_id=lineage_id,
+    )
+    terminal_marker = _exact_marker(
+        manifest_ref=manifest_ref,
+        reservation_lineage_id=lineage_id,
+        disposition="terminal_failure",
+        attempt_ordinal=2,
+    )
+    snapshots = iter(
+        (
+            _exact_queue_snapshot(manifest_ref=manifest_ref, marker=None),
+            _exact_queue_snapshot(manifest_ref=manifest_ref, marker=retry_marker),
+            _exact_queue_snapshot(manifest_ref=manifest_ref, marker=retry_marker),
+            _exact_queue_snapshot(manifest_ref=manifest_ref, marker=terminal_marker),
+        )
+    )
+
+    def disposition_row(
+        disposition: ExactConsolidationDisposition,
+        *,
+        attempt: int,
+    ) -> ExactConsolidationRowResult:
+        return ExactConsolidationRowResult(
+            queue_id="exact-row",
+            board_id=BOARD_ID,
+            source=source,
+            reservation_lineage_id=lineage_id,
+            work_kind="consolidate",
+            artifact_type="spec",
+            artifact_id="exact-spec",
+            generation=0,
+            membership_source_ref="spec:exact-spec",
+            membership_source_version="7",
+            membership_content_hash="a" * 64,
+            attempt_ordinal=attempt,
+            disposition=disposition,
+            origin=ExactConsolidationResultOrigin.NEW,
+            mutation_state=ExactConsolidationMutationState.UNCHANGED,
+            error_code="connectivity_constraint_violated",
+            error_message="deterministic exact failure",
+            next_retry_at=(
+                datetime(2026, 8, 15, 12, 0, 1, tzinfo=timezone.utc)
+                if disposition is ExactConsolidationDisposition.RETRY_SCHEDULED
+                else None
+            ),
+        )
+
+    class Processor:
+        last_attempted_count = 0
+        calls = 0
+
+        async def process_exact_batch(
+            self, *, claim_scope, reservation_authority_probe
+        ):  # noqa: ANN001, ANN201
+            assert claim_scope == scope
+            assert reservation_authority_probe() is True
+            self.calls += 1
+            self.last_attempted_count = 1
+            disposition = (
+                ExactConsolidationDisposition.RETRY_SCHEDULED
+                if self.calls == 1
+                else ExactConsolidationDisposition.TERMINAL_FAILURE
+            )
+            return ExactConsolidationBatchResult(
+                claim_scope=scope,
+                rows=(disposition_row(disposition, attempt=self.calls),),
+            )
+
+    reservation = SimpleNamespace(
+        admin_lane=True,
+        operation=f"kg02_rebuild_reservation:{manifest_ref}",
+        expires_at_epoch=__import__("time").time() + 60,
+        owner_token="reservation-token",
+        owner_id="reservation-owner",
+        acquired_at_epoch=1.0,
+    )
+
+    class ReservationPort:
+        def inspect(self, *, board_id: str):
+            assert board_id == BOARD_ID
+            return reservation
+
+        def is_owner(self, *, board_id: str, owner_token: str) -> bool:
+            return board_id == BOARD_ID and owner_token == reservation.owner_token
+
+    baseline = recovery.QueueSnapshot((), (), "stable")
+    cancel_event = __import__("threading").Event()
+
+    async def service_run() -> object:
+        while not cancel_event.is_set():
+            await asyncio.sleep(0)
+        return SimpleNamespace(outcome="failed", reason="lifecycle_failed")
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        recovery, "_exact_queue_rows", lambda *_a, **_k: next(snapshots)
+    )
+    monkeypatch.setattr(recovery, "_active_exact_queue_depth", lambda *_a, **_k: 1)
+    monkeypatch.setattr(recovery, "_assert_source_unchanged", lambda *_a, **_k: None)
+    monkeypatch.setattr(recovery, "_dlq_snapshot", lambda *_a, **_k: baseline)
+    monkeypatch.setattr(
+        recovery, "_canonical_debt_snapshot", lambda *_a, **_k: baseline
+    )
+    monkeypatch.setattr(
+        recovery, "_protected_queue_snapshot", lambda *_a, **_k: baseline
+    )
+    processor = Processor()
+    service_task = asyncio.create_task(service_run())
+
+    outcome = await recovery._drain_exact_scope(
+        service_task,
+        processor,
+        scope,
+        SimpleNamespace(operation_reservation=ReservationPort()),
+        SimpleNamespace(manifest_ref=manifest_ref),
+        board_id=BOARD_ID,
+        source=source,
+        baseline_dlq=baseline,
+        baseline_debt=baseline,
+        baseline_non_target=baseline,
+        admitted_identities={("spec", "exact-spec")},
+        source_rows=(_exact_source_row(),),
+        ordered_source_rows=(_exact_source_row(),),
+        cancel_event=cancel_event,
+        lifetime_probe=lambda: True,
+        timeout_seconds=1.0,
+        poll_seconds=0.001,
+    )
+
+    assert processor.calls == 2
+    assert cancel_event.is_set()
+    assert outcome.service_result.outcome == "failed"
+    assert outcome.blocker is not None
+    assert outcome.blocker.kind == ExactConsolidationDisposition.TERMINAL_FAILURE.value
+    assert outcome.blocker.queue_id == "exact-row"
+
+
+@pytest.mark.asyncio
+async def test_exact_drain_cancels_on_neutral_claim_loss_with_claim_preserved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import threading
+    import time
+
+    from okto_pulse.core.ports.consolidation import (
+        ConsolidationClaimScope,
+        ExactConsolidationBatchResult,
+        ExactConsolidationDisposition,
+        ExactConsolidationMutationState,
+        ExactConsolidationResultOrigin,
+        ExactConsolidationRowResult,
+    )
+
+    manifest_ref = "manifest-exact-neutral"
+    source = f"rebuild:{manifest_ref}"
+    lineage_id = recovery._exact_reservation_lineage_id(
+        board_id=BOARD_ID,
+        manifest_ref=manifest_ref,
+        f06_run_id=f"f06:{manifest_ref}",
+        confirmation_ref=f"conf_fp_{'7' * 64}",
+    )
+    scope = ConsolidationClaimScope(
+        board_id=BOARD_ID,
+        source=source,
+        reservation_lineage_id=lineage_id,
+    )
+    neutral = ExactConsolidationRowResult(
+        queue_id="exact-row",
+        board_id=BOARD_ID,
+        source=source,
+        reservation_lineage_id=lineage_id,
+        work_kind="consolidate",
+        artifact_type="spec",
+        artifact_id="exact-spec",
+        generation=0,
+        membership_source_ref="spec:exact-spec",
+        membership_source_version="7",
+        membership_content_hash="a" * 64,
+        attempt_ordinal=1,
+        disposition=ExactConsolidationDisposition.NEUTRAL_FENCE_LOSS,
+        origin=ExactConsolidationResultOrigin.NEW,
+        mutation_state=ExactConsolidationMutationState.UNCHANGED,
+        error_code="exact_consolidation_claim_lost",
+        error_message="claim authority was lost before the exact transition",
+    )
+
+    class Processor:
+        last_attempted_count = 1
+
+        async def process_exact_batch(
+            self, *, claim_scope, reservation_authority_probe
+        ):  # noqa: ANN001, ANN201
+            assert claim_scope == scope
+            assert reservation_authority_probe() is True
+            return ExactConsolidationBatchResult(claim_scope=scope, rows=(neutral,))
+
+    reservation = SimpleNamespace(
+        admin_lane=True,
+        operation=f"kg02_rebuild_reservation:{manifest_ref}",
+        expires_at_epoch=time.time() + 60,
+        owner_token="reservation-token",
+        owner_id="reservation-owner",
+        acquired_at_epoch=1.0,
+    )
+
+    class ReservationPort:
+        def inspect(self, *, board_id: str):
+            assert board_id == BOARD_ID
+            return reservation
+
+        def is_owner(self, *, board_id: str, owner_token: str) -> bool:
+            return board_id == BOARD_ID and owner_token == reservation.owner_token
+
+    snapshots = iter(
+        (
+            _exact_queue_snapshot(manifest_ref=manifest_ref, marker=None),
+            _exact_queue_snapshot(
+                manifest_ref=manifest_ref,
+                marker=None,
+                status="claimed",
+            ),
+        )
+    )
+    baseline = recovery.QueueSnapshot((), (), "stable")
+    cancel_event = threading.Event()
+
+    async def service_run() -> object:
+        while not cancel_event.is_set():
+            await asyncio.sleep(0)
+        return SimpleNamespace(outcome="failed", reason="lifecycle_failed")
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        recovery, "_exact_queue_rows", lambda *_a, **_k: next(snapshots)
+    )
+    monkeypatch.setattr(recovery, "_active_exact_queue_depth", lambda *_a, **_k: 1)
+    monkeypatch.setattr(recovery, "_assert_source_unchanged", lambda *_a, **_k: None)
+    monkeypatch.setattr(recovery, "_dlq_snapshot", lambda *_a, **_k: baseline)
+    monkeypatch.setattr(
+        recovery, "_canonical_debt_snapshot", lambda *_a, **_k: baseline
+    )
+    monkeypatch.setattr(
+        recovery, "_protected_queue_snapshot", lambda *_a, **_k: baseline
+    )
+    service_task = asyncio.create_task(service_run())
+
+    outcome = await recovery._drain_exact_scope(
+        service_task,
+        Processor(),
+        scope,
+        SimpleNamespace(operation_reservation=ReservationPort()),
+        SimpleNamespace(manifest_ref=manifest_ref),
+        board_id=BOARD_ID,
+        source=source,
+        baseline_dlq=baseline,
+        baseline_debt=baseline,
+        baseline_non_target=baseline,
+        admitted_identities={("spec", "exact-spec")},
+        source_rows=(_exact_source_row(),),
+        ordered_source_rows=(_exact_source_row(),),
+        cancel_event=cancel_event,
+        lifetime_probe=lambda: True,
+        timeout_seconds=1.0,
+        poll_seconds=0.001,
+    )
+
+    assert cancel_event.is_set()
+    assert outcome.service_result.outcome == "failed"
+    assert outcome.blocker is not None
+    assert outcome.blocker.kind == "neutral_fence_loss"
+    assert outcome.blocker.queue_id == neutral.queue_id
+    assert outcome.blocker.mutation_state == "unchanged"
+    assert outcome.blocker.row_result == neutral
+
+
+@pytest.mark.asyncio
+async def test_exact_drain_validates_partial_ack_then_compensates_post_commit_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import threading
+    import time
+
+    from okto_pulse.core.ports.consolidation import (
+        ConsolidationClaimScope,
+        ExactConsolidationBatchResult,
+        ExactConsolidationDisposition,
+        ExactConsolidationMutationState,
+        ExactConsolidationPostCommitError,
+        ExactConsolidationResultOrigin,
+        ExactConsolidationRowResult,
+    )
+
+    manifest_ref = "manifest-exact-post-commit"
+    source = f"rebuild:{manifest_ref}"
+    lineage_id = recovery._exact_reservation_lineage_id(
+        board_id=BOARD_ID,
+        manifest_ref=manifest_ref,
+        f06_run_id=f"f06:{manifest_ref}",
+        confirmation_ref=f"conf_fp_{'f' * 64}",
+    )
+    scope = ConsolidationClaimScope(
+        board_id=BOARD_ID,
+        source=source,
+        reservation_lineage_id=lineage_id,
+    )
+    ack = ExactConsolidationRowResult(
+        queue_id="exact-row",
+        board_id=BOARD_ID,
+        source=source,
+        reservation_lineage_id=lineage_id,
+        work_kind="consolidate",
+        artifact_type="spec",
+        artifact_id="exact-spec",
+        generation=0,
+        membership_source_ref="spec:exact-spec",
+        membership_source_version="7",
+        membership_content_hash="a" * 64,
+        attempt_ordinal=1,
+        disposition=ExactConsolidationDisposition.ACKED,
+        origin=ExactConsolidationResultOrigin.NEW,
+        mutation_state=ExactConsolidationMutationState.COMMITTED,
+    )
+    partial = ExactConsolidationBatchResult(claim_scope=scope, rows=(ack,))
+    post_commit_error = ExactConsolidationPostCommitError(
+        batch_result=partial,
+        failed_queue_id=ack.queue_id,
+        error_code="exact_consolidation_post_commit_finalization_failed",
+    )
+
+    class Processor:
+        last_attempted_count = 1
+
+        async def process_exact_batch(
+            self, *, claim_scope, reservation_authority_probe
+        ):  # noqa: ANN001, ANN201
+            assert claim_scope == scope
+            assert reservation_authority_probe() is True
+            raise post_commit_error
+
+    reservation = SimpleNamespace(
+        admin_lane=True,
+        operation=f"kg02_rebuild_reservation:{manifest_ref}",
+        expires_at_epoch=time.time() + 60,
+        owner_token="reservation-token",
+        owner_id="reservation-owner",
+        acquired_at_epoch=1.0,
+    )
+
+    class ReservationPort:
+        def inspect(self, *, board_id: str):
+            assert board_id == BOARD_ID
+            return reservation
+
+        def is_owner(self, *, board_id: str, owner_token: str) -> bool:
+            return board_id == BOARD_ID and owner_token == reservation.owner_token
+
+    snapshots = iter(
+        (
+            _exact_queue_snapshot(manifest_ref=manifest_ref, marker=None),
+            recovery.QueueSnapshot(_EXACT_QUEUE_COLUMNS, (), "acked-cut"),
+        )
+    )
+    depths = iter((1, 0))
+    baseline = recovery.QueueSnapshot((), (), "stable")
+    cancel_event = threading.Event()
+
+    async def service_run() -> object:
+        while not cancel_event.is_set():
+            await asyncio.sleep(0)
+        return SimpleNamespace(outcome="failed", reason="lifecycle_failed")
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        recovery, "_exact_queue_rows", lambda *_a, **_k: next(snapshots)
+    )
+    monkeypatch.setattr(
+        recovery,
+        "_active_exact_queue_depth",
+        lambda *_a, **_k: next(depths),
+    )
+    monkeypatch.setattr(recovery, "_assert_source_unchanged", lambda *_a, **_k: None)
+    monkeypatch.setattr(recovery, "_dlq_snapshot", lambda *_a, **_k: baseline)
+    monkeypatch.setattr(
+        recovery, "_canonical_debt_snapshot", lambda *_a, **_k: baseline
+    )
+    monkeypatch.setattr(
+        recovery, "_protected_queue_snapshot", lambda *_a, **_k: baseline
+    )
+    service_task = asyncio.create_task(service_run())
+
+    outcome = await recovery._drain_exact_scope(
+        service_task,
+        Processor(),
+        scope,
+        SimpleNamespace(operation_reservation=ReservationPort()),
+        SimpleNamespace(manifest_ref=manifest_ref),
+        board_id=BOARD_ID,
+        source=source,
+        baseline_dlq=baseline,
+        baseline_debt=baseline,
+        baseline_non_target=baseline,
+        admitted_identities={("spec", "exact-spec")},
+        source_rows=(_exact_source_row(),),
+        ordered_source_rows=(_exact_source_row(),),
+        cancel_event=cancel_event,
+        lifetime_probe=lambda: True,
+        timeout_seconds=1.0,
+        poll_seconds=0.001,
+    )
+
+    assert cancel_event.is_set()
+    assert outcome.blocker is not None
+    assert outcome.blocker.kind == "post_commit_error"
+    assert outcome.blocker.queue_id == ack.queue_id
+    assert outcome.blocker.mutation_state == "committed"
+    assert outcome.blocker.row_result == ack
+
+
+def test_exact_post_commit_blocker_passes_full_compensation_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okto_pulse.core.ports.consolidation import (
+        ConsolidationClaimScope,
+        ExactConsolidationDisposition,
+        ExactConsolidationMutationState,
+        ExactConsolidationResultOrigin,
+        ExactConsolidationRowResult,
+    )
+
+    manifest_ref = "manifest-post-commit-gate"
+    source = f"rebuild:{manifest_ref}"
+    scope = ConsolidationClaimScope(
+        board_id=BOARD_ID,
+        source=source,
+        reservation_lineage_id="9" * 64,
+    )
+    ack = ExactConsolidationRowResult(
+        queue_id="post-commit-row",
+        board_id=BOARD_ID,
+        source=source,
+        reservation_lineage_id=str(scope.reservation_lineage_id),
+        work_kind="consolidate",
+        artifact_type="spec",
+        artifact_id="post-commit-spec",
+        generation=0,
+        membership_source_ref="spec:post-commit-spec",
+        membership_source_version="1",
+        membership_content_hash="8" * 64,
+        attempt_ordinal=1,
+        disposition=ExactConsolidationDisposition.ACKED,
+        origin=ExactConsolidationResultOrigin.NEW,
+        mutation_state=ExactConsolidationMutationState.COMMITTED,
+    )
+    blocker = recovery.ExactDrainBlocker(
+        kind="post_commit_error",
+        queue_id=ack.queue_id,
+        mutation_state="committed",
+        error_code="exact_consolidation_post_commit_finalization_failed",
+        row_result=ack,
+    )
+    actions = (
+        "cancel_enqueued_sources",
+        "discard_candidate_generation",
+        "restore_quarantine",
+    )
+    receipts: dict[str, dict[str, object]] = {}
+    for effect in ("snapshot", "quarantine", "enqueue"):
+        effect_key = f"f06:{manifest_ref}:{effect}"
+        receipts[effect_key] = {
+            "effect_key": effect_key,
+            "effect": effect,
+            "ok": True,
+            "code": "ok",
+            "details": (
+                {"quarantine_ref": "q_original"} if effect == "quarantine" else {}
+            ),
+        }
+    compensate_key = f"f06:{manifest_ref}:compensate"
+    receipts[compensate_key] = {
+        "effect_key": compensate_key,
+        "effect": "compensate",
+        "ok": True,
+        "code": "compensated",
+        "details": {
+            "actions": list(actions),
+            "queue": {"active_remaining": 0},
+            "quarantine_restore": {
+                "ok": True,
+                "report": {
+                    "applied": True,
+                    "open_validated": True,
+                    "board_id": BOARD_ID,
+                    "backup_quarantine_id": "q_backup",
+                },
+            },
+            "candidate_discard": {"status": "discarded"},
+        },
+    }
+    checkpoint = {
+        "state": "failed",
+        "compensation_failed_state": "draining",
+        "compensation_failure_code": "cancelled",
+        "compensation_failure_detail": "cancellation requested",
+        "compensation_actions": list(actions),
+        "writer_handoff_count": 1,
+        "writer_reacquire_count": 1,
+        "command": {"board_id": BOARD_ID, "manifest_ref": manifest_ref},
+        "receipts": receipts,
+    }
+    run_id = "run_post_commit_gate"
+    audit_ref = "audit://post-commit-gate"
+    audit = {
+        "run_id": run_id,
+        "board_id": BOARD_ID,
+        "manifest_ref": manifest_ref,
+        "outcome": "failed",
+        "reason": "lifecycle_failed",
+        "current_kg_generation_id": None,
+        "promotion_outcome": "not_promoted",
+        "publishable_status": "failed",
+        "event_emitted": False,
+    }
+
+    class ArtifactStore:
+        def read_json_reference(self, reference: str):
+            assert reference == audit_ref
+            return audit
+
+        def read_json(self, key):  # noqa: ANN001, ANN201
+            from okto_pulse.community.adapters.rebuild_effects import (
+                CommunityRebuildEffects,
+            )
+
+            for effect_key, receipt in receipts.items():
+                if key.artifact_id == CommunityRebuildEffects._effect_id(effect_key):
+                    return receipt
+            return None
+
+    no_lock = SimpleNamespace(inspect=lambda **_kwargs: None)
+    bundle = SimpleNamespace(
+        artifact_store=ArtifactStore(),
+        single_writer_lock=no_lock,
+        operation_reservation=no_lock,
+    )
+    result = SimpleNamespace(
+        run_id=run_id,
+        audit_ref=audit_ref,
+        outcome="failed",
+        reason="lifecycle_failed",
+        current_kg_generation_id=None,
+        promotion_outcome="not_promoted",
+        publishable_status="failed",
+        event_emitted=False,
+    )
+    baseline = recovery.QueueSnapshot((), (), "stable")
+    quarantine_root = tmp_path / "quarantine"
+    board_storage_root = tmp_path / "boards" / BOARD_ID
+    quarantine_root.mkdir()
+    board_storage_root.mkdir(parents=True)
+    health = {
+        "current_kg_generation_id": None,
+        "graph_storage_exists": True,
+    }
+    monkeypatch.setattr(recovery, "_load_checkpoint", lambda *_a, **_k: checkpoint)
+    monkeypatch.setattr(recovery, "_active_exact_queue_depth", lambda *_a, **_k: 0)
+    monkeypatch.setattr(recovery, "_active_rebuild_queue_depth", lambda *_a, **_k: 0)
+    monkeypatch.setattr(
+        recovery,
+        "_compensated_queue_adoption_from_checkpoint",
+        lambda *_a, **_k: object(),
+    )
+    monkeypatch.setattr(
+        recovery,
+        "_assert_protected_admission_is_noop",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(recovery, "_dlq_snapshot", lambda *_a, **_k: baseline)
+    monkeypatch.setattr(
+        recovery, "_canonical_debt_snapshot", lambda *_a, **_k: baseline
+    )
+    monkeypatch.setattr(
+        recovery, "_protected_queue_snapshot", lambda *_a, **_k: baseline
+    )
+    monkeypatch.setattr(recovery, "_assert_tree_preserved", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        recovery,
+        "_quarantine_ids",
+        lambda *_a, **_k: {"q_original", "q_backup"},
+    )
+    monkeypatch.setattr(
+        recovery,
+        "_snapshot_closed_board_storage",
+        lambda **_kwargs: {"graph.lbug": "a" * 64},
+    )
+    monkeypatch.setattr(
+        recovery,
+        "_offline_cold_graph_health",
+        lambda *_a, **_k: dict(health),
+    )
+
+    recovery._assert_exact_blocking_compensation(
+        bundle,
+        SimpleNamespace(manifest_ref=manifest_ref),
+        result,
+        blocker,
+        board_id=BOARD_ID,
+        db_path=tmp_path / "pulse.db",
+        source=source,
+        baseline_dlq=baseline,
+        baseline_debt=baseline,
+        baseline_non_target=baseline,
+        admitted_identities={("spec", "post-commit-spec")},
+        quarantine_root=quarantine_root,
+        quarantine_baseline={},
+        quarantine_baseline_ids=frozenset(),
+        board_storage_root=board_storage_root,
+        baseline_health=health,
+    )
+
+
 @pytest.mark.asyncio
 async def test_drain_waiter_requires_durable_writer_handoff(
     tmp_path: Path,
@@ -2953,6 +3995,7 @@ async def test_execute_under_lock_runs_archive_lane_with_exact_gate_contract(
     )
     monkeypatch.setattr(recovery, "_protected_queue_snapshot", lambda *_a, **_k: queue)
     monkeypatch.setattr(recovery, "_dlq_snapshot", lambda *_a, **_k: queue)
+    monkeypatch.setattr(recovery, "_canonical_debt_snapshot", lambda *_a, **_k: queue)
     monkeypatch.setattr(recovery, "_dlq_ids_for_board", lambda *_a, **_k: ())
     monkeypatch.setattr(recovery, "_sqlite_logical_fingerprints", lambda *_a, **_k: {})
     monkeypatch.setattr(
@@ -3000,7 +4043,7 @@ def test_service_thread_finishes_before_revocation_and_capability_close() -> Non
     )
     capability_close_offset = source.index("capability_stack.close()", revoke_offset)
     exact_recovery_offset = source.index("await _recover_exact_claims_for_resume(")
-    exact_drain_offset = source.index("result = await _drain_exact_scope(")
+    exact_drain_offset = source.index("drain_outcome = await _drain_exact_scope(")
 
     assert 0 <= fenced_wait_offset < revoke_offset < capability_close_offset
     assert exact_recovery_offset < exact_drain_offset
@@ -3153,7 +4196,11 @@ async def test_exact_claim_replay_is_durable_idempotent_and_scope_bound(
     register_consolidation_persistence_port(adapter)
     try:
         processor = consolidation.ConsolidationProcessor(factory, batch_size=1)
-        scope = ConsolidationClaimScope(board_id=BOARD_ID, source=target_source)
+        scope = ConsolidationClaimScope(
+            board_id=BOARD_ID,
+            source=target_source,
+            reservation_lineage_id="b" * 64,
+        )
         assert (
             await processor.recover_exact_claims(
                 claim_scope=scope,

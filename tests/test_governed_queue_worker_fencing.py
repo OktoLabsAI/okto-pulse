@@ -598,7 +598,11 @@ async def test_recovery_processor_exactly_repends_claim_left_by_killed_process(
     register_consolidation_persistence_port(adapter)
     try:
         processor = consolidation.ConsolidationProcessor(factory, batch_size=1)
-        scope = ConsolidationClaimScope(board_id=BOARD_ID, source=target_source)
+        scope = ConsolidationClaimScope(
+            board_id=BOARD_ID,
+            source=target_source,
+            reservation_lineage_id="a" * 64,
+        )
         assert (
             await processor.recover_exact_claims(
                 claim_scope=scope,
@@ -1119,6 +1123,542 @@ async def test_repend_claimed_entry_is_an_exact_neutral_cas(queue_store) -> None
         assert row.worker_id is None
         assert row.claimed_by_session_id is None
         assert row.claim_token is None
+
+
+@pytest.mark.asyncio
+async def test_exact_pending_inventory_includes_delayed_rows_in_claim_order(
+    queue_store,
+) -> None:
+    factory, adapter = queue_store
+    source = "rebuild:manifest-exact-inventory"
+    now = datetime.now(timezone.utc)
+    async with factory() as session:
+        session.add_all(
+            [
+                ConsolidationQueue(
+                    id="exact-inventory-later",
+                    board_id=BOARD_ID,
+                    artifact_type="spec",
+                    artifact_id="later",
+                    work_kind="consolidate",
+                    generation=0,
+                    payload={"ordinal": 2},
+                    priority="high",
+                    source=source,
+                    status="pending",
+                    triggered_at=now + timedelta(seconds=1),
+                ),
+                ConsolidationQueue(
+                    id="exact-inventory-delayed",
+                    board_id=BOARD_ID,
+                    artifact_type="refinement",
+                    artifact_id="delayed",
+                    work_kind="consolidate",
+                    generation=0,
+                    payload={"ordinal": 1},
+                    priority="high",
+                    source=source,
+                    status="pending",
+                    triggered_at=now,
+                    next_retry_at=now + timedelta(hours=1),
+                ),
+                ConsolidationQueue(
+                    id="exact-inventory-other-source",
+                    board_id=BOARD_ID,
+                    artifact_type="spec",
+                    artifact_id="other",
+                    work_kind="consolidate",
+                    generation=0,
+                    payload={"ordinal": 0},
+                    priority="high",
+                    source="rebuild:other",
+                    status="pending",
+                    triggered_at=now - timedelta(seconds=1),
+                ),
+            ]
+        )
+        await session.commit()
+
+        rows = await adapter.list_pending_exact(
+            session,
+            board_id=BOARD_ID,
+            source=source,
+            work_kind="consolidate",
+        )
+
+    assert tuple(row.id for row in rows) == (
+        "exact-inventory-delayed",
+        "exact-inventory-later",
+    )
+
+
+@pytest.mark.asyncio
+async def test_exact_disposition_save_is_full_state_and_authority_cas(
+    queue_store,
+    monkeypatch,
+) -> None:
+    factory, adapter = queue_store
+    source = "rebuild:manifest-exact-disposition"
+    row_id = "exact-disposition-row"
+    membership = {
+        "run_id": "manifest-exact-disposition",
+        "source_ref": "spec:exact-disposition-spec",
+        "source_version": "7",
+        "content_hash": "a" * 64,
+    }
+    expected_payload = {"_rebuild_membership": membership}
+    marker = {
+        "schema_version": 1,
+        "queue_id": row_id,
+        "board_id": BOARD_ID,
+        "source": source,
+        "work_kind": "consolidate",
+        "artifact_type": "spec",
+        "artifact_id": "exact-disposition-spec",
+        "generation": 0,
+        "membership_source_ref": membership["source_ref"],
+        "membership_source_version": membership["source_version"],
+        "membership_content_hash": membership["content_hash"],
+        "attempt_ordinal": 1,
+        "queue_attempts": 1,
+        "disposition": "terminal_failure",
+        "retryable": False,
+        "mutation_state": "unchanged",
+        "error_code": "connectivity_constraint_violated",
+        "error_message": "canonical graph connectivity refused",
+        "next_retry_at": None,
+        "diagnostic_json": None,
+    }
+    payload = {**expected_payload, "_exact_rebuild_disposition": marker}
+    now = datetime.now(timezone.utc)
+    async with factory() as session:
+        session.add(
+            ConsolidationQueue(
+                id=row_id,
+                board_id=BOARD_ID,
+                artifact_type="spec",
+                artifact_id="exact-disposition-spec",
+                work_kind="consolidate",
+                generation=0,
+                payload=expected_payload,
+                priority="high",
+                source=source,
+                status="claimed",
+                attempts=0,
+                triggered_at=now,
+                claimed_at=now,
+                claim_timeout_at=now + timedelta(minutes=5),
+                worker_id="worker-exact",
+                claimed_by_session_id="worker-exact",
+                claim_token="token-exact",
+            )
+        )
+        await session.commit()
+
+        async def reservation(_context, *, board_id: str):  # noqa: ANN001
+            assert board_id == BOARD_ID
+            return source
+
+        monkeypatch.setattr(adapter, "board_administrative_rebuild_source", reservation)
+        authority_calls = 0
+
+        def authority() -> bool:
+            nonlocal authority_calls
+            authority_calls += 1
+            return True
+
+        stored = await adapter.save_exact_rebuild_disposition(
+            session,
+            entry_id=row_id,
+            claim_token="token-exact",
+            board_id=BOARD_ID,
+            artifact_type="spec",
+            artifact_id="exact-disposition-spec",
+            source=source,
+            work_kind="consolidate",
+            generation=0,
+            delete_event_id=None,
+            expected_attempts=0,
+            expected_last_error=None,
+            expected_next_retry_at=None,
+            expected_payload=expected_payload,
+            reservation_authority_probe=authority,
+            payload=payload,
+            attempts=1,
+            last_error=(
+                "connectivity_constraint_violated:canonical graph connectivity refused"
+            ),
+            next_retry_at=None,
+        )
+        assert stored is not None
+        assert stored.status == "pending"
+        assert stored.payload == payload
+        assert stored.attempts == 1
+        assert stored.claim_token is None
+        assert authority_calls == 2
+        await session.commit()
+
+        unchanged = await adapter.save_exact_rebuild_disposition(
+            session,
+            entry_id=row_id,
+            claim_token="token-exact",
+            board_id=BOARD_ID,
+            artifact_type="refinement",
+            artifact_id="exact-disposition-spec",
+            source=source,
+            work_kind="consolidate",
+            generation=0,
+            delete_event_id=None,
+            expected_attempts=0,
+            expected_last_error=None,
+            expected_next_retry_at=None,
+            expected_payload=expected_payload,
+            reservation_authority_probe=lambda: True,
+            payload=payload,
+            attempts=1,
+            last_error=(
+                "connectivity_constraint_violated:canonical graph connectivity refused"
+            ),
+            next_retry_at=None,
+        )
+        assert unchanged is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authority_results", ((False,), (True, False)))
+async def test_exact_disposition_save_refuses_lost_authority_before_update(
+    queue_store,
+    monkeypatch,
+    authority_results,
+) -> None:
+    factory, adapter = queue_store
+    source = "rebuild:manifest-authority-lost"
+    expected_payload = {
+        "_rebuild_membership": {
+            "run_id": "manifest-authority-lost",
+            "source_ref": "spec:authority-lost",
+            "source_version": "1",
+            "content_hash": "b" * 64,
+        }
+    }
+    payload = {
+        **expected_payload,
+        "_exact_rebuild_disposition": {"schema_version": 1},
+    }
+    now = datetime.now(timezone.utc)
+    async with factory() as session:
+        session.add(
+            ConsolidationQueue(
+                id="authority-lost-row",
+                board_id=BOARD_ID,
+                artifact_type="spec",
+                artifact_id="authority-lost",
+                work_kind="consolidate",
+                generation=0,
+                payload=expected_payload,
+                priority="high",
+                source=source,
+                status="claimed",
+                attempts=0,
+                triggered_at=now,
+                claimed_at=now,
+                claim_timeout_at=now + timedelta(minutes=5),
+                worker_id="worker-authority",
+                claimed_by_session_id="worker-authority",
+                claim_token="token-authority",
+            )
+        )
+        await session.commit()
+
+        async def reservation(_context, *, board_id: str):  # noqa: ANN001
+            assert board_id == BOARD_ID
+            return source
+
+        monkeypatch.setattr(adapter, "board_administrative_rebuild_source", reservation)
+        probe_calls = 0
+        authority_sequence = iter(authority_results)
+
+        def authority_replaced_before_update() -> bool:
+            nonlocal probe_calls
+            probe_calls += 1
+            return next(authority_sequence)
+
+        assert (
+            await adapter.save_exact_rebuild_disposition(
+                session,
+                entry_id="authority-lost-row",
+                claim_token="token-authority",
+                board_id=BOARD_ID,
+                artifact_type="spec",
+                artifact_id="authority-lost",
+                source=source,
+                work_kind="consolidate",
+                generation=0,
+                delete_event_id=None,
+                expected_attempts=0,
+                expected_last_error=None,
+                expected_next_retry_at=None,
+                expected_payload=expected_payload,
+                reservation_authority_probe=authority_replaced_before_update,
+                payload=payload,
+                attempts=1,
+                last_error="connectivity_constraint_violated:blocked",
+                next_retry_at=None,
+            )
+            is None
+        )
+        assert probe_calls == len(authority_results)
+        row = await session.get(ConsolidationQueue, "authority-lost-row")
+        assert row is not None
+        await session.refresh(row)
+        assert row.status == "claimed"
+        assert row.attempts == 0
+        assert row.payload == expected_payload
+        assert row.claim_token == "token-authority"
+
+
+@pytest.mark.asyncio
+async def test_exact_connectivity_terminal_replays_without_debt_or_dlq(
+    queue_store,
+    monkeypatch,
+) -> None:
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        CanonicalDebt,
+        ConsolidationDeadLetter,
+    )
+    from okto_pulse.core.application.processors import consolidation
+    from okto_pulse.core.ports.consolidation import (
+        ExactConsolidationDisposition,
+        ExactConsolidationResultOrigin,
+    )
+
+    factory, adapter = queue_store
+    manifest_ref = "manifest-exact-connectivity"
+    source = f"rebuild:{manifest_ref}"
+    lineage_id = "d" * 64
+    payload = {
+        "_rebuild_membership": {
+            "run_id": manifest_ref,
+            "source_ref": "spec:exact-connectivity-spec",
+            "source_version": "3",
+            "content_hash": "e" * 64,
+        }
+    }
+    async with factory() as session:
+        session.add(
+            ConsolidationQueue(
+                id="exact-connectivity-row",
+                board_id=BOARD_ID,
+                artifact_type="spec",
+                artifact_id="exact-connectivity-spec",
+                work_kind="consolidate",
+                generation=0,
+                payload=payload,
+                priority="high",
+                source=source,
+                status="pending",
+                attempts=0,
+                triggered_at=datetime.now(timezone.utc),
+            )
+        )
+        await session.commit()
+
+    async def reservation(_context, *, board_id: str):  # noqa: ANN001
+        assert board_id == BOARD_ID
+        return source
+
+    process_calls = 0
+
+    async def connectivity_failure(_db, _entry, **_kwargs):  # noqa: ANN001
+        nonlocal process_calls
+        process_calls += 1
+        raise consolidation.KGPrimitiveError(
+            consolidation.CONNECTIVITY_ERROR_CODE,
+            "deterministic connectivity terminal",
+            details={"connectivity": {"violations": [{"reason_code": "denied"}]}},
+        )
+
+    monkeypatch.setattr(adapter, "board_administrative_rebuild_source", reservation)
+    monkeypatch.setattr(
+        consolidation,
+        "_process_queue_entry_serialized",
+        connectivity_failure,
+    )
+    register_consolidation_persistence_port(adapter)
+    scope = ConsolidationClaimScope(
+        board_id=BOARD_ID,
+        source=source,
+        reservation_lineage_id=lineage_id,
+    )
+    try:
+        first_processor = consolidation.ConsolidationProcessor(factory, batch_size=1)
+        first = await first_processor.process_exact_batch(
+            claim_scope=scope,
+            reservation_authority_probe=lambda: True,
+        )
+        successor_processor = consolidation.ConsolidationProcessor(
+            factory, batch_size=1
+        )
+        replayed = await successor_processor.process_exact_batch(
+            claim_scope=scope,
+            reservation_authority_probe=lambda: True,
+        )
+    finally:
+        reset_consolidation_persistence_port_for_tests()
+
+    assert process_calls == 1
+    assert first.new_attempt_count == 1
+    assert len(first.terminal_failures) == 1
+    assert first.terminal_failures[0].disposition is (
+        ExactConsolidationDisposition.TERMINAL_FAILURE
+    )
+    assert replayed.new_attempt_count == 0
+    assert replayed.replayed_count == 1
+    assert replayed.terminal_failures[0].origin is (
+        ExactConsolidationResultOrigin.REPLAYED
+    )
+    async with factory() as session:
+        stored = await session.get(ConsolidationQueue, "exact-connectivity-row")
+        assert stored is not None
+        assert stored.status == "pending"
+        assert stored.attempts == 1
+        assert stored.claim_token is None
+        assert stored.payload is not None
+        marker = stored.payload.get("_exact_rebuild_disposition")
+        assert marker is not None
+        assert marker["reservation_lineage_id"] == lineage_id
+        assert marker["disposition"] == "terminal_failure"
+        assert (await session.execute(select(CanonicalDebt.id))).all() == []
+        assert (await session.execute(select(ConsolidationDeadLetter.id))).all() == []
+
+
+@pytest.mark.asyncio
+async def test_exact_retry_claim_crash_recovers_marker_then_acks_attempt_two(
+    queue_store,
+    monkeypatch,
+) -> None:
+    from okto_pulse.core.application.processors import consolidation
+    from okto_pulse.core.ports.consolidation import ExactConsolidationDisposition
+
+    factory, adapter = queue_store
+    manifest_ref = "manifest-exact-retry-crash"
+    source = f"rebuild:{manifest_ref}"
+    lineage_id = "f" * 64
+    retry_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    membership = {
+        "content_hash": "7" * 64,
+        "run_id": manifest_ref,
+        "source_ref": "spec:retry-crash-spec",
+        "source_version": "9",
+    }
+    marker = {
+        "schema_version": 1,
+        "queue_id": "exact-retry-crash-row",
+        "board_id": BOARD_ID,
+        "source": source,
+        "reservation_lineage_id": lineage_id,
+        "work_kind": "consolidate",
+        "artifact_type": "spec",
+        "artifact_id": "retry-crash-spec",
+        "generation": 0,
+        "membership_source_ref": membership["source_ref"],
+        "membership_source_version": membership["source_version"],
+        "membership_content_hash": membership["content_hash"],
+        "attempt_ordinal": 1,
+        "queue_attempts": 1,
+        "disposition": "retry_scheduled",
+        "retryable": True,
+        "mutation_state": "unchanged",
+        "error_code": "relational_projection_endpoint_pending",
+        "error_message": "projection is not materialized",
+        "next_retry_at": retry_at.isoformat(),
+        "diagnostic_json": None,
+    }
+    payload = {
+        "_rebuild_membership": membership,
+        "_exact_rebuild_disposition": marker,
+    }
+    now = datetime.now(timezone.utc)
+    async with factory() as session:
+        session.add(
+            ConsolidationQueue(
+                id="exact-retry-crash-row",
+                board_id=BOARD_ID,
+                artifact_type="spec",
+                artifact_id="retry-crash-spec",
+                work_kind="consolidate",
+                generation=0,
+                payload=payload,
+                priority="high",
+                source=source,
+                status="claimed",
+                attempts=1,
+                last_error=(
+                    "relational_projection_endpoint_pending:"
+                    "projection is not materialized"
+                ),
+                next_retry_at=retry_at,
+                triggered_at=now - timedelta(minutes=1),
+                claimed_at=now,
+                claim_timeout_at=now + timedelta(minutes=5),
+                worker_id="crashed-worker",
+                claimed_by_session_id="crashed-worker",
+                claim_token="crashed-claim-token",
+            )
+        )
+        await session.commit()
+
+    async def reservation(_context, *, board_id: str):  # noqa: ANN001
+        assert board_id == BOARD_ID
+        return source
+
+    async def success(_db, _entry, **_kwargs):  # noqa: ANN001
+        return True
+
+    monkeypatch.setattr(adapter, "board_administrative_rebuild_source", reservation)
+    monkeypatch.setattr(consolidation, "_process_queue_entry_serialized", success)
+    register_consolidation_persistence_port(adapter)
+    scope = ConsolidationClaimScope(
+        board_id=BOARD_ID,
+        source=source,
+        reservation_lineage_id=lineage_id,
+    )
+    try:
+        recovery_processor = consolidation.ConsolidationProcessor(
+            factory,
+            batch_size=1,
+        )
+        assert (
+            await recovery_processor.recover_exact_claims(
+                claim_scope=scope,
+                recovery_authority_probe=lambda: True,
+            )
+            == 1
+        )
+        async with factory() as session:
+            recovered = await session.get(
+                ConsolidationQueue,
+                "exact-retry-crash-row",
+            )
+            assert recovered is not None
+            assert recovered.status == "pending"
+            assert recovered.claim_token is None
+            assert recovered.payload == payload
+            assert recovered.attempts == 1
+
+        successor = consolidation.ConsolidationProcessor(factory, batch_size=1)
+        completed = await successor.process_exact_batch(
+            claim_scope=scope,
+            reservation_authority_probe=lambda: True,
+        )
+    finally:
+        reset_consolidation_persistence_port_for_tests()
+
+    assert completed.acked_count == 1
+    assert completed.rows[0].attempt_ordinal == 2
+    assert completed.rows[0].disposition is ExactConsolidationDisposition.ACKED
+    async with factory() as session:
+        assert await session.get(ConsolidationQueue, "exact-retry-crash-row") is None
 
 
 @pytest.mark.asyncio

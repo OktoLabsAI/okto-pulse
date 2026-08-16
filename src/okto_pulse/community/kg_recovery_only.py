@@ -346,6 +346,25 @@ class QueueSnapshot:
     fingerprint: str
 
 
+@dataclass(frozen=True, slots=True)
+class ExactDrainBlocker:
+    """One typed processor outcome that requires F06 compensation."""
+
+    kind: str
+    queue_id: str
+    mutation_state: str
+    error_code: str
+    row_result: Any | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExactDrainOutcome:
+    """Service result plus an optional typed blocker that forced compensation."""
+
+    service_result: Any
+    blocker: ExactDrainBlocker | None = None
+
+
 @dataclass(slots=True)
 class ServiceBundle:
     artifact_store: Any
@@ -2595,6 +2614,21 @@ def _dlq_snapshot(db_path: Path) -> QueueSnapshot:
     return _snapshot_query(
         db_path,
         f"SELECT {projection} FROM consolidation_dead_letter ORDER BY id",
+    )
+
+
+def _canonical_debt_snapshot(db_path: Path) -> QueueSnapshot:
+    """Bound and fingerprint the durable debt ledger independently of queue."""
+
+    columns = _table_columns(db_path, "canonical_debt")
+    if not columns:
+        return QueueSnapshot(
+            (), (), hashlib.sha256(b"empty-canonical-debt").hexdigest()
+        )
+    projection = ", ".join(f'"{column}"' for column in columns)
+    return _snapshot_query(
+        db_path,
+        f"SELECT {projection} FROM canonical_debt ORDER BY id",
     )
 
 
@@ -8956,6 +8990,37 @@ def _assert_reservation_exact(
     )
 
 
+def _exact_reservation_lineage_id(
+    *,
+    board_id: str,
+    manifest_ref: str,
+    f06_run_id: str,
+    confirmation_ref: str,
+) -> str:
+    """Stable verified-run lineage; ephemeral reservation tokens stay separate."""
+
+    _require(
+        f06_run_id == f"f06:{manifest_ref}",
+        "exact_rebuild_f06_run_lineage_invalid",
+    )
+    _require(
+        re.fullmatch(r"conf_fp_[0-9a-f]{64}", confirmation_ref) is not None,
+        "exact_rebuild_confirmation_lineage_invalid",
+    )
+
+    return hashlib.sha256(
+        _canonical_json_bytes(
+            {
+                "schema_version": "exact_rebuild_reservation_lineage.v1",
+                "board_id": board_id,
+                "manifest_ref": manifest_ref,
+                "f06_run_id": f06_run_id,
+                "confirmation_ref": confirmation_ref,
+            }
+        )
+    ).hexdigest()
+
+
 def _expected_queue_order(
     source_rows: Sequence[Mapping[str, Any]],
 ) -> tuple[tuple[str, str], ...]:
@@ -9006,7 +9071,7 @@ def _assert_admission_checkpoint(
     manifest_ref: str,
     initial_board_dlq_ids: Sequence[str],
     require_draining: bool,
-) -> tuple[Mapping[str, Any], ...]:
+) -> tuple[tuple[Mapping[str, Any], ...], str]:
     from okto_pulse.community.adapters.board_rebuild_ingestion import (
         REBUILD_QUEUE_ORDER_VERSION,
     )
@@ -9040,6 +9105,11 @@ def _assert_admission_checkpoint(
     command = checkpoint.get("command")
     _require(isinstance(command, Mapping), "checkpoint_command_missing")
     assert isinstance(command, Mapping)
+    f06_run_id = str(command.get("run_id") or "")
+    _require(
+        f06_run_id == f"f06:{manifest_ref}",
+        "checkpoint_run_mismatch",
+    )
     _require(str(command.get("board_id")) == board_id, "checkpoint_board_mismatch")
     _require(
         str(command.get("manifest_ref")) == manifest_ref,
@@ -9083,18 +9153,169 @@ def _assert_admission_checkpoint(
         baseline == tuple(initial_board_dlq_ids),
         "checkpoint_dlq_baseline_mismatch",
     )
-    return source_rows
+    return source_rows, f06_run_id
+
+
+_EXACT_REBUILD_DISPOSITION_KEYS = frozenset(
+    {
+        "artifact_id",
+        "artifact_type",
+        "attempt_ordinal",
+        "board_id",
+        "diagnostic_json",
+        "disposition",
+        "error_code",
+        "error_message",
+        "generation",
+        "membership_content_hash",
+        "membership_source_ref",
+        "membership_source_version",
+        "mutation_state",
+        "next_retry_at",
+        "queue_attempts",
+        "queue_id",
+        "reservation_lineage_id",
+        "retryable",
+        "schema_version",
+        "source",
+        "work_kind",
+    }
+)
+
+
+def _queue_timestamps_same(left: Any, right: Any) -> bool:
+    if left is None or right is None:
+        return left is right
+    return _parse_queue_timestamp(left) == _parse_queue_timestamp(right)
+
+
+def _assert_durable_exact_disposition(
+    marker: Any,
+    *,
+    row_id: str,
+    board_id: str,
+    reservation_lineage_id: str,
+    source: str,
+    work_kind: str,
+    artifact_type: str,
+    artifact_id: str,
+    generation: int,
+    membership: Mapping[str, Any],
+    attempts: Any,
+    last_error: Any,
+    next_retry_at: Any,
+) -> None:
+    """Validate Core's closed crash-replay marker without interpreting errors."""
+
+    _require(
+        type(marker) is dict and set(marker) == _EXACT_REBUILD_DISPOSITION_KEYS,
+        "rebuild_queue_exact_disposition_invalid",
+        row_id,
+    )
+    assert isinstance(marker, dict)
+    exact_values = {
+        "schema_version": 1,
+        "queue_id": row_id,
+        "board_id": board_id,
+        "source": source,
+        "reservation_lineage_id": reservation_lineage_id,
+        "work_kind": work_kind,
+        "artifact_type": artifact_type,
+        "artifact_id": artifact_id,
+        "generation": generation,
+        "membership_source_ref": str(membership.get("source_ref") or ""),
+        "membership_source_version": str(membership.get("source_version") or ""),
+        "membership_content_hash": str(membership.get("content_hash") or ""),
+    }
+    _require(
+        all(
+            type(marker.get(key)) is type(value) and marker.get(key) == value
+            for key, value in exact_values.items()
+        ),
+        "rebuild_queue_exact_disposition_binding_invalid",
+        row_id,
+    )
+    attempt_ordinal = marker.get("attempt_ordinal")
+    queue_attempts = marker.get("queue_attempts")
+    reservation_lineage_id = marker.get("reservation_lineage_id")
+    disposition = marker.get("disposition")
+    mutation_state = marker.get("mutation_state")
+    error_code = marker.get("error_code")
+    error_message = marker.get("error_message")
+    diagnostic_json = marker.get("diagnostic_json")
+    _require(
+        type(attempt_ordinal) is int
+        and attempt_ordinal >= 1
+        and type(queue_attempts) is int
+        and queue_attempts == attempt_ordinal
+        and type(reservation_lineage_id) is str
+        and re.fullmatch(r"[0-9a-f]{64}", reservation_lineage_id) is not None
+        and type(attempts) is int
+        and attempts == attempt_ordinal
+        and disposition in {"retry_scheduled", "terminal_failure"}
+        and mutation_state in {"unchanged", "committed", "compensated", "ambiguous"}
+        and (disposition != "retry_scheduled" or mutation_state == "unchanged")
+        and type(marker.get("retryable")) is bool
+        and marker.get("retryable") is (disposition == "retry_scheduled")
+        and type(error_code) is str
+        and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.:-]{0,127}", error_code) is not None
+        and type(error_message) is str
+        and 1 <= len(error_message) <= 480
+        and last_error == f"{error_code}:{error_message[:480]}"
+        and (diagnostic_json is None or type(diagnostic_json) is str),
+        "rebuild_queue_exact_disposition_state_invalid",
+        row_id,
+    )
+    if diagnostic_json is not None:
+        _require(
+            len(diagnostic_json) <= 16_384,
+            "rebuild_queue_exact_disposition_diagnostic_invalid",
+            row_id,
+        )
+        try:
+            diagnostic = json.loads(diagnostic_json)
+        except (TypeError, ValueError) as exc:
+            raise RecoveryRefused(
+                f"rebuild_queue_exact_disposition_diagnostic_invalid:{row_id}"
+            ) from exc
+        _require(
+            type(diagnostic) is dict
+            and _canonical_json_bytes(diagnostic).decode("utf-8") == diagnostic_json,
+            "rebuild_queue_exact_disposition_diagnostic_invalid",
+            row_id,
+        )
+    marker_retry_at = marker.get("next_retry_at")
+    if disposition == "retry_scheduled":
+        _require(
+            type(marker_retry_at) is str
+            and _queue_timestamps_same(marker_retry_at, next_retry_at),
+            "rebuild_queue_exact_disposition_retry_invalid",
+            row_id,
+        )
+    else:
+        _require(
+            marker_retry_at is None and next_retry_at is None,
+            "rebuild_queue_exact_disposition_retry_invalid",
+            row_id,
+        )
 
 
 def _assert_exact_queue_admission(
     snapshot: QueueSnapshot,
     *,
+    board_id: str,
     manifest_ref: str,
+    reservation_lineage_id: str,
     source_rows: Sequence[Mapping[str, Any]],
     ordered_source_rows: Sequence[Mapping[str, Any]],
     allow_consumed_prefix: bool = False,
     allow_claimed_recovery: bool = False,
+    allow_durable_dispositions: bool = False,
 ) -> int:
+    _require(
+        re.fullmatch(r"[0-9a-f]{64}", reservation_lineage_id) is not None,
+        "exact_rebuild_reservation_lineage_invalid",
+    )
     expected_order = _expected_queue_order(ordered_source_rows)
     command_order = _expected_queue_order(source_rows)
     _require(
@@ -9165,13 +9386,24 @@ def _assert_exact_queue_admission(
         _require(
             str(priority) == "high", "rebuild_queue_priority_invalid", str(_row_id)
         )
-        _require(int(attempts) == 0, "rebuild_queue_attempts_nonzero", str(_row_id))
+        try:
+            decoded = json.loads(str(payload)) if isinstance(payload, str) else payload
+        except json.JSONDecodeError as exc:
+            raise RecoveryRefused("rebuild_queue_payload_invalid") from exc
+        exact_disposition = (
+            decoded.get("_exact_rebuild_disposition")
+            if isinstance(decoded, Mapping)
+            else None
+        )
+        _require(
+            type(attempts) is int and attempts >= 0,
+            "rebuild_queue_attempts_invalid",
+            str(_row_id),
+        )
         if status_text == "claimed":
             claimed_count += 1
             _require(
-                last_error is None
-                and next_retry_at is None
-                and all(
+                all(
                     isinstance(value, str) and bool(value)
                     for value in (
                         claimed_at,
@@ -9184,6 +9416,20 @@ def _assert_exact_queue_admission(
                 "rebuild_queue_claim_recovery_identity_invalid",
                 str(_row_id),
             )
+            if exact_disposition is None:
+                _require(
+                    attempts == 0 and last_error is None and next_retry_at is None,
+                    "rebuild_queue_claim_recovery_identity_invalid",
+                    str(_row_id),
+                )
+            else:
+                _require(
+                    allow_durable_dispositions
+                    and type(exact_disposition) is dict
+                    and exact_disposition.get("disposition") == "retry_scheduled",
+                    "rebuild_queue_claimed_disposition_invalid",
+                    str(_row_id),
+                )
             _require(
                 str(worker_id) == str(claimed_by_session_id)
                 and re.fullmatch(r"[0-9a-f]{32}", str(claim_token)) is not None
@@ -9197,8 +9443,6 @@ def _assert_exact_queue_admission(
                 all(
                     value is None
                     for value in (
-                        last_error,
-                        next_retry_at,
                         claimed_at,
                         claim_timeout_at,
                         worker_id,
@@ -9209,14 +9453,22 @@ def _assert_exact_queue_admission(
                 "rebuild_queue_claim_or_error_present",
                 str(_row_id),
             )
+            if exact_disposition is None:
+                _require(
+                    attempts == 0 and last_error is None and next_retry_at is None,
+                    "rebuild_queue_claim_or_error_present",
+                    str(_row_id),
+                )
+            else:
+                _require(
+                    allow_durable_dispositions,
+                    "rebuild_queue_exact_disposition_not_authorized",
+                    str(_row_id),
+                )
         _require(str(work_kind) == "consolidate", "rebuild_queue_work_kind_invalid")
         _require(
             str(source) == f"rebuild:{manifest_ref}", "rebuild_queue_source_invalid"
         )
-        try:
-            decoded = json.loads(str(payload)) if isinstance(payload, str) else payload
-        except json.JSONDecodeError as exc:
-            raise RecoveryRefused("rebuild_queue_payload_invalid") from exc
         membership = (
             decoded.get("_rebuild_membership") if isinstance(decoded, Mapping) else None
         )
@@ -9238,6 +9490,36 @@ def _assert_exact_queue_admission(
                 == str(expected_source.get(source_field) or ""),
                 "rebuild_queue_membership_source_mismatch",
                 membership_field,
+            )
+        if exact_disposition is not None:
+            _require(
+                allow_durable_dispositions
+                and (
+                    status_text == "pending"
+                    or (
+                        allow_claimed_recovery
+                        and status_text == "claimed"
+                        and type(exact_disposition) is dict
+                        and exact_disposition.get("disposition") == "retry_scheduled"
+                    )
+                ),
+                "rebuild_queue_exact_disposition_not_authorized",
+                str(_row_id),
+            )
+            _assert_durable_exact_disposition(
+                exact_disposition,
+                row_id=str(_row_id),
+                board_id=board_id,
+                reservation_lineage_id=reservation_lineage_id,
+                source=str(source),
+                work_kind=str(work_kind),
+                artifact_type=str(artifact_type),
+                artifact_id=str(artifact_id),
+                generation=generation,
+                membership=membership,
+                attempts=attempts,
+                last_error=last_error,
+                next_retry_at=next_retry_at,
             )
     observed = tuple(observed_order)
     if allow_consumed_prefix:
@@ -9267,6 +9549,7 @@ async def _recover_exact_claims_for_resume(
     source_rows: Sequence[Mapping[str, Any]],
     ordered_source_rows: Sequence[Mapping[str, Any]],
     baseline_dlq: QueueSnapshot,
+    baseline_debt: QueueSnapshot,
     baseline_non_target: QueueSnapshot,
     admitted_identities: set[tuple[str, str]],
     cancel_event: threading.Event,
@@ -9286,11 +9569,26 @@ async def _recover_exact_claims_for_resume(
         bundle.single_writer_lock.inspect(board_id=board_id) is None,
         "writer_a_not_released_before_exact_claim_recovery",
     )
+    reservation_baseline = bundle.operation_reservation.inspect(board_id=board_id)
+    _require(
+        reservation_baseline is not None
+        and reservation_baseline.admin_lane
+        and reservation_baseline.operation
+        == f"kg02_rebuild_reservation:{manifest.manifest_ref}"
+        and reservation_baseline.expires_at_epoch > time.time(),
+        "exact_claim_recovery_reservation_authority_missing",
+    )
+    assert reservation_baseline is not None
     _assert_source_unchanged(bundle, manifest, board_id)
     _assert_unchanged_snapshot(
         _dlq_snapshot(db_path),
         baseline_dlq,
         "dead_letter_set_changed_before_exact_claim_recovery",
+    )
+    _assert_unchanged_snapshot(
+        _canonical_debt_snapshot(db_path),
+        baseline_debt,
+        "canonical_debt_changed_before_exact_claim_recovery",
     )
     _assert_unchanged_snapshot(
         _protected_queue_snapshot(
@@ -9303,7 +9601,25 @@ async def _recover_exact_claims_for_resume(
     )
 
     def recovery_authority_probe() -> bool:
-        return bool(not cancel_event.is_set() and lifetime_probe())
+        try:
+            current = bundle.operation_reservation.inspect(board_id=board_id)
+            return bool(
+                not cancel_event.is_set()
+                and lifetime_probe()
+                and current is not None
+                and current.owner_token == reservation_baseline.owner_token
+                and current.owner_id == reservation_baseline.owner_id
+                and current.operation == reservation_baseline.operation
+                and current.acquired_at_epoch == reservation_baseline.acquired_at_epoch
+                and current.admin_lane is True
+                and current.expires_at_epoch > time.time()
+                and bundle.operation_reservation.is_owner(
+                    board_id=board_id,
+                    owner_token=reservation_baseline.owner_token,
+                )
+            )
+        except BaseException:
+            return False
 
     recovered = int(
         await processor.recover_exact_claims(
@@ -9333,11 +9649,14 @@ async def _recover_exact_claims_for_resume(
     )
     _assert_exact_queue_admission(
         post_recovery,
+        board_id=board_id,
         manifest_ref=manifest.manifest_ref,
+        reservation_lineage_id=str(claim_scope.reservation_lineage_id),
         source_rows=source_rows,
         ordered_source_rows=ordered_source_rows,
         allow_consumed_prefix=True,
         allow_claimed_recovery=False,
+        allow_durable_dispositions=True,
     )
     _require(
         all(
@@ -9350,6 +9669,11 @@ async def _recover_exact_claims_for_resume(
         _dlq_snapshot(db_path),
         baseline_dlq,
         "dead_letter_set_changed_during_exact_claim_recovery",
+    )
+    _assert_unchanged_snapshot(
+        _canonical_debt_snapshot(db_path),
+        baseline_debt,
+        "canonical_debt_changed_during_exact_claim_recovery",
     )
     _assert_unchanged_snapshot(
         _protected_queue_snapshot(
@@ -9935,6 +10259,209 @@ async def _await_service_fenced(
         )
 
 
+def _assert_exact_batch_result(
+    result: Any,
+    processor: Any,
+    claim_scope: Any,
+    before: QueueSnapshot,
+    after: QueueSnapshot,
+    *,
+    board_id: str,
+    source_rows: Sequence[Mapping[str, Any]],
+) -> tuple[Any, ...]:
+    """Bind every typed disposition to the exact queue cut it describes."""
+
+    from okto_pulse.core.ports.consolidation import (
+        ExactConsolidationBatchResult,
+        ExactConsolidationDisposition,
+        ExactConsolidationResultOrigin,
+        ExactConsolidationRowResult,
+    )
+
+    _require(
+        type(result) is ExactConsolidationBatchResult
+        and result.claim_scope == claim_scope
+        and type(result.rows) is tuple,
+        "exact_processor_batch_result_invalid",
+    )
+    rows = tuple(result.rows)
+    _require(
+        all(type(row) is ExactConsolidationRowResult for row in rows),
+        "exact_processor_row_result_invalid",
+    )
+    attempted = getattr(processor, "last_attempted_count", None)
+    _require(
+        type(attempted) is int
+        and attempted >= 0
+        and result.new_attempt_count == attempted,
+        "exact_processor_batch_totality_invalid",
+        f"attempted={attempted!r} new={result.new_attempt_count}",
+    )
+    indexes = {name: index for index, name in enumerate(before.columns)}
+    required = {
+        "id",
+        "artifact_type",
+        "artifact_id",
+        "generation",
+        "payload",
+        "source",
+        "work_kind",
+    }
+    _require(required <= indexes.keys(), "consolidation_queue_schema_missing")
+    before_by_id = {str(row[indexes["id"]]): row for row in before.rows}
+    after_by_id = {str(row[indexes["id"]]): row for row in after.rows}
+    _require(
+        len(before_by_id) == len(before.rows) and len(after_by_id) == len(after.rows),
+        "exact_processor_queue_identity_duplicate",
+    )
+    command_order = _expected_queue_order(source_rows)
+    expected_by_identity = {
+        identity: source_row
+        for identity, source_row in zip(command_order, source_rows, strict=True)
+    }
+    acked_ids: set[str] = set()
+    for row in rows:
+        before_row = before_by_id.get(row.queue_id)
+        _require(
+            before_row is not None,
+            "exact_processor_row_not_in_pre_cut",
+            row.queue_id,
+        )
+        assert before_row is not None
+        identity = (row.artifact_type, row.artifact_id)
+        expected_source = expected_by_identity.get(identity)
+        _require(
+            row.board_id == board_id
+            and row.source == claim_scope.source
+            and row.reservation_lineage_id == claim_scope.reservation_lineage_id
+            and row.work_kind == claim_scope.work_kind
+            and str(before_row[indexes["artifact_type"]]) == row.artifact_type
+            and str(before_row[indexes["artifact_id"]]) == row.artifact_id
+            and before_row[indexes["generation"]] == row.generation
+            and str(before_row[indexes["source"]]) == row.source
+            and str(before_row[indexes["work_kind"]]) == row.work_kind
+            and expected_source is not None
+            and row.membership_source_ref
+            == str(expected_source.get("source_ref") or "")
+            and row.membership_source_version
+            == str(expected_source.get("source_version") or "")
+            and row.membership_content_hash
+            == str(expected_source.get("content_hash") or ""),
+            "exact_processor_row_binding_invalid",
+            row.queue_id,
+        )
+        if row.disposition is ExactConsolidationDisposition.ACKED:
+            _require(
+                row.origin is ExactConsolidationResultOrigin.NEW,
+                "exact_processor_acked_row_replayed",
+                row.queue_id,
+            )
+            acked_ids.add(row.queue_id)
+        elif row.disposition in {
+            ExactConsolidationDisposition.RETRY_SCHEDULED,
+            ExactConsolidationDisposition.TERMINAL_FAILURE,
+        }:
+            _require(
+                row.queue_id in after_by_id,
+                "exact_processor_disposition_row_missing",
+                row.queue_id,
+            )
+            after_row = after_by_id[row.queue_id]
+            raw_after_payload = after_row[indexes["payload"]]
+            try:
+                after_payload = (
+                    json.loads(raw_after_payload)
+                    if isinstance(raw_after_payload, str)
+                    else raw_after_payload
+                )
+            except (TypeError, ValueError) as exc:
+                raise RecoveryRefused(
+                    f"exact_processor_disposition_payload_invalid:{row.queue_id}"
+                ) from exc
+            marker = (
+                after_payload.get("_exact_rebuild_disposition")
+                if isinstance(after_payload, Mapping)
+                else None
+            )
+            expected_marker_values = {
+                "queue_id": row.queue_id,
+                "board_id": row.board_id,
+                "source": row.source,
+                "reservation_lineage_id": row.reservation_lineage_id,
+                "work_kind": row.work_kind,
+                "artifact_type": row.artifact_type,
+                "artifact_id": row.artifact_id,
+                "generation": row.generation,
+                "membership_source_ref": row.membership_source_ref,
+                "membership_source_version": row.membership_source_version,
+                "membership_content_hash": row.membership_content_hash,
+                "attempt_ordinal": row.attempt_ordinal,
+                "queue_attempts": row.attempt_ordinal,
+                "disposition": row.disposition.value,
+                "retryable": (
+                    row.disposition is ExactConsolidationDisposition.RETRY_SCHEDULED
+                ),
+                "mutation_state": row.mutation_state.value,
+                "error_code": row.error_code,
+                "error_message": row.error_message,
+                "next_retry_at": (
+                    row.next_retry_at.isoformat()
+                    if row.next_retry_at is not None
+                    else None
+                ),
+                "diagnostic_json": row.diagnostic_json,
+            }
+            _require(
+                type(marker) is dict
+                and all(
+                    type(marker.get(key)) is type(value) and marker.get(key) == value
+                    for key, value in expected_marker_values.items()
+                ),
+                "exact_processor_disposition_result_mismatch",
+                row.queue_id,
+            )
+            raw_before_payload = before_row[indexes["payload"]]
+            try:
+                before_payload = (
+                    json.loads(raw_before_payload)
+                    if isinstance(raw_before_payload, str)
+                    else raw_before_payload
+                )
+            except (TypeError, ValueError) as exc:
+                raise RecoveryRefused(
+                    f"exact_processor_pre_payload_invalid:{row.queue_id}"
+                ) from exc
+            before_marker = (
+                before_payload.get("_exact_rebuild_disposition")
+                if isinstance(before_payload, Mapping)
+                else None
+            )
+            _require(
+                (
+                    row.origin is ExactConsolidationResultOrigin.REPLAYED
+                    and before_marker == marker
+                )
+                or (
+                    row.origin is ExactConsolidationResultOrigin.NEW
+                    and before_marker != marker
+                ),
+                "exact_processor_disposition_origin_mismatch",
+                row.queue_id,
+            )
+        else:
+            _require(
+                row.origin is ExactConsolidationResultOrigin.NEW
+                and row.queue_id in after_by_id,
+                "exact_processor_neutral_result_invalid",
+                row.queue_id,
+            )
+    _require(
+        set(after_by_id) == set(before_by_id) - acked_ids,
+        "exact_processor_queue_identity_transition_invalid",
+    )
+    return rows
+
+
 async def _drain_exact_scope(
     service_task: asyncio.Task[Any],
     processor: Any,
@@ -9945,18 +10472,54 @@ async def _drain_exact_scope(
     board_id: str,
     source: str,
     baseline_dlq: QueueSnapshot,
+    baseline_debt: QueueSnapshot,
     baseline_non_target: QueueSnapshot,
     admitted_identities: set[tuple[str, str]],
+    source_rows: Sequence[Mapping[str, Any]],
+    ordered_source_rows: Sequence[Mapping[str, Any]],
     cancel_event: threading.Event,
     lifetime_probe: Callable[[], bool],
     timeout_seconds: float,
     poll_seconds: float,
-) -> Any:
+) -> ExactDrainOutcome:
     deadline = asyncio.get_running_loop().time() + timeout_seconds
     db_path = Path(os.environ["DATA_DIR"]) / "data" / "pulse.db"
+    reservation_baseline = bundle.operation_reservation.inspect(board_id=board_id)
+    _require(
+        reservation_baseline is not None
+        and reservation_baseline.admin_lane
+        and reservation_baseline.operation
+        == f"kg02_rebuild_reservation:{manifest.manifest_ref}"
+        and reservation_baseline.expires_at_epoch > time.time(),
+        "exact_processor_reservation_authority_missing",
+    )
+    assert reservation_baseline is not None
+
+    def reservation_authority_probe() -> bool:
+        try:
+            current = bundle.operation_reservation.inspect(board_id=board_id)
+            return bool(
+                not cancel_event.is_set()
+                and lifetime_probe()
+                and current is not None
+                and current.owner_token == reservation_baseline.owner_token
+                and current.owner_id == reservation_baseline.owner_id
+                and current.operation == reservation_baseline.operation
+                and current.acquired_at_epoch == reservation_baseline.acquired_at_epoch
+                and current.admin_lane is True
+                and current.expires_at_epoch > time.time()
+                and bundle.operation_reservation.is_owner(
+                    board_id=board_id,
+                    owner_token=reservation_baseline.owner_token,
+                )
+            )
+        except BaseException:
+            return False
+
     batches = 0
     processed_total = 0
     cancellation_wait_emitted = False
+    blocker: ExactDrainBlocker | None = None
     while not service_task.done():
         _require(lifetime_probe(), "recovery_capability_lifetime_lost")
         if cancel_event.is_set():
@@ -9971,6 +10534,11 @@ async def _drain_exact_scope(
                 _dlq_snapshot(db_path),
                 baseline_dlq,
                 "dead_letter_set_changed_during_cancellation",
+            )
+            _assert_unchanged_snapshot(
+                _canonical_debt_snapshot(db_path),
+                baseline_debt,
+                "canonical_debt_changed_during_cancellation",
             )
             _assert_unchanged_snapshot(
                 _protected_queue_snapshot(
@@ -9999,6 +10567,11 @@ async def _drain_exact_scope(
             "dead_letter_set_changed",
         )
         _assert_unchanged_snapshot(
+            _canonical_debt_snapshot(db_path),
+            baseline_debt,
+            "canonical_debt_changed",
+        )
+        _assert_unchanged_snapshot(
             _protected_queue_snapshot(
                 db_path,
                 board_id=board_id,
@@ -10007,20 +10580,134 @@ async def _drain_exact_scope(
             baseline_non_target,
             "non_target_queue_changed",
         )
-        processed = int(await processor.process_batch(claim_scope=claim_scope))
+        before = _exact_queue_rows(db_path, board_id=board_id, source=source)
+        before_depth = _active_exact_queue_depth(
+            db_path,
+            board_id=board_id,
+            source=source,
+        )
+        from okto_pulse.core.ports.consolidation import (
+            ExactConsolidationPostCommitError,
+        )
+
+        post_commit_error: ExactConsolidationPostCommitError | None = None
+        try:
+            batch_result = await processor.process_exact_batch(
+                claim_scope=claim_scope,
+                reservation_authority_probe=reservation_authority_probe,
+            )
+        except ExactConsolidationPostCommitError as exc:
+            post_commit_error = exc
+            batch_result = exc.batch_result
+        after = _exact_queue_rows(db_path, board_id=board_id, source=source)
+        rows = _assert_exact_batch_result(
+            batch_result,
+            processor,
+            claim_scope,
+            before,
+            after,
+            board_id=board_id,
+            source_rows=source_rows,
+        )
+        neutral_rows = tuple(
+            row for row in rows if row.disposition.value == "neutral_fence_loss"
+        )
+        _assert_exact_queue_admission(
+            after,
+            board_id=board_id,
+            manifest_ref=manifest.manifest_ref,
+            reservation_lineage_id=str(claim_scope.reservation_lineage_id),
+            source_rows=source_rows,
+            ordered_source_rows=ordered_source_rows,
+            allow_consumed_prefix=True,
+            allow_claimed_recovery=bool(neutral_rows),
+            allow_durable_dispositions=True,
+        )
+        after_depth = _active_exact_queue_depth(
+            db_path,
+            board_id=board_id,
+            source=source,
+        )
+        _require(
+            after_depth == before_depth - batch_result.acked_count,
+            "exact_processor_depth_transition_invalid",
+            f"before={before_depth} after={after_depth} acked={batch_result.acked_count}",
+        )
         batches += 1
-        processed_total += processed
-        if processed == 0 and not service_task.done():
-            attempted = int(getattr(processor, "last_attempted_count", 0))
-            depth = _active_exact_queue_depth(
-                db_path,
-                board_id=board_id,
-                source=source,
+        processed_total += batch_result.acked_count
+        terminal_rows = tuple(
+            row for row in rows if row.disposition.value == "terminal_failure"
+        )
+        _require(
+            len(terminal_rows) + len(neutral_rows) <= 1,
+            "exact_processor_blocking_row_cardinality_invalid",
+        )
+        if post_commit_error is not None:
+            matching = tuple(
+                row for row in rows if row.queue_id == post_commit_error.failed_queue_id
             )
             _require(
-                attempted == 0 and depth == 0,
+                len(matching) == 1,
+                "exact_processor_post_commit_identity_invalid",
+                post_commit_error.failed_queue_id,
+            )
+            failed_row = matching[0]
+            blocker = ExactDrainBlocker(
+                kind="post_commit_error",
+                queue_id=post_commit_error.failed_queue_id,
+                mutation_state=failed_row.mutation_state.value,
+                error_code=post_commit_error.error_code,
+                row_result=failed_row,
+            )
+            cancel_event.set()
+            _emit(
+                "exact_scope_post_commit_blocker",
+                queue_id=blocker.queue_id,
+                mutation_state=blocker.mutation_state,
+                error_code=blocker.error_code,
+            )
+            continue
+        if terminal_rows or neutral_rows:
+            blocking_row = (terminal_rows or neutral_rows)[0]
+            blocker = ExactDrainBlocker(
+                kind=blocking_row.disposition.value,
+                queue_id=blocking_row.queue_id,
+                mutation_state=blocking_row.mutation_state.value,
+                error_code=str(blocking_row.error_code or "exact_processor_blocked"),
+                row_result=blocking_row,
+            )
+            cancel_event.set()
+            _emit(
+                "exact_scope_terminal_disposition",
+                queue_id=blocker.queue_id,
+                disposition=blocker.kind,
+                mutation_state=blocker.mutation_state,
+                error_code=blocker.error_code,
+            )
+            continue
+        if batch_result.retry_scheduled:
+            retry_at = batch_result.earliest_retry_at
+            _require(
+                retry_at is not None
+                and retry_at.tzinfo is not None
+                and retry_at.utcoffset() is not None,
+                "exact_processor_retry_deadline_invalid",
+            )
+            remaining = deadline - asyncio.get_running_loop().time()
+            _require(remaining > 0, "rebuild_run_timeout")
+            retry_delay = max(
+                0.0,
+                (
+                    retry_at.astimezone(timezone.utc) - datetime.now(timezone.utc)
+                ).total_seconds(),
+            )
+            await asyncio.sleep(min(poll_seconds, retry_delay, remaining))
+            continue
+        if not rows and not service_task.done():
+            _require(
+                before_depth == 0 and after_depth == 0,
                 "exact_processor_made_no_progress",
-                f"attempted={attempted} depth={depth}",
+                f"depth={after_depth}",
             )
             await asyncio.sleep(poll_seconds)
     result = await service_task
@@ -10030,7 +10717,7 @@ async def _drain_exact_scope(
         processed_total=processed_total,
         service_outcome=getattr(result, "outcome", None),
     )
-    return result
+    return ExactDrainOutcome(service_result=result, blocker=blocker)
 
 
 async def _await_terminal_without_claims(
@@ -10040,6 +10727,7 @@ async def _await_terminal_without_claims(
     *,
     board_id: str,
     baseline_dlq: QueueSnapshot,
+    baseline_debt: QueueSnapshot,
     baseline_non_target: QueueSnapshot,
     admitted_identities: set[tuple[str, str]],
     cancel_event: threading.Event,
@@ -10058,6 +10746,11 @@ async def _await_terminal_without_claims(
             _dlq_snapshot(db_path),
             baseline_dlq,
             "dead_letter_set_changed_during_post_drain_resume",
+        )
+        _assert_unchanged_snapshot(
+            _canonical_debt_snapshot(db_path),
+            baseline_debt,
+            "canonical_debt_changed_during_post_drain_resume",
         )
         _assert_unchanged_snapshot(
             _protected_queue_snapshot(
@@ -10616,6 +11309,248 @@ async def _await_closed_archive_reconciliation(
     }
 
 
+def _assert_exact_blocking_compensation(
+    bundle: ServiceBundle,
+    manifest: Any,
+    result: Any,
+    blocker: ExactDrainBlocker,
+    *,
+    board_id: str,
+    db_path: Path,
+    source: str,
+    baseline_dlq: QueueSnapshot,
+    baseline_debt: QueueSnapshot,
+    baseline_non_target: QueueSnapshot,
+    admitted_identities: set[tuple[str, str]],
+    quarantine_root: Path,
+    quarantine_baseline: Mapping[str, str],
+    quarantine_baseline_ids: frozenset[str],
+    board_storage_root: Path,
+    baseline_health: Mapping[str, Any],
+) -> None:
+    """Prove Core compensated a typed blocker without promotion or debt/DLQ."""
+
+    from okto_pulse.community.adapters.rebuild_effects import CommunityRebuildEffects
+    from okto_pulse.core.kg.interfaces.rebuild_audit_storage import RebuildAuditKey
+
+    _require(
+        blocker.kind in {"terminal_failure", "neutral_fence_loss", "post_commit_error"}
+        and bool(blocker.queue_id)
+        and bool(blocker.error_code)
+        and blocker.mutation_state
+        in {"unchanged", "committed", "compensated", "ambiguous"},
+        "exact_blocking_disposition_invalid",
+    )
+    if blocker.kind == "post_commit_error":
+        _require(
+            blocker.row_result is not None
+            and blocker.row_result.queue_id == blocker.queue_id
+            and blocker.row_result.mutation_state.value == blocker.mutation_state,
+            "exact_blocking_post_commit_binding_invalid",
+        )
+    _require(
+        getattr(result, "outcome", None) == "failed"
+        and getattr(result, "reason", None) == "lifecycle_failed"
+        and getattr(result, "current_kg_generation_id", None) is None
+        and getattr(result, "promotion_outcome", None) != "promoted"
+        and getattr(result, "publishable_status", None) != "completed"
+        and getattr(result, "event_emitted", None) is False,
+        "exact_blocking_service_outcome_invalid",
+    )
+    audit_ref = str(getattr(result, "audit_ref", None) or "")
+    _require(bool(audit_ref), "exact_blocking_run_audit_missing")
+    audit = bundle.artifact_store.read_json_reference(audit_ref)
+    _require(
+        isinstance(audit, Mapping)
+        and str(audit.get("run_id") or "") == str(result.run_id)
+        and str(audit.get("board_id") or "") == board_id
+        and str(audit.get("manifest_ref") or "") == manifest.manifest_ref
+        and str(audit.get("outcome") or "") == "failed"
+        and str(audit.get("reason") or "") == "lifecycle_failed"
+        and audit.get("current_kg_generation_id") is None
+        and audit.get("promotion_outcome") != "promoted"
+        and audit.get("publishable_status") != "completed"
+        and audit.get("event_emitted") is False,
+        "exact_blocking_run_audit_invalid",
+    )
+    checkpoint = _load_checkpoint(bundle, board_id, manifest.manifest_ref)
+    _require(
+        isinstance(checkpoint, Mapping)
+        and _checkpoint_state(checkpoint) == "failed"
+        and checkpoint.get("compensation_failed_state") == "draining"
+        and checkpoint.get("compensation_failure_code") == "cancelled"
+        and checkpoint.get("compensation_failure_detail") == "cancellation requested"
+        and type(checkpoint.get("writer_handoff_count")) is int
+        and checkpoint.get("writer_handoff_count") == 1
+        and type(checkpoint.get("writer_reacquire_count")) is int
+        and checkpoint.get("writer_reacquire_count") == 1,
+        "exact_blocking_checkpoint_invalid",
+    )
+    assert isinstance(checkpoint, Mapping)
+    command = checkpoint.get("command")
+    _require(
+        isinstance(command, Mapping)
+        and str(command.get("board_id") or "") == board_id
+        and str(command.get("manifest_ref") or "") == manifest.manifest_ref,
+        "exact_blocking_checkpoint_command_invalid",
+    )
+    actions = tuple(str(value) for value in checkpoint.get("compensation_actions", ()))
+    _require(
+        "cancel_enqueued_sources" in actions
+        and "discard_candidate_generation" in actions
+        and "restore_quarantine" in actions,
+        "exact_blocking_compensation_actions_invalid",
+    )
+    receipts = checkpoint.get("receipts")
+    expected_effects = {"snapshot", "quarantine", "enqueue", "compensate"}
+    _require(
+        isinstance(receipts, Mapping)
+        and set(str(key) for key in receipts)
+        == {f"f06:{manifest.manifest_ref}:{effect}" for effect in expected_effects},
+        "exact_blocking_checkpoint_receipt_set_invalid",
+    )
+    assert isinstance(receipts, Mapping)
+    receipt_by_effect: dict[str, Mapping[str, Any]] = {}
+    for effect in expected_effects:
+        effect_key = f"f06:{manifest.manifest_ref}:{effect}"
+        receipt = receipts.get(effect_key)
+        _require(
+            isinstance(receipt, Mapping)
+            and receipt.get("ok") is True
+            and str(receipt.get("effect") or "") == effect
+            and str(receipt.get("effect_key") or "") == effect_key,
+            "exact_blocking_effect_receipt_invalid",
+            effect,
+        )
+        assert isinstance(receipt, Mapping)
+        _require(
+            bundle.artifact_store.read_json(
+                RebuildAuditKey(
+                    namespace="run_audit",
+                    board_id=board_id,
+                    artifact_id=CommunityRebuildEffects._effect_id(effect_key),
+                )
+            )
+            == dict(receipt),
+            "exact_blocking_effect_artifact_mismatch",
+            effect,
+        )
+        receipt_by_effect[effect] = receipt
+    compensate = receipt_by_effect["compensate"]
+    _require(
+        str(compensate.get("code") or "") == "compensated",
+        "exact_blocking_compensation_receipt_failed",
+    )
+    details = compensate.get("details")
+    queue_details = details.get("queue") if isinstance(details, Mapping) else None
+    restore = (
+        details.get("quarantine_restore") if isinstance(details, Mapping) else None
+    )
+    discard = details.get("candidate_discard") if isinstance(details, Mapping) else None
+    _require(
+        isinstance(details, Mapping)
+        and tuple(str(value) for value in details.get("actions", ())) == actions
+        and isinstance(queue_details, Mapping)
+        and int(queue_details.get("active_remaining", -1)) == 0
+        and isinstance(restore, Mapping)
+        and restore.get("ok") is True
+        and isinstance(discard, Mapping)
+        and str(discard.get("status") or "")
+        in {"already_absent", "discarded", "discarded_by_atomic_backup_swap"},
+        "exact_blocking_compensation_details_invalid",
+    )
+    _require(
+        _active_exact_queue_depth(db_path, board_id=board_id, source=source) == 0
+        and _active_rebuild_queue_depth(db_path, board_id=board_id) == 0,
+        "exact_blocking_queue_still_active",
+    )
+    adoption = _compensated_queue_adoption_from_checkpoint(
+        checkpoint,
+        board_id=board_id,
+        manifest_ref=manifest.manifest_ref,
+    )
+    _require(adoption is not None, "exact_blocking_queue_adoption_missing")
+    assert adoption is not None
+    _assert_protected_admission_is_noop(
+        db_path,
+        board_id=board_id,
+        admitted_identities=admitted_identities,
+        authorized_rebuild_source="__exact_blocking_no_active_source__",
+        compensated_adoption=adoption,
+    )
+    _assert_unchanged_snapshot(
+        _dlq_snapshot(db_path),
+        baseline_dlq,
+        "exact_blocking_dead_letter_set_changed",
+    )
+    _assert_unchanged_snapshot(
+        _canonical_debt_snapshot(db_path),
+        baseline_debt,
+        "exact_blocking_canonical_debt_changed",
+    )
+    _assert_unchanged_snapshot(
+        _protected_queue_snapshot(
+            db_path,
+            board_id=board_id,
+            admitted_identities=admitted_identities,
+        ),
+        baseline_non_target,
+        "exact_blocking_non_target_queue_changed",
+    )
+    _assert_tree_preserved(quarantine_root, quarantine_baseline)
+    quarantine_details = receipt_by_effect["quarantine"].get("details")
+    original_quarantine_id = (
+        str(quarantine_details.get("quarantine_ref") or "")
+        if isinstance(quarantine_details, Mapping)
+        else ""
+    )
+    restore_report = restore.get("report") if isinstance(restore, Mapping) else None
+    backup_quarantine_id = (
+        str(restore_report.get("backup_quarantine_id") or "")
+        if isinstance(restore_report, Mapping)
+        else ""
+    )
+    _require(
+        isinstance(restore_report, Mapping)
+        and restore_report.get("applied") is True
+        and restore_report.get("open_validated") is True
+        and str(restore_report.get("board_id") or "") == board_id
+        and bool(original_quarantine_id),
+        "exact_blocking_quarantine_restore_invalid",
+    )
+    expected_new_quarantines = {
+        value for value in (original_quarantine_id, backup_quarantine_id) if value
+    }
+    _require(
+        _quarantine_ids(quarantine_root) - quarantine_baseline_ids
+        == expected_new_quarantines,
+        "exact_blocking_quarantine_set_invalid",
+    )
+    terminal_board_storage = _snapshot_closed_board_storage(
+        board_id=board_id,
+        board_storage_root=board_storage_root,
+        phase="exact_blocking_terminal",
+    )
+    post_health = _offline_cold_graph_health(
+        bundle,
+        board_id=board_id,
+        board_storage_root=board_storage_root,
+        board_storage_snapshot=terminal_board_storage,
+    )
+    _require(
+        post_health.get("current_kg_generation_id")
+        == baseline_health.get("current_kg_generation_id")
+        and bool(post_health.get("graph_storage_exists"))
+        == bool(baseline_health.get("graph_storage_exists")),
+        "exact_blocking_graph_or_generation_changed",
+    )
+    _require(
+        bundle.single_writer_lock.inspect(board_id=board_id) is None
+        and bundle.operation_reservation.inspect(board_id=board_id) is None,
+        "exact_blocking_coordination_manifest_present",
+    )
+
+
 async def _assert_terminal_gates(
     composition: Any,
     bundle: ServiceBundle,
@@ -10627,6 +11562,7 @@ async def _assert_terminal_gates(
     db_path: Path,
     source: str,
     baseline_dlq: QueueSnapshot,
+    baseline_debt: QueueSnapshot,
     baseline_non_target: QueueSnapshot,
     admitted_identities: set[tuple[str, str]],
     expected_source_rows: Sequence[Mapping[str, Any]],
@@ -10839,6 +11775,11 @@ async def _assert_terminal_gates(
         _dlq_snapshot(db_path),
         baseline_dlq,
         "terminal_dead_letter_set_changed",
+    )
+    _assert_unchanged_snapshot(
+        _canonical_debt_snapshot(db_path),
+        baseline_debt,
+        "terminal_canonical_debt_changed",
     )
     _assert_unchanged_snapshot(
         _protected_queue_snapshot(
@@ -11460,6 +12401,7 @@ async def _execute_under_serve_lock(
                 admitted_identities=admitted_identities,
             )
             initial_dlq = _dlq_snapshot(db_path)
+            initial_canonical_debt = _canonical_debt_snapshot(db_path)
             initial_board_dlq_ids = _dlq_ids_for_board(db_path, args.board_id)
             logical_database_baseline: Mapping[str, str] = {}
             compensation_queue_baseline: QueueSnapshot | None = None
@@ -11679,7 +12621,7 @@ async def _execute_under_serve_lock(
                         is None,
                         "writer_a_not_released_before_drain",
                     )
-                source_rows = _assert_admission_checkpoint(
+                source_rows, f06_run_id = _assert_admission_checkpoint(
                     checkpoint,
                     board_id=args.board_id,
                     manifest_ref=manifest.manifest_ref,
@@ -11690,6 +12632,12 @@ async def _execute_under_serve_lock(
                     _canonical_source_rows(source_rows)
                     == _canonical_source_rows(expected_source_rows),
                     "checkpoint_dependency_closure_mismatch",
+                )
+                reservation_lineage_id = _exact_reservation_lineage_id(
+                    board_id=args.board_id,
+                    manifest_ref=manifest.manifest_ref,
+                    f06_run_id=f06_run_id,
+                    confirmation_ref=confirmation_ref,
                 )
                 source = f"rebuild:{manifest.manifest_ref}"
                 claim_scope: Any | None = None
@@ -11706,6 +12654,7 @@ async def _execute_under_serve_lock(
                         board_id=args.board_id,
                         source=source,
                         work_kind="consolidate",
+                        reservation_lineage_id=reservation_lineage_id,
                     )
                 exact_rows = _exact_queue_rows(
                     db_path,
@@ -11716,11 +12665,14 @@ async def _execute_under_serve_lock(
                 if requires_claims:
                     claimed_count = _assert_exact_queue_admission(
                         exact_rows,
+                        board_id=args.board_id,
                         manifest_ref=manifest.manifest_ref,
+                        reservation_lineage_id=reservation_lineage_id,
                         source_rows=source_rows,
                         ordered_source_rows=ordered_source_rows,
                         allow_consumed_prefix=plan.mode == "resume",
                         allow_claimed_recovery=plan.mode == "resume",
+                        allow_durable_dispositions=plan.mode == "resume",
                     )
                 else:
                     _require(
@@ -11767,12 +12719,14 @@ async def _execute_under_serve_lock(
                         source_rows=source_rows,
                         ordered_source_rows=ordered_source_rows,
                         baseline_dlq=initial_dlq,
+                        baseline_debt=initial_canonical_debt,
                         baseline_non_target=non_target,
                         admitted_identities=admitted_identities,
                         cancel_event=cancel_event,
                         lifetime_probe=lifetime_probe,
                     )
 
+                exact_blocker: ExactDrainBlocker | None = None
                 if early_result is not None:
                     result = early_result
                 elif requires_claims:
@@ -11780,7 +12734,7 @@ async def _execute_under_serve_lock(
                         processor is not None and claim_scope is not None,
                         "exact_claim_processor_missing",
                     )
-                    result = await _drain_exact_scope(
+                    drain_outcome = await _drain_exact_scope(
                         service_task,
                         processor,
                         claim_scope,
@@ -11789,13 +12743,18 @@ async def _execute_under_serve_lock(
                         board_id=args.board_id,
                         source=source,
                         baseline_dlq=initial_dlq,
+                        baseline_debt=initial_canonical_debt,
                         baseline_non_target=non_target,
                         admitted_identities=admitted_identities,
+                        source_rows=source_rows,
+                        ordered_source_rows=ordered_source_rows,
                         cancel_event=cancel_event,
                         lifetime_probe=lifetime_probe,
                         timeout_seconds=args.run_timeout_seconds,
                         poll_seconds=args.poll_seconds,
                     )
+                    result = drain_outcome.service_result
+                    exact_blocker = drain_outcome.blocker
                 else:
                     result = await _await_terminal_without_claims(
                         service_task,
@@ -11803,6 +12762,7 @@ async def _execute_under_serve_lock(
                         manifest,
                         board_id=args.board_id,
                         baseline_dlq=initial_dlq,
+                        baseline_debt=initial_canonical_debt,
                         baseline_non_target=non_target,
                         admitted_identities=admitted_identities,
                         cancel_event=cancel_event,
@@ -11812,6 +12772,33 @@ async def _execute_under_serve_lock(
                     )
                 service_task = None
                 _require(lifetime_probe(), "offline_lifetime_lost_before_terminal_gate")
+                if exact_blocker is not None:
+                    _assert_exact_blocking_compensation(
+                        bundle,
+                        manifest,
+                        result,
+                        exact_blocker,
+                        board_id=args.board_id,
+                        db_path=db_path,
+                        source=source,
+                        baseline_dlq=initial_dlq,
+                        baseline_debt=initial_canonical_debt,
+                        baseline_non_target=non_target,
+                        admitted_identities=admitted_identities,
+                        quarantine_root=quarantine_root,
+                        quarantine_baseline=quarantine_baseline,
+                        quarantine_baseline_ids=quarantine_baseline_ids,
+                        board_storage_root=board_storage_root,
+                        baseline_health=raw_health,
+                    )
+                    _assert_schema_unchanged(db_path, schema_fingerprint)
+                    _assert_worker_registry_never_started(composition)
+                    raise RecoveryRefused(
+                        "exact_processor_blocked:"
+                        f"{exact_blocker.kind}:"
+                        f"{exact_blocker.queue_id}:"
+                        f"{exact_blocker.error_code}"
+                    )
                 terminal = await _assert_terminal_gates(
                     composition,
                     bundle,
@@ -11822,6 +12809,7 @@ async def _execute_under_serve_lock(
                     db_path=db_path,
                     source=source,
                     baseline_dlq=initial_dlq,
+                    baseline_debt=initial_canonical_debt,
                     baseline_non_target=non_target,
                     admitted_identities=admitted_identities,
                     expected_source_rows=expected_source_rows,
