@@ -324,7 +324,7 @@ build time so the runtime is offline-capable.
 - `.github/workflows/ci.yml` — PR + main: pytest gate is currently dropped
   (same caveat as release); runs build verify on the Dockerfile to catch
   Dockerfile/dep regressions before tagging
-- `.github/workflows/cla.yml` — CLA signing, do not touch
+- `.github/workflows/claude.yml` — CLA signing, do not touch
 
 ## Out of scope (deliberately)
 
