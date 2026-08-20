@@ -268,6 +268,55 @@ interface FlowHealthResponse {
   }>;
 }
 
+interface SpecReadinessResponse {
+  query_fingerprint: string;
+  as_of: string;
+  specs: Array<{
+    spec_id: string;
+    edition: number;
+    validation: {
+      state: string;
+      measures: {
+        confidence: number | null;
+        clarity: number | null;
+        assertiveness: number | null;
+        decidability: number | null;
+        ambiguity: number | null;
+      };
+      attempts: number;
+      lifecycle_ready: boolean | null;
+    };
+    lifecycle: { spec_pending_validation: boolean | null };
+  }>;
+}
+
+interface PolicyResourceReadinessResponse {
+  query_fingerprint: string;
+  as_of: string;
+  specs: Array<{
+    spec_id: string;
+    edition: number;
+    policy: {
+      totals: {
+        native_pass: number;
+        blocking_pending: number;
+        blocking_failed: number;
+        stale: number;
+        inconsistent: number;
+      };
+    };
+    resources: {
+      l1: Array<{ resource_type: string; state: string }>;
+      l2: Array<{
+        resource_type: string;
+        state: string;
+        covered_only_by_cancelled_task: boolean | null;
+      }>;
+      covered_only_by_cancelled_task: number;
+    };
+  }>;
+}
+
 interface CoverageSpec {
   spec_id: string;
   title: string;
@@ -492,6 +541,14 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
   const [flowHealthLoading, setFlowHealthLoading] = useState(true);
   const [flowHealthRetry, setFlowHealthRetry] = useState(0);
   const [flowHealthExporting, setFlowHealthExporting] = useState(false);
+  const [readiness, setReadiness] = useState<{
+    spec: SpecReadinessResponse;
+    policyResource: PolicyResourceReadinessResponse;
+  } | null>(null);
+  const [readinessError, setReadinessError] = useState<string | null>(null);
+  const [readinessLoading, setReadinessLoading] = useState(true);
+  const [readinessRetry, setReadinessRetry] = useState(0);
+  const [readinessExporting, setReadinessExporting] = useState<'spec' | 'policy-resource' | null>(null);
   const [entities, setEntities] = useState<Record<EntityTab, EntityListResponse | null>>({
     spec: null,
     ideation: null,
@@ -600,6 +657,31 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, from, to, flowHealthRetry]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setReadinessLoading(true);
+    setReadinessError(null);
+    Promise.all([api.getSpecReadiness(boardId, from, to), api.getPolicyResourceReadiness(boardId, from, to)])
+      .then(([spec, policyResource]) => {
+        if (!cancelled) {
+          setReadiness({
+            spec: spec as SpecReadinessResponse,
+            policyResource: policyResource as PolicyResourceReadinessResponse
+          });
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setReadinessError(err instanceof Error ? err.message : 'Failed to load readiness');
+      })
+      .finally(() => {
+        if (!cancelled) setReadinessLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, from, to, readinessRetry]);
+
   // Load entities separately — responds to tab, search, page changes
   useEffect(() => {
     const search = entitySearch || undefined;
@@ -702,6 +784,21 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
   const hasOrCoverageMetrics = coverage.some((s) =>
     s.ors_total !== undefined || s.or_task_linkage_pct !== undefined || s.skip_or_coverage === true
   );
+
+  const readinessSummary = readiness
+    ? {
+        specs: readiness.spec.specs.length,
+        current: readiness.spec.specs.filter((item) => item.validation.state === 'current').length,
+        ready: readiness.spec.specs.filter((item) => item.validation.lifecycle_ready === true).length,
+        pending: readiness.spec.specs.filter((item) => item.lifecycle.spec_pending_validation === true).length,
+        nativePass: readiness.policyResource.specs.reduce((total, item) => total + item.policy.totals.native_pass, 0),
+        policyPending: readiness.policyResource.specs.reduce((total, item) => total + item.policy.totals.blocking_pending, 0),
+        policyFailed: readiness.policyResource.specs.reduce((total, item) => total + item.policy.totals.blocking_failed, 0),
+        resourcesProvided: readiness.policyResource.specs.reduce((total, item) => total + item.resources.l1.filter((resource) => resource.state === 'provided').length, 0),
+        resourcesMissing: readiness.policyResource.specs.reduce((total, item) => total + item.resources.l1.filter((resource) => resource.state === 'missing').length, 0),
+        cancelledOnly: readiness.policyResource.specs.reduce((total, item) => total + item.resources.covered_only_by_cancelled_task, 0)
+      }
+    : null;
 
   return (
     <div className="space-y-6">
@@ -957,6 +1054,107 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
               </table>
             </div>
             <p className="text-[10px] text-gray-400">policy v{flowHealth.effective_policy.version} · as_of {flowHealth.as_of} · query {flowHealth.query_fingerprint.slice(0, 12)}…</p>
+          </div>
+        )}
+      </section>
+
+      <section aria-labelledby="readiness-heading" className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 id="readiness-heading" className="text-sm font-semibold text-gray-700 dark:text-gray-200">
+              Spec &amp; Policy Readiness
+            </h3>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Current-edition validation, native policy outcomes and governed L1/L2 resource evidence.</p>
+          </div>
+          <div className="flex flex-wrap justify-end gap-2">
+            {(['spec', 'policy-resource'] as const).map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                disabled={readinessExporting !== null || readinessLoading || readiness === null}
+                onClick={async () => {
+                  if (readinessExporting !== null) return;
+                  setReadinessExporting(kind);
+                  try {
+                    await api.exportReadinessCsv(boardId, kind, from, to);
+                  } catch (err) {
+                    setReadinessError(err instanceof Error ? err.message : 'Readiness export failed');
+                  } finally {
+                    setReadinessExporting(null);
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-gray-200 dark:border-gray-600 disabled:opacity-50"
+              >
+                <Download className="w-3.5 h-3.5" />
+                {readinessExporting === kind ? 'Exporting…' : kind === 'spec' ? 'Spec CSV' : 'Policy/resource CSV'}
+              </button>
+            ))}
+          </div>
+        </div>
+        {readinessLoading && (
+          <p className="mt-4 text-xs text-gray-500" role="status">
+            Loading readiness…
+          </p>
+        )}
+        {!readinessLoading && readinessError && (
+          <div className="mt-4 flex items-center justify-between rounded-md bg-red-50 dark:bg-red-900/20 px-3 py-2" role="alert">
+            <span className="text-xs text-red-700 dark:text-red-300">{readinessError}</span>
+            <button type="button" onClick={() => setReadinessRetry((value) => value + 1)} className="inline-flex items-center gap-1 text-xs text-red-700 dark:text-red-300">
+              <RefreshCw className="w-3.5 h-3.5" /> Retry
+            </button>
+          </div>
+        )}
+        {!readinessLoading && !readinessError && readiness && readinessSummary && (
+          <div className="mt-4 space-y-3">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3" aria-label="Readiness facts">
+              {[
+                ['Ready specs', `${readinessSummary.ready}/${readinessSummary.specs}`],
+                ['Pending validation', readinessSummary.pending],
+                ['Native policy pass', readinessSummary.nativePass],
+                ['Resources provided', readinessSummary.resourcesProvided],
+                ['Resources missing', readinessSummary.resourcesMissing]
+              ].map(([label, value]) => (
+                <div key={String(label)} className="rounded-md bg-gray-50 dark:bg-gray-900/40 p-3">
+                  <p className="text-[10px] uppercase text-gray-400">{label}</p>
+                  <p className="mt-1 text-lg font-semibold text-gray-800 dark:text-gray-100">{value}</p>
+                </div>
+              ))}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-gray-200 dark:border-gray-700 text-left text-[10px] uppercase text-gray-400">
+                    <th className="py-2">Spec</th>
+                    <th>Edition</th>
+                    <th>Validation</th>
+                    <th>Attempts</th>
+                    <th>Policy</th>
+                    <th>Resources L1</th>
+                    <th>Cancelled-only</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {readiness.spec.specs.map((spec) => {
+                    const policy = readiness.policyResource.specs.find((item) => item.spec_id === spec.spec_id && item.edition === spec.edition);
+                    const provided = policy?.resources.l1.filter((item) => item.state === 'provided').length ?? 0;
+                    return (
+                      <tr key={`${spec.spec_id}:${spec.edition}`} className="border-b border-gray-100 dark:border-gray-700/50">
+                        <td className="py-2 font-medium">{spec.spec_id}</td>
+                        <td>{spec.edition}</td>
+                        <td>{spec.validation.lifecycle_ready === true ? 'ready' : spec.validation.state}</td>
+                        <td>{spec.validation.attempts}</td>
+                        <td>{policy ? `${policy.policy.totals.native_pass} pass / ${policy.policy.totals.blocking_pending} pending / ${policy.policy.totals.blocking_failed} failed` : 'unavailable'}</td>
+                        <td>{policy ? `${provided}/${policy.resources.l1.length}` : '—'}</td>
+                        <td>{policy?.resources.covered_only_by_cancelled_task ?? '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-[10px] text-gray-400">
+              current {readinessSummary.current} · policy pending {readinessSummary.policyPending} · policy failed {readinessSummary.policyFailed} · cancelled-only resources {readinessSummary.cancelledOnly} · as_of {readiness.spec.as_of} · query {readiness.spec.query_fingerprint.slice(0, 12)}…
+            </p>
           </div>
         )}
       </section>

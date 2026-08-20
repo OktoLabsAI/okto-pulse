@@ -9,6 +9,7 @@ from sqlalchemy import func, or_, select
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ActivityLog,
+    ArchitectureDesign,
     Board,
     Card,
     CardDependency,
@@ -17,7 +18,9 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     IdeationQAItem,
     Refinement,
     RefinementKnowledgeBase,
+    ResourceNotApplicable,
     Spec,
+    SpecKnowledgeBase,
     Sprint,
     Story,
     StoryIdeationLink,
@@ -33,6 +36,7 @@ from okto_pulse.core.ports.analytics_read import (
 
 _MODELS = {
     "activity_log": ActivityLog,
+    "architecture_design": ArchitectureDesign,
     "board": Board,
     "card": Card,
     "card_dependency": CardDependency,
@@ -41,7 +45,9 @@ _MODELS = {
     "ideation_qa_item": IdeationQAItem,
     "refinement": Refinement,
     "refinement_knowledge_base": RefinementKnowledgeBase,
+    "resource_not_applicable": ResourceNotApplicable,
     "spec": Spec,
+    "spec_knowledge_base": SpecKnowledgeBase,
     "sprint": Sprint,
     "story": Story,
     "story_ideation_link": StoryIdeationLink,

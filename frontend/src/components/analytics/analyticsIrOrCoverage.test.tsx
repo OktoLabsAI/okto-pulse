@@ -11,6 +11,9 @@ const mockApi = vi.hoisted(() => ({
   exportCanonicalBoardCoverageCsv: vi.fn(),
   getBoardFlowHealth: vi.fn(),
   exportBoardFlowHealthCsv: vi.fn(),
+  getSpecReadiness: vi.fn(),
+  getPolicyResourceReadiness: vi.fn(),
+  exportReadinessCsv: vi.fn(),
   getBoardAnalyticsAgents: vi.fn(),
   getBoardAnalyticsValidations: vi.fn(),
   getBoardAnalyticsSprints: vi.fn(),
@@ -186,6 +189,73 @@ describe('analytics IR/OR coverage UI', () => {
         rework: [],
       }],
     });
+    mockApi.getSpecReadiness.mockResolvedValue({
+      query_fingerprint: 'd'.repeat(64),
+      as_of: '2026-05-28T12:00:00.000000Z',
+      specs: [
+        {
+          spec_id: 'spec-1',
+          edition: 3,
+          validation: {
+            state: 'current',
+            measures: {
+              confidence: 80,
+              clarity: 81,
+              assertiveness: 82,
+              decidability: 83,
+              ambiguity: 12
+            },
+            attempts: 2,
+            lifecycle_ready: true
+          },
+          lifecycle: { spec_pending_validation: false }
+        }
+      ]
+    });
+    mockApi.getPolicyResourceReadiness.mockResolvedValue({
+      query_fingerprint: 'e'.repeat(64),
+      as_of: '2026-05-28T12:00:00.000000Z',
+      specs: [
+        {
+          spec_id: 'spec-1',
+          edition: 3,
+          policy: {
+            totals: {
+              native_pass: 1,
+              blocking_pending: 0,
+              blocking_failed: 0,
+              stale: 0,
+              inconsistent: 0
+            }
+          },
+          resources: {
+            l1: [
+              { resource_type: 'architecture', state: 'provided' },
+              { resource_type: 'mockup', state: 'missing' },
+              { resource_type: 'knowledge_base', state: 'provided' }
+            ],
+            l2: [],
+            covered_only_by_cancelled_task: 1
+          }
+        }
+      ]
+    });
+  });
+
+  it('renders canonical Spec, policy and resource readiness independently', async () => {
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+
+    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+
+    const heading = await screen.findByRole('heading', {
+      name: 'Spec & Policy Readiness'
+    });
+    const panel = heading.closest('section');
+    expect(panel).not.toBeNull();
+    expect(within(panel as HTMLElement).getByText('1/1')).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText('1 pass / 0 pending / 0 failed')).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText('2/3')).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText(/cancelled-only resources 1/)).toBeInTheDocument();
   });
 
   it('renders IR and OR coverage bars when the board payload exposes them', async () => {

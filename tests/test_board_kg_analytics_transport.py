@@ -205,3 +205,95 @@ async def test_flow_health_rest_and_csv_share_governed_episode_facts(
     assert rest is flow
     assert rows["$.items[0].current_episode.entry_event_id"] == "event-2"
     assert rows["$.items[0].current_episode.age_seconds"] == 288000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "use_case", "rest_handler", "export_handler", "fact_path", "fact_value"),
+    (
+        (
+            "spec",
+            analytics_api.SpecReadinessAnalyticsUseCase,
+            analytics_api.canonical_spec_readiness,
+            analytics_api.canonical_spec_readiness_export,
+            "$.specs[0].validation.measures.confidence",
+            83,
+        ),
+        (
+            "policy-resource",
+            analytics_api.PolicyResourceReadinessAnalyticsUseCase,
+            analytics_api.canonical_policy_resource_readiness,
+            analytics_api.canonical_policy_resource_readiness_export,
+            "$.specs[0].resources.covered_only_by_cancelled_task",
+            1,
+        ),
+    ),
+)
+async def test_readiness_rest_and_csv_share_exact_canonical_facts(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    use_case: type,
+    rest_handler,
+    export_handler,
+    fact_path: str,
+    fact_value: object,
+) -> None:
+    readiness = {
+        "contract_version": "1",
+        "query_fingerprint": "d" * 64,
+        "as_of": "2026-08-20T12:00:00.000000Z",
+        "specs": [
+            {
+                "spec_id": "spec-1",
+                "edition": 3,
+                "validation": {
+                    "state": "current",
+                    "measures": {"confidence": 83},
+                    "lifecycle_ready": True,
+                },
+                "lifecycle": {"spec_pending_validation": False},
+                "policy": {
+                    "totals": {
+                        "native_pass": 1,
+                        "blocking_pending": 0,
+                        "blocking_failed": 0,
+                    }
+                },
+                "resources": {
+                    "l1": [{"resource_type": "architecture", "state": "provided"}],
+                    "l2": [],
+                    "covered_only_by_cancelled_task": 1,
+                },
+            }
+        ],
+    }
+
+    async def execute(_self, command, *, actor, uow):
+        assert command.board_id == "board-1"
+        assert actor.actor_id == "user-1"
+        return SimpleNamespace(data=readiness)
+
+    monkeypatch.setattr(use_case, "execute", execute)
+    kwargs = {
+        "date_from": "2026-08-19",
+        "date_to": "2026-08-20",
+        "as_of": "2026-08-20T12:00:00Z",
+        "user_id": "user-1",
+        "uow": object(),
+    }
+    rest = await rest_handler("board-1", **kwargs)
+    response = await export_handler("board-1", **kwargs)
+    chunks = [chunk async for chunk in response.body_iterator]
+    body = "".join(
+        chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in chunks
+    )
+    rows = {
+        row["path"]: json.loads(row["json_value"])
+        for row in csv.DictReader(io.StringIO(body))
+    }
+
+    assert rest is readiness
+    assert rows[fact_path] == fact_value
+    assert (
+        f"board-board-1-{kind}-readiness.csv" in response.headers["content-disposition"]
+    )
