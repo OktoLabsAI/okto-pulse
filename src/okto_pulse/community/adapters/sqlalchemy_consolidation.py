@@ -60,6 +60,7 @@ from okto_pulse.core.ports.consolidation import (
     CurrentQualityAssessmentSummary,
     CurrentResearchDecisionSummary,
     CurrentSpecDependencyProjection,
+    ExactConsolidationAckIntegrityError,
     ExactConsolidationAckReceipt,
     ExactConsolidationCompensationError,
     ExactConsolidationCompensationReceipt,
@@ -226,30 +227,34 @@ def _exact_ack_receipt_from_row(
     row: ExactRebuildConsolidationAckJournal,
 ) -> ExactConsolidationAckReceipt:
     try:
-        return ExactConsolidationAckReceipt(
-            queue_id=str(row.queue_id),
-            board_id=str(row.board_id),
-            source=str(row.source),
-            reservation_lineage_id=str(row.reservation_lineage_id),
-            work_kind=str(row.work_kind),
-            artifact_type=str(row.artifact_type),
-            artifact_id=str(row.artifact_id),
-            generation=int(row.generation),
-            membership_source_ref=str(row.membership_source_ref),
-            membership_source_version=str(row.membership_source_version),
-            membership_content_hash=str(row.membership_content_hash),
-            consolidation_session_id=str(row.consolidation_session_id),
-            outbox_event_id=str(row.outbox_event_id),
-            generation_event_id=str(row.generation_event_id),
-            previous_materialization_generation=str(
-                row.previous_materialization_generation
-            ),
-            materialization_generation=str(row.materialization_generation),
-            node_ref_count=int(row.node_ref_count),
-            node_refs_sha256=str(row.node_refs_sha256),
-            receipt_sha256=str(row.receipt_sha256),
+        return ExactConsolidationAckReceipt.from_payload(
+            {
+                "schema": "exact_consolidation_ack_receipt.v2",
+                "queue_id": row.queue_id,
+                "board_id": row.board_id,
+                "source": row.source,
+                "reservation_lineage_id": row.reservation_lineage_id,
+                "work_kind": row.work_kind,
+                "artifact_type": row.artifact_type,
+                "artifact_id": row.artifact_id,
+                "generation": row.generation,
+                "membership_source_ref": row.membership_source_ref,
+                "membership_source_version": row.membership_source_version,
+                "membership_content_hash": row.membership_content_hash,
+                "audit_content_hash": row.audit_content_hash,
+                "consolidation_session_id": row.consolidation_session_id,
+                "outbox_event_id": row.outbox_event_id,
+                "generation_event_id": row.generation_event_id,
+                "previous_materialization_generation": (
+                    row.previous_materialization_generation
+                ),
+                "materialization_generation": row.materialization_generation,
+                "node_ref_count": row.node_ref_count,
+                "node_refs_sha256": row.node_refs_sha256,
+                "receipt_sha256": row.receipt_sha256,
+            }
         )
-    except (TypeError, ValueError) as exc:
+    except (AttributeError, TypeError, ValueError) as exc:
         raise ExactConsolidationCompensationError(
             "exact_consolidation_ack_journal_invalid"
         ) from exc
@@ -1785,7 +1790,9 @@ class CommunitySqlAlchemyConsolidationPersistence:
             )
         )
         if int(already_compensated or 0) != 0:
-            raise RuntimeError("exact_consolidation_ack_after_compensation")
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_after_compensation"
+            )
 
         prior_receipts = await self.list_exact_rebuild_ack_receipts(
             context,
@@ -1794,7 +1801,9 @@ class CommunitySqlAlchemyConsolidationPersistence:
             reservation_lineage_id=reservation_lineage_id,
         )
         if any(receipt.queue_id == entry_id for receipt in prior_receipts):
-            raise RuntimeError("exact_consolidation_ack_queue_reused")
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_queue_reused"
+            )
 
         audit = await context.get(
             ConsolidationAudit,
@@ -1812,7 +1821,6 @@ class CommunitySqlAlchemyConsolidationPersistence:
             or type(audit.committed_at) is not datetime
             or _aware_utc(audit.started_at) > _aware_utc(audit.committed_at)
             or not _is_sha256(audit.content_hash)
-            or audit.content_hash != membership_content_hash
             or audit.undo_status != "none"
             or audit.undone_at is not None
             or audit.error_details is not None
@@ -1826,7 +1834,10 @@ class CommunitySqlAlchemyConsolidationPersistence:
                 )
             )
         ):
-            raise RuntimeError("exact_consolidation_ack_audit_invalid")
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_audit_invalid"
+            )
+        audit_content_hash = audit.content_hash
 
         refs = tuple(
             (
@@ -1855,9 +1866,13 @@ class CommunitySqlAlchemyConsolidationPersistence:
             or ref.operation != "add"
             for ref in refs
         ):
-            raise RuntimeError("exact_consolidation_ack_node_refs_invalid")
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_node_refs_invalid"
+            )
         if len(refs) != audit.nodes_added:
-            raise RuntimeError("exact_consolidation_ack_node_ref_counts_invalid")
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_node_ref_counts_invalid"
+            )
 
         outboxes = tuple(
             (
@@ -1871,7 +1886,9 @@ class CommunitySqlAlchemyConsolidationPersistence:
             .all()
         )
         if len(outboxes) != 1:
-            raise RuntimeError("exact_consolidation_ack_outbox_invalid")
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_outbox_invalid"
+            )
         outbox = outboxes[0]
         expected_outbox_payload = {
             "artifact_id": artifact_id,
@@ -1893,7 +1910,9 @@ class CommunitySqlAlchemyConsolidationPersistence:
             or outbox.retry_count != 0
             or outbox.last_error is not None
         ):
-            raise RuntimeError("exact_consolidation_ack_outbox_invalid")
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_outbox_invalid"
+            )
 
         generation_events = tuple(
             (
@@ -1913,7 +1932,9 @@ class CommunitySqlAlchemyConsolidationPersistence:
             .all()
         )
         if len(generation_events) != 1:
-            raise RuntimeError("exact_consolidation_ack_generation_event_invalid")
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_generation_event_invalid"
+            )
         generation_event = generation_events[0]
         payload = generation_event.payload_json
         if (
@@ -1938,14 +1959,18 @@ class CommunitySqlAlchemyConsolidationPersistence:
                 generation_event.occurred_at, audit.committed_at
             )
         ):
-            raise RuntimeError("exact_consolidation_ack_generation_event_invalid")
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_generation_event_invalid"
+            )
         handler_count = await context.scalar(
             select(func.count())
             .select_from(DomainEventHandlerExecution)
             .where(DomainEventHandlerExecution.event_id == generation_event.id)
         )
         if int(handler_count or 0) != 0:
-            raise RuntimeError("exact_consolidation_ack_generation_event_published")
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_generation_event_published"
+            )
 
         from okto_pulse.community.adapters.materialization_health import (
             materialization_generation_key,
@@ -1966,7 +1991,9 @@ class CommunitySqlAlchemyConsolidationPersistence:
                 and prior_receipts[-1].materialization_generation != previous_generation
             )
         ):
-            raise RuntimeError("exact_consolidation_ack_generation_head_invalid")
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_generation_head_invalid"
+            )
 
         node_refs_sha256 = _canonical_node_refs_sha256(audit=audit, refs=refs)
         receipt = ExactConsolidationAckReceipt.create(
@@ -1981,6 +2008,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
             membership_source_ref=membership_source_ref,
             membership_source_version=membership_source_version,
             membership_content_hash=membership_content_hash,
+            audit_content_hash=audit_content_hash,
             consolidation_session_id=consolidation_session_id,
             outbox_event_id=str(outbox.event_id),
             generation_event_id=str(generation_event.id),
@@ -2002,6 +2030,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
                 membership_source_ref=receipt.membership_source_ref,
                 membership_source_version=receipt.membership_source_version,
                 membership_content_hash=receipt.membership_content_hash,
+                audit_content_hash=receipt.audit_content_hash,
                 consolidation_session_id=receipt.consolidation_session_id,
                 outbox_event_id=receipt.outbox_event_id,
                 generation_event_id=receipt.generation_event_id,
@@ -2324,7 +2353,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
                     or type(audit.committed_at) is not datetime
                     or _aware_utc(audit.started_at) > _aware_utc(audit.committed_at)
                     or not _is_sha256(audit.content_hash)
-                    or audit.content_hash != item.membership_content_hash
+                    or audit.content_hash != item.audit_content_hash
                     or audit.undo_status != expected_undo
                     or (compensated_at is None and audit.undone_at is not None)
                     or (

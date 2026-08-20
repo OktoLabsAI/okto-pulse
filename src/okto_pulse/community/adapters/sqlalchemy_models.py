@@ -7671,6 +7671,7 @@ class ExactRebuildConsolidationAckJournal(Base):
     membership_source_ref: Mapped[str] = mapped_column(String(255), nullable=False)
     membership_source_version: Mapped[str] = mapped_column(String(64), nullable=False)
     membership_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    audit_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     consolidation_session_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("consolidation_audit.session_id", ondelete="RESTRICT"),

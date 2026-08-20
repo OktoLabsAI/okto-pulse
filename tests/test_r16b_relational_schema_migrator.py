@@ -1057,9 +1057,20 @@ def test_v030_installed_schema_upgrades_to_exact_semantic_v2_and_replays(
                 "ORDER BY type, name"
             )
         )
+        exact_ack_columns = tuple(
+            (str(row[1]), str(row[2]), int(row[3]))
+            for row in connection.execute(
+                "PRAGMA table_xinfo(exact_rebuild_consolidation_ack_journal)"
+            )
+        )
     # This exact installed-fixture upgrade is the terminal Community schema,
     # including migration-owned indexes and triggers (not merely ORM tables).
     assert len(schema_objects) == 832
+    assert exact_ack_columns[10:13] == (
+        ("membership_content_hash", "VARCHAR(64)", 1),
+        ("audit_content_hash", "VARCHAR(64)", 1),
+        ("consolidation_session_id", "VARCHAR(36)", 1),
+    )
     assert tuple(
         (object_type, name, table_name)
         for object_type, name, table_name, _sql in schema_objects

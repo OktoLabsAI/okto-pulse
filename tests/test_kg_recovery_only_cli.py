@@ -747,7 +747,7 @@ def test_exact_relational_schema_upgrade_is_exact_and_idempotent(
     assert hashlib.sha256(artifact.read_bytes()).hexdigest() == artifact_before
 
 
-@pytest.mark.parametrize("wrong_shape", ("partial", "weakened"))
+@pytest.mark.parametrize("wrong_shape", ("partial", "weakened", "v1"))
 def test_exact_relational_schema_upgrade_refuses_partial_or_wrong_shape(
     tmp_path: Path,
     wrong_shape: str,
@@ -761,11 +761,22 @@ def test_exact_relational_schema_upgrade_refuses_partial_or_wrong_shape(
             connection.execute(
                 "CREATE TABLE exact_rebuild_consolidation_ack_journal (id TEXT)"
             )
-        else:
+        elif wrong_shape == "weakened":
             connection.execute(
                 "CREATE TABLE exact_rebuild_consolidation_compensations "
                 "(compensation_id TEXT PRIMARY KEY)"
             )
+        else:
+            statements, _expected = recovery._exact_relational_schema_contract()
+            v2_column = "\n\taudit_content_hash VARCHAR(64) NOT NULL, "
+            v1_statements = tuple(
+                statement.replace(v2_column, "")
+                if "CREATE TABLE exact_rebuild_consolidation_ack_journal" in statement
+                else statement
+                for statement in statements
+            )
+            assert v1_statements != statements
+            connection.executescript(";".join(v1_statements))
     schema_before = recovery._sqlite_schema_fingerprint(db_path)
     logical_before = recovery._sqlite_logical_fingerprints(db_path)
 
@@ -2685,6 +2696,7 @@ def test_exact_batch_preserves_card_source_ref_alias(
         membership_source_ref=str(source_row["source_ref"]),
         membership_source_version="2",
         membership_content_hash="6" * 64,
+        audit_content_hash="9" * 64,
         consolidation_session_id="kgses_card",
         outbox_event_id="outbox_card",
         generation_event_id="event_card",
@@ -3082,6 +3094,7 @@ async def test_exact_drain_validates_partial_ack_then_compensates_post_commit_er
         membership_source_ref="spec:exact-spec",
         membership_source_version="7",
         membership_content_hash="a" * 64,
+        audit_content_hash="c" * 64,
         consolidation_session_id="kgses_exact_post_commit",
         outbox_event_id="outbox_exact_post_commit",
         generation_event_id="event_exact_post_commit",
@@ -3243,6 +3256,7 @@ def test_exact_post_commit_blocker_passes_full_compensation_gate(
         membership_source_ref="spec:post-commit-spec",
         membership_source_version="1",
         membership_content_hash="8" * 64,
+        audit_content_hash="6" * 64,
         consolidation_session_id="kgses_post_commit",
         outbox_event_id="outbox_post_commit",
         generation_event_id="event_post_commit",
@@ -4209,6 +4223,7 @@ async def _seed_real_exact_alias_success_chain(
             outbox_event_id = f"outbox-alias-{ordinal}"
             generation_event_id = f"00000000-0000-0000-0000-{ordinal + 200:012d}"
             content_hash = f"{ordinal:x}" * 64
+            audit_content_hash = f"{ordinal + 4:x}" * 64
             materialization_generation = f"mg_alias_{ordinal}"
             occurred_at = datetime(
                 2026,
@@ -4263,7 +4278,7 @@ async def _seed_real_exact_alias_success_chain(
                             nodes_superseded=0,
                             edges_added=ordinal,
                             summary_text=f"alias-{ordinal}",
-                            content_hash=content_hash,
+                            content_hash=audit_content_hash,
                             undo_status="none",
                         ),
                         KuzuNodeRef(
@@ -4922,6 +4937,7 @@ def test_exact_relational_success_gate_reproves_real_ack_and_tamper_matrix(
                     membership_source_ref="spec:extra-artifact",
                     membership_source_version="1",
                     membership_content_hash="e" * 64,
+                    audit_content_hash="d" * 64,
                     consolidation_session_id="session-extra",
                     outbox_event_id="outbox-extra",
                     generation_event_id="00000000-0000-0000-0000-000000000102",
@@ -4950,7 +4966,7 @@ def test_exact_relational_success_gate_reproves_real_ack_and_tamper_matrix(
                         0,
                         0,
                         0,
-                        "e" * 64,
+                        "d" * 64,
                         "none",
                     ),
                 )

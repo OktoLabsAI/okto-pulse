@@ -29,6 +29,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     KuzuNodeRef,
 )
 from okto_pulse.core.ports.consolidation import (
+    ExactConsolidationAckIntegrityError,
     ExactConsolidationAckReceipt,
     ExactConsolidationCompensationError,
 )
@@ -89,6 +90,9 @@ async def _stage_and_ack(
     outbox_event_id = f"outbox-{ordinal}"
     generation_event_id = f"00000000-0000-0000-0000-{ordinal:012d}"
     membership_hash = f"{ordinal + 1:x}" * 64
+    effective_audit_content_hash = (
+        "e" * 64 if audit_content_hash is None else audit_content_hash
+    )
     payload = {
         "_rebuild_membership": {
             "run_id": SOURCE.removeprefix("rebuild:"),
@@ -113,9 +117,7 @@ async def _stage_and_ack(
         nodes_superseded=3,
         edges_added=4,
         summary_text=f"summary-{ordinal}",
-        content_hash=(
-            membership_hash if audit_content_hash is None else audit_content_hash
-        ),
+        content_hash=effective_audit_content_hash,
         undo_status="none",
     )
     session.add_all(
@@ -316,9 +318,13 @@ async def test_exact_ack_journals_effects_and_queue_delete_atomically(exact_stor
             materialization_generation="mg_1",
         )
         assert receipt is not None
+        assert receipt.membership_content_hash != receipt.audit_content_hash
+        assert receipt.audit_content_hash == "e" * 64
         assert await session.get(ConsolidationQueue, "queue-1") is None
         journal = await session.get(ExactRebuildConsolidationAckJournal, "queue-1")
         assert journal is not None
+        assert journal.membership_content_hash == receipt.membership_content_hash
+        assert journal.audit_content_hash == receipt.audit_content_hash
         assert journal.receipt_sha256 == receipt.receipt_sha256
         await session.commit()
 
@@ -525,21 +531,23 @@ async def test_exact_compensation_rejects_any_domain_handler_execution(exact_sto
 
 
 @pytest.mark.asyncio
-async def test_exact_ack_rejects_audit_membership_content_hash_drift(exact_store):
+async def test_exact_ack_rejects_invalid_audit_hash_with_typed_integrity_error(
+    exact_store,
+):
     factory, adapter = exact_store
     async with factory() as session:
-        with pytest.raises(
-            RuntimeError,
-            match="exact_consolidation_ack_audit_invalid",
-        ):
+        with pytest.raises(ExactConsolidationAckIntegrityError) as captured:
             await _stage_and_ack(
                 session,
                 adapter,
                 ordinal=1,
                 previous_generation="unmaterialized-v1",
                 materialization_generation="mg_1",
-                audit_content_hash="f" * 64,
+                audit_content_hash="not-a-sha256",
             )
+        assert captured.value.code == "exact_consolidation_ack_audit_invalid"
+        assert await session.get(ConsolidationQueue, "queue-1") is not None
+        assert await session.get(ExactRebuildConsolidationAckJournal, "queue-1") is None
         await session.rollback()
 
     async with factory() as session:
@@ -549,6 +557,39 @@ async def test_exact_ack_rejects_audit_membership_content_hash_drift(exact_store
             )
             == 0
         )
+
+
+@pytest.mark.asyncio
+async def test_exact_ack_loader_rejects_tampered_v2_journal_row(exact_store):
+    factory, adapter = exact_store
+    async with factory() as session:
+        receipt = await _stage_and_ack(
+            session,
+            adapter,
+            ordinal=1,
+            previous_generation="unmaterialized-v1",
+            materialization_generation="mg_1",
+        )
+        assert receipt is not None
+        await session.commit()
+
+    async with factory() as session:
+        journal = await session.get(ExactRebuildConsolidationAckJournal, "queue-1")
+        assert journal is not None
+        journal.audit_content_hash = "f" * 64
+        await session.commit()
+
+    async with factory() as session:
+        with pytest.raises(
+            ExactConsolidationCompensationError,
+            match="exact_consolidation_ack_journal_invalid",
+        ):
+            await adapter.list_exact_rebuild_ack_receipts(
+                session,
+                board_id=BOARD_ID,
+                source=SOURCE,
+                reservation_lineage_id=LINEAGE,
+            )
 
 
 @pytest.mark.asyncio

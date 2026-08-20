@@ -2950,6 +2950,7 @@ def _capture_exact_relational_scope_proof(
         "membership_source_ref",
         "membership_source_version",
         "membership_content_hash",
+        "audit_content_hash",
         "consolidation_session_id",
         "outbox_event_id",
         "generation_event_id",
@@ -3231,6 +3232,7 @@ def _capture_exact_relational_baseline(
         "membership_source_ref",
         "membership_source_version",
         "membership_content_hash",
+        "audit_content_hash",
         "consolidation_session_id",
         "outbox_event_id",
         "generation_event_id",
@@ -3381,7 +3383,7 @@ def _ordered_exact_ack_receipts_from_rows(
     unordered: list[Any] = []
     for row in rows:
         payload = {
-            "schema": "exact_consolidation_ack_receipt.v1",
+            "schema": "exact_consolidation_ack_receipt.v2",
             **dict(zip(fields, row, strict=True)),
         }
         try:
@@ -3888,7 +3890,7 @@ def _assert_exact_relational_success_state(
                     "edges_added",
                 )
             )
-            and audit["content_hash"] == item.membership_content_hash
+            and audit["content_hash"] == item.audit_content_hash
             and audit["undo_status"] == "none"
             and audit["undone_at"] is None
             and audit["error_details"] is None
@@ -4176,7 +4178,7 @@ def _assert_exact_relational_compensation_state(
             unordered: list[Any] = []
             for row in rows:
                 payload = {
-                    "schema": "exact_consolidation_ack_receipt.v1",
+                    "schema": "exact_consolidation_ack_receipt.v2",
                     **dict(zip(journal_fields, row, strict=True)),
                 }
                 try:
@@ -4390,7 +4392,7 @@ def _assert_exact_relational_compensation_state(
                 type(audit[index]) is int and int(audit[index]) >= 0
                 for index in range(7, 11)
             )
-            and str(audit[12]) == receipt.membership_content_hash
+            and str(audit[12]) == receipt.audit_content_hash
             and str(audit[13]) == "undone"
             and audit[14] is not None
             and audit[15] is None
