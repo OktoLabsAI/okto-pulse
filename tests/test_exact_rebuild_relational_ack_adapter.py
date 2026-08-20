@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event, func, select
+from sqlalchemy import event, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from okto_pulse.community.adapters.materialization_health import (
@@ -39,6 +40,28 @@ BOARD_ID = "exact-relational-board"
 OTHER_BOARD_ID = "exact-relational-other-board"
 SOURCE = "rebuild:rebuild_manifest_exact_adapter"
 LINEAGE = "a" * 64
+
+
+def _queue_payload(ordinal: int) -> dict[str, object]:
+    artifact_id = f"artifact-{ordinal}"
+    return {
+        "_rebuild_membership": {
+            "run_id": SOURCE.removeprefix("rebuild:"),
+            "source_ref": f"spec:{artifact_id}",
+            "source_version": str(ordinal),
+            "content_hash": f"{ordinal + 1:x}" * 64,
+        }
+    }
+
+
+def _compact_json(value: object) -> str:
+    return json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 @pytest_asyncio.fixture
@@ -82,6 +105,9 @@ async def _stage_and_ack(
     materialization_generation: str,
     expected_attempts: int = 0,
     audit_content_hash: str | None = None,
+    compact_queue_payload: bool = False,
+    commit_before_ack: bool = False,
+    expect_receipt: bool | None = None,
 ) -> ExactConsolidationAckReceipt | None:
     artifact_id = f"artifact-{ordinal}"
     queue_id = f"queue-{ordinal}"
@@ -93,14 +119,7 @@ async def _stage_and_ack(
     effective_audit_content_hash = (
         "e" * 64 if audit_content_hash is None else audit_content_hash
     )
-    payload = {
-        "_rebuild_membership": {
-            "run_id": SOURCE.removeprefix("rebuild:"),
-            "source_ref": f"spec:{artifact_id}",
-            "source_version": str(ordinal),
-            "content_hash": membership_hash,
-        }
-    }
+    payload = _queue_payload(ordinal)
     occurred_at = datetime(2026, 8, 16, 12, ordinal, tzinfo=timezone.utc)
     audit = ConsolidationAudit(
         session_id=consolidation_session_id,
@@ -192,6 +211,23 @@ async def _stage_and_ack(
     else:
         head.value = materialization_generation
     await session.flush()
+    if compact_queue_payload:
+        compact_payload_text = _compact_json(payload)
+        await session.execute(
+            text(
+                "UPDATE consolidation_queue SET payload = :payload WHERE id = :queue_id"
+            ),
+            {"payload": compact_payload_text, "queue_id": queue_id},
+        )
+        assert (
+            await session.scalar(
+                text("SELECT payload FROM consolidation_queue WHERE id = :queue_id"),
+                {"queue_id": queue_id},
+            )
+            == compact_payload_text
+        )
+    if commit_before_ack:
+        await session.commit()
 
     receipt = await adapter.ack_exact_rebuild_commit(
         session,
@@ -224,7 +260,10 @@ async def _stage_and_ack(
         },
         reservation_authority_probe=lambda: True,
     )
-    if expected_attempts == 0:
+    should_expect_receipt = (
+        expected_attempts == 0 if expect_receipt is None else expect_receipt
+    )
+    if should_expect_receipt:
         assert type(receipt) is ExactConsolidationAckReceipt
     else:
         assert receipt is None
@@ -335,6 +374,109 @@ async def test_exact_ack_journals_effects_and_queue_delete_atomically(exact_stor
             source=SOURCE,
             reservation_lineage_id=LINEAGE,
         ) == (receipt,)
+
+
+@pytest.mark.asyncio
+async def test_exact_ack_accepts_compact_raw_admission_payload(exact_store):
+    factory, adapter = exact_store
+    async with factory() as session:
+        receipt = await _stage_and_ack(
+            session,
+            adapter,
+            ordinal=1,
+            previous_generation="unmaterialized-v1",
+            materialization_generation="mg_1",
+            compact_queue_payload=True,
+        )
+        assert receipt is not None
+        assert await session.get(ConsolidationQueue, "queue-1") is None
+        journal = await session.get(ExactRebuildConsolidationAckJournal, "queue-1")
+        assert journal is not None
+        assert journal.receipt_sha256 == receipt.receipt_sha256
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("semantic_change", (False, True))
+async def test_exact_ack_raw_payload_drift_after_capture_rolls_back_atomically(
+    exact_store,
+    semantic_change: bool,
+) -> None:
+    factory, adapter = exact_store
+    ordinal = 1
+    queue_id = f"queue-{ordinal}"
+    original_payload = _queue_payload(ordinal)
+    original_raw = _compact_json(original_payload)
+    if semantic_change:
+        replacement_payload = {**original_payload, "tampered": True}
+        replacement_raw = _compact_json(replacement_payload)
+    else:
+        replacement_raw = json.dumps(
+            original_payload,
+            allow_nan=False,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    assert replacement_raw != original_raw
+
+    async_engine = factory.kw["bind"]
+    replaced = False
+
+    def _replace_payload_before_delete(
+        _connection,
+        cursor,
+        statement,
+        _parameters,
+        _context,
+        _executemany,
+    ) -> None:
+        nonlocal replaced
+        if replaced or not statement.lstrip().upper().startswith(
+            "DELETE FROM CONSOLIDATION_QUEUE"
+        ):
+            return
+        cursor.execute(
+            "UPDATE consolidation_queue SET payload = ? WHERE id = ?",
+            (replacement_raw, queue_id),
+        )
+        replaced = True
+
+    event.listen(
+        async_engine.sync_engine,
+        "before_cursor_execute",
+        _replace_payload_before_delete,
+    )
+    try:
+        async with factory() as session:
+            receipt = await _stage_and_ack(
+                session,
+                adapter,
+                ordinal=ordinal,
+                previous_generation="unmaterialized-v1",
+                materialization_generation="mg_1",
+                compact_queue_payload=True,
+                commit_before_ack=True,
+                expect_receipt=False,
+            )
+            assert receipt is None
+            assert replaced is True
+            await session.rollback()
+    finally:
+        event.remove(
+            async_engine.sync_engine,
+            "before_cursor_execute",
+            _replace_payload_before_delete,
+        )
+
+    async with factory() as session:
+        assert (
+            await session.scalar(
+                text("SELECT payload FROM consolidation_queue WHERE id = :queue_id"),
+                {"queue_id": queue_id},
+            )
+            == original_raw
+        )
+        assert await session.get(ConsolidationQueue, queue_id) is not None
+        assert await session.get(ExactRebuildConsolidationAckJournal, queue_id) is None
 
 
 @pytest.mark.asyncio

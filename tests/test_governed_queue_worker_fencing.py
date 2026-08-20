@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import event, select
+from sqlalchemy import event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from okto_pulse.community.adapters.sqlalchemy_base import Base
@@ -1193,7 +1194,7 @@ async def test_exact_pending_inventory_includes_delayed_rows_in_claim_order(
 
 
 @pytest.mark.asyncio
-async def test_exact_disposition_save_is_full_state_and_authority_cas(
+async def test_exact_disposition_save_accepts_compact_raw_payload_with_full_state_cas(
     queue_store,
     monkeypatch,
 ) -> None:
@@ -1254,6 +1255,27 @@ async def test_exact_disposition_save_is_full_state_and_authority_cas(
             )
         )
         await session.commit()
+        compact_expected_payload = json.dumps(
+            expected_payload,
+            allow_nan=False,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        await session.execute(
+            text(
+                "UPDATE consolidation_queue SET payload = :payload WHERE id = :row_id"
+            ),
+            {"payload": compact_expected_payload, "row_id": row_id},
+        )
+        await session.commit()
+        assert (
+            await session.scalar(
+                text("SELECT payload FROM consolidation_queue WHERE id = :row_id"),
+                {"row_id": row_id},
+            )
+            == compact_expected_payload
+        )
 
         async def reservation(_context, *, board_id: str):  # noqa: ANN001
             assert board_id == BOARD_ID
@@ -1295,7 +1317,7 @@ async def test_exact_disposition_save_is_full_state_and_authority_cas(
         assert stored.payload == payload
         assert stored.attempts == 1
         assert stored.claim_token is None
-        assert authority_calls == 2
+        assert authority_calls == 3
         await session.commit()
 
         unchanged = await adapter.save_exact_rebuild_disposition(

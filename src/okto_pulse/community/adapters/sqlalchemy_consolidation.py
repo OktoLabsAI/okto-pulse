@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from sqlalchemy import and_, case, delete, exists, func, or_, select, update
+from sqlalchemy import Text, and_, case, cast, delete, exists, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased, selectinload
@@ -1742,15 +1742,24 @@ class CommunitySqlAlchemyConsolidationPersistence:
             retry_predicate,
             deletion_fence,
         )
-        claimed = (
+        claimed_result = (
             await context.execute(
-                select(ConsolidationQueue).where(*claim_predicates).with_for_update()
+                select(
+                    ConsolidationQueue,
+                    cast(ConsolidationQueue.payload, Text).label(
+                        "claimed_payload_text"
+                    ),
+                )
+                .where(*claim_predicates)
+                .with_for_update()
             )
-        ).scalar_one_or_none()
-        if claimed is None:
+        ).one_or_none()
+        if claimed_result is None:
             return None
+        claimed, claimed_payload_text = claimed_result
         if (
             type(claimed.payload) is not dict
+            or type(claimed_payload_text) is not str
             or _canonical_json(claimed.payload) != expected_payload_json
             or type(claimed.attempts) is not int
             or claimed.attempts != expected_attempts
@@ -2047,12 +2056,14 @@ class CommunitySqlAlchemyConsolidationPersistence:
         if not _exact_authority_valid(reservation_authority_probe):
             return None
 
-        # Reuse the physically loaded JSON value in the final CAS. This keeps
-        # SQLite text-backed JSON exact while the pre-check above is canonical.
+        # Bind the final CAS to the exact SQLite JSON text captured by the
+        # locked read.  Admission writes compact canonical JSON directly;
+        # rebinding the Python dict through SQLAlchemy's JSON serializer would
+        # add whitespace and make an unchanged row compare unequal.
         result = await context.execute(
             delete(ConsolidationQueue).where(
                 *claim_predicates,
-                ConsolidationQueue.payload == claimed.payload,
+                cast(ConsolidationQueue.payload, Text) == claimed_payload_text,
             )
         )
         if int(result.rowcount or 0) != 1:
@@ -2781,6 +2792,11 @@ class CommunitySqlAlchemyConsolidationPersistence:
             or not callable(reservation_authority_probe)
         ):
             raise TypeError("exact_rebuild_disposition_transition_invalid")
+        try:
+            expected_payload_json = _canonical_json(expected_payload)
+            _canonical_json(payload)
+        except (TypeError, ValueError) as exc:
+            raise TypeError("exact_rebuild_disposition_transition_invalid") from exc
 
         try:
             authority_live = reservation_authority_probe() is True
@@ -2818,24 +2834,49 @@ class CommunitySqlAlchemyConsolidationPersistence:
             if expected_next_retry_at is None
             else ConsolidationQueue.next_retry_at == expected_next_retry_at
         )
+        prior_state_predicates = (
+            ConsolidationQueue.id == entry_id,
+            ConsolidationQueue.status == "claimed",
+            ConsolidationQueue.claim_token == claim_token,
+            ConsolidationQueue.board_id == board_id,
+            ConsolidationQueue.artifact_type == artifact_type,
+            ConsolidationQueue.artifact_id == artifact_id,
+            ConsolidationQueue.source == source,
+            ConsolidationQueue.work_kind == work_kind,
+            ConsolidationQueue.generation == generation,
+            delete_event_predicate,
+            ConsolidationQueue.attempts == expected_attempts,
+            prior_error_predicate,
+            prior_retry_predicate,
+        )
+        captured_payload_text = (
+            await context.execute(
+                select(cast(ConsolidationQueue.payload, Text))
+                .where(*prior_state_predicates)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if type(captured_payload_text) is not str:
+            return None
+        try:
+            captured_payload = json.loads(captured_payload_text)
+            captured_payload_json = _canonical_json(captured_payload)
+        except (TypeError, ValueError):
+            return None
+        if (
+            type(captured_payload) is not dict
+            or captured_payload_json != expected_payload_json
+        ):
+            return None
+        if not _exact_authority_valid(reservation_authority_probe):
+            return None
+
         row = (
             await context.execute(
                 update(ConsolidationQueue)
                 .where(
-                    ConsolidationQueue.id == entry_id,
-                    ConsolidationQueue.status == "claimed",
-                    ConsolidationQueue.claim_token == claim_token,
-                    ConsolidationQueue.board_id == board_id,
-                    ConsolidationQueue.artifact_type == artifact_type,
-                    ConsolidationQueue.artifact_id == artifact_id,
-                    ConsolidationQueue.source == source,
-                    ConsolidationQueue.work_kind == work_kind,
-                    ConsolidationQueue.generation == generation,
-                    delete_event_predicate,
-                    ConsolidationQueue.attempts == expected_attempts,
-                    prior_error_predicate,
-                    prior_retry_predicate,
-                    ConsolidationQueue.payload == expected_payload,
+                    *prior_state_predicates,
+                    cast(ConsolidationQueue.payload, Text) == captured_payload_text,
                 )
                 .values(
                     status="pending",
