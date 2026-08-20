@@ -11,6 +11,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 from types import SimpleNamespace
 from typing import Mapping
@@ -3592,6 +3593,8 @@ def test_exact_post_commit_blocker_passes_full_compensation_gate(
         board_storage_root=board_storage_root,
         baseline_health=health,
         exact_relational_baseline=exact_relational_baseline,
+        expected_writer_handoff_count=1,
+        expected_writer_reacquire_count=1,
     )
     assert relational_calls == [exact_relational_binding]
 
@@ -3664,6 +3667,38 @@ def test_exact_post_commit_blocker_passes_full_compensation_gate(
     event.update(original_event)
 
 
+def _waiter_reservation(
+    manifest_ref: str,
+    *,
+    acquired_at_epoch: float,
+    owner_token: str = "reservation-token",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        admin_lane=True,
+        operation=f"kg02_rebuild_reservation:{manifest_ref}",
+        expires_at_epoch=time.time() + 60,
+        owner_token=owner_token,
+        owner_id="reservation-owner",
+        acquired_at_epoch=acquired_at_epoch,
+    )
+
+
+class _WaiterReservationPort:
+    def __init__(self, current: object | None = None) -> None:
+        self.current = current
+
+    def inspect(self, *, board_id: str):  # noqa: ANN201
+        assert board_id == BOARD_ID
+        return self.current
+
+    def is_owner(self, *, board_id: str, owner_token: str) -> bool:
+        return bool(
+            board_id == BOARD_ID
+            and self.current is not None
+            and owner_token == getattr(self.current, "owner_token", None)
+        )
+
+
 @pytest.mark.asyncio
 async def test_drain_waiter_requires_durable_writer_handoff(
     tmp_path: Path,
@@ -3681,11 +3716,18 @@ async def test_drain_waiter_requires_durable_writer_handoff(
     service_finish = asyncio.Event()
     handoff_zero_observed = asyncio.Event()
     depth_reads: list[str] = []
+    manifest_ref = "manifest_handoff"
+    reservation_port = _WaiterReservationPort()
+    not_before = time.time()
 
     async def service_run() -> object:
         release_entered.set()
         await release_allowed.wait()
         checkpoint["writer_handoff_count"] = 1
+        reservation_port.current = _waiter_reservation(
+            manifest_ref,
+            acquired_at_epoch=not_before + 0.001,
+        )
         await service_finish.wait()
         return SimpleNamespace(outcome="completed", reason="test")
 
@@ -3708,11 +3750,16 @@ async def test_drain_waiter_requires_durable_writer_handoff(
     waiter = asyncio.create_task(
         recovery._wait_for_admission_or_post_drain(
             service_task,
-            SimpleNamespace(),
+            SimpleNamespace(operation_reservation=reservation_port),
             board_id=BOARD_ID,
-            manifest_ref="manifest_handoff",
+            manifest_ref=manifest_ref,
             timeout_seconds=1.0,
             poll_seconds=0.001,
+            reservation_not_before_epoch=not_before,
+            preexisting_reservation=None,
+            expected_reservation_owner_id="reservation-owner",
+            baseline_writer_handoff_count=0,
+            baseline_writer_reacquire_count=0,
         )
     )
     try:
@@ -3723,7 +3770,7 @@ async def test_drain_waiter_requires_durable_writer_handoff(
         assert depth_reads == []
 
         release_allowed.set()
-        observed, early_result, requires_claims = await asyncio.wait_for(
+        observed, early_result, requires_claims, reservation = await asyncio.wait_for(
             waiter,
             timeout=1.0,
         )
@@ -3732,6 +3779,7 @@ async def test_drain_waiter_requires_durable_writer_handoff(
         assert observed["writer_reacquire_count"] == 0
         assert early_result is None
         assert requires_claims is True
+        assert reservation is reservation_port.current
         assert depth_reads
     finally:
         release_allowed.set()
@@ -3768,6 +3816,7 @@ async def test_drain_waiter_refuses_service_done_after_handoff(
     )
     service_task = asyncio.create_task(service_run())
     await service_task
+    not_before = time.time()
 
     with pytest.raises(
         recovery.RecoveryRefused,
@@ -3775,11 +3824,16 @@ async def test_drain_waiter_refuses_service_done_after_handoff(
     ):
         await recovery._wait_for_admission_or_post_drain(
             service_task,
-            SimpleNamespace(),
+            SimpleNamespace(operation_reservation=_WaiterReservationPort()),
             board_id=BOARD_ID,
             manifest_ref="manifest_handoff",
             timeout_seconds=1.0,
             poll_seconds=0.001,
+            reservation_not_before_epoch=not_before,
+            preexisting_reservation=None,
+            expected_reservation_owner_id="reservation-owner",
+            baseline_writer_handoff_count=1,
+            baseline_writer_reacquire_count=0,
         )
 
 
@@ -3813,15 +3867,21 @@ async def test_drain_waiter_propagates_service_cancellation_after_handoff(
     service_task = asyncio.create_task(service_run())
     service_task.cancel()
     await asyncio.gather(service_task, return_exceptions=True)
+    not_before = time.time()
 
     with pytest.raises(asyncio.CancelledError):
         await recovery._wait_for_admission_or_post_drain(
             service_task,
-            SimpleNamespace(),
+            SimpleNamespace(operation_reservation=_WaiterReservationPort()),
             board_id=BOARD_ID,
             manifest_ref="manifest_handoff",
             timeout_seconds=1.0,
             poll_seconds=0.001,
+            reservation_not_before_epoch=not_before,
+            preexisting_reservation=None,
+            expected_reservation_owner_id="reservation-owner",
+            baseline_writer_handoff_count=1,
+            baseline_writer_reacquire_count=0,
         )
 
 
@@ -3853,6 +3913,7 @@ async def test_drain_waiter_times_out_while_handoff_is_uncommitted(
         lambda *_args, **_kwargs: pytest.fail("queue depth read before handoff"),
     )
     service_task = asyncio.create_task(service_run())
+    not_before = time.time()
     try:
         with pytest.raises(
             recovery.RecoveryRefused,
@@ -3860,15 +3921,528 @@ async def test_drain_waiter_times_out_while_handoff_is_uncommitted(
         ):
             await recovery._wait_for_admission_or_post_drain(
                 service_task,
-                SimpleNamespace(),
+                SimpleNamespace(operation_reservation=_WaiterReservationPort()),
                 board_id=BOARD_ID,
                 manifest_ref="manifest_handoff",
                 timeout_seconds=0.01,
                 poll_seconds=0.001,
+                reservation_not_before_epoch=not_before,
+                preexisting_reservation=None,
+                expected_reservation_owner_id="reservation-owner",
+                baseline_writer_handoff_count=0,
+                baseline_writer_reacquire_count=0,
             )
     finally:
         service_task.cancel()
         await asyncio.gather(service_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_drain_waiter_does_not_adopt_stale_checkpoint_before_fresh_reservation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    manifest_ref = "manifest_resume"
+    checkpoint = {
+        "state": "draining",
+        "writer_handoff_count": 1,
+        "writer_reacquire_count": 0,
+    }
+    preexisting = _waiter_reservation(
+        manifest_ref,
+        acquired_at_epoch=time.time() - 60,
+        owner_token="old-token",
+    )
+    reservation_port = _WaiterReservationPort(preexisting)
+    publish_fresh = asyncio.Event()
+    publish_handoff = asyncio.Event()
+    service_finish = asyncio.Event()
+    depth_reads: list[str] = []
+    not_before = time.time()
+
+    async def service_run() -> object:
+        await publish_fresh.wait()
+        reservation_port.current = _waiter_reservation(
+            manifest_ref,
+            acquired_at_epoch=not_before + 0.001,
+            owner_token="fresh-token",
+        )
+        await publish_handoff.wait()
+        checkpoint["writer_handoff_count"] = 2
+        await service_finish.wait()
+        return SimpleNamespace(outcome="completed", reason="test")
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        recovery, "_load_checkpoint", lambda *_args, **_kwargs: checkpoint
+    )
+
+    def active_depth(*_args, **_kwargs) -> int:  # noqa: ANN002, ANN003
+        depth_reads.append("read")
+        return 2
+
+    monkeypatch.setattr(recovery, "_active_exact_queue_depth", active_depth)
+    service_task = asyncio.create_task(service_run())
+    waiter = asyncio.create_task(
+        recovery._wait_for_admission_or_post_drain(
+            service_task,
+            SimpleNamespace(operation_reservation=reservation_port),
+            board_id=BOARD_ID,
+            manifest_ref=manifest_ref,
+            timeout_seconds=1.0,
+            poll_seconds=0.001,
+            reservation_not_before_epoch=not_before,
+            preexisting_reservation=preexisting,
+            expected_reservation_owner_id="reservation-owner",
+            baseline_writer_handoff_count=1,
+            baseline_writer_reacquire_count=0,
+        )
+    )
+    try:
+        await asyncio.sleep(0.01)
+        assert waiter.done() is False
+        assert depth_reads == []
+
+        publish_fresh.set()
+        await asyncio.sleep(0.01)
+        assert waiter.done() is False
+        assert depth_reads == []
+
+        publish_handoff.set()
+        observed, early_result, requires_claims, reservation = await asyncio.wait_for(
+            waiter, timeout=1.0
+        )
+        assert observed == checkpoint
+        assert early_result is None
+        assert requires_claims is True
+        assert reservation.owner_token == "fresh-token"
+        assert depth_reads == ["read"]
+    finally:
+        publish_fresh.set()
+        publish_handoff.set()
+        service_finish.set()
+        await asyncio.gather(service_task, return_exceptions=True)
+
+
+def test_reservation_reproof_rejects_same_operation_successor() -> None:
+    manifest_ref = "manifest_resume"
+    baseline = _waiter_reservation(
+        manifest_ref,
+        acquired_at_epoch=time.time(),
+        owner_token="token-a",
+    )
+    successor = _waiter_reservation(
+        manifest_ref,
+        acquired_at_epoch=baseline.acquired_at_epoch + 1,
+        owner_token="token-b",
+    )
+    bundle = SimpleNamespace(operation_reservation=_WaiterReservationPort(successor))
+
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="administrative_reservation_authority_changed",
+    ):
+        recovery._assert_reservation_exact(
+            bundle,
+            board_id=BOARD_ID,
+            manifest_ref=manifest_ref,
+            expected=baseline,
+        )
+
+
+def test_fresh_reservation_requires_exact_invocation_owner() -> None:
+    manifest_ref = "manifest_resume"
+    not_before = time.time()
+    reservation = _waiter_reservation(
+        manifest_ref,
+        acquired_at_epoch=not_before + 0.001,
+    )
+    reservation.owner_id = "foreign-owner"
+    bundle = SimpleNamespace(operation_reservation=_WaiterReservationPort(reservation))
+
+    assert (
+        recovery._fresh_reservation_for_invocation(
+            bundle,
+            board_id=BOARD_ID,
+            manifest_ref=manifest_ref,
+            not_before_epoch=not_before,
+            preexisting=None,
+            expected_owner_id="reservation-owner",
+        )
+        is None
+    )
+
+
+def test_checkpoint_writer_count_baseline_rejects_impossible_history() -> None:
+    assert recovery._checkpoint_writer_count_baseline(None) == (0, 0)
+    assert recovery._checkpoint_writer_count_baseline(
+        {"writer_handoff_count": 2, "writer_reacquire_count": 1}
+    ) == (2, 1)
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="pre_service_checkpoint_writer_counts_invalid",
+    ):
+        recovery._checkpoint_writer_count_baseline(
+            {"writer_handoff_count": 0, "writer_reacquire_count": 1}
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("handoff_count", "reacquire_count"),
+    ((1, 0), (3, 0), (2, 1)),
+    ids=("stale-handoff", "skipped-handoff", "advanced-reacquire"),
+)
+async def test_drain_waiter_rejects_noncurrent_writer_counter_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    handoff_count: int,
+    reacquire_count: int,
+) -> None:
+    import asyncio
+
+    manifest_ref = "manifest_resume"
+    checkpoint = {
+        "state": "draining",
+        "writer_handoff_count": handoff_count,
+        "writer_reacquire_count": reacquire_count,
+    }
+    not_before = time.time()
+    reservation = _waiter_reservation(
+        manifest_ref,
+        acquired_at_epoch=not_before + 0.001,
+    )
+    reservation_port = _WaiterReservationPort(reservation)
+    service_finish = asyncio.Event()
+    depth_reads: list[str] = []
+
+    async def service_run() -> object:
+        await service_finish.wait()
+        return SimpleNamespace(outcome="completed", reason="test")
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        recovery, "_load_checkpoint", lambda *_args, **_kwargs: checkpoint
+    )
+    monkeypatch.setattr(
+        recovery,
+        "_active_exact_queue_depth",
+        lambda *_args, **_kwargs: depth_reads.append("read") or 2,
+    )
+    service_task = asyncio.create_task(service_run())
+    try:
+        with pytest.raises(
+            recovery.RecoveryRefused,
+            match="rebuild_admission_timeout",
+        ):
+            await recovery._wait_for_admission_or_post_drain(
+                service_task,
+                SimpleNamespace(operation_reservation=reservation_port),
+                board_id=BOARD_ID,
+                manifest_ref=manifest_ref,
+                timeout_seconds=0.01,
+                poll_seconds=0.001,
+                reservation_not_before_epoch=not_before,
+                preexisting_reservation=None,
+                expected_reservation_owner_id="reservation-owner",
+                baseline_writer_handoff_count=1,
+                baseline_writer_reacquire_count=0,
+            )
+        assert depth_reads == []
+    finally:
+        service_finish.set()
+        await asyncio.gather(service_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_drain_waiter_requires_current_post_drain_transition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    checkpoint = {
+        "state": "restored",
+        "writer_handoff_count": 1,
+        "writer_reacquire_count": 1,
+    }
+    publish_current = asyncio.Event()
+    service_finish = asyncio.Event()
+
+    async def service_run() -> object:
+        await publish_current.wait()
+        checkpoint["writer_handoff_count"] = 2
+        checkpoint["writer_reacquire_count"] = 2
+        await service_finish.wait()
+        return SimpleNamespace(outcome="completed", reason="test")
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        recovery, "_load_checkpoint", lambda *_args, **_kwargs: checkpoint
+    )
+    monkeypatch.setattr(
+        recovery,
+        "_active_exact_queue_depth",
+        lambda *_args, **_kwargs: pytest.fail("post-drain read exact queue depth"),
+    )
+    service_task = asyncio.create_task(service_run())
+    waiter = asyncio.create_task(
+        recovery._wait_for_admission_or_post_drain(
+            service_task,
+            SimpleNamespace(operation_reservation=_WaiterReservationPort()),
+            board_id=BOARD_ID,
+            manifest_ref="manifest_resume",
+            timeout_seconds=1.0,
+            poll_seconds=0.001,
+            reservation_not_before_epoch=time.time(),
+            preexisting_reservation=None,
+            expected_reservation_owner_id="reservation-owner",
+            baseline_writer_handoff_count=1,
+            baseline_writer_reacquire_count=1,
+        )
+    )
+    try:
+        await asyncio.sleep(0.01)
+        assert waiter.done() is False
+        publish_current.set()
+        observed, result, requires_claims, reservation = await asyncio.wait_for(
+            waiter, timeout=1.0
+        )
+        assert observed == checkpoint
+        assert result is None
+        assert requires_claims is False
+        assert reservation is None
+    finally:
+        publish_current.set()
+        service_finish.set()
+        await asyncio.gather(service_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_drain_waiter_frozen_terminal_waits_for_service_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    checkpoint = {
+        "state": "completed",
+        "writer_handoff_count": 2,
+        "writer_reacquire_count": 1,
+    }
+    service_finish = asyncio.Event()
+
+    async def service_run() -> object:
+        await service_finish.wait()
+        return SimpleNamespace(outcome="completed", reason="frozen")
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        recovery, "_load_checkpoint", lambda *_args, **_kwargs: checkpoint
+    )
+    service_task = asyncio.create_task(service_run())
+    waiter = asyncio.create_task(
+        recovery._wait_for_admission_or_post_drain(
+            service_task,
+            SimpleNamespace(operation_reservation=_WaiterReservationPort()),
+            board_id=BOARD_ID,
+            manifest_ref="manifest_frozen",
+            timeout_seconds=1.0,
+            poll_seconds=0.001,
+            reservation_not_before_epoch=time.time(),
+            preexisting_reservation=None,
+            expected_reservation_owner_id="reservation-owner",
+            baseline_writer_handoff_count=2,
+            baseline_writer_reacquire_count=1,
+            expect_writer_cycle=False,
+        )
+    )
+    await asyncio.sleep(0.01)
+    assert waiter.done() is False
+    service_finish.set()
+    observed, result, requires_claims, reservation = await asyncio.wait_for(
+        waiter, timeout=1.0
+    )
+    assert observed == checkpoint
+    assert result.reason == "frozen"
+    assert requires_claims is False
+    assert reservation is None
+
+
+@pytest.mark.asyncio
+async def test_drain_waiter_does_not_admit_progress_after_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    manifest_ref = "manifest_resume"
+    checkpoint = {
+        "state": "planned",
+        "writer_handoff_count": 0,
+        "writer_reacquire_count": 0,
+    }
+    reservation_port = _WaiterReservationPort()
+    service_finish = asyncio.Event()
+    not_before = time.time()
+
+    async def service_run() -> object:
+        await asyncio.sleep(0.02)
+        checkpoint.update(
+            state="draining",
+            writer_handoff_count=1,
+            writer_reacquire_count=0,
+        )
+        reservation_port.current = _waiter_reservation(
+            manifest_ref,
+            acquired_at_epoch=not_before + 0.001,
+        )
+        await service_finish.wait()
+        return SimpleNamespace(outcome="completed", reason="test")
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        recovery, "_load_checkpoint", lambda *_args, **_kwargs: checkpoint
+    )
+    monkeypatch.setattr(recovery, "_active_exact_queue_depth", lambda *_a, **_k: 2)
+    service_task = asyncio.create_task(service_run())
+    try:
+        with pytest.raises(
+            recovery.RecoveryRefused,
+            match="rebuild_admission_timeout",
+        ):
+            await recovery._wait_for_admission_or_post_drain(
+                service_task,
+                SimpleNamespace(operation_reservation=reservation_port),
+                board_id=BOARD_ID,
+                manifest_ref=manifest_ref,
+                timeout_seconds=0.01,
+                poll_seconds=0.05,
+                reservation_not_before_epoch=not_before,
+                preexisting_reservation=None,
+                expected_reservation_owner_id="reservation-owner",
+                baseline_writer_handoff_count=0,
+                baseline_writer_reacquire_count=0,
+            )
+    finally:
+        service_finish.set()
+        await asyncio.gather(service_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_drain_waiter_rechecks_deadline_after_admission_io(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    manifest_ref = "manifest_resume"
+    checkpoint = {
+        "state": "draining",
+        "writer_handoff_count": 1,
+        "writer_reacquire_count": 0,
+    }
+    not_before = time.time()
+    reservation = _waiter_reservation(
+        manifest_ref,
+        acquired_at_epoch=not_before + 0.001,
+    )
+    service_finish = asyncio.Event()
+
+    async def service_run() -> object:
+        await service_finish.wait()
+        return SimpleNamespace(outcome="completed", reason="test")
+
+    def slow_depth(*_args, **_kwargs) -> int:  # noqa: ANN002, ANN003
+        time.sleep(0.02)
+        return 2
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        recovery, "_load_checkpoint", lambda *_args, **_kwargs: checkpoint
+    )
+    monkeypatch.setattr(recovery, "_active_exact_queue_depth", slow_depth)
+    service_task = asyncio.create_task(service_run())
+    try:
+        with pytest.raises(
+            recovery.RecoveryRefused,
+            match="rebuild_admission_timeout",
+        ):
+            await recovery._wait_for_admission_or_post_drain(
+                service_task,
+                SimpleNamespace(
+                    operation_reservation=_WaiterReservationPort(reservation)
+                ),
+                board_id=BOARD_ID,
+                manifest_ref=manifest_ref,
+                timeout_seconds=0.01,
+                poll_seconds=0.001,
+                reservation_not_before_epoch=not_before,
+                preexisting_reservation=None,
+                expected_reservation_owner_id="reservation-owner",
+                baseline_writer_handoff_count=0,
+                baseline_writer_reacquire_count=0,
+            )
+    finally:
+        service_finish.set()
+        await asyncio.gather(service_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_drain_waiter_prioritizes_service_completion_during_reservation_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    manifest_ref = "manifest_resume"
+    checkpoint = {
+        "state": "draining",
+        "writer_handoff_count": 1,
+        "writer_reacquire_count": 0,
+    }
+    not_before = time.time()
+    reservation = _waiter_reservation(
+        manifest_ref,
+        acquired_at_epoch=not_before + 0.001,
+    )
+    service_future = asyncio.get_running_loop().create_future()
+
+    class CompletingReservationPort(_WaiterReservationPort):
+        def inspect(self, *, board_id: str):  # noqa: ANN201
+            if not service_future.done():
+                service_future.set_result(
+                    SimpleNamespace(outcome="failed", reason="test")
+                )
+            return super().inspect(board_id=board_id)
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        recovery, "_load_checkpoint", lambda *_args, **_kwargs: checkpoint
+    )
+    monkeypatch.setattr(recovery, "_active_exact_queue_depth", lambda *_a, **_k: 2)
+
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="rebuild_terminated_before_drain_admission",
+    ):
+        await recovery._wait_for_admission_or_post_drain(
+            service_future,
+            SimpleNamespace(
+                operation_reservation=CompletingReservationPort(reservation)
+            ),
+            board_id=BOARD_ID,
+            manifest_ref=manifest_ref,
+            timeout_seconds=1.0,
+            poll_seconds=0.001,
+            reservation_not_before_epoch=not_before,
+            preexisting_reservation=None,
+            expected_reservation_owner_id="reservation-owner",
+            baseline_writer_handoff_count=0,
+            baseline_writer_reacquire_count=0,
+        )
 
 
 class _CheckpointArtifactStore:
@@ -5332,7 +5906,7 @@ def test_prior_frozen_terminal_reproves_complete_exact_relational_scope(
     }
     checkpoint = {
         "state": "completed",
-        "writer_handoff_count": 1,
+        "writer_handoff_count": 2,
         "writer_reacquire_count": 1,
         "command": {
             "run_id": f"f06:{manifest_ref}",
@@ -5357,6 +5931,20 @@ def test_prior_frozen_terminal_reproves_complete_exact_relational_scope(
         board_id=BOARD_ID,
         db_path=db_path,
     )
+
+    checkpoint["writer_handoff_count"] = 0
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="prior_frozen_exact_checkpoint_invalid",
+    ):
+        recovery._assert_frozen_exact_relational_baseline_safe(
+            SimpleNamespace(),
+            receipt=receipt,
+            audit=audit,
+            board_id=BOARD_ID,
+            db_path=db_path,
+        )
+    checkpoint["writer_handoff_count"] = 2
 
     tampered = tmp_path / "prior-frozen-tampered.sqlite3"
     with sqlite3.connect(db_path) as source_connection:

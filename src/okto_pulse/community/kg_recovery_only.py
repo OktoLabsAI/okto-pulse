@@ -4037,9 +4037,10 @@ def _assert_frozen_exact_relational_baseline_safe(
         isinstance(checkpoint, Mapping)
         and _checkpoint_state(checkpoint) == CHECKPOINT_STATE_COMPLETED
         and type(checkpoint.get("writer_handoff_count")) is int
-        and checkpoint.get("writer_handoff_count") == 1
         and type(checkpoint.get("writer_reacquire_count")) is int
-        and checkpoint.get("writer_reacquire_count") == 1,
+        and checkpoint.get("writer_handoff_count")
+        >= checkpoint.get("writer_reacquire_count")
+        >= 1,
         "prior_frozen_exact_checkpoint_invalid",
     )
     assert isinstance(checkpoint, Mapping)
@@ -10925,7 +10926,8 @@ def _assert_reservation_exact(
     *,
     board_id: str,
     manifest_ref: str,
-) -> None:
+    expected: Any | None = None,
+) -> Any:
     reservation = bundle.operation_reservation.inspect(board_id=board_id)
     _require(reservation is not None, "administrative_reservation_missing")
     assert reservation is not None
@@ -10939,6 +10941,74 @@ def _assert_reservation_exact(
         reservation.expires_at_epoch > time.time(),
         "administrative_reservation_expired",
     )
+    if expected is not None:
+        _require(
+            reservation.owner_token == expected.owner_token
+            and reservation.owner_id == expected.owner_id
+            and reservation.operation == expected.operation
+            and reservation.acquired_at_epoch == expected.acquired_at_epoch
+            and reservation.admin_lane is True
+            and bundle.operation_reservation.is_owner(
+                board_id=board_id,
+                owner_token=expected.owner_token,
+            ),
+            "administrative_reservation_authority_changed",
+        )
+    return reservation
+
+
+def _fresh_reservation_for_invocation(
+    bundle: ServiceBundle,
+    *,
+    board_id: str,
+    manifest_ref: str,
+    not_before_epoch: float,
+    preexisting: Any | None,
+    expected_owner_id: str,
+) -> Any | None:
+    """Return only the live reservation acquired by the current service run."""
+
+    try:
+        current = bundle.operation_reservation.inspect(board_id=board_id)
+        if current is None:
+            return None
+        identity = (
+            current.owner_token,
+            current.owner_id,
+            current.operation,
+            current.acquired_at_epoch,
+        )
+        preexisting_identity = (
+            (
+                preexisting.owner_token,
+                preexisting.owner_id,
+                preexisting.operation,
+                preexisting.acquired_at_epoch,
+            )
+            if preexisting is not None
+            else None
+        )
+        if (
+            current.admin_lane is not True
+            or current.operation != f"kg02_rebuild_reservation:{manifest_ref}"
+            or not isinstance(current.owner_token, str)
+            or not current.owner_token
+            or not isinstance(current.owner_id, str)
+            or current.owner_id != expected_owner_id
+            or isinstance(current.acquired_at_epoch, bool)
+            or not isinstance(current.acquired_at_epoch, (int, float))
+            or current.acquired_at_epoch < not_before_epoch
+            or current.expires_at_epoch <= time.time()
+            or identity == preexisting_identity
+            or not bundle.operation_reservation.is_owner(
+                board_id=board_id,
+                owner_token=current.owner_token,
+            )
+        ):
+            return None
+        return current
+    except BaseException:
+        return None
 
 
 def _exact_reservation_lineage_id(
@@ -11015,6 +11085,8 @@ def _assert_admission_checkpoint(
     manifest_ref: str,
     initial_board_dlq_ids: Sequence[str],
     require_draining: bool,
+    expected_writer_handoff_count: int,
+    expected_writer_reacquire_count: int,
 ) -> tuple[tuple[Mapping[str, Any], ...], str]:
     from okto_pulse.community.adapters.board_rebuild_ingestion import (
         REBUILD_QUEUE_ORDER_VERSION,
@@ -11034,12 +11106,13 @@ def _assert_admission_checkpoint(
             checkpoint_state,
         )
     _require(
-        int(checkpoint.get("writer_handoff_count", 0)) == 1,
+        type(checkpoint.get("writer_handoff_count")) is int
+        and checkpoint.get("writer_handoff_count") == expected_writer_handoff_count,
         "checkpoint_writer_handoff_invalid",
     )
     _require(
-        int(checkpoint.get("writer_reacquire_count", 0))
-        == (0 if require_draining else 1),
+        type(checkpoint.get("writer_reacquire_count")) is int
+        and checkpoint.get("writer_reacquire_count") == expected_writer_reacquire_count,
         (
             "checkpoint_writer_reacquire_early"
             if require_draining
@@ -11524,22 +11597,24 @@ async def _recover_exact_claims_for_resume(
     admitted_identities: set[tuple[str, str]],
     cancel_event: threading.Event,
     lifetime_probe: Callable[[], bool],
+    reservation_baseline: Any | None = None,
 ) -> None:
     """Neutrally repend only dead claims from this authorized resume scope."""
 
     _require(claimed_count > 0, "exact_claim_recovery_count_invalid")
     _require(not cancel_event.is_set(), "exact_claim_recovery_cancelled")
     _require(lifetime_probe(), "exact_claim_recovery_authority_lost")
-    _assert_reservation_exact(
+    current_reservation = _assert_reservation_exact(
         bundle,
         board_id=board_id,
         manifest_ref=manifest.manifest_ref,
+        expected=reservation_baseline,
     )
     _require(
         bundle.single_writer_lock.inspect(board_id=board_id) is None,
         "writer_a_not_released_before_exact_claim_recovery",
     )
-    reservation_baseline = bundle.operation_reservation.inspect(board_id=board_id)
+    reservation_baseline = reservation_baseline or current_reservation
     _require(
         reservation_baseline is not None
         and reservation_baseline.admin_lane
@@ -11607,6 +11682,7 @@ async def _recover_exact_claims_for_resume(
         bundle,
         board_id=board_id,
         manifest_ref=manifest.manifest_ref,
+        expected=reservation_baseline,
     )
     _require(
         bundle.single_writer_lock.inspect(board_id=board_id) is None,
@@ -12146,7 +12222,13 @@ async def _wait_for_admission_or_post_drain(
     manifest_ref: str,
     timeout_seconds: float,
     poll_seconds: float,
-) -> tuple[Mapping[str, Any], Any | None, bool]:
+    reservation_not_before_epoch: float,
+    preexisting_reservation: Any | None,
+    expected_reservation_owner_id: str,
+    baseline_writer_handoff_count: int,
+    baseline_writer_reacquire_count: int,
+    expect_writer_cycle: bool = True,
+) -> tuple[Mapping[str, Any], Any | None, bool, Any | None]:
     deadline = asyncio.get_running_loop().time() + timeout_seconds
     source = f"rebuild:{manifest_ref}"
     while True:
@@ -12158,20 +12240,35 @@ async def _wait_for_admission_or_post_drain(
                 isinstance(checkpoint, Mapping)
                 and _checkpoint_state(checkpoint) in POST_DRAIN_CHECKPOINT_STATES
             ):
-                return checkpoint, result, False
+                return checkpoint, result, False, None
             raise RecoveryRefused(
                 "rebuild_terminated_before_drain_admission:"
                 f"outcome={getattr(result, 'outcome', None)} "
                 f"reason={getattr(result, 'reason', None)}"
             )
+        if asyncio.get_running_loop().time() >= deadline:
+            if service_task.done():
+                continue
+            raise RecoveryRefused("rebuild_admission_timeout")
         if isinstance(checkpoint, Mapping):
             state = _checkpoint_state(checkpoint)
-            if state == CHECKPOINT_STATE_DRAINING:
+            if state == CHECKPOINT_STATE_DRAINING and expect_writer_cycle:
+                reservation = _fresh_reservation_for_invocation(
+                    bundle,
+                    board_id=board_id,
+                    manifest_ref=manifest_ref,
+                    not_before_epoch=reservation_not_before_epoch,
+                    preexisting=preexisting_reservation,
+                    expected_owner_id=expected_reservation_owner_id,
+                )
                 if (
-                    type(checkpoint.get("writer_handoff_count")) is int
-                    and checkpoint.get("writer_handoff_count") == 1
+                    reservation is not None
+                    and type(checkpoint.get("writer_handoff_count")) is int
+                    and checkpoint.get("writer_handoff_count")
+                    == baseline_writer_handoff_count + 1
                     and type(checkpoint.get("writer_reacquire_count")) is int
-                    and checkpoint.get("writer_reacquire_count") == 0
+                    and checkpoint.get("writer_reacquire_count")
+                    == baseline_writer_reacquire_count
                     and _active_exact_queue_depth(
                         Path(os.environ["DATA_DIR"]) / "data" / "pulse.db",
                         board_id=board_id,
@@ -12179,14 +12276,54 @@ async def _wait_for_admission_or_post_drain(
                     )
                     > 0
                 ):
-                    return checkpoint, None, True
-            elif state in POST_DRAIN_CHECKPOINT_STATES:
-                return checkpoint, None, False
-        _require(
-            asyncio.get_running_loop().time() < deadline,
-            "rebuild_admission_timeout",
-        )
+                    if service_task.done():
+                        continue
+                    if asyncio.get_running_loop().time() >= deadline:
+                        if service_task.done():
+                            continue
+                        raise RecoveryRefused("rebuild_admission_timeout")
+                    return checkpoint, None, True, reservation
+            elif (
+                expect_writer_cycle
+                and state in POST_DRAIN_CHECKPOINT_STATES
+                and type(checkpoint.get("writer_handoff_count")) is int
+                and checkpoint.get("writer_handoff_count")
+                == baseline_writer_handoff_count + 1
+                and type(checkpoint.get("writer_reacquire_count")) is int
+                and checkpoint.get("writer_reacquire_count")
+                == baseline_writer_reacquire_count + 1
+            ):
+                if service_task.done():
+                    continue
+                if asyncio.get_running_loop().time() >= deadline:
+                    if service_task.done():
+                        continue
+                    raise RecoveryRefused("rebuild_admission_timeout")
+                return checkpoint, None, False, None
         await asyncio.sleep(poll_seconds)
+
+
+def _checkpoint_writer_count_baseline(
+    checkpoint: Any,
+) -> tuple[int, int]:
+    if checkpoint is None:
+        return 0, 0
+    _require(
+        isinstance(checkpoint, Mapping),
+        "pre_service_checkpoint_writer_counts_invalid",
+    )
+    assert isinstance(checkpoint, Mapping)
+    handoff_count = checkpoint.get("writer_handoff_count")
+    reacquire_count = checkpoint.get("writer_reacquire_count")
+    _require(
+        type(handoff_count) is int
+        and handoff_count >= 0
+        and type(reacquire_count) is int
+        and reacquire_count >= 0
+        and handoff_count >= reacquire_count,
+        "pre_service_checkpoint_writer_counts_invalid",
+    )
+    return handoff_count, reacquire_count
 
 
 async def _await_service_fenced(
@@ -12453,10 +12590,17 @@ async def _drain_exact_scope(
     lifetime_probe: Callable[[], bool],
     timeout_seconds: float,
     poll_seconds: float,
+    reservation_baseline: Any | None = None,
 ) -> ExactDrainOutcome:
     deadline = asyncio.get_running_loop().time() + timeout_seconds
     db_path = Path(os.environ["DATA_DIR"]) / "data" / "pulse.db"
-    reservation_baseline = bundle.operation_reservation.inspect(board_id=board_id)
+    current_reservation = _assert_reservation_exact(
+        bundle,
+        board_id=board_id,
+        manifest_ref=manifest.manifest_ref,
+        expected=reservation_baseline,
+    )
+    reservation_baseline = reservation_baseline or current_reservation
     _require(
         reservation_baseline is not None
         and reservation_baseline.admin_lane
@@ -12531,6 +12675,7 @@ async def _drain_exact_scope(
             bundle,
             board_id=board_id,
             manifest_ref=manifest.manifest_ref,
+            expected=reservation_baseline,
         )
         _assert_source_unchanged(bundle, manifest, board_id)
         _assert_unchanged_snapshot(
@@ -13538,6 +13683,8 @@ def _assert_exact_blocking_compensation(
     board_storage_root: Path,
     baseline_health: Mapping[str, Any],
     exact_relational_baseline: ExactRelationalBaseline,
+    expected_writer_handoff_count: int,
+    expected_writer_reacquire_count: int,
 ) -> None:
     """Prove Core compensated a typed blocker without promotion or debt/DLQ."""
 
@@ -13596,9 +13743,9 @@ def _assert_exact_blocking_compensation(
         and checkpoint.get("compensation_failure_code") == "cancelled"
         and checkpoint.get("compensation_failure_detail") == "cancellation requested"
         and type(checkpoint.get("writer_handoff_count")) is int
-        and checkpoint.get("writer_handoff_count") == 1
+        and checkpoint.get("writer_handoff_count") == expected_writer_handoff_count
         and type(checkpoint.get("writer_reacquire_count")) is int
-        and checkpoint.get("writer_reacquire_count") == 1,
+        and checkpoint.get("writer_reacquire_count") == expected_writer_reacquire_count,
         "exact_blocking_checkpoint_invalid",
     )
     assert isinstance(checkpoint, Mapping)
@@ -13828,6 +13975,8 @@ async def _assert_terminal_gates(
     cognitive_ledger_baseline: CognitiveLedgerBaseline,
     exact_relational_baseline: ExactRelationalBaseline,
     frozen_confirmation_receipt_baseline: Mapping[str, Any] | None,
+    expected_writer_handoff_count: int,
+    expected_writer_reacquire_count: int,
     rebaseline_audit_baseline: Mapping[str, Any] | None = None,
     expected_rebaseline_evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -13976,11 +14125,13 @@ async def _assert_terminal_gates(
         _checkpoint_state(checkpoint),
     )
     _require(
-        int(checkpoint.get("writer_handoff_count", 0)) == 1,
+        type(checkpoint.get("writer_handoff_count")) is int
+        and checkpoint.get("writer_handoff_count") == expected_writer_handoff_count,
         "terminal_writer_handoff_invalid",
     )
     _require(
-        int(checkpoint.get("writer_reacquire_count", 0)) == 1,
+        type(checkpoint.get("writer_reacquire_count")) is int
+        and checkpoint.get("writer_reacquire_count") == expected_writer_reacquire_count,
         "terminal_writer_reacquire_invalid",
     )
     receipts = checkpoint.get("receipts")
@@ -14773,6 +14924,24 @@ async def _execute_under_serve_lock(
                             confirmation_ref=confirmation_ref,
                         ),
                     )
+                if reconciliation_mode:
+                    preexisting_reservation = None
+                    baseline_writer_handoff_count = 0
+                    baseline_writer_reacquire_count = 0
+                else:
+                    preexisting_reservation = bundle.operation_reservation.inspect(
+                        board_id=args.board_id
+                    )
+                    pre_service_checkpoint = _load_checkpoint(
+                        bundle,
+                        args.board_id,
+                        manifest.manifest_ref,
+                    )
+                    (
+                        baseline_writer_handoff_count,
+                        baseline_writer_reacquire_count,
+                    ) = _checkpoint_writer_count_baseline(pre_service_checkpoint)
+                reservation_not_before_epoch = time.time()
                 service_task = asyncio.create_task(
                     asyncio.to_thread(
                         service_callable,
@@ -14876,6 +15045,7 @@ async def _execute_under_serve_lock(
                     checkpoint,
                     early_result,
                     requires_claims,
+                    reservation_baseline,
                 ) = await _wait_for_admission_or_post_drain(
                     service_task,
                     bundle,
@@ -14883,13 +15053,24 @@ async def _execute_under_serve_lock(
                     manifest_ref=manifest.manifest_ref,
                     timeout_seconds=args.admission_timeout_seconds,
                     poll_seconds=args.poll_seconds,
+                    reservation_not_before_epoch=reservation_not_before_epoch,
+                    preexisting_reservation=preexisting_reservation,
+                    expected_reservation_owner_id=owner_id,
+                    baseline_writer_handoff_count=baseline_writer_handoff_count,
+                    baseline_writer_reacquire_count=baseline_writer_reacquire_count,
+                    expect_writer_cycle=not plan.frozen_terminal,
                 )
                 _require(lifetime_probe(), "offline_lifetime_lost_at_admission")
                 if requires_claims:
+                    _require(
+                        reservation_baseline is not None,
+                        "administrative_reservation_baseline_missing",
+                    )
                     _assert_reservation_exact(
                         bundle,
                         board_id=args.board_id,
                         manifest_ref=manifest.manifest_ref,
+                        expected=reservation_baseline,
                     )
                     _require(
                         bundle.single_writer_lock.inspect(board_id=args.board_id)
@@ -14902,6 +15083,14 @@ async def _execute_under_serve_lock(
                     manifest_ref=manifest.manifest_ref,
                     initial_board_dlq_ids=initial_board_dlq_ids,
                     require_draining=requires_claims,
+                    expected_writer_handoff_count=(
+                        baseline_writer_handoff_count
+                        + (0 if plan.frozen_terminal else 1)
+                    ),
+                    expected_writer_reacquire_count=(
+                        baseline_writer_reacquire_count
+                        + (0 if requires_claims or plan.frozen_terminal else 1)
+                    ),
                 )
                 _require(
                     _canonical_source_rows(source_rows)
@@ -15015,6 +15204,7 @@ async def _execute_under_serve_lock(
                         admitted_identities=admitted_identities,
                         cancel_event=cancel_event,
                         lifetime_probe=lifetime_probe,
+                        reservation_baseline=reservation_baseline,
                     )
 
                 exact_blocker: ExactDrainBlocker | None = None
@@ -15044,6 +15234,7 @@ async def _execute_under_serve_lock(
                         lifetime_probe=lifetime_probe,
                         timeout_seconds=args.run_timeout_seconds,
                         poll_seconds=args.poll_seconds,
+                        reservation_baseline=reservation_baseline,
                     )
                     result = drain_outcome.service_result
                     exact_blocker = drain_outcome.blocker
@@ -15083,6 +15274,12 @@ async def _execute_under_serve_lock(
                         board_storage_root=board_storage_root,
                         baseline_health=raw_health,
                         exact_relational_baseline=exact_relational_baseline,
+                        expected_writer_handoff_count=(
+                            baseline_writer_handoff_count + 1
+                        ),
+                        expected_writer_reacquire_count=(
+                            baseline_writer_reacquire_count + 1
+                        ),
                     )
                     _assert_schema_unchanged(db_path, schema_fingerprint)
                     _assert_worker_registry_never_started(composition)
@@ -15136,6 +15333,14 @@ async def _execute_under_serve_lock(
                     exact_relational_baseline=exact_relational_baseline,
                     frozen_confirmation_receipt_baseline=(
                         plan.receipt if plan.frozen_terminal else None
+                    ),
+                    expected_writer_handoff_count=(
+                        baseline_writer_handoff_count
+                        + (0 if plan.frozen_terminal else 1)
+                    ),
+                    expected_writer_reacquire_count=(
+                        baseline_writer_reacquire_count
+                        + (0 if plan.frozen_terminal else 1)
                     ),
                     rebaseline_audit_baseline=rebaseline_audit_baseline,
                     expected_rebaseline_evidence=(plan.rebaseline_evidence),
