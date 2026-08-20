@@ -85,10 +85,17 @@ MAX_COGNITIVE_BASELINE_RECORD_BYTES = 16 * 1024 * 1024
 MAX_GOVERNED_REBUILD_ARTIFACT_BYTES = 16 * 1024 * 1024
 MAX_LEGACY_PROTECTED_QUEUE_ROWS = 16_384
 MAX_LEGACY_PROTECTED_QUEUE_BYTES = 32 * 1024 * 1024
+MAX_EXACT_RELATIONAL_PROOF_ROWS = 131_072
+MAX_EXACT_RELATIONAL_PROOF_BYTES = 128 * 1024 * 1024
+MAX_EXACT_ACK_JOURNAL_ROWS = 50_000
 MAX_LEGACY_COGNITIVE_LEDGER_ROWS = 16_384
 MAX_LEGACY_COGNITIVE_LEDGER_BYTES = 64 * 1024 * 1024
 MAX_RECOVERY_SQLITE_TABLES = 512
 MAX_RECOVERY_SQLITE_SCHEMA_OBJECTS = 4_096
+EXACT_RELATIONAL_SCHEMA_TABLES = (
+    "exact_rebuild_consolidation_ack_journal",
+    "exact_rebuild_consolidation_compensations",
+)
 
 
 @dataclass(frozen=True)
@@ -344,6 +351,43 @@ class QueueSnapshot:
     columns: tuple[str, ...]
     rows: tuple[tuple[Any, ...], ...]
     fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class SQLiteStreamProof:
+    row_count: int
+    byte_count: int
+    fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExactRelationalBaseline:
+    """Board-scoped relational state outside one exact ACK journal."""
+
+    reservation_lineage_id: str
+    audits: SQLiteStreamProof
+    node_refs: SQLiteStreamProof
+    outbox: SQLiteStreamProof
+    domain_events: SQLiteStreamProof
+    handler_executions: SQLiteStreamProof
+    foreign_ack_journal: SQLiteStreamProof
+    foreign_compensations: SQLiteStreamProof
+    current_scope: "ExactRelationalScopeProof"
+    current_receipts: tuple[Any, ...]
+    materialization_generation: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ExactRelationalScopeProof:
+    """Byte-semantic state owned by the current exact receipt prefix."""
+
+    ack_journal: SQLiteStreamProof
+    audits: SQLiteStreamProof
+    node_refs: SQLiteStreamProof
+    outbox: SQLiteStreamProof
+    domain_events: SQLiteStreamProof
+    handler_executions: SQLiteStreamProof
+    compensations: SQLiteStreamProof
 
 
 @dataclass(frozen=True, slots=True)
@@ -1665,6 +1709,68 @@ def _stream_sqlite_logical_table_fingerprint(
     return digest.hexdigest()
 
 
+def _sqlite_logical_fingerprints_from_connection(
+    connection: sqlite3.Connection,
+    *,
+    exclude_tables: frozenset[str] = frozenset(),
+) -> dict[str, str]:
+    """Fingerprint every user table in the caller's single SQLite snapshot."""
+
+    result: dict[str, str] = {}
+    table_name_rows = _bounded_sqlite_snapshot_rows(
+        connection.execute(
+            "SELECT name FROM main.sqlite_master "
+            "WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ),
+        code="sqlite_logical_table_inventory",
+        max_rows=MAX_RECOVERY_SQLITE_TABLES,
+        max_bytes=MAX_LEGACY_PROTECTED_QUEUE_BYTES,
+    )
+    table_names = tuple(str(row[0]) for row in table_name_rows)
+    for table_name in table_names:
+        if table_name in exclude_tables:
+            continue
+        streaming_policy = SQLITE_LOGICAL_STREAMING_POLICIES.get(table_name)
+        if streaming_policy is not None:
+            result[table_name] = _stream_sqlite_logical_table_fingerprint(
+                connection,
+                table_name=table_name,
+                policy=streaming_policy,
+            )
+            continue
+        quoted_table = '"' + table_name.replace('"', '""') + '"'
+        columns = tuple(
+            str(row[1])
+            for row in connection.execute(f"PRAGMA table_info({quoted_table})")
+        )
+        _require(bool(columns), "sqlite_logical_table_shape_missing", table_name)
+        quoted_columns = ", ".join(
+            '"' + column.replace('"', '""') + '"' for column in columns
+        )
+        rows = list(
+            _bounded_sqlite_snapshot_rows(
+                connection.execute(f"SELECT {quoted_columns} FROM {quoted_table}"),
+                code=f"sqlite_logical_table_{table_name}",
+                max_bytes=(
+                    MAX_LEGACY_COGNITIVE_LEDGER_BYTES
+                    if table_name
+                    in {
+                        "kg_cognitive_sources",
+                        "kg_cognitive_source_revisions",
+                    }
+                    else MAX_LEGACY_PROTECTED_QUEUE_BYTES
+                ),
+            )
+        )
+        rows.sort(
+            key=lambda row: _canonical_json_bytes(
+                [_normalize_sqlite_value(value) for value in row]
+            )
+        )
+        result[table_name] = _fingerprint_rows(columns, rows)
+    return result
+
+
 def _sqlite_logical_fingerprints(
     db_path: Path,
     *,
@@ -1672,62 +1778,15 @@ def _sqlite_logical_fingerprints(
 ) -> dict[str, str]:
     """Fingerprint every user table in one read transaction, independent of WAL bytes."""
 
-    result: dict[str, str] = {}
     with closing(_sqlite_connect_readonly(db_path)) as connection:
         connection.execute("BEGIN")
-        table_name_rows = _bounded_sqlite_snapshot_rows(
-            connection.execute(
-                "SELECT name FROM main.sqlite_master "
-                "WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-            ),
-            code="sqlite_logical_table_inventory",
-            max_rows=MAX_RECOVERY_SQLITE_TABLES,
-            max_bytes=MAX_LEGACY_PROTECTED_QUEUE_BYTES,
-        )
-        table_names = tuple(str(row[0]) for row in table_name_rows)
-        for table_name in table_names:
-            if table_name in exclude_tables:
-                continue
-            streaming_policy = SQLITE_LOGICAL_STREAMING_POLICIES.get(table_name)
-            if streaming_policy is not None:
-                result[table_name] = _stream_sqlite_logical_table_fingerprint(
-                    connection,
-                    table_name=table_name,
-                    policy=streaming_policy,
-                )
-                continue
-            quoted_table = '"' + table_name.replace('"', '""') + '"'
-            columns = tuple(
-                str(row[1])
-                for row in connection.execute(f"PRAGMA table_info({quoted_table})")
+        try:
+            return _sqlite_logical_fingerprints_from_connection(
+                connection,
+                exclude_tables=exclude_tables,
             )
-            _require(bool(columns), "sqlite_logical_table_shape_missing", table_name)
-            quoted_columns = ", ".join(
-                '"' + column.replace('"', '""') + '"' for column in columns
-            )
-            rows = list(
-                _bounded_sqlite_snapshot_rows(
-                    connection.execute(f"SELECT {quoted_columns} FROM {quoted_table}"),
-                    code=f"sqlite_logical_table_{table_name}",
-                    max_bytes=(
-                        MAX_LEGACY_COGNITIVE_LEDGER_BYTES
-                        if table_name
-                        in {
-                            "kg_cognitive_sources",
-                            "kg_cognitive_source_revisions",
-                        }
-                        else MAX_LEGACY_PROTECTED_QUEUE_BYTES
-                    ),
-                )
-            )
-            rows.sort(
-                key=lambda row: _canonical_json_bytes(
-                    [_normalize_sqlite_value(value) for value in row]
-                )
-            )
-            result[table_name] = _fingerprint_rows(columns, rows)
-        connection.rollback()
-    return result
+        finally:
+            connection.rollback()
 
 
 def _table_columns(db_path: Path, table: str) -> tuple[str, ...]:
@@ -1788,6 +1847,244 @@ def _sqlite_schema_fingerprint(db_path: Path) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+@lru_cache(maxsize=1)
+def _exact_relational_schema_contract() -> tuple[
+    tuple[str, ...], tuple[tuple[str, str, str, str], ...]
+]:
+    """Compile and materialize the two installed ORM DDL objects exactly."""
+
+    from sqlalchemy.dialects import sqlite as sqlalchemy_sqlite
+    from sqlalchemy.schema import CreateIndex, CreateTable
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        ExactRebuildConsolidationAckJournal,
+        ExactRebuildConsolidationCompensation,
+    )
+
+    dialect = sqlalchemy_sqlite.dialect()
+    statements: list[str] = []
+    for model in (
+        ExactRebuildConsolidationAckJournal,
+        ExactRebuildConsolidationCompensation,
+    ):
+        table = model.__table__
+        statements.append(str(CreateTable(table).compile(dialect=dialect)))
+        statements.extend(
+            str(CreateIndex(index).compile(dialect=dialect))
+            for index in sorted(table.indexes, key=lambda value: str(value.name))
+        )
+    with closing(sqlite3.connect(":memory:", isolation_level=None)) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            for statement in statements:
+                connection.execute(statement)
+            placeholders = ",".join("?" for _ in EXACT_RELATIONAL_SCHEMA_TABLES)
+            expected = tuple(
+                (
+                    str(row[0]),
+                    str(row[1]),
+                    str(row[2]),
+                    "" if row[3] is None else str(row[3]),
+                )
+                for row in connection.execute(
+                    "SELECT type,name,tbl_name,sql FROM sqlite_master "
+                    f"WHERE tbl_name IN ({placeholders}) ORDER BY type,name",
+                    EXACT_RELATIONAL_SCHEMA_TABLES,
+                )
+            )
+        finally:
+            connection.rollback()
+    _require(bool(expected), "exact_relational_schema_contract_empty")
+    return tuple(statements), expected
+
+
+def _sqlite_schema_rows_from_connection(
+    connection: sqlite3.Connection,
+) -> tuple[tuple[str, str, str, str], ...]:
+    return tuple(
+        (
+            str(row[0]),
+            str(row[1]),
+            str(row[2]),
+            "" if row[3] is None else str(row[3]),
+        )
+        for row in _bounded_sqlite_snapshot_rows(
+            connection.execute(
+                "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name"
+            ),
+            code="exact_relational_schema_inventory",
+            max_rows=MAX_RECOVERY_SQLITE_SCHEMA_OBJECTS,
+            max_bytes=MAX_LEGACY_PROTECTED_QUEUE_BYTES,
+        )
+    )
+
+
+def _exact_relational_schema_candidate_rows(
+    connection: sqlite3.Connection,
+    *,
+    expected: Sequence[tuple[str, str, str, str]],
+) -> tuple[tuple[str, str, str, str], ...]:
+    expected_names = tuple(sorted({row[1] for row in expected}))
+    table_placeholders = ",".join("?" for _ in EXACT_RELATIONAL_SCHEMA_TABLES)
+    name_placeholders = ",".join("?" for _ in expected_names)
+    parameters = (*EXACT_RELATIONAL_SCHEMA_TABLES, *expected_names)
+    return tuple(
+        (
+            str(row[0]),
+            str(row[1]),
+            str(row[2]),
+            "" if row[3] is None else str(row[3]),
+        )
+        for row in connection.execute(
+            "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE "
+            f"tbl_name IN ({table_placeholders}) OR name IN ({name_placeholders}) "
+            "ORDER BY type,name",
+            parameters,
+        )
+    )
+
+
+def _install_exact_relational_recovery_schema(db_path: Path) -> bool:
+    """Install only the exact ACK/compensation schema under the offline fence.
+
+    A completely absent pair is added atomically.  An already exact pair is a
+    no-op.  Partial, weakened, renamed, or trigger-augmented shapes are refused
+    before DDL.  Every pre-existing logical row is fingerprinted in the same
+    ``BEGIN IMMEDIATE`` snapshot and must remain byte-semantic-equivalent.
+    """
+
+    statements, expected_rows = _exact_relational_schema_contract()
+    expected_set = set(expected_rows)
+    excluded = frozenset(EXACT_RELATIONAL_SCHEMA_TABLES)
+    logical_before: dict[str, str] | None = None
+    installed = False
+    connection = sqlite3.connect(str(db_path), timeout=2.0, isolation_level=None)
+    try:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            database_row = connection.execute("PRAGMA database_list").fetchone()
+            _require(
+                database_row is not None
+                and Path(str(database_row[2])).resolve() == db_path.resolve(),
+                "exact_relational_schema_database_identity_invalid",
+            )
+            _require(
+                connection.execute("PRAGMA foreign_key_check").fetchone() is None,
+                "exact_relational_schema_foreign_key_precheck_failed",
+            )
+            schema_before = _sqlite_schema_rows_from_connection(connection)
+            candidate_before = _exact_relational_schema_candidate_rows(
+                connection,
+                expected=expected_rows,
+            )
+            _require(
+                not candidate_before or set(candidate_before) == expected_set,
+                "exact_relational_schema_partial_or_mismatched",
+            )
+            logical_before = _sqlite_logical_fingerprints_from_connection(
+                connection,
+                exclude_tables=excluded,
+            )
+            if not candidate_before:
+                for statement in statements:
+                    connection.execute(statement)
+                installed = True
+                candidate_after = _exact_relational_schema_candidate_rows(
+                    connection,
+                    expected=expected_rows,
+                )
+                _require(
+                    set(candidate_after) == expected_set
+                    and len(candidate_after) == len(expected_rows),
+                    "exact_relational_schema_install_mismatch",
+                )
+                schema_after = _sqlite_schema_rows_from_connection(connection)
+                before_map = {(row[0], row[1], row[2]): row[3] for row in schema_before}
+                after_map = {(row[0], row[1], row[2]): row[3] for row in schema_after}
+                _require(
+                    all(
+                        after_map.get(key) == value for key, value in before_map.items()
+                    )
+                    and {
+                        (*key, value)
+                        for key, value in after_map.items()
+                        if key not in before_map
+                    }
+                    == expected_set,
+                    "exact_relational_schema_diff_invalid",
+                )
+                for table_name in EXACT_RELATIONAL_SCHEMA_TABLES:
+                    _require(
+                        int(
+                            connection.execute(
+                                f'SELECT COUNT(*) FROM "{table_name}"'
+                            ).fetchone()[0]
+                        )
+                        == 0,
+                        "exact_relational_schema_new_table_not_empty",
+                        table_name,
+                    )
+            _require(
+                _sqlite_logical_fingerprints_from_connection(
+                    connection,
+                    exclude_tables=excluded,
+                )
+                == logical_before,
+                "exact_relational_schema_logical_data_changed",
+            )
+            _require(
+                connection.execute("PRAGMA foreign_key_check").fetchone() is None,
+                "exact_relational_schema_foreign_key_postcheck_failed",
+            )
+            integrity = connection.execute("PRAGMA integrity_check").fetchone()
+            _require(
+                integrity is not None and str(integrity[0]).lower() == "ok",
+                "exact_relational_schema_integrity_check_failed",
+            )
+            if installed:
+                connection.commit()
+            else:
+                connection.rollback()
+        except BaseException:
+            with suppress(sqlite3.Error):
+                connection.rollback()
+            raise
+    finally:
+        connection.close()
+
+    with closing(_sqlite_connect_readonly(db_path)) as verification:
+        verification.execute("BEGIN")
+        try:
+            _require(
+                set(
+                    _exact_relational_schema_candidate_rows(
+                        verification,
+                        expected=expected_rows,
+                    )
+                )
+                == expected_set,
+                "exact_relational_schema_postcommit_mismatch",
+            )
+            _require(
+                logical_before is not None
+                and _sqlite_logical_fingerprints_from_connection(
+                    verification,
+                    exclude_tables=excluded,
+                )
+                == logical_before,
+                "exact_relational_schema_postcommit_data_changed",
+            )
+            _require(
+                verification.execute("PRAGMA foreign_key_check").fetchone() is None,
+                "exact_relational_schema_postcommit_foreign_key_failed",
+            )
+        finally:
+            verification.rollback()
+    return installed
 
 
 def _sqlite_storage_fingerprints(db_path: Path) -> dict[str, str]:
@@ -2128,6 +2425,22 @@ def _parse_utc_timestamp(value: Any, *, code: str) -> datetime:
     _require(parsed.tzinfo is not None, code)
     _require(parsed.utcoffset() == timedelta(0), code)
     return parsed.astimezone(timezone.utc)
+
+
+def _sqlite_utc_timestamp_text(value: Any, *, code: str) -> str:
+    """Restore SQLite's timezone-less SQLAlchemy UTC datetime representation."""
+
+    _require(type(value) is str and bool(value), code)
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise RecoveryRefused(code) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        _require(parsed.utcoffset() == timedelta(0), code)
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed.isoformat()
 
 
 def _validate_storage_hashes(value: Any, *, code: str) -> dict[str, str]:
@@ -2561,6 +2874,1531 @@ def _snapshot_query(
         columns = tuple(str(item[0]) for item in (cursor.description or ()))
         rows = _bounded_sqlite_snapshot_rows(cursor, code="sqlite_snapshot")
     return QueueSnapshot(columns, rows, _fingerprint_rows(columns, rows))
+
+
+def _stream_query_proof(
+    connection: sqlite3.Connection,
+    query: str,
+    parameters: Sequence[Any],
+    *,
+    columns: Sequence[str],
+    code: str,
+    include: Callable[[tuple[Any, ...]], bool] | None = None,
+) -> SQLiteStreamProof:
+    """Hash one ordered relational projection without retaining its rows."""
+
+    cursor = connection.execute(query, tuple(parameters))
+    actual_columns = tuple(str(item[0]) for item in (cursor.description or ()))
+    expected_columns = tuple(columns)
+    _require(actual_columns == expected_columns, f"{code}_columns_invalid")
+    digest = hashlib.sha256()
+    digest.update(b"okto-pulse.exact-relational-proof.v1\x00")
+    header = _canonical_json_bytes({"columns": list(expected_columns)})
+    digest.update(len(header).to_bytes(8, "big"))
+    digest.update(header)
+    row_count = 0
+    scanned_count = 0
+    byte_count = 0
+    for raw in cursor:
+        _require(
+            scanned_count < MAX_EXACT_RELATIONAL_PROOF_ROWS,
+            f"{code}_scan_row_limit_exceeded",
+        )
+        scanned_count += 1
+        row = tuple(raw)
+        if include is not None and not include(row):
+            continue
+        _require(
+            row_count < MAX_EXACT_RELATIONAL_PROOF_ROWS,
+            f"{code}_row_limit_exceeded",
+        )
+        encoded = _canonical_json_bytes(
+            [_normalize_sqlite_value(value) for value in row]
+        )
+        byte_count += len(encoded)
+        _require(
+            byte_count <= MAX_EXACT_RELATIONAL_PROOF_BYTES,
+            f"{code}_byte_limit_exceeded",
+        )
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+        row_count += 1
+    digest.update(row_count.to_bytes(8, "big"))
+    digest.update(byte_count.to_bytes(8, "big"))
+    return SQLiteStreamProof(row_count, byte_count, digest.hexdigest())
+
+
+def _capture_exact_relational_scope_proof(
+    connection: sqlite3.Connection,
+    *,
+    board_id: str,
+    source: str,
+    reservation_lineage_id: str,
+    receipt_prefix: Sequence[Any] | None = None,
+) -> ExactRelationalScopeProof:
+    """Stream the current exact scope, optionally restricted to one prefix."""
+
+    journal_columns = (
+        "queue_id",
+        "board_id",
+        "source",
+        "reservation_lineage_id",
+        "work_kind",
+        "artifact_type",
+        "artifact_id",
+        "generation",
+        "membership_source_ref",
+        "membership_source_version",
+        "membership_content_hash",
+        "consolidation_session_id",
+        "outbox_event_id",
+        "generation_event_id",
+        "previous_materialization_generation",
+        "materialization_generation",
+        "node_ref_count",
+        "node_refs_sha256",
+        "receipt_sha256",
+        "created_at",
+    )
+    audit_columns = (
+        "session_id",
+        "board_id",
+        "artifact_id",
+        "artifact_type",
+        "agent_id",
+        "started_at",
+        "committed_at",
+        "nodes_added",
+        "nodes_updated",
+        "nodes_superseded",
+        "edges_added",
+        "summary_text",
+        "content_hash",
+        "undo_status",
+        "undone_at",
+        "error_details",
+    )
+    ref_columns = (
+        "id",
+        "session_id",
+        "board_id",
+        "kuzu_node_id",
+        "kuzu_node_type",
+        "operation",
+        "timestamp",
+    )
+    outbox_columns = (
+        "id",
+        "event_id",
+        "board_id",
+        "session_id",
+        "event_type",
+        "payload",
+        "created_at",
+        "processed_at",
+        "retry_count",
+        "last_error",
+    )
+    event_columns = (
+        "id",
+        "event_type",
+        "board_id",
+        "actor_id",
+        "actor_type",
+        "payload_json",
+        "occurred_at",
+        "correlation_id",
+    )
+    execution_columns = (
+        "id",
+        "event_id",
+        "handler_name",
+        "status",
+        "attempts",
+        "last_error",
+        "processed_at",
+        "next_attempt_at",
+        "correlation_id",
+    )
+    compensation_columns = (
+        "compensation_id",
+        "board_id",
+        "source",
+        "reservation_lineage_id",
+        "baseline_materialization_generation",
+        "terminal_materialization_generation",
+        "ack_count",
+        "node_ref_count",
+        "ack_receipts_sha256",
+        "audit_session_ids",
+        "outbox_event_ids",
+        "generation_event_ids",
+        "compensated_at",
+        "receipt_sha256",
+    )
+    prefix = tuple(receipt_prefix) if receipt_prefix is not None else None
+    queue_ids = {item.queue_id for item in prefix or ()}
+    session_ids = {item.consolidation_session_id for item in prefix or ()}
+    include_queue = None if prefix is None else lambda row: str(row[0]) in queue_ids
+    include_audit_session = (
+        None if prefix is None else lambda row: str(row[0]) in session_ids
+    )
+    include_ref_session = (
+        None if prefix is None else lambda row: str(row[1]) in session_ids
+    )
+    include_outbox_session = (
+        None if prefix is None else lambda row: str(row[3]) in session_ids
+    )
+    include_correlation = (
+        None if prefix is None else lambda row: str(row[-1]) in session_ids
+    )
+    scope = (board_id, source, reservation_lineage_id)
+    ack_journal = _stream_query_proof(
+        connection,
+        f"SELECT {','.join(journal_columns)} FROM "
+        "exact_rebuild_consolidation_ack_journal WHERE board_id=? AND source=? "
+        "AND reservation_lineage_id=? ORDER BY queue_id",
+        scope,
+        columns=journal_columns,
+        code="exact_relational_current_ack_journal",
+        include=include_queue,
+    )
+    audits = _stream_query_proof(
+        connection,
+        f"SELECT {','.join('a.' + name for name in audit_columns)} FROM "
+        "consolidation_audit AS a JOIN "
+        "exact_rebuild_consolidation_ack_journal AS j ON "
+        "j.consolidation_session_id=a.session_id WHERE j.board_id=? AND "
+        "j.source=? AND j.reservation_lineage_id=? ORDER BY a.session_id",
+        scope,
+        columns=audit_columns,
+        code="exact_relational_current_audits",
+        include=include_audit_session,
+    )
+    node_refs = _stream_query_proof(
+        connection,
+        f"SELECT {','.join('r.' + name for name in ref_columns)} FROM "
+        "kuzu_node_refs AS r JOIN exact_rebuild_consolidation_ack_journal AS j "
+        "ON j.consolidation_session_id=r.session_id WHERE j.board_id=? AND "
+        "j.source=? AND j.reservation_lineage_id=? ORDER BY r.session_id,"
+        "r.kuzu_node_type,r.kuzu_node_id,r.operation,r.id",
+        scope,
+        columns=ref_columns,
+        code="exact_relational_current_node_refs",
+        include=include_ref_session,
+    )
+    outbox = _stream_query_proof(
+        connection,
+        f"SELECT {','.join('o.' + name for name in outbox_columns)} FROM "
+        "global_update_outbox AS o JOIN "
+        "exact_rebuild_consolidation_ack_journal AS j ON "
+        "j.consolidation_session_id=o.session_id WHERE j.board_id=? AND "
+        "j.source=? AND j.reservation_lineage_id=? ORDER BY o.session_id,o.id",
+        scope,
+        columns=outbox_columns,
+        code="exact_relational_current_outbox",
+        include=include_outbox_session,
+    )
+    domain_events = _stream_query_proof(
+        connection,
+        "SELECT e.id,e.event_type,e.board_id,e.actor_id,e.actor_type,"
+        "e.payload_json,e.occurred_at,"
+        "json_extract(e.payload_json,'$.correlation_id') AS correlation_id "
+        "FROM domain_events AS e JOIN exact_rebuild_consolidation_ack_journal "
+        "AS j ON json_extract(e.payload_json,'$.correlation_id')="
+        "j.consolidation_session_id WHERE j.board_id=? AND j.source=? AND "
+        "j.reservation_lineage_id=? ORDER BY correlation_id,e.id",
+        scope,
+        columns=event_columns,
+        code="exact_relational_current_domain_events",
+        include=include_correlation,
+    )
+    handler_executions = _stream_query_proof(
+        connection,
+        "SELECT x.id,x.event_id,x.handler_name,x.status,x.attempts,x.last_error,"
+        "x.processed_at,x.next_attempt_at,"
+        "json_extract(e.payload_json,'$.correlation_id') AS correlation_id "
+        "FROM domain_event_handler_executions AS x JOIN domain_events AS e ON "
+        "e.id=x.event_id JOIN exact_rebuild_consolidation_ack_journal AS j ON "
+        "json_extract(e.payload_json,'$.correlation_id')="
+        "j.consolidation_session_id WHERE j.board_id=? AND j.source=? AND "
+        "j.reservation_lineage_id=? ORDER BY correlation_id,x.id",
+        scope,
+        columns=execution_columns,
+        code="exact_relational_current_handler_executions",
+        include=include_correlation,
+    )
+    compensations = _stream_query_proof(
+        connection,
+        f"SELECT {','.join(compensation_columns)} FROM "
+        "exact_rebuild_consolidation_compensations WHERE board_id=? AND "
+        "source=? AND reservation_lineage_id=? ORDER BY compensation_id",
+        scope,
+        columns=compensation_columns,
+        code="exact_relational_current_compensations",
+    )
+    return ExactRelationalScopeProof(
+        ack_journal=ack_journal,
+        audits=audits,
+        node_refs=node_refs,
+        outbox=outbox,
+        domain_events=domain_events,
+        handler_executions=handler_executions,
+        compensations=compensations,
+    )
+
+
+def _capture_exact_relational_baseline(
+    db_path: Path,
+    *,
+    board_id: str,
+    source: str,
+    reservation_lineage_id: str,
+) -> ExactRelationalBaseline:
+    """Capture all non-journal board facts from one WAL-aware read cut."""
+
+    from okto_pulse.community.adapters.materialization_health import (
+        materialization_generation_key,
+    )
+
+    audit_columns = (
+        "session_id",
+        "board_id",
+        "artifact_id",
+        "artifact_type",
+        "agent_id",
+        "started_at",
+        "committed_at",
+        "nodes_added",
+        "nodes_updated",
+        "nodes_superseded",
+        "edges_added",
+        "summary_text",
+        "content_hash",
+        "undo_status",
+        "undone_at",
+        "error_details",
+    )
+    ref_columns = (
+        "id",
+        "session_id",
+        "board_id",
+        "kuzu_node_id",
+        "kuzu_node_type",
+        "operation",
+        "timestamp",
+    )
+    outbox_columns = (
+        "id",
+        "event_id",
+        "board_id",
+        "session_id",
+        "event_type",
+        "payload",
+        "created_at",
+        "processed_at",
+        "retry_count",
+        "last_error",
+    )
+    event_columns = (
+        "id",
+        "event_type",
+        "board_id",
+        "actor_id",
+        "actor_type",
+        "payload_json",
+        "occurred_at",
+    )
+    execution_columns = (
+        "id",
+        "event_id",
+        "handler_name",
+        "status",
+        "attempts",
+        "last_error",
+        "processed_at",
+        "next_attempt_at",
+    )
+    journal_columns = (
+        "queue_id",
+        "board_id",
+        "source",
+        "reservation_lineage_id",
+        "work_kind",
+        "artifact_type",
+        "artifact_id",
+        "generation",
+        "membership_source_ref",
+        "membership_source_version",
+        "membership_content_hash",
+        "consolidation_session_id",
+        "outbox_event_id",
+        "generation_event_id",
+        "previous_materialization_generation",
+        "materialization_generation",
+        "node_ref_count",
+        "node_refs_sha256",
+        "receipt_sha256",
+        "created_at",
+    )
+    compensation_columns = (
+        "compensation_id",
+        "board_id",
+        "source",
+        "reservation_lineage_id",
+        "baseline_materialization_generation",
+        "terminal_materialization_generation",
+        "ack_count",
+        "node_ref_count",
+        "ack_receipts_sha256",
+        "audit_session_ids",
+        "outbox_event_ids",
+        "generation_event_ids",
+        "compensated_at",
+        "receipt_sha256",
+    )
+    current_scope = (board_id, source, reservation_lineage_id)
+    with closing(_sqlite_connect_readonly(db_path)) as connection:
+        connection.execute("BEGIN")
+        try:
+            audits = _stream_query_proof(
+                connection,
+                f"SELECT {','.join('a.' + value for value in audit_columns)} "
+                "FROM consolidation_audit AS a WHERE a.board_id=? AND NOT EXISTS ("
+                "SELECT 1 FROM exact_rebuild_consolidation_ack_journal AS j "
+                "WHERE j.board_id=? AND j.source=? AND j.reservation_lineage_id=? "
+                "AND j.consolidation_session_id=a.session_id) ORDER BY a.session_id",
+                (board_id, *current_scope),
+                columns=audit_columns,
+                code="exact_relational_audits",
+            )
+            node_refs = _stream_query_proof(
+                connection,
+                f"SELECT {','.join('r.' + value for value in ref_columns)} "
+                "FROM kuzu_node_refs AS r WHERE r.board_id=? AND NOT EXISTS ("
+                "SELECT 1 FROM exact_rebuild_consolidation_ack_journal AS j "
+                "WHERE j.board_id=? AND j.source=? AND j.reservation_lineage_id=? "
+                "AND j.consolidation_session_id=r.session_id) ORDER BY r.id",
+                (board_id, *current_scope),
+                columns=ref_columns,
+                code="exact_relational_node_refs",
+            )
+            outbox = _stream_query_proof(
+                connection,
+                f"SELECT {','.join('o.' + value for value in outbox_columns)} "
+                "FROM global_update_outbox AS o WHERE o.board_id=? AND NOT EXISTS ("
+                "SELECT 1 FROM exact_rebuild_consolidation_ack_journal AS j "
+                "WHERE j.board_id=? AND j.source=? AND j.reservation_lineage_id=? "
+                "AND j.outbox_event_id=o.event_id) ORDER BY o.id",
+                (board_id, *current_scope),
+                columns=outbox_columns,
+                code="exact_relational_outbox",
+            )
+            domain_events = _stream_query_proof(
+                connection,
+                f"SELECT {','.join('e.' + value for value in event_columns)} "
+                "FROM domain_events AS e WHERE e.board_id=? AND NOT EXISTS ("
+                "SELECT 1 FROM exact_rebuild_consolidation_ack_journal AS j "
+                "WHERE j.board_id=? AND j.source=? AND j.reservation_lineage_id=? "
+                "AND j.generation_event_id=e.id) ORDER BY e.id",
+                (board_id, *current_scope),
+                columns=event_columns,
+                code="exact_relational_domain_events",
+            )
+            handler_executions = _stream_query_proof(
+                connection,
+                f"SELECT {','.join('x.' + value for value in execution_columns)} "
+                "FROM domain_event_handler_executions AS x "
+                "JOIN domain_events AS e ON e.id=x.event_id WHERE e.board_id=? "
+                "AND NOT EXISTS (SELECT 1 FROM "
+                "exact_rebuild_consolidation_ack_journal AS j WHERE j.board_id=? "
+                "AND j.source=? AND j.reservation_lineage_id=? "
+                "AND j.generation_event_id=x.event_id) ORDER BY x.id",
+                (board_id, *current_scope),
+                columns=execution_columns,
+                code="exact_relational_handler_executions",
+            )
+            foreign_ack_journal = _stream_query_proof(
+                connection,
+                f"SELECT {','.join(journal_columns)} FROM "
+                "exact_rebuild_consolidation_ack_journal WHERE NOT "
+                "(board_id=? AND source=? AND reservation_lineage_id=?) "
+                "ORDER BY queue_id",
+                current_scope,
+                columns=journal_columns,
+                code="exact_relational_foreign_ack_journal",
+            )
+            foreign_compensations = _stream_query_proof(
+                connection,
+                f"SELECT {','.join(compensation_columns)} FROM "
+                "exact_rebuild_consolidation_compensations WHERE NOT "
+                "(board_id=? AND source=? AND reservation_lineage_id=?) "
+                "ORDER BY compensation_id",
+                current_scope,
+                columns=compensation_columns,
+                code="exact_relational_foreign_compensations",
+            )
+            current_receipts = _read_exact_ack_receipts(
+                connection,
+                board_id=board_id,
+                source=source,
+                reservation_lineage_id=reservation_lineage_id,
+            )
+            current_scope_proof = _capture_exact_relational_scope_proof(
+                connection,
+                board_id=board_id,
+                source=source,
+                reservation_lineage_id=reservation_lineage_id,
+            )
+            generation_row = connection.execute(
+                "SELECT value FROM app_settings WHERE key=?",
+                (materialization_generation_key(board_id),),
+            ).fetchone()
+        finally:
+            connection.rollback()
+    generation = str(generation_row[0]) if generation_row is not None else None
+    return ExactRelationalBaseline(
+        reservation_lineage_id=reservation_lineage_id,
+        audits=audits,
+        node_refs=node_refs,
+        outbox=outbox,
+        domain_events=domain_events,
+        handler_executions=handler_executions,
+        foreign_ack_journal=foreign_ack_journal,
+        foreign_compensations=foreign_compensations,
+        current_scope=current_scope_proof,
+        current_receipts=current_receipts,
+        materialization_generation=generation,
+    )
+
+
+def _ordered_exact_ack_receipts_from_rows(
+    rows: Sequence[Sequence[Any]],
+) -> tuple[Any, ...]:
+    from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
+
+    fields = tuple(ExactConsolidationAckReceipt.__dataclass_fields__)
+    unordered: list[Any] = []
+    for row in rows:
+        payload = {
+            "schema": "exact_consolidation_ack_receipt.v1",
+            **dict(zip(fields, row, strict=True)),
+        }
+        try:
+            unordered.append(ExactConsolidationAckReceipt.from_payload(payload))
+        except (TypeError, ValueError) as exc:
+            raise RecoveryRefused("exact_relational_ack_journal_invalid") from exc
+    generations = {receipt.materialization_generation for receipt in unordered}
+    by_previous: dict[str, Any] = {}
+    for receipt in unordered:
+        _require(
+            receipt.previous_materialization_generation not in by_previous,
+            "exact_relational_ack_chain_invalid",
+        )
+        by_previous[receipt.previous_materialization_generation] = receipt
+    starts = [
+        receipt
+        for receipt in unordered
+        if receipt.previous_materialization_generation not in generations
+    ]
+    _require(
+        (not unordered and not starts) or len(starts) == 1,
+        "exact_relational_ack_chain_invalid",
+    )
+    ordered: list[Any] = []
+    if starts:
+        current = starts[0]
+        while current is not None:
+            _require(current not in ordered, "exact_relational_ack_chain_cycle")
+            ordered.append(current)
+            current = by_previous.get(current.materialization_generation)
+    _require(
+        len(ordered) == len(unordered),
+        "exact_relational_ack_chain_incomplete",
+    )
+    return tuple(ordered)
+
+
+def _read_exact_ack_receipts(
+    connection: sqlite3.Connection,
+    *,
+    board_id: str,
+    source: str,
+    reservation_lineage_id: str,
+) -> tuple[Any, ...]:
+    """Read and validate one bounded exact ACK chain from an existing cut."""
+
+    from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
+
+    receipt_fields = tuple(ExactConsolidationAckReceipt.__dataclass_fields__)
+    rows = _bounded_sqlite_snapshot_rows(
+        connection.execute(
+            f"SELECT {','.join(receipt_fields)} FROM "
+            "exact_rebuild_consolidation_ack_journal WHERE board_id=? "
+            "AND source=? AND reservation_lineage_id=? ORDER BY queue_id",
+            (board_id, source, reservation_lineage_id),
+        ),
+        code="exact_relational_current_ack_journal",
+        max_rows=MAX_EXACT_ACK_JOURNAL_ROWS + 1,
+        max_bytes=MAX_EXACT_RELATIONAL_PROOF_BYTES,
+    )
+    _require(
+        len(rows) <= MAX_EXACT_ACK_JOURNAL_ROWS,
+        "exact_relational_current_ack_journal_row_limit_exceeded",
+    )
+    return _ordered_exact_ack_receipts_from_rows(rows)
+
+
+def _load_exact_ack_receipts(
+    db_path: Path,
+    *,
+    board_id: str,
+    source: str,
+    reservation_lineage_id: str,
+) -> tuple[Any, ...]:
+    with closing(_sqlite_connect_readonly(db_path)) as connection:
+        connection.execute("BEGIN")
+        try:
+            return _read_exact_ack_receipts(
+                connection,
+                board_id=board_id,
+                source=source,
+                reservation_lineage_id=reservation_lineage_id,
+            )
+        finally:
+            connection.rollback()
+
+
+def _exact_node_refs_sha256_from_sqlite(
+    *,
+    audit: Mapping[str, Any],
+    refs: Sequence[Mapping[str, Any]],
+) -> str:
+    canonical_refs = sorted(
+        (
+            {
+                "board_id": str(ref["board_id"]),
+                "kuzu_node_id": str(ref["kuzu_node_id"]),
+                "kuzu_node_type": str(ref["kuzu_node_type"]),
+                "operation": str(ref["operation"]),
+                "session_id": str(ref["session_id"]),
+            }
+            for ref in refs
+        ),
+        key=lambda value: (
+            value["board_id"],
+            value["session_id"],
+            value["kuzu_node_type"],
+            value["kuzu_node_id"],
+            value["operation"],
+        ),
+    )
+    payload = {
+        "agent_id": str(audit["agent_id"]),
+        "artifact_id": str(audit["artifact_id"]),
+        "artifact_type": str(audit["artifact_type"]),
+        "audit_content_hash": str(audit["content_hash"]),
+        "board_id": str(audit["board_id"]),
+        "committed_at": _sqlite_utc_timestamp_text(
+            audit["committed_at"],
+            code="exact_relational_success_audit_invalid",
+        ),
+        "edges_added": int(audit["edges_added"]),
+        "nodes_added": int(audit["nodes_added"]),
+        "nodes_superseded": int(audit["nodes_superseded"]),
+        "nodes_updated": int(audit["nodes_updated"]),
+        "refs": canonical_refs,
+        "schema": "exact_consolidation_node_refs.v1",
+        "session_id": str(audit["session_id"]),
+        "started_at": _sqlite_utc_timestamp_text(
+            audit["started_at"],
+            code="exact_relational_success_audit_invalid",
+        ),
+        "summary_text": audit["summary_text"],
+    }
+    digest = hashlib.sha256()
+    digest.update(b"okto-pulse.exact-consolidation.node-refs.v1\x00")
+    digest.update(_canonical_json_bytes(payload))
+    return digest.hexdigest()
+
+
+def _assert_exact_relational_success_state(
+    db_path: Path,
+    *,
+    board_id: str,
+    source: str,
+    baseline: ExactRelationalBaseline,
+    expected_source_rows: Sequence[Mapping[str, Any]],
+    resume_mode: bool,
+    require_no_suffix: bool = False,
+) -> None:
+    """Prove every successful exact ACK and its unpublished relational facts."""
+
+    from okto_pulse.community.adapters.materialization_health import (
+        INITIAL_MATERIALIZATION_GENERATION,
+        materialization_generation_key,
+    )
+    from okto_pulse.core.kg.board_rebuild_adapter import queue_artifact_type
+    from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
+
+    lineage_id = baseline.reservation_lineage_id
+    terminal = _capture_exact_relational_baseline(
+        db_path,
+        board_id=board_id,
+        source=source,
+        reservation_lineage_id=lineage_id,
+    )
+    _require(
+        all(
+            getattr(terminal, field) == getattr(baseline, field)
+            for field in (
+                "audits",
+                "node_refs",
+                "outbox",
+                "domain_events",
+                "handler_executions",
+                "foreign_ack_journal",
+                "foreign_compensations",
+            )
+        ),
+        "exact_relational_success_foreign_state_changed",
+    )
+    receipt_fields = tuple(ExactConsolidationAckReceipt.__dataclass_fields__)
+    with closing(_sqlite_connect_readonly(db_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN")
+        try:
+            receipt_rows = _bounded_sqlite_snapshot_rows(
+                connection.execute(
+                    f"SELECT {','.join(receipt_fields)} FROM "
+                    "exact_rebuild_consolidation_ack_journal WHERE board_id=? "
+                    "AND source=? AND reservation_lineage_id=? ORDER BY queue_id",
+                    (board_id, source, lineage_id),
+                ),
+                code="exact_relational_success_ack_journal",
+                max_rows=MAX_EXACT_ACK_JOURNAL_ROWS + 1,
+                max_bytes=MAX_EXACT_RELATIONAL_PROOF_BYTES,
+            )
+            _require(
+                len(receipt_rows) <= MAX_EXACT_ACK_JOURNAL_ROWS,
+                "exact_relational_success_ack_journal_row_limit_exceeded",
+            )
+            compensation_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM "
+                    "exact_rebuild_consolidation_compensations WHERE board_id=? "
+                    "AND source=? AND reservation_lineage_id=?",
+                    (board_id, source, lineage_id),
+                ).fetchone()[0]
+            )
+            audit_rows = tuple(
+                connection.execute(
+                    "SELECT a.session_id,a.board_id,a.artifact_id,a.artifact_type,"
+                    "a.agent_id,a.started_at,a.committed_at,a.nodes_added,"
+                    "a.nodes_updated,a.nodes_superseded,a.edges_added,a.summary_text,"
+                    "a.content_hash,a.undo_status,a.undone_at,a.error_details FROM "
+                    "consolidation_audit AS a JOIN "
+                    "exact_rebuild_consolidation_ack_journal AS j ON "
+                    "j.consolidation_session_id=a.session_id WHERE j.board_id=? "
+                    "AND j.source=? AND j.reservation_lineage_id=? "
+                    "ORDER BY a.session_id",
+                    (board_id, source, lineage_id),
+                )
+            )
+            ref_rows = _bounded_sqlite_snapshot_rows(
+                connection.execute(
+                    "SELECT r.id,r.session_id,r.board_id,r.kuzu_node_id,"
+                    "r.kuzu_node_type,r.operation,r.timestamp FROM kuzu_node_refs AS r "
+                    "JOIN exact_rebuild_consolidation_ack_journal AS j ON "
+                    "j.consolidation_session_id=r.session_id WHERE j.board_id=? "
+                    "AND j.source=? AND j.reservation_lineage_id=? ORDER BY "
+                    "r.session_id,r.kuzu_node_type,r.kuzu_node_id,r.operation,r.id",
+                    (board_id, source, lineage_id),
+                ),
+                code="exact_relational_success_node_refs",
+                max_rows=MAX_EXACT_RELATIONAL_PROOF_ROWS,
+                max_bytes=MAX_EXACT_RELATIONAL_PROOF_BYTES,
+            )
+            outbox_rows = _bounded_sqlite_snapshot_rows(
+                connection.execute(
+                    "SELECT o.id,o.event_id,o.board_id,o.session_id,o.event_type,"
+                    "o.payload,o.created_at,o.processed_at,o.retry_count,o.last_error "
+                    "FROM global_update_outbox AS o JOIN "
+                    "exact_rebuild_consolidation_ack_journal AS j ON "
+                    "j.consolidation_session_id=o.session_id WHERE j.board_id=? "
+                    "AND j.source=? AND j.reservation_lineage_id=? ORDER BY o.id",
+                    (board_id, source, lineage_id),
+                ),
+                code="exact_relational_success_outbox",
+                max_rows=MAX_EXACT_ACK_JOURNAL_ROWS + 1,
+                max_bytes=MAX_EXACT_RELATIONAL_PROOF_BYTES,
+            )
+            event_rows = _bounded_sqlite_snapshot_rows(
+                connection.execute(
+                    "SELECT e.id,e.event_type,e.board_id,e.actor_id,e.actor_type,"
+                    "e.payload_json,e.occurred_at FROM domain_events AS e JOIN "
+                    "exact_rebuild_consolidation_ack_journal AS j ON "
+                    "json_extract(e.payload_json,'$.correlation_id')="
+                    "j.consolidation_session_id WHERE j.board_id=? AND j.source=? "
+                    "AND j.reservation_lineage_id=? ORDER BY e.id",
+                    (board_id, source, lineage_id),
+                ),
+                code="exact_relational_success_domain_events",
+                max_rows=MAX_EXACT_ACK_JOURNAL_ROWS + 1,
+                max_bytes=MAX_EXACT_RELATIONAL_PROOF_BYTES,
+            )
+            execution_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM domain_event_handler_executions AS x "
+                    "JOIN exact_rebuild_consolidation_ack_journal AS j ON "
+                    "j.generation_event_id=x.event_id WHERE j.board_id=? "
+                    "AND j.source=? AND j.reservation_lineage_id=?",
+                    (board_id, source, lineage_id),
+                ).fetchone()[0]
+            )
+            generation_row = connection.execute(
+                "SELECT value FROM app_settings WHERE key=?",
+                (materialization_generation_key(board_id),),
+            ).fetchone()
+            observed_scope = _capture_exact_relational_scope_proof(
+                connection,
+                board_id=board_id,
+                source=source,
+                reservation_lineage_id=lineage_id,
+            )
+            observed_prefix_scope = _capture_exact_relational_scope_proof(
+                connection,
+                board_id=board_id,
+                source=source,
+                reservation_lineage_id=lineage_id,
+                receipt_prefix=baseline.current_receipts,
+            )
+        finally:
+            connection.rollback()
+
+    receipts = _ordered_exact_ack_receipts_from_rows(receipt_rows)
+    snapshot_drift = tuple(
+        name
+        for name in ExactRelationalScopeProof.__dataclass_fields__
+        if getattr(observed_scope, name) != getattr(terminal.current_scope, name)
+    )
+    _require(
+        receipts == terminal.current_receipts and not snapshot_drift,
+        "exact_relational_success_snapshot_drift",
+        repr(snapshot_drift),
+    )
+    prefix_count = len(baseline.current_receipts)
+    prefix_drift = tuple(
+        name
+        for name in ExactRelationalScopeProof.__dataclass_fields__
+        if getattr(observed_prefix_scope, name) != getattr(baseline.current_scope, name)
+    )
+    _require(
+        prefix_count <= len(receipts)
+        and receipts[:prefix_count] == baseline.current_receipts
+        and not prefix_drift,
+        "exact_relational_success_prefix_changed",
+        repr(prefix_drift),
+    )
+    if require_no_suffix:
+        _require(
+            receipts == baseline.current_receipts
+            and observed_scope == baseline.current_scope,
+            "exact_relational_frozen_scope_changed",
+        )
+    if resume_mode:
+        if baseline.current_receipts:
+            _require(
+                baseline.materialization_generation
+                == baseline.current_receipts[-1].materialization_generation,
+                "exact_relational_success_resume_head_invalid",
+            )
+        else:
+            _require(
+                baseline.materialization_generation is None
+                or (
+                    type(baseline.materialization_generation) is str
+                    and bool(baseline.materialization_generation)
+                ),
+                "exact_relational_success_resume_head_invalid",
+            )
+    else:
+        _require(
+            not baseline.current_receipts
+            and baseline.current_scope.ack_journal.row_count == 0
+            and baseline.current_scope.audits.row_count == 0
+            and baseline.current_scope.node_refs.row_count == 0
+            and baseline.current_scope.outbox.row_count == 0
+            and baseline.current_scope.domain_events.row_count == 0
+            and baseline.current_scope.handler_executions.row_count == 0
+            and baseline.current_scope.compensations.row_count == 0,
+            "exact_relational_success_fresh_scope_not_empty",
+        )
+    expected_order = _expected_queue_order(expected_source_rows)
+    _require(
+        bool(expected_order)
+        and len(receipts) == len(expected_order)
+        and compensation_count == 0,
+        "exact_relational_success_receipt_set_invalid",
+    )
+    expected_by_identity = {
+        (
+            queue_artifact_type(str(row.get("artifact_type") or "")),
+            str(row.get("id") or ""),
+        ): row
+        for row in expected_source_rows
+    }
+    _require(
+        len(expected_by_identity) == len(expected_source_rows)
+        and tuple((item.artifact_type, item.artifact_id) for item in receipts)
+        == expected_order,
+        "exact_relational_success_membership_set_invalid",
+    )
+    for item in receipts:
+        expected = expected_by_identity.get((item.artifact_type, item.artifact_id))
+        _require(
+            expected is not None
+            and item.board_id == board_id
+            and item.source == source
+            and item.reservation_lineage_id == lineage_id
+            and item.work_kind == "consolidate"
+            and item.membership_source_ref == str(expected.get("source_ref") or "")
+            and item.membership_source_version
+            == str(expected.get("source_version") or "")
+            and item.membership_content_hash == str(expected.get("content_hash") or ""),
+            "exact_relational_success_membership_invalid",
+            item.queue_id,
+        )
+    current_generation = str(generation_row[0]) if generation_row is not None else None
+    baseline_generation = (
+        baseline.current_receipts[-1].materialization_generation
+        if baseline.current_receipts
+        else baseline.materialization_generation or INITIAL_MATERIALIZATION_GENERATION
+    )
+    _require(
+        current_generation
+        == terminal.materialization_generation
+        == receipts[-1].materialization_generation
+        and baseline_generation
+        == (
+            baseline.current_receipts[-1].materialization_generation
+            if baseline.current_receipts
+            else receipts[0].previous_materialization_generation
+        ),
+        "exact_relational_success_generation_head_invalid",
+    )
+
+    audit_columns = (
+        "session_id",
+        "board_id",
+        "artifact_id",
+        "artifact_type",
+        "agent_id",
+        "started_at",
+        "committed_at",
+        "nodes_added",
+        "nodes_updated",
+        "nodes_superseded",
+        "edges_added",
+        "summary_text",
+        "content_hash",
+        "undo_status",
+        "undone_at",
+        "error_details",
+    )
+    ref_columns = (
+        "id",
+        "session_id",
+        "board_id",
+        "kuzu_node_id",
+        "kuzu_node_type",
+        "operation",
+        "timestamp",
+    )
+    outbox_columns = (
+        "id",
+        "event_id",
+        "board_id",
+        "session_id",
+        "event_type",
+        "payload",
+        "created_at",
+        "processed_at",
+        "retry_count",
+        "last_error",
+    )
+    event_columns = (
+        "id",
+        "event_type",
+        "board_id",
+        "actor_id",
+        "actor_type",
+        "payload_json",
+        "occurred_at",
+    )
+    audits = {
+        str(row[0]): dict(zip(audit_columns, row, strict=True)) for row in audit_rows
+    }
+    refs_by_session: dict[str, list[dict[str, Any]]] = {}
+    for row in ref_rows:
+        value = dict(zip(ref_columns, row, strict=True))
+        refs_by_session.setdefault(str(value["session_id"]), []).append(value)
+    outboxes = {
+        str(row[1]): dict(zip(outbox_columns, row, strict=True)) for row in outbox_rows
+    }
+    events = {
+        str(row[0]): dict(zip(event_columns, row, strict=True)) for row in event_rows
+    }
+    _require(
+        len(audits) == len(receipts)
+        and len(outbox_rows) == len(receipts)
+        and len(outboxes) == len(receipts)
+        and len(event_rows) == len(receipts)
+        and len(events) == len(receipts)
+        and execution_count == 0,
+        "exact_relational_success_evidence_set_invalid",
+    )
+
+    def json_object(raw: Any, *, code: str) -> dict[str, Any]:
+        try:
+            value = json.loads(raw) if type(raw) is str else raw
+        except (TypeError, ValueError) as exc:
+            raise RecoveryRefused(code) from exc
+        _require(type(value) is dict, code)
+        return dict(value)
+
+    for item in receipts:
+        audit = audits.get(item.consolidation_session_id)
+        refs = refs_by_session.get(item.consolidation_session_id, [])
+        outbox = outboxes.get(item.outbox_event_id)
+        event = events.get(item.generation_event_id)
+        _require(
+            audit is not None
+            and audit["board_id"] == board_id
+            and audit["artifact_type"] == item.artifact_type
+            and audit["artifact_id"] == item.artifact_id
+            and type(audit["agent_id"]) is str
+            and bool(audit["agent_id"])
+            and all(
+                type(audit[name]) is int and audit[name] >= 0
+                for name in (
+                    "nodes_added",
+                    "nodes_updated",
+                    "nodes_superseded",
+                    "edges_added",
+                )
+            )
+            and audit["content_hash"] == item.membership_content_hash
+            and audit["undo_status"] == "none"
+            and audit["undone_at"] is None
+            and audit["error_details"] is None
+            and len(refs) == item.node_ref_count == audit["nodes_added"]
+            and all(
+                ref["board_id"] == board_id
+                and ref["session_id"] == item.consolidation_session_id
+                and type(ref["kuzu_node_id"]) is str
+                and bool(ref["kuzu_node_id"])
+                and type(ref["kuzu_node_type"]) is str
+                and bool(ref["kuzu_node_type"])
+                and ref["operation"] == "add"
+                for ref in refs
+            )
+            and _exact_node_refs_sha256_from_sqlite(audit=audit, refs=refs)
+            == item.node_refs_sha256,
+            "exact_relational_success_audit_or_refs_invalid",
+            item.queue_id,
+        )
+        assert audit is not None
+        expected_outbox_payload = {
+            "artifact_id": item.artifact_id,
+            "edges_added": audit["edges_added"],
+            "nodes_added": audit["nodes_added"],
+            "nodes_superseded": audit["nodes_superseded"],
+            "nodes_updated": audit["nodes_updated"],
+            "session_id": item.consolidation_session_id,
+        }
+        expected_event_payload = {
+            "correlation_id": item.consolidation_session_id,
+            "materialization_generation": item.materialization_generation,
+            "previous_materialization_generation": (
+                item.previous_materialization_generation
+            ),
+        }
+        _require(
+            outbox is not None
+            and outbox["board_id"] == board_id
+            and outbox["session_id"] == item.consolidation_session_id
+            and outbox["event_type"] == "consolidation_committed"
+            and _canonical_json_bytes(
+                json_object(
+                    outbox["payload"],
+                    code="exact_relational_success_outbox_invalid",
+                )
+            )
+            == _canonical_json_bytes(expected_outbox_payload)
+            and outbox["processed_at"] is None
+            and outbox["retry_count"] == 0
+            and outbox["last_error"] is None
+            and event is not None
+            and event["board_id"] == board_id
+            and event["event_type"] == "kg.materialization_generation_advanced"
+            and event["actor_id"] is None
+            and event["actor_type"] == "agent"
+            and _canonical_json_bytes(
+                json_object(
+                    event["payload_json"],
+                    code="exact_relational_success_event_invalid",
+                )
+            )
+            == _canonical_json_bytes(expected_event_payload)
+            and _sqlite_utc_timestamp_text(
+                event["occurred_at"],
+                code="exact_relational_success_event_invalid",
+            )
+            == _sqlite_utc_timestamp_text(
+                audit["committed_at"],
+                code="exact_relational_success_audit_invalid",
+            ),
+            "exact_relational_success_integration_fact_invalid",
+            item.queue_id,
+        )
+
+
+def _assert_exact_relational_resume_prefix_state(
+    db_path: Path,
+    *,
+    board_id: str,
+    source: str,
+    baseline: ExactRelationalBaseline,
+    ordered_source_rows: Sequence[Mapping[str, Any]],
+) -> None:
+    """Prove a resumed run's already-consumed prefix before any new claim."""
+
+    prefix_count = len(baseline.current_receipts)
+    _require(
+        prefix_count <= len(ordered_source_rows),
+        "exact_relational_resume_prefix_cardinality_invalid",
+    )
+    if prefix_count == 0:
+        _require(
+            baseline.current_scope.ack_journal.row_count == 0
+            and baseline.current_scope.audits.row_count == 0
+            and baseline.current_scope.node_refs.row_count == 0
+            and baseline.current_scope.outbox.row_count == 0
+            and baseline.current_scope.domain_events.row_count == 0
+            and baseline.current_scope.handler_executions.row_count == 0
+            and baseline.current_scope.compensations.row_count == 0,
+            "exact_relational_resume_empty_prefix_invalid",
+        )
+        return
+    _assert_exact_relational_success_state(
+        db_path,
+        board_id=board_id,
+        source=source,
+        baseline=baseline,
+        expected_source_rows=ordered_source_rows[:prefix_count],
+        resume_mode=True,
+        require_no_suffix=True,
+    )
+
+
+def _assert_frozen_exact_relational_baseline_safe(
+    bundle: ServiceBundle,
+    *,
+    receipt: Mapping[str, Any],
+    audit: Mapping[str, Any],
+    board_id: str,
+    db_path: Path,
+) -> None:
+    """Reprove a prior successful exact run before rotating to a fresh run."""
+
+    manifest_ref = str(receipt.get("manifest_ref") or "")
+    confirmation_ref = str(receipt.get("confirmation_ref") or "")
+    run_id = str(receipt.get("run_id") or "")
+    _require(
+        receipt.get("receipt_state") == "terminal"
+        and bool(manifest_ref)
+        and bool(confirmation_ref)
+        and bool(run_id)
+        and str(receipt.get("board_id") or "") == board_id
+        and str(audit.get("run_id") or "") == run_id
+        and str(audit.get("board_id") or "") == board_id
+        and str(audit.get("manifest_ref") or "") == manifest_ref
+        and str(audit.get("confirmation_ref") or "") == confirmation_ref
+        and str(audit.get("outcome") or "") == "completed",
+        "prior_frozen_exact_terminal_binding_invalid",
+    )
+    checkpoint = _load_checkpoint(bundle, board_id, manifest_ref)
+    _require(
+        isinstance(checkpoint, Mapping)
+        and _checkpoint_state(checkpoint) == CHECKPOINT_STATE_COMPLETED
+        and type(checkpoint.get("writer_handoff_count")) is int
+        and checkpoint.get("writer_handoff_count") == 1
+        and type(checkpoint.get("writer_reacquire_count")) is int
+        and checkpoint.get("writer_reacquire_count") == 1,
+        "prior_frozen_exact_checkpoint_invalid",
+    )
+    assert isinstance(checkpoint, Mapping)
+    command = checkpoint.get("command")
+    _require(isinstance(command, Mapping), "prior_frozen_exact_command_invalid")
+    assert isinstance(command, Mapping)
+    f06_run_id = f"f06:{manifest_ref}"
+    lineage_id = _exact_reservation_lineage_id(
+        board_id=board_id,
+        manifest_ref=manifest_ref,
+        f06_run_id=f06_run_id,
+        confirmation_ref=confirmation_ref,
+    )
+    raw_source_rows = command.get("source_rows")
+    _require(
+        command.get("run_id") == f06_run_id
+        and command.get("board_id") == board_id
+        and command.get("manifest_ref") == manifest_ref
+        and command.get("exact_relational_compensation") is True
+        and command.get("reservation_lineage_id") == lineage_id
+        and isinstance(raw_source_rows, list)
+        and bool(raw_source_rows),
+        "prior_frozen_exact_command_invalid",
+    )
+    assert isinstance(raw_source_rows, list)
+    source_rows = tuple(
+        dict(row) for row in raw_source_rows if isinstance(row, Mapping)
+    )
+    _require(
+        len(source_rows) == len(raw_source_rows),
+        "prior_frozen_exact_source_rows_invalid",
+    )
+    ordered_source_rows = _production_ordered_source_rows(
+        db_path,
+        board_id=board_id,
+        source_rows=source_rows,
+    )
+    source = f"rebuild:{manifest_ref}"
+    baseline = _capture_exact_relational_baseline(
+        db_path,
+        board_id=board_id,
+        source=source,
+        reservation_lineage_id=lineage_id,
+    )
+    _require(
+        not _exact_queue_rows(db_path, board_id=board_id, source=source).rows,
+        "prior_frozen_exact_queue_residue",
+    )
+    _assert_exact_relational_success_state(
+        db_path,
+        board_id=board_id,
+        source=source,
+        baseline=baseline,
+        expected_source_rows=ordered_source_rows,
+        resume_mode=True,
+        require_no_suffix=True,
+    )
+
+
+def _assert_exact_relational_compensation_state(
+    db_path: Path,
+    *,
+    board_id: str,
+    source: str,
+    baseline: ExactRelationalBaseline,
+    binding: object,
+) -> None:
+    """Reprove the exact ACK journal and its complete relational rollback."""
+
+    from okto_pulse.community.adapters.materialization_health import (
+        materialization_generation_key,
+    )
+    from okto_pulse.core.ports.consolidation import (
+        ExactConsolidationAckReceipt,
+        ExactConsolidationCompensationReceipt,
+        exact_consolidation_ack_receipts_sha256,
+        validate_exact_consolidation_compensation_binding,
+    )
+
+    lineage_id = baseline.reservation_lineage_id
+    try:
+        bound_receipt = validate_exact_consolidation_compensation_binding(
+            binding,
+            board_id=board_id,
+            source=source,
+            reservation_lineage_id=lineage_id,
+        )
+    except (TypeError, ValueError) as exc:
+        raise RecoveryRefused("exact_relational_compensation_binding_invalid") from exc
+
+    terminal = _capture_exact_relational_baseline(
+        db_path,
+        board_id=board_id,
+        source=source,
+        reservation_lineage_id=lineage_id,
+    )
+    _require(
+        all(
+            getattr(terminal, field) == getattr(baseline, field)
+            for field in (
+                "audits",
+                "node_refs",
+                "outbox",
+                "domain_events",
+                "handler_executions",
+                "foreign_ack_journal",
+                "foreign_compensations",
+            )
+        ),
+        "exact_relational_non_journal_state_changed",
+    )
+
+    journal_fields = tuple(ExactConsolidationAckReceipt.__dataclass_fields__)
+    journal_columns = (*journal_fields,)
+    compensation_fields = tuple(
+        ExactConsolidationCompensationReceipt.__dataclass_fields__
+    )
+    with closing(_sqlite_connect_readonly(db_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN")
+        try:
+            cursor = connection.execute(
+                f"SELECT {','.join(journal_columns)} FROM "
+                "exact_rebuild_consolidation_ack_journal WHERE board_id=? "
+                "AND source=? AND reservation_lineage_id=? ORDER BY queue_id",
+                (board_id, source, lineage_id),
+            )
+            rows = _bounded_sqlite_snapshot_rows(
+                cursor,
+                code="exact_relational_ack_journal",
+                max_rows=MAX_EXACT_ACK_JOURNAL_ROWS + 1,
+                max_bytes=MAX_EXACT_RELATIONAL_PROOF_BYTES,
+            )
+            _require(
+                len(rows) <= MAX_EXACT_ACK_JOURNAL_ROWS,
+                "exact_relational_ack_journal_row_limit_exceeded",
+            )
+            unordered: list[Any] = []
+            for row in rows:
+                payload = {
+                    "schema": "exact_consolidation_ack_receipt.v1",
+                    **dict(zip(journal_fields, row, strict=True)),
+                }
+                try:
+                    unordered.append(ExactConsolidationAckReceipt.from_payload(payload))
+                except (TypeError, ValueError) as exc:
+                    raise RecoveryRefused(
+                        "exact_relational_ack_journal_invalid"
+                    ) from exc
+
+            generations = {receipt.materialization_generation for receipt in unordered}
+            by_previous: dict[str, Any] = {}
+            for receipt in unordered:
+                _require(
+                    receipt.previous_materialization_generation not in by_previous,
+                    "exact_relational_ack_chain_invalid",
+                )
+                by_previous[receipt.previous_materialization_generation] = receipt
+            starts = [
+                receipt
+                for receipt in unordered
+                if receipt.previous_materialization_generation not in generations
+            ]
+            _require(
+                (not unordered and not starts) or len(starts) == 1,
+                "exact_relational_ack_chain_invalid",
+            )
+            ordered: list[Any] = []
+            if starts:
+                current = starts[0]
+                while current is not None:
+                    _require(
+                        current not in ordered,
+                        "exact_relational_ack_chain_cycle",
+                    )
+                    ordered.append(current)
+                    current = by_previous.get(current.materialization_generation)
+            _require(
+                len(ordered) == len(unordered),
+                "exact_relational_ack_chain_incomplete",
+            )
+            receipts_tuple = tuple(ordered)
+
+            comp_cursor = connection.execute(
+                f"SELECT {','.join(compensation_fields)} FROM "
+                "exact_rebuild_consolidation_compensations WHERE board_id=? "
+                "AND source=? AND reservation_lineage_id=? ORDER BY compensation_id",
+                (board_id, source, lineage_id),
+            )
+            compensation_rows = _bounded_sqlite_snapshot_rows(
+                comp_cursor,
+                code="exact_relational_compensation_receipt",
+                max_rows=2,
+                max_bytes=MAX_LEGACY_PROTECTED_QUEUE_BYTES,
+            )
+
+            audit_rows = tuple(
+                connection.execute(
+                    "SELECT a.session_id,a.board_id,a.artifact_type,a.artifact_id,"
+                    "a.agent_id,a.started_at,a.committed_at,a.nodes_added,"
+                    "a.nodes_updated,a.nodes_superseded,a.edges_added,a.summary_text,"
+                    "a.content_hash,a.undo_status,a.undone_at,a.error_details "
+                    "FROM consolidation_audit AS a "
+                    "JOIN exact_rebuild_consolidation_ack_journal AS j "
+                    "ON j.consolidation_session_id=a.session_id WHERE j.board_id=? "
+                    "AND j.source=? AND j.reservation_lineage_id=? "
+                    "ORDER BY a.session_id",
+                    (board_id, source, lineage_id),
+                )
+            )
+            ref_cursor = connection.execute(
+                "SELECT r.session_id,r.board_id,r.kuzu_node_id,r.kuzu_node_type,"
+                "r.operation FROM kuzu_node_refs AS r JOIN "
+                "exact_rebuild_consolidation_ack_journal AS j "
+                "ON j.consolidation_session_id=r.session_id WHERE j.board_id=? "
+                "AND j.source=? AND j.reservation_lineage_id=? ORDER BY "
+                "r.session_id,r.kuzu_node_type,r.kuzu_node_id,r.operation,r.id",
+                (board_id, source, lineage_id),
+            )
+            ref_rows = _bounded_sqlite_snapshot_rows(
+                ref_cursor,
+                code="exact_relational_preserved_node_refs",
+                max_rows=MAX_EXACT_RELATIONAL_PROOF_ROWS,
+                max_bytes=MAX_EXACT_RELATIONAL_PROOF_BYTES,
+            )
+            remaining_outbox = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM global_update_outbox AS o JOIN "
+                    "exact_rebuild_consolidation_ack_journal AS j "
+                    "ON j.outbox_event_id=o.event_id WHERE j.board_id=? "
+                    "AND j.source=? AND j.reservation_lineage_id=?",
+                    (board_id, source, lineage_id),
+                ).fetchone()[0]
+            )
+            remaining_events = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM domain_events AS e JOIN "
+                    "exact_rebuild_consolidation_ack_journal AS j "
+                    "ON j.generation_event_id=e.id WHERE j.board_id=? "
+                    "AND j.source=? AND j.reservation_lineage_id=?",
+                    (board_id, source, lineage_id),
+                ).fetchone()[0]
+            )
+            remaining_executions = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM domain_event_handler_executions AS x "
+                    "JOIN exact_rebuild_consolidation_ack_journal AS j "
+                    "ON j.generation_event_id=x.event_id WHERE j.board_id=? "
+                    "AND j.source=? AND j.reservation_lineage_id=?",
+                    (board_id, source, lineage_id),
+                ).fetchone()[0]
+            )
+            generation_row = connection.execute(
+                "SELECT value FROM app_settings WHERE key=?",
+                (materialization_generation_key(board_id),),
+            ).fetchone()
+        finally:
+            connection.rollback()
+
+    current_generation = str(generation_row[0]) if generation_row is not None else None
+    if not receipts_tuple:
+        _require(
+            bound_receipt is None
+            and not compensation_rows
+            and not audit_rows
+            and not ref_rows
+            and remaining_outbox == 0
+            and remaining_events == 0
+            and remaining_executions == 0
+            and current_generation == baseline.materialization_generation,
+            "exact_relational_not_required_state_invalid",
+        )
+        return
+
+    _require(
+        bound_receipt is not None and len(compensation_rows) == 1,
+        "exact_relational_compensation_receipt_missing",
+    )
+    assert bound_receipt is not None
+    compensation_payload: dict[str, object] = {
+        "schema": "exact_consolidation_compensation_receipt.v1"
+    }
+    for name, raw in zip(compensation_fields, compensation_rows[0], strict=True):
+        value: object = raw
+        if name in {
+            "audit_session_ids",
+            "outbox_event_ids",
+            "generation_event_ids",
+        }:
+            try:
+                value = json.loads(str(raw))
+            except (TypeError, ValueError) as exc:
+                raise RecoveryRefused(
+                    "exact_relational_compensation_receipt_invalid"
+                ) from exc
+        elif name == "compensated_at":
+            value = _sqlite_utc_timestamp_text(
+                raw,
+                code="exact_relational_compensation_receipt_invalid",
+            )
+        compensation_payload[name] = value
+    try:
+        stored_compensation = ExactConsolidationCompensationReceipt.from_payload(
+            compensation_payload
+        )
+    except (TypeError, ValueError) as exc:
+        raise RecoveryRefused("exact_relational_compensation_receipt_invalid") from exc
+    _require(
+        stored_compensation == bound_receipt
+        and bound_receipt.ack_count == len(receipts_tuple)
+        and bound_receipt.node_ref_count
+        == sum(receipt.node_ref_count for receipt in receipts_tuple)
+        and bound_receipt.ack_receipts_sha256
+        == exact_consolidation_ack_receipts_sha256(receipts_tuple)
+        and bound_receipt.audit_session_ids
+        == tuple(receipt.consolidation_session_id for receipt in receipts_tuple)
+        and bound_receipt.outbox_event_ids
+        == tuple(receipt.outbox_event_id for receipt in receipts_tuple)
+        and bound_receipt.generation_event_ids
+        == tuple(receipt.generation_event_id for receipt in receipts_tuple)
+        and bound_receipt.baseline_materialization_generation
+        == receipts_tuple[0].previous_materialization_generation
+        and bound_receipt.terminal_materialization_generation
+        == receipts_tuple[-1].materialization_generation
+        and current_generation == bound_receipt.baseline_materialization_generation
+        and remaining_outbox == 0
+        and remaining_events == 0
+        and remaining_executions == 0,
+        "exact_relational_compensation_state_invalid",
+    )
+
+    audit_by_session = {str(row[0]): row for row in audit_rows}
+    refs_by_session: dict[str, list[tuple[Any, ...]]] = {}
+    for row in ref_rows:
+        refs_by_session.setdefault(str(row[0]), []).append(tuple(row))
+    _require(
+        set(audit_by_session) == set(bound_receipt.audit_session_ids)
+        and not refs_by_session,
+        "exact_relational_preserved_evidence_set_invalid",
+    )
+    for receipt in receipts_tuple:
+        audit = audit_by_session[receipt.consolidation_session_id]
+        refs = tuple(refs_by_session.get(receipt.consolidation_session_id, ()))
+        _require(
+            str(audit[1]) == board_id
+            and str(audit[2]) == receipt.artifact_type
+            and str(audit[3]) == receipt.artifact_id
+            and bool(str(audit[4]))
+            and audit[5] is not None
+            and audit[6] is not None
+            and all(
+                type(audit[index]) is int and int(audit[index]) >= 0
+                for index in range(7, 11)
+            )
+            and str(audit[12]) == receipt.membership_content_hash
+            and str(audit[13]) == "undone"
+            and audit[14] is not None
+            and audit[15] is None
+            and not refs
+            and receipt.node_ref_count == int(audit[7]),
+            "exact_relational_preserved_evidence_invalid",
+            receipt.consolidation_session_id,
+        )
 
 
 def _assert_database_preflight(
@@ -8594,6 +10432,38 @@ def _assert_closed_operation_baseline_safe(
         "terminal_reconciliation_required:closed_checkpoint_binding_invalid",
         run_id,
     )
+    assert isinstance(command, Mapping)
+    exact_relational = command.get("exact_relational_compensation") is True
+    lineage_id = command.get("reservation_lineage_id")
+    if exact_relational:
+        from okto_pulse.community.adapters.board_rebuild_ingestion import (
+            exact_rebuild_reservation_lineage_id,
+        )
+
+        confirmation_ref = str(receipt.get("confirmation_ref") or "")
+        try:
+            expected_lineage_id = exact_rebuild_reservation_lineage_id(
+                board_id=board_id,
+                manifest_ref=manifest_ref,
+                f06_run_id=f"f06:{manifest_ref}",
+                confirmation_ref=confirmation_ref,
+            )
+        except RuntimeError as exc:
+            raise RecoveryRefused(
+                "terminal_reconciliation_required:closed_exact_lineage_invalid"
+            ) from exc
+        _require(
+            type(lineage_id) is str and lineage_id == expected_lineage_id,
+            "terminal_reconciliation_required:closed_exact_lineage_invalid",
+            run_id,
+        )
+    else:
+        _require(
+            command.get("exact_relational_compensation") in (None, False)
+            and lineage_id is None,
+            "terminal_reconciliation_required:closed_legacy_exact_binding_invalid",
+            run_id,
+        )
     failed_state = str(checkpoint.get("compensation_failed_state") or "")
     expected_effects_by_state = {
         "quarantined": ("snapshot", "quarantine"),
@@ -8645,6 +10515,18 @@ def _assert_closed_operation_baseline_safe(
             "discard_candidate_generation",
         ),
     }
+    if exact_relational and failed_state in {
+        "enqueued",
+        "draining",
+        "restored",
+        "promoted",
+        "completed",
+    }:
+        expected_actions_by_state[failed_state] = (
+            expected_actions_by_state[failed_state][0],
+            "compensate_exact_relational_commits",
+            *expected_actions_by_state[failed_state][1:],
+        )
     _require(
         failed_state in expected_effects_by_state
         and tuple(checkpoint.get("compensation_actions") or ())
@@ -8714,6 +10596,57 @@ def _assert_closed_operation_baseline_safe(
         "terminal_reconciliation_required:closed_compensation_details_invalid",
         run_id,
     )
+    exact_action = "compensate_exact_relational_commits" in compensation_actions
+    exact_binding = (
+        details.get("exact_relational_compensation")
+        if isinstance(details, Mapping)
+        else None
+    )
+    if exact_action:
+        assert isinstance(lineage_id, str)
+        exact_baseline = _capture_exact_relational_baseline(
+            db_path,
+            board_id=board_id,
+            source=source,
+            reservation_lineage_id=lineage_id,
+        )
+        _assert_exact_relational_compensation_state(
+            db_path,
+            board_id=board_id,
+            source=source,
+            baseline=exact_baseline,
+            binding=exact_binding,
+        )
+    else:
+        _require(
+            exact_binding is None,
+            "terminal_reconciliation_required:closed_exact_binding_unexpected",
+            run_id,
+        )
+        if exact_relational:
+            assert isinstance(lineage_id, str)
+            with closing(_sqlite_connect_readonly(db_path)) as connection:
+                journal_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM "
+                        "exact_rebuild_consolidation_ack_journal WHERE board_id=? "
+                        "AND source=? AND reservation_lineage_id=?",
+                        (board_id, source, lineage_id),
+                    ).fetchone()[0]
+                )
+                compensation_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM "
+                        "exact_rebuild_consolidation_compensations WHERE board_id=? "
+                        "AND source=? AND reservation_lineage_id=?",
+                        (board_id, source, lineage_id),
+                    ).fetchone()[0]
+                )
+            _require(
+                journal_count == 0 and compensation_count == 0,
+                "terminal_reconciliation_required:closed_exact_pre_enqueue_residue",
+                run_id,
+            )
     if "cancel_enqueued_sources" in compensation_actions:
         _require(
             isinstance(queue_details, Mapping)
@@ -8999,26 +10932,19 @@ def _exact_reservation_lineage_id(
 ) -> str:
     """Stable verified-run lineage; ephemeral reservation tokens stay separate."""
 
-    _require(
-        f06_run_id == f"f06:{manifest_ref}",
-        "exact_rebuild_f06_run_lineage_invalid",
-    )
-    _require(
-        re.fullmatch(r"conf_fp_[0-9a-f]{64}", confirmation_ref) is not None,
-        "exact_rebuild_confirmation_lineage_invalid",
+    from okto_pulse.community.adapters.board_rebuild_ingestion import (
+        exact_rebuild_reservation_lineage_id,
     )
 
-    return hashlib.sha256(
-        _canonical_json_bytes(
-            {
-                "schema_version": "exact_rebuild_reservation_lineage.v1",
-                "board_id": board_id,
-                "manifest_ref": manifest_ref,
-                "f06_run_id": f06_run_id,
-                "confirmation_ref": confirmation_ref,
-            }
+    try:
+        return exact_rebuild_reservation_lineage_id(
+            board_id=board_id,
+            manifest_ref=manifest_ref,
+            f06_run_id=f06_run_id,
+            confirmation_ref=confirmation_ref,
         )
-    ).hexdigest()
+    except RuntimeError as exc:
+        raise RecoveryRefused(str(exc)) from exc
 
 
 def _expected_queue_order(
@@ -9309,6 +11235,7 @@ def _assert_exact_queue_admission(
     source_rows: Sequence[Mapping[str, Any]],
     ordered_source_rows: Sequence[Mapping[str, Any]],
     allow_consumed_prefix: bool = False,
+    consumed_receipts: Sequence[Any] = (),
     allow_claimed_recovery: bool = False,
     allow_durable_dispositions: bool = False,
 ) -> int:
@@ -9522,15 +11449,39 @@ def _assert_exact_queue_admission(
                 next_retry_at=next_retry_at,
             )
     observed = tuple(observed_order)
+    consumed = tuple(consumed_receipts)
     if allow_consumed_prefix:
         suffix_offset = len(expected_order) - len(observed)
         _require(
-            suffix_offset >= 0 and observed == expected_order[suffix_offset:],
+            suffix_offset >= 0
+            and observed == expected_order[suffix_offset:]
+            and len(consumed) == suffix_offset,
             "rebuild_queue_not_deterministic_suffix",
         )
+        for receipt, identity in zip(
+            consumed,
+            expected_order[:suffix_offset],
+            strict=True,
+        ):
+            expected_source = expected_by_identity[identity]
+            _require(
+                receipt.board_id == board_id
+                and receipt.source == f"rebuild:{manifest_ref}"
+                and receipt.reservation_lineage_id == reservation_lineage_id
+                and receipt.work_kind == "consolidate"
+                and (receipt.artifact_type, receipt.artifact_id) == identity
+                and receipt.membership_source_ref
+                == str(expected_source.get("source_ref") or "")
+                and receipt.membership_source_version
+                == str(expected_source.get("source_version") or "")
+                and receipt.membership_content_hash
+                == str(expected_source.get("content_hash") or ""),
+                "rebuild_queue_consumed_prefix_invalid",
+                receipt.queue_id,
+            )
     else:
         _require(
-            observed == expected_order,
+            not consumed and observed == expected_order,
             "rebuild_queue_topological_order_mismatch",
         )
     return claimed_count
@@ -9548,6 +11499,7 @@ async def _recover_exact_claims_for_resume(
     claimed_count: int,
     source_rows: Sequence[Mapping[str, Any]],
     ordered_source_rows: Sequence[Mapping[str, Any]],
+    consumed_receipts: Sequence[Any],
     baseline_dlq: QueueSnapshot,
     baseline_debt: QueueSnapshot,
     baseline_non_target: QueueSnapshot,
@@ -9655,6 +11607,7 @@ async def _recover_exact_claims_for_resume(
         source_rows=source_rows,
         ordered_source_rows=ordered_source_rows,
         allow_consumed_prefix=True,
+        consumed_receipts=consumed_receipts,
         allow_claimed_recovery=False,
         allow_durable_dispositions=True,
     )
@@ -10477,6 +12430,7 @@ async def _drain_exact_scope(
     admitted_identities: set[tuple[str, str]],
     source_rows: Sequence[Mapping[str, Any]],
     ordered_source_rows: Sequence[Mapping[str, Any]],
+    consumed_receipts: Sequence[Any],
     cancel_event: threading.Event,
     lifetime_probe: Callable[[], bool],
     timeout_seconds: float,
@@ -10612,6 +12566,16 @@ async def _drain_exact_scope(
         neutral_rows = tuple(
             row for row in rows if row.disposition.value == "neutral_fence_loss"
         )
+        current_receipts = _load_exact_ack_receipts(
+            db_path,
+            board_id=board_id,
+            source=source,
+            reservation_lineage_id=str(claim_scope.reservation_lineage_id),
+        )
+        _require(
+            current_receipts[: len(consumed_receipts)] == tuple(consumed_receipts),
+            "exact_processor_consumed_prefix_changed",
+        )
         _assert_exact_queue_admission(
             after,
             board_id=board_id,
@@ -10620,6 +12584,7 @@ async def _drain_exact_scope(
             source_rows=source_rows,
             ordered_source_rows=ordered_source_rows,
             allow_consumed_prefix=True,
+            consumed_receipts=current_receipts,
             allow_claimed_recovery=bool(neutral_rows),
             allow_durable_dispositions=True,
         )
@@ -11309,6 +13274,218 @@ async def _await_closed_archive_reconciliation(
     }
 
 
+def _assert_exact_failed_rebuild_event(
+    bundle: ServiceBundle,
+    manifest: Any,
+    result: Any,
+    audit: Mapping[str, Any],
+    *,
+    board_id: str,
+    candidate_generation_id: str,
+) -> None:
+    """Validate the report-backed failed TR8 event as an exact run receipt."""
+
+    from okto_pulse.core.kg.interfaces.rebuild_audit_storage import RebuildAuditKey
+    from okto_pulse.core.kg.rebuild_generation import is_valid_kg_generation_id
+
+    run_id = str(getattr(result, "run_id", None) or "")
+    report_ref = str(getattr(result, "report_ref", None) or "")
+    report_id = str(getattr(result, "report_id", None) or "")
+    _require(
+        bool(run_id)
+        and bool(report_ref)
+        and bool(report_id)
+        and is_valid_kg_generation_id(candidate_generation_id),
+        "exact_blocking_terminal_receipt_binding_invalid",
+    )
+    report = bundle.artifact_store.read_json_reference(report_ref)
+    expected_report_keys = {
+        "report_id",
+        "persisted_at",
+        "summary",
+        "hashes",
+        "source_refs",
+        "reconciliation_decisions",
+        "drilldown",
+        "operator_notes",
+    }
+    _require(
+        isinstance(report, Mapping) and set(report) == expected_report_keys,
+        "exact_blocking_report_invalid",
+    )
+    assert isinstance(report, Mapping)
+    summary = report.get("summary")
+    expected_summary_keys = {
+        "board_id",
+        "run_id",
+        "status",
+        "started_at",
+        "finished_at",
+        "counts",
+        "triggered_by",
+        "previous_kg_generation_id",
+        "kg_generation_id",
+    }
+    _require(
+        isinstance(summary, Mapping)
+        and set(summary) == expected_summary_keys
+        and report.get("report_id") == report_id
+        and summary.get("board_id") == board_id
+        and summary.get("run_id") == run_id
+        and summary.get("status") == "rebuild_failed"
+        and summary.get("started_at") == getattr(result, "started_at", None)
+        and summary.get("previous_kg_generation_id")
+        == getattr(result, "previous_kg_generation_id", None)
+        and summary.get("kg_generation_id") is None
+        and report.get("source_refs") == [manifest.manifest_ref]
+        and isinstance(report.get("hashes"), Mapping)
+        and set(report.get("hashes") or {}) == {"source_hash", "structural_hash"}
+        and all(
+            isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+            for value in dict(report.get("hashes") or {}).values()
+        )
+        and isinstance(report.get("reconciliation_decisions"), list)
+        and isinstance(report.get("drilldown"), Mapping)
+        and report.get("operator_notes")
+        == (str(audit.get("user_reason") or "") or None),
+        "exact_blocking_report_binding_invalid",
+    )
+    assert isinstance(summary, Mapping)
+    counts = summary.get("counts")
+    expected_by_layer = (
+        counts.get("expected_by_layer") if isinstance(counts, Mapping) else None
+    )
+    _require(
+        isinstance(counts, Mapping)
+        and len(counts) <= 64
+        and all(
+            isinstance(key, str)
+            and bool(key)
+            and len(key) <= 128
+            and (
+                (type(value) is int and value >= 0)
+                or (key == "expected_by_layer" and value is expected_by_layer)
+            )
+            for key, value in counts.items()
+        )
+        and isinstance(expected_by_layer, Mapping)
+        and len(expected_by_layer) <= 32
+        and all(
+            isinstance(layer, str)
+            and bool(layer)
+            and len(layer) <= 64
+            and type(value) is int
+            and value >= 0
+            for layer, value in expected_by_layer.items()
+        )
+        and isinstance(summary.get("triggered_by"), str)
+        and bool(summary.get("triggered_by"))
+        and summary.get("triggered_by") == audit.get("actor_id"),
+        "exact_blocking_report_counts_or_actor_invalid",
+    )
+    report_persisted_at = _parse_utc_timestamp(
+        report.get("persisted_at"),
+        code="exact_blocking_report_timestamp_invalid",
+    )
+    summary_finished_at = _parse_utc_timestamp(
+        summary.get("finished_at"),
+        code="exact_blocking_report_timestamp_invalid",
+    )
+    _require(
+        _parse_utc_timestamp(
+            summary.get("started_at"),
+            code="exact_blocking_report_timestamp_invalid",
+        )
+        <= summary_finished_at
+        <= report_persisted_at,
+        "exact_blocking_report_timestamp_invalid",
+    )
+
+    event_id = (
+        "evt_"
+        + hashlib.sha256(f"{board_id}\x1f{run_id}".encode("utf-8")).hexdigest()[:32]
+    )
+    event = bundle.artifact_store.read_json(
+        RebuildAuditKey(
+            namespace="event_audit",
+            board_id=board_id,
+            artifact_id=event_id,
+        )
+    )
+    expected_event_keys = {
+        "event_id",
+        "event",
+        "board_id",
+        "previous_kg_generation_id",
+        "kg_generation_id",
+        "candidate_kg_generation_id",
+        "triggered_by",
+        "started_at",
+        "finished_at",
+        "status",
+        "counts",
+        "report_ref",
+        "manifest_ref",
+        "run_id",
+        "persisted_at",
+        "delivery_outcome",
+        "delivery_detail",
+        "delivered_at",
+    }
+    _require(
+        isinstance(event, Mapping)
+        and set(event) == expected_event_keys
+        and event.get("event_id") == event_id
+        and event.get("event") == "kg.rebuilt"
+        and event.get("board_id") == board_id
+        and event.get("run_id") == run_id
+        and event.get("manifest_ref") == manifest.manifest_ref
+        and event.get("report_ref") == report_ref
+        and event.get("status") == "rebuild_failed"
+        and event.get("previous_kg_generation_id")
+        == getattr(result, "previous_kg_generation_id", None)
+        and event.get("kg_generation_id") is None
+        and event.get("candidate_kg_generation_id") == candidate_generation_id
+        and event.get("triggered_by") == summary.get("triggered_by")
+        and event.get("started_at") == summary.get("started_at")
+        and event.get("finished_at") == summary.get("finished_at")
+        and isinstance(event.get("counts"), Mapping)
+        and _canonical_json_bytes(event.get("counts"))
+        == _canonical_json_bytes(dict(counts))
+        and event.get("delivery_outcome") == "published"
+        and event.get("delivery_detail") is None,
+        "exact_blocking_terminal_event_invalid",
+    )
+    assert isinstance(event, Mapping)
+    event_persisted_at = _parse_utc_timestamp(
+        event.get("persisted_at"),
+        code="exact_blocking_terminal_event_timestamp_invalid",
+    )
+    event_delivered_at = _parse_utc_timestamp(
+        event.get("delivered_at"),
+        code="exact_blocking_terminal_event_timestamp_invalid",
+    )
+    result_finished_at = _parse_utc_timestamp(
+        getattr(result, "finished_at", None),
+        code="exact_blocking_terminal_event_timestamp_invalid",
+    )
+    _require(
+        summary_finished_at
+        <= report_persisted_at
+        <= event_persisted_at
+        <= event_delivered_at
+        <= result_finished_at,
+        "exact_blocking_terminal_event_timestamp_invalid",
+    )
+    _require(
+        audit.get("report_ref") == report_ref
+        and audit.get("report_id") == report_id
+        and audit.get("started_at") == getattr(result, "started_at", None)
+        and audit.get("finished_at") == getattr(result, "finished_at", None),
+        "exact_blocking_event_run_audit_binding_invalid",
+    )
+
+
 def _assert_exact_blocking_compensation(
     bundle: ServiceBundle,
     manifest: Any,
@@ -11327,6 +13504,7 @@ def _assert_exact_blocking_compensation(
     quarantine_baseline_ids: frozenset[str],
     board_storage_root: Path,
     baseline_health: Mapping[str, Any],
+    exact_relational_baseline: ExactRelationalBaseline,
 ) -> None:
     """Prove Core compensated a typed blocker without promotion or debt/DLQ."""
 
@@ -11352,9 +13530,9 @@ def _assert_exact_blocking_compensation(
         getattr(result, "outcome", None) == "failed"
         and getattr(result, "reason", None) == "lifecycle_failed"
         and getattr(result, "current_kg_generation_id", None) is None
-        and getattr(result, "promotion_outcome", None) != "promoted"
-        and getattr(result, "publishable_status", None) != "completed"
-        and getattr(result, "event_emitted", None) is False,
+        and getattr(result, "promotion_outcome", None) is None
+        and getattr(result, "publishable_status", None) == "rebuild_failed"
+        and getattr(result, "event_emitted", None) is True,
         "exact_blocking_service_outcome_invalid",
     )
     audit_ref = str(getattr(result, "audit_ref", None) or "")
@@ -11368,9 +13546,13 @@ def _assert_exact_blocking_compensation(
         and str(audit.get("outcome") or "") == "failed"
         and str(audit.get("reason") or "") == "lifecycle_failed"
         and audit.get("current_kg_generation_id") is None
-        and audit.get("promotion_outcome") != "promoted"
-        and audit.get("publishable_status") != "completed"
-        and audit.get("event_emitted") is False,
+        and audit.get("promotion_outcome") is None
+        and audit.get("publishable_status") == "rebuild_failed"
+        and audit.get("event_emitted") is True
+        and audit.get("report_ref") == getattr(result, "report_ref", None)
+        and audit.get("report_id") == getattr(result, "report_id", None)
+        and audit.get("previous_kg_generation_id")
+        == getattr(result, "previous_kg_generation_id", None),
         "exact_blocking_run_audit_invalid",
     )
     checkpoint = _load_checkpoint(bundle, board_id, manifest.manifest_ref)
@@ -11391,12 +13573,16 @@ def _assert_exact_blocking_compensation(
     _require(
         isinstance(command, Mapping)
         and str(command.get("board_id") or "") == board_id
-        and str(command.get("manifest_ref") or "") == manifest.manifest_ref,
+        and str(command.get("manifest_ref") or "") == manifest.manifest_ref
+        and command.get("exact_relational_compensation") is True
+        and command.get("reservation_lineage_id")
+        == exact_relational_baseline.reservation_lineage_id,
         "exact_blocking_checkpoint_command_invalid",
     )
     actions = tuple(str(value) for value in checkpoint.get("compensation_actions", ()))
     _require(
         "cancel_enqueued_sources" in actions
+        and "compensate_exact_relational_commits" in actions
         and "discard_candidate_generation" in actions
         and "restore_quarantine" in actions,
         "exact_blocking_compensation_actions_invalid",
@@ -11447,6 +13633,11 @@ def _assert_exact_blocking_compensation(
         details.get("quarantine_restore") if isinstance(details, Mapping) else None
     )
     discard = details.get("candidate_discard") if isinstance(details, Mapping) else None
+    exact_relational = (
+        details.get("exact_relational_compensation")
+        if isinstance(details, Mapping)
+        else None
+    )
     _require(
         isinstance(details, Mapping)
         and tuple(str(value) for value in details.get("actions", ())) == actions
@@ -11458,6 +13649,26 @@ def _assert_exact_blocking_compensation(
         and str(discard.get("status") or "")
         in {"already_absent", "discarded", "discarded_by_atomic_backup_swap"},
         "exact_blocking_compensation_details_invalid",
+    )
+    _assert_exact_relational_compensation_state(
+        db_path,
+        board_id=board_id,
+        source=source,
+        baseline=exact_relational_baseline,
+        binding=exact_relational,
+    )
+    candidate_generation_id = (
+        str(discard.get("candidate_generation_id") or "")
+        if isinstance(discard, Mapping)
+        else ""
+    )
+    _assert_exact_failed_rebuild_event(
+        bundle,
+        manifest,
+        result,
+        audit,
+        board_id=board_id,
+        candidate_generation_id=candidate_generation_id,
     )
     _require(
         _active_exact_queue_depth(db_path, board_id=board_id, source=source) == 0
@@ -11566,6 +13777,7 @@ async def _assert_terminal_gates(
     baseline_non_target: QueueSnapshot,
     admitted_identities: set[tuple[str, str]],
     expected_source_rows: Sequence[Mapping[str, Any]],
+    ordered_source_rows: Sequence[Mapping[str, Any]],
     expected_cognitive_source_rows: Sequence[Mapping[str, Any]],
     quarantine_root: Path,
     quarantine_baseline: Mapping[str, str],
@@ -11581,6 +13793,7 @@ async def _assert_terminal_gates(
     overlay_revision_baseline: Mapping[str, Any] | None,
     expect_overlay_revision_advance: bool,
     cognitive_ledger_baseline: CognitiveLedgerBaseline,
+    exact_relational_baseline: ExactRelationalBaseline,
     frozen_confirmation_receipt_baseline: Mapping[str, Any] | None,
     rebaseline_audit_baseline: Mapping[str, Any] | None = None,
     expected_rebaseline_evidence: Mapping[str, Any] | None = None,
@@ -11626,6 +13839,15 @@ async def _assert_terminal_gates(
         getattr(result, "promotion_outcome", None) == "promoted",
         "generation_not_promoted",
         str(getattr(result, "promotion_outcome", None)),
+    )
+    _assert_exact_relational_success_state(
+        db_path,
+        board_id=board_id,
+        source=f"rebuild:{manifest.manifest_ref}",
+        baseline=exact_relational_baseline,
+        expected_source_rows=ordered_source_rows,
+        resume_mode=resume_mode,
+        require_no_suffix=not expect_overlay_revision_advance,
     )
     current_generation = getattr(result, "current_kg_generation_id", None)
     _require(bool(current_generation), "current_generation_missing")
@@ -12214,6 +14436,13 @@ async def _execute_under_serve_lock(
 
                 compensated_adoption: CompensatedQueueAdoption | None = None
                 if is_rebuild_terminal_audit_frozen(prior_audit):
+                    _assert_frozen_exact_relational_baseline_safe(
+                        bundle,
+                        receipt=prior_receipt,
+                        audit=prior_audit,
+                        board_id=args.board_id,
+                        db_path=db_path,
+                    )
                     closed_baseline_kind = "prior_frozen_terminal"
                 else:
                     closed_baseline_kind, compensated_adoption = (
@@ -12405,6 +14634,7 @@ async def _execute_under_serve_lock(
             initial_board_dlq_ids = _dlq_ids_for_board(db_path, args.board_id)
             logical_database_baseline: Mapping[str, str] = {}
             compensation_queue_baseline: QueueSnapshot | None = None
+            exact_relational_baseline: ExactRelationalBaseline | None = None
             _assert_no_pulse_processes()
             _require(lifetime_probe(), "offline_lifetime_proof_failed")
             capability_stack = ExitStack()
@@ -12497,6 +14727,18 @@ async def _execute_under_serve_lock(
                     logical_database_baseline = _sqlite_logical_fingerprints(
                         db_path,
                         exclude_tables=frozenset({"consolidation_queue"}),
+                    )
+                elif not reconciliation_mode:
+                    exact_relational_baseline = _capture_exact_relational_baseline(
+                        db_path,
+                        board_id=args.board_id,
+                        source=f"rebuild:{manifest.manifest_ref}",
+                        reservation_lineage_id=_exact_reservation_lineage_id(
+                            board_id=args.board_id,
+                            manifest_ref=manifest.manifest_ref,
+                            f06_run_id=f"f06:{manifest.manifest_ref}",
+                            confirmation_ref=confirmation_ref,
+                        ),
                     )
                 service_task = asyncio.create_task(
                     asyncio.to_thread(
@@ -12639,6 +14881,12 @@ async def _execute_under_serve_lock(
                     f06_run_id=f06_run_id,
                     confirmation_ref=confirmation_ref,
                 )
+                _require(
+                    exact_relational_baseline is not None
+                    and exact_relational_baseline.reservation_lineage_id
+                    == reservation_lineage_id,
+                    "exact_relational_baseline_lineage_invalid",
+                )
                 source = f"rebuild:{manifest.manifest_ref}"
                 claim_scope: Any | None = None
                 if requires_claims:
@@ -12671,6 +14919,7 @@ async def _execute_under_serve_lock(
                         source_rows=source_rows,
                         ordered_source_rows=ordered_source_rows,
                         allow_consumed_prefix=plan.mode == "resume",
+                        consumed_receipts=exact_relational_baseline.current_receipts,
                         allow_claimed_recovery=plan.mode == "resume",
                         allow_durable_dispositions=plan.mode == "resume",
                     )
@@ -12683,6 +14932,14 @@ async def _execute_under_serve_lock(
                         )
                         == 0,
                         "post_drain_resume_has_active_exact_rows",
+                    )
+                if requires_claims:
+                    _assert_exact_relational_resume_prefix_state(
+                        db_path,
+                        board_id=args.board_id,
+                        source=source,
+                        baseline=exact_relational_baseline,
+                        ordered_source_rows=ordered_source_rows,
                     )
                 _assert_unchanged_snapshot(
                     _dlq_snapshot(db_path),
@@ -12718,6 +14975,7 @@ async def _execute_under_serve_lock(
                         claimed_count=claimed_count,
                         source_rows=source_rows,
                         ordered_source_rows=ordered_source_rows,
+                        consumed_receipts=exact_relational_baseline.current_receipts,
                         baseline_dlq=initial_dlq,
                         baseline_debt=initial_canonical_debt,
                         baseline_non_target=non_target,
@@ -12748,6 +15006,7 @@ async def _execute_under_serve_lock(
                         admitted_identities=admitted_identities,
                         source_rows=source_rows,
                         ordered_source_rows=ordered_source_rows,
+                        consumed_receipts=exact_relational_baseline.current_receipts,
                         cancel_event=cancel_event,
                         lifetime_probe=lifetime_probe,
                         timeout_seconds=args.run_timeout_seconds,
@@ -12790,6 +15049,7 @@ async def _execute_under_serve_lock(
                         quarantine_baseline_ids=quarantine_baseline_ids,
                         board_storage_root=board_storage_root,
                         baseline_health=raw_health,
+                        exact_relational_baseline=exact_relational_baseline,
                     )
                     _assert_schema_unchanged(db_path, schema_fingerprint)
                     _assert_worker_registry_never_started(composition)
@@ -12813,6 +15073,7 @@ async def _execute_under_serve_lock(
                     baseline_non_target=non_target,
                     admitted_identities=admitted_identities,
                     expected_source_rows=expected_source_rows,
+                    ordered_source_rows=ordered_source_rows,
                     expected_cognitive_source_rows=(
                         tuple(
                             row.to_dict()
@@ -12839,6 +15100,7 @@ async def _execute_under_serve_lock(
                     overlay_revision_baseline=overlay_revision_baseline,
                     expect_overlay_revision_advance=not plan.frozen_terminal,
                     cognitive_ledger_baseline=cognitive_ledger_baseline,
+                    exact_relational_baseline=exact_relational_baseline,
                     frozen_confirmation_receipt_baseline=(
                         plan.receipt if plan.frozen_terminal else None
                     ),
@@ -13035,6 +15297,22 @@ def _execute(args: argparse.Namespace, evidence: InstallEvidence) -> int:
                     and locked_file_hash == live_receipt_file_hash,
                     "rehearsal_receipt_changed_after_consumption",
                 )
+            _assert_no_pulse_processes()
+            _require(
+                heartbeat.failure is None
+                and _authoritative_serve_lock_matches(
+                    serve_lock,
+                    data_home=data_home,
+                ),
+                "exact_relational_schema_offline_fence_lost",
+            )
+            schema_installed = _install_exact_relational_recovery_schema(db_path)
+            _emit(
+                "exact_relational_recovery_schema_ready",
+                board_id=args.board_id,
+                installed=schema_installed,
+                tables=EXACT_RELATIONAL_SCHEMA_TABLES,
+            )
             owner_id, _board_settings, schema_fingerprint = _assert_database_preflight(
                 db_path,
                 args.board_id,

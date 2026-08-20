@@ -1059,7 +1059,29 @@ def test_v030_installed_schema_upgrades_to_exact_semantic_v2_and_replays(
         )
     # This exact installed-fixture upgrade is the terminal Community schema,
     # including migration-owned indexes and triggers (not merely ORM tables).
-    assert len(schema_objects) == 829
+    assert len(schema_objects) == 832
+    assert tuple(
+        (object_type, name, table_name)
+        for object_type, name, table_name, _sql in schema_objects
+        if name.startswith("exact_rebuild_consolidation_")
+        or name == "ix_exact_rebuild_ack_scope"
+    ) == (
+        (
+            "index",
+            "ix_exact_rebuild_ack_scope",
+            "exact_rebuild_consolidation_ack_journal",
+        ),
+        (
+            "table",
+            "exact_rebuild_consolidation_ack_journal",
+            "exact_rebuild_consolidation_ack_journal",
+        ),
+        (
+            "table",
+            "exact_rebuild_consolidation_compensations",
+            "exact_rebuild_consolidation_compensations",
+        ),
+    )
     assert recovery.MAX_RECOVERY_SQLITE_SCHEMA_OBJECTS >= 4 * len(schema_objects)
     assert (
         len(json.dumps(schema_objects, sort_keys=True, separators=(",", ":")).encode())

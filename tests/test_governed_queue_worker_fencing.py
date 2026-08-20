@@ -1537,6 +1537,16 @@ async def test_exact_retry_claim_crash_recovers_marker_then_acks_attempt_two(
     queue_store,
     monkeypatch,
 ) -> None:
+    from okto_pulse.community.adapters.materialization_health import (
+        materialization_generation_key,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        AppSetting,
+        ConsolidationAudit,
+        DomainEventRow,
+        GlobalUpdateOutbox,
+        KuzuNodeRef,
+    )
     from okto_pulse.core.application.processors import consolidation
     from okto_pulse.core.ports.consolidation import ExactConsolidationDisposition
 
@@ -1612,11 +1622,92 @@ async def test_exact_retry_claim_crash_recovers_marker_then_acks_attempt_two(
         assert board_id == BOARD_ID
         return source
 
-    async def success(_db, _entry, **_kwargs):  # noqa: ANN001
+    async def settle_deferred(*_args, **_kwargs) -> None:
+        return None
+
+    async def success(db, entry, **kwargs):  # noqa: ANN001
+        deferred_session_ids = kwargs.get("deferred_session_ids")
+        assert isinstance(deferred_session_ids, list)
+        session_id = "retry-crash-success-session"
+        committed_at = datetime.now(timezone.utc)
+        previous_generation = "unmaterialized-v1"
+        materialization_generation = "mg_retry_crash_success"
+        generation_event_id = "00000000-0000-0000-0000-000000000301"
+        db.add_all(
+            [
+                ConsolidationAudit(
+                    session_id=session_id,
+                    board_id=BOARD_ID,
+                    artifact_id=entry.artifact_id,
+                    artifact_type=entry.artifact_type,
+                    agent_id="system:historical_consolidation",
+                    started_at=committed_at,
+                    committed_at=committed_at,
+                    nodes_added=1,
+                    nodes_updated=0,
+                    nodes_superseded=0,
+                    edges_added=0,
+                    content_hash=membership["content_hash"],
+                    undo_status="none",
+                ),
+                KuzuNodeRef(
+                    id="retry-crash-success-ref",
+                    session_id=session_id,
+                    board_id=BOARD_ID,
+                    kuzu_node_id="retry-crash-success-node",
+                    kuzu_node_type="Entity",
+                    operation="add",
+                    timestamp=committed_at,
+                ),
+                GlobalUpdateOutbox(
+                    id="retry-crash-success-outbox-row",
+                    event_id="retry-crash-success-outbox",
+                    board_id=BOARD_ID,
+                    session_id=session_id,
+                    event_type="consolidation_committed",
+                    payload={
+                        "session_id": session_id,
+                        "artifact_id": entry.artifact_id,
+                        "nodes_added": 1,
+                        "nodes_updated": 0,
+                        "nodes_superseded": 0,
+                        "edges_added": 0,
+                    },
+                    retry_count=0,
+                ),
+                DomainEventRow(
+                    id=generation_event_id,
+                    event_type="kg.materialization_generation_advanced",
+                    board_id=BOARD_ID,
+                    actor_type="agent",
+                    payload_json={
+                        "correlation_id": session_id,
+                        "previous_materialization_generation": previous_generation,
+                        "materialization_generation": materialization_generation,
+                    },
+                    occurred_at=committed_at,
+                ),
+            ]
+        )
+        head = await db.get(AppSetting, materialization_generation_key(BOARD_ID))
+        if head is None:
+            db.add(
+                AppSetting(
+                    key=materialization_generation_key(BOARD_ID),
+                    value=materialization_generation,
+                )
+            )
+        else:
+            head.value = materialization_generation
+        await db.flush()
+        deferred_session_ids.append(session_id)
         return True
 
     monkeypatch.setattr(adapter, "board_administrative_rebuild_source", reservation)
     monkeypatch.setattr(consolidation, "_process_queue_entry_serialized", success)
+    monkeypatch.setattr(
+        consolidation, "finalize_deferred_consolidation", settle_deferred
+    )
     register_consolidation_persistence_port(adapter)
     scope = ConsolidationClaimScope(
         board_id=BOARD_ID,

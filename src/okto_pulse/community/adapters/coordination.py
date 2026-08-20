@@ -54,11 +54,15 @@ from .filesystem_erasure import (
 # expired, replaced or foreign-token manifest can never be resurrected.  Two
 # backoffs mean three total attempts and at most 0.15s of added latency, far
 # below the shortest writer-lease TTL.  The same bounded retry covers a busy
-# board recovery mutex during renewal and exact-token release: the
+# board recovery mutex during acquisition, renewal and exact-token release: the
 # administrative-reservation and graph-writer heartbeats legitimately share
-# that mutex, and a transient collision is not evidence that either exact
-# token was lost.  Every retry still re-reads the manifest and current clock,
-# so an expired/replaced token can never be extended or removed.
+# that mutex, and a transient collision is not evidence that another writer
+# owns the graph or that either exact token was lost.  Every retry still
+# re-reads the manifest and current clock, so an expired/replaced token can
+# never be extended or removed.  Acquisition exhaustion is surfaced as a
+# typed recovery failure rather than ordinary writer contention: a caller must
+# never claim that an unobserved owner exists merely because this sidecar mutex
+# stayed busy for the bounded interval.
 _SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS = 3
 _SINGLE_WRITER_RENEW_REPLACE_BACKOFF_SECONDS = (0.05, 0.1)
 
@@ -334,7 +338,11 @@ class CommunityLocalWriteLockPort(WriteLockPort):
         base_dir_hint: str | None = None,
         board_dir_resolver: Any | None = None,
     ):
-        from okto_pulse.core.kg.single_writer_lock import RECOVERY_LOCK_FILENAME
+        from okto_pulse.core.kg.single_writer_lock import (
+            RECOVERY_LOCK_FILENAME,
+            SingleWriterLockError,
+            SingleWriterLockErrorCode,
+        )
 
         board_dir = self._single_writer_board_dir(
             board_id,
@@ -344,35 +352,47 @@ class CommunityLocalWriteLockPort(WriteLockPort):
         board_dir.mkdir(parents=True, exist_ok=True)
         path = self._single_writer_path(board_dir, artifact_id)
         recovery_path = board_dir / RECOVERY_LOCK_FILENAME
-        try:
-            with self._single_writer_recovery_mutex(board_dir):
-                recovery_token, recovery_marker_recovered = (
-                    self._claim_single_writer_recovery_marker(
-                        recovery_path=recovery_path,
-                        board_id=board_id,
-                        operation=operation,
-                        owner_id=owner_id,
-                    )
+        for attempt_index in range(_SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS):
+            if attempt_index:
+                time.sleep(
+                    _SINGLE_WRITER_RENEW_REPLACE_BACKOFF_SECONDS[attempt_index - 1]
                 )
-                if recovery_token is None:
-                    return self._single_writer_contention(path)
-                try:
-                    return self._acquire_single_writer_under_mutex(
-                        path=path,
-                        board_id=board_id,
-                        operation=operation,
-                        owner_id=owner_id,
-                        ttl_seconds=ttl_seconds,
-                        admin_lane=admin_lane,
-                        recovery_marker_recovered=recovery_marker_recovered,
+            try:
+                with self._single_writer_recovery_mutex(board_dir):
+                    recovery_token, recovery_marker_recovered = (
+                        self._claim_single_writer_recovery_marker(
+                            recovery_path=recovery_path,
+                            board_id=board_id,
+                            operation=operation,
+                            owner_id=owner_id,
+                        )
                     )
-                finally:
-                    self._release_single_writer_recovery_marker(
-                        recovery_path,
-                        recovery_token=recovery_token,
-                    )
-        except _SingleWriterRecoveryMutexBusy:
-            return self._single_writer_contention(path)
+                    if recovery_token is None:
+                        return self._single_writer_contention(path)
+                    try:
+                        return self._acquire_single_writer_under_mutex(
+                            path=path,
+                            board_id=board_id,
+                            operation=operation,
+                            owner_id=owner_id,
+                            ttl_seconds=ttl_seconds,
+                            admin_lane=admin_lane,
+                            recovery_marker_recovered=recovery_marker_recovered,
+                        )
+                    finally:
+                        self._release_single_writer_recovery_marker(
+                            recovery_path,
+                            recovery_token=recovery_token,
+                        )
+            except _SingleWriterRecoveryMutexBusy:
+                if attempt_index + 1 == _SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS:
+                    raise SingleWriterLockError(
+                        SingleWriterLockErrorCode.STALE_LOCK_RECOVERY_FAILED,
+                        retryable=True,
+                        reason="recovery_mutex_busy_exhausted",
+                    ) from None
+                continue
+        raise AssertionError("bounded single-writer acquisition loop did not terminate")
 
     def _acquire_single_writer_under_mutex(
         self,

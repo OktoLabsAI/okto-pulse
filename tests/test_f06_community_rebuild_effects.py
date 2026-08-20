@@ -11,6 +11,7 @@ import pytest
 
 from okto_pulse.community.adapters.board_rebuild_ingestion import (
     CommunityBoardRebuildIngestionAdapter,
+    exact_rebuild_reservation_lineage_id,
 )
 from okto_pulse.community.adapters.rebuild_effects import CommunityRebuildEffects
 from okto_pulse.core.application.rebuild_processor import (
@@ -27,6 +28,12 @@ from okto_pulse.core.kg.rebuild_service import RebuildStepInput
 from okto_pulse.core.ports.policy_constraint_projection import (
     PolicyConstraintProjectionResult,
 )
+from okto_pulse.core.ports.consolidation import (
+    build_exact_consolidation_compensation_binding,
+)
+
+
+AUTHORIZED_CONFIRMATION_REF = f"conf_fp_{'a' * 64}"
 
 
 class DictArtifactStore:
@@ -146,6 +153,12 @@ def _queue_db(tmp_path: Path) -> Path:
 
 
 def _command() -> RebuildCommand:
+    lineage_id = exact_rebuild_reservation_lineage_id(
+        board_id="board-1",
+        manifest_ref="manifest-1",
+        f06_run_id="f06:manifest-1",
+        confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
+    )
     return RebuildCommand(
         run_id="f06:manifest-1",
         board_id="board-1",
@@ -156,6 +169,8 @@ def _command() -> RebuildCommand:
         source_rows=({"artifact_type": "story", "id": "story-1"},),
         candidate_generation_id="gen-2",
         owner_token="owner-token",
+        exact_relational_compensation=True,
+        reservation_lineage_id=lineage_id,
     )
 
 
@@ -171,6 +186,7 @@ def _recovery_request(**overrides) -> RebuildStepInput:  # noqa: ANN003
         "candidate_kg_generation_id": "gen-2",
         "recovery_failure_code": RebuildOutcomeCode.MANIFEST_DRIFT.value,
         "recovery_failure_detail": "manifest missing during authorized resume",
+        "authorized_confirmation_ref": AUTHORIZED_CONFIRMATION_REF,
     }
     values.update(overrides)
     return RebuildStepInput(**values)
@@ -212,6 +228,7 @@ def test_f06_recovery_failure_without_checkpoint_never_resolves_sources(
             RebuildState.ENQUEUED,
             (
                 CompensationAction.CANCEL_ENQUEUED_SOURCES,
+                CompensationAction.COMPENSATE_EXACT_RELATIONAL_COMMITS,
                 CompensationAction.RESTORE_QUARANTINE,
                 CompensationAction.DISCARD_CANDIDATE_GENERATION,
             ),
@@ -220,6 +237,7 @@ def test_f06_recovery_failure_without_checkpoint_never_resolves_sources(
             RebuildState.DRAINING,
             (
                 CompensationAction.CANCEL_ENQUEUED_SOURCES,
+                CompensationAction.COMPENSATE_EXACT_RELATIONAL_COMMITS,
                 CompensationAction.RESTORE_QUARANTINE,
                 CompensationAction.DISCARD_CANDIDATE_GENERATION,
             ),
@@ -228,6 +246,7 @@ def test_f06_recovery_failure_without_checkpoint_never_resolves_sources(
             RebuildState.COMPLETED,
             (
                 CompensationAction.CANCEL_ENQUEUED_SOURCES,
+                CompensationAction.COMPENSATE_EXACT_RELATIONAL_COMMITS,
                 CompensationAction.DEMOTE_CANDIDATE_GENERATION,
                 CompensationAction.RESTORE_QUARANTINE,
                 CompensationAction.DISCARD_CANDIDATE_GENERATION,
@@ -262,7 +281,21 @@ def test_f06_recovery_failure_compensates_checkpoint_without_resolving_sources(
     def _compensate(self, compensation, *, effect_key):  # noqa: ANN001, ANN202
         del self
         observed_actions.append(compensation.actions)
-        return RebuildEffectReceipt(effect_key, "compensate", True)
+        return RebuildEffectReceipt(
+            effect_key,
+            "compensate",
+            True,
+            details={
+                "exact_relational_compensation": (
+                    build_exact_consolidation_compensation_binding(
+                        board_id=command.board_id,
+                        source=f"rebuild:{command.manifest_ref}",
+                        reservation_lineage_id=str(command.reservation_lineage_id),
+                        result=None,
+                    )
+                )
+            },
+        )
 
     def _audit(self, outcome, *, effect_key):  # noqa: ANN001, ANN202
         del self, outcome
@@ -642,6 +675,7 @@ def test_f06_v3_checkpoint_strictly_upgrades_and_replays_v4_enqueue_once(
         owner_token="owner-token-b",
         previous_kg_generation_id="gen-1",
         candidate_kg_generation_id="gen-3",
+        authorized_confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
     )
     result = step(request)
 
@@ -965,6 +999,7 @@ def test_f06_v3_upgrade_crash_before_enqueue_replays_v4_without_resnapshot(
         owner_token="owner-token-b",
         previous_kg_generation_id="gen-1",
         candidate_kg_generation_id="gen-3",
+        authorized_confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
     )
 
     with pytest.raises(_CrashAfterUpgrade):
@@ -1364,6 +1399,7 @@ def test_f06_build_step_uses_core_processor_and_typed_effects(
             operation="rebuild",
             owner_token="token-1",
             candidate_kg_generation_id="gen-2",
+            authorized_confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
         )
     )
 
@@ -1401,6 +1437,7 @@ def test_f06_build_step_uses_core_processor_and_typed_effects(
             operation="rebuild",
             owner_token="token-1",
             candidate_kg_generation_id="gen-2",
+            authorized_confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
         )
     )
     assert replay.ok is True
@@ -1494,6 +1531,20 @@ def test_f06_policy_constraint_rebuild_failure_is_fail_closed(
     candidate_path.parent.mkdir(parents=True)
     candidate_path.write_bytes(b"failed-candidate")
     monkeypatch.setattr(
+        CommunityRebuildEffects,
+        "_compensate_exact_relational_commits",
+        staticmethod(
+            lambda command, *, mutation_guard: (
+                build_exact_consolidation_compensation_binding(
+                    board_id=command.board_id,
+                    source=f"rebuild:{command.manifest_ref}",
+                    reservation_lineage_id=str(command.reservation_lineage_id),
+                    result=None,
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
         kg_runtime,
         "board_kuzu_path",
         lambda _board_id: candidate_path,
@@ -1521,6 +1572,7 @@ def test_f06_policy_constraint_rebuild_failure_is_fail_closed(
             owner_token="token-1",
             previous_kg_generation_id="gen-1",
             candidate_kg_generation_id="gen-2",
+            authorized_confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
         )
     )
 
@@ -1537,6 +1589,7 @@ def test_f06_policy_constraint_rebuild_failure_is_fail_closed(
         "promotion_allowed": False,
         "compensation_actions": [
             "cancel_enqueued_sources",
+            "compensate_exact_relational_commits",
             "demote_candidate_generation",
             "restore_quarantine",
             "discard_candidate_generation",
@@ -1573,6 +1626,7 @@ def test_f06_policy_constraint_rebuild_failure_is_fail_closed(
             owner_token="token-1",
             previous_kg_generation_id="gen-1",
             candidate_kg_generation_id="gen-2",
+            authorized_confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
         )
     )
     assert same_run.ok is False
@@ -1588,6 +1642,7 @@ def test_f06_policy_constraint_rebuild_failure_is_fail_closed(
             owner_token="token-1",
             previous_kg_generation_id="gen-1",
             candidate_kg_generation_id="gen-3",
+            authorized_confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
         )
     )
     assert fresh_run.ok is True
@@ -1624,6 +1679,7 @@ def test_f06_salvage_pending_blocks_before_quarantine(
             actor_id="operator",
             operation="rebuild",
             owner_token="token",
+            authorized_confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
         )
     )
     assert result.ok is False
@@ -1665,6 +1721,7 @@ def test_f06_build_step_honors_cooperative_cancellation_before_mutation(
             owner_token="token",
             cancel_requested=lambda: True,
             lease_renew=renew,
+            authorized_confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
         )
     )
 

@@ -59,6 +59,8 @@ def _command_payload(command: RebuildCommand) -> dict[str, object]:
         "previous_generation_id": command.previous_generation_id,
         "candidate_generation_id": command.candidate_generation_id,
         "salvage_pending": command.salvage_pending,
+        "exact_relational_compensation": command.exact_relational_compensation,
+        "reservation_lineage_id": command.reservation_lineage_id,
     }
 
 
@@ -932,6 +934,28 @@ class CommunityRebuildEffects:
             details["queue"] = queue_result
             queue_fenced = int(queue_result.get("active_remaining", -1)) == 0
             ok = ok and queue_fenced
+        exact_action = CompensationAction.COMPENSATE_EXACT_RELATIONAL_COMMITS
+        if exact_action in command.actions:
+            if (
+                CompensationAction.CANCEL_ENQUEUED_SOURCES not in command.actions
+                or not rebuild_command.exact_relational_compensation
+                or rebuild_command.reservation_lineage_id is None
+            ):
+                raise RuntimeError("exact_relational_compensation_binding_invalid")
+            if not queue_fenced:
+                details["exact_relational_compensation"] = {
+                    "status": "blocked_by_active_queue"
+                }
+                ok = False
+            else:
+                if not _mutation_allowed("compensate_exact_relational_commits"):
+                    return _guard_failure()
+                details["exact_relational_compensation"] = (
+                    self._compensate_exact_relational_commits(
+                        rebuild_command,
+                        mutation_guard=command.mutation_guard,
+                    )
+                )
         if CompensationAction.DEMOTE_CANDIDATE_GENERATION in command.actions:
             details["candidate_demotion"] = {
                 "status": "not_persisted_by_effect_adapter",
@@ -1000,6 +1024,61 @@ class CommunityRebuildEffects:
             details=details,
         )
         return self._store_receipt(rebuild_command, receipt)
+
+    @staticmethod
+    def _compensate_exact_relational_commits(
+        command: RebuildCommand,
+        *,
+        mutation_guard: Callable[[], bool] | None,
+    ) -> dict[str, object]:
+        """Reverse the complete exact ACK journal under the live reservation."""
+
+        from okto_pulse.core.application.processors.consolidation import (
+            ConsolidationProcessor,
+        )
+        from okto_pulse.core.kg.async_bridge import run_async_blocking
+        from okto_pulse.core.ports.consolidation import (
+            ConsolidationClaimScope,
+            build_exact_consolidation_compensation_binding,
+        )
+
+        lineage_id = command.reservation_lineage_id
+        if (
+            not command.exact_relational_compensation
+            or type(lineage_id) is not str
+            or len(lineage_id) != 64
+            or any(character not in "0123456789abcdef" for character in lineage_id)
+            or not callable(mutation_guard)
+        ):
+            raise RuntimeError("exact_relational_compensation_binding_invalid")
+        source = f"rebuild:{command.manifest_ref}"
+        scope = ConsolidationClaimScope(
+            board_id=command.board_id,
+            source=source,
+            work_kind="consolidate",
+            reservation_lineage_id=lineage_id,
+        )
+        processor = ConsolidationProcessor()
+
+        async def _run() -> object:
+            receipts = await processor.list_exact_rebuild_ack_receipts(
+                claim_scope=scope,
+                reservation_authority_probe=mutation_guard,
+            )
+            if not receipts:
+                return None
+            return await processor.compensate_exact_rebuild_commits(
+                claim_scope=scope,
+                reservation_authority_probe=mutation_guard,
+            )
+
+        result = run_async_blocking(_run())
+        return build_exact_consolidation_compensation_binding(
+            board_id=command.board_id,
+            source=source,
+            reservation_lineage_id=lineage_id,
+            result=result,
+        )
 
     def _quarantine_had_affected_files(
         self,

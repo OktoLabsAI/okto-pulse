@@ -7609,6 +7609,138 @@ class GlobalUpdateOutbox(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class ExactRebuildConsolidationAckJournal(Base):
+    """Immutable receipt for one relational commit in an exact F06 drain.
+
+    The queue row is deleted in the same transaction that inserts this row.
+    Physical graph compensation is separate; the journal preserves enough
+    identity to reverse only the unpublished relational projection owned by
+    the discarded candidate generation.
+    """
+
+    __tablename__ = "exact_rebuild_consolidation_ack_journal"
+    __table_args__ = (
+        UniqueConstraint(
+            "consolidation_session_id",
+            name="uq_exact_rebuild_ack_consolidation_session",
+        ),
+        UniqueConstraint(
+            "outbox_event_id",
+            name="uq_exact_rebuild_ack_outbox_event",
+        ),
+        UniqueConstraint(
+            "generation_event_id",
+            name="uq_exact_rebuild_ack_generation_event",
+        ),
+        UniqueConstraint(
+            "receipt_sha256",
+            name="uq_exact_rebuild_ack_receipt_sha256",
+        ),
+        CheckConstraint(
+            "work_kind = 'consolidate'",
+            name="ck_exact_rebuild_ack_work_kind",
+        ),
+        CheckConstraint(
+            "generation >= 0",
+            name="ck_exact_rebuild_ack_generation",
+        ),
+        CheckConstraint(
+            "node_ref_count >= 0",
+            name="ck_exact_rebuild_ack_node_ref_count",
+        ),
+        Index(
+            "ix_exact_rebuild_ack_scope",
+            "board_id",
+            "source",
+            "reservation_lineage_id",
+        ),
+    )
+
+    queue_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source: Mapped[str] = mapped_column(String(255), nullable=False)
+    reservation_lineage_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    work_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    artifact_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    artifact_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    membership_source_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    membership_source_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    membership_content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    consolidation_session_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("consolidation_audit.session_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    outbox_event_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    generation_event_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    previous_materialization_generation: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )
+    materialization_generation: Mapped[str] = mapped_column(String(64), nullable=False)
+    node_ref_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    node_refs_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    receipt_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ExactRebuildConsolidationCompensation(Base):
+    """Replayable terminal receipt for one fully reversed exact ACK journal."""
+
+    __tablename__ = "exact_rebuild_consolidation_compensations"
+    __table_args__ = (
+        UniqueConstraint(
+            "board_id",
+            "source",
+            "reservation_lineage_id",
+            name="uq_exact_rebuild_compensation_scope",
+        ),
+        UniqueConstraint(
+            "receipt_sha256",
+            name="uq_exact_rebuild_compensation_receipt_sha256",
+        ),
+        CheckConstraint(
+            "ack_count >= 1",
+            name="ck_exact_rebuild_compensation_ack_count",
+        ),
+        CheckConstraint(
+            "node_ref_count >= 0",
+            name="ck_exact_rebuild_compensation_node_ref_count",
+        ),
+    )
+
+    compensation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source: Mapped[str] = mapped_column(String(255), nullable=False)
+    reservation_lineage_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    baseline_materialization_generation: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )
+    terminal_materialization_generation: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )
+    ack_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    node_ref_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    ack_receipts_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    audit_session_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    outbox_event_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    generation_event_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    compensated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    receipt_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class GlobalDiscoveryDeliveryLedger(Base):
     """Durable ownership ledger for Global Discovery parity delivery."""
 

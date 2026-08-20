@@ -330,9 +330,7 @@ def test_af29_s2_community_recovery_lock_serializes_fresh_holder(
             ttl_seconds=60,
         )
 
-    assert "recovery_lock_stale_manual_intervention_required" in (
-        exc_info.value.reason
-    )
+    assert "recovery_lock_stale_manual_intervention_required" in (exc_info.value.reason)
     assert primary_unlinks["n"] == 0
     assert primary_path.exists()
     assert recovery_path.exists()
@@ -526,12 +524,13 @@ def test_live_kernel_mutex_blocks_acquire_renew_and_release_without_mutation(
     primary_before = primary_path.read_bytes()
 
     with port._single_writer_recovery_mutex(board_dir):  # noqa: SLF001
-        contender = lock.acquire(
-            board_id="board-live-mutex",
-            operation="rebuild",
-            owner_id="owner-b",
-            ttl_seconds=60,
-        )
+        with pytest.raises(SingleWriterLockError) as contender_error:
+            lock.acquire(
+                board_id="board-live-mutex",
+                operation="rebuild",
+                owner_id="owner-b",
+                ttl_seconds=60,
+            )
         renewed = lock.renew(
             board_id="board-live-mutex",
             owner_token=str(acquired.owner_token),
@@ -542,7 +541,8 @@ def test_live_kernel_mutex_blocks_acquire_renew_and_release_without_mutation(
             owner_token=str(acquired.owner_token),
         )
 
-    assert contender.acquired is False
+    assert contender_error.value.retryable is True
+    assert contender_error.value.reason == "recovery_mutex_busy_exhausted"
     assert renewed is False
     assert released is False
     assert primary_path.read_bytes() == primary_before
@@ -561,9 +561,7 @@ def test_renew_and_release_reclaim_orphaned_protocol_markers_safely(
         ttl_seconds=60,
     )
     assert acquired.acquired and acquired.owner_token
-    recovery_path = (
-        base_dir / "board-renew-release-orphan" / RECOVERY_LOCK_FILENAME
-    )
+    recovery_path = base_dir / "board-renew-release-orphan" / RECOVERY_LOCK_FILENAME
 
     _write_protocol_recovery_marker(
         recovery_path,
@@ -612,9 +610,10 @@ def test_protocol_marker_cleanup_does_not_unlink_foreign_replacement_token(
         recovery_token=str(token),
     )
 
-    assert json.loads(recovery_path.read_text(encoding="utf-8"))[
-        "recovery_token"
-    ] == "foreign-token"
+    assert (
+        json.loads(recovery_path.read_text(encoding="utf-8"))["recovery_token"]
+        == "foreign-token"
+    )
 
 
 def test_af29_s2_community_quarantine_adapter_preserves_manifest_and_scope(

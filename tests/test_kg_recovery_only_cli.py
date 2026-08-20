@@ -689,6 +689,123 @@ def test_required_recovery_schema_refuses_app_settings_drift(
         recovery._assert_required_recovery_schema(db_path)
 
 
+def _create_pre_exact_relational_db(path: Path) -> None:
+    import sqlite3
+
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            "CREATE TABLE boards (id TEXT PRIMARY KEY);"
+            "CREATE TABLE consolidation_audit (session_id TEXT PRIMARY KEY);"
+            "CREATE TABLE sentinel (id TEXT PRIMARY KEY, payload TEXT NOT NULL);"
+            "INSERT INTO sentinel(id,payload) VALUES ('sentinel','preserve-me');"
+        )
+
+
+def test_exact_relational_schema_upgrade_is_exact_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    import sqlite3
+
+    db_path = tmp_path / "pulse.db"
+    artifact = tmp_path / "boards" / BOARD_ID / "graph.lbug"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"graph-must-not-change")
+    _create_pre_exact_relational_db(db_path)
+    logical_before = recovery._sqlite_logical_fingerprints(db_path)
+    artifact_before = hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+    assert recovery._install_exact_relational_recovery_schema(db_path) is True
+    statements, expected = recovery._exact_relational_schema_contract()
+    assert statements
+    with sqlite3.connect(db_path) as connection:
+        observed = recovery._exact_relational_schema_candidate_rows(
+            connection,
+            expected=expected,
+        )
+        assert set(observed) == set(expected)
+        assert connection.execute("PRAGMA foreign_key_check").fetchone() is None
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        assert connection.execute("SELECT * FROM sentinel").fetchall() == [
+            ("sentinel", "preserve-me")
+        ]
+        for table_name in recovery.EXACT_RELATIONAL_SCHEMA_TABLES:
+            assert connection.execute(
+                f'SELECT COUNT(*) FROM "{table_name}"'
+            ).fetchone() == (0,)
+    logical_after = recovery._sqlite_logical_fingerprints(
+        db_path,
+        exclude_tables=frozenset(recovery.EXACT_RELATIONAL_SCHEMA_TABLES),
+    )
+    assert logical_after == logical_before
+    assert hashlib.sha256(artifact.read_bytes()).hexdigest() == artifact_before
+
+    schema_after_first = recovery._sqlite_schema_fingerprint(db_path)
+    storage_after_first = recovery._sqlite_storage_fingerprints(db_path)
+    assert recovery._install_exact_relational_recovery_schema(db_path) is False
+    assert recovery._sqlite_schema_fingerprint(db_path) == schema_after_first
+    assert recovery._sqlite_storage_fingerprints(db_path) == storage_after_first
+    assert hashlib.sha256(artifact.read_bytes()).hexdigest() == artifact_before
+
+
+@pytest.mark.parametrize("wrong_shape", ("partial", "weakened"))
+def test_exact_relational_schema_upgrade_refuses_partial_or_wrong_shape(
+    tmp_path: Path,
+    wrong_shape: str,
+) -> None:
+    import sqlite3
+
+    db_path = tmp_path / f"{wrong_shape}.sqlite3"
+    _create_pre_exact_relational_db(db_path)
+    with sqlite3.connect(db_path) as connection:
+        if wrong_shape == "partial":
+            connection.execute(
+                "CREATE TABLE exact_rebuild_consolidation_ack_journal (id TEXT)"
+            )
+        else:
+            connection.execute(
+                "CREATE TABLE exact_rebuild_consolidation_compensations "
+                "(compensation_id TEXT PRIMARY KEY)"
+            )
+    schema_before = recovery._sqlite_schema_fingerprint(db_path)
+    logical_before = recovery._sqlite_logical_fingerprints(db_path)
+
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="exact_relational_schema_partial_or_mismatched",
+    ):
+        recovery._install_exact_relational_recovery_schema(db_path)
+
+    assert recovery._sqlite_schema_fingerprint(db_path) == schema_before
+    assert recovery._sqlite_logical_fingerprints(db_path) == logical_before
+
+
+def test_exact_relational_schema_upgrade_is_ordered_after_locked_attestation() -> None:
+    """Freeze the offline upgrade before preflight and any composition work."""
+
+    execute_source = inspect.getsource(recovery._execute)
+    locked_receipt_offset = execute_source.index(
+        "locked_receipt, locked_file_hash = _validate_rehearsal_attestation("
+    )
+    install_offset = execute_source.index(
+        "schema_installed = _install_exact_relational_recovery_schema(db_path)"
+    )
+    preflight_offset = execute_source.index(
+        "owner_id, _board_settings, schema_fingerprint = _assert_database_preflight("
+    )
+    service_offset = execute_source.index(
+        "_execute_under_serve_lock(", preflight_offset
+    )
+    assert locked_receipt_offset < install_offset < preflight_offset < service_offset
+
+    service_source = inspect.getsource(recovery._execute_under_serve_lock)
+    assert "app = create_community_app()" in service_source
+    assert "_install_exact_relational_recovery_schema" not in service_source
+    install_source = inspect.getsource(
+        recovery._install_exact_relational_recovery_schema
+    )
+    assert "create_community_app" not in install_source
+
+
 def test_preexisting_rebuild_temp_is_refused_before_plan_or_artifact_read(
     tmp_path: Path,
 ) -> None:
@@ -1119,6 +1236,8 @@ def test_real_ladybug_close_releases_hash_handle_and_allows_explicit_reopen(
     import textwrap
 
     source_root = Path(recovery.__file__).resolve().parents[2]
+    core_source_root = source_root.parent.parent / "okto_labs_pulse_core" / "src"
+    assert (core_source_root / "okto_pulse" / "core").is_dir()
     child_home = tmp_path / "native-child"
     script = textwrap.dedent(
         """
@@ -1126,6 +1245,12 @@ def test_real_ladybug_close_releases_hash_handle_and_allows_explicit_reopen(
         from pathlib import Path
         import sys
         from okto_pulse.community import kg_recovery_only as recovery
+        from okto_pulse.core.ports import consolidation as core_consolidation
+
+        assert Path(core_consolidation.__file__).resolve().is_relative_to(
+            Path(sys.argv[2]).resolve()
+        )
+        assert hasattr(core_consolidation, 'ExactConsolidationAckReceipt')
 
         async def main():
             home = Path(sys.argv[1]).resolve()
@@ -1197,9 +1322,9 @@ def test_real_ladybug_close_releases_hash_handle_and_allows_explicit_reopen(
         """
     )
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(source_root)
+    env["PYTHONPATH"] = os.pathsep.join((str(source_root), str(core_source_root)))
     completed = subprocess.run(
-        [sys.executable, "-c", script, str(child_home)],
+        [sys.executable, "-c", script, str(child_home), str(core_source_root)],
         cwd=source_root.parent,
         env=env,
         capture_output=True,
@@ -2288,6 +2413,69 @@ def test_exact_disposition_admission_binds_verified_lineage_and_resume_shape() -
         )
         == 0
     )
+    consumed = SimpleNamespace(
+        queue_id="consumed-exact-row",
+        board_id=BOARD_ID,
+        source=f"rebuild:{manifest_ref}",
+        reservation_lineage_id=lineage_id,
+        work_kind="consolidate",
+        artifact_type="spec",
+        artifact_id="exact-spec",
+        membership_source_ref="spec:exact-spec",
+        membership_source_version="7",
+        membership_content_hash="a" * 64,
+    )
+    empty = recovery.QueueSnapshot(_EXACT_QUEUE_COLUMNS, (), "empty-exact-cut")
+    assert (
+        recovery._assert_exact_queue_admission(
+            empty,
+            board_id=BOARD_ID,
+            manifest_ref=manifest_ref,
+            reservation_lineage_id=lineage_id,
+            source_rows=(_exact_source_row(),),
+            ordered_source_rows=(_exact_source_row(),),
+            allow_consumed_prefix=True,
+            consumed_receipts=(consumed,),
+            allow_durable_dispositions=True,
+        )
+        == 0
+    )
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="rebuild_queue_not_deterministic_suffix",
+    ):
+        recovery._assert_exact_queue_admission(
+            empty,
+            board_id=BOARD_ID,
+            manifest_ref=manifest_ref,
+            reservation_lineage_id=lineage_id,
+            source_rows=(_exact_source_row(),),
+            ordered_source_rows=(_exact_source_row(),),
+            allow_consumed_prefix=True,
+            allow_durable_dispositions=True,
+        )
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="rebuild_queue_consumed_prefix_invalid",
+    ):
+        recovery._assert_exact_queue_admission(
+            empty,
+            board_id=BOARD_ID,
+            manifest_ref=manifest_ref,
+            reservation_lineage_id=lineage_id,
+            source_rows=(_exact_source_row(),),
+            ordered_source_rows=(_exact_source_row(),),
+            allow_consumed_prefix=True,
+            consumed_receipts=(
+                SimpleNamespace(
+                    **{
+                        **vars(consumed),
+                        "membership_content_hash": "f" * 64,
+                    }
+                ),
+            ),
+            allow_durable_dispositions=True,
+        )
     claimed = _exact_queue_snapshot(
         manifest_ref=manifest_ref,
         marker=marker,
@@ -2431,6 +2619,7 @@ def test_exact_batch_preserves_card_source_ref_alias(
 
     from okto_pulse.core.ports.consolidation import (
         ConsolidationClaimScope,
+        ExactConsolidationAckReceipt,
         ExactConsolidationBatchResult,
         ExactConsolidationDisposition,
         ExactConsolidationMutationState,
@@ -2484,6 +2673,26 @@ def test_exact_batch_preserves_card_source_ref_alias(
         source=source,
         reservation_lineage_id=lineage_id,
     )
+    ack_receipt = ExactConsolidationAckReceipt.create(
+        queue_id="card-row",
+        board_id=BOARD_ID,
+        source=source,
+        reservation_lineage_id=str(scope.reservation_lineage_id),
+        work_kind="consolidate",
+        artifact_type="card",
+        artifact_id="card-source",
+        generation=0,
+        membership_source_ref=str(source_row["source_ref"]),
+        membership_source_version="2",
+        membership_content_hash="6" * 64,
+        consolidation_session_id="kgses_card",
+        outbox_event_id="outbox_card",
+        generation_event_id="event_card",
+        previous_materialization_generation="mg_before",
+        materialization_generation="mg_after",
+        node_ref_count=1,
+        node_refs_sha256="7" * 64,
+    )
     ack = ExactConsolidationRowResult(
         queue_id="card-row",
         board_id=BOARD_ID,
@@ -2500,6 +2709,7 @@ def test_exact_batch_preserves_card_source_ref_alias(
         disposition=ExactConsolidationDisposition.ACKED,
         origin=ExactConsolidationResultOrigin.NEW,
         mutation_state=ExactConsolidationMutationState.COMMITTED,
+        ack_receipt=ack_receipt,
     )
 
     assert recovery._assert_exact_batch_result(
@@ -2652,6 +2862,7 @@ async def test_exact_drain_retries_typed_marker_then_cancels_on_terminal(
     monkeypatch.setattr(
         recovery, "_protected_queue_snapshot", lambda *_a, **_k: baseline
     )
+    monkeypatch.setattr(recovery, "_load_exact_ack_receipts", lambda *_a, **_k: ())
     processor = Processor()
     service_task = asyncio.create_task(service_run())
 
@@ -2669,6 +2880,7 @@ async def test_exact_drain_retries_typed_marker_then_cancels_on_terminal(
         admitted_identities={("spec", "exact-spec")},
         source_rows=(_exact_source_row(),),
         ordered_source_rows=(_exact_source_row(),),
+        consumed_receipts=(),
         cancel_event=cancel_event,
         lifetime_probe=lambda: True,
         timeout_seconds=1.0,
@@ -2792,6 +3004,7 @@ async def test_exact_drain_cancels_on_neutral_claim_loss_with_claim_preserved(
     monkeypatch.setattr(
         recovery, "_protected_queue_snapshot", lambda *_a, **_k: baseline
     )
+    monkeypatch.setattr(recovery, "_load_exact_ack_receipts", lambda *_a, **_k: ())
     service_task = asyncio.create_task(service_run())
 
     outcome = await recovery._drain_exact_scope(
@@ -2808,6 +3021,7 @@ async def test_exact_drain_cancels_on_neutral_claim_loss_with_claim_preserved(
         admitted_identities={("spec", "exact-spec")},
         source_rows=(_exact_source_row(),),
         ordered_source_rows=(_exact_source_row(),),
+        consumed_receipts=(),
         cancel_event=cancel_event,
         lifetime_probe=lambda: True,
         timeout_seconds=1.0,
@@ -2834,6 +3048,7 @@ async def test_exact_drain_validates_partial_ack_then_compensates_post_commit_er
 
     from okto_pulse.core.ports.consolidation import (
         ConsolidationClaimScope,
+        ExactConsolidationAckReceipt,
         ExactConsolidationBatchResult,
         ExactConsolidationDisposition,
         ExactConsolidationMutationState,
@@ -2855,6 +3070,26 @@ async def test_exact_drain_validates_partial_ack_then_compensates_post_commit_er
         source=source,
         reservation_lineage_id=lineage_id,
     )
+    ack_receipt = ExactConsolidationAckReceipt.create(
+        queue_id="exact-row",
+        board_id=BOARD_ID,
+        source=source,
+        reservation_lineage_id=lineage_id,
+        work_kind="consolidate",
+        artifact_type="spec",
+        artifact_id="exact-spec",
+        generation=0,
+        membership_source_ref="spec:exact-spec",
+        membership_source_version="7",
+        membership_content_hash="a" * 64,
+        consolidation_session_id="kgses_exact_post_commit",
+        outbox_event_id="outbox_exact_post_commit",
+        generation_event_id="event_exact_post_commit",
+        previous_materialization_generation="mg_before",
+        materialization_generation="mg_after",
+        node_ref_count=1,
+        node_refs_sha256="b" * 64,
+    )
     ack = ExactConsolidationRowResult(
         queue_id="exact-row",
         board_id=BOARD_ID,
@@ -2871,6 +3106,7 @@ async def test_exact_drain_validates_partial_ack_then_compensates_post_commit_er
         disposition=ExactConsolidationDisposition.ACKED,
         origin=ExactConsolidationResultOrigin.NEW,
         mutation_state=ExactConsolidationMutationState.COMMITTED,
+        ack_receipt=ack_receipt,
     )
     partial = ExactConsolidationBatchResult(claim_scope=scope, rows=(ack,))
     post_commit_error = ExactConsolidationPostCommitError(
@@ -2938,6 +3174,11 @@ async def test_exact_drain_validates_partial_ack_then_compensates_post_commit_er
     monkeypatch.setattr(
         recovery, "_protected_queue_snapshot", lambda *_a, **_k: baseline
     )
+    monkeypatch.setattr(
+        recovery,
+        "_load_exact_ack_receipts",
+        lambda *_a, **_k: (ack_receipt,),
+    )
     service_task = asyncio.create_task(service_run())
 
     outcome = await recovery._drain_exact_scope(
@@ -2954,6 +3195,7 @@ async def test_exact_drain_validates_partial_ack_then_compensates_post_commit_er
         admitted_identities={("spec", "exact-spec")},
         source_rows=(_exact_source_row(),),
         ordered_source_rows=(_exact_source_row(),),
+        consumed_receipts=(),
         cancel_event=cancel_event,
         lifetime_probe=lambda: True,
         timeout_seconds=1.0,
@@ -2974,6 +3216,8 @@ def test_exact_post_commit_blocker_passes_full_compensation_gate(
 ) -> None:
     from okto_pulse.core.ports.consolidation import (
         ConsolidationClaimScope,
+        ExactConsolidationAckReceipt,
+        build_exact_consolidation_compensation_binding,
         ExactConsolidationDisposition,
         ExactConsolidationMutationState,
         ExactConsolidationResultOrigin,
@@ -2986,6 +3230,26 @@ def test_exact_post_commit_blocker_passes_full_compensation_gate(
         board_id=BOARD_ID,
         source=source,
         reservation_lineage_id="9" * 64,
+    )
+    ack_receipt = ExactConsolidationAckReceipt.create(
+        queue_id="post-commit-row",
+        board_id=BOARD_ID,
+        source=source,
+        reservation_lineage_id=str(scope.reservation_lineage_id),
+        work_kind="consolidate",
+        artifact_type="spec",
+        artifact_id="post-commit-spec",
+        generation=0,
+        membership_source_ref="spec:post-commit-spec",
+        membership_source_version="1",
+        membership_content_hash="8" * 64,
+        consolidation_session_id="kgses_post_commit",
+        outbox_event_id="outbox_post_commit",
+        generation_event_id="event_post_commit",
+        previous_materialization_generation="mg_before",
+        materialization_generation="mg_after",
+        node_ref_count=1,
+        node_refs_sha256="7" * 64,
     )
     ack = ExactConsolidationRowResult(
         queue_id="post-commit-row",
@@ -3003,6 +3267,7 @@ def test_exact_post_commit_blocker_passes_full_compensation_gate(
         disposition=ExactConsolidationDisposition.ACKED,
         origin=ExactConsolidationResultOrigin.NEW,
         mutation_state=ExactConsolidationMutationState.COMMITTED,
+        ack_receipt=ack_receipt,
     )
     blocker = recovery.ExactDrainBlocker(
         kind="post_commit_error",
@@ -3013,8 +3278,15 @@ def test_exact_post_commit_blocker_passes_full_compensation_gate(
     )
     actions = (
         "cancel_enqueued_sources",
-        "discard_candidate_generation",
+        "compensate_exact_relational_commits",
         "restore_quarantine",
+        "discard_candidate_generation",
+    )
+    exact_relational_binding = build_exact_consolidation_compensation_binding(
+        board_id=BOARD_ID,
+        source=source,
+        reservation_lineage_id=str(scope.reservation_lineage_id),
+        result=None,
     )
     receipts: dict[str, dict[str, object]] = {}
     for effect in ("snapshot", "quarantine", "enqueue"):
@@ -3029,6 +3301,7 @@ def test_exact_post_commit_blocker_passes_full_compensation_gate(
             ),
         }
     compensate_key = f"f06:{manifest_ref}:compensate"
+    candidate_generation_id = "c04bbef2-ef75-46ff-8723-1f6ca91a5f6d"
     receipts[compensate_key] = {
         "effect_key": compensate_key,
         "effect": "compensate",
@@ -3046,7 +3319,11 @@ def test_exact_post_commit_blocker_passes_full_compensation_gate(
                     "backup_quarantine_id": "q_backup",
                 },
             },
-            "candidate_discard": {"status": "discarded"},
+            "candidate_discard": {
+                "status": "discarded",
+                "candidate_generation_id": candidate_generation_id,
+            },
+            "exact_relational_compensation": exact_relational_binding,
         },
     }
     checkpoint = {
@@ -3057,33 +3334,109 @@ def test_exact_post_commit_blocker_passes_full_compensation_gate(
         "compensation_actions": list(actions),
         "writer_handoff_count": 1,
         "writer_reacquire_count": 1,
-        "command": {"board_id": BOARD_ID, "manifest_ref": manifest_ref},
+        "command": {
+            "board_id": BOARD_ID,
+            "manifest_ref": manifest_ref,
+            "exact_relational_compensation": True,
+            "reservation_lineage_id": str(scope.reservation_lineage_id),
+        },
         "receipts": receipts,
     }
     run_id = "run_post_commit_gate"
     audit_ref = "audit://post-commit-gate"
+    report_ref = "report://post-commit-gate"
+    report_id = "report_post_commit_gate"
+    started_at = "2026-08-16T12:04:39+00:00"
+    report_finished_at = "2026-08-16T12:17:22+00:00"
+    report_persisted_at = "2026-08-16T12:17:23+00:00"
+    event_persisted_at = "2026-08-16T12:17:25+00:00"
+    event_delivered_at = "2026-08-16T12:17:26+00:00"
+    result_finished_at = "2026-08-16T12:17:27+00:00"
     audit = {
         "run_id": run_id,
         "board_id": BOARD_ID,
+        "actor_id": "local-user",
+        "user_reason": "governed exact recovery",
         "manifest_ref": manifest_ref,
         "outcome": "failed",
         "reason": "lifecycle_failed",
+        "started_at": started_at,
+        "finished_at": result_finished_at,
+        "previous_kg_generation_id": None,
         "current_kg_generation_id": None,
-        "promotion_outcome": "not_promoted",
-        "publishable_status": "failed",
-        "event_emitted": False,
+        "promotion_outcome": None,
+        "publishable_status": "rebuild_failed",
+        "event_emitted": True,
+        "report_ref": report_ref,
+        "report_id": report_id,
+    }
+    report = {
+        "report_id": report_id,
+        "persisted_at": report_persisted_at,
+        "summary": {
+            "board_id": BOARD_ID,
+            "run_id": run_id,
+            "status": "rebuild_failed",
+            "started_at": started_at,
+            "finished_at": report_finished_at,
+            "counts": {
+                "nodes": 1,
+                "expected_by_layer": {"canonical": 1, "working": 0},
+            },
+            "triggered_by": "local-user",
+            "previous_kg_generation_id": None,
+            "kg_generation_id": None,
+        },
+        "hashes": {"source_hash": "4" * 64, "structural_hash": "5" * 64},
+        "source_refs": [manifest_ref],
+        "reconciliation_decisions": [],
+        "drilldown": {},
+        "operator_notes": "governed exact recovery",
+    }
+    event_id = (
+        "evt_"
+        + hashlib.sha256(f"{BOARD_ID}\x1f{run_id}".encode("utf-8")).hexdigest()[:32]
+    )
+    event = {
+        "event_id": event_id,
+        "event": "kg.rebuilt",
+        "board_id": BOARD_ID,
+        "previous_kg_generation_id": None,
+        "kg_generation_id": None,
+        "candidate_kg_generation_id": candidate_generation_id,
+        "triggered_by": "local-user",
+        "started_at": started_at,
+        "finished_at": report_finished_at,
+        "status": "rebuild_failed",
+        "counts": {
+            "nodes": 1,
+            "expected_by_layer": {"canonical": 1, "working": 0},
+        },
+        "report_ref": report_ref,
+        "manifest_ref": manifest_ref,
+        "run_id": run_id,
+        "persisted_at": event_persisted_at,
+        "delivery_outcome": "published",
+        "delivery_detail": None,
+        "delivered_at": event_delivered_at,
     }
 
     class ArtifactStore:
         def read_json_reference(self, reference: str):
-            assert reference == audit_ref
-            return audit
+            if reference == audit_ref:
+                return audit
+            assert reference == report_ref
+            return report
 
         def read_json(self, key):  # noqa: ANN001, ANN201
             from okto_pulse.community.adapters.rebuild_effects import (
                 CommunityRebuildEffects,
             )
 
+            if key.namespace == "event_audit":
+                assert key.board_id == BOARD_ID
+                assert key.artifact_id == event_id
+                return event
             for effect_key, receipt in receipts.items():
                 if key.artifact_id == CommunityRebuildEffects._effect_id(effect_key):
                     return receipt
@@ -3098,12 +3451,17 @@ def test_exact_post_commit_blocker_passes_full_compensation_gate(
     result = SimpleNamespace(
         run_id=run_id,
         audit_ref=audit_ref,
+        report_ref=report_ref,
+        report_id=report_id,
         outcome="failed",
         reason="lifecycle_failed",
+        started_at=started_at,
+        finished_at=result_finished_at,
+        previous_kg_generation_id=None,
         current_kg_generation_id=None,
-        promotion_outcome="not_promoted",
-        publishable_status="failed",
-        event_emitted=False,
+        promotion_outcome=None,
+        publishable_status="rebuild_failed",
+        event_emitted=True,
     )
     baseline = recovery.QueueSnapshot((), (), "stable")
     quarantine_root = tmp_path / "quarantine"
@@ -3150,6 +3508,35 @@ def test_exact_post_commit_blocker_passes_full_compensation_gate(
         "_offline_cold_graph_health",
         lambda *_a, **_k: dict(health),
     )
+    proof = recovery.SQLiteStreamProof(0, 0, "proof")
+    current_scope = recovery.ExactRelationalScopeProof(
+        ack_journal=proof,
+        audits=proof,
+        node_refs=proof,
+        outbox=proof,
+        domain_events=proof,
+        handler_executions=proof,
+        compensations=proof,
+    )
+    exact_relational_baseline = recovery.ExactRelationalBaseline(
+        reservation_lineage_id=str(scope.reservation_lineage_id),
+        audits=proof,
+        node_refs=proof,
+        outbox=proof,
+        domain_events=proof,
+        handler_executions=proof,
+        foreign_ack_journal=proof,
+        foreign_compensations=proof,
+        current_scope=current_scope,
+        current_receipts=(),
+        materialization_generation=None,
+    )
+    relational_calls: list[object] = []
+    monkeypatch.setattr(
+        recovery,
+        "_assert_exact_relational_compensation_state",
+        lambda _db_path, **kwargs: relational_calls.append(kwargs["binding"]),
+    )
 
     recovery._assert_exact_blocking_compensation(
         bundle,
@@ -3168,7 +3555,77 @@ def test_exact_post_commit_blocker_passes_full_compensation_gate(
         quarantine_baseline_ids=frozenset(),
         board_storage_root=board_storage_root,
         baseline_health=health,
+        exact_relational_baseline=exact_relational_baseline,
     )
+    assert relational_calls == [exact_relational_binding]
+
+    original_event = dict(event)
+    for field, tampered in (
+        ("candidate_kg_generation_id", "73c643f6-f713-413d-b813-1bb476c3858f"),
+        ("delivery_outcome", "pending"),
+        ("counts", {"nodes": 2}),
+        (
+            "counts",
+            {
+                "nodes": True,
+                "expected_by_layer": {"canonical": True, "working": 0},
+            },
+        ),
+        ("persisted_at", "2026-08-16T12:17:29+00:00"),
+    ):
+        event.clear()
+        event.update(original_event)
+        event[field] = tampered
+        with pytest.raises(recovery.RecoveryRefused):
+            recovery._assert_exact_failed_rebuild_event(
+                bundle,
+                SimpleNamespace(manifest_ref=manifest_ref),
+                result,
+                audit,
+                board_id=BOARD_ID,
+                candidate_generation_id=candidate_generation_id,
+            )
+    event.clear()
+    event.update({**original_event, "unexpected": True})
+    with pytest.raises(recovery.RecoveryRefused):
+        recovery._assert_exact_failed_rebuild_event(
+            bundle,
+            SimpleNamespace(manifest_ref=manifest_ref),
+            result,
+            audit,
+            board_id=BOARD_ID,
+            candidate_generation_id=candidate_generation_id,
+        )
+    event.clear()
+    event.update(original_event)
+    report_summary = report["summary"]
+    assert isinstance(report_summary, dict)
+    report_summary["triggered_by"] = "attacker"
+    event["triggered_by"] = "attacker"
+    with pytest.raises(recovery.RecoveryRefused):
+        recovery._assert_exact_failed_rebuild_event(
+            bundle,
+            SimpleNamespace(manifest_ref=manifest_ref),
+            result,
+            audit,
+            board_id=BOARD_ID,
+            candidate_generation_id=candidate_generation_id,
+        )
+    report_summary["triggered_by"] = "local-user"
+    event["triggered_by"] = "local-user"
+    event["persisted_at"] = "2098-08-16T12:17:25+00:00"
+    event["delivered_at"] = "2099-08-16T12:17:26+00:00"
+    with pytest.raises(recovery.RecoveryRefused):
+        recovery._assert_exact_failed_rebuild_event(
+            bundle,
+            SimpleNamespace(manifest_ref=manifest_ref),
+            result,
+            audit,
+            board_id=BOARD_ID,
+            candidate_generation_id=candidate_generation_id,
+        )
+    event.clear()
+    event.update(original_event)
 
 
 @pytest.mark.asyncio
@@ -3422,6 +3879,485 @@ def _closed_baseline_inputs(tmp_path: Path, *, checkpoint=None):  # noqa: ANN001
     }
 
 
+async def _seed_real_closed_exact_relational_state(
+    db_path: Path,
+    *,
+    manifest_ref: str,
+    lineage_id: str,
+    compensate: bool = True,
+) -> tuple[
+    dict[str, object] | None,
+    str,
+    recovery.ExactRelationalBaseline,
+    object,
+]:
+    """Create one real ACK and optionally compensate it through the adapter."""
+
+    from sqlalchemy import event
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
+
+    from okto_pulse.community.adapters.materialization_health import (
+        materialization_generation_key,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_base import Base
+    from okto_pulse.community.adapters.sqlalchemy_consolidation import (
+        CommunitySqlAlchemyConsolidationPersistence,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        AppSetting,
+        Board,
+        ConsolidationAudit,
+        ConsolidationQueue,
+        DomainEventRow,
+        GlobalUpdateOutbox,
+        KuzuNodeRef,
+    )
+    from okto_pulse.core.ports.consolidation import (
+        build_exact_consolidation_compensation_binding,
+    )
+
+    source = f"rebuild:{manifest_ref}"
+    artifact_id = "source-1"
+    queue_id = "queue-real-exact"
+    session_id = "session-real-exact"
+    outbox_event_id = "outbox-real-exact"
+    generation_event_id = "00000000-0000-0000-0000-000000000101"
+    membership_hash = "a" * 64
+    baseline_generation = "unmaterialized-v1"
+    terminal_generation = "mg_real_exact"
+    occurred_at = datetime(2026, 8, 16, 12, 0, tzinfo=timezone.utc)
+    payload = {
+        "_rebuild_membership": {
+            "run_id": manifest_ref,
+            "source_ref": f"spec:{artifact_id}",
+            "source_version": "7",
+            "content_hash": membership_hash,
+        }
+    }
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _configure_sqlite(dbapi_connection, _connection_record):  # noqa: ANN001
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
+
+    factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    adapter = CommunitySqlAlchemyConsolidationPersistence()
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with factory() as session:
+            session.add_all(
+                [
+                    Board(id=BOARD_ID, name="Exact closed", owner_id="owner-1"),
+                    AppSetting(
+                        key=materialization_generation_key(BOARD_ID),
+                        value=baseline_generation,
+                    ),
+                ]
+            )
+            await session.commit()
+        baseline = recovery._capture_exact_relational_baseline(
+            db_path,
+            board_id=BOARD_ID,
+            source=source,
+            reservation_lineage_id=lineage_id,
+        )
+        async with factory() as session:
+            head = await session.get(
+                AppSetting,
+                materialization_generation_key(BOARD_ID),
+            )
+            assert head is not None
+            head.value = terminal_generation
+            session.add_all(
+                [
+                    ConsolidationQueue(
+                        id=queue_id,
+                        board_id=BOARD_ID,
+                        artifact_type="spec",
+                        artifact_id=artifact_id,
+                        work_kind="consolidate",
+                        generation=0,
+                        payload=payload,
+                        priority="low",
+                        source=source,
+                        status="claimed",
+                        claimed_by_session_id="worker-session",
+                        claim_token="claim-real-exact",
+                        claimed_at=occurred_at,
+                        worker_id="worker-real-exact",
+                        attempts=0,
+                    ),
+                    ConsolidationAudit(
+                        session_id=session_id,
+                        board_id=BOARD_ID,
+                        artifact_id=artifact_id,
+                        artifact_type="spec",
+                        agent_id="system:historical_consolidation",
+                        started_at=occurred_at,
+                        committed_at=occurred_at,
+                        nodes_added=1,
+                        nodes_updated=2,
+                        nodes_superseded=0,
+                        edges_added=3,
+                        summary_text="real closed exact",
+                        content_hash=membership_hash,
+                        undo_status="none",
+                    ),
+                    KuzuNodeRef(
+                        id="ref-real-exact",
+                        session_id=session_id,
+                        board_id=BOARD_ID,
+                        kuzu_node_id="node-real-exact",
+                        kuzu_node_type="Entity",
+                        operation="add",
+                        timestamp=occurred_at,
+                    ),
+                    GlobalUpdateOutbox(
+                        id="outbox-row-real-exact",
+                        event_id=outbox_event_id,
+                        board_id=BOARD_ID,
+                        session_id=session_id,
+                        event_type="consolidation_committed",
+                        payload={
+                            "session_id": session_id,
+                            "artifact_id": artifact_id,
+                            "nodes_added": 1,
+                            "nodes_updated": 2,
+                            "nodes_superseded": 0,
+                            "edges_added": 3,
+                        },
+                        retry_count=0,
+                    ),
+                    DomainEventRow(
+                        id=generation_event_id,
+                        event_type="kg.materialization_generation_advanced",
+                        board_id=BOARD_ID,
+                        actor_type="agent",
+                        payload_json={
+                            "correlation_id": session_id,
+                            "previous_materialization_generation": (
+                                baseline_generation
+                            ),
+                            "materialization_generation": terminal_generation,
+                        },
+                        occurred_at=occurred_at,
+                    ),
+                ]
+            )
+            await session.flush()
+            ack = await adapter.ack_exact_rebuild_commit(
+                session,
+                entry_id=queue_id,
+                claim_token="claim-real-exact",
+                board_id=BOARD_ID,
+                artifact_type="spec",
+                artifact_id=artifact_id,
+                source=source,
+                work_kind="consolidate",
+                generation=0,
+                delete_event_id=None,
+                reservation_lineage_id=lineage_id,
+                membership_source_ref=f"spec:{artifact_id}",
+                membership_source_version="7",
+                membership_content_hash=membership_hash,
+                consolidation_session_id=session_id,
+                expected_attempts=0,
+                expected_last_error=None,
+                expected_next_retry_at=None,
+                expected_payload=payload,
+                reservation_authority_probe=lambda: True,
+            )
+            assert ack is not None
+            await session.commit()
+
+        if not compensate:
+            return None, session_id, baseline, ack
+
+        async with factory() as session:
+            result = await adapter.compensate_exact_rebuild_commits(
+                session,
+                board_id=BOARD_ID,
+                source=source,
+                reservation_lineage_id=lineage_id,
+                expected_receipts=(ack,),
+                reservation_authority_probe=lambda: True,
+            )
+            assert result is not None and result.replayed is False
+            session.add(
+                ConsolidationQueue(
+                    id=queue_id,
+                    board_id=BOARD_ID,
+                    artifact_type="spec",
+                    artifact_id=artifact_id,
+                    work_kind="consolidate",
+                    generation=0,
+                    payload=payload,
+                    priority="low",
+                    source=source,
+                    status="failed",
+                    triggered_at=occurred_at,
+                    attempts=0,
+                    last_error="rebuild_compensated",
+                )
+            )
+            await session.commit()
+        binding = build_exact_consolidation_compensation_binding(
+            board_id=BOARD_ID,
+            source=source,
+            reservation_lineage_id=lineage_id,
+            result=result,
+        )
+        return binding, session_id, baseline, ack
+    finally:
+        await engine.dispose()
+
+
+async def _seed_real_exact_alias_success_chain(
+    db_path: Path,
+    *,
+    manifest_ref: str,
+    lineage_id: str,
+) -> tuple[
+    recovery.ExactRelationalBaseline,
+    recovery.ExactRelationalBaseline,
+    tuple[object, ...],
+    tuple[dict[str, object], ...],
+]:
+    from sqlalchemy import event
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
+
+    from okto_pulse.community.adapters.materialization_health import (
+        materialization_generation_key,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_base import Base
+    from okto_pulse.community.adapters.sqlalchemy_consolidation import (
+        CommunitySqlAlchemyConsolidationPersistence,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        AppSetting,
+        Board,
+        ConsolidationAudit,
+        ConsolidationQueue,
+        DomainEventRow,
+        GlobalUpdateOutbox,
+        KuzuNodeRef,
+    )
+
+    source = f"rebuild:{manifest_ref}"
+    generation_key = materialization_generation_key(BOARD_ID)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _configure_sqlite(dbapi_connection, _connection_record):  # noqa: ANN001
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
+
+    factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+    adapter = CommunitySqlAlchemyConsolidationPersistence()
+    receipts: list[object] = []
+    source_rows: list[dict[str, object]] = []
+    intermediate_baseline: recovery.ExactRelationalBaseline | None = None
+    previous_generation = "unmaterialized-v1"
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with factory() as session:
+            session.add_all(
+                [
+                    Board(id=BOARD_ID, name="Alias success", owner_id="owner-1"),
+                    AppSetting(key=generation_key, value=previous_generation),
+                ]
+            )
+            await session.commit()
+        baseline = recovery._capture_exact_relational_baseline(
+            db_path,
+            board_id=BOARD_ID,
+            source=source,
+            reservation_lineage_id=lineage_id,
+        )
+        for ordinal, membership_type in enumerate(
+            ("task", "test", "bug", "card"), start=1
+        ):
+            artifact_id = f"alias-{ordinal}"
+            queue_id = f"queue-alias-{ordinal}"
+            claim_token = f"claim-alias-{ordinal}"
+            session_id = f"session-alias-{ordinal}"
+            outbox_event_id = f"outbox-alias-{ordinal}"
+            generation_event_id = f"00000000-0000-0000-0000-{ordinal + 200:012d}"
+            content_hash = f"{ordinal:x}" * 64
+            materialization_generation = f"mg_alias_{ordinal}"
+            occurred_at = datetime(
+                2026,
+                8,
+                16,
+                13,
+                ordinal,
+                tzinfo=timezone.utc,
+            )
+            membership_ref = f"{membership_type}:{artifact_id}"
+            payload = {
+                "_rebuild_membership": {
+                    "run_id": manifest_ref,
+                    "source_ref": membership_ref,
+                    "source_version": str(ordinal),
+                    "content_hash": content_hash,
+                }
+            }
+            async with factory() as session:
+                head = await session.get(AppSetting, generation_key)
+                assert head is not None
+                head.value = materialization_generation
+                session.add_all(
+                    [
+                        ConsolidationQueue(
+                            id=queue_id,
+                            board_id=BOARD_ID,
+                            artifact_type="card",
+                            artifact_id=artifact_id,
+                            work_kind="consolidate",
+                            generation=0,
+                            payload=payload,
+                            priority="low",
+                            source=source,
+                            status="claimed",
+                            claimed_by_session_id="worker-session",
+                            claim_token=claim_token,
+                            claimed_at=occurred_at,
+                            worker_id="worker-alias",
+                            attempts=0,
+                        ),
+                        ConsolidationAudit(
+                            session_id=session_id,
+                            board_id=BOARD_ID,
+                            artifact_id=artifact_id,
+                            artifact_type="card",
+                            agent_id="system:historical_consolidation",
+                            started_at=occurred_at,
+                            committed_at=occurred_at,
+                            nodes_added=1,
+                            nodes_updated=ordinal,
+                            nodes_superseded=0,
+                            edges_added=ordinal,
+                            summary_text=f"alias-{ordinal}",
+                            content_hash=content_hash,
+                            undo_status="none",
+                        ),
+                        KuzuNodeRef(
+                            id=f"ref-alias-{ordinal}",
+                            session_id=session_id,
+                            board_id=BOARD_ID,
+                            kuzu_node_id=f"node-alias-{ordinal}",
+                            kuzu_node_type="Entity",
+                            operation="add",
+                            timestamp=occurred_at,
+                        ),
+                        GlobalUpdateOutbox(
+                            id=f"outbox-row-alias-{ordinal}",
+                            event_id=outbox_event_id,
+                            board_id=BOARD_ID,
+                            session_id=session_id,
+                            event_type="consolidation_committed",
+                            payload={
+                                "session_id": session_id,
+                                "artifact_id": artifact_id,
+                                "nodes_added": 1,
+                                "nodes_updated": ordinal,
+                                "nodes_superseded": 0,
+                                "edges_added": ordinal,
+                            },
+                            retry_count=0,
+                        ),
+                        DomainEventRow(
+                            id=generation_event_id,
+                            event_type=("kg.materialization_generation_advanced"),
+                            board_id=BOARD_ID,
+                            actor_type="agent",
+                            payload_json={
+                                "correlation_id": session_id,
+                                "previous_materialization_generation": (
+                                    previous_generation
+                                ),
+                                "materialization_generation": (
+                                    materialization_generation
+                                ),
+                            },
+                            occurred_at=occurred_at,
+                        ),
+                    ]
+                )
+                await session.flush()
+                receipt = await adapter.ack_exact_rebuild_commit(
+                    session,
+                    entry_id=queue_id,
+                    claim_token=claim_token,
+                    board_id=BOARD_ID,
+                    artifact_type="card",
+                    artifact_id=artifact_id,
+                    source=source,
+                    work_kind="consolidate",
+                    generation=0,
+                    delete_event_id=None,
+                    reservation_lineage_id=lineage_id,
+                    membership_source_ref=membership_ref,
+                    membership_source_version=str(ordinal),
+                    membership_content_hash=content_hash,
+                    consolidation_session_id=session_id,
+                    expected_attempts=0,
+                    expected_last_error=None,
+                    expected_next_retry_at=None,
+                    expected_payload=payload,
+                    reservation_authority_probe=lambda: True,
+                )
+                assert receipt is not None
+                await session.commit()
+            receipts.append(receipt)
+            source_rows.append(
+                {
+                    "artifact_type": membership_type,
+                    "id": artifact_id,
+                    "source_ref": membership_ref,
+                    "source_version": str(ordinal),
+                    "content_hash": content_hash,
+                }
+            )
+            if ordinal == 2:
+                intermediate_baseline = recovery._capture_exact_relational_baseline(
+                    db_path,
+                    board_id=BOARD_ID,
+                    source=source,
+                    reservation_lineage_id=lineage_id,
+                )
+            previous_generation = materialization_generation
+        assert intermediate_baseline is not None
+        return baseline, intermediate_baseline, tuple(receipts), tuple(source_rows)
+    finally:
+        await engine.dispose()
+
+
 def test_closed_archive_baseline_accepts_only_zero_effect_receipt(
     tmp_path: Path,
 ) -> None:
@@ -3490,8 +4426,11 @@ def test_closed_archive_baseline_refuses_enqueued_row_without_checkpoint(
         recovery._assert_closed_operation_baseline_safe(**kwargs)
 
 
+@pytest.mark.parametrize("exact_relational", (False, True))
 def test_closed_archive_baseline_accepts_only_exact_completed_compensation(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exact_relational: bool,
 ) -> None:
     import sqlite3
 
@@ -3510,9 +4449,33 @@ def test_closed_archive_baseline_accepts_only_exact_completed_compensation(
     }
     actions = (
         "cancel_enqueued_sources",
+        *(("compensate_exact_relational_commits",) if exact_relational else ()),
         "restore_quarantine",
         "discard_candidate_generation",
     )
+    lineage_id = (
+        recovery._exact_reservation_lineage_id(
+            board_id=BOARD_ID,
+            manifest_ref=manifest_ref,
+            f06_run_id=f06_run_id,
+            confirmation_ref=str(receipt["confirmation_ref"]),
+        )
+        if exact_relational
+        else None
+    )
+    exact_binding: dict[str, object] | None = None
+    if exact_relational:
+        from okto_pulse.core.ports.consolidation import (
+            build_exact_consolidation_compensation_binding,
+        )
+
+        assert lineage_id is not None
+        exact_binding = build_exact_consolidation_compensation_binding(
+            board_id=BOARD_ID,
+            source=f"rebuild:{manifest_ref}",
+            reservation_lineage_id=lineage_id,
+            result=None,
+        )
 
     def effect(name: str, *, details=None):  # noqa: ANN001, ANN202
         key = f"{f06_run_id}:{name}"
@@ -3544,6 +4507,11 @@ def test_closed_archive_baseline_accepts_only_exact_completed_compensation(
                 },
                 "quarantine_restore": {"ok": True},
                 "candidate_discard": {"status": "already_absent"},
+                **(
+                    {"exact_relational_compensation": exact_binding}
+                    if exact_relational
+                    else {}
+                ),
             },
         ),
     }
@@ -3561,6 +4529,14 @@ def test_closed_archive_baseline_accepts_only_exact_completed_compensation(
             "source_rows": [source_row],
             "previous_generation_id": None,
             "candidate_generation_id": "candidate-generation",
+            **(
+                {
+                    "exact_relational_compensation": True,
+                    "reservation_lineage_id": lineage_id,
+                }
+                if exact_relational
+                else {}
+            ),
         },
         "receipts": receipts,
     }
@@ -3603,11 +4579,49 @@ def test_closed_archive_baseline_accepts_only_exact_completed_compensation(
             ),
         )
 
+    relational_calls: list[object] = []
+    if exact_relational:
+        proof = recovery.SQLiteStreamProof(0, 0, "proof")
+        current_scope = recovery.ExactRelationalScopeProof(
+            ack_journal=proof,
+            audits=proof,
+            node_refs=proof,
+            outbox=proof,
+            domain_events=proof,
+            handler_executions=proof,
+            compensations=proof,
+        )
+        assert lineage_id is not None
+        exact_baseline = recovery.ExactRelationalBaseline(
+            reservation_lineage_id=lineage_id,
+            audits=proof,
+            node_refs=proof,
+            outbox=proof,
+            domain_events=proof,
+            handler_executions=proof,
+            foreign_ack_journal=proof,
+            foreign_compensations=proof,
+            current_scope=current_scope,
+            current_receipts=(),
+            materialization_generation=None,
+        )
+        monkeypatch.setattr(
+            recovery,
+            "_capture_exact_relational_baseline",
+            lambda *_args, **_kwargs: exact_baseline,
+        )
+        monkeypatch.setattr(
+            recovery,
+            "_assert_exact_relational_compensation_state",
+            lambda _db_path, **values: relational_calls.append(values["binding"]),
+        )
+
     kind, adoption = recovery._assert_closed_operation_baseline_safe(**kwargs)
 
     assert kind == "fully_compensated"
     assert adoption is not None
     assert adoption.identities == frozenset({("spec", "source-1")})
+    assert relational_calls == ([exact_binding] if exact_relational else [])
 
     board_storage_root = kwargs["board_storage_root"]
     assert isinstance(board_storage_root, Path)
@@ -3617,6 +4631,715 @@ def test_closed_archive_baseline_accepts_only_exact_completed_compensation(
         match="closed_compensation_graph_mismatch",
     ):
         recovery._assert_closed_operation_baseline_safe(**kwargs)
+
+
+def test_closed_archive_baseline_reproves_real_exact_relational_compensation(
+    tmp_path: Path,
+) -> None:
+    import asyncio
+    import copy
+    import sqlite3
+
+    from okto_pulse.community.adapters.rebuild_effects import CommunityRebuildEffects
+
+    receipt = _receipt(state="authorized")
+    manifest_ref = str(receipt["manifest_ref"])
+    f06_run_id = f"f06:{manifest_ref}"
+    lineage_id = recovery._exact_reservation_lineage_id(
+        board_id=BOARD_ID,
+        manifest_ref=manifest_ref,
+        f06_run_id=f06_run_id,
+        confirmation_ref=str(receipt["confirmation_ref"]),
+    )
+    db_path = tmp_path / "pulse.db"
+    exact_binding, session_id, _pre_ack_baseline, _ack = asyncio.run(
+        _seed_real_closed_exact_relational_state(
+            db_path,
+            manifest_ref=manifest_ref,
+            lineage_id=lineage_id,
+        )
+    )
+    assert exact_binding is not None
+    source_row = {
+        "artifact_type": "spec",
+        "source_ref": "spec:source-1",
+        "source_version": "7",
+        "content_hash": "a" * 64,
+        "created_at": "2026-08-15T10:00:00+00:00",
+        "id": "source-1",
+    }
+    actions = (
+        "cancel_enqueued_sources",
+        "compensate_exact_relational_commits",
+        "restore_quarantine",
+        "discard_candidate_generation",
+    )
+
+    def effect(name: str, *, details=None):  # noqa: ANN001, ANN202
+        return {
+            "effect_key": f"{f06_run_id}:{name}",
+            "effect": name,
+            "ok": True,
+            "code": "compensated" if name == "compensate" else "ok",
+            "details": dict(details or {}),
+        }
+
+    receipts = {
+        f"{f06_run_id}:snapshot": effect("snapshot"),
+        f"{f06_run_id}:quarantine": effect(
+            "quarantine", details={"affected_files": []}
+        ),
+        f"{f06_run_id}:enqueue": effect("enqueue"),
+        f"{f06_run_id}:compensate": effect(
+            "compensate",
+            details={
+                "actions": list(actions),
+                "queue": {
+                    "active_remaining": 0,
+                    "live_intents_restored": 0,
+                    "pending_compensated": 1,
+                    "claimed_compensated": 0,
+                    "total_compensated": 1,
+                },
+                "quarantine_restore": {"ok": True},
+                "candidate_discard": {"status": "already_absent"},
+                "exact_relational_compensation": exact_binding,
+            },
+        ),
+    }
+    checkpoint = {
+        "state": "failed",
+        "compensation_failed_state": "enqueued",
+        "compensation_actions": list(actions),
+        "command": {
+            "run_id": f06_run_id,
+            "board_id": BOARD_ID,
+            "manifest_ref": manifest_ref,
+            "operation": receipt["operation"],
+            "actor_id": receipt["actor_id"],
+            "reason": receipt["user_reason"],
+            "source_rows": [source_row],
+            "previous_generation_id": None,
+            "candidate_generation_id": "candidate-generation",
+            "exact_relational_compensation": True,
+            "reservation_lineage_id": lineage_id,
+        },
+        "receipts": receipts,
+    }
+    rebuild_root = tmp_path / "rebuild"
+    quarantine_root = tmp_path / "quarantine"
+    board_storage_root = tmp_path / "boards" / BOARD_ID
+    rebuild_root.mkdir()
+    quarantine_root.mkdir()
+    board_storage_root.mkdir(parents=True)
+    bundle = SimpleNamespace(artifact_store=_CheckpointArtifactStore(checkpoint))
+
+    def persist_effects() -> dict[str, str]:
+        for effect_key, effect_payload in checkpoint["receipts"].items():
+            effect_id = CommunityRebuildEffects._effect_id(effect_key)
+            _write_artifact(
+                rebuild_root,
+                f"audit/{effect_id}.json",
+                effect_payload,
+            )
+        return recovery._snapshot_tree_hashes(rebuild_root)
+
+    kwargs = {
+        "bundle": bundle,
+        "receipt": receipt,
+        "audit": _terminal_audit(
+            receipt,
+            outcome="failed",
+            reason="lifecycle_failed",
+        ),
+        "board_id": BOARD_ID,
+        "db_path": db_path,
+        "rebuild_root": rebuild_root,
+        "rebuild_baseline": persist_effects(),
+        "quarantine_root": quarantine_root,
+        "quarantine_baseline": recovery._snapshot_tree_hashes(quarantine_root),
+        "board_storage_root": board_storage_root,
+        "raw_health": {
+            "graph_state": "healthy",
+            "current_kg_generation_id": None,
+        },
+    }
+
+    kind, adoption = recovery._assert_closed_operation_baseline_safe(**kwargs)
+    assert kind == "fully_compensated"
+    assert adoption is not None
+    assert adoption.identities == frozenset({("spec", "source-1")})
+
+    original_checkpoint = copy.deepcopy(checkpoint)
+    checkpoint["compensation_actions"] = [
+        "cancel_enqueued_sources",
+        "restore_quarantine",
+        "discard_candidate_generation",
+    ]
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match=("closed_core_classification_ambiguous|closed_compensation_plan_invalid"),
+    ):
+        recovery._assert_closed_operation_baseline_safe(**kwargs)
+    checkpoint.clear()
+    checkpoint.update(copy.deepcopy(original_checkpoint))
+
+    compensate = checkpoint["receipts"][f"{f06_run_id}:compensate"]
+    compensate["details"]["exact_relational_compensation"] = {"schema": "invalid"}
+    kwargs["rebuild_baseline"] = persist_effects()
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="exact_relational_compensation_binding_invalid",
+    ):
+        recovery._assert_closed_operation_baseline_safe(**kwargs)
+    checkpoint.clear()
+    checkpoint.update(copy.deepcopy(original_checkpoint))
+    kwargs["rebuild_baseline"] = persist_effects()
+
+    checkpoint["command"]["reservation_lineage_id"] = "f" * 64
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="closed_exact_lineage_invalid",
+    ):
+        recovery._assert_closed_operation_baseline_safe(**kwargs)
+    checkpoint["command"]["reservation_lineage_id"] = lineage_id
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "INSERT INTO kuzu_node_refs "
+            "(id,session_id,board_id,kuzu_node_id,kuzu_node_type,operation,timestamp) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (
+                "residue-after-compensation",
+                session_id,
+                BOARD_ID,
+                "residue-node",
+                "Entity",
+                "add",
+                "2026-08-16 12:30:00+00:00",
+            ),
+        )
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="exact_relational_preserved_evidence_set_invalid",
+    ):
+        recovery._assert_closed_operation_baseline_safe(**kwargs)
+
+
+def test_exact_relational_success_gate_reproves_real_ack_and_tamper_matrix(
+    tmp_path: Path,
+) -> None:
+    import asyncio
+    import sqlite3
+
+    from okto_pulse.community.adapters.materialization_health import (
+        materialization_generation_key,
+    )
+    from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
+
+    manifest_ref = "manifest_success_exact"
+    source = f"rebuild:{manifest_ref}"
+    lineage_id = "d" * 64
+    db_path = tmp_path / "success.sqlite3"
+    binding, session_id, baseline, raw_ack = asyncio.run(
+        _seed_real_closed_exact_relational_state(
+            db_path,
+            manifest_ref=manifest_ref,
+            lineage_id=lineage_id,
+            compensate=False,
+        )
+    )
+    assert binding is None
+    assert type(raw_ack) is ExactConsolidationAckReceipt
+    ack = raw_ack
+    expected_sources = (
+        {
+            "artifact_type": "spec",
+            "id": "source-1",
+            "source_ref": "spec:source-1",
+            "source_version": "7",
+            "content_hash": "a" * 64,
+        },
+    )
+    recovery._assert_exact_relational_success_state(
+        db_path,
+        board_id=BOARD_ID,
+        source=source,
+        baseline=baseline,
+        expected_source_rows=expected_sources,
+        resume_mode=False,
+    )
+    resume_baseline = recovery._capture_exact_relational_baseline(
+        db_path,
+        board_id=BOARD_ID,
+        source=source,
+        reservation_lineage_id=lineage_id,
+    )
+    recovery._assert_exact_relational_success_state(
+        db_path,
+        board_id=BOARD_ID,
+        source=source,
+        baseline=resume_baseline,
+        expected_source_rows=expected_sources,
+        resume_mode=True,
+    )
+
+    def copy_database(target: Path) -> None:
+        with sqlite3.connect(db_path) as source_connection:
+            with sqlite3.connect(target) as target_connection:
+                source_connection.backup(target_connection)
+
+    for mutation in (
+        "missing_journal",
+        "extra_journal",
+        "chain",
+        "content_hash",
+        "node_ref",
+        "outbox",
+        "event",
+        "generation_head",
+        "handler_execution",
+        "compensation",
+        "foreign_scope",
+    ):
+        candidate = tmp_path / f"success-{mutation}.sqlite3"
+        copy_database(candidate)
+        with sqlite3.connect(candidate) as connection:
+            if mutation == "missing_journal":
+                connection.execute(
+                    "DELETE FROM exact_rebuild_consolidation_ack_journal"
+                )
+            elif mutation == "extra_journal":
+                extra = ExactConsolidationAckReceipt.create(
+                    queue_id="queue-extra",
+                    board_id=BOARD_ID,
+                    source=source,
+                    reservation_lineage_id=lineage_id,
+                    work_kind="consolidate",
+                    artifact_type="spec",
+                    artifact_id="extra-artifact",
+                    generation=0,
+                    membership_source_ref="spec:extra-artifact",
+                    membership_source_version="1",
+                    membership_content_hash="e" * 64,
+                    consolidation_session_id="session-extra",
+                    outbox_event_id="outbox-extra",
+                    generation_event_id="00000000-0000-0000-0000-000000000102",
+                    previous_materialization_generation=(
+                        ack.materialization_generation
+                    ),
+                    materialization_generation="mg_extra",
+                    node_ref_count=0,
+                    node_refs_sha256="e" * 64,
+                )
+                connection.execute(
+                    "INSERT INTO consolidation_audit "
+                    "(session_id,board_id,artifact_id,artifact_type,agent_id,"
+                    "started_at,committed_at,nodes_added,nodes_updated,"
+                    "nodes_superseded,edges_added,content_hash,undo_status) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        "session-extra",
+                        BOARD_ID,
+                        "extra-artifact",
+                        "spec",
+                        "agent",
+                        "2026-08-16 12:01:00",
+                        "2026-08-16 12:01:00",
+                        0,
+                        0,
+                        0,
+                        0,
+                        "e" * 64,
+                        "none",
+                    ),
+                )
+                values = {
+                    name: getattr(extra, name) for name in extra.__dataclass_fields__
+                }
+                columns = tuple(values)
+                connection.execute(
+                    "INSERT INTO exact_rebuild_consolidation_ack_journal "
+                    f"({','.join(columns)}) VALUES "
+                    f"({','.join('?' for _ in columns)})",
+                    tuple(values[name] for name in columns),
+                )
+            elif mutation == "chain":
+                changed = ExactConsolidationAckReceipt.create(
+                    **{
+                        name: getattr(ack, name)
+                        for name in ack.__dataclass_fields__
+                        if name
+                        not in {
+                            "previous_materialization_generation",
+                            "receipt_sha256",
+                        }
+                    },
+                    previous_materialization_generation="wrong-baseline",
+                )
+                connection.execute(
+                    "UPDATE exact_rebuild_consolidation_ack_journal SET "
+                    "previous_materialization_generation=?,receipt_sha256=? "
+                    "WHERE queue_id=?",
+                    (
+                        changed.previous_materialization_generation,
+                        changed.receipt_sha256,
+                        ack.queue_id,
+                    ),
+                )
+            elif mutation == "content_hash":
+                connection.execute(
+                    "UPDATE consolidation_audit SET content_hash=? WHERE session_id=?",
+                    ("b" * 64, session_id),
+                )
+            elif mutation == "node_ref":
+                connection.execute(
+                    "DELETE FROM kuzu_node_refs WHERE session_id=?", (session_id,)
+                )
+            elif mutation == "outbox":
+                connection.execute(
+                    "DELETE FROM global_update_outbox WHERE event_id=?",
+                    (ack.outbox_event_id,),
+                )
+            elif mutation == "event":
+                connection.execute(
+                    "DELETE FROM domain_events WHERE id=?",
+                    (ack.generation_event_id,),
+                )
+            elif mutation == "generation_head":
+                connection.execute(
+                    "UPDATE app_settings SET value='foreign-head' WHERE key=?",
+                    (materialization_generation_key(BOARD_ID),),
+                )
+            elif mutation == "handler_execution":
+                connection.execute(
+                    "INSERT INTO domain_event_handler_executions "
+                    "(id,event_id,handler_name,status,attempts) VALUES (?,?,?,?,?)",
+                    (
+                        "handler-execution",
+                        ack.generation_event_id,
+                        "test-handler",
+                        "pending",
+                        0,
+                    ),
+                )
+            else:
+                current_scope = mutation == "compensation"
+                connection.execute(
+                    "INSERT INTO exact_rebuild_consolidation_compensations "
+                    "(compensation_id,board_id,source,reservation_lineage_id,"
+                    "baseline_materialization_generation,"
+                    "terminal_materialization_generation,ack_count,node_ref_count,"
+                    "ack_receipts_sha256,audit_session_ids,outbox_event_ids,"
+                    "generation_event_ids,compensated_at,receipt_sha256) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        f"comp-{mutation}",
+                        BOARD_ID,
+                        source,
+                        lineage_id if current_scope else "f" * 64,
+                        "unmaterialized-v1",
+                        ack.materialization_generation,
+                        1,
+                        ack.node_ref_count,
+                        "1" * 64,
+                        json.dumps([session_id]),
+                        json.dumps([ack.outbox_event_id]),
+                        json.dumps([ack.generation_event_id]),
+                        "2026-08-16 12:30:00",
+                        ("2" if current_scope else "3") * 64,
+                    ),
+                )
+        with pytest.raises(recovery.RecoveryRefused, match="exact_relational"):
+            recovery._assert_exact_relational_success_state(
+                candidate,
+                board_id=BOARD_ID,
+                source=source,
+                baseline=baseline,
+                expected_source_rows=expected_sources,
+                resume_mode=False,
+            )
+
+
+def test_exact_relational_success_gate_binds_alias_order_and_resume_prefix(
+    tmp_path: Path,
+) -> None:
+    import asyncio
+    import sqlite3
+
+    from okto_pulse.core.ports.consolidation import ExactConsolidationAckReceipt
+
+    manifest_ref = "manifest_alias_success"
+    source = f"rebuild:{manifest_ref}"
+    lineage_id = "c" * 64
+    db_path = tmp_path / "alias-success.sqlite3"
+    baseline, intermediate_resume, raw_receipts, source_rows = asyncio.run(
+        _seed_real_exact_alias_success_chain(
+            db_path,
+            manifest_ref=manifest_ref,
+            lineage_id=lineage_id,
+        )
+    )
+    assert all(type(item) is ExactConsolidationAckReceipt for item in raw_receipts)
+    receipts = tuple(raw_receipts)
+    recovery._assert_exact_relational_success_state(
+        db_path,
+        board_id=BOARD_ID,
+        source=source,
+        baseline=baseline,
+        expected_source_rows=source_rows,
+        resume_mode=False,
+    )
+    recovery._assert_exact_relational_success_state(
+        db_path,
+        board_id=BOARD_ID,
+        source=source,
+        baseline=intermediate_resume,
+        expected_source_rows=source_rows,
+        resume_mode=True,
+    )
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="exact_relational_frozen_scope_changed",
+    ):
+        recovery._assert_exact_relational_success_state(
+            db_path,
+            board_id=BOARD_ID,
+            source=source,
+            baseline=intermediate_resume,
+            expected_source_rows=source_rows,
+            resume_mode=True,
+            require_no_suffix=True,
+        )
+    frozen_baseline = recovery._capture_exact_relational_baseline(
+        db_path,
+        board_id=BOARD_ID,
+        source=source,
+        reservation_lineage_id=lineage_id,
+    )
+    recovery._assert_exact_relational_success_state(
+        db_path,
+        board_id=BOARD_ID,
+        source=source,
+        baseline=frozen_baseline,
+        expected_source_rows=source_rows,
+        resume_mode=True,
+        require_no_suffix=True,
+    )
+
+    prefix_mutations = (
+        (
+            "journal_created_at",
+            "UPDATE exact_rebuild_consolidation_ack_journal SET created_at=? "
+            "WHERE queue_id=?",
+            ("2099-01-01 00:00:00", receipts[0].queue_id),
+        ),
+        (
+            "audit",
+            "UPDATE consolidation_audit SET summary_text=? WHERE session_id=?",
+            ("tampered-prefix-audit", receipts[0].consolidation_session_id),
+        ),
+        (
+            "node_ref",
+            "UPDATE kuzu_node_refs SET timestamp=? WHERE session_id=?",
+            ("2099-01-01 00:00:00", receipts[0].consolidation_session_id),
+        ),
+        (
+            "outbox",
+            "UPDATE global_update_outbox SET created_at=? WHERE event_id=?",
+            ("2099-01-01 00:00:00", receipts[0].outbox_event_id),
+        ),
+        (
+            "event",
+            "UPDATE domain_events SET occurred_at=? WHERE id=?",
+            ("2099-01-01 00:00:00", receipts[0].generation_event_id),
+        ),
+    )
+    for label, statement, parameters in prefix_mutations:
+        candidate = tmp_path / f"alias-success-prefix-{label}.sqlite3"
+        with sqlite3.connect(db_path) as source_connection:
+            with sqlite3.connect(candidate) as target_connection:
+                source_connection.backup(target_connection)
+        with sqlite3.connect(candidate) as connection:
+            connection.execute(statement, parameters)
+        with pytest.raises(
+            recovery.RecoveryRefused,
+            match="exact_relational_success_prefix_changed",
+        ):
+            recovery._assert_exact_relational_success_state(
+                candidate,
+                board_id=BOARD_ID,
+                source=source,
+                baseline=intermediate_resume,
+                expected_source_rows=source_rows,
+                resume_mode=True,
+            )
+
+    frozen_candidate = tmp_path / "alias-success-frozen-tamper.sqlite3"
+    with sqlite3.connect(db_path) as source_connection:
+        with sqlite3.connect(frozen_candidate) as target_connection:
+            source_connection.backup(target_connection)
+    with sqlite3.connect(frozen_candidate) as connection:
+        connection.execute(
+            "UPDATE exact_rebuild_consolidation_ack_journal SET created_at=? "
+            "WHERE queue_id=?",
+            ("2099-01-01 00:00:00", receipts[-1].queue_id),
+        )
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="exact_relational_success_prefix_changed",
+    ):
+        recovery._assert_exact_relational_success_state(
+            frozen_candidate,
+            board_id=BOARD_ID,
+            source=source,
+            baseline=frozen_baseline,
+            expected_source_rows=source_rows,
+            resume_mode=True,
+            require_no_suffix=True,
+        )
+
+    swapped = (source_rows[1], source_rows[0], *source_rows[2:])
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="exact_relational_success_membership_set_invalid",
+    ):
+        recovery._assert_exact_relational_success_state(
+            db_path,
+            board_id=BOARD_ID,
+            source=source,
+            baseline=baseline,
+            expected_source_rows=swapped,
+            resume_mode=False,
+        )
+
+    cycle_path = tmp_path / "alias-success-cycle.sqlite3"
+    with sqlite3.connect(db_path) as source_connection:
+        with sqlite3.connect(cycle_path) as target_connection:
+            source_connection.backup(target_connection)
+    first = receipts[0]
+    cycled = ExactConsolidationAckReceipt.create(
+        **{
+            name: getattr(first, name)
+            for name in first.__dataclass_fields__
+            if name
+            not in {
+                "previous_materialization_generation",
+                "receipt_sha256",
+            }
+        },
+        previous_materialization_generation=receipts[-1].materialization_generation,
+    )
+    with sqlite3.connect(cycle_path) as connection:
+        connection.execute(
+            "UPDATE exact_rebuild_consolidation_ack_journal SET "
+            "previous_materialization_generation=?,receipt_sha256=? "
+            "WHERE queue_id=?",
+            (
+                cycled.previous_materialization_generation,
+                cycled.receipt_sha256,
+                cycled.queue_id,
+            ),
+        )
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="exact_relational_ack_chain_invalid",
+    ):
+        recovery._assert_exact_relational_success_state(
+            cycle_path,
+            board_id=BOARD_ID,
+            source=source,
+            baseline=baseline,
+            expected_source_rows=source_rows,
+            resume_mode=False,
+        )
+
+
+def test_prior_frozen_terminal_reproves_complete_exact_relational_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import sqlite3
+
+    manifest_ref = "manifest_prior_frozen_exact"
+    confirmation_ref = f"conf_fp_{'7' * 64}"
+    lineage_id = recovery._exact_reservation_lineage_id(
+        board_id=BOARD_ID,
+        manifest_ref=manifest_ref,
+        f06_run_id=f"f06:{manifest_ref}",
+        confirmation_ref=confirmation_ref,
+    )
+    db_path = tmp_path / "prior-frozen.sqlite3"
+    _initial, _intermediate, _receipts, source_rows = asyncio.run(
+        _seed_real_exact_alias_success_chain(
+            db_path,
+            manifest_ref=manifest_ref,
+            lineage_id=lineage_id,
+        )
+    )
+    receipt = {
+        "receipt_state": "terminal",
+        "board_id": BOARD_ID,
+        "manifest_ref": manifest_ref,
+        "confirmation_ref": confirmation_ref,
+        "run_id": "run_prior_frozen_exact",
+    }
+    audit = {
+        "run_id": receipt["run_id"],
+        "board_id": BOARD_ID,
+        "manifest_ref": manifest_ref,
+        "confirmation_ref": confirmation_ref,
+        "outcome": "completed",
+    }
+    checkpoint = {
+        "state": "completed",
+        "writer_handoff_count": 1,
+        "writer_reacquire_count": 1,
+        "command": {
+            "run_id": f"f06:{manifest_ref}",
+            "board_id": BOARD_ID,
+            "manifest_ref": manifest_ref,
+            "exact_relational_compensation": True,
+            "reservation_lineage_id": lineage_id,
+            "source_rows": [dict(row) for row in source_rows],
+        },
+    }
+    monkeypatch.setattr(recovery, "_load_checkpoint", lambda *_a, **_k: checkpoint)
+    monkeypatch.setattr(
+        recovery,
+        "_production_ordered_source_rows",
+        lambda _db_path, **_kwargs: source_rows,
+    )
+
+    recovery._assert_frozen_exact_relational_baseline_safe(
+        SimpleNamespace(),
+        receipt=receipt,
+        audit=audit,
+        board_id=BOARD_ID,
+        db_path=db_path,
+    )
+
+    tampered = tmp_path / "prior-frozen-tampered.sqlite3"
+    with sqlite3.connect(db_path) as source_connection:
+        with sqlite3.connect(tampered) as target_connection:
+            source_connection.backup(target_connection)
+    with sqlite3.connect(tampered) as connection:
+        connection.execute(
+            "UPDATE consolidation_audit SET content_hash=? WHERE session_id=?",
+            ("f" * 64, "session-alias-1"),
+        )
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="exact_relational_success_audit_or_refs_invalid",
+    ):
+        recovery._assert_frozen_exact_relational_baseline_safe(
+            SimpleNamespace(),
+            receipt=receipt,
+            audit=audit,
+            board_id=BOARD_ID,
+            db_path=tampered,
+        )
 
 
 def test_bounded_recovery_lanes_use_distinct_reconciliation_and_fresh_calls() -> None:

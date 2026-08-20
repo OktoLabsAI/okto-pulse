@@ -35,6 +35,7 @@ Trade-off documented:
 from __future__ import annotations
 
 import heapq
+import hashlib
 import json
 import logging
 import sqlite3
@@ -91,6 +92,52 @@ _REBUILD_SOURCE_OPERATIONAL_MARKERS = frozenset(
         "_rebuild_dependency_closure",
     }
 )
+
+
+def exact_rebuild_reservation_lineage_id(
+    *,
+    board_id: str,
+    manifest_ref: str,
+    f06_run_id: str,
+    confirmation_ref: str,
+) -> str:
+    """Return the stable exact-drain lineage for one verified F06 run.
+
+    The administrative reservation token is deliberately absent: it is an
+    ephemeral capability re-proved by the runtime callback.  This digest binds
+    durable ACK/compensation receipts to the verified confirmation lineage so
+    a successor reservation for the same run can replay them after a crash.
+    """
+
+    values = (board_id, manifest_ref, f06_run_id, confirmation_ref)
+    if any(type(value) is not str or not value for value in values):
+        raise RuntimeError("exact_rebuild_reservation_lineage_invalid")
+    if f06_run_id != f"f06:{manifest_ref}":
+        raise RuntimeError("exact_rebuild_f06_run_lineage_invalid")
+    confirmation_digest = confirmation_ref.removeprefix("conf_fp_")
+    if (
+        not confirmation_ref.startswith("conf_fp_")
+        or len(confirmation_digest) != 64
+        or any(character not in "0123456789abcdef" for character in confirmation_digest)
+    ):
+        raise RuntimeError("exact_rebuild_confirmation_lineage_invalid")
+    payload = {
+        "schema_version": "exact_rebuild_reservation_lineage.v1",
+        "board_id": board_id,
+        "manifest_ref": manifest_ref,
+        "f06_run_id": f06_run_id,
+        "confirmation_ref": confirmation_ref,
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 _REBUILD_CHECKPOINT_UPGRADE_STATES = frozenset(
     {
         "planned",
@@ -1729,6 +1776,12 @@ class CommunityBoardRebuildIngestionAdapter:
 
         def _adapter(req):
             run_id = f"f06:{req.manifest_ref or req.candidate_kg_generation_id or req.board_id}"
+            reservation_lineage_id = exact_rebuild_reservation_lineage_id(
+                board_id=req.board_id,
+                manifest_ref=req.manifest_ref,
+                f06_run_id=run_id,
+                confirmation_ref=getattr(req, "authorized_confirmation_ref", None),
+            )
             self._rebuild_run_boards[run_id] = req.board_id
             effects = CommunityRebuildEffects(self, artifact_store=self.artifact_store)
             checkpoint = effects.load_checkpoint(run_id)
@@ -1795,6 +1848,8 @@ class CommunityBoardRebuildIngestionAdapter:
                     persisted.board_id != req.board_id
                     or persisted.manifest_ref != req.manifest_ref
                     or persisted.operation != req.operation
+                    or not persisted.exact_relational_compensation
+                    or persisted.reservation_lineage_id != reservation_lineage_id
                 ):
                     return RebuildStepResult(
                         ok=False,
@@ -1876,6 +1931,8 @@ class CommunityBoardRebuildIngestionAdapter:
                     persisted.board_id != req.board_id
                     or persisted.manifest_ref != req.manifest_ref
                     or persisted.operation != req.operation
+                    or not persisted.exact_relational_compensation
+                    or persisted.reservation_lineage_id != reservation_lineage_id
                 ):
                     raise RuntimeError("rebuild_resume_command_drift")
                 if persisted.source_rows != sources:
@@ -1919,6 +1976,8 @@ class CommunityBoardRebuildIngestionAdapter:
                     persisted,
                     owner_token=req.owner_token,
                     salvage_pending=salvage_pending,
+                    exact_relational_compensation=True,
+                    reservation_lineage_id=reservation_lineage_id,
                 )
                 effective_req = replace(
                     req,
@@ -1938,6 +1997,8 @@ class CommunityBoardRebuildIngestionAdapter:
                     candidate_generation_id=req.candidate_kg_generation_id,
                     owner_token=req.owner_token,
                     salvage_pending=salvage_pending,
+                    exact_relational_compensation=True,
+                    reservation_lineage_id=reservation_lineage_id,
                 )
                 effective_req = req
 

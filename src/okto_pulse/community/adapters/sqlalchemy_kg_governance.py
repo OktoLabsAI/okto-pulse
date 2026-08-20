@@ -29,6 +29,8 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ConsolidationAudit,
     ConsolidationQueue,
     DesignSystemGateAudit,
+    ExactRebuildConsolidationAckJournal,
+    ExactRebuildConsolidationCompensation,
     GlobalDiscoveryDeliveryRedriveControl,
     GlobalUpdateOutbox,
     Guideline,
@@ -622,8 +624,7 @@ class CommunitySqlAlchemyKGGovernanceStore:
             )
             await context.execute(
                 delete(SemanticGuidelineBindingConfigurationRow).where(
-                    SemanticGuidelineBindingConfigurationRow.board_id
-                    == board_id
+                    SemanticGuidelineBindingConfigurationRow.board_id == board_id
                 )
             )
 
@@ -753,8 +754,7 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 for revision_id in inline_revision_ids:
                     await context.execute(
                         delete(SemanticGuidelineRevisionRow).where(
-                            SemanticGuidelineRevisionRow.revision_id
-                            == revision_id
+                            SemanticGuidelineRevisionRow.revision_id == revision_id
                         )
                     )
                     await context.execute(
@@ -816,6 +816,11 @@ class CommunitySqlAlchemyKGGovernanceStore:
             # Remaining board-scoped rows have no boards.id FK and would
             # otherwise survive the source Board DELETE.
             for model in (
+                # The exact ACK journal RESTRICTs its consolidation audit.
+                # Its terminal receipt is scope-owned evidence, so remove the
+                # receipt first and the journal before audit/node history.
+                ExactRebuildConsolidationCompensation,
+                ExactRebuildConsolidationAckJournal,
                 KuzuNodeRef,
                 ConsolidationAudit,
                 ConsolidationQueue,
@@ -867,6 +872,8 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 KnowledgeMutationLedgerRecord,
                 KnowledgePropagationScopeRecord,
                 KGCognitiveSource,
+                ExactRebuildConsolidationCompensation,
+                ExactRebuildConsolidationAckJournal,
                 KuzuNodeRef,
                 ConsolidationAudit,
                 ConsolidationQueue,
@@ -994,9 +1001,7 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 ] = await _count_where(
                     context,
                     SemanticGuidelineRevisionRow,
-                    SemanticGuidelineRevisionRow.guideline_id.in_(
-                        inline_guideline_ids
-                    ),
+                    SemanticGuidelineRevisionRow.guideline_id.in_(inline_guideline_ids),
                 )
                 residuals[GuidelineRetirementRow.__tablename__] = await _count_where(
                     context,
