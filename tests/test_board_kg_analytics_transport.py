@@ -149,3 +149,59 @@ async def test_canonical_coverage_rest_and_csv_share_factual_skip_semantics(
     assert rest["totals"]["covered"] == 0
     assert rows["$.totals.skipped"] == 2
     assert rows["$.totals.covered"] == 0
+
+
+@pytest.mark.asyncio
+async def test_flow_health_rest_and_csv_share_governed_episode_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = {
+        "query_fingerprint": "c" * 64,
+        "as_of": "2026-08-20T12:00:00.000000Z",
+        "summary": {"healthy": 1, "stale": 1},
+        "items": [
+            {
+                "subject": {"type": "card", "id": "card-1"},
+                "current_episode": {
+                    "state": "in_progress",
+                    "entry_event_id": "event-2",
+                    "age_seconds": 288000,
+                },
+            }
+        ],
+    }
+
+    async def execute(_self, command, *, actor, uow):
+        assert command.board_id == "board-1"
+        return SimpleNamespace(data=flow)
+
+    monkeypatch.setattr(analytics_api.FlowHealthAnalyticsUseCase, "execute", execute)
+    uow = object()
+    rest = await analytics_api.canonical_flow_health(
+        "board-1",
+        date_from="2026-08-19",
+        date_to="2026-08-20",
+        as_of="2026-08-20T12:00:00Z",
+        user_id="user-1",
+        uow=uow,
+    )
+    response = await analytics_api.canonical_flow_health_export(
+        "board-1",
+        date_from="2026-08-19",
+        date_to="2026-08-20",
+        as_of="2026-08-20T12:00:00Z",
+        user_id="user-1",
+        uow=uow,
+    )
+    chunks = [chunk async for chunk in response.body_iterator]
+    body = "".join(
+        chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in chunks
+    )
+    rows = {
+        row["path"]: json.loads(row["json_value"])
+        for row in csv.DictReader(io.StringIO(body))
+    }
+
+    assert rest is flow
+    assert rows["$.items[0].current_episode.entry_event_id"] == "event-2"
+    assert rows["$.items[0].current_episode.age_seconds"] == 288000

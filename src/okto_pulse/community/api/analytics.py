@@ -42,6 +42,8 @@ from okto_pulse.core.application.use_cases import (
     CoverageTraceabilityAnalyticsCommand,
     CoverageTraceabilityAnalyticsUseCase,
     EntityNotFoundError,
+    FlowHealthAnalyticsCommand,
+    FlowHealthAnalyticsUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
@@ -759,6 +761,95 @@ async def canonical_board_coverage_export(
         headers={
             "Content-Disposition": (
                 f'attachment; filename="board-{board_id}-coverage-analytics.csv"'
+            )
+        },
+    )
+
+
+async def _flow_health_payload(
+    board_id: str,
+    *,
+    date_from: str | None,
+    date_to: str | None,
+    as_of: str | None,
+    user_id: str,
+    uow: PulseUnitOfWork,
+) -> dict[str, object]:
+    temporal = _board_kg_analytics_command(
+        board_id,
+        date_from=date_from,
+        date_to=date_to,
+        as_of=as_of,
+    )
+    try:
+        result = await FlowHealthAnalyticsUseCase().execute(
+            FlowHealthAnalyticsCommand(
+                board_id=board_id,
+                window=temporal.window,
+                as_of=temporal.as_of,
+            ),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "analytics_query_invalid", "message": str(exc)},
+        ) from exc
+    return result.data
+
+
+@router.get("/boards/{board_id}/analytics/flow-health")
+async def canonical_flow_health(
+    board_id: str,
+    date_from: str | None = Query(None, alias="from"),
+    date_to: str | None = Query(None, alias="to"),
+    as_of: str | None = Query(None),
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    return await _flow_health_payload(
+        board_id,
+        date_from=date_from,
+        date_to=date_to,
+        as_of=as_of,
+        user_id=user_id,
+        uow=uow,
+    )
+
+
+@router.get("/boards/{board_id}/analytics/flow-health/export")
+async def canonical_flow_health_export(
+    board_id: str,
+    date_from: str | None = Query(None, alias="from"),
+    date_to: str | None = Query(None, alias="to"),
+    as_of: str | None = Query(None),
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    payload = await _flow_health_payload(
+        board_id,
+        date_from=date_from,
+        date_to=date_to,
+        as_of=as_of,
+        user_id=user_id,
+        uow=uow,
+    )
+    output = io.StringIO()
+    writer = csv.writer(output)
+    _write_csv_row(writer, ["path", "json_value"])
+    for path, value in _flatten_canonical_payload(payload):
+        _write_csv_row(writer, [path, value])
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="board-{board_id}-flow-health.csv"'
             )
         },
     )

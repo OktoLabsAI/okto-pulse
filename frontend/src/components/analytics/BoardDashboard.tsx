@@ -250,6 +250,24 @@ interface CanonicalCoverageResponse {
   }>;
 }
 
+interface FlowHealthResponse {
+  query_fingerprint: string;
+  as_of: string;
+  effective_policy: {
+    version: number;
+    general_stale_hours: number;
+    rejected_stale_hours: number;
+  };
+  summary: Record<'healthy' | 'at_risk' | 'blocked' | 'stale' | 'restricted' | 'unavailable' | 'inconsistent', number>;
+  items: Array<{
+    subject: { type: string; id: string };
+    state: string;
+    reason_codes: string[];
+    current_episode: { state: string; age_seconds: number; entered_at: string } | null;
+    rework: Array<{ attempt: number; rejection_code: string }>;
+  }>;
+}
+
 interface CoverageSpec {
   spec_id: string;
   title: string;
@@ -469,6 +487,11 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
   const [canonicalCoverageLoading, setCanonicalCoverageLoading] = useState(true);
   const [canonicalCoverageRetry, setCanonicalCoverageRetry] = useState(0);
   const [canonicalCoverageExporting, setCanonicalCoverageExporting] = useState(false);
+  const [flowHealth, setFlowHealth] = useState<FlowHealthResponse | null>(null);
+  const [flowHealthError, setFlowHealthError] = useState<string | null>(null);
+  const [flowHealthLoading, setFlowHealthLoading] = useState(true);
+  const [flowHealthRetry, setFlowHealthRetry] = useState(0);
+  const [flowHealthExporting, setFlowHealthExporting] = useState(false);
   const [entities, setEntities] = useState<Record<EntityTab, EntityListResponse | null>>({
     spec: null,
     ideation: null,
@@ -558,6 +581,24 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, from, to, canonicalCoverageRetry]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setFlowHealthLoading(true);
+    setFlowHealthError(null);
+    api.getBoardFlowHealth(boardId, from, to)
+      .then((payload) => {
+        if (!cancelled) setFlowHealth(payload as FlowHealthResponse);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setFlowHealthError(err instanceof Error ? err.message : 'Failed to load Flow Health');
+      })
+      .finally(() => {
+        if (!cancelled) setFlowHealthLoading(false);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, from, to, flowHealthRetry]);
 
   // Load entities separately — responds to tab, search, page changes
   useEffect(() => {
@@ -814,7 +855,7 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
                 ['Covered', canonicalCoverage.totals.covered],
                 ['Uncovered', canonicalCoverage.totals.uncovered],
                 ['Skipped', canonicalCoverage.totals.skipped],
-                ['Coverage', canonicalCoverage.totals.value === null ? null : `${Math.round(canonicalCoverage.totals.value * 100)}%`],
+                ['Coverage', canonicalCoverage.totals.value === null ? null : `${Math.round(canonicalCoverage.totals.value)}%`],
               ].map(([label, value]) => (
                 <div key={String(label)} className="rounded-md bg-gray-50 dark:bg-gray-900/40 p-3">
                   <p className="text-[10px] uppercase text-gray-400">{label}</p>
@@ -851,6 +892,71 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
             <p className="text-[10px] text-gray-400">
               as_of {canonicalCoverage.as_of} · query {canonicalCoverage.query_fingerprint.slice(0, 12)}…
             </p>
+          </div>
+        )}
+      </section>
+
+      <section
+        aria-labelledby="flow-health-heading"
+        className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6"
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 id="flow-health-heading" className="text-sm font-semibold text-gray-700 dark:text-gray-200">Flow Health</h3>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Episode age and rework come only from governed lifecycle events.</p>
+          </div>
+          <button
+            type="button"
+            disabled={flowHealthExporting || flowHealthLoading || flowHealth === null}
+            onClick={async () => {
+              if (flowHealthExporting) return;
+              setFlowHealthExporting(true);
+              try {
+                await api.exportBoardFlowHealthCsv(boardId, from, to);
+              } catch (err) {
+                setFlowHealthError(err instanceof Error ? err.message : 'Flow Health export failed');
+              } finally {
+                setFlowHealthExporting(false);
+              }
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-gray-200 dark:border-gray-600 disabled:opacity-50"
+          >
+            <Download className="w-3.5 h-3.5" /> {flowHealthExporting ? 'Exporting…' : 'Complete CSV'}
+          </button>
+        </div>
+        {flowHealthLoading && <p className="mt-4 text-xs text-gray-500" role="status">Loading Flow Health…</p>}
+        {!flowHealthLoading && flowHealthError && (
+          <div className="mt-4 flex items-center justify-between rounded-md bg-red-50 dark:bg-red-900/20 px-3 py-2" role="alert">
+            <span className="text-xs text-red-700 dark:text-red-300">{flowHealthError}</span>
+            <button type="button" onClick={() => setFlowHealthRetry((value) => value + 1)} className="inline-flex items-center gap-1 text-xs text-red-700 dark:text-red-300">
+              <RefreshCw className="w-3.5 h-3.5" /> Retry
+            </button>
+          </div>
+        )}
+        {!flowHealthLoading && !flowHealthError && flowHealth && (
+          <div className="mt-4 space-y-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+              {Object.entries(flowHealth.summary).map(([label, value]) => (
+                <div key={label} className="rounded-md bg-gray-50 dark:bg-gray-900/40 p-3">
+                  <p className="text-[10px] uppercase text-gray-400">{label.replace('_', ' ')}</p>
+                  <p className="mt-1 text-lg font-semibold text-gray-800 dark:text-gray-100">{value}</p>
+                </div>
+              ))}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead><tr className="border-b border-gray-200 dark:border-gray-700 text-left text-[10px] uppercase text-gray-400"><th className="py-2">Subject</th><th>State</th><th>Episode</th><th>Age</th><th>Rework</th></tr></thead>
+                <tbody>{flowHealth.items.map((item) => (
+                  <tr key={`${item.subject.type}:${item.subject.id}`} className="border-b border-gray-100 dark:border-gray-700/50">
+                    <td className="py-2 font-medium">{item.subject.type}:{item.subject.id}</td>
+                    <td>{item.state}</td><td>{item.current_episode?.state ?? 'unavailable'}</td>
+                    <td>{item.current_episode ? `${Math.floor(item.current_episode.age_seconds / 3600)}h` : '—'}</td>
+                    <td>{item.rework.length}</td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+            <p className="text-[10px] text-gray-400">policy v{flowHealth.effective_policy.version} · as_of {flowHealth.as_of} · query {flowHealth.query_fingerprint.slice(0, 12)}…</p>
           </div>
         )}
       </section>

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BoardDashboard } from './BoardDashboard';
 import { EntityDetail } from './EntityDetail';
@@ -9,6 +9,8 @@ const mockApi = vi.hoisted(() => ({
   getBoardAnalyticsCoverage: vi.fn(),
   getCanonicalBoardCoverage: vi.fn(),
   exportCanonicalBoardCoverageCsv: vi.fn(),
+  getBoardFlowHealth: vi.fn(),
+  exportBoardFlowHealthCsv: vi.fn(),
   getBoardAnalyticsAgents: vi.fn(),
   getBoardAnalyticsValidations: vi.fn(),
   getBoardAnalyticsSprints: vi.fn(),
@@ -159,6 +161,31 @@ describe('analytics IR/OR coverage UI', () => {
         rows: [],
       }],
     });
+    mockApi.getBoardFlowHealth.mockResolvedValue({
+      query_fingerprint: 'c'.repeat(64),
+      as_of: '2026-05-28T12:00:00.000000Z',
+      effective_policy: {
+        version: 2,
+        general_stale_hours: 72,
+        rejected_stale_hours: 96,
+      },
+      summary: {
+        healthy: 1,
+        at_risk: 0,
+        blocked: 1,
+        stale: 0,
+        restricted: 0,
+        unavailable: 0,
+        inconsistent: 0,
+      },
+      items: [{
+        subject: { type: 'card', id: 'card-1' },
+        state: 'blocked',
+        reason_codes: ['spec_pending_validation'],
+        current_episode: { state: 'in_progress', age_seconds: 3600, entered_at: '2026-05-28T11:00:00Z' },
+        rework: [],
+      }],
+    });
   });
 
   it('renders IR and OR coverage bars when the board payload exposes them', async () => {
@@ -201,10 +228,12 @@ describe('analytics IR/OR coverage UI', () => {
     render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByText('Board KG Analytics')).toBeInTheDocument());
-    expect(screen.getByText('healthy')).toBeInTheDocument();
-    expect(screen.getByText('unavailable')).toBeInTheDocument();
-    expect(screen.getAllByText('Unavailable')).toHaveLength(2);
-    expect(screen.getByText('cognitive_metric_unavailable')).toBeInTheDocument();
+    const panel = screen.getByRole('heading', { name: 'Board KG Analytics' }).closest('section');
+    expect(panel).not.toBeNull();
+    expect(within(panel!).getByText('healthy')).toBeInTheDocument();
+    expect(within(panel!).getByText('unavailable')).toBeInTheDocument();
+    expect(within(panel!).getAllByText('Unavailable')).toHaveLength(2);
+    expect(within(panel!).getByText('cognitive_metric_unavailable')).toBeInTheDocument();
   });
 
   it('keeps skipped obligations in factual coverage and out of covered', async () => {
@@ -300,6 +329,17 @@ describe('analytics IR/OR coverage UI', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Completeness help' }));
     expect(scrollIntoView).toHaveBeenCalled();
+  });
+
+  it('renders governed Flow Health independently from legacy analytics', async () => {
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+
+    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Flow Health' })).toBeInTheDocument());
+    expect(screen.getByText('card:card-1')).toBeInTheDocument();
+    expect(screen.getByText('in_progress')).toBeInTheDocument();
+    expect(screen.getByText('policy v2', { exact: false })).toBeInTheDocument();
   });
 
   it('renders spec-detail IR/OR drilldowns and header help targets', async () => {
