@@ -52,6 +52,9 @@ from okto_pulse.core.ports.discovery_catalog import (
 from okto_pulse.core.ports.amendment_revision import (
     register_amendment_revision_store,
 )
+from okto_pulse.core.ports.sprint_activation_baseline import (
+    register_sprint_activation_baseline_store,
+)
 from okto_pulse.core.ports.parent_artifact import register_parent_artifact_read_port
 from okto_pulse.core.ports.architecture_legacy import (
     register_architecture_legacy_snapshot_read_port,
@@ -403,6 +406,9 @@ def register_community_relational_effects(
     from okto_pulse.community.adapters.sqlalchemy_amendment_revision import (
         CommunitySqlAlchemyAmendmentRevisionStore,
     )
+    from okto_pulse.community.adapters.sqlalchemy_sprint_activation_baseline import (
+        CommunitySqlAlchemySprintActivationBaselineStore,
+    )
     from okto_pulse.community.adapters.sqlalchemy_parent_artifact import (
         CommunitySqlAlchemyParentArtifactReader,
     )
@@ -522,6 +528,9 @@ def register_community_relational_effects(
     register_skip_override_read_port(CommunitySqlAlchemySkipOverrideReader())
     register_discovery_catalog_read_port(CommunitySqlAlchemyDiscoveryCatalogReader())
     register_amendment_revision_store(CommunitySqlAlchemyAmendmentRevisionStore())
+    register_sprint_activation_baseline_store(
+        CommunitySqlAlchemySprintActivationBaselineStore()
+    )
     register_parent_artifact_read_port(CommunitySqlAlchemyParentArtifactReader())
     register_architecture_legacy_snapshot_read_port(
         CommunitySqlAlchemyArchitectureLegacySnapshotReader()

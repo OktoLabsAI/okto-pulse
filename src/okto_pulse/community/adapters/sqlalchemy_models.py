@@ -2166,6 +2166,50 @@ class SprintHistory(Base):
     sprint: Mapped["Sprint"] = relationship("Sprint", back_populates="history")
 
 
+class SprintActivationBaseline(Base):
+    """Immutable analytical commitment captured by the activation UoW."""
+
+    __tablename__ = "sprint_activation_baselines"
+    __table_args__ = (
+        UniqueConstraint("sprint_id", name="uq_sprint_activation_baselines_sprint_id"),
+        CheckConstraint(
+            "sprint_version >= 1",
+            name="ck_sprint_activation_baselines_sprint_version",
+        ),
+        CheckConstraint(
+            "member_count >= 1",
+            name="ck_sprint_activation_baselines_member_count",
+        ),
+    )
+
+    baseline_ref: Mapped[str] = mapped_column(String(96), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sprint_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("sprints.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    spec_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("specs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sprint_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    activated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    activated_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    member_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    members: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(), server_default=func.now(), nullable=False
+    )
+
+
 class SprintQAItem(Base):
     """Q&A on a sprint — same pattern as spec/ideation/refinement Q&A."""
 
