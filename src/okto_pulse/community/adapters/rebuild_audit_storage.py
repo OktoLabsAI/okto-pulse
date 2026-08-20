@@ -8,6 +8,7 @@ import secrets
 import shutil
 import stat
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -121,10 +122,11 @@ def _fsync_directory(path: Path) -> None:
         return
 
 
-def _replace_write_through(source: Path, destination: Path) -> None:
-    if os.name != "nt":
-        os.replace(source, destination)
-        return
+_WINDOWS_REPLACE_RETRYABLE_ERROR_CODES = frozenset({5, 32})
+_WINDOWS_REPLACE_RETRY_DELAYS_SECONDS = (0.05, 0.10)
+
+
+def _windows_replace_write_through_once(source: Path, destination: Path) -> None:
     import ctypes
     from ctypes import wintypes
 
@@ -143,6 +145,23 @@ def _replace_write_through(source: Path, destination: Path) -> None:
         movefile_replace_existing | movefile_write_through,
     ):
         raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _replace_write_through(source: Path, destination: Path) -> None:
+    if os.name != "nt":
+        os.replace(source, destination)
+        return
+    for attempt in range(len(_WINDOWS_REPLACE_RETRY_DELAYS_SECONDS) + 1):
+        try:
+            _windows_replace_write_through_once(source, destination)
+            return
+        except OSError as exc:
+            winerror = getattr(exc, "winerror", None)
+            if winerror not in _WINDOWS_REPLACE_RETRYABLE_ERROR_CODES or attempt >= len(
+                _WINDOWS_REPLACE_RETRY_DELAYS_SECONDS
+            ):
+                raise
+            time.sleep(_WINDOWS_REPLACE_RETRY_DELAYS_SECONDS[attempt])
 
 
 def _payload_mentions_board(payload: object, board_id: str) -> bool:

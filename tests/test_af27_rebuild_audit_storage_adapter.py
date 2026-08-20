@@ -678,6 +678,110 @@ def test_atomic_write_orders_file_fsync_replace_and_directory_fsync(
     assert events.index("replace") < events.index("directory_fsync")
 
 
+def _synthetic_windows_error(code: int) -> OSError:
+    exc = OSError(f"synthetic Windows error {code}")
+    exc.winerror = code
+    return exc
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing semantics")
+def test_atomic_write_retries_transient_windows_sharing_denial(tmp_path, monkeypatch):
+    from okto_pulse.community.adapters import rebuild_audit_storage as module
+
+    store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
+    key = RebuildAuditKey(
+        namespace="global_discovery_recovery",
+        board_id="_global",
+        artifact_id="windows-sharing-retry",
+    )
+    store.write_json_atomic(key, {"version": "old"})
+    path = Path(store.reference(key))
+    attempts = 0
+    sleeps: list[float] = []
+
+    def replace(source, destination):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise _synthetic_windows_error(5)
+        module.os.replace(source, destination)
+
+    monkeypatch.setattr(module, "_windows_replace_write_through_once", replace)
+    monkeypatch.setattr(module.time, "sleep", sleeps.append)
+
+    store.write_json_atomic(key, {"version": "new"})
+
+    assert attempts == 2
+    assert sleeps == [0.05]
+    assert store.read_json(key) == {"version": "new"}
+    assert not list(path.parent.glob(f".{path.name}.*.tmp"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing semantics")
+def test_atomic_write_exhausts_windows_sharing_retry_without_replacing(
+    tmp_path, monkeypatch
+):
+    from okto_pulse.community.adapters import rebuild_audit_storage as module
+
+    store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
+    key = RebuildAuditKey(
+        namespace="global_discovery_recovery",
+        board_id="_global",
+        artifact_id="windows-sharing-exhausted",
+    )
+    store.write_json_atomic(key, {"version": "committed"})
+    path = Path(store.reference(key))
+    before = path.read_bytes()
+    attempts = 0
+    sleeps: list[float] = []
+
+    def replace(_source, _destination):
+        nonlocal attempts
+        attempts += 1
+        raise _synthetic_windows_error(32)
+
+    monkeypatch.setattr(module, "_windows_replace_write_through_once", replace)
+    monkeypatch.setattr(module.time, "sleep", sleeps.append)
+
+    with pytest.raises(OSError) as raised:
+        store.write_json_atomic(key, {"version": "uncommitted"})
+
+    assert raised.value.winerror == 32
+    assert attempts == 3
+    assert sleeps == [0.05, 0.10]
+    assert path.read_bytes() == before
+    assert not list(path.parent.glob(f".{path.name}.*.tmp"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing semantics")
+def test_atomic_write_does_not_retry_other_windows_errors(tmp_path, monkeypatch):
+    from okto_pulse.community.adapters import rebuild_audit_storage as module
+
+    store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
+    key = RebuildAuditKey(
+        namespace="global_discovery_recovery",
+        board_id="_global",
+        artifact_id="windows-non-sharing-error",
+    )
+    attempts = 0
+    sleeps: list[float] = []
+
+    def replace(_source, _destination):
+        nonlocal attempts
+        attempts += 1
+        raise _synthetic_windows_error(87)
+
+    monkeypatch.setattr(module, "_windows_replace_write_through_once", replace)
+    monkeypatch.setattr(module.time, "sleep", sleeps.append)
+
+    with pytest.raises(OSError) as raised:
+        store.write_json_atomic(key, {"version": "never-committed"})
+
+    assert raised.value.winerror == 87
+    assert attempts == 1
+    assert sleeps == []
+
+
 def test_next_mutation_removes_orphan_unique_temp_without_promoting_it(tmp_path):
     store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
     key = RebuildAuditKey(
