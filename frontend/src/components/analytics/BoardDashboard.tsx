@@ -225,6 +225,31 @@ interface BoardKgAnalyticsResponse {
   };
 }
 
+interface CanonicalCoverageResponse {
+  query_fingerprint: string;
+  as_of: string;
+  totals: {
+    state: 'available' | 'not_applicable' | 'restricted' | 'unavailable' | 'inconsistent';
+    applicable: number | null;
+    covered: number | null;
+    uncovered: number | null;
+    skipped: number | null;
+    value: number | null;
+    n: number | null;
+    reason: string | null;
+  };
+  coverage: Array<{
+    obligation_type: string;
+    counts: CanonicalCoverageResponse['totals'];
+    rows: Array<{
+      identity: { spec_id: string; obligation_id: string; edition: number };
+      state: string;
+      covered: boolean | null;
+      skip: { state: string; effective: boolean; reason_code: string | null };
+    }>;
+  }>;
+}
+
 interface CoverageSpec {
   spec_id: string;
   title: string;
@@ -439,6 +464,11 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
   const [kgError, setKgError] = useState<string | null>(null);
   const [kgRetry, setKgRetry] = useState(0);
   const [kgExporting, setKgExporting] = useState(false);
+  const [canonicalCoverage, setCanonicalCoverage] = useState<CanonicalCoverageResponse | null>(null);
+  const [canonicalCoverageError, setCanonicalCoverageError] = useState<string | null>(null);
+  const [canonicalCoverageLoading, setCanonicalCoverageLoading] = useState(true);
+  const [canonicalCoverageRetry, setCanonicalCoverageRetry] = useState(0);
+  const [canonicalCoverageExporting, setCanonicalCoverageExporting] = useState(false);
   const [entities, setEntities] = useState<Record<EntityTab, EntityListResponse | null>>({
     spec: null,
     ideation: null,
@@ -508,6 +538,26 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, from, to, kgRetry]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCanonicalCoverageLoading(true);
+    setCanonicalCoverageError(null);
+    api.getCanonicalBoardCoverage(boardId, from, to)
+      .then((payload) => {
+        if (!cancelled) setCanonicalCoverage(payload as CanonicalCoverageResponse);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setCanonicalCoverageError(err instanceof Error ? err.message : 'Failed to load canonical coverage');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCanonicalCoverageLoading(false);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, from, to, canonicalCoverageRetry]);
 
   // Load entities separately — responds to tab, search, page changes
   useEffect(() => {
@@ -703,6 +753,103 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
             </div>
             <p className="text-[10px] text-gray-400">
               as_of {kgAnalytics.as_of} · query {kgAnalytics.query_fingerprint.slice(0, 12)}…
+            </p>
+          </div>
+        )}
+      </section>
+
+      <section
+        aria-labelledby="canonical-coverage-heading"
+        className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6"
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 id="canonical-coverage-heading" className="text-sm font-semibold text-gray-700 dark:text-gray-200">
+              Canonical Coverage &amp; Traceability
+            </h3>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Factual coverage keeps governed skips, unavailable authority and ineligible historical evidence separate.
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={canonicalCoverageExporting || canonicalCoverageLoading || canonicalCoverage === null}
+            onClick={async () => {
+              if (canonicalCoverageExporting) return;
+              setCanonicalCoverageExporting(true);
+              try {
+                await api.exportCanonicalBoardCoverageCsv(boardId, from, to);
+              } catch (err) {
+                setCanonicalCoverageError(err instanceof Error ? err.message : 'Coverage export failed');
+              } finally {
+                setCanonicalCoverageExporting(false);
+              }
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-gray-200 dark:border-gray-600 disabled:opacity-50"
+          >
+            <Download className="w-3.5 h-3.5" />
+            {canonicalCoverageExporting ? 'Exporting…' : 'Complete CSV'}
+          </button>
+        </div>
+        {canonicalCoverageLoading && (
+          <p className="mt-4 text-xs text-gray-500" role="status">Loading canonical coverage…</p>
+        )}
+        {!canonicalCoverageLoading && canonicalCoverageError && (
+          <div className="mt-4 flex items-center justify-between rounded-md bg-red-50 dark:bg-red-900/20 px-3 py-2" role="alert">
+            <span className="text-xs text-red-700 dark:text-red-300">{canonicalCoverageError}</span>
+            <button
+              type="button"
+              onClick={() => setCanonicalCoverageRetry((value) => value + 1)}
+              className="inline-flex items-center gap-1 text-xs text-red-700 dark:text-red-300"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Retry
+            </button>
+          </div>
+        )}
+        {!canonicalCoverageLoading && !canonicalCoverageError && canonicalCoverage && (
+          <div className="mt-4 space-y-3">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              {[
+                ['Applicable', canonicalCoverage.totals.applicable],
+                ['Covered', canonicalCoverage.totals.covered],
+                ['Uncovered', canonicalCoverage.totals.uncovered],
+                ['Skipped', canonicalCoverage.totals.skipped],
+                ['Coverage', canonicalCoverage.totals.value === null ? null : `${Math.round(canonicalCoverage.totals.value * 100)}%`],
+              ].map(([label, value]) => (
+                <div key={String(label)} className="rounded-md bg-gray-50 dark:bg-gray-900/40 p-3">
+                  <p className="text-[10px] uppercase text-gray-400">{label}</p>
+                  <p className="mt-1 text-lg font-semibold text-gray-800 dark:text-gray-100">
+                    {value === null ? canonicalCoverage.totals.state : value}
+                  </p>
+                </div>
+              ))}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-gray-200 dark:border-gray-700 text-left text-[10px] uppercase text-gray-400">
+                    <th className="py-2">Obligation</th>
+                    <th className="py-2 text-right">Applicable</th>
+                    <th className="py-2 text-right">Covered</th>
+                    <th className="py-2 text-right">Uncovered</th>
+                    <th className="py-2 text-right">Skipped</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {canonicalCoverage.coverage.map((group) => (
+                    <tr key={group.obligation_type} className="border-b border-gray-100 dark:border-gray-700/50">
+                      <td className="py-2 font-medium">{group.obligation_type}</td>
+                      <td className="py-2 text-right">{group.counts.applicable ?? group.counts.state}</td>
+                      <td className="py-2 text-right">{group.counts.covered ?? '—'}</td>
+                      <td className="py-2 text-right">{group.counts.uncovered ?? '—'}</td>
+                      <td className="py-2 text-right">{group.counts.skipped ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-[10px] text-gray-400">
+              as_of {canonicalCoverage.as_of} · query {canonicalCoverage.query_fingerprint.slice(0, 12)}…
             </p>
           </div>
         )}

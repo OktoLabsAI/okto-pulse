@@ -91,3 +91,61 @@ async def test_rest_and_complete_csv_share_the_exact_projection(
     assert reconstructed["$.result_state"] == CANONICAL["result_state"]
     assert reconstructed["$.health.state"] == CANONICAL["health"]["state"]
     assert reconstructed["$.debt_domains.active_queue_count"] is None
+
+
+@pytest.mark.asyncio
+async def test_canonical_coverage_rest_and_csv_share_factual_skip_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    coverage = {
+        "query_fingerprint": "b" * 64,
+        "totals": {
+            "state": "available",
+            "applicable": 2,
+            "covered": 0,
+            "uncovered": 2,
+            "skipped": 2,
+            "value": 0.0,
+        },
+        "coverage": [],
+    }
+
+    async def execute(_self, command, *, actor, uow):
+        assert command.board_id == "board-1"
+        return SimpleNamespace(data=coverage)
+
+    monkeypatch.setattr(
+        analytics_api.CoverageTraceabilityAnalyticsUseCase,
+        "execute",
+        execute,
+    )
+    uow = object()
+    rest = await analytics_api.canonical_board_coverage(
+        "board-1",
+        date_from="2026-08-19",
+        date_to="2026-08-20",
+        as_of="2026-08-20T12:00:00Z",
+        user_id="user-1",
+        uow=uow,
+    )
+    response = await analytics_api.canonical_board_coverage_export(
+        "board-1",
+        date_from="2026-08-19",
+        date_to="2026-08-20",
+        as_of="2026-08-20T12:00:00Z",
+        user_id="user-1",
+        uow=uow,
+    )
+    chunks = [chunk async for chunk in response.body_iterator]
+    body = "".join(
+        chunk.decode() if isinstance(chunk, bytes) else chunk for chunk in chunks
+    )
+    rows = {
+        row["path"]: json.loads(row["json_value"])
+        for row in csv.DictReader(io.StringIO(body))
+    }
+
+    assert rest["totals"]["skipped"] == 2
+    assert rest["totals"]["covered"] == 0
+    assert rows["$.totals.skipped"] == 2
+    assert rows["$.totals.covered"] == 0

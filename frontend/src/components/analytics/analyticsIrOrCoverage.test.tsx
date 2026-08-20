@@ -7,6 +7,8 @@ const mockApi = vi.hoisted(() => ({
   getBoardAnalyticsFunnel: vi.fn(),
   getBoardAnalyticsQuality: vi.fn(),
   getBoardAnalyticsCoverage: vi.fn(),
+  getCanonicalBoardCoverage: vi.fn(),
+  exportCanonicalBoardCoverageCsv: vi.fn(),
   getBoardAnalyticsAgents: vi.fn(),
   getBoardAnalyticsValidations: vi.fn(),
   getBoardAnalyticsSprints: vi.fn(),
@@ -129,6 +131,34 @@ describe('analytics IR/OR coverage UI', () => {
         persistence_gap_count: null,
       },
     });
+    mockApi.getCanonicalBoardCoverage.mockResolvedValue({
+      query_fingerprint: 'b'.repeat(64),
+      as_of: '2026-05-28T12:00:00.000000Z',
+      totals: {
+        state: 'available',
+        applicable: 2,
+        covered: 0,
+        uncovered: 2,
+        skipped: 2,
+        value: 0,
+        n: 2,
+        reason: null,
+      },
+      coverage: [{
+        obligation_type: 'ac',
+        counts: {
+          state: 'available',
+          applicable: 2,
+          covered: 0,
+          uncovered: 2,
+          skipped: 2,
+          value: 0,
+          n: 2,
+          reason: null,
+        },
+        rows: [],
+      }],
+    });
   });
 
   it('renders IR and OR coverage bars when the board payload exposes them', async () => {
@@ -175,6 +205,19 @@ describe('analytics IR/OR coverage UI', () => {
     expect(screen.getByText('unavailable')).toBeInTheDocument();
     expect(screen.getAllByText('Unavailable')).toHaveLength(2);
     expect(screen.getByText('cognitive_metric_unavailable')).toBeInTheDocument();
+  });
+
+  it('keeps skipped obligations in factual coverage and out of covered', async () => {
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+
+    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText('Canonical Coverage & Traceability')).toBeInTheDocument());
+    const panel = screen.getByRole('heading', { name: 'Canonical Coverage & Traceability' }).closest('section');
+    expect(panel).not.toBeNull();
+    expect(panel).toHaveTextContent('Covered0');
+    expect(panel).toHaveTextContent('Uncovered2');
+    expect(panel).toHaveTextContent('Skipped2');
   });
 
   it('labels a historical Sprint commitment unavailable without inferred counts', async () => {
