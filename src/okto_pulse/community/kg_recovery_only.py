@@ -7037,7 +7037,7 @@ def _legacy_command_from_checkpoint(
     command = checkpoint.get("command")
     _require(isinstance(command, Mapping), "legacy_queue_only_command_missing")
     assert isinstance(command, Mapping)
-    expected_keys = {
+    legacy_keys = {
         "run_id",
         "board_id",
         "manifest_ref",
@@ -7049,10 +7049,22 @@ def _legacy_command_from_checkpoint(
         "candidate_generation_id",
         "salvage_pending",
     }
+    current_keys = legacy_keys | {
+        "exact_relational_compensation",
+        "reservation_lineage_id",
+    }
+    command_keys = set(command)
     _require(
-        set(command) == expected_keys,
+        command_keys == legacy_keys or command_keys == current_keys,
         "legacy_queue_only_command_shape_invalid",
     )
+    if command_keys == current_keys:
+        _require(
+            type(command.get("exact_relational_compensation")) is bool
+            and command.get("exact_relational_compensation") is False
+            and command.get("reservation_lineage_id") is None,
+            "legacy_queue_only_command_shape_invalid",
+        )
     manifest_ref = str(command.get("manifest_ref") or "")
     run_id = str(command.get("run_id") or "")
     candidate_generation_id = str(command.get("candidate_generation_id") or "")
@@ -7094,6 +7106,8 @@ def _legacy_command_from_checkpoint(
         previous_generation_id=None,
         candidate_generation_id=candidate_generation_id,
         salvage_pending=False,
+        exact_relational_compensation=False,
+        reservation_lineage_id=None,
     )
 
 

@@ -1777,6 +1777,68 @@ def test_legacy_checkpoint_candidate_accepts_current_shape_exactly(
     assert candidate[1] == raw_checkpoint
 
 
+@pytest.mark.parametrize("current_shape", (False, True))
+def test_legacy_command_accepts_only_complete_legacy_or_current_shapes(
+    tmp_path: Path,
+    current_shape: bool,
+) -> None:
+    data_home = tmp_path / "data-home"
+    _rebuild, _quarantine, checkpoint_relative = _create_legacy_artifacts(data_home)
+    checkpoint = json.loads((data_home / "rebuild" / checkpoint_relative).read_bytes())
+    if current_shape:
+        checkpoint["command"].update(
+            {
+                "exact_relational_compensation": False,
+                "reservation_lineage_id": None,
+            }
+        )
+
+    command = recovery._legacy_command_from_checkpoint(
+        checkpoint,
+        board_id=BOARD_ID,
+    )
+
+    assert command.exact_relational_compensation is False
+    assert command.reservation_lineage_id is None
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    (
+        "hybrid_exact_only",
+        "hybrid_lineage_only",
+        "exact_enabled",
+        "lineage_non_null",
+        "extra_key",
+    ),
+)
+def test_legacy_command_refuses_noncanonical_current_shape(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    data_home = tmp_path / "data-home"
+    _rebuild, _quarantine, checkpoint_relative = _create_legacy_artifacts(data_home)
+    checkpoint = json.loads((data_home / "rebuild" / checkpoint_relative).read_bytes())
+    command = checkpoint["command"]
+    if tamper != "hybrid_lineage_only":
+        command["exact_relational_compensation"] = tamper == "exact_enabled"
+    if tamper != "hybrid_exact_only":
+        command["reservation_lineage_id"] = (
+            "a" * 64 if tamper == "lineage_non_null" else None
+        )
+    if tamper == "extra_key":
+        command["unexpected"] = "unbound"
+
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="legacy_queue_only_command_shape_invalid",
+    ):
+        recovery._legacy_command_from_checkpoint(
+            checkpoint,
+            board_id=BOARD_ID,
+        )
+
+
 def test_legacy_discovery_selects_active_run_and_normalizes_exact_old_shape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2165,6 +2227,14 @@ def test_legacy_executor_discovers_reconciles_and_rediscovers_adoption(
     assert adoption.identities == frozenset({("spec", "spec-legacy")})
 
     checkpoint_path = rebuild / checkpoint_relative
+    current_terminal_checkpoint = json.loads(checkpoint_path.read_bytes())
+    current_terminal_checkpoint["command"].update(
+        {
+            "exact_relational_compensation": False,
+            "reservation_lineage_id": None,
+        }
+    )
+    _write_json(checkpoint_path, current_terminal_checkpoint)
     exact_terminal_checkpoint = checkpoint_path.read_bytes()
     corrupted_checkpoint = json.loads(exact_terminal_checkpoint)
     corrupted_checkpoint["compensation_failure_code"] = "lease_lost"
