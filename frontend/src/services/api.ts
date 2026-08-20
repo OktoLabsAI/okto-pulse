@@ -2363,6 +2363,32 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson(`/boards/${boardId}/analytics/sprints?${params.toString()}`);
     },
 
+    async getBoardKgAnalytics(boardId: string, from?: string, to?: string): Promise<any> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/kg?${params.toString()}`);
+    },
+
+    async exportBoardKgAnalyticsCsv(boardId: string, from?: string, to?: string): Promise<void> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      const response = await apiClient.fetch(`/boards/${boardId}/analytics/kg/export?${params.toString()}`);
+      if (!response.ok) {
+        throw new Error(`Export failed: ${response.status}`);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `board-${boardId}-kg-analytics.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    },
+
     // --- Per-spec analytics detail (validation timeline, task gate summary)
     async getBoardAnalyticsSpecDetail(boardId: string, specId: string): Promise<any> {
       return apiClient.fetchJson(`/boards/${boardId}/analytics/spec/${specId}`);

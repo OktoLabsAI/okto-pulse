@@ -19,7 +19,10 @@ import {
   FlaskConical,
   Bug,
   Clock,
+  Database,
+  Download,
   HelpCircle,
+  RefreshCw,
 } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
 import { PulseLoader } from '@/components/shared/PulseLoader';
@@ -169,7 +172,57 @@ interface SprintsResponse {
       rejection_reasons: Record<string, number>;
       first_pass_rate: number | null;
     };
+    commitment: {
+      state: 'available' | 'unavailable_legacy';
+      baseline_ref: string | null;
+      activated_at?: string;
+      original_member_count?: number;
+      current_member_count?: number;
+      added_count?: number;
+      removed_count?: number;
+      unavailable_reason: string | null;
+    };
   }>;
+}
+
+type BoardKgHealthState =
+  | 'healthy'
+  | 'at_risk'
+  | 'backpressure'
+  | 'recovery_needed'
+  | 'quarantined';
+
+type BoardKgResultState =
+  | 'available'
+  | 'restricted'
+  | 'unavailable'
+  | 'empty'
+  | 'error';
+
+interface BoardKgAnalyticsResponse {
+  query_fingerprint: string;
+  as_of: string;
+  result_state: BoardKgResultState;
+  health: {
+    state: BoardKgHealthState;
+    classification_reason: string;
+    reason_codes: string[];
+  };
+  debt_domains: {
+    result_state: BoardKgResultState;
+    active_queue_count: number | null;
+    technical_dlq_count: number | null;
+    canonical_debt_count: number | null;
+  };
+  cognitive_effectiveness: {
+    result_state: BoardKgResultState;
+    cognitively_effective: boolean | null;
+    denominator: number | null;
+    attempted_count: number | null;
+    persisted_count: number | null;
+    technical_dlq_count: number | null;
+    persistence_gap_count: number | null;
+  };
 }
 
 interface CoverageSpec {
@@ -381,6 +434,11 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
   const [agents, setAgents] = useState<AgentRow[]>([]);
   const [validations, setValidations] = useState<ValidationsResponse | null>(null);
   const [sprints, setSprints] = useState<SprintsResponse | null>(null);
+  const [kgAnalytics, setKgAnalytics] = useState<BoardKgAnalyticsResponse | null>(null);
+  const [kgLoading, setKgLoading] = useState(true);
+  const [kgError, setKgError] = useState<string | null>(null);
+  const [kgRetry, setKgRetry] = useState(0);
+  const [kgExporting, setKgExporting] = useState(false);
   const [entities, setEntities] = useState<Record<EntityTab, EntityListResponse | null>>({
     spec: null,
     ideation: null,
@@ -428,6 +486,28 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, from, to]);
+
+  // KG Analytics has an independent lifecycle: failure here must not hide the
+  // usable funnel, coverage, validation or Sprint panels.
+  useEffect(() => {
+    let cancelled = false;
+    setKgLoading(true);
+    setKgError(null);
+    api.getBoardKgAnalytics(boardId, from, to)
+      .then((payload) => {
+        if (!cancelled) setKgAnalytics(payload as BoardKgAnalyticsResponse);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setKgError(err instanceof Error ? err.message : 'Failed to load KG analytics');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setKgLoading(false);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, from, to, kgRetry]);
 
   // Load entities separately — responds to tab, search, page changes
   useEffect(() => {
@@ -534,6 +614,100 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
 
   return (
     <div className="space-y-6">
+      <section
+        aria-labelledby="board-kg-analytics-heading"
+        className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6"
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <Database className="w-4 h-4 text-indigo-500" />
+              <h3 id="board-kg-analytics-heading" className="text-sm font-semibold text-gray-700 dark:text-gray-200">
+                Board KG Analytics
+              </h3>
+            </div>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Canonical health, operational debt and cognitive effectiveness. Availability is reported separately from health.
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={kgExporting || kgLoading || kgAnalytics === null}
+            onClick={async () => {
+              if (kgExporting) return;
+              setKgExporting(true);
+              try {
+                await api.exportBoardKgAnalyticsCsv(boardId, from, to);
+              } catch (err) {
+                setKgError(err instanceof Error ? err.message : 'KG Analytics export failed');
+              } finally {
+                setKgExporting(false);
+              }
+            }}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-gray-200 dark:border-gray-600 disabled:opacity-50"
+          >
+            <Download className="w-3.5 h-3.5" />
+            {kgExporting ? 'Exporting…' : 'Complete CSV'}
+          </button>
+        </div>
+
+        {kgLoading && (
+          <p className="mt-4 text-xs text-gray-500" role="status">Loading KG Analytics…</p>
+        )}
+        {!kgLoading && kgError && (
+          <div className="mt-4 flex items-center justify-between gap-3 rounded-md bg-red-50 dark:bg-red-900/20 px-3 py-2" role="alert">
+            <span className="text-xs text-red-700 dark:text-red-300">{kgError}</span>
+            <button
+              type="button"
+              onClick={() => setKgRetry((value) => value + 1)}
+              className="inline-flex items-center gap-1 text-xs font-medium text-red-700 dark:text-red-300"
+            >
+              <RefreshCw className="w-3.5 h-3.5" /> Retry
+            </button>
+          </div>
+        )}
+        {!kgLoading && !kgError && kgAnalytics && (
+          <div className="mt-4 space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-gray-500 dark:text-gray-400">Health</span>
+              <span className="rounded-full bg-indigo-100 dark:bg-indigo-900/40 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:text-indigo-300">
+                {kgAnalytics.health.state}
+              </span>
+              <span className="text-xs text-gray-500 dark:text-gray-400">Result</span>
+              <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                kgAnalytics.result_state === 'available'
+                  ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300'
+                  : 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300'
+              }`}>
+                {kgAnalytics.result_state}
+              </span>
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                {kgAnalytics.health.classification_reason}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3" aria-label="KG analytics facts">
+              {[
+                ['Active queue', kgAnalytics.debt_domains.active_queue_count],
+                ['Technical DLQ', kgAnalytics.debt_domains.technical_dlq_count],
+                ['Canonical debt', kgAnalytics.debt_domains.canonical_debt_count],
+                ['Cognitive denominator', kgAnalytics.cognitive_effectiveness.denominator],
+                ['Persistence gaps', kgAnalytics.cognitive_effectiveness.persistence_gap_count],
+              ].map(([label, value]) => (
+                <div key={String(label)} className="rounded-md bg-gray-50 dark:bg-gray-900/40 p-3">
+                  <p className="text-[10px] uppercase text-gray-400">{label}</p>
+                  <p className="mt-1 text-lg font-semibold text-gray-800 dark:text-gray-100">
+                    {value === null ? 'Unavailable' : value}
+                  </p>
+                </div>
+              ))}
+            </div>
+            <p className="text-[10px] text-gray-400">
+              as_of {kgAnalytics.as_of} · query {kgAnalytics.query_fingerprint.slice(0, 12)}…
+            </p>
+          </div>
+        )}
+      </section>
+
       {/* ------------------------------------------------------------------ */}
       {/* KPI Cards                                                          */}
       {/* ------------------------------------------------------------------ */}
@@ -1212,6 +1386,7 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
                   <th className="py-2 font-medium text-center">Status</th>
                   <th className="py-2 font-medium text-center">Cards</th>
                   <th className="py-2 font-medium text-center">Completion</th>
+                  <th className="py-2 font-medium text-center">Commitment</th>
                   <th className="py-2 font-medium text-center">Task Gate</th>
                   <th className="py-2 font-medium text-center">Last Eval</th>
                 </tr>
@@ -1238,6 +1413,23 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
                         </div>
                         <span className="text-[10px] font-medium">{sp.completion_rate}%</span>
                       </div>
+                    </td>
+                    <td className="py-2 text-center">
+                      {sp.commitment.state === 'available' ? (
+                        <span
+                          className="text-[10px] text-gray-600 dark:text-gray-300"
+                          title={`Baseline ${sp.commitment.baseline_ref}`}
+                        >
+                          {sp.commitment.original_member_count} original · {sp.commitment.added_count} added · {sp.commitment.removed_count} removed
+                        </span>
+                      ) : (
+                        <span
+                          className="text-[10px] text-amber-600 dark:text-amber-300"
+                          title={sp.commitment.unavailable_reason || 'Activation baseline unavailable'}
+                        >
+                          unavailable legacy
+                        </span>
+                      )}
                     </td>
                     <td className="py-2 text-center">
                       {sp.task_validation_gate.total_submitted > 0 ? (

@@ -2,7 +2,8 @@
 
 import csv
 import io
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from starlette.responses import StreamingResponse
@@ -18,6 +19,8 @@ from okto_pulse.core.application.use_cases import (
     BoardCoverageUseCase,
     BoardFunnelCommand,
     BoardFunnelUseCase,
+    BoardKgAnalyticsCommand,
+    BoardKgAnalyticsUseCase,
     BoardQualityCommand,
     BoardQualityUseCase,
     BoardValidationsCommand,
@@ -41,6 +44,7 @@ from okto_pulse.core.application.use_cases import (
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
+from okto_pulse.core.ports.analytics_foundation import AnalyticsUtcWindow
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.services.analytics_contract import parse_analytics_datetime
 
@@ -64,6 +68,34 @@ def _neutralize_csv_formula_cell(value):
 
 def _write_csv_row(writer, values) -> None:
     writer.writerow([_neutralize_csv_formula_cell(value) for value in values])
+
+
+def _flatten_canonical_payload(
+    value: object, *, path: str = "$"
+) -> list[tuple[str, str]]:
+    """Flatten a canonical payload without dropping null or empty values."""
+    if isinstance(value, dict):
+        if not value:
+            return [(path, "{}")]
+        rows: list[tuple[str, str]] = []
+        for key in sorted(value):
+            rows.extend(_flatten_canonical_payload(value[key], path=f"{path}.{key}"))
+        return rows
+    if isinstance(value, list):
+        if not value:
+            return [(path, "[]")]
+        rows = []
+        for index, item in enumerate(value):
+            rows.extend(_flatten_canonical_payload(item, path=f"{path}[{index}]"))
+        return rows
+    return [
+        (
+            path,
+            json.dumps(
+                value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ),
+        )
+    ]
 
 
 def _parse_date(value: str | None, end_of_day: bool = False) -> datetime | None:
@@ -529,6 +561,116 @@ async def board_sprint_analytics(
         detail = "Board not found" if exc.entity_type == "board" else "Sprint not found"
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
     return result.data
+
+
+# ---------------------------------------------------------------------------
+# Canonical Board KG Analytics — shared REST/UI/CSV projection
+# ---------------------------------------------------------------------------
+
+
+def _board_kg_analytics_command(
+    board_id: str,
+    *,
+    date_from: str | None,
+    date_to: str | None,
+    as_of: str | None,
+) -> BoardKgAnalyticsCommand:
+    observed_at = _parse_date(as_of) or datetime.now(timezone.utc)
+    window_from = _parse_date(date_from) or datetime(1970, 1, 1, tzinfo=timezone.utc)
+    window_to = _parse_date(date_to, end_of_day=True) or observed_at + timedelta(
+        microseconds=1
+    )
+    return BoardKgAnalyticsCommand(
+        board_id=board_id,
+        window=AnalyticsUtcWindow(window_from, window_to),
+        as_of=observed_at,
+    )
+
+
+async def _board_kg_analytics_payload(
+    board_id: str,
+    *,
+    date_from: str | None,
+    date_to: str | None,
+    as_of: str | None,
+    user_id: str,
+    uow: PulseUnitOfWork,
+) -> dict[str, object]:
+    try:
+        result = await BoardKgAnalyticsUseCase().execute(
+            _board_kg_analytics_command(
+                board_id,
+                date_from=date_from,
+                date_to=date_to,
+                as_of=as_of,
+            ),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "analytics_query_invalid", "message": str(exc)},
+        ) from exc
+    return result.data
+
+
+@router.get("/boards/{board_id}/analytics/kg")
+async def board_kg_analytics(
+    board_id: str,
+    date_from: str | None = Query(None, alias="from"),
+    date_to: str | None = Query(None, alias="to"),
+    as_of: str | None = Query(None),
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Canonical Board KG health and cognitive-effectiveness projection."""
+    return await _board_kg_analytics_payload(
+        board_id,
+        date_from=date_from,
+        date_to=date_to,
+        as_of=as_of,
+        user_id=user_id,
+        uow=uow,
+    )
+
+
+@router.get("/boards/{board_id}/analytics/kg/export")
+async def board_kg_analytics_export(
+    board_id: str,
+    date_from: str | None = Query(None, alias="from"),
+    date_to: str | None = Query(None, alias="to"),
+    as_of: str | None = Query(None),
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Complete deterministic CSV for the same canonical REST projection."""
+    payload = await _board_kg_analytics_payload(
+        board_id,
+        date_from=date_from,
+        date_to=date_to,
+        as_of=as_of,
+        user_id=user_id,
+        uow=uow,
+    )
+    output = io.StringIO()
+    writer = csv.writer(output)
+    _write_csv_row(writer, ["path", "json_value"])
+    for path, value in _flatten_canonical_payload(payload):
+        _write_csv_row(writer, [path, value])
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="board-{board_id}-kg-analytics.csv"'
+            )
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

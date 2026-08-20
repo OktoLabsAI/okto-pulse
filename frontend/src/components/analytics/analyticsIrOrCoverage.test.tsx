@@ -10,6 +10,8 @@ const mockApi = vi.hoisted(() => ({
   getBoardAnalyticsAgents: vi.fn(),
   getBoardAnalyticsValidations: vi.fn(),
   getBoardAnalyticsSprints: vi.fn(),
+  getBoardKgAnalytics: vi.fn(),
+  exportBoardKgAnalyticsCsv: vi.fn(),
   getBoardAnalyticsEntities: vi.fn(),
   getEntityAnalytics: vi.fn(),
   getRefinement: vi.fn(),
@@ -102,6 +104,31 @@ describe('analytics IR/OR coverage UI', () => {
       sprints: [],
     });
     mockApi.getBoardAnalyticsEntities.mockResolvedValue({ total: 0, offset: 0, limit: 50, items: [] });
+    mockApi.getBoardKgAnalytics.mockResolvedValue({
+      query_fingerprint: 'a'.repeat(64),
+      as_of: '2026-05-28T12:00:00.000000Z',
+      result_state: 'unavailable',
+      health: {
+        state: 'healthy',
+        classification_reason: 'cognitive_metric_unavailable',
+        reason_codes: ['cognitive_metric_unavailable'],
+      },
+      debt_domains: {
+        result_state: 'available',
+        active_queue_count: 2,
+        technical_dlq_count: 1,
+        canonical_debt_count: 3,
+      },
+      cognitive_effectiveness: {
+        result_state: 'unavailable',
+        cognitively_effective: null,
+        denominator: null,
+        attempted_count: null,
+        persisted_count: null,
+        technical_dlq_count: null,
+        persistence_gap_count: null,
+      },
+    });
   });
 
   it('renders IR and OR coverage bars when the board payload exposes them', async () => {
@@ -136,6 +163,60 @@ describe('analytics IR/OR coverage UI', () => {
     expect(screen.getByText('IRs')).toBeInTheDocument();
     expect(screen.getByText('ORs')).toBeInTheDocument();
     expect(screen.getByText('50%')).toBeInTheDocument();
+  });
+
+  it('renders KG health and metric availability as independent states', async () => {
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+
+    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText('Board KG Analytics')).toBeInTheDocument());
+    expect(screen.getByText('healthy')).toBeInTheDocument();
+    expect(screen.getByText('unavailable')).toBeInTheDocument();
+    expect(screen.getAllByText('Unavailable')).toHaveLength(2);
+    expect(screen.getByText('cognitive_metric_unavailable')).toBeInTheDocument();
+  });
+
+  it('labels a historical Sprint commitment unavailable without inferred counts', async () => {
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+    mockApi.getBoardAnalyticsSprints.mockResolvedValue({
+      summary: {
+        total_sprints: 1,
+        status_breakdown: { active: 1 },
+        avg_completion_rate: 50,
+        sprint_evaluation: { total_submitted: 0, approve_rate: null, avg_overall_score: null },
+      },
+      sprints: [{
+        sprint_id: 'sprint-legacy',
+        title: 'Legacy Sprint',
+        status: 'active',
+        spec_id: 'spec-1',
+        total_cards: 2,
+        done_cards: 1,
+        completion_rate: 50,
+        card_status_breakdown: { done: 1, in_progress: 1 },
+        evaluations_count: 0,
+        last_evaluation: null,
+        task_validation_gate: {
+          total_submitted: 0,
+          total_success: 0,
+          total_failed: 0,
+          rejection_reasons: {},
+          first_pass_rate: null,
+        },
+        commitment: {
+          state: 'unavailable_legacy',
+          baseline_ref: null,
+          unavailable_reason: 'activation_baseline_not_persisted',
+        },
+      }],
+    });
+
+    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText('Legacy Sprint')).toBeInTheDocument());
+    expect(screen.getByText('unavailable legacy')).toBeInTheDocument();
+    expect(screen.queryByText(/original ·/)).not.toBeInTheDocument();
   });
 
   it('keeps legacy board coverage payloads free of IR/OR rows', async () => {
