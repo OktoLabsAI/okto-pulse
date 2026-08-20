@@ -2956,6 +2956,7 @@ async def test_exact_drain_cancels_on_neutral_claim_loss_with_claim_preserved(
         mutation_state=ExactConsolidationMutationState.UNCHANGED,
         error_code="exact_consolidation_claim_lost",
         error_message="claim authority was lost before the exact transition",
+        diagnostic_json='{"phase":"before_ack"}',
     )
 
     class Processor:
@@ -3017,6 +3018,12 @@ async def test_exact_drain_cancels_on_neutral_claim_loss_with_claim_preserved(
         recovery, "_protected_queue_snapshot", lambda *_a, **_k: baseline
     )
     monkeypatch.setattr(recovery, "_load_exact_ack_receipts", lambda *_a, **_k: ())
+    emitted: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        recovery,
+        "_emit",
+        lambda event, **details: emitted.append((event, details)),
+    )
     service_task = asyncio.create_task(service_run())
 
     outcome = await recovery._drain_exact_scope(
@@ -3046,7 +3053,22 @@ async def test_exact_drain_cancels_on_neutral_claim_loss_with_claim_preserved(
     assert outcome.blocker.kind == "neutral_fence_loss"
     assert outcome.blocker.queue_id == neutral.queue_id
     assert outcome.blocker.mutation_state == "unchanged"
+    assert outcome.blocker.error_message == neutral.error_message
+    assert outcome.blocker.diagnostic_json == neutral.diagnostic_json
     assert outcome.blocker.row_result == neutral
+    terminal = next(
+        details
+        for event, details in emitted
+        if event == "exact_scope_terminal_disposition"
+    )
+    assert terminal["error_message"] == neutral.error_message
+    assert terminal["diagnostic_json"] == neutral.diagnostic_json
+    drained = next(
+        details for event, details in emitted if event == "exact_scope_drained"
+    )
+    assert drained["blocker_error_code"] == neutral.error_code
+    assert drained["blocker_error_message"] == neutral.error_message
+    assert drained["blocker_diagnostic_json"] == neutral.diagnostic_json
 
 
 @pytest.mark.asyncio

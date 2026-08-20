@@ -398,6 +398,8 @@ class ExactDrainBlocker:
     queue_id: str
     mutation_state: str
     error_code: str
+    error_message: str | None = None
+    diagnostic_json: str | None = None
     row_result: Any | None = None
 
 
@@ -12638,6 +12640,8 @@ async def _drain_exact_scope(
                 queue_id=post_commit_error.failed_queue_id,
                 mutation_state=failed_row.mutation_state.value,
                 error_code=post_commit_error.error_code,
+                error_message=failed_row.error_message,
+                diagnostic_json=failed_row.diagnostic_json,
                 row_result=failed_row,
             )
             cancel_event.set()
@@ -12646,6 +12650,8 @@ async def _drain_exact_scope(
                 queue_id=blocker.queue_id,
                 mutation_state=blocker.mutation_state,
                 error_code=blocker.error_code,
+                error_message=blocker.error_message,
+                diagnostic_json=blocker.diagnostic_json,
             )
             continue
         if terminal_rows or neutral_rows:
@@ -12655,6 +12661,8 @@ async def _drain_exact_scope(
                 queue_id=blocking_row.queue_id,
                 mutation_state=blocking_row.mutation_state.value,
                 error_code=str(blocking_row.error_code or "exact_processor_blocked"),
+                error_message=blocking_row.error_message,
+                diagnostic_json=blocking_row.diagnostic_json,
                 row_result=blocking_row,
             )
             cancel_event.set()
@@ -12664,6 +12672,8 @@ async def _drain_exact_scope(
                 disposition=blocker.kind,
                 mutation_state=blocker.mutation_state,
                 error_code=blocker.error_code,
+                error_message=blocker.error_message,
+                diagnostic_json=blocker.diagnostic_json,
             )
             continue
         if batch_result.retry_scheduled:
@@ -12697,6 +12707,13 @@ async def _drain_exact_scope(
         batches=batches,
         processed_total=processed_total,
         service_outcome=getattr(result, "outcome", None),
+        blocker_kind=blocker.kind if blocker is not None else None,
+        blocker_queue_id=blocker.queue_id if blocker is not None else None,
+        blocker_error_code=blocker.error_code if blocker is not None else None,
+        blocker_error_message=blocker.error_message if blocker is not None else None,
+        blocker_diagnostic_json=(
+            blocker.diagnostic_json if blocker is not None else None
+        ),
     )
     return ExactDrainOutcome(service_result=result, blocker=blocker)
 
