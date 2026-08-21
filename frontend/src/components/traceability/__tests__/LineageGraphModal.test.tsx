@@ -59,6 +59,8 @@ vi.mock('@xyflow/react', () => ({
       id: string;
       source: string;
       target: string;
+      sourceHandle?: string;
+      targetHandle?: string;
       label?: string;
       animated?: boolean;
       markerEnd?: { type?: string };
@@ -90,6 +92,8 @@ vi.mock('@xyflow/react', () => ({
           data-testid={`flow-edge-${edge.id}`}
           data-source={edge.source}
           data-target={edge.target}
+          data-source-handle={edge.sourceHandle}
+          data-target-handle={edge.targetHandle}
           data-label={edge.label}
           data-animated={String(Boolean(edge.animated))}
           data-marker={edge.markerEnd?.type}
@@ -942,6 +946,545 @@ describe('LineageGraphModal', () => {
     expect(overlaps).toEqual([]);
     expect(Number(screen.getByTestId('flow-node-origin:spec-a').dataset.x)).toBeLessThan(
       Number(screen.getByTestId('flow-node-origin:spec-b').dataset.x),
+    );
+  });
+
+  it('keeps dependent Specs in their Refinement lanes when derivatives fan out', async () => {
+    const branchedLineage: LineageGraphResponse = {
+      board_id: 'board-1',
+      view: 'lineage',
+      selected: { entity_type: 'spec', entity_id: 'phase-1-spec' },
+      root_ideation: { id: 'ideation-1', title: 'Analytics delivery' },
+      resolution_path: [{ type: 'spec', id: 'phase-1-spec' }],
+      nodes: [
+        {
+          id: 'origin:ideation-1',
+          entity_type: 'ideation',
+          entity_id: 'ideation-1',
+          title: 'Analytics delivery',
+          label: 'Analytics delivery',
+          stage: 0,
+        },
+        {
+          id: 'origin:phase-2-refinement',
+          entity_type: 'refinement',
+          entity_id: 'phase-2-refinement',
+          title: 'Analytics Phase 2 refinement',
+          label: 'Analytics Phase 2 refinement',
+          stage: 1,
+        },
+        {
+          id: 'origin:phase-1-refinement',
+          entity_type: 'refinement',
+          entity_id: 'phase-1-refinement',
+          title: 'Analytics Phase 1 refinement',
+          label: 'Analytics Phase 1 refinement',
+          stage: 1,
+        },
+        {
+          id: 'origin:phase-2-spec',
+          entity_type: 'spec',
+          entity_id: 'phase-2-spec',
+          title: 'Analytics Phase 2 Spec',
+          label: 'Analytics Phase 2 Spec',
+          stage: 2,
+        },
+        {
+          id: 'origin:phase-1-spec',
+          entity_type: 'spec',
+          entity_id: 'phase-1-spec',
+          title: 'Analytics Phase 1 Spec',
+          label: 'Analytics Phase 1 Spec',
+          stage: 2,
+        },
+        {
+          id: 'origin:direct-spec',
+          entity_type: 'spec',
+          entity_id: 'direct-spec',
+          title: 'Analytics shared controls',
+          label: 'Analytics shared controls',
+          stage: 2,
+        },
+        {
+          id: 'origin:phase-2-sprint',
+          entity_type: 'sprint',
+          entity_id: 'phase-2-sprint',
+          title: 'Analytics Phase 2 Sprint',
+          label: 'Analytics Phase 2 Sprint',
+          stage: 3,
+        },
+        {
+          id: 'origin:phase-2-task',
+          entity_type: 'task',
+          entity_id: 'phase-2-task',
+          title: 'Build forecast panel',
+          label: 'Build forecast panel',
+          stage: 4,
+        },
+        {
+          id: 'origin:phase-2-test',
+          entity_type: 'test',
+          entity_id: 'phase-2-test',
+          title: 'Verify forecast scenarios',
+          label: 'Verify forecast scenarios',
+          stage: 4,
+        },
+        {
+          id: 'origin:phase-2-bug',
+          entity_type: 'bug',
+          entity_id: 'phase-2-bug',
+          title: 'Forecast regression',
+          label: 'Forecast regression',
+          stage: 5,
+        },
+      ],
+      edges: [
+        {
+          id: 'lineage:ideation-refinement-2',
+          source: 'origin:ideation-1',
+          target: 'origin:phase-2-refinement',
+          relationship: 'has_refinement',
+        },
+        {
+          id: 'lineage:ideation-refinement-1',
+          source: 'origin:ideation-1',
+          target: 'origin:phase-1-refinement',
+          relationship: 'has_refinement',
+        },
+        {
+          id: 'lineage:refinement-spec-2',
+          source: 'origin:phase-2-refinement',
+          target: 'origin:phase-2-spec',
+          relationship: 'derived_spec',
+        },
+        {
+          id: 'lineage:refinement-spec-1',
+          source: 'origin:phase-1-refinement',
+          target: 'origin:phase-1-spec',
+          relationship: 'derived_spec',
+        },
+        {
+          id: 'lineage:ideation-direct-spec',
+          source: 'origin:ideation-1',
+          target: 'origin:direct-spec',
+          relationship: 'direct_spec',
+        },
+        {
+          id: 'lineage:spec-sprint-2',
+          source: 'origin:phase-2-spec',
+          target: 'origin:phase-2-sprint',
+          relationship: 'has_sprint',
+        },
+        {
+          id: 'lineage:sprint-task-2',
+          source: 'origin:phase-2-sprint',
+          target: 'origin:phase-2-task',
+          relationship: 'contains_card',
+        },
+        {
+          id: 'lineage:sprint-test-2',
+          source: 'origin:phase-2-sprint',
+          target: 'origin:phase-2-test',
+          relationship: 'contains_card',
+        },
+        {
+          id: 'lineage:task-bug-2',
+          source: 'origin:phase-2-task',
+          target: 'origin:phase-2-bug',
+          relationship: 'originates_bug',
+        },
+      ],
+      summary: {
+        ideations: 1,
+        refinements: 2,
+        specs: 3,
+        sprints: 1,
+        tasks: 1,
+        tests: 1,
+        bugs: 1,
+        nodes: 10,
+        edges: 9,
+      },
+      warnings: [],
+    };
+    const branchedOverlay: DependencyOverlay = {
+      board_id: 'board-1',
+      view: 'dependency',
+      dependency_scope: 'lineage',
+      lineage_node_ids: [
+        'spec:phase-1-spec',
+        'spec:phase-2-spec',
+        'spec:direct-spec',
+        'task:phase-2-task',
+        'test:phase-2-test',
+        'bug:phase-2-bug',
+      ],
+      lineage_entities: [
+        { entity_type: 'card', entity_id: 'phase-2-bug' },
+        { entity_type: 'card', entity_id: 'phase-2-task' },
+        { entity_type: 'card', entity_id: 'phase-2-test' },
+        { entity_type: 'spec', entity_id: 'direct-spec' },
+        { entity_type: 'spec', entity_id: 'phase-1-spec' },
+        { entity_type: 'spec', entity_id: 'phase-2-spec' },
+      ],
+      selected: { entity_type: 'spec', entity_id: 'phase-1-spec' },
+      root_ideation: { id: 'ideation-1', title: 'Analytics delivery' },
+      resolution_path: [{ type: 'spec', id: 'phase-1-spec' }],
+      nodes: [
+        {
+          id: 'spec:external-prerequisite',
+          entity_type: 'spec',
+          entity_id: 'external-prerequisite',
+          title: 'External analytics prerequisite',
+          label: 'External analytics prerequisite',
+          stage: -1,
+        },
+        {
+          id: 'spec:phase-1-spec',
+          entity_type: 'spec',
+          entity_id: 'phase-1-spec',
+          title: 'Analytics Phase 1 Spec',
+          label: 'Analytics Phase 1 Spec',
+          stage: 0,
+        },
+        {
+          id: 'spec:phase-2-spec',
+          entity_type: 'spec',
+          entity_id: 'phase-2-spec',
+          title: 'Analytics Phase 2 Spec',
+          label: 'Analytics Phase 2 Spec',
+          stage: 1,
+        },
+        {
+          id: 'spec:direct-spec',
+          entity_type: 'spec',
+          entity_id: 'direct-spec',
+          title: 'Analytics shared controls',
+          label: 'Analytics shared controls',
+          stage: 0,
+        },
+        {
+          id: 'task:phase-2-task',
+          entity_type: 'task',
+          entity_id: 'phase-2-task',
+          title: 'Build forecast panel',
+          label: 'Build forecast panel',
+          stage: 0,
+        },
+        {
+          id: 'test:phase-2-test',
+          entity_type: 'test',
+          entity_id: 'phase-2-test',
+          title: 'Verify forecast scenarios',
+          label: 'Verify forecast scenarios',
+          stage: 0,
+        },
+        {
+          id: 'bug:phase-2-bug',
+          entity_type: 'bug',
+          entity_id: 'phase-2-bug',
+          title: 'Forecast regression',
+          label: 'Forecast regression',
+          stage: 0,
+        },
+      ],
+      edges: [
+        {
+          id: 'precedes:external-phase-1',
+          source: 'spec:external-prerequisite',
+          target: 'spec:phase-1-spec',
+          relationship: 'precedes',
+        },
+        {
+          id: 'precedes:phase-1-phase-2',
+          source: 'spec:phase-1-spec',
+          target: 'spec:phase-2-spec',
+          relationship: 'precedes',
+        },
+      ],
+      summary: { specs: 4, cards: 3, nodes: 7, edges: 2 },
+      warnings: [],
+    };
+    apiMock.getLineageGraph.mockImplementation((
+      _boardId: string,
+      _entityType: string,
+      _entityId: string,
+      _includeArtifacts: boolean,
+      view?: string,
+    ) => Promise.resolve(view === 'dependency' ? branchedOverlay : branchedLineage));
+
+    render(<LineageGraphModal boardId="board-1" />);
+    act(() => {
+      openLineageGraph('spec', 'phase-1-spec');
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Dependencies' }));
+    await screen.findByTestId('flow-edge-precedes:phase-1-phase-2');
+
+    const position = (nodeId: string) => {
+      const node = screen.getByTestId(`flow-node-${nodeId}`);
+      return { x: Number(node.dataset.x), y: Number(node.dataset.y) };
+    };
+    const phase1Refinement = position('origin:phase-1-refinement');
+    const phase1Spec = position('origin:phase-1-spec');
+    const phase2Refinement = position('origin:phase-2-refinement');
+    const phase2Spec = position('origin:phase-2-spec');
+
+    expect(phase1Spec.y).toBe(phase1Refinement.y);
+    expect(phase2Spec.y).toBe(phase2Refinement.y);
+    expect(position('spec:external-prerequisite').x).toBeLessThan(phase1Spec.x);
+    expect(phase1Spec.x).toBeLessThan(phase2Spec.x);
+    branchedLineage.edges.forEach((edge) => {
+      expect(position(edge.source).x).toBeLessThan(position(edge.target).x);
+    });
+
+    const nodeIds = [
+      ...branchedLineage.nodes.map((node) => node.id),
+      'spec:external-prerequisite',
+    ];
+    const rectangles = nodeIds.map((nodeId) => ({
+      nodeId,
+      ...position(nodeId),
+      width: 236,
+      height: 136,
+    }));
+    const overlaps: string[] = [];
+    rectangles.forEach((left, leftIndex) => {
+      rectangles.slice(leftIndex + 1).forEach((right) => {
+        if (
+          Math.abs(left.x - right.x) < left.width
+          && Math.abs(left.y - right.y) < left.height
+        ) {
+          overlaps.push(`${left.nodeId} / ${right.nodeId}`);
+        }
+      });
+    });
+
+    expect(overlaps).toEqual([]);
+    expect(position('origin:phase-2-task').y).not.toBe(
+      position('origin:phase-2-test').y,
+    );
+  });
+
+  it('centers Refinements on multi-Spec branch lanes without overlap', async () => {
+    const multiSpecLineage: LineageGraphResponse = {
+      board_id: 'board-1',
+      view: 'lineage',
+      selected: { entity_type: 'spec', entity_id: 'a-1' },
+      root_ideation: { id: 'idea', title: 'Multi-Spec initiative' },
+      resolution_path: [{ type: 'spec', id: 'a-1' }],
+      nodes: [
+        {
+          id: 'origin:idea',
+          entity_type: 'ideation',
+          entity_id: 'idea',
+          title: 'Multi-Spec initiative',
+          label: 'Multi-Spec initiative',
+          stage: 0,
+        },
+        ...['a', 'b'].map((branch) => ({
+          id: `origin:ref-${branch}`,
+          entity_type: 'refinement' as const,
+          entity_id: `ref-${branch}`,
+          title: `Refinement ${branch.toUpperCase()}`,
+          label: `Refinement ${branch.toUpperCase()}`,
+          stage: 1,
+        })),
+        ...['a-1', 'a-2', 'b-1', 'b-2'].map((specId) => ({
+          id: `origin:${specId}`,
+          entity_type: 'spec' as const,
+          entity_id: specId,
+          title: `Spec ${specId.toUpperCase()}`,
+          label: `Spec ${specId.toUpperCase()}`,
+          stage: 2,
+        })),
+      ],
+      edges: [
+        ...['a', 'b'].map((branch) => ({
+          id: `lineage:idea-ref-${branch}`,
+          source: 'origin:idea',
+          target: `origin:ref-${branch}`,
+          relationship: 'has_refinement',
+        })),
+        ...['a-1', 'a-2', 'b-1', 'b-2'].map((specId) => ({
+          id: `lineage:ref-${specId[0]}-${specId}`,
+          source: `origin:ref-${specId[0]}`,
+          target: `origin:${specId}`,
+          relationship: 'derived_spec',
+        })),
+      ],
+      summary: { ideations: 1, refinements: 2, specs: 4, nodes: 7, edges: 6 },
+      warnings: [],
+    };
+    const multiSpecOverlay: DependencyOverlay = {
+      board_id: 'board-1',
+      view: 'dependency',
+      dependency_scope: 'lineage',
+      lineage_node_ids: ['spec:a-1', 'spec:a-2', 'spec:b-1', 'spec:b-2'],
+      lineage_entities: [
+        { entity_type: 'spec', entity_id: 'a-1' },
+        { entity_type: 'spec', entity_id: 'a-2' },
+        { entity_type: 'spec', entity_id: 'b-1' },
+        { entity_type: 'spec', entity_id: 'b-2' },
+      ],
+      selected: { entity_type: 'spec', entity_id: 'a-1' },
+      root_ideation: { id: 'idea', title: 'Multi-Spec initiative' },
+      resolution_path: [{ type: 'spec', id: 'a-1' }],
+      nodes: ['a-1', 'a-2', 'b-1', 'b-2'].map((specId) => ({
+        id: `spec:${specId}`,
+        entity_type: 'spec' as const,
+        entity_id: specId,
+        title: `Spec ${specId.toUpperCase()}`,
+        label: `Spec ${specId.toUpperCase()}`,
+        stage: specId === 'a-1' ? 0 : specId === 'b-1' ? 1 : 0,
+      })),
+      edges: [{
+        id: 'precedes:a-1-b-1',
+        source: 'spec:a-1',
+        target: 'spec:b-1',
+        relationship: 'precedes',
+      }],
+      summary: { specs: 4, nodes: 4, edges: 1 },
+      warnings: [],
+    };
+    apiMock.getLineageGraph.mockImplementation((
+      _boardId: string,
+      _entityType: string,
+      _entityId: string,
+      _includeArtifacts: boolean,
+      view?: string,
+    ) => Promise.resolve(view === 'dependency' ? multiSpecOverlay : multiSpecLineage));
+
+    render(<LineageGraphModal boardId="board-1" />);
+    act(() => {
+      openLineageGraph('spec', 'a-1');
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Dependencies' }));
+    await screen.findByTestId('flow-edge-precedes:a-1-b-1');
+
+    const position = (nodeId: string) => {
+      const node = screen.getByTestId(`flow-node-${nodeId}`);
+      return { x: Number(node.dataset.x), y: Number(node.dataset.y) };
+    };
+    expect(position('origin:ref-a').y).toBe(
+      (position('origin:a-1').y + position('origin:a-2').y) / 2,
+    );
+    expect(position('origin:ref-b').y).toBe(
+      (position('origin:b-1').y + position('origin:b-2').y) / 2,
+    );
+
+    const rectangles = multiSpecLineage.nodes.map((node) => ({
+      ...position(node.id),
+      width: 236,
+      height: 136,
+    }));
+    rectangles.forEach((left, leftIndex) => {
+      rectangles.slice(leftIndex + 1).forEach((right) => {
+        expect(
+          Math.abs(left.x - right.x) >= left.width
+          || Math.abs(left.y - right.y) >= left.height,
+        ).toBe(true);
+      });
+    });
+  });
+
+  it('routes a lineage edge through reverse handles when dependency order opposes it', async () => {
+    const cyclicLineage: LineageGraphResponse = {
+      board_id: 'board-1',
+      view: 'lineage',
+      selected: { entity_type: 'task', entity_id: 'task-a' },
+      root_ideation: { id: 'task-a', title: 'Task A' },
+      resolution_path: [{ type: 'task', id: 'task-a' }],
+      nodes: [
+        {
+          id: 'origin:task-a',
+          entity_type: 'task',
+          entity_id: 'task-a',
+          title: 'Task A',
+          label: 'Task A',
+          stage: 4,
+        },
+        {
+          id: 'origin:bug-a',
+          entity_type: 'bug',
+          entity_id: 'bug-a',
+          title: 'Bug A',
+          label: 'Bug A',
+          stage: 5,
+        },
+      ],
+      edges: [{
+        id: 'lineage:task-bug-cycle',
+        source: 'origin:task-a',
+        target: 'origin:bug-a',
+        relationship: 'originates_bug',
+      }],
+      summary: { tasks: 1, bugs: 1, nodes: 2, edges: 1 },
+      warnings: [],
+    };
+    const cyclicOverlay: DependencyOverlay = {
+      board_id: 'board-1',
+      view: 'dependency',
+      dependency_scope: 'lineage',
+      lineage_node_ids: ['bug:bug-a', 'task:task-a'],
+      lineage_entities: [
+        { entity_type: 'card', entity_id: 'bug-a' },
+        { entity_type: 'card', entity_id: 'task-a' },
+      ],
+      selected: { entity_type: 'task', entity_id: 'task-a' },
+      root_ideation: { id: 'task-a', title: 'Task A' },
+      resolution_path: [{ type: 'task', id: 'task-a' }],
+      nodes: [
+        {
+          id: 'bug:bug-a',
+          entity_type: 'bug',
+          entity_id: 'bug-a',
+          title: 'Bug A',
+          label: 'Bug A',
+          stage: 0,
+        },
+        {
+          id: 'task:task-a',
+          entity_type: 'task',
+          entity_id: 'task-a',
+          title: 'Task A',
+          label: 'Task A',
+          stage: 1,
+        },
+      ],
+      edges: [{
+        id: 'precedes:bug-task-cycle',
+        source: 'bug:bug-a',
+        target: 'task:task-a',
+        relationship: 'precedes',
+      }],
+      summary: { cards: 2, nodes: 2, edges: 1 },
+      warnings: [],
+    };
+    apiMock.getLineageGraph.mockImplementation((
+      _boardId: string,
+      _entityType: string,
+      _entityId: string,
+      _includeArtifacts: boolean,
+      view?: string,
+    ) => Promise.resolve(view === 'dependency' ? cyclicOverlay : cyclicLineage));
+
+    render(<LineageGraphModal boardId="board-1" />);
+    act(() => {
+      openLineageGraph('task', 'task-a');
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Dependencies' }));
+    await screen.findByTestId('flow-edge-precedes:bug-task-cycle');
+
+    const taskX = Number(screen.getByTestId('flow-node-origin:task-a').dataset.x);
+    const bugX = Number(screen.getByTestId('flow-node-origin:bug-a').dataset.x);
+    expect(bugX).toBeLessThan(taskX);
+    expect(screen.getByTestId('flow-edge-lineage:task-bug-cycle')).toHaveAttribute(
+      'data-source-handle',
+      'lineage-source-left',
+    );
+    expect(screen.getByTestId('flow-edge-lineage:task-bug-cycle')).toHaveAttribute(
+      'data-target-handle',
+      'lineage-target-right',
     );
   });
 

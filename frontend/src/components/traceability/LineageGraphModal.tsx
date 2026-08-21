@@ -52,6 +52,8 @@ const STAGE_X = (BASE_STAGE_X * 2) / 3;
 const NODE_Y = 136;
 const ACCESSIBLE_RELATION_LIMIT = 500;
 const MAX_ANIMATED_DEPENDENCY_EDGES = 80;
+const REVERSE_SOURCE_HANDLE = 'lineage-source-left';
+const REVERSE_TARGET_HANDLE = 'lineage-target-right';
 
 type LineageViewMode = 'lineage' | 'dependencies';
 
@@ -60,6 +62,7 @@ type LineageDependencyOverlayResponse = LineageGraphResponse;
 interface DependencyViewProjection {
   graph: LineageGraphResponse;
   positionStages: ReadonlyMap<string, number>;
+  lineageNodeIds: ReadonlySet<string>;
 }
 
 type LineageFlowNodeData = Record<string, unknown> & {
@@ -213,6 +216,12 @@ function LineageNode({ data }: NodeProps<LineageFlowNode>) {
         position={Position.Left}
         className="!h-2 !w-2 !border !border-gray-300 !bg-gray-700 dark:!border-gray-600"
       />
+      <Handle
+        id={REVERSE_SOURCE_HANDLE}
+        type="source"
+        position={Position.Left}
+        className="!h-2 !w-2 !border !border-gray-300 !bg-gray-700 dark:!border-gray-600"
+      />
       <div
         className={[
           'flex items-center gap-2 border-b px-2.5 py-2 text-[11px] font-semibold uppercase',
@@ -253,6 +262,12 @@ function LineageNode({ data }: NodeProps<LineageFlowNode>) {
           </span>
         </div>
       </div>
+      <Handle
+        id={REVERSE_TARGET_HANDLE}
+        type="target"
+        position={Position.Right}
+        className="!h-2 !w-2 !border !border-gray-300 !bg-gray-700 dark:!border-gray-600"
+      />
       <Handle
         type="source"
         position={Position.Right}
@@ -463,12 +478,75 @@ function dependencyPositionStages(
       : offsets.length % 2 === 1
         ? offsets[middle]
         : (offsets[middle - 1] + offsets[middle]) / 2;
-    const offset = Math.round(medianOffset);
+    // Keep every original lineage seed at, or to the right of, its canonical
+    // stage. This prevents a long precedence chain from shifting a Spec onto
+    // the same column as its Refinement while preserving the whole component's
+    // left-to-right dependency order.
+    const offset = lineageOffsets.length > 0
+      ? Math.max(...lineageOffsets)
+      : Math.round(medianOffset);
     component.forEach((nodeId) => {
       positionStages.set(nodeId, (levels.get(nodeId) || 0) + offset);
     });
   }
   return positionStages;
+}
+
+function forwardLineagePositionStages(
+  graph: LineageGraphResponse,
+  dependencyStages: ReadonlyMap<string, number>,
+): ReadonlyMap<string, number> {
+  const nodeIds = new Set(graph.nodes.map((node) => node.id));
+  const stages = new Map(graph.nodes.map((node) => {
+    const requestedStage = dependencyStages.get(node.id) ?? node.stage;
+    return [node.id, Number.isFinite(requestedStage) ? requestedStage : 5];
+  }));
+  const successors = new Map<string, Set<string>>();
+  const indegree = new Map(graph.nodes.map((node) => [node.id, 0]));
+
+  graph.edges.forEach((edge) => {
+    if (
+      edge.source === edge.target
+      || !nodeIds.has(edge.source)
+      || !nodeIds.has(edge.target)
+    ) return;
+    const targets = successors.get(edge.source) || new Set<string>();
+    if (targets.has(edge.target)) return;
+    targets.add(edge.target);
+    successors.set(edge.source, targets);
+    indegree.set(edge.target, (indegree.get(edge.target) || 0) + 1);
+  });
+
+  const ready = graph.nodes
+    .map((node) => node.id)
+    .filter((nodeId) => (indegree.get(nodeId) || 0) === 0)
+    .sort();
+  const topological: string[] = [];
+  while (ready.length > 0) {
+    const current = ready.shift()!;
+    topological.push(current);
+    for (const target of Array.from(successors.get(current) || []).sort()) {
+      const nextIndegree = (indegree.get(target) || 0) - 1;
+      indegree.set(target, nextIndegree);
+      if (nextIndegree === 0) {
+        ready.push(target);
+        ready.sort();
+      }
+    }
+  }
+
+  // A cross-surface dependency can theoretically oppose an origin edge. In
+  // that case, keep the dependency projection (whose direction is governed)
+  // instead of attempting an unbounded horizontal relaxation.
+  if (topological.length !== graph.nodes.length) return dependencyStages;
+
+  topological.forEach((source) => {
+    const sourceStage = stages.get(source) ?? 5;
+    for (const target of successors.get(source) || []) {
+      stages.set(target, Math.max(stages.get(target) ?? 5, sourceStage + 1));
+    }
+  });
+  return stages;
 }
 
 function mergeLineageDependencyOverlay(
@@ -534,9 +612,11 @@ function mergeLineageDependencyOverlay(
       ...(dependencyGraph.warnings || []),
     ])),
   };
+  const dependencyStages = dependencyPositionStages(mergedGraph, lineageNodeIds);
   return {
     graph: mergedGraph,
-    positionStages: dependencyPositionStages(mergedGraph, lineageNodeIds),
+    positionStages: forwardLineagePositionStages(mergedGraph, dependencyStages),
+    lineageNodeIds,
   };
 }
 
@@ -583,22 +663,166 @@ function layoutNodes(
   selectedNodeId: string | null,
   onOpenDetails: (node: LineageGraphNode) => void,
   positionStages: ReadonlyMap<string, number> = new Map(),
+  lineageNodeIds?: ReadonlySet<string>,
 ): LineageFlowNode[] {
-  const groups = new Map<number, LineageGraphNode[]>();
+  // Dependency order is a horizontal projection only. Keeping the vertical
+  // groups tied to the canonical SDLC stage preserves each lineage branch's
+  // lane when a prerequisite moves its Spec into another X column.
+  const originalLineageNodeIds = lineageNodeIds
+    || new Set(graph.nodes.map((node) => node.id));
+  const desiredY = new Map<string, number>();
+  const isFree = (candidate: number, occupied: number[]) => (
+    occupied.every((value) => Math.abs(value - candidate) >= NODE_Y)
+  );
+  const assignCanonicalRows = (nodes: LineageGraphNode[]) => {
+    const groups = new Map<number, LineageGraphNode[]>();
+    nodes.forEach((node) => {
+      const verticalStage = Number.isFinite(node.stage) ? node.stage : 5;
+      const stageNodes = groups.get(verticalStage) || [];
+      stageNodes.push(node);
+      groups.set(verticalStage, stageNodes);
+    });
+    groups.forEach((stageNodes) => {
+      const yOffset = -((stageNodes.length - 1) * NODE_Y) / 2;
+      stageNodes.forEach((node, index) => {
+        desiredY.set(node.id, yOffset + index * NODE_Y);
+      });
+    });
+  };
+  assignCanonicalRows(
+    graph.nodes.filter((node) => originalLineageNodeIds.has(node.id)),
+  );
+
+  // Preserve branch identity even when direct Specs and derived Specs are
+  // interleaved in the response: a derived Spec inherits its Refinement's
+  // lane, while sibling Specs remain compactly centered around that lane.
+  const originalNodeById = new Map(
+    graph.nodes
+      .filter((node) => originalLineageNodeIds.has(node.id))
+      .map((node) => [node.id, node]),
+  );
+  const originalGraphOrder = new Map(
+    graph.nodes.map((node, index) => [node.id, index]),
+  );
+  const derivedSpecsByRefinement = new Map<string, LineageGraphNode[]>();
+  graph.edges.forEach((edge) => {
+    if (edge.relationship !== 'derived_spec') return;
+    const refinement = originalNodeById.get(edge.source);
+    const spec = originalNodeById.get(edge.target);
+    if (refinement?.entity_type !== 'refinement' || spec?.entity_type !== 'spec') return;
+    const children = derivedSpecsByRefinement.get(refinement.id) || [];
+    children.push(spec);
+    derivedSpecsByRefinement.set(refinement.id, children);
+  });
+  const positionedDerivedSpecIds = new Set<string>();
+  const occupiedSpecRows: number[] = [];
+  const refinementBranches = graph.nodes
+    .filter((node) => (
+      originalLineageNodeIds.has(node.id)
+      && node.entity_type === 'refinement'
+    ))
+    .map((refinement) => ({
+      refinement,
+      children: [...(derivedSpecsByRefinement.get(refinement.id) || [])]
+        .sort((left, right) => (
+          (originalGraphOrder.get(left.id) || 0)
+          - (originalGraphOrder.get(right.id) || 0)
+        )),
+    }));
+  const totalRefinementRows = refinementBranches.reduce(
+    (total, branch) => total + Math.max(branch.children.length, 1),
+    0,
+  );
+  const refinementYOffset = -((totalRefinementRows - 1) * NODE_Y) / 2;
+  let nextRefinementRow = 0;
+  refinementBranches.forEach(({ refinement, children }) => {
+    const rowCount = Math.max(children.length, 1);
+    const firstY = refinementYOffset + nextRefinementRow * NODE_Y;
+    const lastY = firstY + (rowCount - 1) * NODE_Y;
+    desiredY.set(refinement.id, (firstY + lastY) / 2);
+    children.forEach((child, index) => {
+      const y = firstY + index * NODE_Y;
+      desiredY.set(child.id, y);
+      positionedDerivedSpecIds.add(child.id);
+      occupiedSpecRows.push(y);
+    });
+    nextRefinementRow += rowCount;
+  });
+  graph.nodes.forEach((node) => {
+    if (
+      !originalLineageNodeIds.has(node.id)
+      || node.entity_type !== 'spec'
+      || positionedDerivedSpecIds.has(node.id)
+    ) return;
+    const preferredY = desiredY.get(node.id) || 0;
+    let y = preferredY;
+    for (let distance = 1; !isFree(y, occupiedSpecRows); distance += 1) {
+      const below = preferredY + distance * NODE_Y;
+      const above = preferredY - distance * NODE_Y;
+      if (isFree(below, occupiedSpecRows)) {
+        y = below;
+      } else if (isFree(above, occupiedSpecRows)) {
+        y = above;
+      }
+    }
+    desiredY.set(node.id, y);
+    occupiedSpecRows.push(y);
+  });
+  assignCanonicalRows(
+    graph.nodes.filter((node) => !originalLineageNodeIds.has(node.id)),
+  );
+
+  // A long dependency chain can move a node into an occupied SDLC column.
+  // Resolve only those effective-column collisions, leaving the original
+  // lineage lanes untouched whenever geometry allows it.
+  const effectiveStage = new Map<string, number>();
+  const renderedColumns = new Map<number, LineageGraphNode[]>();
   graph.nodes.forEach((node) => {
     const requestedStage = positionStages.get(node.id) ?? node.stage;
     const stage = Number.isFinite(requestedStage) ? requestedStage : 5;
-    const stageNodes = groups.get(stage) || [];
-    stageNodes.push(node);
-    groups.set(stage, stageNodes);
+    effectiveStage.set(node.id, stage);
+    const columnNodes = renderedColumns.get(stage) || [];
+    columnNodes.push(node);
+    renderedColumns.set(stage, columnNodes);
+  });
+  const renderedY = new Map<string, number>();
+  const graphOrder = new Map(graph.nodes.map((node, index) => [node.id, index]));
+  renderedColumns.forEach((columnNodes) => {
+    const occupied: number[] = [];
+    const orderedNodes = [...columnNodes].sort((left, right) => {
+      const leftUnmoved = (
+        originalLineageNodeIds.has(left.id)
+        && effectiveStage.get(left.id) === left.stage
+      );
+      const rightUnmoved = (
+        originalLineageNodeIds.has(right.id)
+        && effectiveStage.get(right.id) === right.stage
+      );
+      if (leftUnmoved !== rightUnmoved) return leftUnmoved ? -1 : 1;
+      const leftLineage = originalLineageNodeIds.has(left.id);
+      const rightLineage = originalLineageNodeIds.has(right.id);
+      if (leftLineage !== rightLineage) return leftLineage ? -1 : 1;
+      return (graphOrder.get(left.id) || 0) - (graphOrder.get(right.id) || 0);
+    });
+    orderedNodes.forEach((node) => {
+      const preferredY = desiredY.get(node.id) || 0;
+      let y = preferredY;
+      for (let distance = 1; !isFree(y, occupied); distance += 1) {
+        const below = preferredY + distance * NODE_Y;
+        const above = preferredY - distance * NODE_Y;
+        if (isFree(below, occupied)) {
+          y = below;
+        } else if (isFree(above, occupied)) {
+          y = above;
+        }
+      }
+      renderedY.set(node.id, y);
+      occupied.push(y);
+    });
   });
 
   return graph.nodes.map((node) => {
-    const requestedStage = positionStages.get(node.id) ?? node.stage;
-    const stage = Number.isFinite(requestedStage) ? requestedStage : 5;
-    const stageNodes = groups.get(stage) || [];
-    const index = stageNodes.findIndex((item) => item.id === node.id);
-    const yOffset = -((stageNodes.length - 1) * NODE_Y) / 2;
+    const stage = effectiveStage.get(node.id) ?? 5;
     const selected = selectedNodeId === node.id;
     return {
       id: node.id,
@@ -606,7 +830,7 @@ function layoutNodes(
       data: { lineageNode: node, selected, onOpenDetails },
       position: {
         x: stage * STAGE_X,
-        y: yOffset + index * NODE_Y,
+        y: renderedY.get(node.id) || 0,
       },
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
@@ -619,14 +843,27 @@ function layoutNodes(
 function layoutEdges(
   graph: LineageGraphResponse,
   selectedNodeId: string | null,
+  positionStages?: ReadonlyMap<string, number>,
 ): Edge[] {
+  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
   return graph.edges.map((edge) => {
     const selectedPath =
       !selectedNodeId || edge.source === selectedNodeId || edge.target === selectedNodeId;
+    const sourceNode = nodeById.get(edge.source);
+    const targetNode = nodeById.get(edge.target);
+    const sourceStage = sourceNode
+      ? positionStages?.get(sourceNode.id) ?? sourceNode.stage
+      : 0;
+    const targetStage = targetNode
+      ? positionStages?.get(targetNode.id) ?? targetNode.stage
+      : sourceStage + 1;
+    const reversePath = targetStage <= sourceStage;
     return {
       id: edge.id,
       source: edge.source,
       target: edge.target,
+      sourceHandle: reversePath ? REVERSE_SOURCE_HANDLE : undefined,
+      targetHandle: reversePath ? REVERSE_TARGET_HANDLE : undefined,
       type: 'smoothstep',
       label: relationshipLabels[edge.relationship] || edge.relationship,
       animated: selectedPath && Boolean(selectedNodeId),
@@ -838,6 +1075,9 @@ export function LineageGraphModal({ boardId }: Props) {
   const activePositionStages = viewMode === 'dependencies'
     ? dependencyProjection?.positionStages
     : undefined;
+  const activeLineageNodeIds = viewMode === 'dependencies'
+    ? dependencyProjection?.lineageNodeIds
+    : undefined;
   const dependencyViewSupported = Boolean(request && graph);
   const requestedNodeTitle = request
     ? graph?.nodes.find((node) => isRequestedEntity(node, request))?.title
@@ -876,9 +1116,16 @@ export function LineageGraphModal({ boardId }: Props) {
           selectedNodeId,
           openNodeDetails,
           activePositionStages,
+          activeLineageNodeIds,
         )
       : []),
-    [activeGraph, activePositionStages, selectedNodeId, openNodeDetails],
+    [
+      activeGraph,
+      activeLineageNodeIds,
+      activePositionStages,
+      selectedNodeId,
+      openNodeDetails,
+    ],
   );
   const edges = useMemo(
     () => {
@@ -891,11 +1138,15 @@ export function LineageGraphModal({ boardId }: Props) {
         (edge) => edge.relationship === 'precedes',
       );
       return [
-        ...layoutEdges({ ...activeGraph, edges: lineageEdges }, selectedNodeId),
+        ...layoutEdges(
+          { ...activeGraph, edges: lineageEdges },
+          selectedNodeId,
+          activePositionStages,
+        ),
         ...layoutDependencyEdges({ ...activeGraph, edges: dependencyEdges }, selectedNodeId),
       ];
     },
-    [activeGraph, selectedNodeId, viewMode],
+    [activeGraph, activePositionStages, selectedNodeId, viewMode],
   );
   const selectedNode = useMemo(
     () => activeGraph?.nodes.find((node) => node.id === selectedNodeId) || null,
