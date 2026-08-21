@@ -40,13 +40,19 @@ from okto_pulse.core.application.use_cases.base import (
 )
 from okto_pulse.core.application.use_cases.policy_governance import (
     GuidelineRevisionUnderBump,
+    PreviewGuidelineImpactResult,
 )
 from okto_pulse.core.domain.guideline_compliance import PolicyProjection
 from okto_pulse.core.domain.guideline_compliance import (
     GuidelineRevisionListItem,
     GuidelineRevisionProjectionPage,
 )
-from okto_pulse.core.domain.guideline_policy import GuidelineRevisionPageCursor
+from okto_pulse.core.domain.guideline_policy import (
+    GuidelineEnforcement,
+    GuidelineImpactReceipt,
+    GuidelineRevisionPageCursor,
+    guideline_impact_digest_v2,
+)
 from okto_pulse.core.domain.guideline_lifecycle import GuidelineVersionBump
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.inbound.guideline_policy_cursor import (
@@ -98,7 +104,12 @@ class _Facade:
         if operation in self.results:
             return self.results[operation]
         if operation.startswith("list_") and operation != "list_waiver_events":
-            return {"items": [], "limit": values["limit"], "has_more": False, "next_cursor": None}
+            return {
+                "items": [],
+                "limit": values["limit"],
+                "has_more": False,
+                "next_cursor": None,
+            }
         if operation == "create_revision":
             return {
                 "status": "applied",
@@ -116,7 +127,12 @@ class _Facade:
             }
         if operation == "retire_guideline":
             return {"retirement": {}}
-        if operation in {"preview_impact", "get_impact", "get_compliance_receipt", "get_current_compliance"}:
+        if operation in {
+            "preview_impact",
+            "get_impact",
+            "get_compliance_receipt",
+            "get_current_compliance",
+        }:
             return {"receipt": {}}
         if operation == "adopt_revision":
             return {"binding": {}, "receipt": {}}
@@ -167,6 +183,48 @@ def _client(
     if facade is not None:
         app.dependency_overrides[get_policy_governance_facade] = lambda: facade
     return TestClient(app, raise_server_exceptions=False), uow
+
+
+def _frozen_impact_receipt() -> GuidelineImpactReceipt:
+    metric_thresholds = {"architecture_segregation": 85}
+    digest_fields = {
+        "board_id": "board-b13",
+        "guideline_id": "guideline-b13",
+        "binding_id": "binding-b13",
+        "from_revision_id": None,
+        "from_semantic_version": None,
+        "from_revision_digest": None,
+        "to_revision_id": "revision-b13",
+        "to_revision_number": 2,
+        "to_semantic_version": "2.0.0",
+        "to_revision_digest": "a" * 64,
+        "expected_head_revision": 2,
+        "expected_binding_revision": None,
+        "expected_binding_state": None,
+        "binding_digest": "b" * 64,
+        "binding_head_digest_before": "c" * 64,
+        "binding_head_digest_after": "d" * 64,
+        "policy_set_digest_before": "e" * 64,
+        "policy_set_digest_after": "f" * 64,
+        "artifact_snapshot_digest": "1" * 64,
+        "waiver_snapshot_digest": "2" * 64,
+        "proposed_priority": 3,
+        "proposed_enforcement": GuidelineEnforcement.ADVISORY,
+        "proposed_minimum_confidence": 80,
+        "proposed_metric_threshold_overrides": metric_thresholds,
+        "affected_entity_types": (),
+        "items": (),
+        "added_metric_ids": (),
+        "changed_metric_ids": (),
+        "removed_metric_ids": (),
+    }
+    return GuidelineImpactReceipt(
+        impact_receipt_id="impact-b13",
+        requested_by="owner-b13",
+        created_at=datetime(2026, 8, 21, tzinfo=timezone.utc),
+        impact_digest=guideline_impact_digest_v2(**digest_fields),
+        **digest_fields,
+    )
 
 
 def _minimal_v3_envelope() -> dict:
@@ -308,16 +366,12 @@ def test_literal_governance_routes_are_registered_before_legacy_param_routes() -
     board_export = "/boards/{board_id}/guidelines/export"
     board_import = "/boards/{board_id}/guidelines/import"
     assert paths[:2] == [board_export, board_import]
-    assert (
-        paths.index("/boards/{board_id}/semantic-guideline-assessments/current")
-        < paths.index(
-            "/boards/{board_id}/semantic-guideline-assessments/{receipt_id}"
-        )
-    )
-    assert (
-        paths.index("/boards/{board_id}/policy-waivers/{waiver_id}/events")
-        < paths.index("/boards/{board_id}/policy-waivers/{waiver_id}")
-    )
+    assert paths.index(
+        "/boards/{board_id}/semantic-guideline-assessments/current"
+    ) < paths.index("/boards/{board_id}/semantic-guideline-assessments/{receipt_id}")
+    assert paths.index(
+        "/boards/{board_id}/policy-waivers/{waiver_id}/events"
+    ) < paths.index("/boards/{board_id}/policy-waivers/{waiver_id}")
     source = (
         Path(__file__).resolve().parents[1]
         / "src"
@@ -411,6 +465,72 @@ def test_governance_request_validation_is_structured_and_never_calls_facade() ->
     assert facade.calls == []
 
 
+def test_impact_preview_encodes_frozen_metric_mapping_without_http_500() -> None:
+    receipt = _frozen_impact_receipt()
+    assert type(receipt.proposed_metric_threshold_overrides).__name__ == (
+        "mappingproxy"
+    )
+    facade = _Facade(
+        results={
+            "preview_impact": PreviewGuidelineImpactResult(receipt=receipt),
+        }
+    )
+    client, _ = _client(facade)
+
+    response = client.post(
+        "/api/v1/boards/board-b13/guidelines/guideline-b13/impact-previews",
+        json={
+            "proposed_priority": 3,
+            "proposed_enforcement": "advisory",
+            "proposed_minimum_confidence": 80,
+            "proposed_metric_threshold_overrides": {
+                "architecture_segregation": 85,
+            },
+            "idempotency_key": "impact:mappingproxy:b13",
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["receipt"] == {
+        "impact_receipt_id": "impact-b13",
+        "board_id": "board-b13",
+        "guideline_id": "guideline-b13",
+        "binding_id": "binding-b13",
+        "to_revision_id": "revision-b13",
+        "to_revision_number": 2,
+        "to_semantic_version": "2.0.0",
+        "to_revision_digest": "a" * 64,
+        "expected_head_revision": 2,
+        "expected_binding_revision": None,
+        "expected_binding_state": None,
+        "binding_digest": "b" * 64,
+        "binding_head_digest_before": "c" * 64,
+        "binding_head_digest_after": "d" * 64,
+        "policy_set_digest_before": "e" * 64,
+        "policy_set_digest_after": "f" * 64,
+        "artifact_snapshot_digest": "1" * 64,
+        "waiver_snapshot_digest": "2" * 64,
+        "proposed_priority": 3,
+        "proposed_enforcement": "advisory",
+        "proposed_minimum_confidence": 80,
+        "proposed_metric_threshold_overrides": {
+            "architecture_segregation": 85,
+        },
+        "affected_entity_types": [],
+        "items": [],
+        "added_metric_ids": [],
+        "changed_metric_ids": [],
+        "removed_metric_ids": [],
+        "requested_by": "owner-b13",
+        "created_at": "2026-08-21T00:00:00Z",
+        "impact_digest": receipt.impact_digest,
+        "from_revision_id": None,
+        "from_semantic_version": None,
+        "from_revision_digest": None,
+        "requires_explicit_adoption": True,
+    }
+
+
 def test_import_v3_schema_is_recursively_closed_before_core_or_uow() -> None:
     payload = _minimal_v3_envelope()
     payload["guidelines"][0]["identity"]["unexpected"] = "must fail"
@@ -455,9 +575,7 @@ def test_export_preserves_required_nullable_fields_for_import_roundtrip() -> Non
     assert projected["source_board_id"] is None
     assert projected["guidelines"][0]["identity"]["board_id"] is None
     assert projected["guidelines"][0]["retirement"] is None
-    assert projected["guidelines"][0]["revisions"][0][
-        "parent_revision_id"
-    ] is None
+    assert projected["guidelines"][0]["revisions"][0]["parent_revision_id"] is None
     GuidelineExportV3Request.model_validate(projected)
 
 
@@ -483,9 +601,7 @@ def test_governance_errors_use_bounded_shared_projection(
     facade = _Facade(error)
     client, _ = _client(facade)
 
-    response = client.get(
-        "/api/v1/boards/board-b13/guidelines/guideline-b13/revisions"
-    )
+    response = client.get("/api/v1/boards/board-b13/guidelines/guideline-b13/revisions")
 
     assert response.status_code == expected_status
     detail = response.json()["detail"]
@@ -613,9 +729,7 @@ def test_canonical_endpoint_http_exception_is_not_double_wrapped() -> None:
         )
     )
 
-    response = client.get(
-        "/api/v1/boards/board-b13/guidelines/guideline-b13/revisions"
-    )
+    response = client.get("/api/v1/boards/board-b13/guidelines/guideline-b13/revisions")
 
     assert response.status_code == 409
     assert response.json() == {"detail": detail}
@@ -651,9 +765,7 @@ def test_stale_adoption_is_http_409_with_closed_currentness_reasons() -> None:
     assert detail["code"] == "conflict"
     assert detail["details"] == {
         "reason_code": "guideline_impact_stale",
-        "stale_reasons": (
-            "guideline_head_changed,waiver_snapshot_changed"
-        ),
+        "stale_reasons": ("guideline_head_changed,waiver_snapshot_changed"),
     }
 
 
@@ -667,9 +779,7 @@ def test_untrusted_dependency_error_code_cannot_escape_or_break_projection() -> 
         )
     )
 
-    response = client.get(
-        "/api/v1/boards/board-b13/guidelines/guideline-b13/revisions"
-    )
+    response = client.get("/api/v1/boards/board-b13/guidelines/guideline-b13/revisions")
 
     envelope = PolicyErrorEnvelope.model_validate(response.json())
     assert response.status_code == 503
@@ -974,7 +1084,9 @@ def test_every_governance_route_declares_a_closed_response_model() -> None:
     assert all(route.response_model is not None for route in router.routes)
 
 
-def test_paginated_routes_preserve_required_nulls_and_omit_unset_projection_fields() -> None:
+def test_paginated_routes_preserve_required_nulls_and_omit_unset_projection_fields() -> (
+    None
+):
     page_models = {
         GuidelineImpactItemPageResponse,
         GuidelineRevisionPageResponse,
@@ -984,9 +1096,7 @@ def test_paginated_routes_preserve_required_nulls_and_omit_unset_projection_fiel
         SemanticWaiverPageResponse,
     }
     page_routes = [
-        route
-        for route in router.routes
-        if route.response_model in page_models
+        route for route in router.routes if route.response_model in page_models
     ]
 
     assert len(page_routes) == 6
@@ -1051,9 +1161,7 @@ def test_waiver_mutations_require_non_empty_evidence_before_facade(
 def test_revision_storage_boundaries_reject_boundary_plus_one_before_facade() -> None:
     facade = _Facade()
     client, _ = _client(facade)
-    route = (
-        "/api/v1/boards/board-b13/guidelines/guideline-b13/revisions"
-    )
+    route = "/api/v1/boards/board-b13/guidelines/guideline-b13/revisions"
     valid = {
         "next_revision_id": "r" * 36,
         "idempotency_key": "i" * 255,
@@ -1078,9 +1186,7 @@ def test_revision_storage_boundaries_reject_boundary_plus_one_before_facade() ->
 def test_metric_and_priority_storage_boundaries_are_closed_at_rest() -> None:
     facade = _Facade()
     client, _ = _client(facade)
-    revision_route = (
-        "/api/v1/boards/board-b13/guidelines/guideline-b13/revisions"
-    )
+    revision_route = "/api/v1/boards/board-b13/guidelines/guideline-b13/revisions"
     metric = {
         "metric_id": "m" * 64,
         "code": "architecture_segregation",
@@ -1111,9 +1217,7 @@ def test_metric_and_priority_storage_boundaries_are_closed_at_rest() -> None:
 
     impact_facade = _Facade(EntityNotFoundError("guideline", "guideline-b13"))
     impact_client, _ = _client(impact_facade)
-    impact_route = (
-        "/api/v1/boards/board-b13/guidelines/guideline-b13/impact-previews"
-    )
+    impact_route = "/api/v1/boards/board-b13/guidelines/guideline-b13/impact-previews"
     common = {
         "proposed_enforcement": "advisory",
         "proposed_minimum_confidence": 80,
@@ -1271,8 +1375,7 @@ def test_real_local_auth_reaches_board_authorization_instead_of_403() -> None:
     configure_auth(LocalAuthProvider())
     try:
         response = TestClient(app, raise_server_exceptions=False).get(
-            "/api/v1/boards/board-b13/guidelines/guideline-b13/"
-            "revisions/revision-b13"
+            "/api/v1/boards/board-b13/guidelines/guideline-b13/revisions/revision-b13"
         )
     finally:
         if previous is not None:
@@ -1295,9 +1398,7 @@ def test_revision_http_statuses_preserve_noop_and_replay_semantics() -> None:
         "minimum_bump": None,
         "rejection_code": None,
     }
-    applied_client, _ = _client(
-        _Facade(results={"create_revision": applied_result})
-    )
+    applied_client, _ = _client(_Facade(results={"create_revision": applied_result}))
     first = applied_client.post(
         "/api/v1/boards/board-b13/guidelines/guideline-b13/revisions",
         json=payload,
@@ -1521,9 +1622,7 @@ def test_every_governance_success_schema_is_recursively_closed_and_exact() -> No
                 assert "422" in responses
             else:
                 assert "422" not in responses
-            assert {"400", "401", "403", "404", "409", "503"}.issubset(
-                responses
-            )
+            assert {"400", "401", "403", "404", "409", "503"}.issubset(responses)
             for status_code in (
                 "400",
                 "401",
@@ -1642,7 +1741,7 @@ def test_legacy_patch_delete_gate_then_delegate_append_retire(
                 "revisions": {
                     "create": True,
                     "retire": True,
-                }
+                },
             },
             "spec": {"entity": {"edit_fields": True}},
         }

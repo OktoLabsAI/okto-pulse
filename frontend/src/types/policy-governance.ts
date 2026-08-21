@@ -627,6 +627,7 @@ export interface BoardGuidelineBinding {
   enforcement: GuidelineEnforcement;
   minimum_confidence: number;
   metric_threshold_overrides: GuidelineMetricThresholdOverrides;
+  configuration_digest: string | null;
   state: GuidelineBindingState;
   source_kind: GuidelineBindingProvenance;
 }
@@ -736,11 +737,13 @@ export interface RetirementResponse {
 }
 
 export interface PreviewGuidelineImpactRequest {
-  target_revision_id: string;
-  expected_binding_head_revision: number | null;
-  enforcement: GuidelineEnforcement;
-  minimum_confidence: number;
-  metric_threshold_overrides: GuidelineMetricThresholdOverrides;
+  proposed_priority: number;
+  proposed_enforcement: GuidelineEnforcement;
+  proposed_minimum_confidence: number;
+  proposed_metric_threshold_overrides: GuidelineMetricThresholdOverrides;
+  idempotency_key: string;
+  to_revision_id?: string | null;
+  requested_at?: string | null;
 }
 
 interface GuidelineImpactItemBase {
@@ -788,24 +791,57 @@ export interface GuidelineImpactPreviewItemsPage {
   next_cursor: string | null;
 }
 
+export interface GuidelineImpactReceipt {
+  impact_receipt_id: string;
+  board_id: string;
+  guideline_id: string;
+  binding_id: string;
+  to_revision_id: string;
+  to_revision_number: number;
+  to_semantic_version: string;
+  to_revision_digest: string;
+  expected_head_revision: number;
+  expected_binding_revision: number | null;
+  expected_binding_state: GuidelineBindingState | null;
+  binding_digest: string;
+  binding_head_digest_before: string;
+  binding_head_digest_after: string;
+  policy_set_digest_before: string;
+  policy_set_digest_after: string;
+  artifact_snapshot_digest: string;
+  waiver_snapshot_digest: string;
+  proposed_priority: number;
+  proposed_enforcement: GuidelineEnforcement;
+  proposed_minimum_confidence: number;
+  proposed_metric_threshold_overrides: GuidelineMetricThresholdOverrides;
+  affected_entity_types: PolicyEntityType[];
+  items: GuidelineImpactItem[];
+  added_metric_ids: string[];
+  changed_metric_ids: string[];
+  removed_metric_ids: string[];
+  requested_by: string;
+  created_at: string;
+  impact_digest: string;
+  from_revision_id: string | null;
+  from_semantic_version: string | null;
+  from_revision_digest: string | null;
+  requires_explicit_adoption: true;
+}
+
 export interface GuidelineImpactPreviewResponse {
-  preview_id: string;
-  preview_digest: string;
-  items_page: GuidelineImpactPreviewItemsPage;
+  receipt: GuidelineImpactReceipt;
 }
 
 export interface AdoptGuidelineRevisionRequest {
-  preview_id: string;
-  preview_digest: string;
-  expected_binding_head_revision: number | null;
+  impact_receipt_id: string;
+  impact_digest: string;
   idempotency_key: string;
+  occurred_at?: string | null;
 }
 
 export interface GuidelineAdoptionResponse {
-  binding_id: string;
-  binding_revision: number;
-  configuration_digest: string;
-  replayed: boolean;
+  binding: BoardGuidelineBinding & { configuration_digest: string };
+  receipt: GuidelineImpactReceipt;
 }
 
 export type GuidelineHistoryStatus = 'complete' | 'baseline_only';

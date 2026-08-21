@@ -16,6 +16,7 @@ routes in registration order.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import MISSING, fields, is_dataclass
 from contextlib import nullcontext
 from datetime import datetime
@@ -151,9 +152,7 @@ class PolicyGovernanceRoute(APIRoute):
                 if board_id is not None:
                     validate_community_board_id(board_id)
                 if preflight_import_envelope:
-                    GuidelineExportV3Request.model_validate_json(
-                        await request.body()
-                    )
+                    GuidelineExportV3Request.model_validate_json(await request.body())
                 return await original(request)
             except (RequestValidationError, ValidationError):
                 from okto_pulse.core.application.use_cases.base import (
@@ -268,9 +267,7 @@ def _governed_http_error_detail(
             details={},
         )
     if exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
-        legacy_code = (
-            exc.detail.get("code") if isinstance(exc.detail, dict) else None
-        )
+        legacy_code = exc.detail.get("code") if isinstance(exc.detail, dict) else None
         code = (
             legacy_code
             if isinstance(legacy_code, str)
@@ -369,9 +366,7 @@ def _closed_response_annotation(annotation: object) -> object:
             (_closed_response_annotation(item) for item in arguments),
         )
     converted = tuple(
-        item
-        if item is Ellipsis
-        else _closed_response_annotation(item)
+        item if item is Ellipsis else _closed_response_annotation(item)
         for item in arguments
     )
     try:
@@ -397,11 +392,8 @@ def _closed_dataclass_response_model(domain_type: type) -> type[_ClosedModel]:
         annotation = _closed_response_annotation(
             annotations.get(dataclass_field.name, dataclass_field.type)
         )
-        if (
-            dataclass_field.name == "projection"
-            and domain_type.__module__.endswith(
-                "guideline_semantic_projection"
-            )
+        if dataclass_field.name == "projection" and domain_type.__module__.endswith(
+            "guideline_semantic_projection"
         ):
             for suffix, profile in semantic_profile.items():
                 if domain_type.__name__.endswith(suffix):
@@ -410,23 +402,17 @@ def _closed_dataclass_response_model(domain_type: type) -> type[_ClosedModel]:
         if dataclass_field.name == "metric_results":
             if domain_type is CoreSemanticAssessmentDetail:
                 annotation = tuple[
-                    _closed_dataclass_response_model(
-                        CoreSemanticMetricResultDetail
-                    ),
+                    _closed_dataclass_response_model(CoreSemanticMetricResultDetail),
                     ...,
                 ]
             elif domain_type is CoreSemanticAssessmentFull:
                 annotation = tuple[
-                    _closed_dataclass_response_model(
-                        CoreSemanticMetricResultFull
-                    ),
+                    _closed_dataclass_response_model(CoreSemanticMetricResultFull),
                     ...,
                 ]
         semantic_subject_edition = (
             dataclass_field.name == "subject_edition"
-            and domain_type.__module__.endswith(
-                "guideline_semantic_projection"
-            )
+            and domain_type.__module__.endswith("guideline_semantic_projection")
         )
         if dataclass_field.default is not MISSING:
             default: object = dataclass_field.default
@@ -896,9 +882,7 @@ class RecordSemanticGuidelineAssessmentRequest(_ClosedModel):
     )
     confidence: int = Field(ge=0, le=100)
     assessor: SemanticAssessmentAssessorRequest
-    metric_results: list[SemanticMetricAssessmentRequest] = Field(
-        min_length=1
-    )
+    metric_results: list[SemanticMetricAssessmentRequest] = Field(min_length=1)
 
     @model_validator(mode="after")
     def require_edition_fence(
@@ -1025,9 +1009,7 @@ class GuidelineExportRevisionV3(_ClosedModel):
     tags: list[str]
     published_head_revision: int = Field(ge=1, le=POLICY_SQL_INTEGER_MAX)
     published_head_updated_at: datetime
-    legacy_version: str | None = Field(
-        max_length=GUIDELINE_SEMANTIC_VERSION_MAX_LENGTH
-    )
+    legacy_version: str | None = Field(max_length=GUIDELINE_SEMANTIC_VERSION_MAX_LENGTH)
     legacy_version_unresolvable: bool
     legacy_tags: list[str] | None
 
@@ -1152,15 +1134,11 @@ class GuidelineImportResultResponse(_ClosedModel):
 ClosedGuidelineRevisionListItem = _closed_dataclass_response_model(
     CoreGuidelineRevisionListItem
 )
-ClosedGuidelineImpactItem = _closed_dataclass_response_model(
-    CoreGuidelineImpactItem
-)
+ClosedGuidelineImpactItem = _closed_dataclass_response_model(CoreGuidelineImpactItem)
 ClosedGuideline = _closed_dataclass_response_model(CoreGuideline)
 ClosedGuidelineRevision = _closed_dataclass_response_model(CoreGuidelineRevision)
 ClosedGuidelineHead = _closed_dataclass_response_model(CoreGuidelineHead)
-ClosedGuidelineRetirement = _closed_dataclass_response_model(
-    CoreGuidelineRetirement
-)
+ClosedGuidelineRetirement = _closed_dataclass_response_model(CoreGuidelineRetirement)
 ClosedGuidelineImpactReceipt = _closed_dataclass_response_model(
     CoreGuidelineImpactReceipt
 )
@@ -1182,27 +1160,15 @@ ClosedSemanticFindingSummary = _closed_dataclass_response_model(
 ClosedSemanticFindingDetail = _closed_dataclass_response_model(
     CoreSemanticFindingDetail
 )
-ClosedSemanticFindingFull = _closed_dataclass_response_model(
-    CoreSemanticFindingFull
-)
+ClosedSemanticFindingFull = _closed_dataclass_response_model(CoreSemanticFindingFull)
 ClosedSemanticWaiverSummary = _closed_dataclass_response_model(
     CoreSemanticWaiverSummary
 )
-ClosedSemanticWaiverDetail = _closed_dataclass_response_model(
-    CoreSemanticWaiverDetail
-)
-ClosedSemanticWaiverFull = _closed_dataclass_response_model(
-    CoreSemanticWaiverFull
-)
-ClosedSemanticSkipSummary = _closed_dataclass_response_model(
-    CoreSemanticSkipSummary
-)
-ClosedSemanticSkipDetail = _closed_dataclass_response_model(
-    CoreSemanticSkipDetail
-)
-ClosedSemanticSkipFull = _closed_dataclass_response_model(
-    CoreSemanticSkipFull
-)
+ClosedSemanticWaiverDetail = _closed_dataclass_response_model(CoreSemanticWaiverDetail)
+ClosedSemanticWaiverFull = _closed_dataclass_response_model(CoreSemanticWaiverFull)
+ClosedSemanticSkipSummary = _closed_dataclass_response_model(CoreSemanticSkipSummary)
+ClosedSemanticSkipDetail = _closed_dataclass_response_model(CoreSemanticSkipDetail)
+ClosedSemanticSkipFull = _closed_dataclass_response_model(CoreSemanticSkipFull)
 ClosedSemanticMetricWaiverEvent = _closed_dataclass_response_model(
     CoreSemanticMetricWaiverEvent
 )
@@ -1218,14 +1184,10 @@ SemanticFindingProjectionResponse = (
     | ClosedSemanticFindingFull
 )
 SemanticWaiverProjectionResponse = (
-    ClosedSemanticWaiverSummary
-    | ClosedSemanticWaiverDetail
-    | ClosedSemanticWaiverFull
+    ClosedSemanticWaiverSummary | ClosedSemanticWaiverDetail | ClosedSemanticWaiverFull
 )
 SemanticSkipProjectionResponse = (
-    ClosedSemanticSkipSummary
-    | ClosedSemanticSkipDetail
-    | ClosedSemanticSkipFull
+    ClosedSemanticSkipSummary | ClosedSemanticSkipDetail | ClosedSemanticSkipFull
 )
 
 
@@ -1617,9 +1579,7 @@ def _semantic_evidence(payload: dict[str, Any]) -> object:
 
 
 def _semantic_projection(value: object) -> object:
-    projection = import_module(
-        "okto_pulse.core.domain.guideline_semantic_projection"
-    )
+    projection = import_module("okto_pulse.core.domain.guideline_semantic_projection")
     return projection.SemanticGuidelineProjection(value)
 
 
@@ -1632,9 +1592,7 @@ def _adapt_semantic_values(
 ) -> dict[str, Any]:
     policy = import_module("okto_pulse.core.domain.guideline_policy")
     ports = import_module("okto_pulse.core.ports.guideline_policy")
-    exceptions = import_module(
-        "okto_pulse.core.domain.guideline_semantic_exceptions"
-    )
+    exceptions = import_module("okto_pulse.core.domain.guideline_semantic_exceptions")
     adapted = dict(values)
     projection_value = adapted.get("projection")
     if projection_value is not None:
@@ -1674,9 +1632,7 @@ def _adapt_semantic_values(
         query_type, cursor_kind = query_contract
         token = adapted.pop("cursor", None)
         adapted["cursor"] = (
-            None
-            if token is None
-            else codec.decode(token, expected_kind=cursor_kind)
+            None if token is None else codec.decode(token, expected_kind=cursor_kind)
         )
         status_value = adapted.get("status")
         if status_value is not None:
@@ -1703,23 +1659,18 @@ def _adapt_semantic_values(
         assessment = import_module(
             "okto_pulse.core.domain.guideline_semantic_assessment"
         )
-        quality = import_module(
-            "okto_pulse.core.domain.quality_assessment"
-        )
+        quality = import_module("okto_pulse.core.domain.quality_assessment")
         metric_results = tuple(
             assessment.SemanticMetricAssessment(
                 metric_id=item["metric_id"],
                 score=item["score"],
                 rationale=item["rationale"],
                 evidence_refs=tuple(
-                    _semantic_evidence(evidence)
-                    for evidence in item["evidence_refs"]
+                    _semantic_evidence(evidence) for evidence in item["evidence_refs"]
                 ),
                 pinpoints=tuple(
                     quality.UnboundFindingAnchor(
-                        anchor_type=quality.FindingAnchorType(
-                            pinpoint["anchor_type"]
-                        ),
+                        anchor_type=quality.FindingAnchorType(pinpoint["anchor_type"]),
                         anchor_ref=pinpoint.get("anchor_ref"),
                         excerpt_hash=pinpoint.get("excerpt_hash"),
                     )
@@ -1739,12 +1690,8 @@ def _adapt_semantic_values(
         submission = assessment.SemanticGuidelineAssessmentSubmission(
             subject=subject,
             binding_id=adapted.pop("binding_id"),
-            expected_binding_revision=adapted.pop(
-                "expected_binding_revision"
-            ),
-            guideline_revision_id=adapted.pop(
-                "guideline_revision_id"
-            ),
+            expected_binding_revision=adapted.pop("expected_binding_revision"),
+            guideline_revision_id=adapted.pop("guideline_revision_id"),
             idempotency_key=adapted.pop("idempotency_key"),
             confidence=adapted.pop("confidence"),
             assessor=assessment.SemanticAssessmentAssessor(
@@ -1760,9 +1707,7 @@ def _adapt_semantic_values(
         assessment = import_module(
             "okto_pulse.core.domain.guideline_semantic_assessment"
         )
-        semantic_v2 = import_module(
-            "okto_pulse.core.domain.guideline_semantic_v2"
-        )
+        semantic_v2 = import_module("okto_pulse.core.domain.guideline_semantic_v2")
         quality = import_module("okto_pulse.core.domain.quality_assessment")
         adapted.pop("contract_version")
         metric_results = tuple(
@@ -1771,8 +1716,7 @@ def _adapt_semantic_values(
                 score=item["score"],
                 rationale=item["rationale"],
                 evidence_refs=tuple(
-                    _semantic_evidence(evidence)
-                    for evidence in item["evidence_refs"]
+                    _semantic_evidence(evidence) for evidence in item["evidence_refs"]
                 ),
                 pinpoints=tuple(
                     semantic_v2.SemanticPinpointDraftV2(
@@ -1833,8 +1777,7 @@ def _adapt_semantic_values(
         "revalidate_semantic_waiver",
     }:
         adapted["evidence_refs"] = tuple(
-            _semantic_evidence(item)
-            for item in adapted.get("evidence_refs", ())
+            _semantic_evidence(item) for item in adapted.get("evidence_refs", ())
         )
     if operation == "review_semantic_waiver":
         adapted["decision"] = exceptions.SemanticMetricWaiverEventType(
@@ -1913,7 +1856,7 @@ def _adapt_values(
                     if item_kind is not None
                     else None
                 ),
-            )
+            ),
         }
     return adapted
 
@@ -1948,9 +1891,7 @@ class CorePolicyGovernanceFacade:
         semantic_contract = _SEMANTIC_OPERATION_TYPES.get(operation)
         if semantic_contract is None:
             command_name, use_case_name = _OPERATION_TYPES[operation]
-            module_name = (
-                "okto_pulse.core.application.use_cases.policy_governance"
-            )
+            module_name = "okto_pulse.core.application.use_cases.policy_governance"
         else:
             module_name, command_name, use_case_name = semantic_contract
         module = import_module(module_name)
@@ -2015,7 +1956,32 @@ def _wire_result(result: object) -> object:
     envelope = getattr(result, "envelope", None)
     if envelope is not None:
         return guideline_export_payload(envelope)
-    return jsonable_encoder(result)
+    return jsonable_encoder(_wire_safe_dataclass_payload(result))
+
+
+def _wire_safe_dataclass_payload(value: object) -> object:
+    """Project frozen Core dataclasses without ``dataclasses.asdict``.
+
+    FastAPI's dataclass encoder calls ``dataclasses.asdict``, which deep-copies
+    every field before encoding it.  Core deliberately deep-freezes policy
+    mappings with ``MappingProxyType``; those values are JSON-compatible but
+    cannot be pickled/deep-copied.  Walk declared fields and immutable
+    containers directly so the REST boundary preserves the closed Core shape
+    without weakening the domain object's immutability.
+    """
+
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            dataclass_field.name: _wire_safe_dataclass_payload(
+                getattr(value, dataclass_field.name)
+            )
+            for dataclass_field in fields(value)
+        }
+    if isinstance(value, Mapping):
+        return {key: _wire_safe_dataclass_payload(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_wire_safe_dataclass_payload(item) for item in value]
+    return value
 
 
 def _restore_required_nones(item: object, payload: object) -> None:
@@ -2083,9 +2049,7 @@ def _project_core_result(
             "items": _jsonable_page_items(page.items),
             "has_more": page.has_more,
             "next_cursor": (
-                codec.encode(next_cursor)
-                if next_cursor is not None
-                else None
+                codec.encode(next_cursor) if next_cursor is not None else None
             ),
         }
         if operation.startswith("list_semantic_"):
@@ -2216,26 +2180,19 @@ async def _execute(
             )
 
             detail = http_error.detail
-            reason_code = (
-                detail.get("code") if isinstance(detail, dict) else None
-            )
+            reason_code = detail.get("code") if isinstance(detail, dict) else None
             capability_state = (
                 detail.get("details", {}).get("capability_state")
-                if isinstance(detail, dict)
-                and isinstance(detail.get("details"), dict)
+                if isinstance(detail, dict) and isinstance(detail.get("details"), dict)
                 else None
             )
             emit_semantic_assessment_write_metric(
                 surface="rest",
                 contract_version=semantic_contract_version,
                 outcome="error",
-                reason_code=(
-                    reason_code if isinstance(reason_code, str) else None
-                ),
+                reason_code=(reason_code if isinstance(reason_code, str) else None),
                 capability_state=(
-                    capability_state
-                    if isinstance(capability_state, str)
-                    else None
+                    capability_state if isinstance(capability_state, str) else None
                 ),
             )
         raise http_error from exc
@@ -2392,9 +2349,7 @@ async def create_guideline_revision(
             )
         )
     response_status = (
-        status.HTTP_201_CREATED
-        if projected.status == "applied"
-        else status.HTTP_200_OK
+        status.HTTP_201_CREATED if projected.status == "applied" else status.HTTP_200_OK
     )
     return JSONResponse(
         status_code=response_status,
@@ -2643,9 +2598,7 @@ async def list_semantic_guideline_assessments(
     ),
     outcome: SemanticAssessmentOutcome | None = Query(default=None),
     currentness: PolicyCurrentness | None = Query(default=None),
-    projection: SemanticPolicyProjection = Query(
-        SemanticPolicyProjection.SUMMARY
-    ),
+    projection: SemanticPolicyProjection = Query(SemanticPolicyProjection.SUMMARY),
     limit: int = Query(
         POLICY_PAGE_LIMIT_DEFAULT,
         ge=1,
@@ -2663,16 +2616,12 @@ async def list_semantic_guideline_assessments(
             "board_id": board_id,
             "limit": limit,
             "cursor": cursor,
-            "subject_type": (
-                subject_type.value if subject_type else None
-            ),
+            "subject_type": (subject_type.value if subject_type else None),
             "subject_id": subject_id,
             "guideline_id": guideline_id,
             "binding_id": binding_id,
             "outcome": outcome.value if outcome else None,
-            "currentness": (
-                currentness.value if currentness else None
-            ),
+            "currentness": (currentness.value if currentness else None),
             "projection": projection.value,
         },
         principal=principal,
@@ -2699,9 +2648,7 @@ async def get_current_semantic_guideline_assessment(
         min_length=1,
         max_length=GUIDELINE_BINDING_ID_MAX_LENGTH,
     ),
-    projection: SemanticPolicyProjection = Query(
-        SemanticPolicyProjection.FULL
-    ),
+    projection: SemanticPolicyProjection = Query(SemanticPolicyProjection.FULL),
     principal: Principal = Depends(require_principal),
     facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
@@ -2730,9 +2677,7 @@ async def get_current_semantic_guideline_assessment(
 async def get_semantic_guideline_assessment(
     board_id: BoardId,
     receipt_id: ComplianceReceiptId,
-    projection: SemanticPolicyProjection = Query(
-        SemanticPolicyProjection.FULL
-    ),
+    projection: SemanticPolicyProjection = Query(SemanticPolicyProjection.FULL),
     principal: Principal = Depends(require_principal),
     facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
@@ -2785,9 +2730,7 @@ async def list_semantic_guideline_findings(
         max_length=POLICY_SUBJECT_ID_MAX_LENGTH,
     ),
     outcome: SemanticMetricOutcome | None = Query(default=None),
-    projection: SemanticPolicyProjection = Query(
-        SemanticPolicyProjection.SUMMARY
-    ),
+    projection: SemanticPolicyProjection = Query(SemanticPolicyProjection.SUMMARY),
     limit: int = Query(
         POLICY_PAGE_LIMIT_DEFAULT,
         ge=1,
@@ -2808,9 +2751,7 @@ async def list_semantic_guideline_findings(
             "receipt_id": receipt_id,
             "guideline_id": guideline_id,
             "subject_id": subject_id,
-            "subject_type": (
-                subject_type.value if subject_type else None
-            ),
+            "subject_type": (subject_type.value if subject_type else None),
             "binding_id": binding_id,
             "metric_id": metric_id,
             "outcome": outcome.value if outcome else None,
@@ -2870,9 +2811,7 @@ async def list_semantic_metric_waivers(
         default=None,
         alias="status",
     ),
-    projection: SemanticPolicyProjection = Query(
-        SemanticPolicyProjection.SUMMARY
-    ),
+    projection: SemanticPolicyProjection = Query(SemanticPolicyProjection.SUMMARY),
     limit: int = Query(
         POLICY_PAGE_LIMIT_DEFAULT,
         ge=1,
@@ -2897,9 +2836,7 @@ async def list_semantic_metric_waivers(
             "guideline_id": guideline_id,
             "binding_id": binding_id,
             "metric_id": metric_id,
-            "subject_type": (
-                subject_type.value if subject_type else None
-            ),
+            "subject_type": (subject_type.value if subject_type else None),
             "subject_id": subject_id,
             "status": waiver_status.value if waiver_status else None,
             "projection": projection.value,
@@ -3040,9 +2977,7 @@ async def get_semantic_metric_waiver(
     board_id: BoardId,
     waiver_id: WaiverId,
     evaluated_at: datetime = Query(...),
-    projection: SemanticPolicyProjection = Query(
-        SemanticPolicyProjection.FULL
-    ),
+    projection: SemanticPolicyProjection = Query(SemanticPolicyProjection.FULL),
     principal: Principal = Depends(require_principal),
     facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
@@ -3085,9 +3020,7 @@ async def list_semantic_policy_skips(
         alias="status",
     ),
     currentness: PolicyCurrentness | None = Query(default=None),
-    projection: SemanticPolicyProjection = Query(
-        SemanticPolicyProjection.SUMMARY
-    ),
+    projection: SemanticPolicyProjection = Query(SemanticPolicyProjection.SUMMARY),
     limit: int = Query(
         POLICY_PAGE_LIMIT_DEFAULT,
         ge=1,
@@ -3105,15 +3038,11 @@ async def list_semantic_policy_skips(
             "board_id": board_id,
             "limit": limit,
             "cursor": cursor,
-            "subject_type": (
-                subject_type.value if subject_type else None
-            ),
+            "subject_type": (subject_type.value if subject_type else None),
             "subject_id": subject_id,
             "binding_id": binding_id,
             "status": skip_status,
-            "currentness": (
-                currentness.value if currentness else None
-            ),
+            "currentness": (currentness.value if currentness else None),
             "projection": projection.value,
         },
         principal=principal,
@@ -3188,9 +3117,7 @@ async def revoke_semantic_policy_skip(
 async def get_semantic_policy_skip(
     board_id: BoardId,
     skip_id: ComplianceReceiptId,
-    projection: SemanticPolicyProjection = Query(
-        SemanticPolicyProjection.FULL
-    ),
+    projection: SemanticPolicyProjection = Query(SemanticPolicyProjection.FULL),
     principal: Principal = Depends(require_principal),
     facade: PolicyGovernanceFacade = Depends(get_policy_governance_facade),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),

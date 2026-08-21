@@ -31,7 +31,7 @@ import { usePolicyGovernanceApi } from '@/services/policy-governance-api';
 import type {
   GuidelineAdoptionResponse,
   GuidelineEnforcement,
-  GuidelineImpactPageItem,
+  GuidelineImpactItem,
   GuidelineImpactPreviewResponse,
   GuidelineMetric,
   GuidelineMetricThresholdOverrides,
@@ -87,6 +87,7 @@ export interface GuidelineImpactDialogProps {
   guidelineTitle: string;
   targetRevisionId: string;
   targetSemanticVersion: string;
+  proposedPriority: number;
   adoptedBinding?: AdoptedGuidelineBindingAuthority;
   initialEnforcement: GuidelineEnforcement;
   initialMinimumConfidence?: number;
@@ -141,7 +142,7 @@ function updateIsAvailable({
   );
 }
 
-function ImpactItemRow({ item }: { item: GuidelineImpactPageItem }) {
+function ImpactItemRow({ item }: { item: GuidelineImpactItem }) {
   return (
     <li
       className="rounded-lg border border-surface-200 bg-white p-3 dark:border-surface-700 dark:bg-surface-900/50"
@@ -162,7 +163,7 @@ function ImpactItemRow({ item }: { item: GuidelineImpactPageItem }) {
             {item.entity_type} · {item.entity_id}
           </p>
         </div>
-        {item.entity_version !== undefined && (
+        {item.entity_version !== null && (
           <span className="text-[11px] text-surface-500">
             Entity v{item.entity_version}
           </span>
@@ -309,6 +310,7 @@ export function GuidelineImpactDialog({
   guidelineTitle,
   targetRevisionId,
   targetSemanticVersion,
+  proposedPriority,
   adoptedBinding,
   initialEnforcement,
   initialMinimumConfidence = DEFAULT_MINIMUM_CONFIDENCE,
@@ -358,6 +360,7 @@ export function GuidelineImpactDialog({
   const adoptionRequestRef = useRef(0);
   const adoptionActiveRef = useRef(false);
   const adoptionIntentRef = useRef({ signature: '', idempotencyKey: '' });
+  const previewIntentRef = useRef({ signature: '', idempotencyKey: '' });
   const autoPreviewAttemptRef = useRef('');
 
   const minimumConfidence = parseScore(minimumConfidenceInput);
@@ -548,6 +551,7 @@ export function GuidelineImpactDialog({
     guidelineId,
     targetRevisionId,
     targetSemanticVersion,
+    proposedPriority,
     adoptedBinding?.bindingRevision ?? null,
     enforcement,
     minimumConfidence,
@@ -570,6 +574,7 @@ export function GuidelineImpactDialog({
     setConflictMessage(null);
     setAdopting(false);
     setAdoptionError(null);
+    previewIntentRef.current = { signature: '', idempotencyKey: '' };
   }, [currentSignature]);
 
   useEffect(
@@ -614,17 +619,28 @@ export function GuidelineImpactDialog({
     setPreview(null);
     setPreviewSignature('');
 
+    if (
+      previewIntentRef.current.signature !== signature
+      || !previewIntentRef.current.idempotencyKey
+    ) {
+      previewIntentRef.current = {
+        signature,
+        idempotencyKey:
+          createGuidelinePolicyClientId('guideline-impact-preview'),
+      };
+    }
+
     try {
       const response = await api.previewGuidelineImpact(
         boardId,
         guidelineId,
         {
-          target_revision_id: targetRevisionId,
-          expected_binding_head_revision:
-            adoptedBinding?.bindingRevision ?? null,
-          enforcement,
-          minimum_confidence: minimumConfidence,
-          metric_threshold_overrides: parsedOverrides,
+          proposed_priority: proposedPriority,
+          proposed_enforcement: enforcement,
+          proposed_minimum_confidence: minimumConfidence,
+          proposed_metric_threshold_overrides: parsedOverrides,
+          idempotency_key: previewIntentRef.current.idempotencyKey,
+          to_revision_id: targetRevisionId,
         },
         controller.signal,
       );
@@ -633,7 +649,22 @@ export function GuidelineImpactDialog({
         || requestId !== previewRequestRef.current
         || currentSignatureRef.current !== signature
       ) return;
-      if (!isGuidelineImpactPreviewResponse(response)) {
+      if (!isGuidelineImpactPreviewResponse(response, {
+        boardId,
+        guidelineId,
+        targetRevisionId,
+        targetSemanticVersion,
+        targetRevisionDigest: revisionAuthority.revision.revision_digest,
+        proposedPriority,
+        proposedEnforcement: enforcement,
+        proposedMinimumConfidence: minimumConfidence,
+        proposedMetricThresholdOverrides: parsedOverrides,
+        bindingId: adoptedBinding?.bindingId ?? null,
+        bindingRevision: adoptedBinding?.bindingRevision ?? null,
+        fromRevisionId: adoptedBinding?.revisionId ?? null,
+        fromSemanticVersion: adoptedBinding?.semanticVersion ?? null,
+        fromRevisionDigest: adoptedBinding?.revisionDigest ?? null,
+      })) {
         throw new Error(
           'The impact preview returned a mismatched payload. Refresh the guideline and try again.',
         );
@@ -669,7 +700,7 @@ export function GuidelineImpactDialog({
       }
     }
   }, [
-    adoptedBinding?.bindingRevision,
+    adoptedBinding,
     api,
     boardId,
     canPreview,
@@ -680,8 +711,10 @@ export function GuidelineImpactDialog({
     hasNoProposedChanges,
     minimumConfidence,
     parsedOverrides,
+    proposedPriority,
     revisionAuthority,
     targetRevisionId,
+    targetSemanticVersion,
   ]);
 
   useEffect(() => {
@@ -722,9 +755,8 @@ export function GuidelineImpactDialog({
     ) return;
 
     const signature = JSON.stringify([
-      currentPreview.preview_id,
-      currentPreview.preview_digest,
-      adoptedBinding?.bindingRevision ?? null,
+      currentPreview.receipt.impact_receipt_id,
+      currentPreview.receipt.impact_digest,
     ]);
     if (
       adoptionIntentRef.current.signature !== signature
@@ -752,10 +784,8 @@ export function GuidelineImpactDialog({
         boardId,
         guidelineId,
         {
-          preview_id: currentPreview.preview_id,
-          preview_digest: currentPreview.preview_digest,
-          expected_binding_head_revision:
-            adoptedBinding?.bindingRevision ?? null,
+          impact_receipt_id: currentPreview.receipt.impact_receipt_id,
+          impact_digest: currentPreview.receipt.impact_digest,
           idempotency_key: adoptionIntentRef.current.idempotencyKey,
         },
         controller.signal,
@@ -770,6 +800,7 @@ export function GuidelineImpactDialog({
       if (
         !isGuidelineAdoptionResponseForPreview(
           response,
+          currentPreview,
           expectedBindingRevision,
         )
       ) {
@@ -827,7 +858,7 @@ export function GuidelineImpactDialog({
     targetSemanticVersion,
   });
   const impactCounts = currentPreview
-    ? countGuidelineImpactItems(currentPreview.items_page.items)
+    ? countGuidelineImpactItems(currentPreview.receipt.items)
     : null;
   const previewEnabled = (
     canPreview
@@ -839,7 +870,6 @@ export function GuidelineImpactDialog({
   const adoptEnabled = (
     canAdopt
     && currentPreview !== null
-    && currentPreview.items_page.next_cursor === null
     && !busy
   );
 
@@ -1328,35 +1358,24 @@ export function GuidelineImpactDialog({
               {currentPreview && (
                 <CollapsibleEvidenceSection
                   title="Affected items"
-                  description="The bounded first page returned by this exact impact preview."
+                  description="The immutable affected-item set sealed by this exact impact receipt."
                   expanded={itemsExpanded}
                   onToggle={() => setItemsExpanded((value) => !value)}
                   testId="guideline-impact-items"
                 >
-                  {currentPreview.items_page.items.length === 0 ? (
+                  {currentPreview.receipt.items.length === 0 ? (
                     <p className="rounded-lg border border-dashed border-surface-300 p-3 text-xs text-surface-500 dark:border-surface-700 dark:text-surface-400">
                       This preview has no affected item.
                     </p>
                   ) : (
                     <ol className="space-y-2">
-                      {currentPreview.items_page.items.map((item) => (
+                      {currentPreview.receipt.items.map((item) => (
                         <ImpactItemRow
                           key={item.impact_item_id}
                           item={item}
                         />
                       ))}
                     </ol>
-                  )}
-                  {currentPreview.items_page.next_cursor !== null && (
-                    <p
-                      role="note"
-                      className="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs text-blue-800 dark:border-blue-700 dark:bg-blue-950/20 dark:text-blue-200"
-                      data-testid="guideline-impact-more-items"
-                    >
-                      More affected items exist. Adoption stays disabled until
-                      the paginated continuation response is part of the public
-                      contract and the complete impact can be reviewed.
-                    </p>
                   )}
                 </CollapsibleEvidenceSection>
               )}
@@ -1372,18 +1391,18 @@ export function GuidelineImpactDialog({
                   <dl className="grid gap-3 rounded-lg border border-surface-200 p-3 text-xs dark:border-surface-700 sm:grid-cols-2">
                     <div>
                       <dt className="font-semibold text-surface-600 dark:text-surface-300">
-                        Preview ID
+                        Impact receipt ID
                       </dt>
                       <dd className="mt-1 break-all font-mono text-[10px] text-surface-500">
-                        {currentPreview.preview_id}
+                        {currentPreview.receipt.impact_receipt_id}
                       </dd>
                     </div>
                     <div>
                       <dt className="font-semibold text-surface-600 dark:text-surface-300">
-                        Preview digest
+                        Impact digest
                       </dt>
                       <dd className="mt-1 break-all font-mono text-[10px] text-surface-500">
-                        {currentPreview.preview_digest}
+                        {currentPreview.receipt.impact_digest}
                       </dd>
                     </div>
                   </dl>

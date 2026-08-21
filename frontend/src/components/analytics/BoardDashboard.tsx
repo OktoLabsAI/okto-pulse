@@ -240,7 +240,14 @@ interface CanonicalCoverageResponse {
   };
   coverage: Array<{
     obligation_type: string;
-    counts: CanonicalCoverageResponse['totals'];
+    state: CanonicalCoverageResponse['totals']['state'];
+    applicable: number | null;
+    covered: number | null;
+    uncovered: number | null;
+    skipped: number | null;
+    value: number | null;
+    n: number | null;
+    reason: string | null;
     rows: Array<{
       identity: { spec_id: string; obligation_id: string; edition: number };
       state: string;
@@ -977,10 +984,10 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
                   {canonicalCoverage.coverage.map((group) => (
                     <tr key={group.obligation_type} className="border-b border-gray-100 dark:border-gray-700/50">
                       <td className="py-2 font-medium">{group.obligation_type}</td>
-                      <td className="py-2 text-right">{group.counts.applicable ?? group.counts.state}</td>
-                      <td className="py-2 text-right">{group.counts.covered ?? '—'}</td>
-                      <td className="py-2 text-right">{group.counts.uncovered ?? '—'}</td>
-                      <td className="py-2 text-right">{group.counts.skipped ?? '—'}</td>
+                      <td className="py-2 text-right">{group.applicable ?? group.state}</td>
+                      <td className="py-2 text-right">{group.covered ?? '—'}</td>
+                      <td className="py-2 text-right">{group.uncovered ?? '—'}</td>
+                      <td className="py-2 text-right">{group.skipped ?? '—'}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -151,16 +151,14 @@ describe('analytics IR/OR coverage UI', () => {
       },
       coverage: [{
         obligation_type: 'ac',
-        counts: {
-          state: 'available',
-          applicable: 2,
-          covered: 0,
-          uncovered: 2,
-          skipped: 2,
-          value: 0,
-          n: 2,
-          reason: null,
-        },
+        state: 'available',
+        applicable: 2,
+        covered: 0,
+        uncovered: 2,
+        skipped: 2,
+        value: 0,
+        n: 2,
+        reason: null,
         rows: [],
       }],
     });
@@ -317,6 +315,45 @@ describe('analytics IR/OR coverage UI', () => {
     expect(panel).toHaveTextContent('Covered0');
     expect(panel).toHaveTextContent('Uncovered2');
     expect(panel).toHaveTextContent('Skipped2');
+    expect(panel).toHaveTextContent('ac2');
+  });
+
+  it('renders unavailable obligation groups without dereferencing absent counts', async () => {
+    mockApi.getCanonicalBoardCoverage.mockResolvedValue({
+      query_fingerprint: 'f'.repeat(64),
+      as_of: '2026-05-28T12:00:00.000000Z',
+      totals: {
+        state: 'unavailable',
+        applicable: null,
+        covered: null,
+        uncovered: null,
+        skipped: null,
+        value: null,
+        n: null,
+        reason: 'coverage_unavailable',
+      },
+      coverage: [{
+        obligation_type: 'decision',
+        state: 'unavailable',
+        applicable: null,
+        covered: null,
+        uncovered: null,
+        skipped: null,
+        value: null,
+        n: null,
+        reason: 'coverage_unavailable',
+        rows: [],
+      }],
+    });
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+
+    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+
+    const obligation = await screen.findByText('decision');
+    const row = obligation.closest('tr');
+    expect(row).not.toBeNull();
+    expect(within(row!).getByText('unavailable')).toBeInTheDocument();
+    expect(within(row!).getAllByText('—')).toHaveLength(3);
   });
 
   it('labels a historical Sprint commitment unavailable without inferred counts', async () => {
