@@ -26,8 +26,9 @@ import { useDashboardApi } from '@/services/api';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { CanonicalCoveragePanel } from './CanonicalCoveragePanel';
 import { DeliveryForecastPanel } from './DeliveryForecastPanel';
-import { FlowHealthPanel } from './FlowHealthPanel';
+import { FlowHealthSummary } from './FlowHealthSummary';
 import { KgEffectivenessPanel } from './KgEffectivenessPanel';
+import type { CanonicalCoverageQueryState } from './canonicalCoverageQueryState';
 import type {
   BoardKgAnalyticsResponse,
   CanonicalCoverageResponse,
@@ -247,7 +248,11 @@ interface BoardDashboardProps {
   boardId: string;
   from: string;
   to: string;
-  onSelectEntity: (type: 'ideation' | 'spec' | 'refinement' | 'card', id: string, name: string) => void;
+  onSelectEntity: (type: 'ideation' | 'spec' | 'refinement' | 'sprint' | 'card', id: string, name: string) => void;
+  onOpenFlowHealth?: () => void;
+  onOpenCanonicalCoverage?: (query: CanonicalCoverageQueryState) => void;
+  onOpenKgEffectiveness?: () => void;
+  onOpenDeliveryIntelligence?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -369,7 +374,16 @@ type EntityTab = 'spec' | 'ideation' | 'card';
 // Main component
 // ---------------------------------------------------------------------------
 
-export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashboardProps) {
+export function BoardDashboard({
+  boardId,
+  from,
+  to,
+  onSelectEntity,
+  onOpenFlowHealth = () => {},
+  onOpenCanonicalCoverage,
+  onOpenKgEffectiveness,
+  onOpenDeliveryIntelligence,
+}: BoardDashboardProps) {
   const api = useDashboardApi();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -398,7 +412,6 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
   const [flowHealthError, setFlowHealthError] = useState<string | null>(null);
   const [flowHealthLoading, setFlowHealthLoading] = useState(true);
   const [flowHealthRetry, setFlowHealthRetry] = useState(0);
-  const [flowHealthExporting, setFlowHealthExporting] = useState(false);
   const [readiness, setReadiness] = useState<{
     spec: SpecReadinessResponse;
     policyResource: PolicyResourceReadinessResponse;
@@ -722,6 +735,8 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
         exporting={kgExporting}
         from={from}
         to={to}
+        mode="compact"
+        onOpenFullView={onOpenKgEffectiveness}
         onRetry={() => setKgRetry((value) => value + 1)}
         onExport={async () => {
           if (kgExporting) return;
@@ -761,30 +776,19 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
           }
         }}
         onOpenSpec={(specId, title) => onSelectEntity('spec', specId, title)}
+        onOpenFullView={onOpenCanonicalCoverage}
+        viewMode="summary"
       />
 
-      <FlowHealthPanel
-        boardId={boardId}
+      <FlowHealthSummary
         data={flowHealth}
         loading={flowHealthLoading}
         error={flowHealthError}
-        exporting={flowHealthExporting}
         from={from}
         to={to}
-        subjectTitles={entityTitleCatalog}
         onRetry={() => setFlowHealthRetry((value) => value + 1)}
-        onReload={() => setFlowHealthRetry((value) => value + 1)}
-        onExport={async () => {
-          if (flowHealthExporting) return;
-          setFlowHealthExporting(true);
-          try {
-            await api.exportBoardFlowHealthCsv(boardId, from, to);
-          } catch (err) {
-            setFlowHealthError(err instanceof Error ? err.message : 'Flow Health export failed');
-          } finally {
-            setFlowHealthExporting(false);
-          }
-        }}
+        onOpenFullView={onOpenFlowHealth}
+        subjectTitles={entityTitleCatalog}
         onOpenSubject={(type, id, title) => {
           const normalized = type === 'task' ? 'card' : type;
           if (normalized === 'spec' || normalized === 'card' || normalized === 'ideation' || normalized === 'refinement') {
@@ -1417,6 +1421,8 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
         forecastExporting={deliveryForecastExporting}
         from={from}
         to={to}
+        compact
+        onOpenFullView={onOpenDeliveryIntelligence}
         onRetryForecast={() => setDeliveryForecastRetry((value) => value + 1)}
         onExportForecast={async () => {
           if (deliveryForecastExporting) return;

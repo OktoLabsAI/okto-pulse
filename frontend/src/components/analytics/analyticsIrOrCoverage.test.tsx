@@ -1,7 +1,10 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BoardDashboard } from './BoardDashboard';
+import { CanonicalCoveragePanel } from './CanonicalCoveragePanel';
+import { DeliveryForecastPanel } from './DeliveryForecastPanel';
 import { EntityDetail } from './EntityDetail';
+import { KgEffectivenessPanel } from './KgEffectivenessPanel';
 
 const mockApi = vi.hoisted(() => ({
   getBoardAnalyticsFunnel: vi.fn(),
@@ -479,7 +482,21 @@ describe('analytics IR/OR coverage UI', () => {
     });
     mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
 
-    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+    render(
+      <CanonicalCoveragePanel
+        data={await mockApi.getCanonicalBoardCoverage('board-1', '2026-05-01', '2026-05-28')}
+        loading={false}
+        error={null}
+        exporting={false}
+        from="2026-05-01"
+        to="2026-05-28"
+        specTitles={{}}
+        onRetry={vi.fn()}
+        onExport={vi.fn().mockResolvedValue(undefined)}
+        onOpenSpec={vi.fn()}
+        viewMode="full"
+      />,
+    );
 
     const heading = await screen.findByRole('heading', { name: 'Canonical Coverage & Traceability' });
     const panel = heading.closest('section');
@@ -501,7 +518,21 @@ describe('analytics IR/OR coverage UI', () => {
       code_evidence: { state: 'available', reason: null, targets: [], resolutions: [], executions: [], overlaps: [], waivers: [] },
     });
 
-    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+    render(
+      <CanonicalCoveragePanel
+        data={await mockApi.getCanonicalBoardCoverage('board-1', '2026-05-01', '2026-05-28')}
+        loading={false}
+        error={null}
+        exporting={false}
+        from="2026-05-01"
+        to="2026-05-28"
+        specTitles={{}}
+        onRetry={vi.fn()}
+        onExport={vi.fn().mockResolvedValue(undefined)}
+        onOpenSpec={vi.fn()}
+        viewMode="full"
+      />,
+    );
 
     const heading = await screen.findByRole('heading', { name: 'Canonical Coverage & Traceability' });
     const panel = heading.closest('section');
@@ -512,7 +543,19 @@ describe('analytics IR/OR coverage UI', () => {
   it('keeps product classification fail-safe while preserving component health', async () => {
     mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
 
-    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+    render(
+      <KgEffectivenessPanel
+        data={await mockApi.getBoardKgAnalytics('board-1', '2026-05-01', '2026-05-28')}
+        loading={false}
+        error={null}
+        exporting={false}
+        from="2026-05-01"
+        to="2026-05-28"
+        onRetry={vi.fn()}
+        onExport={vi.fn().mockResolvedValue(undefined)}
+        mode="full"
+      />,
+    );
 
     await waitFor(() => expect(screen.getByText('Board KG Analytics')).toBeInTheDocument());
     const panel = screen.getByRole('heading', { name: 'Board KG Analytics' }).closest('section');
@@ -528,7 +571,21 @@ describe('analytics IR/OR coverage UI', () => {
   it('keeps skipped obligations in factual coverage and out of covered', async () => {
     mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
 
-    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+    render(
+      <CanonicalCoveragePanel
+        data={await mockApi.getCanonicalBoardCoverage('board-1', '2026-05-01', '2026-05-28')}
+        loading={false}
+        error={null}
+        exporting={false}
+        from="2026-05-01"
+        to="2026-05-28"
+        specTitles={{}}
+        onRetry={vi.fn()}
+        onExport={vi.fn().mockResolvedValue(undefined)}
+        onOpenSpec={vi.fn()}
+        viewMode="full"
+      />,
+    );
 
     await waitFor(() => expect(screen.getByText('Canonical Coverage & Traceability')).toBeInTheDocument());
     const panel = screen.getByRole('heading', { name: 'Canonical Coverage & Traceability' }).closest('section');
@@ -575,7 +632,21 @@ describe('analytics IR/OR coverage UI', () => {
     });
     mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
 
-    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+    render(
+      <CanonicalCoveragePanel
+        data={await mockApi.getCanonicalBoardCoverage('board-1', '2026-05-01', '2026-05-28')}
+        loading={false}
+        error={null}
+        exporting={false}
+        from="2026-05-01"
+        to="2026-05-28"
+        specTitles={{}}
+        onRetry={vi.fn()}
+        onExport={vi.fn().mockResolvedValue(undefined)}
+        onOpenSpec={vi.fn()}
+        viewMode="full"
+      />,
+    );
 
     const obligation = await screen.findByText('Decision');
     const row = obligation.closest('tr');
@@ -619,7 +690,19 @@ describe('analytics IR/OR coverage UI', () => {
       }],
     });
 
-    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+    render(
+      <DeliveryForecastPanel
+        sprints={await mockApi.getBoardAnalyticsSprints('board-1', '2026-05-01', '2026-05-28')}
+        forecast={await mockApi.getBoardDeliveryForecast('board-1', '2026-05-01', '2026-05-28')}
+        forecastLoading={false}
+        forecastError={null}
+        forecastExporting={false}
+        from="2026-05-01"
+        to="2026-05-28"
+        onRetryForecast={vi.fn()}
+        onExportForecast={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
 
     await waitFor(() => expect(screen.getByText('Legacy Sprint')).toBeInTheDocument());
     expect(screen.getByText('Unavailable Legacy')).toBeInTheDocument();

@@ -62,6 +62,9 @@ export interface SprintAnalyticsItem {
   title: string;
   status: string;
   spec_id: string;
+  lane_type?: 'normal' | 'hotfix' | string;
+  origin_sprint_id?: string | null;
+  origin_bug_id?: string | null;
   total_cards: number;
   done_cards: number;
   completion_rate: number;
@@ -209,3 +212,101 @@ export interface DeliveryForecastNonReadyResponse extends DeliveryForecastBase {
 export type DeliveryForecastResponse =
   | DeliveryForecastReadyResponse
   | DeliveryForecastNonReadyResponse;
+
+export interface DeliveryMetric {
+  state: AnalyticsAvailabilityState;
+  value: number | null;
+  numerator: number | null;
+  denominator: number | null;
+  sample_size: number;
+  reason: string | null;
+  unit: string | null;
+}
+
+export interface DeliveryIntelligenceSprint extends SprintAnalyticsItem {
+  lane_type: 'normal' | 'hotfix' | string;
+  origin_sprint_id: string | null;
+  origin_bug_id: string | null;
+  completed_committed_count: number | null;
+  committed_effort: {
+    state: AnalyticsAvailabilityState;
+    value: number | null;
+    unit: string | null;
+    reason: string | null;
+  };
+  carryover: {
+    state: AnalyticsAvailabilityState;
+    count: number | null;
+    reason: string | null;
+  };
+  velocity: {
+    state: AnalyticsAvailabilityState;
+    period: string;
+    sample_size: number;
+    series: Array<Record<string, string | number>>;
+    reason: string | null;
+  };
+}
+
+export interface DeliveryContribution {
+  subject_id: string | null;
+  subject_label: string;
+  visibility: 'self' | 'operator' | 'aggregate' | 'restricted';
+  role: string;
+  done_count: number | null;
+  first_pass: DeliveryMetric;
+  validation_success: DeliveryMetric;
+  rework_introduced: number | null;
+  rework_resolved: number | null;
+  median_cycle_hours: DeliveryMetric;
+  sample_size: number;
+  period: { from: string; to: string };
+}
+
+export interface DeliveryIntelligenceResponse {
+  contract_version: '1';
+  foundation_version: string;
+  query_fingerprint: string;
+  filters: AnalyticsFilterClause[];
+  as_of: string;
+  board_id: string;
+  result_state: 'available' | 'partial' | 'empty' | 'restricted' | 'unavailable' | 'error';
+  provenance: AnalyticsProjectionProvenance;
+  population_scope: AnalyticsPopulationScope;
+  exclusions: AnalyticsExclusionSummary;
+  minimum_sample_size: number;
+  summary: {
+    commitment_reliability: DeliveryMetric;
+    throughput: {
+      state: AnalyticsAvailabilityState;
+      total: number;
+      normal: number;
+      hotfix: number;
+      sample_size: number;
+      reason: string | null;
+    };
+    carryover: DeliveryMetric;
+    hotfix_share: DeliveryMetric;
+    scope: {
+      state: AnalyticsAvailabilityState;
+      committed_at_activation: number | null;
+      completed_from_commitment: number | null;
+      added_after_activation: number | null;
+      removed_after_activation: number | null;
+      sample_size: number;
+      reason: string | null;
+    };
+  };
+  sprints: DeliveryIntelligenceSprint[];
+  contributions: DeliveryContribution[];
+  next_cursor: string | null;
+}
+
+export interface DeliveryIntelligenceFilters {
+  sprintId?: string;
+  lane?: 'all' | 'normal' | 'hotfix';
+  role?: string;
+  contributionView?: 'self' | 'aggregates' | 'self_and_aggregates' | 'operator';
+  cursor?: string;
+  limit?: number;
+}

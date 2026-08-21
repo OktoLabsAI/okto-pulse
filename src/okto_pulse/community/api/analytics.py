@@ -14,6 +14,7 @@ from okto_pulse.community.api.analytics_transport import (
     CanonicalCoverageResponseDTO,
     CanonicalDeliveryForecastResponseDTO,
     CanonicalFlowHealthResponseDTO,
+    DeliveryIntelligenceResponseDTO,
     FlowHealthSettingsResponseDTO,
 )
 from okto_pulse.community.api.deps import get_unit_of_work
@@ -68,6 +69,10 @@ from okto_pulse.core.application.use_cases import (
 from okto_pulse.core.application.use_cases.delivery_forecast import (
     DeliveryForecastCommand,
     DeliveryForecastUseCase,
+)
+from okto_pulse.core.application.use_cases.delivery_intelligence import (
+    DeliveryIntelligenceCommand,
+    DeliveryIntelligenceUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
@@ -622,6 +627,234 @@ async def board_sprint_analytics(
 
 
 # ---------------------------------------------------------------------------
+# Delivery Intelligence — immutable commitment, lanes, contribution and CSV
+# ---------------------------------------------------------------------------
+
+
+_DELIVERY_LANES = frozenset({"normal", "hotfix"})
+_CONTRIBUTION_VIEWS = frozenset(
+    {"self", "aggregates", "self_and_aggregates", "operator"}
+)
+
+
+def _delivery_intelligence_command(
+    board_id: str,
+    *,
+    date_from: str | None,
+    date_to: str | None,
+    as_of: str | None,
+    sprint_ids: tuple[str, ...],
+    lanes: tuple[str, ...],
+    roles: tuple[str, ...],
+    contribution_view: str,
+    cursor: str | None,
+    limit: int,
+    minimum_sample_size: int,
+) -> DeliveryIntelligenceCommand:
+    observed_at = _parse_date(as_of) or datetime.now(timezone.utc)
+    window_from = _parse_date(date_from) or datetime(1970, 1, 1, tzinfo=timezone.utc)
+    window_to = _parse_date(date_to, end_of_day=True) or observed_at + timedelta(
+        microseconds=1
+    )
+    normalized_lanes = tuple(
+        sorted({value.strip().lower() for value in lanes if value.strip()})
+    )
+    if any(value not in _DELIVERY_LANES for value in normalized_lanes):
+        raise ValueError("delivery_intelligence_lane_invalid")
+    normalized_roles = tuple(
+        sorted({value.strip().lower() for value in roles if value.strip()})
+    )
+    normalized_view = contribution_view.strip().lower()
+    if normalized_view not in _CONTRIBUTION_VIEWS:
+        raise ValueError("delivery_intelligence_contribution_view_invalid")
+    filters: list[AnalyticsFilterClause] = []
+    if sprint_ids:
+        filters.append(AnalyticsFilterClause("sprint_id", "in", sprint_ids))
+    if normalized_lanes:
+        filters.append(AnalyticsFilterClause("lane", "in", normalized_lanes))
+    if normalized_roles:
+        filters.append(AnalyticsFilterClause("role", "in", normalized_roles))
+    filters.append(AnalyticsFilterClause("contribution_view", "eq", normalized_view))
+    return DeliveryIntelligenceCommand(
+        board_id=board_id,
+        window=AnalyticsUtcWindow(window_from, window_to),
+        as_of=observed_at,
+        filters=tuple(filters),
+        cursor=cursor,
+        limit=limit,
+        minimum_sample_size=minimum_sample_size,
+    )
+
+
+async def _delivery_intelligence_payload(
+    board_id: str,
+    *,
+    date_from: str | None,
+    date_to: str | None,
+    as_of: str | None,
+    range_value: str | None,
+    sprint_ids: tuple[str, ...],
+    lanes: tuple[str, ...],
+    roles: tuple[str, ...],
+    contribution_view: str,
+    cursor: str | None,
+    limit: int,
+    minimum_sample_size: int,
+    user_id: str,
+    uow: PulseUnitOfWork,
+) -> dict[str, object]:
+    if range_value is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "analytics_query_invalid",
+                "message": "analytics_range_encoding_unsupported_use_from_and_to",
+            },
+        )
+    try:
+        result = await DeliveryIntelligenceUseCase().execute(
+            _delivery_intelligence_command(
+                board_id,
+                date_from=date_from,
+                date_to=date_to,
+                as_of=as_of,
+                sprint_ids=sprint_ids,
+                lanes=lanes,
+                roles=roles,
+                contribution_view=contribution_view,
+                cursor=cursor,
+                limit=limit,
+                minimum_sample_size=minimum_sample_size,
+            ),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "board_not_found", "message": "Board not found"},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "analytics_query_invalid", "message": str(exc)},
+        ) from exc
+    return result.data
+
+
+@router.get(
+    "/boards/{board_id}/analytics/delivery-intelligence",
+    response_model=DeliveryIntelligenceResponseDTO,
+)
+async def delivery_intelligence(
+    board_id: str,
+    date_from: str | None = Query(None, alias="from"),
+    date_to: str | None = Query(None, alias="to"),
+    as_of: str | None = Query(None),
+    range_value: str | None = Query(None, alias="range", deprecated=True),
+    sprint_ids: list[UUID] | None = Query(None, alias="sprint_id"),
+    lanes: list[str] | None = Query(None, alias="lane"),
+    roles: list[str] | None = Query(None, alias="role"),
+    contribution_view: str = Query("self_and_aggregates"),
+    cursor: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=100),
+    minimum_sample_size: int = Query(5, ge=2, le=100),
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Return the versioned, authorized Delivery Intelligence projection."""
+    return await _delivery_intelligence_payload(
+        board_id,
+        date_from=date_from,
+        date_to=date_to,
+        as_of=as_of,
+        range_value=range_value,
+        sprint_ids=tuple(str(value) for value in (sprint_ids or ())),
+        lanes=tuple(lanes or ()),
+        roles=tuple(roles or ()),
+        contribution_view=contribution_view,
+        cursor=cursor,
+        limit=limit,
+        minimum_sample_size=minimum_sample_size,
+        user_id=user_id,
+        uow=uow,
+    )
+
+
+@router.get("/boards/{board_id}/analytics/delivery-intelligence/export")
+async def delivery_intelligence_export(
+    board_id: str,
+    date_from: str | None = Query(None, alias="from"),
+    date_to: str | None = Query(None, alias="to"),
+    as_of: str | None = Query(None),
+    range_value: str | None = Query(None, alias="range", deprecated=True),
+    sprint_ids: list[UUID] | None = Query(None, alias="sprint_id"),
+    lanes: list[str] | None = Query(None, alias="lane"),
+    roles: list[str] | None = Query(None, alias="role"),
+    contribution_view: str = Query("self_and_aggregates"),
+    cursor: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=100),
+    minimum_sample_size: int = Query(5, ge=2, le=100),
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Export the complete authorized projection for the selected filters."""
+    del cursor, limit  # Pagination controls never truncate a complete export.
+    export_as_of = as_of or datetime.now(timezone.utc).isoformat(
+        timespec="microseconds"
+    ).replace("+00:00", "Z")
+    pages: list[dict[str, object]] = []
+    seen_cursors: set[str] = set()
+    next_cursor: str | None = None
+    while True:
+        page = await _delivery_intelligence_payload(
+            board_id,
+            date_from=date_from,
+            date_to=date_to,
+            as_of=export_as_of,
+            range_value=range_value,
+            sprint_ids=tuple(str(value) for value in (sprint_ids or ())),
+            lanes=tuple(lanes or ()),
+            roles=tuple(roles or ()),
+            contribution_view=contribution_view,
+            cursor=next_cursor,
+            limit=100,
+            minimum_sample_size=minimum_sample_size,
+            user_id=user_id,
+            uow=uow,
+        )
+        pages.append(page)
+        raw_cursor = page.get("next_cursor")
+        if not isinstance(raw_cursor, str) or not raw_cursor.strip():
+            break
+        next_cursor = raw_cursor.strip()
+        if next_cursor in seen_cursors or len(pages) >= 10_000:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "analytics_pagination_invalid",
+                    "message": "Delivery Intelligence export pagination did not converge.",
+                },
+            )
+        seen_cursors.add(next_cursor)
+
+    payload = {
+        **pages[0],
+        "sprints": [
+            sprint
+            for page in pages
+            for sprint in page.get("sprints", [])
+            if isinstance(sprint, dict)
+        ],
+        "next_cursor": None,
+    }
+    return _canonical_csv_response(
+        payload,
+        filename=f"board-{board_id}-delivery-intelligence.csv",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Delivery Forecast — governed readiness/result union and complete CSV
 # ---------------------------------------------------------------------------
 
@@ -828,6 +1061,7 @@ async def _board_kg_analytics_payload(
     limit: int = 100,
     user_id: str,
     uow: PulseUnitOfWork,
+    observed_at: datetime | None = None,
 ) -> dict[str, object]:
     temporal = _board_kg_analytics_command(
         board_id,
@@ -840,7 +1074,7 @@ async def _board_kg_analytics_payload(
             BoardKgAnalyticsCommand(
                 board_id=board_id,
                 window=temporal.window,
-                as_of=temporal.as_of,
+                as_of=observed_at or temporal.as_of,
                 cognitive_status=tuple(item.value for item in cognitive_status),
                 artifact_types=artifact_types,
                 cursor=cursor,
@@ -928,28 +1162,63 @@ async def board_kg_analytics_export(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Complete deterministic CSV for the same canonical REST projection."""
+    del cursor, limit  # Pagination controls never truncate a complete export.
     normalized_statuses = (
         cognitive_status if isinstance(cognitive_status, (list, tuple)) else ()
     )
     normalized_artifact_types = (
         artifact_types if isinstance(artifact_types, (list, tuple)) else ()
     )
-    payload = await _board_kg_analytics_payload(
-        board_id,
-        date_from=date_from,
-        date_to=date_to,
-        as_of=as_of,
-        cognitive_status=tuple(
-            sorted(set(normalized_statuses), key=lambda item: item.value)
-        ),
-        artifact_types=tuple(
-            sorted({item.strip() for item in normalized_artifact_types})
-        ),
-        cursor=cursor if isinstance(cursor, str) else None,
-        limit=limit if isinstance(limit, int) else 100,
-        user_id=user_id,
-        uow=uow,
-    )
+    export_observed_at = datetime.now(timezone.utc)
+    pages: list[dict[str, object]] = []
+    seen_cursors: set[str] = set()
+    next_cursor: str | None = None
+    while True:
+        page = await _board_kg_analytics_payload(
+            board_id,
+            date_from=date_from,
+            date_to=date_to,
+            as_of=as_of,
+            cognitive_status=tuple(
+                sorted(set(normalized_statuses), key=lambda item: item.value)
+            ),
+            artifact_types=tuple(
+                sorted({item.strip() for item in normalized_artifact_types})
+            ),
+            cursor=next_cursor,
+            limit=500,
+            user_id=user_id,
+            uow=uow,
+            observed_at=export_observed_at,
+        )
+        pages.append(page)
+        raw_cursor = page.get("next_cursor")
+        if not isinstance(raw_cursor, str) or not raw_cursor.strip():
+            break
+        next_cursor = raw_cursor.strip()
+        if next_cursor in seen_cursors or len(pages) >= 10_000:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "analytics_pagination_invalid",
+                    "message": "KG Analytics export pagination did not converge.",
+                },
+            )
+        seen_cursors.add(next_cursor)
+
+    payload: dict[str, object]
+    if len(pages) == 1:
+        payload = pages[0]
+    else:
+        payload = {
+            "export_contract_version": "1",
+            "complete": True,
+            "page_count": len(pages),
+            "projection_contract_version": pages[0].get("contract_version"),
+            "board_id": board_id,
+            "filters": pages[0].get("filters", []),
+            "pages": pages,
+        }
     return _canonical_csv_response(
         payload,
         filename=f"board-{board_id}-kg-analytics.csv",

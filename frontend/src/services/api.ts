@@ -11,8 +11,11 @@ import type {
   FlowHealthSettingsResponse,
   FlowHealthSettingsUpdate,
   BoardKgAnalyticsResponse,
+  BoardKgAnalyticsQueryOptions,
 } from '@/components/analytics/analyticsCanonicalTypes';
 import type {
+  DeliveryIntelligenceFilters,
+  DeliveryIntelligenceResponse,
   DeliveryForecastResponse,
   SprintAnalyticsResponse,
 } from '@/components/analytics/analyticsDeliveryTypes';
@@ -2476,6 +2479,52 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson(`/boards/${boardId}/analytics/sprints?${params.toString()}`);
     },
 
+    async getBoardDeliveryIntelligence(
+      boardId: string,
+      from?: string,
+      to?: string,
+      options: DeliveryIntelligenceFilters = {},
+    ): Promise<DeliveryIntelligenceResponse> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      if (options.sprintId) params.append('sprint_id', options.sprintId);
+      if (options.lane && options.lane !== 'all') params.append('lane', options.lane);
+      if (options.role && options.role !== 'all') params.append('role', options.role);
+      if (options.contributionView) params.set('contribution_view', options.contributionView);
+      if (options.cursor) params.set('cursor', options.cursor);
+      if (options.limit !== undefined) params.set('limit', String(options.limit));
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/delivery-intelligence?${params.toString()}`);
+    },
+
+    async exportBoardDeliveryIntelligenceCsv(
+      boardId: string,
+      from?: string,
+      to?: string,
+      options: DeliveryIntelligenceFilters = {},
+    ): Promise<void> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      if (options.sprintId) params.append('sprint_id', options.sprintId);
+      if (options.lane && options.lane !== 'all') params.append('lane', options.lane);
+      if (options.role && options.role !== 'all') params.append('role', options.role);
+      if (options.contributionView) params.set('contribution_view', options.contributionView);
+      if (options.cursor) params.set('cursor', options.cursor);
+      if (options.limit !== undefined) params.set('limit', String(options.limit));
+      const response = await apiClient.fetch(`/boards/${boardId}/analytics/delivery-intelligence/export?${params.toString()}`);
+      if (!response.ok) throw new Error(`Export failed: ${response.status}`);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `board-${boardId}-delivery-intelligence.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    },
+
     async getBoardDeliveryForecast(boardId: string, from?: string, to?: string): Promise<DeliveryForecastResponse> {
       const params = new URLSearchParams();
       if (from) params.set('from', from);
@@ -2500,17 +2549,43 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       URL.revokeObjectURL(url);
     },
 
-    async getBoardKgAnalytics(boardId: string, from?: string, to?: string): Promise<BoardKgAnalyticsResponse> {
+    async getBoardKgAnalytics(
+      boardId: string,
+      from?: string,
+      to?: string,
+      options: BoardKgAnalyticsQueryOptions = {},
+    ): Promise<BoardKgAnalyticsResponse> {
       const params = new URLSearchParams();
       if (from) params.set('from', from);
       if (to) params.set('to', to);
+      [...new Set(options.cognitiveStatus ?? [])].sort().forEach((status) => {
+        params.append('cognitive_status', status);
+      });
+      [...new Set((options.artifactTypes ?? []).map((value) => value.trim()).filter(Boolean))].sort().forEach((artifactType) => {
+        params.append('artifact_type', artifactType);
+      });
+      if (options.cursor) params.set('cursor', options.cursor);
+      if (options.limit !== undefined) params.set('limit', String(options.limit));
       return apiClient.fetchJson(`/boards/${boardId}/analytics/kg-effectiveness?${params.toString()}`);
     },
 
-    async exportBoardKgAnalyticsCsv(boardId: string, from?: string, to?: string): Promise<void> {
+    async exportBoardKgAnalyticsCsv(
+      boardId: string,
+      from?: string,
+      to?: string,
+      options: BoardKgAnalyticsQueryOptions = {},
+    ): Promise<void> {
       const params = new URLSearchParams();
       if (from) params.set('from', from);
       if (to) params.set('to', to);
+      [...new Set(options.cognitiveStatus ?? [])].sort().forEach((status) => {
+        params.append('cognitive_status', status);
+      });
+      [...new Set((options.artifactTypes ?? []).map((value) => value.trim()).filter(Boolean))].sort().forEach((artifactType) => {
+        params.append('artifact_type', artifactType);
+      });
+      if (options.cursor) params.set('cursor', options.cursor);
+      if (options.limit !== undefined) params.set('limit', String(options.limit));
       const response = await apiClient.fetch(`/boards/${boardId}/analytics/kg-effectiveness/export?${params.toString()}`);
       if (!response.ok) {
         throw new Error(`Export failed: ${response.status}`);

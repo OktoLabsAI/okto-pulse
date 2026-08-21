@@ -276,7 +276,7 @@ describe('canonical Analytics A3/A4 panels', () => {
       />,
     );
 
-    expect(screen.getByText('N/A')).toBeInTheDocument();
+    expect(screen.getAllByText('N/A').length).toBeGreaterThan(0);
     expect(screen.getAllByText('No applicable obligations').length).toBeGreaterThan(0);
     expect(screen.getByText('No canonical obligations are applicable in this period.')).toBeInTheDocument();
   });

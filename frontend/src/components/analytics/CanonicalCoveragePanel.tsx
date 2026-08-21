@@ -18,8 +18,13 @@ import type {
   CanonicalCoverageResponse,
   CanonicalCoverageRow,
 } from './analyticsCanonicalTypes';
+import {
+  canonicalCoverageQueryState,
+  type CanonicalCoverageOutcome,
+  type CanonicalCoverageQueryState,
+} from './canonicalCoverageQueryState';
 
-interface CanonicalCoveragePanelProps {
+export interface CanonicalCoveragePanelProps {
   data: CanonicalCoverageResponse | null;
   loading: boolean;
   error: string | null;
@@ -30,9 +35,13 @@ interface CanonicalCoveragePanelProps {
   onRetry: () => void;
   onExport: () => Promise<void>;
   onOpenSpec: (specId: string, title: string) => void;
+  onOpenFullView?: (query: CanonicalCoverageQueryState) => void;
+  onQueryStateChange?: (query: CanonicalCoverageQueryState) => void;
+  queryState?: CanonicalCoverageQueryState;
+  viewMode?: 'summary' | 'full';
 }
 
-type OutcomeFilter = 'all' | 'covered' | 'uncovered' | 'skipped' | 'incomplete';
+type OutcomeFilter = CanonicalCoverageOutcome;
 
 function words(value: string | null | undefined): string {
   if (!value) return 'Unknown';
@@ -172,11 +181,25 @@ export function CanonicalCoveragePanel({
   onRetry,
   onExport,
   onOpenSpec,
+  onOpenFullView,
+  onQueryStateChange,
+  queryState,
+  viewMode = 'full',
 }: CanonicalCoveragePanelProps) {
-  const [search, setSearch] = useState('');
-  const [lifecycle, setLifecycle] = useState('all');
-  const [outcome, setOutcome] = useState<OutcomeFilter>('all');
+  const [localQuery, setLocalQuery] = useState<CanonicalCoverageQueryState>(() => (
+    canonicalCoverageQueryState({ from, to })
+  ));
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const activeQuery = queryState
+    ? canonicalCoverageQueryState(queryState)
+    : canonicalCoverageQueryState({ ...localQuery, from, to });
+  const { lifecycle, outcome, search } = activeQuery;
+
+  const updateQuery = (patch: Partial<CanonicalCoverageQueryState>) => {
+    const next = canonicalCoverageQueryState({ ...activeQuery, ...patch });
+    if (!queryState) setLocalQuery(next);
+    onQueryStateChange?.(next);
+  };
 
   const allRows = useMemo(
     () => (data?.coverage ?? []).flatMap((group) =>
@@ -192,8 +215,11 @@ export function CanonicalCoveragePanel({
   );
 
   const lifecycleOptions = useMemo(
-    () => Array.from(new Set(allRows.map(rowLifecycle).filter(Boolean))).sort(),
-    [allRows],
+    () => Array.from(new Set([
+      ...allRows.map(rowLifecycle).filter(Boolean),
+      ...(lifecycle === 'all' ? [] : [lifecycle]),
+    ])).sort(),
+    [allRows, lifecycle],
   );
 
   const filteredRows = useMemo(() => {
@@ -257,6 +283,33 @@ export function CanonicalCoveragePanel({
   const boardSkips = effectiveSkips.filter((row) => row.skip.authority_ref?.startsWith('board:')).length;
   const specSkips = effectiveSkips.filter((row) => row.skip.authority_ref?.startsWith('spec:')).length;
   const unclassifiedSkips = effectiveSkips.length - boardSkips - specSkips;
+  const effectiveSkipCount = data?.totals.skipped;
+  const skipRate = data?.totals.state === 'not_applicable' || applicable === 0
+    ? 'N/A'
+    : data?.totals.state !== 'available'
+      ? words(data?.totals.state)
+      : effectiveSkipCount === null || effectiveSkipCount === undefined
+        ? 'Unavailable'
+        : `${Math.round((effectiveSkipCount / applicable) * 100)}%`;
+  const authoritySkipSummary = data?.totals.state === 'not_applicable' || applicable === 0
+    ? 'No applicable obligations'
+    : data?.totals.state !== 'available'
+      ? 'Authority split is not available'
+      : `Board ${Math.round((boardSkips / applicable) * 100)}% · Spec ${Math.round((specSkips / applicable) * 100)}%${unclassifiedSkips > 0 ? ` · ${unclassifiedSkips} unclassified` : ''}`;
+  const headlineCards = [
+    { label: 'Native coverage', value: coverageValue, icon: CheckCircle2, note: applicable === 0 ? 'No applicable obligations' : `${applicable} applicable` },
+    { label: 'Readiness', value: words(readiness), icon: ShieldCheck, note: codeEvidence?.reason ? words(codeEvidence.reason) : 'Final disposition authority' },
+    { label: 'Effective skip rate', value: skipRate, icon: CircleSlash2, note: authoritySkipSummary },
+    { label: 'Incomplete projections', value: incomplete, icon: AlertTriangle, note: 'Covered interpretation is unavailable' },
+  ];
+  const detailCards = [
+    { label: 'Covered', value: data?.totals.covered ?? '—', icon: Link2, note: 'Canonical evidence only' },
+    { label: 'Final / deferred', value: 'Unavailable', icon: ShieldCheck, note: 'Not supplied by canonical authority' },
+    { label: 'Skipped', value: data?.totals.skipped ?? '—', icon: CircleSlash2, note: 'Governed, never covered' },
+    { label: 'Board skips', value: boardSkips, icon: CircleSlash2, note: 'Effective, never covered' },
+    { label: 'Spec skips', value: specSkips, icon: CircleSlash2, note: unclassifiedSkips > 0 ? `${unclassifiedSkips} unclassified` : 'Effective, never covered' },
+    { label: 'Current targets', value: targets.filter((item) => item.currentness === 'current').length, icon: Clock3, note: `${targets.length} total targets` },
+  ];
 
   return (
     <section
@@ -276,9 +329,18 @@ export function CanonicalCoveragePanel({
           <p className="mt-1 max-w-3xl text-xs text-gray-500 dark:text-gray-400">
             Governed obligations and Code Evidence use the same canonical authority. Skips, incomplete authority and historical evidence never count as covered.
           </p>
-          <p className="mt-1 text-[10px] text-gray-400">Period {from} through {to}</p>
+          <p className="mt-1 text-[10px] text-gray-400">Period {activeQuery.from} through {activeQuery.to}</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          {onOpenFullView && (
+            <button
+              type="button"
+              onClick={() => onOpenFullView(activeQuery)}
+              className="inline-flex items-center gap-1.5 rounded-md bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-cyan-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-500"
+            >
+              Open full view <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          )}
           <button type="button" disabled={loading} onClick={onRetry} className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium disabled:opacity-50 dark:border-gray-600"><RefreshCw className="h-3.5 w-3.5" aria-hidden="true" /> Refresh</button>
           <button
             type="button"
@@ -304,18 +366,8 @@ export function CanonicalCoveragePanel({
 
       {!loading && !error && data && (
         <div className="mt-5 space-y-5">
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-9" aria-label="Canonical coverage KPIs">
-            {[
-              { label: 'Coverage', value: coverageValue, icon: CheckCircle2, note: applicable === 0 ? 'No applicable obligations' : `${applicable} applicable` },
-              { label: 'Readiness', value: words(readiness), icon: ShieldCheck, note: codeEvidence?.reason ? words(codeEvidence.reason) : 'Code Evidence authority' },
-              { label: 'Covered', value: data.totals.covered ?? '—', icon: Link2, note: 'Canonical evidence only' },
-              { label: 'Final / deferred', value: 'Unavailable', icon: ShieldCheck, note: 'Not supplied by canonical authority' },
-              { label: 'Skipped', value: data.totals.skipped ?? '—', icon: CircleSlash2, note: 'Governed, never covered' },
-              { label: 'Board skips', value: boardSkips, icon: CircleSlash2, note: 'Effective, never covered' },
-              { label: 'Spec skips', value: specSkips, icon: CircleSlash2, note: unclassifiedSkips > 0 ? `${unclassifiedSkips} unclassified` : 'Effective, never covered' },
-              { label: 'Incomplete', value: incomplete, icon: AlertTriangle, note: 'Authority not decisive' },
-              { label: 'Current targets', value: targets.filter((item) => item.currentness === 'current').length, icon: Clock3, note: `${targets.length} total targets` },
-            ].map(({ label, value, icon: Icon, note }) => (
+          <div className={`grid grid-cols-2 gap-3 md:grid-cols-4 ${viewMode === 'full' ? 'xl:grid-cols-5' : ''}`} aria-label="Canonical coverage KPIs">
+            {(viewMode === 'summary' ? headlineCards : [...headlineCards, ...detailCards]).map(({ label, value, icon: Icon, note }) => (
               <div key={label} className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/40">
                 <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-400">
                   <Icon className="h-3.5 w-3.5" aria-hidden="true" /> {label}
@@ -326,33 +378,49 @@ export function CanonicalCoveragePanel({
             ))}
           </div>
 
+          {viewMode === 'full' && <>
           <div className="grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_190px_180px_180px] dark:border-gray-700 dark:bg-gray-900/30" aria-label="Coverage filters">
             <label className="relative">
               <span className="sr-only">Search coverage</span>
               <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-gray-400" aria-hidden="true" />
               <input
                 value={search}
-                onChange={(event) => setSearch(event.target.value)}
+                onChange={(event) => updateQuery({ search: event.target.value })}
                 placeholder="Search Spec, obligation, evidence or source…"
                 className="min-h-9 w-full rounded-md border border-gray-300 bg-white py-2 pl-9 pr-3 text-xs text-gray-800 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
               />
             </label>
-            <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">
-              Period
-              <div className="mt-1 flex min-h-9 items-center rounded-md border border-gray-300 bg-white px-2 text-xs font-normal normal-case dark:border-gray-600 dark:bg-gray-800">
-                {from} → {to}
+            <fieldset className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+              <legend>Period</legend>
+              <div className="mt-1 grid min-h-9 grid-cols-2 gap-1">
+                <label className="sr-only" htmlFor="canonical-coverage-from">From date</label>
+                <input
+                  id="canonical-coverage-from"
+                  type="date"
+                  value={activeQuery.from}
+                  onChange={(event) => updateQuery({ from: event.target.value })}
+                  className="min-w-0 rounded-md border border-gray-300 bg-white px-1.5 text-[10px] font-normal normal-case dark:border-gray-600 dark:bg-gray-800"
+                />
+                <label className="sr-only" htmlFor="canonical-coverage-to">To date</label>
+                <input
+                  id="canonical-coverage-to"
+                  type="date"
+                  value={activeQuery.to}
+                  onChange={(event) => updateQuery({ to: event.target.value })}
+                  className="min-w-0 rounded-md border border-gray-300 bg-white px-1.5 text-[10px] font-normal normal-case dark:border-gray-600 dark:bg-gray-800"
+                />
               </div>
-            </div>
+            </fieldset>
             <label className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">
               Lifecycle
-              <select value={lifecycle} onChange={(event) => setLifecycle(event.target.value)} className="mt-1 min-h-9 w-full rounded-md border border-gray-300 bg-white px-2 text-xs normal-case dark:border-gray-600 dark:bg-gray-800">
+              <select value={lifecycle} onChange={(event) => updateQuery({ lifecycle: event.target.value })} className="mt-1 min-h-9 w-full rounded-md border border-gray-300 bg-white px-2 text-xs normal-case dark:border-gray-600 dark:bg-gray-800">
                 <option value="all">All lifecycle states</option>
                 {lifecycleOptions.map((value) => <option key={value} value={value}>{words(value)}</option>)}
               </select>
             </label>
             <label className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">
               Outcome
-              <select value={outcome} onChange={(event) => setOutcome(event.target.value as OutcomeFilter)} className="mt-1 min-h-9 w-full rounded-md border border-gray-300 bg-white px-2 text-xs normal-case dark:border-gray-600 dark:bg-gray-800">
+              <select value={outcome} onChange={(event) => updateQuery({ outcome: event.target.value as OutcomeFilter })} className="mt-1 min-h-9 w-full rounded-md border border-gray-300 bg-white px-2 text-xs normal-case dark:border-gray-600 dark:bg-gray-800">
                 <option value="all">All outcomes</option>
                 <option value="covered">Covered</option>
                 <option value="uncovered">Uncovered</option>
@@ -384,7 +452,14 @@ export function CanonicalCoveragePanel({
                     <td className="px-3 py-2 text-right tabular-nums">{countValue(group.covered)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{countValue(group.uncovered)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{countValue(group.skipped)}</td>
-                    <td className="px-3 py-2 text-right font-semibold">{coverageRate(group.state, group.applicable, group.value)}</td>
+                    <td className="px-3 py-2 text-right font-semibold">
+                      <span>{coverageRate(group.state, group.applicable, group.value)}</span>
+                      {(group.state === 'not_applicable' || group.applicable === 0) && (
+                        <span className="mt-0.5 block text-[10px] font-normal text-gray-500 dark:text-gray-400">
+                          {group.reason ? words(group.reason) : 'No applicable obligations'}
+                        </span>
+                      )}
+                    </td>
                   </tr>
                 ))}
                 {data.coverage.length === 0 && (
@@ -528,6 +603,7 @@ export function CanonicalCoveragePanel({
               </div>
             )}
           </div>
+          </>}
 
           <p className="text-[10px] text-gray-400">
             as_of {data.as_of} · query {data.query_fingerprint.slice(0, 12)}…{data.contract_version ? ` · contract ${data.contract_version}` : ''}

@@ -250,9 +250,24 @@ export type BoardKgDomain =
   | 'cognitive_backlog';
 
 export type BoardKgDomainSeverity = 'informational' | 'at_risk' | 'blocking';
-export type BoardKgCognitiveStatus = 'pending' | 'in_progress' | 'consolidated' | 'skipped' | 'failed' | 'no_action';
+export const BOARD_KG_COGNITIVE_STATUSES = [
+  'pending',
+  'in_progress',
+  'consolidated',
+  'skipped',
+  'failed',
+  'no_action',
+] as const;
+export type BoardKgCognitiveStatus = typeof BOARD_KG_COGNITIVE_STATUSES[number];
 export type BoardKgProvenanceKind = 'deterministic' | 'cognitive' | 'fallback' | 'legacy';
 export type BoardKgEffectivenessState = 'available' | 'empty' | 'unavailable' | 'restricted';
+
+export interface BoardKgAnalyticsQueryOptions {
+  cognitiveStatus?: readonly BoardKgCognitiveStatus[];
+  artifactTypes?: readonly string[];
+  cursor?: string | null;
+  limit?: number;
+}
 
 export interface BoardKgHealthComponent {
   component: string;

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowRight,
   CalendarRange,
   CheckCircle2,
   Clock3,
@@ -27,6 +28,8 @@ interface DeliveryForecastPanelProps {
   to: string;
   onRetryForecast: () => void;
   onExportForecast: () => Promise<void>;
+  compact?: boolean;
+  onOpenFullView?: () => void;
 }
 
 function words(value: string | null | undefined): string {
@@ -78,6 +81,8 @@ export function DeliveryForecastPanel({
   to,
   onRetryForecast,
   onExportForecast,
+  compact = false,
+  onOpenFullView,
 }: DeliveryForecastPanelProps) {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('all');
@@ -95,6 +100,27 @@ export function DeliveryForecastPanel({
   const scopeChanges = commitments.reduce((total, item) => (
     total + (item.commitment.added_count ?? 0) + (item.commitment.removed_count ?? 0)
   ), 0);
+
+  if (compact) {
+    return (
+      <section id="analytics-delivery-forecast" aria-labelledby="delivery-forecast-heading" className="scroll-mt-20 rounded-xl border border-gray-200 bg-white p-5 dark:border-gray-700 dark:bg-gray-800" data-testid="delivery-forecast-panel">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2"><CalendarRange className="h-4 w-4 text-blue-500" aria-hidden="true" /><h3 id="delivery-forecast-heading" className="text-sm font-semibold text-gray-800 dark:text-gray-100">Delivery Intelligence</h3></div>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Immutable Sprint commitment, scope change, lane-aware throughput, contribution context, and forecast readiness.</p>
+            <p className="mt-1 text-[10px] text-gray-400">Period {from} through {to}</p>
+          </div>
+          <button type="button" onClick={onOpenFullView} disabled={!onOpenFullView} className="inline-flex min-h-9 items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-3 text-xs font-semibold text-blue-700 disabled:opacity-50 dark:border-blue-800 dark:bg-blue-950/30 dark:text-blue-300">Open full view <ArrowRight className="h-3.5 w-3.5" /></button>
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+          <div className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/40"><p className="text-[10px] font-semibold uppercase text-gray-400">Sprints</p><p className="mt-1 text-xl font-bold">{sprints?.summary.total_sprints ?? 0}</p><p className="text-[10px] text-gray-500">Selected period</p></div>
+          <div className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/40"><p className="text-[10px] font-semibold uppercase text-gray-400">Activation baselines</p><p className="mt-1 text-xl font-bold">{commitments.length}</p><p className="text-[10px] text-gray-500">{missingCommitments} unavailable</p></div>
+          <div className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/40"><p className="text-[10px] font-semibold uppercase text-gray-400">Scope changes</p><p className="mt-1 text-xl font-bold">{commitments.length === 0 ? 'Unavailable' : scopeChanges}</p><p className="text-[10px] text-gray-500">Added + removed facts</p></div>
+          <div className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/40"><p className="text-[10px] font-semibold uppercase text-gray-400">Forecast readiness</p><div className="mt-1"><StateBadge value={forecastLoading ? 'loading' : forecast?.readiness.state ?? 'unavailable'} title={forecastError ?? forecast?.readiness.reason ?? undefined} /></div><p className="mt-1 text-[10px] text-gray-500">Loaded independently from delivery facts</p></div>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section id="analytics-delivery-forecast" aria-labelledby="delivery-forecast-heading" className="scroll-mt-20 rounded-xl border border-gray-200 bg-white p-6 dark:border-gray-700 dark:bg-gray-800" data-testid="delivery-forecast-panel">

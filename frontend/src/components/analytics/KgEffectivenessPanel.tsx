@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowRight,
   BrainCircuit,
   CheckCircle2,
   Clock3,
@@ -14,19 +15,24 @@ import {
 } from 'lucide-react';
 import type {
   BoardKgAnalyticsResponse,
+  BoardKgAnalyticsState,
   BoardKgDiagnostic,
   BoardKgOperationalDomain,
 } from './analyticsCanonicalTypes';
 
-interface KgEffectivenessPanelProps {
+export interface KgEffectivenessPanelProps {
   data: BoardKgAnalyticsResponse | null;
   loading: boolean;
   error: string | null;
+  errorState?: Extract<BoardKgAnalyticsState, 'restricted' | 'unavailable' | 'error'>;
   exporting: boolean;
   from: string;
   to: string;
   onRetry: () => void;
   onExport: () => Promise<void>;
+  mode?: 'compact' | 'full';
+  onOpenFullView?: () => void;
+  loadedPages?: number;
 }
 
 function words(value: string | null | undefined): string {
@@ -50,6 +56,27 @@ function tone(value: string | null | undefined): string {
 
 function StateBadge({ value, title }: { value: string | null | undefined; title?: string }) {
   return <span title={title} className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold ${tone(value)}`}>{words(value)}</span>;
+}
+
+const ANALYTICS_STATE_MESSAGE: Record<BoardKgAnalyticsState, string> = {
+  available: 'Canonical KG data is available for this selection.',
+  partial: 'Some canonical KG facts are unavailable. Available facts remain visible and are not inferred.',
+  empty: 'No authorized KG records match this selection.',
+  restricted: 'You do not have access to this canonical KG projection.',
+  unavailable: 'The canonical KG authority is unavailable. No result was inferred.',
+  error: 'The canonical KG request failed. Retry when ready.',
+};
+
+function AnalyticsStateNotice({ state }: { state: BoardKgAnalyticsState }) {
+  return (
+    <p
+      className={`rounded-lg border px-3 py-2 text-xs ${tone(state)}`}
+      role={state === 'error' ? 'alert' : 'status'}
+      data-testid={`kg-result-state-${state}`}
+    >
+      <span className="font-semibold">{words(state)}.</span> {ANALYTICS_STATE_MESSAGE[state]}
+    </p>
+  );
 }
 
 function availabilityFact(value: number | null, state: string): string | number {
@@ -90,7 +117,7 @@ function DomainTable({ domains }: { domains: BoardKgOperationalDomain[] }) {
             <td className="px-3 py-3"><StateBadge value={domain.severity} /></td>
             <td className="px-3 py-3 tabular-nums">{hoursFact(domain.age.p50_hours, domain.age.result_state)} / {hoursFact(domain.age.p95_hours, domain.age.result_state)}</td>
             <td className="px-3 py-3 tabular-nums">{hoursFact(domain.age.oldest_hours, domain.age.result_state)}</td>
-            <td className="px-3 py-3"><p className="text-[10px] text-gray-500">{domain.reason ? words(domain.reason) : 'No diagnostic reason'}</p>{domain.drill_down.allowed && safeDrillDown(domain.drill_down.target) ? <a href={domain.drill_down.target!} className="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-indigo-600 dark:text-indigo-300"><ExternalLink className="h-3 w-3" /> Open domain</a> : domain.drill_down.allowed ? <p className="mt-1 font-mono text-[10px] text-gray-400" title={domain.drill_down.target ?? undefined}>{domain.drill_down.target ?? 'Target unavailable'}</p> : <p className="mt-1 text-[10px] text-gray-400">No authorized drill-down</p>}</td>
+            <td className="px-3 py-3"><p className="text-[10px] text-gray-500">{domain.reason ? words(domain.reason) : 'No diagnostic reason'}</p>{domain.drill_down.allowed && safeDrillDown(domain.drill_down.target) ? <a href={domain.drill_down.target!} className="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-indigo-600 dark:text-indigo-300"><ExternalLink className="h-3 w-3" aria-hidden="true" /> Open domain</a> : domain.drill_down.allowed ? <p className="mt-1 font-mono text-[10px] text-gray-400" title={domain.drill_down.target ?? undefined}>{domain.drill_down.target ?? 'Target unavailable'}</p> : <p className="mt-1 text-[10px] text-gray-400">No authorized drill-down</p>}</td>
           </tr>
         ))}</tbody>
       </table>
@@ -100,10 +127,23 @@ function DomainTable({ domains }: { domains: BoardKgOperationalDomain[] }) {
 
 function DiagnosticList({ diagnostics }: { diagnostics: BoardKgDiagnostic[] }) {
   if (diagnostics.length === 0) return <div className="rounded-lg border border-dashed border-gray-300 px-4 py-6 text-center text-xs text-gray-400 dark:border-gray-600">No canonical diagnostics for this period.</div>;
-  return <div className="space-y-2">{diagnostics.map((diagnostic, index) => <article key={`${diagnostic.domain}:${diagnostic.reason}:${index}`} className="rounded-lg border border-gray-200 p-3 dark:border-gray-700"><div className="flex flex-wrap items-center justify-between gap-2"><h6 className="text-xs font-semibold text-gray-800 dark:text-gray-100">{words(diagnostic.domain)}</h6><StateBadge value={diagnostic.severity} /></div><p className="mt-1 text-[10px] text-gray-500 dark:text-gray-400">{words(diagnostic.reason)}</p>{diagnostic.next_step.allowed && safeDrillDown(diagnostic.next_step.target) && <a href={diagnostic.next_step.target!} className="mt-2 inline-flex items-center gap-1 text-[10px] font-semibold text-indigo-600 dark:text-indigo-300"><ExternalLink className="h-3 w-3" /> Open next step</a>}</article>)}</div>;
+  return <div className="space-y-2">{diagnostics.map((diagnostic, index) => <article key={`${diagnostic.domain}:${diagnostic.reason}:${index}`} className="rounded-lg border border-gray-200 p-3 dark:border-gray-700"><div className="flex flex-wrap items-center justify-between gap-2"><h6 className="text-xs font-semibold text-gray-800 dark:text-gray-100">{words(diagnostic.domain)}</h6><StateBadge value={diagnostic.severity} /></div><p className="mt-1 text-[10px] text-gray-500 dark:text-gray-400">{words(diagnostic.reason)}</p>{diagnostic.next_step.allowed && safeDrillDown(diagnostic.next_step.target) && <a href={diagnostic.next_step.target!} className="mt-2 inline-flex items-center gap-1 text-[10px] font-semibold text-indigo-600 dark:text-indigo-300"><ExternalLink className="h-3 w-3" aria-hidden="true" /> Open next step</a>}</article>)}</div>;
 }
 
-export function KgEffectivenessPanel({ data, loading, error, exporting, from, to, onRetry, onExport }: KgEffectivenessPanelProps) {
+export function KgEffectivenessPanel({
+  data,
+  loading,
+  error,
+  errorState = 'error',
+  exporting,
+  from,
+  to,
+  onRetry,
+  onExport,
+  mode = 'full',
+  onOpenFullView,
+  loadedPages = 1,
+}: KgEffectivenessPanelProps) {
   const [search, setSearch] = useState('');
   const [resultState, setResultState] = useState('all');
   const [severity, setSeverity] = useState('all');
@@ -118,19 +158,91 @@ export function KgEffectivenessPanel({ data, loading, error, exporting, from, to
   const inventory = data?.cognitive_inventory;
   const policyDebt = domains.find((item) => item.domain === 'policy_projection_debt');
 
+  if (mode === 'compact') {
+    const summaryCards = data && effectiveness && inventory ? [
+      {
+        label: 'Effectiveness',
+        value: rateFact(effectiveness.rate, effectiveness.state),
+        note: `${availabilityFact(effectiveness.numerator, effectiveness.state)} / ${availabilityFact(effectiveness.denominator, effectiveness.state)}`,
+        icon: CheckCircle2,
+      },
+      {
+        label: 'Candidate → persisted',
+        value: rateFact(effectiveness.conversion_rate, effectiveness.state),
+        note: `${availabilityFact(effectiveness.candidate_count, effectiveness.state)} candidates · ${availabilityFact(effectiveness.persisted_count, effectiveness.state)} persisted`,
+        icon: BrainCircuit,
+      },
+      {
+        label: 'Cognitive inventory',
+        value: availabilityFact(inventory.total, inventory.result_state),
+        note: `${availabilityFact(inventory.overdue_revisits, inventory.result_state)} overdue revisits`,
+        icon: Database,
+      },
+      {
+        label: 'Policy projection debt',
+        value: policyDebt ? availabilityFact(policyDebt.count, policyDebt.result_state) : 'Unavailable',
+        note: 'Independent debt domain',
+        icon: ShieldAlert,
+      },
+    ] : [];
+
+    return (
+      <section
+        id="analytics-kg-effectiveness"
+        aria-labelledby="kg-effectiveness-heading"
+        className="scroll-mt-20 rounded-xl border border-gray-200 bg-white p-6 dark:border-gray-700 dark:bg-gray-800"
+        data-testid="kg-effectiveness-panel"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <Database className="h-4 w-4 text-indigo-500" aria-hidden="true" />
+              <h3 id="kg-effectiveness-heading" className="text-sm font-semibold text-gray-800 dark:text-gray-100">Board KG Analytics</h3>
+            </div>
+            <p className="mt-1 max-w-3xl text-xs text-gray-500 dark:text-gray-400">Canonical KG health and cognitive effectiveness summary.</p>
+            <p className="mt-1 text-[10px] text-gray-400">Period {from} through {to}{data ? ` · updated ${data.provenance.observed_at}` : ''}</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" disabled={loading} onClick={onRetry} className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium disabled:opacity-50 dark:border-gray-600">
+              <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" /> Refresh
+            </button>
+            <button
+              type="button"
+              disabled={!onOpenFullView}
+              onClick={onOpenFullView}
+              className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Open full view <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+
+        {loading && <p className="mt-4 text-xs text-gray-500" role="status">Loading Board KG Analytics…</p>}
+        {!loading && error && <div className="mt-4 space-y-2"><AnalyticsStateNotice state={errorState} /><button type="button" onClick={onRetry} className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 dark:text-red-300"><RefreshCw className="h-3.5 w-3.5" aria-hidden="true" /> Retry: {error}</button></div>}
+        {!loading && !error && !data && <div className="mt-4"><AnalyticsStateNotice state="unavailable" /></div>}
+        {!loading && !error && data && <div className="mt-4 space-y-4">
+          <AnalyticsStateNotice state={data.result_state} />
+          <div className="flex flex-wrap items-center gap-2" aria-label="KG health and availability"><span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Health</span><StateBadge value={data.health.state} title={data.health.classification_reason} /><span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Result</span><StateBadge value={data.result_state} /><span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Currentness</span><StateBadge value={data.provenance.currentness} title={data.provenance.reason ?? undefined} /></div>
+          {summaryCards.length > 0 ? <div className="grid grid-cols-2 gap-3 xl:grid-cols-4" aria-label="KG effectiveness summary KPIs">{summaryCards.map(({ label, value, note, icon: Icon }) => <article key={label} className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/40"><p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-400"><Icon className="h-3.5 w-3.5" aria-hidden="true" /> {label}</p><p className="mt-1 text-lg font-bold text-gray-900 dark:text-white">{value}</p><p className="mt-0.5 text-[10px] text-gray-500 dark:text-gray-400">{note}</p></article>)}</div> : <p className="rounded-lg border border-dashed border-red-300 bg-red-50 px-4 py-4 text-xs text-red-800 dark:border-red-800 dark:bg-red-950/20 dark:text-red-200">The canonical KG payload is incomplete. Missing facts were not inferred.</p>}
+        </div>}
+      </section>
+    );
+  }
+
   return (
     <section id="analytics-kg-effectiveness" aria-labelledby="kg-effectiveness-heading" className="scroll-mt-20 rounded-xl border border-gray-200 bg-white p-6 dark:border-gray-700 dark:bg-gray-800" data-testid="kg-effectiveness-panel">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div><div className="flex items-center gap-2"><Database className="h-4 w-4 text-indigo-500" aria-hidden="true" /><h3 id="kg-effectiveness-heading" className="text-sm font-semibold text-gray-800 dark:text-gray-100">Board KG Analytics</h3></div><p className="mt-1 max-w-3xl text-xs text-gray-500 dark:text-gray-400">Canonical KG health, operational debt and cognitive effectiveness. Health and metric availability remain independent facts.</p><p className="mt-1 text-[10px] text-gray-400">Period {from} through {to}{data ? ` · updated ${data.provenance.observed_at}` : ''}</p></div>
-        <div className="flex flex-wrap gap-2"><button type="button" disabled={loading} onClick={onRetry} className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium disabled:opacity-50 dark:border-gray-600"><RefreshCw className="h-3.5 w-3.5" /> Refresh</button><button type="button" disabled={exporting || loading || data === null} onClick={() => void onExport()} className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium disabled:opacity-50 dark:border-gray-600"><Download className="h-3.5 w-3.5" /> {exporting ? 'Exporting…' : 'Complete CSV'}</button></div>
+        <div className="flex flex-wrap gap-2"><button type="button" disabled={loading} onClick={onRetry} className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium disabled:opacity-50 dark:border-gray-600"><RefreshCw className="h-3.5 w-3.5" aria-hidden="true" /> Refresh</button><button type="button" disabled={exporting || loading || data === null} onClick={() => void onExport()} className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 px-3 py-1.5 text-xs font-medium disabled:opacity-50 dark:border-gray-600"><Download className="h-3.5 w-3.5" aria-hidden="true" /> {exporting ? 'Exporting…' : 'Export CSV'}</button></div>
       </div>
 
       {loading && <p className="mt-4 text-xs text-gray-500" role="status">Loading Board KG Analytics…</p>}
-      {!loading && error && <div className="mt-4 flex items-center justify-between gap-3 rounded-lg bg-red-50 px-3 py-2 dark:bg-red-950/25" role="alert"><p className="text-xs text-red-700 dark:text-red-300">{error}</p><button type="button" onClick={onRetry} className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 dark:text-red-300"><RefreshCw className="h-3.5 w-3.5" /> Retry</button></div>}
-      {!loading && !error && !data && <div className="mt-4 rounded-lg border border-dashed border-amber-300 bg-amber-50 px-4 py-5 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-200">The canonical Board KG projection is unavailable. No health or effectiveness result was inferred.</div>}
+      {!loading && error && <div className="mt-4 space-y-2"><AnalyticsStateNotice state={errorState} /><div className="flex items-center justify-between gap-3 rounded-lg bg-red-50 px-3 py-2 dark:bg-red-950/25"><p className="text-xs text-red-700 dark:text-red-300">{error}</p><button type="button" onClick={onRetry} className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 dark:text-red-300"><RefreshCw className="h-3.5 w-3.5" aria-hidden="true" /> Retry</button></div></div>}
+      {!loading && !error && !data && <div className="mt-4"><AnalyticsStateNotice state="unavailable" /></div>}
 
       {!loading && !error && data && (!effectiveness || !inventory) && <div className="mt-4 rounded-lg border border-dashed border-red-300 bg-red-50 px-4 py-5 text-xs text-red-800 dark:border-red-800 dark:bg-red-950/20 dark:text-red-200">The canonical KG payload is incomplete. Effectiveness and inventory were not inferred from other facts.</div>}
       {!loading && !error && data && effectiveness && inventory && <div className="mt-5 space-y-5">
+        <AnalyticsStateNotice state={data.result_state} />
         <div className="flex flex-wrap items-center gap-2" aria-label="KG health and availability"><span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Health</span><StateBadge value={data.health.state} title={data.health.classification_reason} /><span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Result</span><StateBadge value={data.result_state} /><span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Currentness</span><StateBadge value={data.provenance.currentness} title={data.provenance.reason ?? undefined} /><span className="text-xs text-gray-500 dark:text-gray-400">{words(data.health.classification_reason)}</span></div>
 
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6" aria-label="KG effectiveness KPIs">{[
@@ -140,11 +252,11 @@ export function KgEffectivenessPanel({ data, loading, error, exporting, from, to
           { label: 'Persistence p95', value: hoursFact(effectiveness.timing.p95_hours, effectiveness.timing.state), note: effectiveness.timing.reason ? words(effectiveness.timing.reason) : 'Canonical timing', icon: Clock3 },
           { label: 'Cognitive inventory', value: availabilityFact(inventory.total, inventory.result_state), note: `${availabilityFact(inventory.overdue_revisits, inventory.result_state)} overdue revisits`, icon: Database },
           { label: 'Policy projection debt', value: policyDebt ? availabilityFact(policyDebt.count, policyDebt.result_state) : 'Unavailable', note: 'Independent debt domain', icon: ShieldAlert },
-        ].map(({ label, value, note, icon: Icon }) => <div key={label} className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/40"><div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-400"><Icon className="h-3.5 w-3.5" /> {label}</div><p className="mt-1 text-lg font-bold text-gray-900 dark:text-white">{value}</p><p className="mt-0.5 text-[10px] text-gray-500 dark:text-gray-400">{note}</p></div>)}</div>
+        ].map(({ label, value, note, icon: Icon }) => <div key={label} className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/40"><div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-400"><Icon className="h-3.5 w-3.5" aria-hidden="true" /> {label}</div><p className="mt-1 text-lg font-bold text-gray-900 dark:text-white">{value}</p><p className="mt-0.5 text-[10px] text-gray-500 dark:text-gray-400">{note}</p></div>)}</div>
 
-        <div className="grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3 md:grid-cols-[minmax(0,1fr)_180px_180px] dark:border-gray-700 dark:bg-gray-900/30" aria-label="KG Analytics filters"><label className="relative"><span className="sr-only">Search KG domains</span><Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-gray-400" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search domain, state, reason or target…" className="min-h-9 w-full rounded-md border border-gray-300 bg-white py-2 pl-9 pr-3 text-xs dark:border-gray-600 dark:bg-gray-800" /></label><label className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Availability<select value={resultState} onChange={(event) => setResultState(event.target.value)} className="mt-1 min-h-9 w-full rounded-md border border-gray-300 bg-white px-2 text-xs normal-case dark:border-gray-600 dark:bg-gray-800"><option value="all">All result states</option>{resultStates.map((value) => <option key={value} value={value}>{words(value)}</option>)}</select></label><label className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Severity<select value={severity} onChange={(event) => setSeverity(event.target.value)} className="mt-1 min-h-9 w-full rounded-md border border-gray-300 bg-white px-2 text-xs normal-case dark:border-gray-600 dark:bg-gray-800"><option value="all">All severities</option>{severities.map((value) => <option key={value} value={value}>{words(value)}</option>)}</select></label></div>
+        <div className="grid gap-3 rounded-lg border border-gray-200 bg-gray-50 p-3 md:grid-cols-[minmax(0,1fr)_180px_180px] dark:border-gray-700 dark:bg-gray-900/30" aria-label="KG Analytics filters"><label className="relative"><span className="sr-only">Search KG domains</span><Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-gray-400" aria-hidden="true" /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search domain, state, reason or target…" className="min-h-9 w-full rounded-md border border-gray-300 bg-white py-2 pl-9 pr-3 text-xs dark:border-gray-600 dark:bg-gray-800" /></label><label className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Availability<select value={resultState} onChange={(event) => setResultState(event.target.value)} className="mt-1 min-h-9 w-full rounded-md border border-gray-300 bg-white px-2 text-xs normal-case dark:border-gray-600 dark:bg-gray-800"><option value="all">All result states</option>{resultStates.map((value) => <option key={value} value={value}>{words(value)}</option>)}</select></label><label className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Severity<select value={severity} onChange={(event) => setSeverity(event.target.value)} className="mt-1 min-h-9 w-full rounded-md border border-gray-300 bg-white px-2 text-xs normal-case dark:border-gray-600 dark:bg-gray-800"><option value="all">All severities</option>{severities.map((value) => <option key={value} value={value}>{words(value)}</option>)}</select></label></div>
 
-        <div><div className="mb-2 flex items-center justify-between"><div><h4 className="text-xs font-semibold text-gray-800 dark:text-gray-100">Operational domains</h4><p className="text-[10px] text-gray-500">{filteredDomains.length} of {domains.length} shown</p></div><Filter className="h-4 w-4 text-gray-400" /></div><DomainTable domains={filteredDomains} /></div>
+        <div><div className="mb-2 flex items-center justify-between"><div><h4 className="text-xs font-semibold text-gray-800 dark:text-gray-100">Operational domains</h4><p className="text-[10px] text-gray-500">{filteredDomains.length} of {domains.length} shown</p></div><Filter className="h-4 w-4 text-gray-400" aria-hidden="true" /></div><DomainTable domains={filteredDomains} /></div>
 
         <div className="grid gap-4 lg:grid-cols-2">
           <div><h4 className="mb-2 text-xs font-semibold text-gray-800 dark:text-gray-100">Cognitive inventory</h4><div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700"><div className="flex flex-wrap items-center justify-between gap-2"><StateBadge value={inventory.result_state} title={inventory.reason ?? undefined} /><span className="text-[10px] text-gray-400">age p50 {hoursFact(inventory.age.p50_hours, inventory.age.result_state)} · p95 {hoursFact(inventory.age.p95_hours, inventory.age.result_state)}</span></div><dl className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">{Object.entries(inventory.by_status).map(([status, count]) => <div key={status} className="rounded-md bg-gray-50 p-2 dark:bg-gray-900/40"><dt className="text-[10px] uppercase tracking-wide text-gray-400">{words(status)}</dt><dd className="mt-0.5 text-base font-bold">{count}</dd></div>)}{Object.keys(inventory.by_status).length === 0 && <div className="col-span-full py-3 text-center text-xs text-gray-400">No authorized inventory facts.</div>}</dl></div></div>
@@ -153,9 +265,9 @@ export function KgEffectivenessPanel({ data, loading, error, exporting, from, to
 
         <div className="grid gap-4 lg:grid-cols-2"><div><h4 className="mb-2 text-xs font-semibold text-gray-800 dark:text-gray-100">Health components</h4><div className="space-y-2">{data.health.components.map((component) => <article key={component.component} className="rounded-lg border border-gray-200 p-3 dark:border-gray-700"><div className="flex flex-wrap items-center justify-between gap-2"><h6 className="text-xs font-semibold">{words(component.component)}</h6><div className="flex gap-1.5"><StateBadge value={component.health_state} /><StateBadge value={component.result_state} /></div></div><p className="mt-1 text-[10px] text-gray-500">{words(component.classification_reason)}</p></article>)}{data.health.components.length === 0 && <div className="rounded-lg border border-dashed border-gray-300 px-4 py-6 text-center text-xs text-gray-400 dark:border-gray-600">No component facts supplied.</div>}</div></div><div><h4 className="mb-2 text-xs font-semibold text-gray-800 dark:text-gray-100">Diagnostics &amp; next steps</h4><DiagnosticList diagnostics={data.diagnostics} /></div></div>
 
-        {data.redactions.length > 0 && <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-3 dark:border-amber-800 dark:bg-amber-950/20"><div className="flex items-center gap-2 text-xs font-semibold text-amber-800 dark:text-amber-200"><AlertTriangle className="h-4 w-4" /> Authorized redactions</div><ul className="mt-2 list-inside list-disc text-[10px] text-amber-700 dark:text-amber-300">{data.redactions.map((redaction) => <li key={redaction}>{words(redaction)}</li>)}</ul></div>}
+        {data.redactions.length > 0 && <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-3 dark:border-amber-800 dark:bg-amber-950/20"><div className="flex items-center gap-2 text-xs font-semibold text-amber-800 dark:text-amber-200"><AlertTriangle className="h-4 w-4" aria-hidden="true" /> Authorized redactions</div><ul className="mt-2 list-inside list-disc text-[10px] text-amber-700 dark:text-amber-300">{data.redactions.map((redaction) => <li key={redaction}>{words(redaction)}</li>)}</ul></div>}
 
-        <div className="rounded-lg border border-gray-200 p-3 text-[10px] text-gray-500 dark:border-gray-700"><p>Population {data.population_scope.accessible_count} accessible · {data.population_scope.excluded_count} excluded · restricted {data.exclusions.restricted_count}</p><p className="mt-1 text-gray-400">as_of {data.as_of} · query {data.query_fingerprint.slice(0, 12)}… · contract {data.contract_version} · method {data.effectiveness.method_version}{data.next_cursor ? ' · more canonical records available' : ''}</p></div>
+        <div className="rounded-lg border border-gray-200 p-3 text-[10px] text-gray-500 dark:border-gray-700"><p>Population {data.population_scope.accessible_count} accessible · {data.population_scope.excluded_count} excluded · restricted {data.exclusions.restricted_count}</p><p className="mt-1 text-gray-400">{loadedPages > 1 ? 'latest page as_of' : 'as_of'} {data.as_of} · {loadedPages > 1 ? 'latest page query' : 'query'} {data.query_fingerprint.slice(0, 12)}… · contract {data.contract_version} · method {data.effectiveness.method_version} · {loadedPages} {loadedPages === 1 ? 'page' : 'pages'} loaded{data.next_cursor ? ' · more canonical records available' : ''}</p></div>
       </div>}
     </section>
   );
