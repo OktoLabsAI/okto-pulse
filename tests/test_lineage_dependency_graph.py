@@ -20,6 +20,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
     Card,
     CardDependency,
+    Ideation,
     Spec,
     SpecDependency,
 )
@@ -58,10 +59,16 @@ async def _database(path: Path):
     )
 
 
-def _spec(spec_id: str, *, board_id: str = BOARD_ID) -> Spec:
+def _spec(
+    spec_id: str,
+    *,
+    board_id: str = BOARD_ID,
+    ideation_id: str | None = None,
+) -> Spec:
     return Spec(
         id=spec_id,
         board_id=board_id,
+        ideation_id=ideation_id,
         title=f"Spec {spec_id}",
         status=SpecStatus.VALIDATED,
         edition=2,
@@ -110,6 +117,7 @@ def _card(
     *,
     board_id: str = BOARD_ID,
     origin_task_id: str | None = None,
+    spec_id: str | None = None,
 ) -> Card:
     return Card(
         id=card_id,
@@ -118,6 +126,7 @@ def _card(
         status=CardStatus.NOT_STARTED,
         card_type=card_type,
         origin_task_id=origin_task_id,
+        spec_id=spec_id,
         created_by="owner",
     )
 
@@ -180,13 +189,27 @@ async def test_rest_dependency_view_forwards_the_canonical_singular_contract(
         entity_id="spec-a",
         include_artifacts=False,
         view="dependency",
+        dependency_scope="selected",
         user_id="owner",
         uow=object(),
     )
 
     command = captured["lineage_command"]
     assert command.view == "dependency"
+    assert command.dependency_scope == "selected"
     assert result["view"] == "dependency"
+
+    await traceability_api.get_lineage_graph(
+        BOARD_ID,
+        entity_type="spec",
+        entity_id="spec-a",
+        include_artifacts=False,
+        view="dependency",
+        dependency_scope="lineage",
+        user_id="owner",
+        uow=object(),
+    )
+    assert captured["lineage_command"].dependency_scope == "lineage"
 
 
 @pytest.mark.asyncio
@@ -617,8 +640,8 @@ async def test_dependency_view_fails_closed_for_an_unavailable_closure_endpoint(
             )
         )
 
-    def _inconsistent_edge_query(*, entity_id: str, edge_query):
-        del entity_id, edge_query
+    def _inconsistent_edge_query(*, seed_query, edge_query):
+        del seed_query, edge_query
         return select(
             literal("inconsistent-dependency"),
             literal("unavailable-prerequisite"),
@@ -681,6 +704,319 @@ async def test_dependency_view_fails_closed_when_node_limit_is_exceeded(
                 entity_id="b",
                 include_artifacts=False,
                 view="dependency",
+            )
+
+    assert raised.value.code == "dependency_graph_node_limit_exceeded"
+    assert raised.value.status_code == 409
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_lineage_scope_batches_every_lineage_seed_and_external_closure(
+    tmp_path: Path,
+) -> None:
+    engine, factory = await _database(tmp_path / "lineage-scoped-dependencies.db")
+    async with factory() as session, session.begin():
+        session.add_all(
+            (
+                Board(id=BOARD_ID, name="Dependency", owner_id="owner"),
+                Board(id=OTHER_BOARD_ID, name="Other", owner_id="owner"),
+                Ideation(
+                    id="idea",
+                    board_id=BOARD_ID,
+                    title="Idea",
+                    created_by="owner",
+                ),
+                _spec("spec-a", ideation_id="idea"),
+                _spec("spec-b", ideation_id="idea"),
+                _spec("spec-external-pre"),
+                _spec("spec-external-post"),
+                _card("task-a", CardType.NORMAL, spec_id="spec-a"),
+                _card("test-b", CardType.TEST, spec_id="spec-b"),
+                _card("card-external-pre", CardType.NORMAL),
+                _card("card-external-post", CardType.BUG),
+                _card(
+                    "card-outside-board",
+                    CardType.NORMAL,
+                    board_id=OTHER_BOARD_ID,
+                ),
+            )
+        )
+        await session.flush()
+        session.add_all(
+            (
+                _spec_dependency(
+                    "spec-dep-pre-a",
+                    prerequisite_id="spec-external-pre",
+                    dependent_id="spec-a",
+                ),
+                _spec_dependency(
+                    "spec-dep-a-b",
+                    prerequisite_id="spec-a",
+                    dependent_id="spec-b",
+                ),
+                _spec_dependency(
+                    "spec-dep-b-post",
+                    prerequisite_id="spec-b",
+                    dependent_id="spec-external-post",
+                ),
+                CardDependency(
+                    id="card-dep-pre-a",
+                    card_id="task-a",
+                    depends_on_id="card-external-pre",
+                ),
+                CardDependency(
+                    id="card-dep-a-b",
+                    card_id="test-b",
+                    depends_on_id="task-a",
+                ),
+                CardDependency(
+                    id="card-dep-b-post",
+                    card_id="card-external-post",
+                    depends_on_id="test-b",
+                ),
+                CardDependency(
+                    id="card-dep-cross-board",
+                    card_id="card-outside-board",
+                    depends_on_id="task-a",
+                ),
+            )
+        )
+
+    overlay_query_labels: list[str] = []
+
+    def _capture_overlay_queries(
+        _connection,
+        _cursor,
+        _statement,
+        _parameters,
+        context,
+        _executemany,
+    ) -> None:
+        label = context.execution_options.get(
+            "lineage_dependency_overlay_query"
+        )
+        if label:
+            overlay_query_labels.append(str(label))
+
+    event.listen(engine.sync_engine, "before_cursor_execute", _capture_overlay_queries)
+    try:
+        async with factory() as session:
+            graph = await build_lineage_graph(
+                session,
+                BOARD_ID,
+                entity_type="spec",
+                entity_id="spec-a",
+                include_artifacts=False,
+                view="dependency",
+                dependency_scope="lineage",
+            )
+    finally:
+        event.remove(
+            engine.sync_engine,
+            "before_cursor_execute",
+            _capture_overlay_queries,
+        )
+
+    assert overlay_query_labels == [
+        "spec_edges",
+        "card_edges",
+        "spec_nodes",
+        "card_nodes",
+    ]
+    assert graph["view"] == "dependency"
+    assert graph["dependency_scope"] == "lineage"
+    assert graph["lineage_node_ids"] == [
+        "spec:spec-a",
+        "spec:spec-b",
+        "task:task-a",
+        "test:test-b",
+    ]
+    assert graph["lineage_entities"] == [
+        {"entity_type": "card", "entity_id": "task-a"},
+        {"entity_type": "card", "entity_id": "test-b"},
+        {"entity_type": "spec", "entity_id": "spec-a"},
+        {"entity_type": "spec", "entity_id": "spec-b"},
+    ]
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    assert set(nodes) == {
+        "spec:spec-external-pre",
+        "spec:spec-a",
+        "spec:spec-b",
+        "spec:spec-external-post",
+        "task:card-external-pre",
+        "task:task-a",
+        "test:test-b",
+        "bug:card-external-post",
+    }
+    assert all("dependency_role" not in node for node in nodes.values())
+    assert len(graph["edges"]) == 6
+    assert all(edge["relationship"] == "precedes" for edge in graph["edges"])
+    assert all(
+        nodes[edge["source"]]["stage"] < nodes[edge["target"]]["stage"]
+        for edge in graph["edges"]
+    )
+    assert all(
+        edge["id"].startswith(("spec-dependency:", "card-dependency:"))
+        for edge in graph["edges"]
+    )
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_lineage_scope_rejects_a_cycle_in_any_seeded_family(
+    tmp_path: Path,
+) -> None:
+    engine, factory = await _database(tmp_path / "lineage-scoped-cycle.db")
+    async with factory() as session, session.begin():
+        session.add_all(
+            (
+                Board(id=BOARD_ID, name="Dependency", owner_id="owner"),
+                Ideation(
+                    id="idea",
+                    board_id=BOARD_ID,
+                    title="Idea",
+                    created_by="owner",
+                ),
+                _spec("spec-a", ideation_id="idea"),
+                _card("task-a", CardType.NORMAL, spec_id="spec-a"),
+                _card("external", CardType.NORMAL),
+                CardDependency(
+                    id="card-dep-a-external",
+                    card_id="external",
+                    depends_on_id="task-a",
+                ),
+                CardDependency(
+                    id="card-dep-external-a",
+                    card_id="task-a",
+                    depends_on_id="external",
+                ),
+            )
+        )
+
+    async with factory() as session:
+        with pytest.raises(TraceabilityReadError) as raised:
+            await build_lineage_graph(
+                session,
+                BOARD_ID,
+                entity_type="spec",
+                entity_id="spec-a",
+                include_artifacts=False,
+                view="dependency",
+                dependency_scope="lineage",
+            )
+
+    assert raised.value.code == "dependency_graph_cycle_detected"
+    assert raised.value.status_code == 409
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_lineage_scope_applies_edge_limit_across_spec_and_card_families(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okto_pulse.community.adapters import sqlalchemy_traceability_read_model
+
+    engine, factory = await _database(tmp_path / "lineage-scoped-edge-limit.db")
+    async with factory() as session, session.begin():
+        session.add_all(
+            (
+                Board(id=BOARD_ID, name="Dependency", owner_id="owner"),
+                Ideation(
+                    id="idea",
+                    board_id=BOARD_ID,
+                    title="Idea",
+                    created_by="owner",
+                ),
+                _spec("spec-a", ideation_id="idea"),
+                _spec("spec-external"),
+                _card("task-a", CardType.NORMAL, spec_id="spec-a"),
+                _card("card-external", CardType.NORMAL),
+            )
+        )
+        await session.flush()
+        session.add_all(
+            (
+                _spec_dependency(
+                    "spec-dep",
+                    prerequisite_id="spec-external",
+                    dependent_id="spec-a",
+                ),
+                CardDependency(
+                    id="card-dep",
+                    card_id="task-a",
+                    depends_on_id="card-external",
+                ),
+            )
+        )
+
+    monkeypatch.setattr(
+        sqlalchemy_traceability_read_model,
+        "_DEPENDENCY_GRAPH_EDGE_LIMIT",
+        1,
+    )
+    async with factory() as session:
+        with pytest.raises(TraceabilityReadError) as raised:
+            await build_lineage_graph(
+                session,
+                BOARD_ID,
+                entity_type="spec",
+                entity_id="spec-a",
+                include_artifacts=False,
+                view="dependency",
+                dependency_scope="lineage",
+            )
+
+    assert raised.value.code == "dependency_graph_edge_limit_exceeded"
+    assert raised.value.status_code == 409
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_lineage_scope_applies_node_limit_to_seeds_and_external_nodes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okto_pulse.community.adapters import sqlalchemy_traceability_read_model
+
+    engine, factory = await _database(tmp_path / "lineage-scoped-node-limit.db")
+    async with factory() as session, session.begin():
+        session.add_all(
+            (
+                Board(id=BOARD_ID, name="Dependency", owner_id="owner"),
+                Ideation(
+                    id="idea",
+                    board_id=BOARD_ID,
+                    title="Idea",
+                    created_by="owner",
+                ),
+                _spec("spec-a", ideation_id="idea"),
+                _card("task-a", CardType.NORMAL, spec_id="spec-a"),
+                _card("card-external", CardType.NORMAL),
+                CardDependency(
+                    id="card-dep",
+                    card_id="task-a",
+                    depends_on_id="card-external",
+                ),
+            )
+        )
+
+    monkeypatch.setattr(
+        sqlalchemy_traceability_read_model,
+        "_DEPENDENCY_GRAPH_NODE_LIMIT",
+        2,
+    )
+    async with factory() as session:
+        with pytest.raises(TraceabilityReadError) as raised:
+            await build_lineage_graph(
+                session,
+                BOARD_ID,
+                entity_type="spec",
+                entity_id="spec-a",
+                include_artifacts=False,
+                view="dependency",
+                dependency_scope="lineage",
             )
 
     assert raised.value.code == "dependency_graph_node_limit_exceeded"

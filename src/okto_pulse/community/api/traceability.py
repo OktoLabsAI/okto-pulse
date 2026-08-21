@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from okto_pulse.community.api.auth_deps import require_user
@@ -19,6 +21,7 @@ from okto_pulse.core.application.use_cases.operational_rest import (
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.ports.traceability import (
+    LineageGraphDependencyScope,
     LineageGraphView,
     TraceabilityReadError,
 )
@@ -59,6 +62,7 @@ async def get_lineage_graph(
     entity_id: str = Query(..., min_length=1),
     include_artifacts: bool = False,
     view: LineageGraphView = Query("lineage"),
+    dependency_scope: str = Query("selected"),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> dict:
@@ -71,6 +75,10 @@ async def get_lineage_graph(
                 entity_id=entity_id,
                 include_artifacts=include_artifacts,
                 view=view,
+                dependency_scope=cast(
+                    LineageGraphDependencyScope,
+                    dependency_scope,
+                ),
             ),
             actor=RESTAdapterContract.actor(user_id, board_id=board_id),
             uow=uow,

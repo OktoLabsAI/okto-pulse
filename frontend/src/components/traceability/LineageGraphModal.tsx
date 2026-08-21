@@ -55,6 +55,13 @@ const MAX_ANIMATED_DEPENDENCY_EDGES = 80;
 
 type LineageViewMode = 'lineage' | 'dependencies';
 
+type LineageDependencyOverlayResponse = LineageGraphResponse;
+
+interface DependencyViewProjection {
+  graph: LineageGraphResponse;
+  positionStages: ReadonlyMap<string, number>;
+}
+
 type LineageFlowNodeData = Record<string, unknown> & {
   lineageNode: LineageGraphNode;
   selected: boolean;
@@ -257,6 +264,27 @@ function LineageNode({ data }: NodeProps<LineageFlowNode>) {
 
 const nodeTypes = { lineage: LineageNode };
 
+const cardEntityTypes = new Set(['task', 'test', 'bug', 'card']);
+
+function semanticEntityType(entityType: string): string {
+  return cardEntityTypes.has(entityType) ? 'card' : entityType;
+}
+
+function semanticEntityIdentity(node: Pick<LineageGraphNode, 'entity_type' | 'entity_id'>) {
+  return `${semanticEntityType(node.entity_type)}\u0000${node.entity_id}`;
+}
+
+function lineageDependencyMembership(graph: LineageGraphResponse): string[] {
+  return Array.from(new Set(
+    graph.nodes.flatMap((node) => {
+      const entityType = semanticEntityType(node.entity_type);
+      return entityType === 'spec' || entityType === 'card'
+        ? [`${entityType}\u0000${node.entity_id}`]
+        : [];
+    }),
+  )).sort();
+}
+
 function dependencySubjectType(entityType: string): 'spec' | 'task' | null {
   if (entityType === 'spec') return 'spec';
   if (['task', 'test', 'bug', 'card'].includes(entityType)) return 'task';
@@ -277,28 +305,239 @@ function isRequestedEntity(
 }
 
 function assertDependencyGraphResponse(
-  data: LineageGraphResponse,
+  data: LineageDependencyOverlayResponse,
+  lineageGraph: LineageGraphResponse,
   boardId: string,
   request: OpenLineageGraphDetail,
 ): void {
   const nodeIds = new Set(data.nodes.map((node) => node.id));
-  const selectedNode = data.nodes.find((node) => isRequestedEntity(node, request));
+  const nodeById = new Map(data.nodes.map((node) => [node.id, node]));
+  const semanticNodeIds = data.nodes.map(semanticEntityIdentity);
+  const receivedMembership = Array.isArray(data.lineage_entities)
+    ? data.lineage_entities.map((entity) => (
+        entity
+        && (entity.entity_type === 'spec' || entity.entity_type === 'card')
+        && typeof entity.entity_id === 'string'
+        && entity.entity_id
+          ? `${entity.entity_type}\u0000${entity.entity_id}`
+          : ''
+      ))
+    : [];
+  const expectedMembership = lineageDependencyMembership(lineageGraph);
+  const stableMembership = (
+    receivedMembership.length === expectedMembership.length
+    && receivedMembership.every((identity, index) => identity === expectedMembership[index])
+  );
+  const lineageNodeIds = Array.isArray(data.lineage_node_ids)
+    ? data.lineage_node_ids
+    : [];
+  const receivedLineageNodeMembership = lineageNodeIds
+    .map((nodeId) => nodeById.get(nodeId))
+    .filter((node): node is LineageGraphNode => Boolean(node))
+    .map(semanticEntityIdentity)
+    .sort();
+  const stableLineageNodeMembership = (
+    receivedLineageNodeMembership.length === expectedMembership.length
+    && receivedLineageNodeMembership.every(
+      (identity, index) => identity === expectedMembership[index],
+    )
+  );
   const invalidEdge = data.edges.some((edge) => (
     edge.relationship !== 'precedes'
     || !nodeIds.has(edge.source)
     || !nodeIds.has(edge.target)
+    || semanticEntityIdentity(nodeById.get(edge.source)!)
+      === semanticEntityIdentity(nodeById.get(edge.target)!)
   ));
   if (
     data.view !== 'dependency'
+    || data.dependency_scope !== 'lineage'
     || data.board_id !== boardId
+    || semanticEntityType(data.selected.entity_type)
+      !== semanticEntityType(request.entityType)
     || data.selected.entity_id !== request.entityId
-    || !selectedNode
+    || nodeIds.size !== data.nodes.length
+    || new Set(semanticNodeIds).size !== semanticNodeIds.length
+    || !stableMembership
+    || lineageNodeIds.length !== expectedMembership.length
+    || new Set(lineageNodeIds).size !== lineageNodeIds.length
+    || lineageNodeIds.some((nodeId) => !nodeIds.has(nodeId))
+    || !stableLineageNodeMembership
     || invalidEdge
   ) {
     throw new Error(
       'The server returned an incompatible dependency graph. Refresh after updating Pulse.',
     );
   }
+}
+
+function dependencyPositionStages(
+  graph: LineageGraphResponse,
+  lineageNodeIds: ReadonlySet<string>,
+): ReadonlyMap<string, number> {
+  const dependencyEdges = graph.edges.filter((edge) => edge.relationship === 'precedes');
+  if (dependencyEdges.length === 0) return new Map();
+
+  const graphNodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const dependencyNodeIds = new Set<string>();
+  const successors = new Map<string, Set<string>>();
+  const undirected = new Map<string, Set<string>>();
+  const indegree = new Map<string, number>();
+  for (const edge of dependencyEdges) {
+    dependencyNodeIds.add(edge.source);
+    dependencyNodeIds.add(edge.target);
+    successors.set(edge.source, successors.get(edge.source) || new Set());
+    successors.set(edge.target, successors.get(edge.target) || new Set());
+    undirected.set(edge.source, undirected.get(edge.source) || new Set());
+    undirected.set(edge.target, undirected.get(edge.target) || new Set());
+    indegree.set(edge.source, indegree.get(edge.source) || 0);
+    indegree.set(edge.target, indegree.get(edge.target) || 0);
+    if (!successors.get(edge.source)!.has(edge.target)) {
+      successors.get(edge.source)!.add(edge.target);
+      indegree.set(edge.target, (indegree.get(edge.target) || 0) + 1);
+    }
+    undirected.get(edge.source)!.add(edge.target);
+    undirected.get(edge.target)!.add(edge.source);
+  }
+
+  const ready = Array.from(dependencyNodeIds)
+    .filter((nodeId) => (indegree.get(nodeId) || 0) === 0)
+    .sort();
+  const levels = new Map(Array.from(dependencyNodeIds, (nodeId) => [nodeId, 0]));
+  const topological: string[] = [];
+  while (ready.length > 0) {
+    const current = ready.shift()!;
+    topological.push(current);
+    for (const dependentId of Array.from(successors.get(current) || []).sort()) {
+      levels.set(
+        dependentId,
+        Math.max(levels.get(dependentId) || 0, (levels.get(current) || 0) + 1),
+      );
+      const nextIndegree = (indegree.get(dependentId) || 0) - 1;
+      indegree.set(dependentId, nextIndegree);
+      if (nextIndegree === 0) {
+        ready.push(dependentId);
+        ready.sort();
+      }
+    }
+  }
+  if (topological.length !== dependencyNodeIds.size) {
+    throw new Error('The dependency overlay contains a cycle and cannot be displayed.');
+  }
+
+  const positionStages = new Map<string, number>();
+  const visited = new Set<string>();
+  for (const rootId of Array.from(dependencyNodeIds).sort()) {
+    if (visited.has(rootId)) continue;
+    const component: string[] = [];
+    const pending = [rootId];
+    visited.add(rootId);
+    while (pending.length > 0) {
+      const current = pending.pop()!;
+      component.push(current);
+      for (const adjacentId of undirected.get(current) || []) {
+        if (!visited.has(adjacentId)) {
+          visited.add(adjacentId);
+          pending.push(adjacentId);
+        }
+      }
+    }
+
+    const lineageOffsets = component.flatMap((nodeId) => {
+      const node = graphNodeById.get(nodeId);
+      return lineageNodeIds.has(nodeId) && node && Number.isFinite(node.stage)
+        ? [node.stage - (levels.get(nodeId) || 0)]
+        : [];
+    });
+    const fallbackOffsets = component.flatMap((nodeId) => {
+      const node = graphNodeById.get(nodeId);
+      return node && Number.isFinite(node.stage)
+        ? [node.stage - (levels.get(nodeId) || 0)]
+        : [];
+    });
+    const offsets = (lineageOffsets.length > 0 ? lineageOffsets : fallbackOffsets)
+      .sort((left, right) => left - right);
+    const middle = Math.floor(offsets.length / 2);
+    const medianOffset = offsets.length === 0
+      ? 0
+      : offsets.length % 2 === 1
+        ? offsets[middle]
+        : (offsets[middle - 1] + offsets[middle]) / 2;
+    const offset = Math.round(medianOffset);
+    component.forEach((nodeId) => {
+      positionStages.set(nodeId, (levels.get(nodeId) || 0) + offset);
+    });
+  }
+  return positionStages;
+}
+
+function mergeLineageDependencyOverlay(
+  lineageGraph: LineageGraphResponse,
+  dependencyGraph: LineageDependencyOverlayResponse,
+): DependencyViewProjection {
+  const nodes = [...lineageGraph.nodes];
+  const lineageNodeIds = new Set(lineageGraph.nodes.map((node) => node.id));
+  const usedNodeIds = new Set(lineageNodeIds);
+  const identityToMergedNodeId = new Map<string, string>();
+  lineageGraph.nodes.forEach((node) => {
+    if (!identityToMergedNodeId.has(semanticEntityIdentity(node))) {
+      identityToMergedNodeId.set(semanticEntityIdentity(node), node.id);
+    }
+  });
+
+  const dependencyNodeIdToMergedNodeId = new Map<string, string>();
+  for (const dependencyNode of dependencyGraph.nodes) {
+    const identity = semanticEntityIdentity(dependencyNode);
+    let mergedNodeId = identityToMergedNodeId.get(identity);
+    if (!mergedNodeId) {
+      mergedNodeId = dependencyNode.id;
+      let suffix = 1;
+      while (usedNodeIds.has(mergedNodeId)) {
+        mergedNodeId = `dependency-overlay:${suffix}:${dependencyNode.id}`;
+        suffix += 1;
+      }
+      const { dependency_role: _ignoredRole, ...dependencyOnlyNode } = dependencyNode;
+      nodes.push({ ...dependencyOnlyNode, id: mergedNodeId });
+      usedNodeIds.add(mergedNodeId);
+      identityToMergedNodeId.set(identity, mergedNodeId);
+    }
+    dependencyNodeIdToMergedNodeId.set(dependencyNode.id, mergedNodeId);
+  }
+
+  const edges = [...lineageGraph.edges];
+  const usedEdgeIds = new Set(edges.map((edge) => edge.id));
+  for (const dependencyEdge of dependencyGraph.edges) {
+    const source = dependencyNodeIdToMergedNodeId.get(dependencyEdge.source)!;
+    const target = dependencyNodeIdToMergedNodeId.get(dependencyEdge.target)!;
+    let edgeId = dependencyEdge.id;
+    let suffix = 1;
+    while (usedEdgeIds.has(edgeId)) {
+      edgeId = `dependency-overlay:${suffix}:${dependencyEdge.id}`;
+      suffix += 1;
+    }
+    usedEdgeIds.add(edgeId);
+    edges.push({ ...dependencyEdge, id: edgeId, source, target });
+  }
+
+  const mergedGraph: LineageGraphResponse = {
+    ...lineageGraph,
+    view: 'dependency',
+    nodes,
+    edges,
+    summary: {
+      ...lineageGraph.summary,
+      dependency_nodes: dependencyGraph.nodes.length,
+      dependency_edges: dependencyGraph.edges.length,
+    },
+    warnings: Array.from(new Set([
+      ...(lineageGraph.warnings || []),
+      ...(dependencyGraph.warnings || []),
+    ])),
+  };
+  return {
+    graph: mergedGraph,
+    positionStages: dependencyPositionStages(mergedGraph, lineageNodeIds),
+  };
 }
 
 function layoutDependencyEdges(
@@ -343,15 +582,21 @@ function layoutNodes(
   graph: LineageGraphResponse,
   selectedNodeId: string | null,
   onOpenDetails: (node: LineageGraphNode) => void,
+  positionStages: ReadonlyMap<string, number> = new Map(),
 ): LineageFlowNode[] {
   const groups = new Map<number, LineageGraphNode[]>();
   graph.nodes.forEach((node) => {
-    const stage = Number.isFinite(node.stage) ? node.stage : 5;
-    groups.set(stage, [...(groups.get(stage) || []), node]);
+    const requestedStage = positionStages.get(node.id) ?? node.stage;
+    const stage = Number.isFinite(requestedStage) ? requestedStage : 5;
+    const stageNodes = groups.get(stage) || [];
+    stageNodes.push(node);
+    groups.set(stage, stageNodes);
   });
 
   return graph.nodes.map((node) => {
-    const stageNodes = groups.get(node.stage) || [];
+    const requestedStage = positionStages.get(node.id) ?? node.stage;
+    const stage = Number.isFinite(requestedStage) ? requestedStage : 5;
+    const stageNodes = groups.get(stage) || [];
     const index = stageNodes.findIndex((item) => item.id === node.id);
     const yOffset = -((stageNodes.length - 1) * NODE_Y) / 2;
     const selected = selectedNodeId === node.id;
@@ -360,7 +605,7 @@ function layoutNodes(
       type: 'lineage',
       data: { lineageNode: node, selected, onOpenDetails },
       position: {
-        x: node.stage * STAGE_X,
+        x: stage * STAGE_X,
         y: yOffset + index * NODE_Y,
       },
       sourcePosition: Position.Right,
@@ -424,7 +669,7 @@ export function LineageGraphModal({ boardId }: Props) {
   const dependencyLoadGeneration = useRef(0);
   const [request, setRequest] = useState<OpenLineageGraphDetail | null>(null);
   const [graph, setGraph] = useState<LineageGraphResponse | null>(null);
-  const [dependencyGraph, setDependencyGraph] = useState<LineageGraphResponse | null>(null);
+  const [dependencyGraph, setDependencyGraph] = useState<LineageDependencyOverlayResponse | null>(null);
   const [lineageRevision, setLineageRevision] = useState(0);
   const [dependencyRevision, setDependencyRevision] = useState(0);
   const [viewMode, setViewMode] = useState<LineageViewMode>('lineage');
@@ -485,6 +730,10 @@ export function LineageGraphModal({ boardId }: Props) {
         false,
       );
       if (generation !== lineageLoadGeneration.current) return;
+      dependencyLoadGeneration.current += 1;
+      setDependencyGraph(null);
+      setDependencyError(null);
+      setDependencyLoading(false);
       setGraph(data);
       setLineageRevision((revision) => revision + 1);
     } catch (err) {
@@ -502,7 +751,7 @@ export function LineageGraphModal({ boardId }: Props) {
   }, [loadGraph]);
 
   const loadDependencyGraph = useCallback(async () => {
-    if (!request || !dependencySubjectType(request.entityType)) return;
+    if (!request || !graph || loading) return;
     const generation = ++dependencyLoadGeneration.current;
     setDependencyLoading(true);
     setDependencyError(null);
@@ -513,9 +762,13 @@ export function LineageGraphModal({ boardId }: Props) {
         request.entityId,
         false,
         'dependency',
+        'lineage',
       );
       if (generation !== dependencyLoadGeneration.current) return;
-      assertDependencyGraphResponse(data, boardId, request);
+      assertDependencyGraphResponse(data, graph, boardId, request);
+      // Preflight the topology while the error can still be projected without
+      // replacing the already-rendered lineage base.
+      mergeLineageDependencyOverlay(graph, data);
       setDependencyGraph(data);
       setDependencyRevision((revision) => revision + 1);
     } catch (err) {
@@ -531,11 +784,13 @@ export function LineageGraphModal({ boardId }: Props) {
         setDependencyLoading(false);
       }
     }
-  }, [api, boardId, request]);
+  }, [api, boardId, graph, loading, request]);
 
   useEffect(() => {
     if (
       viewMode === 'dependencies'
+      && graph
+      && !loading
       && !dependencyGraph
       && !dependencyLoading
       && !dependencyError
@@ -546,7 +801,9 @@ export function LineageGraphModal({ boardId }: Props) {
     dependencyError,
     dependencyGraph,
     dependencyLoading,
+    graph,
     loadDependencyGraph,
+    loading,
     viewMode,
   ]);
 
@@ -569,32 +826,42 @@ export function LineageGraphModal({ boardId }: Props) {
     });
   }, [openCardModal, push]);
 
-  const activeGraph = viewMode === 'dependencies' ? dependencyGraph : graph;
-  const dependencyViewSupported = Boolean(
-    request && dependencySubjectType(request.entityType),
+  const dependencyProjection = useMemo(
+    () => (graph && dependencyGraph
+      ? mergeLineageDependencyOverlay(graph, dependencyGraph)
+      : null),
+    [dependencyGraph, graph],
   );
+  const activeGraph = viewMode === 'dependencies'
+    ? dependencyProjection?.graph || graph
+    : graph;
+  const activePositionStages = viewMode === 'dependencies'
+    ? dependencyProjection?.positionStages
+    : undefined;
+  const dependencyViewSupported = Boolean(request && graph);
   const requestedNodeTitle = request
     ? graph?.nodes.find((node) => isRequestedEntity(node, request))?.title
     : undefined;
-  const activeGraphTitle = activeGraph?.root_ideation.title
+  const activeGraphTitle = graph?.root_ideation.title
     || requestedNodeTitle
     || request?.entityType
     || 'lineage';
   const activeGraphRevision = viewMode === 'dependencies'
-    ? dependencyRevision
-    : lineageRevision;
+    ? `${lineageRevision}:${dependencyRevision}`
+    : String(lineageRevision);
   const accessibleDependencyRelationships = useMemo(() => {
-    if (viewMode !== 'dependencies' || !dependencyGraph) return [];
+    if (viewMode !== 'dependencies' || !dependencyGraph || !activeGraph) return [];
     const titlesByNodeId = new Map(
-      dependencyGraph.nodes.map((node) => [node.id, node.title]),
+      activeGraph.nodes.map((node) => [node.id, node.title]),
     );
-    return dependencyGraph.edges
+    return activeGraph.edges
+      .filter((edge) => edge.relationship === 'precedes')
       .slice(0, ACCESSIBLE_RELATION_LIMIT)
       .map((edge) => ({
         id: edge.id,
         description: `${titlesByNodeId.get(edge.source) || edge.source} precedes ${titlesByNodeId.get(edge.target) || edge.target}`,
       }));
-  }, [dependencyGraph, viewMode]);
+  }, [activeGraph, dependencyGraph, viewMode]);
 
   useEffect(() => {
     if (!request || !activeGraph) return;
@@ -604,16 +871,29 @@ export function LineageGraphModal({ boardId }: Props) {
 
   const nodes = useMemo(
     () => (activeGraph
-      ? layoutNodes(activeGraph, selectedNodeId, openNodeDetails)
+      ? layoutNodes(
+          activeGraph,
+          selectedNodeId,
+          openNodeDetails,
+          activePositionStages,
+        )
       : []),
-    [activeGraph, selectedNodeId, openNodeDetails],
+    [activeGraph, activePositionStages, selectedNodeId, openNodeDetails],
   );
   const edges = useMemo(
     () => {
       if (!activeGraph) return [];
-      return viewMode === 'dependencies'
-        ? layoutDependencyEdges(activeGraph, selectedNodeId)
-        : layoutEdges(activeGraph, selectedNodeId);
+      if (viewMode !== 'dependencies') return layoutEdges(activeGraph, selectedNodeId);
+      const lineageEdges = activeGraph.edges.filter(
+        (edge) => edge.relationship !== 'precedes',
+      );
+      const dependencyEdges = activeGraph.edges.filter(
+        (edge) => edge.relationship === 'precedes',
+      );
+      return [
+        ...layoutEdges({ ...activeGraph, edges: lineageEdges }, selectedNodeId),
+        ...layoutDependencyEdges({ ...activeGraph, edges: dependencyEdges }, selectedNodeId),
+      ];
     },
     [activeGraph, selectedNodeId, viewMode],
   );
@@ -748,33 +1028,47 @@ export function LineageGraphModal({ boardId }: Props) {
           id="lineage-graph-region"
           role="region"
           aria-label={`${viewMode === 'dependencies' ? 'Dependencies' : 'Origin and derivation'} graph for ${activeGraphTitle}`}
-          aria-busy={viewMode === 'dependencies' ? dependencyLoading : loading}
+          aria-busy={loading || (viewMode === 'dependencies' && dependencyLoading)}
           className="relative flex-1 bg-gray-50 dark:bg-gray-950"
         >
-          {(viewMode === 'dependencies' ? dependencyLoading : loading) && (
+          {(loading || (viewMode === 'dependencies' && dependencyLoading)) && (
             <div
               role="status"
               aria-live="polite"
               className="absolute inset-0 z-10 flex items-center justify-center bg-white/70 text-sm text-gray-500 backdrop-blur-sm dark:bg-gray-950/70 dark:text-gray-400"
             >
-              Loading...
+              {viewMode === 'dependencies' && dependencyLoading
+                ? 'Loading dependency overlay...'
+                : 'Loading...'}
             </div>
           )}
-          {(viewMode === 'dependencies' ? dependencyError : error) && (
+          {(viewMode === 'dependencies' ? dependencyError || error : error) && (
             <div
               role="alert"
               className="absolute left-4 top-4 z-20 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900/60 dark:bg-red-950/60 dark:text-red-300"
             >
               <AlertCircle size={16} />
-              <span>{viewMode === 'dependencies' ? dependencyError : error}</span>
-              {viewMode === 'dependencies' && (
-                <button
-                  type="button"
-                  onClick={() => void loadDependencyGraph()}
-                  className="ml-1 rounded border border-red-300 px-2 py-0.5 text-xs font-semibold hover:bg-red-100 dark:border-red-800 dark:hover:bg-red-900/40"
-                >
-                  Retry
-                </button>
+              <span>{viewMode === 'dependencies' ? dependencyError || error : error}</span>
+              {viewMode === 'dependencies' && dependencyError && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void loadDependencyGraph()}
+                    className="ml-1 rounded border border-red-300 px-2 py-0.5 text-xs font-semibold hover:bg-red-100 dark:border-red-800 dark:hover:bg-red-900/40"
+                  >
+                    Retry overlay
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setViewMode('lineage');
+                      void loadGraph();
+                    }}
+                    className="rounded border border-red-300 px-2 py-0.5 text-xs font-semibold hover:bg-red-100 dark:border-red-800 dark:hover:bg-red-900/40"
+                  >
+                    Refresh lineage
+                  </button>
+                </>
               )}
             </div>
           )}
@@ -816,33 +1110,37 @@ export function LineageGraphModal({ boardId }: Props) {
               <div
                 data-testid="lineage-stage-bar"
                 data-view={viewMode}
+                role="group"
+                aria-label={viewMode === 'dependencies'
+                  ? 'Graph legend: SDLC stages and dependency order'
+                  : 'Graph legend: SDLC stages'}
                 className="absolute left-4 top-4 z-10 flex flex-wrap gap-2 overflow-visible rounded-lg border border-gray-200 bg-white/95 px-2 py-1.5 shadow-sm dark:border-gray-800 dark:bg-gray-900/95"
                 style={{ maxWidth: 'min(760px, calc(100% - 2rem))' }}
               >
-                {viewMode === 'lineage' ? stageLabels.map(({ stage, label }) => (
+                {stageLabels.map(({ stage, label }) => (
                   <span
                     key={stage}
                     className="whitespace-nowrap rounded bg-gray-100 px-2 py-1 text-[11px] font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300"
                   >
                     {label}
                   </span>
-                )) : (
+                ))}
+                {viewMode === 'dependencies' && (
                   <>
-                    <span className="whitespace-nowrap rounded bg-gray-100 px-2 py-1 text-[11px] font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300">
-                      Prerequisites
+                    <span className="sr-only">
+                      Horizontal position follows dependency order.
                     </span>
-                    <span aria-hidden="true" className="self-center text-amber-500">→</span>
-                    <span className="whitespace-nowrap rounded bg-amber-100 px-2 py-1 text-[11px] font-semibold text-amber-800 dark:bg-amber-950/50 dark:text-amber-200">
-                      Selected {dependencySubjectType(request.entityType) === 'spec' ? 'Spec' : 'Task'}
-                    </span>
-                    <span aria-hidden="true" className="self-center text-amber-500">→</span>
-                    <span className="whitespace-nowrap rounded bg-gray-100 px-2 py-1 text-[11px] font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300">
-                      Dependents
+                    <span
+                      aria-hidden="true"
+                      className="mx-0.5 self-stretch border-l border-gray-300 dark:border-gray-700"
+                    />
+                    <span className="whitespace-nowrap rounded bg-amber-100 px-2 py-1 text-[11px] font-semibold text-amber-900 dark:bg-amber-950/50 dark:text-amber-200">
+                      Spec / Task dependencies
                     </span>
                     <span className="inline-flex items-center gap-1.5 whitespace-nowrap px-1 py-1 text-[11px] font-semibold text-amber-700 dark:text-amber-300">
                       <span
                         aria-hidden="true"
-                        className="inline-block w-7 border-t-2 border-dashed border-amber-500"
+                        className="inline-block w-7 border-t-2 border-dashed border-amber-700 dark:border-amber-500"
                       />
                       precedes
                     </span>
@@ -904,7 +1202,7 @@ export function LineageGraphModal({ boardId }: Props) {
                     aria-live="polite"
                     className="absolute bottom-5 left-1/2 z-10 -translate-x-1/2 rounded-lg border border-gray-200 bg-white/95 px-3 py-2 text-xs font-medium text-gray-600 shadow-sm dark:border-gray-800 dark:bg-gray-900/95 dark:text-gray-300"
                   >
-                    No active prerequisites or dependents.
+                    No active Spec or Task dependencies in this lineage.
                   </div>
               )}
               {viewMode === 'dependencies' && dependencyGraph && (

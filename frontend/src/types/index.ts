@@ -126,6 +126,15 @@ export interface LineageGraphResponse {
   board_id: string;
   /** Absent on rolling-upgrade servers, where lineage is the only view. */
   view?: 'lineage' | 'dependency';
+  /** Dependency projection scope; absent for origin/derivation responses. */
+  dependency_scope?: 'selected' | 'lineage';
+  /** Canonical IDs of the Spec/Card seeds represented by a lineage overlay. */
+  lineage_node_ids?: string[];
+  /** Stable semantic seed membership used to reject cross-snapshot overlays. */
+  lineage_entities?: Array<{
+    entity_type: 'spec' | 'card';
+    entity_id: string;
+  }>;
   selected: {
     entity_type: string;
     entity_id: string;

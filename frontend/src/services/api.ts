@@ -716,6 +716,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       entityId: string,
       includeArtifacts = false,
       view: 'lineage' | 'dependency' = 'lineage',
+      dependencyScope: 'selected' | 'lineage' = 'selected',
     ): Promise<LineageGraphResponse> {
       const p = new URLSearchParams({
         entity_type: entityType,
@@ -723,6 +724,9 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
         include_artifacts: includeArtifacts ? 'true' : 'false',
       });
       if (view !== 'lineage') p.set('view', view);
+      if (view === 'dependency' && dependencyScope !== 'selected') {
+        p.set('dependency_scope', dependencyScope);
+      }
       return apiClient.fetchJson<LineageGraphResponse>(
         `/boards/${boardId}/lineage-graph?${p.toString()}`
       );

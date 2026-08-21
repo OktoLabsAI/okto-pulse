@@ -37,7 +37,7 @@ describe('Traceability graph API surface', () => {
     );
   });
 
-  it('requests the dependency projection explicitly and lazily', async () => {
+  it('keeps the selected-entity dependency scope as the backward-compatible default', async () => {
     const { result } = renderHook(() => useDashboardApi());
 
     await result.current.getLineageGraph(
@@ -50,6 +50,23 @@ describe('Traceability graph API surface', () => {
 
     expect(mockApiClient.fetchJson).toHaveBeenCalledWith(
       '/boards/board-1/lineage-graph?entity_type=task&entity_id=task-1&include_artifacts=false&view=dependency',
+    );
+  });
+
+  it('requests the full-lineage dependency overlay explicitly and lazily', async () => {
+    const { result } = renderHook(() => useDashboardApi());
+
+    await result.current.getLineageGraph(
+      'board-1',
+      'task',
+      'task-1',
+      false,
+      'dependency',
+      'lineage',
+    );
+
+    expect(mockApiClient.fetchJson).toHaveBeenCalledWith(
+      '/boards/board-1/lineage-graph?entity_type=task&entity_id=task-1&include_artifacts=false&view=dependency&dependency_scope=lineage',
     );
   });
 });
