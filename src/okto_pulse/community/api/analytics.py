@@ -4,11 +4,20 @@ import csv
 import io
 import json
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from starlette.responses import StreamingResponse
 
+from okto_pulse.community.api.analytics_transport import (
+    CanonicalBoardKgAnalyticsResponseDTO,
+    CanonicalCoverageResponseDTO,
+    CanonicalDeliveryForecastResponseDTO,
+    CanonicalFlowHealthResponseDTO,
+    FlowHealthSettingsResponseDTO,
+)
 from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.permission_errors import permission_denied_http_error
 from okto_pulse.core.application.use_cases import (
     AnalyticsOverviewCommand,
     CommandValidationError,
@@ -44,14 +53,43 @@ from okto_pulse.core.application.use_cases import (
     EntityNotFoundError,
     FlowHealthAnalyticsCommand,
     FlowHealthAnalyticsUseCase,
+    FlowHealthSettingsVersionConflict,
+    GetFlowHealthSettingsCommand,
+    GetFlowHealthSettingsUseCase,
+    PermissionDeniedError,
     PolicyResourceReadinessAnalyticsUseCase,
     ReadinessAnalyticsCommand,
+    RestoreFlowHealthSettingsCommand,
+    RestoreFlowHealthSettingsUseCase,
+    SaveFlowHealthSettingsCommand,
+    SaveFlowHealthSettingsUseCase,
     SpecReadinessAnalyticsUseCase,
+)
+from okto_pulse.core.application.use_cases.delivery_forecast import (
+    DeliveryForecastCommand,
+    DeliveryForecastUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.ports.application_persistence import PAGE_OFFSET_MAX
-from okto_pulse.core.ports.analytics_foundation import AnalyticsUtcWindow
+from okto_pulse.core.ports.analytics_foundation import (
+    AnalyticsFilterClause,
+    AnalyticsUtcWindow,
+)
+from okto_pulse.core.ports.delivery_forecast import (
+    DEFAULT_FORECAST_CONFIDENCE_LEVEL,
+    DEFAULT_FORECAST_HORIZON,
+    DEFAULT_FORECAST_METHOD_VERSION,
+    DeliveryForecastError,
+)
+from okto_pulse.core.ports.board_kg_analytics import (
+    BoardKgAnalyticsError,
+    BoardKgCognitiveStatus,
+)
+from okto_pulse.core.models.schemas import (
+    FlowHealthSettingsRestore,
+    FlowHealthSettingsUpdate,
+)
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.services.analytics_contract import parse_analytics_datetime
 
@@ -103,6 +141,19 @@ def _flatten_canonical_payload(
             ),
         )
     ]
+
+
+def _canonical_csv_response(payload: dict[str, object], *, filename: str):
+    output = io.StringIO()
+    writer = csv.writer(output)
+    _write_csv_row(writer, ["path", "json_value"])
+    for path, value in _flatten_canonical_payload(payload):
+        _write_csv_row(writer, [path, value])
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def _parse_date(value: str | None, end_of_day: bool = False) -> datetime | None:
@@ -571,6 +622,177 @@ async def board_sprint_analytics(
 
 
 # ---------------------------------------------------------------------------
+# Delivery Forecast — governed readiness/result union and complete CSV
+# ---------------------------------------------------------------------------
+
+
+def _delivery_forecast_command(
+    board_id: str,
+    *,
+    date_from: str | None,
+    date_to: str | None,
+    historical_as_of: str | None,
+    sprint_ids: tuple[str, ...],
+    horizon: str,
+    confidence_level: float,
+    method_version: str,
+) -> DeliveryForecastCommand:
+    observed_at = datetime.now(timezone.utc)
+    window_from = _parse_date(date_from) or datetime(1970, 1, 1, tzinfo=timezone.utc)
+    window_to = _parse_date(date_to, end_of_day=True) or observed_at + timedelta(
+        microseconds=1
+    )
+    filters = (
+        (
+            AnalyticsFilterClause(
+                field="sprint_id",
+                operator="in",
+                value=sprint_ids,
+            ),
+        )
+        if sprint_ids
+        else ()
+    )
+    return DeliveryForecastCommand(
+        board_id=board_id,
+        window=AnalyticsUtcWindow(window_from, window_to),
+        as_of=observed_at,
+        horizon=horizon,
+        confidence_level=confidence_level,
+        method_version=method_version,
+        filters=filters,
+        historical_as_of=_parse_date(historical_as_of),
+    )
+
+
+async def _delivery_forecast_payload(
+    board_id: str,
+    *,
+    date_from: str | None,
+    date_to: str | None,
+    range_value: str | None,
+    historical_as_of: str | None,
+    sprint_ids: tuple[str, ...],
+    horizon: str,
+    confidence_level: float,
+    method_version: str,
+    user_id: str,
+    uow: PulseUnitOfWork,
+) -> dict[str, object]:
+    if range_value is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "analytics_query_invalid",
+                "message": "analytics_range_encoding_unsupported_use_from_and_to",
+            },
+        )
+    try:
+        result = await DeliveryForecastUseCase().execute(
+            _delivery_forecast_command(
+                board_id,
+                date_from=date_from,
+                date_to=date_to,
+                historical_as_of=historical_as_of,
+                sprint_ids=sprint_ids,
+                horizon=horizon,
+                confidence_level=confidence_level,
+                method_version=method_version,
+            ),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "board_not_found", "message": "Board not found"},
+        ) from exc
+    except DeliveryForecastError as exc:
+        raise HTTPException(
+            status_code=exc.http_status,
+            detail=exc.canonical_dict(),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "analytics_query_invalid", "message": str(exc)},
+        ) from exc
+    return result.data
+
+
+@router.get(
+    "/boards/{board_id}/analytics/delivery-forecast",
+    response_model=CanonicalDeliveryForecastResponseDTO,
+)
+async def delivery_forecast(
+    board_id: str,
+    date_from: str | None = Query(None, alias="from"),
+    date_to: str | None = Query(None, alias="to"),
+    range_value: str | None = Query(
+        None,
+        alias="range",
+        deprecated=True,
+        description="Unsupported until the Spec defines a concrete range encoding; use from/to.",
+    ),
+    sprint_ids: list[UUID] | None = Query(None),
+    horizon: str = Query(DEFAULT_FORECAST_HORIZON),
+    confidence_level: float = Query(DEFAULT_FORECAST_CONFIDENCE_LEVEL),
+    method_version: str = Query(DEFAULT_FORECAST_METHOD_VERSION),
+    historical_as_of: str | None = Query(None, alias="as_of"),
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Read the deterministic forecast readiness/result projection."""
+    return await _delivery_forecast_payload(
+        board_id,
+        date_from=date_from,
+        date_to=date_to,
+        range_value=range_value,
+        historical_as_of=historical_as_of,
+        sprint_ids=tuple(str(item) for item in (sprint_ids or ())),
+        horizon=horizon,
+        confidence_level=confidence_level,
+        method_version=method_version,
+        user_id=user_id,
+        uow=uow,
+    )
+
+
+@router.get("/boards/{board_id}/analytics/delivery-forecast/export")
+async def delivery_forecast_export(
+    board_id: str,
+    date_from: str | None = Query(None, alias="from"),
+    date_to: str | None = Query(None, alias="to"),
+    range_value: str | None = Query(None, alias="range", deprecated=True),
+    sprint_ids: list[UUID] | None = Query(None),
+    horizon: str = Query(DEFAULT_FORECAST_HORIZON),
+    confidence_level: float = Query(DEFAULT_FORECAST_CONFIDENCE_LEVEL),
+    method_version: str = Query(DEFAULT_FORECAST_METHOD_VERSION),
+    historical_as_of: str | None = Query(None, alias="as_of"),
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Export exactly one authorized canonical forecast projection."""
+    payload = await _delivery_forecast_payload(
+        board_id,
+        date_from=date_from,
+        date_to=date_to,
+        range_value=range_value,
+        historical_as_of=historical_as_of,
+        sprint_ids=tuple(str(item) for item in (sprint_ids or ())),
+        horizon=horizon,
+        confidence_level=confidence_level,
+        method_version=method_version,
+        user_id=user_id,
+        uow=uow,
+    )
+    return _canonical_csv_response(
+        payload,
+        filename=f"board-{board_id}-delivery-forecast.csv",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Canonical Board KG Analytics — shared REST/UI/CSV projection
 # ---------------------------------------------------------------------------
 
@@ -600,23 +822,43 @@ async def _board_kg_analytics_payload(
     date_from: str | None,
     date_to: str | None,
     as_of: str | None,
+    cognitive_status: tuple[BoardKgCognitiveStatus, ...] = (),
+    artifact_types: tuple[str, ...] = (),
+    cursor: str | None = None,
+    limit: int = 100,
     user_id: str,
     uow: PulseUnitOfWork,
 ) -> dict[str, object]:
+    temporal = _board_kg_analytics_command(
+        board_id,
+        date_from=date_from,
+        date_to=date_to,
+        as_of=None,
+    )
     try:
         result = await BoardKgAnalyticsUseCase().execute(
-            _board_kg_analytics_command(
-                board_id,
-                date_from=date_from,
-                date_to=date_to,
-                as_of=as_of,
+            BoardKgAnalyticsCommand(
+                board_id=board_id,
+                window=temporal.window,
+                as_of=temporal.as_of,
+                cognitive_status=tuple(item.value for item in cognitive_status),
+                artifact_types=artifact_types,
+                cursor=cursor,
+                limit=limit,
+                historical_as_of=_parse_date(as_of),
             ),
             actor=RESTAdapterContract.actor(user_id, board_id=board_id),
             uow=uow,
         )
     except EntityNotFoundError as exc:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "board_not_found", "message": "Board not found"},
+        ) from exc
+    except BoardKgAnalyticsError as exc:
+        raise HTTPException(
+            status_code=exc.http_status,
+            detail=exc.canonical_dict(),
         ) from exc
     except ValueError as exc:
         raise HTTPException(
@@ -626,57 +868,91 @@ async def _board_kg_analytics_payload(
     return result.data
 
 
-@router.get("/boards/{board_id}/analytics/kg")
+@router.get(
+    "/boards/{board_id}/analytics/kg",
+    response_model=CanonicalBoardKgAnalyticsResponseDTO,
+)
+@router.get(
+    "/boards/{board_id}/analytics/kg-effectiveness",
+    response_model=CanonicalBoardKgAnalyticsResponseDTO,
+)
 async def board_kg_analytics(
     board_id: str,
     date_from: str | None = Query(None, alias="from"),
     date_to: str | None = Query(None, alias="to"),
     as_of: str | None = Query(None),
+    cognitive_status: list[BoardKgCognitiveStatus] | None = Query(None),
+    artifact_types: list[str] | None = Query(None, alias="artifact_type"),
+    cursor: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Canonical Board KG health and cognitive-effectiveness projection."""
+    normalized_statuses = (
+        cognitive_status if isinstance(cognitive_status, (list, tuple)) else ()
+    )
+    normalized_artifact_types = (
+        artifact_types if isinstance(artifact_types, (list, tuple)) else ()
+    )
     return await _board_kg_analytics_payload(
         board_id,
         date_from=date_from,
         date_to=date_to,
         as_of=as_of,
+        cognitive_status=tuple(
+            sorted(set(normalized_statuses), key=lambda item: item.value)
+        ),
+        artifact_types=tuple(
+            sorted({item.strip() for item in normalized_artifact_types})
+        ),
+        cursor=cursor if isinstance(cursor, str) else None,
+        limit=limit if isinstance(limit, int) else 100,
         user_id=user_id,
         uow=uow,
     )
 
 
 @router.get("/boards/{board_id}/analytics/kg/export")
+@router.get("/boards/{board_id}/analytics/kg-effectiveness/export")
 async def board_kg_analytics_export(
     board_id: str,
     date_from: str | None = Query(None, alias="from"),
     date_to: str | None = Query(None, alias="to"),
     as_of: str | None = Query(None),
+    cognitive_status: list[BoardKgCognitiveStatus] | None = Query(None),
+    artifact_types: list[str] | None = Query(None, alias="artifact_type"),
+    cursor: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Complete deterministic CSV for the same canonical REST projection."""
+    normalized_statuses = (
+        cognitive_status if isinstance(cognitive_status, (list, tuple)) else ()
+    )
+    normalized_artifact_types = (
+        artifact_types if isinstance(artifact_types, (list, tuple)) else ()
+    )
     payload = await _board_kg_analytics_payload(
         board_id,
         date_from=date_from,
         date_to=date_to,
         as_of=as_of,
+        cognitive_status=tuple(
+            sorted(set(normalized_statuses), key=lambda item: item.value)
+        ),
+        artifact_types=tuple(
+            sorted({item.strip() for item in normalized_artifact_types})
+        ),
+        cursor=cursor if isinstance(cursor, str) else None,
+        limit=limit if isinstance(limit, int) else 100,
         user_id=user_id,
         uow=uow,
     )
-    output = io.StringIO()
-    writer = csv.writer(output)
-    _write_csv_row(writer, ["path", "json_value"])
-    for path, value in _flatten_canonical_payload(payload):
-        _write_csv_row(writer, [path, value])
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={
-            "Content-Disposition": (
-                f'attachment; filename="board-{board_id}-kg-analytics.csv"'
-            )
-        },
+    return _canonical_csv_response(
+        payload,
+        filename=f"board-{board_id}-kg-analytics.csv",
     )
 
 
@@ -717,7 +993,10 @@ async def _canonical_coverage_payload(
     return result.data
 
 
-@router.get("/boards/{board_id}/analytics/coverage/canonical")
+@router.get(
+    "/boards/{board_id}/analytics/coverage/canonical",
+    response_model=CanonicalCoverageResponseDTO,
+)
 async def canonical_board_coverage(
     board_id: str,
     date_from: str | None = Query(None, alias="from"),
@@ -806,7 +1085,10 @@ async def _flow_health_payload(
     return result.data
 
 
-@router.get("/boards/{board_id}/analytics/flow-health")
+@router.get(
+    "/boards/{board_id}/analytics/flow-health",
+    response_model=CanonicalFlowHealthResponseDTO,
+)
 async def canonical_flow_health(
     board_id: str,
     date_from: str | None = Query(None, alias="from"),
@@ -856,6 +1138,99 @@ async def canonical_flow_health_export(
             )
         },
     )
+
+
+def _flow_health_settings_conflict(
+    exc: FlowHealthSettingsVersionConflict,
+) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "code": exc.code,
+            "expected_version": exc.expected_version,
+            "current_version": exc.current_version,
+        },
+    )
+
+
+@router.get(
+    "/boards/{board_id}/analytics/flow-health/settings",
+    response_model=FlowHealthSettingsResponseDTO,
+)
+async def get_flow_health_settings(
+    board_id: str,
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Read the board's effective, revisioned Flow Health policy."""
+    try:
+        result = await GetFlowHealthSettingsUseCase().execute(
+            GetFlowHealthSettingsCommand(board_id),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "board_not_found", "message": "Board not found"},
+        ) from exc
+    return result.canonical_dict()
+
+
+@router.patch(
+    "/boards/{board_id}/analytics/flow-health/settings",
+    response_model=FlowHealthSettingsResponseDTO,
+)
+async def save_flow_health_settings(
+    board_id: str,
+    data: FlowHealthSettingsUpdate,
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Replace Flow Health thresholds under the Core version/CAS contract."""
+    try:
+        result = await SaveFlowHealthSettingsUseCase().execute(
+            SaveFlowHealthSettingsCommand(board_id, data),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        ) from exc
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
+    except FlowHealthSettingsVersionConflict as exc:
+        raise _flow_health_settings_conflict(exc) from exc
+    return result.canonical_dict()
+
+
+@router.post(
+    "/boards/{board_id}/analytics/flow-health/settings/restore",
+    response_model=FlowHealthSettingsResponseDTO,
+)
+async def restore_flow_health_settings(
+    board_id: str,
+    data: FlowHealthSettingsRestore,
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Restore Core defaults while advancing the board policy version."""
+    try:
+        result = await RestoreFlowHealthSettingsUseCase().execute(
+            RestoreFlowHealthSettingsCommand(board_id, data),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
+        ) from exc
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
+    except FlowHealthSettingsVersionConflict as exc:
+        raise _flow_health_settings_conflict(exc) from exc
+    return result.canonical_dict()
 
 
 async def _readiness_payload(

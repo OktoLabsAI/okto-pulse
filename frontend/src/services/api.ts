@@ -6,6 +6,17 @@ import { useMemo } from 'react';
 import { useApiClient } from '@/contexts/ApiContext';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import type {
+  CanonicalCoverageResponse,
+  FlowHealthResponse,
+  FlowHealthSettingsResponse,
+  FlowHealthSettingsUpdate,
+  BoardKgAnalyticsResponse,
+} from '@/components/analytics/analyticsCanonicalTypes';
+import type {
+  DeliveryForecastResponse,
+  SprintAnalyticsResponse,
+} from '@/components/analytics/analyticsDeliveryTypes';
+import type {
   AddSpecDependencyRequest,
   ListSpecDependenciesOptions,
   RemoveSpecDependencyRequest,
@@ -2322,7 +2333,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson(`/boards/${boardId}/analytics/coverage?${params.toString()}`);
     },
 
-    async getCanonicalBoardCoverage(boardId: string, from?: string, to?: string): Promise<any> {
+    async getCanonicalBoardCoverage(boardId: string, from?: string, to?: string): Promise<CanonicalCoverageResponse> {
       const params = new URLSearchParams();
       if (from) params.set('from', from);
       if (to) params.set('to', to);
@@ -2348,7 +2359,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       URL.revokeObjectURL(url);
     },
 
-    async getBoardFlowHealth(boardId: string, from?: string, to?: string): Promise<any> {
+    async getBoardFlowHealth(boardId: string, from?: string, to?: string): Promise<FlowHealthResponse> {
       const params = new URLSearchParams();
       if (from) params.set('from', from);
       if (to) params.set('to', to);
@@ -2370,6 +2381,27 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+    },
+
+    async getBoardFlowHealthSettings(boardId: string): Promise<FlowHealthSettingsResponse> {
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/flow-health/settings`);
+    },
+
+    async saveBoardFlowHealthSettings(
+      boardId: string,
+      data: FlowHealthSettingsUpdate,
+    ): Promise<FlowHealthSettingsResponse> {
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/flow-health/settings`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async restoreBoardFlowHealthSettings(boardId: string, expectedVersion: number): Promise<FlowHealthSettingsResponse> {
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/flow-health/settings/restore`, {
+        method: 'POST',
+        body: JSON.stringify({ expected_version: expectedVersion }),
+      });
     },
 
     async getSpecReadiness(boardId: string, from?: string, to?: string): Promise<any> {
@@ -2437,25 +2469,49 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     },
 
     // --- Sprint analytics panel (summary + per-sprint breakdown)
-    async getBoardAnalyticsSprints(boardId: string, from?: string, to?: string): Promise<any> {
+    async getBoardAnalyticsSprints(boardId: string, from?: string, to?: string): Promise<SprintAnalyticsResponse> {
       const params = new URLSearchParams();
       if (from) params.set('from', from);
       if (to) params.set('to', to);
       return apiClient.fetchJson(`/boards/${boardId}/analytics/sprints?${params.toString()}`);
     },
 
-    async getBoardKgAnalytics(boardId: string, from?: string, to?: string): Promise<any> {
+    async getBoardDeliveryForecast(boardId: string, from?: string, to?: string): Promise<DeliveryForecastResponse> {
       const params = new URLSearchParams();
       if (from) params.set('from', from);
       if (to) params.set('to', to);
-      return apiClient.fetchJson(`/boards/${boardId}/analytics/kg?${params.toString()}`);
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/delivery-forecast?${params.toString()}`);
+    },
+
+    async exportBoardDeliveryForecastCsv(boardId: string, from?: string, to?: string): Promise<void> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      const response = await apiClient.fetch(`/boards/${boardId}/analytics/delivery-forecast/export?${params.toString()}`);
+      if (!response.ok) throw new Error(`Export failed: ${response.status}`);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `board-${boardId}-delivery-forecast.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    },
+
+    async getBoardKgAnalytics(boardId: string, from?: string, to?: string): Promise<BoardKgAnalyticsResponse> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/kg-effectiveness?${params.toString()}`);
     },
 
     async exportBoardKgAnalyticsCsv(boardId: string, from?: string, to?: string): Promise<void> {
       const params = new URLSearchParams();
       if (from) params.set('from', from);
       if (to) params.set('to', to);
-      const response = await apiClient.fetch(`/boards/${boardId}/analytics/kg/export?${params.toString()}`);
+      const response = await apiClient.fetch(`/boards/${boardId}/analytics/kg-effectiveness/export?${params.toString()}`);
       if (!response.ok) {
         throw new Error(`Export failed: ${response.status}`);
       }

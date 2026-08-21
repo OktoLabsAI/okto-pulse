@@ -3038,6 +3038,16 @@ export interface BoardSettings {
   lint_languages?: LintLanguageCode[];
   /** Source-blind policy for observations submitted by authenticated agents. */
   code_traceability?: CodeTraceabilitySettings | null;
+  /** Board-scoped analytics policy. Missing legacy values resolve to backend defaults. */
+  analytics?: {
+    version: 1;
+    flow_health: {
+      version: 1;
+      general_stale_hours: number;
+      rejected_stale_hours: number;
+      overrides: Record<string, unknown>;
+    };
+  } | null;
 }
 
 export type LintLanguageCode = 'pt-BR' | 'en-US' | 'es-ES' | 'de-DE' | 'fr-FR';

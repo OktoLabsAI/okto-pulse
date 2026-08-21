@@ -17,6 +17,7 @@ const mockApi = vi.hoisted(() => ({
   getBoardAnalyticsAgents: vi.fn(),
   getBoardAnalyticsValidations: vi.fn(),
   getBoardAnalyticsSprints: vi.fn(),
+  getBoardDeliveryForecast: vi.fn(),
   getBoardKgAnalytics: vi.fn(),
   exportBoardKgAnalyticsCsv: vi.fn(),
   getBoardAnalyticsEntities: vi.fn(),
@@ -110,31 +111,126 @@ describe('analytics IR/OR coverage UI', () => {
       },
       sprints: [],
     });
+    mockApi.getBoardDeliveryForecast.mockResolvedValue({
+      contract_version: '1',
+      dependency_versions: { analytics_foundation: '1', delivery_phase_1: '1' },
+      query_fingerprint: '9'.repeat(64),
+      filters: [],
+      as_of: '2026-05-28T12:00:00.000000Z',
+      board_id: 'board-1',
+      result_state: 'unavailable',
+      provenance: {
+        observed_at: '2026-05-28T12:00:00.000000Z',
+        currentness: 'unavailable',
+        reason: 'insufficient_observations',
+        sources: [],
+      },
+      readiness: {
+        ready: false,
+        state: 'unavailable',
+        reason: 'insufficient_observations',
+        remediation: 'Complete more governed Sprints.',
+        actual_observations: 0,
+        required_observations: 5,
+        rule_version: '1',
+      },
+      backtest: {
+        state: 'unavailable',
+        error: null,
+        calibration: null,
+        method_version: 'empirical-v1',
+        sample_size: 0,
+        evaluation_window: null,
+        reason: 'insufficient_observations',
+      },
+      population_scope: { scope_ref: 'board:board-1', accessible_count: 0, excluded_count: 0 },
+      exclusions: { restricted_count: 0, excluded_count: 0, reasons: [] },
+    });
     mockApi.getBoardAnalyticsEntities.mockResolvedValue({ total: 0, offset: 0, limit: 50, items: [] });
     mockApi.getBoardKgAnalytics.mockResolvedValue({
+      contract_version: '2',
+      foundation_version: '1',
       query_fingerprint: 'a'.repeat(64),
+      query: {
+        window: { from: '2026-05-01T00:00:00.000000Z', to: '2026-05-29T00:00:00.000000Z' },
+        cognitive_status: [],
+        artifact_types: [],
+        cursor: null,
+        limit: 100,
+      },
+      filters: [],
       as_of: '2026-05-28T12:00:00.000000Z',
+      board_id: 'board-1',
       result_state: 'unavailable',
+      provenance: {
+        observed_at: '2026-05-28T12:00:00.000000Z',
+        currentness: 'unavailable',
+        reason: 'cognitive_metric_unavailable',
+        sources: [],
+      },
       health: {
-        state: 'healthy',
+        state: 'unavailable',
         classification_reason: 'cognitive_metric_unavailable',
         reason_codes: ['cognitive_metric_unavailable'],
+        availability: {
+          active_queue: 'available',
+          technical_dlq: 'available',
+          canonical_debt: 'unavailable',
+          policy_projection_debt: 'unavailable',
+          cognitive_backlog: 'unavailable',
+          cognitive_effectiveness: 'unavailable',
+        },
+        components: [{
+          component: 'cognitive_effectiveness',
+          health_state: 'healthy',
+          result_state: 'unavailable',
+          classification_reason: 'cognitive_metric_unavailable',
+        }],
       },
-      debt_domains: {
+      domains: [{
+        domain: 'active_queue',
         result_state: 'available',
-        active_queue_count: 2,
-        technical_dlq_count: 1,
-        canonical_debt_count: 3,
-      },
-      cognitive_effectiveness: {
+        count: 2,
+        severity: 'at_risk',
+        age: { result_state: 'available', sample_count: 2, p50_hours: 3, p95_hours: 8, oldest_hours: 10, reason: null },
+        drill_down: { allowed: false, target: null },
+        reason: null,
+      }, {
+        domain: 'technical_dlq',
+        result_state: 'available',
+        count: 1,
+        severity: 'blocking',
+        age: { result_state: 'available', sample_count: 1, p50_hours: 12, p95_hours: 12, oldest_hours: 12, reason: null },
+        drill_down: { allowed: false, target: null },
+        reason: null,
+      }],
+      cognitive_inventory: {
         result_state: 'unavailable',
-        cognitively_effective: null,
-        denominator: null,
-        attempted_count: null,
-        persisted_count: null,
-        technical_dlq_count: null,
-        persistence_gap_count: null,
+        by_status: {},
+        total: null,
+        overdue_revisits: null,
+        age: { result_state: 'unavailable', sample_count: 0, p50_hours: null, p95_hours: null, oldest_hours: null, reason: 'cognitive_metric_unavailable' },
+        reason: 'cognitive_metric_unavailable',
       },
+      effectiveness: {
+        state: 'unavailable',
+        numerator: null,
+        denominator: null,
+        rate: null,
+        candidate_count: null,
+        persisted_count: null,
+        conversion_rate: null,
+        method_version: 'candidate-persistence-v1',
+        sample_period: { from: '2026-05-01T00:00:00.000000Z', to: '2026-05-29T00:00:00.000000Z' },
+        timing: { state: 'unavailable', sample_count: 0, p50_hours: null, p95_hours: null, reason: 'cognitive_metric_unavailable' },
+        reason: 'cognitive_metric_unavailable',
+      },
+      provenance_mix: { result_state: 'unavailable', total: null, by_kind: {}, reason: 'cognitive_metric_unavailable' },
+      diagnostics: [{ domain: 'effectiveness', severity: 'at_risk', reason: 'cognitive_metric_unavailable', next_step: { allowed: false, target: null } }],
+      redactions: [],
+      population_scope: { scope_ref: 'board:board-1', accessible_count: 2, excluded_count: 0 },
+      exclusions: { restricted_count: 0, excluded_count: 0, reasons: [] },
+      next_cursor: null,
     });
     mockApi.getCanonicalBoardCoverage.mockResolvedValue({
       query_fingerprint: 'b'.repeat(64),
@@ -310,7 +406,7 @@ describe('analytics IR/OR coverage UI', () => {
       expect(within(flowPanel!).getByText('Checkout implementation card')).toBeInTheDocument();
       expect(within(readinessPanel!).getByText('Checkout readiness spec')).toBeInTheDocument();
     });
-    expect(within(flowPanel!).getByText('Checkout implementation card').closest('td'))
+    expect(within(flowPanel!).getByText('Checkout implementation card').closest('button'))
       .toHaveAttribute('title', 'card:card-1');
     expect(within(readinessPanel!).getByText('Checkout readiness spec').closest('td'))
       .toHaveAttribute('title', 'spec-1');
@@ -393,41 +489,27 @@ describe('analytics IR/OR coverage UI', () => {
     }
   });
 
-  it('renders IR and OR coverage bars when the board payload exposes them', async () => {
-    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([
-      {
-        spec_id: 'spec-1',
-        title: 'Coverage Spec',
-        total_ac: 2,
-        covered_ac: 2,
-        total_scenarios: 1,
-        scenario_status_counts: { ready: 1 },
-        business_rules_count: 1,
-        api_contracts_count: 1,
-        fr_with_rules_pct: 100,
-        fr_with_contracts_pct: 100,
-        tr_task_linkage_pct: 100,
-        trs_total: 1,
-        ir_task_linkage_pct: 50,
-        irs_total: 2,
-        irs_linked: 1,
-        or_task_linkage_pct: 100,
-        ors_total: 1,
-        ors_linked: 1,
-        decisions_coverage_pct: 0,
-        decisions_total: 0,
-      },
-    ]);
+  it('renders IR and OR from canonical obligation groups', async () => {
+    mockApi.getCanonicalBoardCoverage.mockResolvedValue({
+      query_fingerprint: 'i'.repeat(64),
+      as_of: '2026-05-28T12:00:00.000000Z',
+      totals: { state: 'available', applicable: 3, covered: 2, uncovered: 1, skipped: 0, value: 66.7, n: 3, reason: null },
+      coverage: [
+        { obligation_type: 'integration_requirement', state: 'available', applicable: 2, covered: 1, uncovered: 1, skipped: 0, value: 50, n: 2, reason: null, rows: [] },
+        { obligation_type: 'observability_requirement', state: 'available', applicable: 1, covered: 1, uncovered: 0, skipped: 0, value: 100, n: 1, reason: null, rows: [] },
+      ],
+      code_evidence: { state: 'available', reason: null, targets: [], resolutions: [], executions: [], overlaps: [], waivers: [] },
+    });
 
     render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
 
-    await waitFor(() => expect(screen.getByText('Coverage Spec')).toBeInTheDocument());
-    expect(screen.getByText('IRs')).toBeInTheDocument();
-    expect(screen.getByText('ORs')).toBeInTheDocument();
-    expect(screen.getByText('50%')).toBeInTheDocument();
+    const heading = await screen.findByRole('heading', { name: 'Canonical Coverage & Traceability' });
+    const panel = heading.closest('section');
+    expect(within(panel!).getByRole('row', { name: /Integration Requirement.*50%/ })).toBeInTheDocument();
+    expect(within(panel!).getByRole('row', { name: /Observability Requirement.*100%/ })).toBeInTheDocument();
   });
 
-  it('renders KG health and metric availability as independent states', async () => {
+  it('keeps product classification fail-safe while preserving component health', async () => {
     mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
 
     render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
@@ -435,10 +517,12 @@ describe('analytics IR/OR coverage UI', () => {
     await waitFor(() => expect(screen.getByText('Board KG Analytics')).toBeInTheDocument());
     const panel = screen.getByRole('heading', { name: 'Board KG Analytics' }).closest('section');
     expect(panel).not.toBeNull();
-    expect(within(panel!).getByText('healthy')).toBeInTheDocument();
-    expect(within(panel!).getByText('unavailable')).toBeInTheDocument();
-    expect(within(panel!).getAllByText('Unavailable')).toHaveLength(2);
-    expect(within(panel!).getByText('cognitive_metric_unavailable')).toBeInTheDocument();
+    const headline = within(panel!).getByLabelText('KG health and availability');
+    expect(headline).toHaveTextContent('Unavailable');
+    expect(headline).not.toHaveTextContent('Healthy');
+    expect(within(panel!).getByText('Healthy')).toBeInTheDocument();
+    expect(within(panel!).getAllByText('Unavailable').length).toBeGreaterThan(1);
+    expect(within(panel!).getAllByText('Cognitive Metric Unavailable').length).toBeGreaterThan(0);
   });
 
   it('keeps skipped obligations in factual coverage and out of covered', async () => {
@@ -450,9 +534,16 @@ describe('analytics IR/OR coverage UI', () => {
     const panel = screen.getByRole('heading', { name: 'Canonical Coverage & Traceability' }).closest('section');
     expect(panel).not.toBeNull();
     expect(panel).toHaveTextContent('Covered0');
-    expect(panel).toHaveTextContent('Uncovered2');
     expect(panel).toHaveTextContent('Skipped2');
-    expect(panel).toHaveTextContent('Acceptance Criteria2');
+    const obligationRow = within(panel!).getByRole('row', { name: /Acceptance Criteria/ });
+    expect(within(obligationRow).getAllByRole('cell').map((cell) => cell.textContent)).toEqual([
+      'Available',
+      '2',
+      '0',
+      '2',
+      '2',
+      '0%',
+    ]);
   });
 
   it('renders unavailable obligation groups without dereferencing absent counts', async () => {
@@ -489,8 +580,8 @@ describe('analytics IR/OR coverage UI', () => {
     const obligation = await screen.findByText('Decision');
     const row = obligation.closest('tr');
     expect(row).not.toBeNull();
-    expect(within(row!).getByText('unavailable')).toBeInTheDocument();
-    expect(within(row!).getAllByText('—')).toHaveLength(3);
+    expect(within(row!).getAllByText('Unavailable')).toHaveLength(2);
+    expect(within(row!).getAllByText('—')).toHaveLength(4);
   });
 
   it('labels a historical Sprint commitment unavailable without inferred counts', async () => {
@@ -531,11 +622,11 @@ describe('analytics IR/OR coverage UI', () => {
     render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByText('Legacy Sprint')).toBeInTheDocument());
-    expect(screen.getByText('unavailable legacy')).toBeInTheDocument();
+    expect(screen.getByText('Unavailable Legacy')).toBeInTheDocument();
     expect(screen.queryByText(/original ·/)).not.toBeInTheDocument();
   });
 
-  it('keeps legacy board coverage payloads free of IR/OR rows', async () => {
+  it('does not render the conflicting legacy board coverage projection', async () => {
     mockApi.getBoardAnalyticsCoverage.mockResolvedValue([
       {
         spec_id: 'spec-legacy',
@@ -553,7 +644,9 @@ describe('analytics IR/OR coverage UI', () => {
 
     render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
 
-    await waitFor(() => expect(screen.getByText('Legacy Spec')).toBeInTheDocument());
+    await screen.findByRole('heading', { name: 'Canonical Coverage & Traceability' });
+    expect(mockApi.getBoardAnalyticsCoverage).not.toHaveBeenCalled();
+    expect(screen.queryByText('Legacy Spec')).not.toBeInTheDocument();
     expect(screen.queryByText('IRs')).not.toBeInTheDocument();
     expect(screen.queryByText('ORs')).not.toBeInTheDocument();
   });
@@ -567,9 +660,10 @@ describe('analytics IR/OR coverage UI', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Stories help' })).toBeInTheDocument());
 
-    for (const label of ['Stories', 'Ideations', 'Specs', 'Tasks', 'Completeness', 'Drift', 'Coverage', 'Bugs', 'Cycle Time']) {
+    for (const label of ['Stories', 'Ideations', 'Specs', 'Tasks', 'Completeness', 'Drift', 'Bugs', 'Cycle Time']) {
       expect(screen.getByRole('button', { name: `${label} help` })).toBeInTheDocument();
     }
+    expect(screen.queryByRole('button', { name: 'Coverage help' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Completeness help' }));
     expect(scrollIntoView).toHaveBeenCalled();
@@ -582,9 +676,10 @@ describe('analytics IR/OR coverage UI', () => {
     render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
 
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Flow Health' })).toBeInTheDocument());
-    expect(screen.getByText('card:card-1')).toBeInTheDocument();
-    expect(screen.getByText('in_progress')).toBeInTheDocument();
-    expect(screen.getByText('policy v2', { exact: false })).toBeInTheDocument();
+    const panel = screen.getByRole('heading', { name: 'Flow Health' }).closest('section');
+    expect(within(panel!).getByText('Card card-1')).toBeInTheDocument();
+    expect(within(panel!).getByText('In Progress')).toBeInTheDocument();
+    expect(within(panel!).getByText('v2')).toBeInTheDocument();
   });
 
   it('renders spec-detail IR/OR drilldowns and header help targets', async () => {

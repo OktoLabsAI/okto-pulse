@@ -16,16 +16,27 @@ import {
   CheckSquare,
   Target,
   AlertTriangle,
-  FlaskConical,
   Bug,
   Clock,
-  Database,
   Download,
   HelpCircle,
   RefreshCw,
 } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
 import { PulseLoader } from '@/components/shared/PulseLoader';
+import { CanonicalCoveragePanel } from './CanonicalCoveragePanel';
+import { DeliveryForecastPanel } from './DeliveryForecastPanel';
+import { FlowHealthPanel } from './FlowHealthPanel';
+import { KgEffectivenessPanel } from './KgEffectivenessPanel';
+import type {
+  BoardKgAnalyticsResponse,
+  CanonicalCoverageResponse,
+  FlowHealthResponse,
+} from './analyticsCanonicalTypes';
+import type {
+  DeliveryForecastResponse,
+  SprintAnalyticsResponse,
+} from './analyticsDeliveryTypes';
 
 // ---------------------------------------------------------------------------
 // Types matching backend responses
@@ -143,138 +154,6 @@ interface ValidationsResponse {
   };
 }
 
-interface SprintsResponse {
-  summary: {
-    total_sprints: number;
-    status_breakdown: Record<string, number>;
-    avg_completion_rate: number | null;
-    sprint_evaluation: {
-      total_submitted: number;
-      approve_rate: number | null;
-      avg_overall_score: number | null;
-    };
-  };
-  sprints: Array<{
-    sprint_id: string;
-    title: string;
-    status: string;
-    spec_id: string;
-    total_cards: number;
-    done_cards: number;
-    completion_rate: number;
-    card_status_breakdown: Record<string, number>;
-    evaluations_count: number;
-    last_evaluation: { overall_score: number | null; recommendation: string | null; evaluator_name: string | null; created_at: string | null } | null;
-    task_validation_gate: {
-      total_submitted: number;
-      total_success: number;
-      total_failed: number;
-      rejection_reasons: Record<string, number>;
-      first_pass_rate: number | null;
-    };
-    commitment: {
-      state: 'available' | 'unavailable_legacy';
-      baseline_ref: string | null;
-      activated_at?: string;
-      original_member_count?: number;
-      current_member_count?: number;
-      added_count?: number;
-      removed_count?: number;
-      unavailable_reason: string | null;
-    };
-  }>;
-}
-
-type BoardKgHealthState =
-  | 'healthy'
-  | 'at_risk'
-  | 'backpressure'
-  | 'recovery_needed'
-  | 'quarantined';
-
-type BoardKgResultState =
-  | 'available'
-  | 'restricted'
-  | 'unavailable'
-  | 'empty'
-  | 'error';
-
-interface BoardKgAnalyticsResponse {
-  query_fingerprint: string;
-  as_of: string;
-  result_state: BoardKgResultState;
-  health: {
-    state: BoardKgHealthState;
-    classification_reason: string;
-    reason_codes: string[];
-  };
-  debt_domains: {
-    result_state: BoardKgResultState;
-    active_queue_count: number | null;
-    technical_dlq_count: number | null;
-    canonical_debt_count: number | null;
-  };
-  cognitive_effectiveness: {
-    result_state: BoardKgResultState;
-    cognitively_effective: boolean | null;
-    denominator: number | null;
-    attempted_count: number | null;
-    persisted_count: number | null;
-    technical_dlq_count: number | null;
-    persistence_gap_count: number | null;
-  };
-}
-
-interface CanonicalCoverageResponse {
-  query_fingerprint: string;
-  as_of: string;
-  totals: {
-    state: 'available' | 'not_applicable' | 'restricted' | 'unavailable' | 'inconsistent';
-    applicable: number | null;
-    covered: number | null;
-    uncovered: number | null;
-    skipped: number | null;
-    value: number | null;
-    n: number | null;
-    reason: string | null;
-  };
-  coverage: Array<{
-    obligation_type: string;
-    state: CanonicalCoverageResponse['totals']['state'];
-    applicable: number | null;
-    covered: number | null;
-    uncovered: number | null;
-    skipped: number | null;
-    value: number | null;
-    n: number | null;
-    reason: string | null;
-    rows: Array<{
-      identity: { spec_id: string; obligation_id: string; edition: number };
-      state: string;
-      covered: boolean | null;
-      skip: { state: string; effective: boolean; reason_code: string | null };
-    }>;
-  }>;
-}
-
-interface FlowHealthResponse {
-  query_fingerprint: string;
-  as_of: string;
-  effective_policy: {
-    version: number;
-    general_stale_hours: number;
-    rejected_stale_hours: number;
-  };
-  summary: Record<'healthy' | 'at_risk' | 'blocked' | 'stale' | 'restricted' | 'unavailable' | 'inconsistent', number>;
-  items: Array<{
-    subject: { type: string; id: string };
-    state: string;
-    reason_codes: string[];
-    current_episode: { state: string; age_seconds: number; entered_at: string } | null;
-    rework: Array<{ attempt: number; rejection_code: string }>;
-  }>;
-}
-
 interface SpecReadinessResponse {
   query_fingerprint: string;
   as_of: string;
@@ -322,38 +201,6 @@ interface PolicyResourceReadinessResponse {
       covered_only_by_cancelled_task: number;
     };
   }>;
-}
-
-interface CoverageSpec {
-  spec_id: string;
-  title: string;
-  total_ac: number;
-  covered_ac: number;
-  total_scenarios: number;
-  scenario_status_counts: Record<string, number>;
-  business_rules_count: number;
-  api_contracts_count: number;
-  fr_with_rules_pct: number;
-  fr_with_contracts_pct: number;
-  // Spec 233eaad3: 4 novos campos vindo do spec_coverage_summary —
-  // refletem cancelled-card filter (gates e dashboard usam mesma fonte).
-  decisions_coverage_pct?: number;
-  decisions_total?: number;
-  tr_task_linkage_pct?: number;
-  trs_total?: number;
-  ir_task_linkage_pct?: number;
-  irs_total?: number;
-  irs_linked?: number;
-  irs_uncovered_ids?: string[];
-  skip_ir_coverage?: boolean;
-  or_task_linkage_pct?: number;
-  ors_total?: number;
-  ors_linked?: number;
-  ors_uncovered_ids?: string[];
-  skip_or_coverage?: boolean;
-  // Bug 6f152627: AC/FR coverage explícitos para o painel nível 2.
-  ac_coverage_pct?: number;
-  fr_coverage_pct?: number;
 }
 
 interface AgentRow {
@@ -445,32 +292,10 @@ function formatCycleTime(hours: number): string {
   return `${(hours / 24).toFixed(1)}d`;
 }
 
-function coverageBarColor(pct: number): string {
-  if (pct >= 95) return 'bg-green-500';
-  if (pct >= 80) return 'bg-amber-500';
-  return 'bg-red-500';
-}
-
 function scatterDotColor(completeness: number, drift: number): string {
   // Green quadrant: high completeness + low drift
   if (completeness >= 70 && drift <= 25) return '#22c55e';
   return '#ef4444';
-}
-
-const CANONICAL_OBLIGATION_LABELS: Record<string, string> = {
-  ac: 'Acceptance Criteria',
-  fr: 'Functional Requirement',
-  test_scenario: 'Test Scenario',
-  business_rule: 'Business Rule',
-  api_contract: 'API Contract',
-  technical_requirement: 'Technical Requirement',
-  decision: 'Decision',
-  integration_requirement: 'Integration Requirement',
-  observability_requirement: 'Observability Requirement',
-};
-
-function canonicalObligationLabel(obligationType: string): string {
-  return CANONICAL_OBLIGATION_LABELS[obligationType] ?? obligationType;
 }
 
 type AnalyticsEntityCatalogKind = 'spec' | 'card';
@@ -551,10 +376,14 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
 
   const [funnel, setFunnel] = useState<FunnelData | null>(null);
   const [quality, setQuality] = useState<QualityPoint[]>([]);
-  const [coverage, setCoverage] = useState<CoverageSpec[]>([]);
   const [agents, setAgents] = useState<AgentRow[]>([]);
   const [validations, setValidations] = useState<ValidationsResponse | null>(null);
-  const [sprints, setSprints] = useState<SprintsResponse | null>(null);
+  const [sprints, setSprints] = useState<SprintAnalyticsResponse | null>(null);
+  const [deliveryForecast, setDeliveryForecast] = useState<DeliveryForecastResponse | null>(null);
+  const [deliveryForecastLoading, setDeliveryForecastLoading] = useState(true);
+  const [deliveryForecastError, setDeliveryForecastError] = useState<string | null>(null);
+  const [deliveryForecastRetry, setDeliveryForecastRetry] = useState(0);
+  const [deliveryForecastExporting, setDeliveryForecastExporting] = useState(false);
   const [kgAnalytics, setKgAnalytics] = useState<BoardKgAnalyticsResponse | null>(null);
   const [kgLoading, setKgLoading] = useState(true);
   const [kgError, setKgError] = useState<string | null>(null);
@@ -599,22 +428,20 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
     Promise.all([
       api.getBoardAnalyticsFunnel(boardId, from, to),
       api.getBoardAnalyticsQuality(boardId, from, to),
-      api.getBoardAnalyticsCoverage(boardId, from, to),
       api.getBoardAnalyticsAgents(boardId, from, to),
       api.getBoardAnalyticsValidations(boardId, from, to),
       api.getBoardAnalyticsSprints(boardId, from, to),
     ])
-      .then(([funnelRes, qualityRes, coverageRes, agentsRes, validationsRes, sprintsRes]) => {
+      .then(([funnelRes, qualityRes, agentsRes, validationsRes, sprintsRes]) => {
         if (cancelled) return;
         setFunnel(funnelRes as FunnelData);
         // Quality endpoint now returns {conclusion_reported, validation_reported}.
         // Prefer validation data; fall back to conclusions when absent.
         const q = qualityRes as QualityResponse;
         setQuality(q.validation_reported.length > 0 ? q.validation_reported : q.conclusion_reported);
-        setCoverage(coverageRes as CoverageSpec[]);
         setAgents(agentsRes as AgentRow[]);
         setValidations(validationsRes as ValidationsResponse);
-        setSprints(sprintsRes as SprintsResponse);
+        setSprints(sprintsRes);
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load board analytics');
@@ -635,7 +462,7 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
     setKgError(null);
     api.getBoardKgAnalytics(boardId, from, to)
       .then((payload) => {
-        if (!cancelled) setKgAnalytics(payload as BoardKgAnalyticsResponse);
+        if (!cancelled) setKgAnalytics(payload);
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -651,11 +478,32 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
 
   useEffect(() => {
     let cancelled = false;
+    setDeliveryForecastLoading(true);
+    setDeliveryForecastError(null);
+    api.getBoardDeliveryForecast(boardId, from, to)
+      .then((payload) => {
+        if (!cancelled) setDeliveryForecast(payload);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setDeliveryForecast(null);
+          setDeliveryForecastError(err instanceof Error ? err.message : 'Delivery forecast is unavailable.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDeliveryForecastLoading(false);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, from, to, deliveryForecastRetry]);
+
+  useEffect(() => {
+    let cancelled = false;
     setCanonicalCoverageLoading(true);
     setCanonicalCoverageError(null);
     api.getCanonicalBoardCoverage(boardId, from, to)
       .then((payload) => {
-        if (!cancelled) setCanonicalCoverage(payload as CanonicalCoverageResponse);
+        if (!cancelled) setCanonicalCoverage(payload);
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -675,7 +523,7 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
     setFlowHealthError(null);
     api.getBoardFlowHealth(boardId, from, to)
       .then((payload) => {
-        if (!cancelled) setFlowHealth(payload as FlowHealthResponse);
+        if (!cancelled) setFlowHealth(payload);
       })
       .catch((err: unknown) => {
         if (!cancelled) setFlowHealthError(err instanceof Error ? err.message : 'Failed to load Flow Health');
@@ -811,12 +659,6 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
       ? Math.round(driftVals.reduce((a, b) => a + b, 0) / driftVals.length)
       : null;
 
-    // Coverage: % of specs that have at least one test scenario
-    const specsWithTests = coverage.filter((s) => s.total_scenarios > 0).length;
-    const coberturaPct = coverage.length > 0
-      ? Math.round((specsWithTests / coverage.length) * 100)
-      : 0;
-
     return {
       stories: funnel.stories || 0,
       storiesConvertedPct: Math.round(funnel.story_conversion_pct || 0),
@@ -828,9 +670,8 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
       tasksDonePct,
       avgCompleteness,
       avgDrift,
-      coberturaPct,
     };
-  }, [funnel, quality, coverage]);
+  }, [funnel, quality]);
 
   // Sorted entity items for current tab
   const sortedEntities = useMemo(() => {
@@ -838,16 +679,6 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
     if (!current) return [];
     return [...current.items].sort((a, b) => (a.title || '').localeCompare(b.title || ''));
   }, [entities, activeTab]);
-
-  // Coverage bars sorted by coverage %
-  const coverageBars = useMemo(() => {
-    return [...coverage]
-      .map((s) => {
-        const pct = s.total_ac > 0 ? Math.round((s.covered_ac / s.total_ac) * 100) : 0;
-        return { ...s, pct };
-      })
-      .sort((a, b) => b.pct - a.pct);
-  }, [coverage]);
 
   // ---------------------------------------------------------------------------
   // Render
@@ -867,13 +698,6 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
   if (!kpis) return null;
 
   const tabLabels: Record<EntityTab, string> = { spec: 'Specs', ideation: 'Ideations', card: 'Tasks' };
-  const hasIrCoverageMetrics = coverage.some((s) =>
-    s.irs_total !== undefined || s.ir_task_linkage_pct !== undefined || s.skip_ir_coverage === true
-  );
-  const hasOrCoverageMetrics = coverage.some((s) =>
-    s.ors_total !== undefined || s.or_task_linkage_pct !== undefined || s.skip_or_coverage === true
-  );
-
   const readinessSummary = readiness
     ? {
         specs: readiness.spec.specs.length,
@@ -891,269 +715,83 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
 
   const governedAnalyticsSections = (
     <>
-      <section
-        aria-labelledby="board-kg-analytics-heading"
-        className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6"
-      >
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <Database className="w-4 h-4 text-indigo-500" />
-              <h3 id="board-kg-analytics-heading" className="text-sm font-semibold text-gray-700 dark:text-gray-200">
-                Board KG Analytics
-              </h3>
-            </div>
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Canonical health, operational debt and cognitive effectiveness. Availability is reported separately from health.
-            </p>
-          </div>
-          <button
-            type="button"
-            disabled={kgExporting || kgLoading || kgAnalytics === null}
-            onClick={async () => {
-              if (kgExporting) return;
-              setKgExporting(true);
-              try {
-                await api.exportBoardKgAnalyticsCsv(boardId, from, to);
-              } catch (err) {
-                setKgError(err instanceof Error ? err.message : 'KG Analytics export failed');
-              } finally {
-                setKgExporting(false);
-              }
-            }}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-gray-200 dark:border-gray-600 disabled:opacity-50"
-          >
-            <Download className="w-3.5 h-3.5" />
-            {kgExporting ? 'Exporting…' : 'Complete CSV'}
-          </button>
-        </div>
+      <KgEffectivenessPanel
+        data={kgAnalytics}
+        loading={kgLoading}
+        error={kgError}
+        exporting={kgExporting}
+        from={from}
+        to={to}
+        onRetry={() => setKgRetry((value) => value + 1)}
+        onExport={async () => {
+          if (kgExporting) return;
+          setKgExporting(true);
+          try {
+            await api.exportBoardKgAnalyticsCsv(boardId, from, to);
+          } catch (err) {
+            setKgError(err instanceof Error ? err.message : 'KG effectiveness export failed');
+          } finally {
+            setKgExporting(false);
+          }
+        }}
+      />
 
-        {kgLoading && (
-          <p className="mt-4 text-xs text-gray-500" role="status">Loading KG Analytics…</p>
+      <CanonicalCoveragePanel
+        data={canonicalCoverage}
+        loading={canonicalCoverageLoading}
+        error={canonicalCoverageError}
+        exporting={canonicalCoverageExporting}
+        from={from}
+        to={to}
+        specTitles={Object.fromEntries(
+          Object.entries(entityTitleCatalog)
+            .filter(([key]) => key.startsWith('spec:'))
+            .map(([key, value]) => [key.slice('spec:'.length), value]),
         )}
-        {!kgLoading && kgError && (
-          <div className="mt-4 flex items-center justify-between gap-3 rounded-md bg-red-50 dark:bg-red-900/20 px-3 py-2" role="alert">
-            <span className="text-xs text-red-700 dark:text-red-300">{kgError}</span>
-            <button
-              type="button"
-              onClick={() => setKgRetry((value) => value + 1)}
-              className="inline-flex items-center gap-1 text-xs font-medium text-red-700 dark:text-red-300"
-            >
-              <RefreshCw className="w-3.5 h-3.5" /> Retry
-            </button>
-          </div>
-        )}
-        {!kgLoading && !kgError && kgAnalytics && (
-          <div className="mt-4 space-y-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs text-gray-500 dark:text-gray-400">Health</span>
-              <span className="rounded-full bg-indigo-100 dark:bg-indigo-900/40 px-2 py-0.5 text-xs font-medium text-indigo-700 dark:text-indigo-300">
-                {kgAnalytics.health.state}
-              </span>
-              <span className="text-xs text-gray-500 dark:text-gray-400">Result</span>
-              <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                kgAnalytics.result_state === 'available'
-                  ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300'
-                  : 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300'
-              }`}>
-                {kgAnalytics.result_state}
-              </span>
-              <span className="text-xs text-gray-500 dark:text-gray-400">
-                {kgAnalytics.health.classification_reason}
-              </span>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3" aria-label="KG analytics facts">
-              {[
-                ['Active queue', kgAnalytics.debt_domains.active_queue_count],
-                ['Technical DLQ', kgAnalytics.debt_domains.technical_dlq_count],
-                ['Canonical debt', kgAnalytics.debt_domains.canonical_debt_count],
-                ['Cognitive denominator', kgAnalytics.cognitive_effectiveness.denominator],
-                ['Persistence gaps', kgAnalytics.cognitive_effectiveness.persistence_gap_count],
-              ].map(([label, value]) => (
-                <div key={String(label)} className="rounded-md bg-gray-50 dark:bg-gray-900/40 p-3">
-                  <p className="text-[10px] uppercase text-gray-400">{label}</p>
-                  <p className="mt-1 text-lg font-semibold text-gray-800 dark:text-gray-100">
-                    {value === null ? 'Unavailable' : value}
-                  </p>
-                </div>
-              ))}
-            </div>
-            <p className="text-[10px] text-gray-400">
-              as_of {kgAnalytics.as_of} · query {kgAnalytics.query_fingerprint.slice(0, 12)}…
-            </p>
-          </div>
-        )}
-      </section>
+        onRetry={() => setCanonicalCoverageRetry((value) => value + 1)}
+        onExport={async () => {
+          if (canonicalCoverageExporting) return;
+          setCanonicalCoverageExporting(true);
+          try {
+            await api.exportCanonicalBoardCoverageCsv(boardId, from, to);
+          } catch (err) {
+            setCanonicalCoverageError(err instanceof Error ? err.message : 'Coverage export failed');
+          } finally {
+            setCanonicalCoverageExporting(false);
+          }
+        }}
+        onOpenSpec={(specId, title) => onSelectEntity('spec', specId, title)}
+      />
 
-      <section
-        aria-labelledby="canonical-coverage-heading"
-        className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6"
-      >
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h3 id="canonical-coverage-heading" className="text-sm font-semibold text-gray-700 dark:text-gray-200">
-              Canonical Coverage &amp; Traceability
-            </h3>
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Factual coverage keeps governed skips, unavailable authority and ineligible historical evidence separate.
-            </p>
-          </div>
-          <button
-            type="button"
-            disabled={canonicalCoverageExporting || canonicalCoverageLoading || canonicalCoverage === null}
-            onClick={async () => {
-              if (canonicalCoverageExporting) return;
-              setCanonicalCoverageExporting(true);
-              try {
-                await api.exportCanonicalBoardCoverageCsv(boardId, from, to);
-              } catch (err) {
-                setCanonicalCoverageError(err instanceof Error ? err.message : 'Coverage export failed');
-              } finally {
-                setCanonicalCoverageExporting(false);
-              }
-            }}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-gray-200 dark:border-gray-600 disabled:opacity-50"
-          >
-            <Download className="w-3.5 h-3.5" />
-            {canonicalCoverageExporting ? 'Exporting…' : 'Complete CSV'}
-          </button>
-        </div>
-        {canonicalCoverageLoading && (
-          <p className="mt-4 text-xs text-gray-500" role="status">Loading canonical coverage…</p>
-        )}
-        {!canonicalCoverageLoading && canonicalCoverageError && (
-          <div className="mt-4 flex items-center justify-between rounded-md bg-red-50 dark:bg-red-900/20 px-3 py-2" role="alert">
-            <span className="text-xs text-red-700 dark:text-red-300">{canonicalCoverageError}</span>
-            <button
-              type="button"
-              onClick={() => setCanonicalCoverageRetry((value) => value + 1)}
-              className="inline-flex items-center gap-1 text-xs text-red-700 dark:text-red-300"
-            >
-              <RefreshCw className="w-3.5 h-3.5" /> Retry
-            </button>
-          </div>
-        )}
-        {!canonicalCoverageLoading && !canonicalCoverageError && canonicalCoverage && (
-          <div className="mt-4 space-y-3">
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-              {[
-                ['Applicable', canonicalCoverage.totals.applicable],
-                ['Covered', canonicalCoverage.totals.covered],
-                ['Uncovered', canonicalCoverage.totals.uncovered],
-                ['Skipped', canonicalCoverage.totals.skipped],
-                ['Coverage', canonicalCoverage.totals.value === null ? null : `${Math.round(canonicalCoverage.totals.value)}%`],
-              ].map(([label, value]) => (
-                <div key={String(label)} className="rounded-md bg-gray-50 dark:bg-gray-900/40 p-3">
-                  <p className="text-[10px] uppercase text-gray-400">{label}</p>
-                  <p className="mt-1 text-lg font-semibold text-gray-800 dark:text-gray-100">
-                    {value === null ? canonicalCoverage.totals.state : value}
-                  </p>
-                </div>
-              ))}
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-gray-200 dark:border-gray-700 text-left text-[10px] uppercase text-gray-400">
-                    <th className="py-2">Obligation</th>
-                    <th className="py-2 text-right">Applicable</th>
-                    <th className="py-2 text-right">Covered</th>
-                    <th className="py-2 text-right">Uncovered</th>
-                    <th className="py-2 text-right">Skipped</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {canonicalCoverage.coverage.map((group) => (
-                    <tr key={group.obligation_type} className="border-b border-gray-100 dark:border-gray-700/50">
-                      <td className="py-2 font-medium">
-                        {canonicalObligationLabel(group.obligation_type)}
-                      </td>
-                      <td className="py-2 text-right">{group.applicable ?? group.state}</td>
-                      <td className="py-2 text-right">{group.covered ?? '—'}</td>
-                      <td className="py-2 text-right">{group.uncovered ?? '—'}</td>
-                      <td className="py-2 text-right">{group.skipped ?? '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <p className="text-[10px] text-gray-400">
-              as_of {canonicalCoverage.as_of} · query {canonicalCoverage.query_fingerprint.slice(0, 12)}…
-            </p>
-          </div>
-        )}
-      </section>
-
-      <section
-        aria-labelledby="flow-health-heading"
-        className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6"
-      >
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h3 id="flow-health-heading" className="text-sm font-semibold text-gray-700 dark:text-gray-200">Flow Health</h3>
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Episode age and rework come only from governed lifecycle events.</p>
-          </div>
-          <button
-            type="button"
-            disabled={flowHealthExporting || flowHealthLoading || flowHealth === null}
-            onClick={async () => {
-              if (flowHealthExporting) return;
-              setFlowHealthExporting(true);
-              try {
-                await api.exportBoardFlowHealthCsv(boardId, from, to);
-              } catch (err) {
-                setFlowHealthError(err instanceof Error ? err.message : 'Flow Health export failed');
-              } finally {
-                setFlowHealthExporting(false);
-              }
-            }}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-gray-200 dark:border-gray-600 disabled:opacity-50"
-          >
-            <Download className="w-3.5 h-3.5" /> {flowHealthExporting ? 'Exporting…' : 'Complete CSV'}
-          </button>
-        </div>
-        {flowHealthLoading && <p className="mt-4 text-xs text-gray-500" role="status">Loading Flow Health…</p>}
-        {!flowHealthLoading && flowHealthError && (
-          <div className="mt-4 flex items-center justify-between rounded-md bg-red-50 dark:bg-red-900/20 px-3 py-2" role="alert">
-            <span className="text-xs text-red-700 dark:text-red-300">{flowHealthError}</span>
-            <button type="button" onClick={() => setFlowHealthRetry((value) => value + 1)} className="inline-flex items-center gap-1 text-xs text-red-700 dark:text-red-300">
-              <RefreshCw className="w-3.5 h-3.5" /> Retry
-            </button>
-          </div>
-        )}
-        {!flowHealthLoading && !flowHealthError && flowHealth && (
-          <div className="mt-4 space-y-3">
-            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
-              {Object.entries(flowHealth.summary).map(([label, value]) => (
-                <div key={label} className="rounded-md bg-gray-50 dark:bg-gray-900/40 p-3">
-                  <p className="text-[10px] uppercase text-gray-400">{label.replace('_', ' ')}</p>
-                  <p className="mt-1 text-lg font-semibold text-gray-800 dark:text-gray-100">{value}</p>
-                </div>
-              ))}
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead><tr className="border-b border-gray-200 dark:border-gray-700 text-left text-[10px] uppercase text-gray-400"><th className="py-2">Subject</th><th>State</th><th>Episode</th><th>Age</th><th>Rework</th></tr></thead>
-                <tbody>{flowHealth.items.map((item) => {
-                  const subjectRef = analyticsEntityCatalogKey(item.subject.type, item.subject.id);
-                  const subjectTitle = entityTitleCatalog[subjectRef];
-                  return (
-                    <tr key={subjectRef} className="border-b border-gray-100 dark:border-gray-700/50">
-                      <td className="py-2 font-medium" title={subjectTitle ? subjectRef : undefined}>
-                        {subjectTitle ?? subjectRef}
-                      </td>
-                      <td>{item.state}</td><td>{item.current_episode?.state ?? 'unavailable'}</td>
-                      <td>{item.current_episode ? `${Math.floor(item.current_episode.age_seconds / 3600)}h` : '—'}</td>
-                      <td>{item.rework.length}</td>
-                    </tr>
-                  );
-                })}</tbody>
-              </table>
-            </div>
-            <p className="text-[10px] text-gray-400">policy v{flowHealth.effective_policy.version} · as_of {flowHealth.as_of} · query {flowHealth.query_fingerprint.slice(0, 12)}…</p>
-          </div>
-        )}
-      </section>
+      <FlowHealthPanel
+        boardId={boardId}
+        data={flowHealth}
+        loading={flowHealthLoading}
+        error={flowHealthError}
+        exporting={flowHealthExporting}
+        from={from}
+        to={to}
+        subjectTitles={entityTitleCatalog}
+        onRetry={() => setFlowHealthRetry((value) => value + 1)}
+        onReload={() => setFlowHealthRetry((value) => value + 1)}
+        onExport={async () => {
+          if (flowHealthExporting) return;
+          setFlowHealthExporting(true);
+          try {
+            await api.exportBoardFlowHealthCsv(boardId, from, to);
+          } catch (err) {
+            setFlowHealthError(err instanceof Error ? err.message : 'Flow Health export failed');
+          } finally {
+            setFlowHealthExporting(false);
+          }
+        }}
+        onOpenSubject={(type, id, title) => {
+          const normalized = type === 'task' ? 'card' : type;
+          if (normalized === 'spec' || normalized === 'card' || normalized === 'ideation' || normalized === 'refinement') {
+            onSelectEntity(normalized, id, title);
+          }
+        }}
+      />
 
       <section aria-labelledby="readiness-heading" className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
         <div className="flex items-start justify-between gap-4">
@@ -1368,23 +1006,6 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
           </span>
         </div>
 
-        {/* Coverage */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
-          <div className="flex items-center gap-1.5 mb-1">
-            <FlaskConical className="w-4 h-4 text-emerald-500" />
-            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Coverage</span>
-            <DashboardMetricHelp
-              label="Coverage"
-              description="Shows objective spec coverage. Open the chart to inspect AC, FR, TR, IR, OR, and decision coverage per spec."
-              targetId="analytics-coverage-by-spec"
-            />
-          </div>
-          <span className="text-2xl font-bold text-gray-800 dark:text-gray-100">
-            {kpis.coberturaPct}%
-          </span>
-          <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">specs with tests</p>
-        </div>
-
         {/* Bugs */}
         <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
           <div className="flex items-center gap-1.5 mb-1">
@@ -1425,9 +1046,9 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
       </div>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Scatter + Coverage Charts                                          */}
+      {/* Canonical coverage lives above; this chart is quality-only.         */}
       {/* ------------------------------------------------------------------ */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4">
         {/* Scatter Completeness x Drift */}
         <div id="analytics-quality-scatter" className="scroll-mt-20 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-4">
@@ -1477,133 +1098,6 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
           )}
         </div>
 
-        {/* Coverage by Spec (Tests, Rules, Contracts) */}
-        <div id="analytics-coverage-by-spec" className="scroll-mt-20 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
-          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-2">
-            Coverage by Spec
-          </h3>
-          <div className="flex items-center gap-4 mb-3 text-[10px] text-gray-500 dark:text-gray-400 flex-wrap">
-            <span className="flex items-center gap-1" title="Acceptance Criteria covered by Test Scenarios"><span className="w-2 h-2 rounded-full bg-green-500 inline-block" /> AC</span>
-            <span className="flex items-center gap-1" title="Functional Requirements covered by Business Rules"><span className="w-2 h-2 rounded-full bg-amber-500 inline-block" /> FR</span>
-            <span className="flex items-center gap-1" title="Technical Requirements with active linked tasks"><span className="w-2 h-2 rounded-full bg-purple-500 inline-block" /> TRs</span>
-            {hasIrCoverageMetrics && (
-              <span className="flex items-center gap-1" title="Integration Requirements with active linked tasks"><span className="w-2 h-2 rounded-full bg-sky-500 inline-block" /> IRs</span>
-            )}
-            {hasOrCoverageMetrics && (
-              <span className="flex items-center gap-1" title="Observability Requirements with active linked tasks"><span className="w-2 h-2 rounded-full bg-teal-500 inline-block" /> ORs</span>
-            )}
-            <span className="flex items-center gap-1" title="Decisions with active linked tasks"><span className="w-2 h-2 rounded-full bg-indigo-500 inline-block" /> Decisions</span>
-          </div>
-          {coverageBars.length > 0 ? (
-            <div className="space-y-3 max-h-[260px] overflow-y-auto pr-1">
-              {coverageBars.map((s) => {
-                const acPct = s.ac_coverage_pct ?? s.pct;
-                const frPct = s.fr_coverage_pct ?? s.fr_with_rules_pct ?? 0;
-                const trPct = s.tr_task_linkage_pct ?? 0;
-                const irPct = s.ir_task_linkage_pct ?? 0;
-                const orPct = s.or_task_linkage_pct ?? 0;
-                const irSkipped = s.skip_ir_coverage === true;
-                const orSkipped = s.skip_or_coverage === true;
-                const decPct = s.decisions_coverage_pct ?? 0;
-                return (
-                  <div key={s.spec_id}>
-                    <span className="text-xs text-gray-600 dark:text-gray-300 truncate block mb-1" title={s.title}>
-                      {s.title}
-                    </span>
-                    <div className="space-y-0.5">
-                      {/* AC coverage bar */}
-                      <div className="flex items-center gap-2" title={`ACs: ${s.covered_ac}/${s.total_ac} covered by Test Scenarios`}>
-                        <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
-                          <div
-                            className={`h-full rounded transition-all duration-500 ${coverageBarColor(acPct)}`}
-                            style={{ width: `${acPct}%` }}
-                          />
-                        </div>
-                        <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
-                          {acPct}%
-                        </span>
-                      </div>
-                      {/* FR coverage bar */}
-                      <div className="flex items-center gap-2" title={`FRs covered by Business Rules`}>
-                        <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
-                          <div
-                            className="h-full rounded transition-all duration-500 bg-amber-500"
-                            style={{ width: `${frPct}%` }}
-                          />
-                        </div>
-                        <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
-                          {frPct}%
-                        </span>
-                      </div>
-                      {/* TR coverage bar (spec 233eaad3) */}
-                      <div className="flex items-center gap-2" title={`TRs: ${s.trs_total ?? 0} total`}>
-                        <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
-                          <div
-                            className="h-full rounded transition-all duration-500 bg-purple-500"
-                            style={{ width: `${trPct}%` }}
-                          />
-                        </div>
-                        <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
-                          {trPct}%
-                        </span>
-                      </div>
-                      {/* IR coverage bar */}
-                      {hasIrCoverageMetrics && (
-                        <div
-                          className="flex items-center gap-2"
-                          title={irSkipped ? 'IR coverage skipped by coverage calculator' : `IRs: ${s.irs_linked ?? 0}/${s.irs_total ?? 0} linked to active tasks`}
-                        >
-                          <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
-                            <div
-                              className={`h-full rounded transition-all duration-500 ${irSkipped ? 'bg-gray-400 dark:bg-gray-500' : 'bg-sky-500'}`}
-                              style={{ width: `${irSkipped ? 100 : irPct}%` }}
-                            />
-                          </div>
-                          <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
-                            {irSkipped ? 'skip' : `${irPct}%`}
-                          </span>
-                        </div>
-                      )}
-                      {/* OR coverage bar */}
-                      {hasOrCoverageMetrics && (
-                        <div
-                          className="flex items-center gap-2"
-                          title={orSkipped ? 'OR coverage skipped by coverage calculator' : `ORs: ${s.ors_linked ?? 0}/${s.ors_total ?? 0} linked to active tasks`}
-                        >
-                          <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
-                            <div
-                              className={`h-full rounded transition-all duration-500 ${orSkipped ? 'bg-gray-400 dark:bg-gray-500' : 'bg-teal-500'}`}
-                              style={{ width: `${orSkipped ? 100 : orPct}%` }}
-                            />
-                          </div>
-                          <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
-                            {orSkipped ? 'skip' : `${orPct}%`}
-                          </span>
-                        </div>
-                      )}
-                      {/* Decisions coverage bar (spec 233eaad3) */}
-                      <div className="flex items-center gap-2" title={`Decisions: ${s.decisions_total ?? 0} total`}>
-                        <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
-                          <div
-                            className="h-full rounded transition-all duration-500 bg-indigo-500"
-                            style={{ width: `${decPct}%` }}
-                          />
-                        </div>
-                        <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
-                          {decPct}%
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="h-56 flex items-center justify-center text-sm text-gray-400 dark:text-gray-500">
-              No specs with acceptance criteria
-            </div>
-          )}
-        </div>
       </div>
 
       {/* ------------------------------------------------------------------ */}
@@ -1915,111 +1409,27 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
 
       {governedAnalyticsSections}
 
-      {/* ------------------------------------------------------------------ */}
-      {/* Sprints panel                                                      */}
-      {/* ------------------------------------------------------------------ */}
-      {sprints && sprints.summary.total_sprints > 0 && (
-        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">
-              Sprints
-            </h3>
-            <div className="flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
-              <span>{sprints.summary.total_sprints} total</span>
-              <span>·</span>
-              <span>avg completion: {sprints.summary.avg_completion_rate !== null ? `${sprints.summary.avg_completion_rate}%` : '--'}</span>
-              {sprints.summary.sprint_evaluation.total_submitted > 0 && (
-                <>
-                  <span>·</span>
-                  <span>eval approve: {sprints.summary.sprint_evaluation.approve_rate !== null ? `${sprints.summary.sprint_evaluation.approve_rate}%` : '--'}</span>
-                </>
-              )}
-            </div>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-left text-[10px] uppercase text-gray-400 border-b border-gray-200 dark:border-gray-700">
-                  <th className="py-2 font-medium">Sprint</th>
-                  <th className="py-2 font-medium text-center">Status</th>
-                  <th className="py-2 font-medium text-center">Cards</th>
-                  <th className="py-2 font-medium text-center">Completion</th>
-                  <th className="py-2 font-medium text-center">Commitment</th>
-                  <th className="py-2 font-medium text-center">Task Gate</th>
-                  <th className="py-2 font-medium text-center">Last Eval</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sprints.sprints.map((sp) => (
-                  <tr key={sp.sprint_id} className="border-b border-gray-100 dark:border-gray-700/50">
-                    <td className="py-2 truncate max-w-[250px]" title={sp.title}>{sp.title}</td>
-                    <td className="py-2 text-center">
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                        sp.status === 'active' ? 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300' :
-                        sp.status === 'closed' ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300' :
-                        sp.status === 'review' ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300' :
-                        'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400'
-                      }`}>{sp.status}</span>
-                    </td>
-                    <td className="py-2 text-center text-gray-600 dark:text-gray-400">
-                      {sp.done_cards}/{sp.total_cards}
-                    </td>
-                    <td className="py-2 text-center">
-                      <div className="flex items-center justify-center gap-1.5">
-                        <div className="w-16 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                          <div className="h-full bg-indigo-500" style={{ width: `${sp.completion_rate}%` }} />
-                        </div>
-                        <span className="text-[10px] font-medium">{sp.completion_rate}%</span>
-                      </div>
-                    </td>
-                    <td className="py-2 text-center">
-                      {sp.commitment.state === 'available' ? (
-                        <span
-                          className="text-[10px] text-gray-600 dark:text-gray-300"
-                          title={`Baseline ${sp.commitment.baseline_ref}`}
-                        >
-                          {sp.commitment.original_member_count} original · {sp.commitment.added_count} added · {sp.commitment.removed_count} removed
-                        </span>
-                      ) : (
-                        <span
-                          className="text-[10px] text-amber-600 dark:text-amber-300"
-                          title={sp.commitment.unavailable_reason || 'Activation baseline unavailable'}
-                        >
-                          unavailable legacy
-                        </span>
-                      )}
-                    </td>
-                    <td className="py-2 text-center">
-                      {sp.task_validation_gate.total_submitted > 0 ? (
-                        <span className="text-[10px]">
-                          <span className="text-green-600 dark:text-green-400">{sp.task_validation_gate.total_success}</span>
-                          /
-                          <span className="text-red-500 dark:text-red-400">{sp.task_validation_gate.total_failed}</span>
-                        </span>
-                      ) : (
-                        <span className="text-[10px] text-gray-400">—</span>
-                      )}
-                    </td>
-                    <td className="py-2 text-center">
-                      {sp.last_evaluation ? (
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                          sp.last_evaluation.recommendation === 'approve'
-                            ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300'
-                            : 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300'
-                        }`}>
-                          {sp.last_evaluation.recommendation} ({sp.last_evaluation.overall_score}%)
-                        </span>
-                      ) : (
-                        <span className="text-[10px] text-gray-400">—</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+      <DeliveryForecastPanel
+        sprints={sprints}
+        forecast={deliveryForecast}
+        forecastLoading={deliveryForecastLoading}
+        forecastError={deliveryForecastError}
+        forecastExporting={deliveryForecastExporting}
+        from={from}
+        to={to}
+        onRetryForecast={() => setDeliveryForecastRetry((value) => value + 1)}
+        onExportForecast={async () => {
+          if (deliveryForecastExporting) return;
+          setDeliveryForecastExporting(true);
+          try {
+            await api.exportBoardDeliveryForecastCsv(boardId, from, to);
+          } catch (err) {
+            setDeliveryForecastError(err instanceof Error ? err.message : 'Delivery forecast export failed');
+          } finally {
+            setDeliveryForecastExporting(false);
+          }
+        }}
+      />
     </div>
   );
 }
