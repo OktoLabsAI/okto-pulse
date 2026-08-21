@@ -457,6 +457,28 @@ function scatterDotColor(completeness: number, drift: number): string {
   return '#ef4444';
 }
 
+const CANONICAL_OBLIGATION_LABELS: Record<string, string> = {
+  ac: 'Acceptance Criteria',
+  fr: 'Functional Requirement',
+  test_scenario: 'Test Scenario',
+  business_rule: 'Business Rule',
+  api_contract: 'API Contract',
+  technical_requirement: 'Technical Requirement',
+  decision: 'Decision',
+  integration_requirement: 'Integration Requirement',
+  observability_requirement: 'Observability Requirement',
+};
+
+function canonicalObligationLabel(obligationType: string): string {
+  return CANONICAL_OBLIGATION_LABELS[obligationType] ?? obligationType;
+}
+
+type AnalyticsEntityCatalogKind = 'spec' | 'card';
+
+function analyticsEntityCatalogKey(kind: string, id: string): string {
+  return `${kind}:${id}`;
+}
+
 // ---------------------------------------------------------------------------
 // Skeleton
 // ---------------------------------------------------------------------------
@@ -561,6 +583,7 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
     ideation: null,
     card: null,
   });
+  const [entityTitleCatalog, setEntityTitleCatalog] = useState<Record<string, string>>({});
 
   const [activeTab, setActiveTab] = useState<EntityTab>('spec');
   const [entitySearch, setEntitySearch] = useState('');
@@ -689,6 +712,65 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, from, to, readinessRetry]);
 
+  // Canonical Flow Health and readiness projections intentionally expose only
+  // stable entity identities. Resolve human-readable titles through the
+  // paginated analytics catalog and fail soft to those identities when either
+  // catalog is unavailable.
+  useEffect(() => {
+    let cancelled = false;
+    const CATALOG_PAGE_SIZE = 200;
+    setEntityTitleCatalog({});
+
+    const loadCatalog = async (kind: AnalyticsEntityCatalogKind): Promise<EntityItem[]> => {
+      const items: EntityItem[] = [];
+      let offset = 0;
+
+      while (!cancelled) {
+        const response = await api.getBoardAnalyticsEntities(
+          boardId,
+          kind,
+          undefined,
+          undefined,
+          offset,
+          CATALOG_PAGE_SIZE,
+        ) as EntityListResponse;
+        if (cancelled) return [];
+
+        const pageItems = Array.isArray(response.items) ? response.items : [];
+        items.push(...pageItems);
+        const nextOffset = offset + pageItems.length;
+        const total = Number.isInteger(response.total) && response.total >= 0
+          ? response.total
+          : nextOffset;
+        if (pageItems.length === 0 || nextOffset <= offset || nextOffset >= total) break;
+        offset = nextOffset;
+      }
+
+      return items;
+    };
+
+    Promise.allSettled([loadCatalog('spec'), loadCatalog('card')]).then((results) => {
+      if (cancelled) return;
+      const nextCatalog: Record<string, string> = {};
+      results.forEach((result, index) => {
+        if (result.status !== 'fulfilled') return;
+        const kind: AnalyticsEntityCatalogKind = index === 0 ? 'spec' : 'card';
+        result.value.forEach((item) => {
+          const title = typeof item.title === 'string' ? item.title.trim() : '';
+          if (item.id && title) {
+            nextCatalog[analyticsEntityCatalogKey(kind, item.id)] = title;
+          }
+        });
+      });
+      setEntityTitleCatalog(nextCatalog);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId]);
+
   // Load entities separately — responds to tab, search, page changes
   useEffect(() => {
     const search = entitySearch || undefined;
@@ -807,8 +889,8 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
       }
     : null;
 
-  return (
-    <div className="space-y-6">
+  const governedAnalyticsSections = (
+    <>
       <section
         aria-labelledby="board-kg-analytics-heading"
         className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6"
@@ -983,7 +1065,9 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
                 <tbody>
                   {canonicalCoverage.coverage.map((group) => (
                     <tr key={group.obligation_type} className="border-b border-gray-100 dark:border-gray-700/50">
-                      <td className="py-2 font-medium">{group.obligation_type}</td>
+                      <td className="py-2 font-medium">
+                        {canonicalObligationLabel(group.obligation_type)}
+                      </td>
                       <td className="py-2 text-right">{group.applicable ?? group.state}</td>
                       <td className="py-2 text-right">{group.covered ?? '—'}</td>
                       <td className="py-2 text-right">{group.uncovered ?? '—'}</td>
@@ -1050,14 +1134,20 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead><tr className="border-b border-gray-200 dark:border-gray-700 text-left text-[10px] uppercase text-gray-400"><th className="py-2">Subject</th><th>State</th><th>Episode</th><th>Age</th><th>Rework</th></tr></thead>
-                <tbody>{flowHealth.items.map((item) => (
-                  <tr key={`${item.subject.type}:${item.subject.id}`} className="border-b border-gray-100 dark:border-gray-700/50">
-                    <td className="py-2 font-medium">{item.subject.type}:{item.subject.id}</td>
-                    <td>{item.state}</td><td>{item.current_episode?.state ?? 'unavailable'}</td>
-                    <td>{item.current_episode ? `${Math.floor(item.current_episode.age_seconds / 3600)}h` : '—'}</td>
-                    <td>{item.rework.length}</td>
-                  </tr>
-                ))}</tbody>
+                <tbody>{flowHealth.items.map((item) => {
+                  const subjectRef = analyticsEntityCatalogKey(item.subject.type, item.subject.id);
+                  const subjectTitle = entityTitleCatalog[subjectRef];
+                  return (
+                    <tr key={subjectRef} className="border-b border-gray-100 dark:border-gray-700/50">
+                      <td className="py-2 font-medium" title={subjectTitle ? subjectRef : undefined}>
+                        {subjectTitle ?? subjectRef}
+                      </td>
+                      <td>{item.state}</td><td>{item.current_episode?.state ?? 'unavailable'}</td>
+                      <td>{item.current_episode ? `${Math.floor(item.current_episode.age_seconds / 3600)}h` : '—'}</td>
+                      <td>{item.rework.length}</td>
+                    </tr>
+                  );
+                })}</tbody>
               </table>
             </div>
             <p className="text-[10px] text-gray-400">policy v{flowHealth.effective_policy.version} · as_of {flowHealth.as_of} · query {flowHealth.query_fingerprint.slice(0, 12)}…</p>
@@ -1144,9 +1234,12 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
                   {readiness.spec.specs.map((spec) => {
                     const policy = readiness.policyResource.specs.find((item) => item.spec_id === spec.spec_id && item.edition === spec.edition);
                     const provided = policy?.resources.l1.filter((item) => item.state === 'provided').length ?? 0;
+                    const specTitle = entityTitleCatalog[analyticsEntityCatalogKey('spec', spec.spec_id)];
                     return (
                       <tr key={`${spec.spec_id}:${spec.edition}`} className="border-b border-gray-100 dark:border-gray-700/50">
-                        <td className="py-2 font-medium">{spec.spec_id}</td>
+                        <td className="py-2 font-medium" title={specTitle ? spec.spec_id : undefined}>
+                          {specTitle ?? spec.spec_id}
+                        </td>
                         <td>{spec.edition}</td>
                         <td>{spec.validation.lifecycle_ready === true ? 'ready' : spec.validation.state}</td>
                         <td>{spec.validation.attempts}</td>
@@ -1165,6 +1258,11 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
           </div>
         )}
       </section>
+    </>
+  );
+
+  return (
+    <div className="space-y-6">
 
       {/* ------------------------------------------------------------------ */}
       {/* KPI Cards                                                          */}
@@ -1814,6 +1912,8 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
           </div>
         </div>
       )}
+
+      {governedAnalyticsSections}
 
       {/* ------------------------------------------------------------------ */}
       {/* Sprints panel                                                      */}

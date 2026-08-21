@@ -253,7 +253,144 @@ describe('analytics IR/OR coverage UI', () => {
     expect(within(panel as HTMLElement).getByText('1/1')).toBeInTheDocument();
     expect(within(panel as HTMLElement).getByText('1 pass / 0 pending / 0 failed')).toBeInTheDocument();
     expect(within(panel as HTMLElement).getByText('2/3')).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText('spec-1')).toBeInTheDocument();
     expect(within(panel as HTMLElement).getByText(/cancelled-only resources 1/)).toBeInTheDocument();
+  });
+
+  it('resolves Flow Health and readiness titles from paginated entity catalogs', async () => {
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+    mockApi.getBoardAnalyticsEntities.mockImplementation(async (
+      _boardId: string,
+      type: string,
+      _from?: string,
+      _to?: string,
+      offset = 0,
+      limit = 50,
+    ) => {
+      if (limit !== 200) {
+        return { total: 0, offset, limit, items: [] };
+      }
+      if (type === 'spec' && offset === 0) {
+        return {
+          total: 2,
+          offset,
+          limit,
+          items: [{ id: 'spec-other', title: 'Another spec', status: 'current' }],
+        };
+      }
+      if (type === 'spec' && offset === 1) {
+        return {
+          total: 2,
+          offset,
+          limit,
+          items: [{ id: 'spec-1', title: 'Checkout readiness spec', status: 'current' }],
+        };
+      }
+      if (type === 'card') {
+        return {
+          total: 1,
+          offset,
+          limit,
+          items: [{ id: 'card-1', title: 'Checkout implementation card', status: 'in_progress' }],
+        };
+      }
+      return { total: 0, offset, limit, items: [] };
+    });
+
+    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+
+    const flowHeading = await screen.findByRole('heading', { name: 'Flow Health' });
+    const flowPanel = flowHeading.closest('section');
+    const readinessHeading = screen.getByRole('heading', { name: 'Spec & Policy Readiness' });
+    const readinessPanel = readinessHeading.closest('section');
+    expect(flowPanel).not.toBeNull();
+    expect(readinessPanel).not.toBeNull();
+
+    await waitFor(() => {
+      expect(within(flowPanel!).getByText('Checkout implementation card')).toBeInTheDocument();
+      expect(within(readinessPanel!).getByText('Checkout readiness spec')).toBeInTheDocument();
+    });
+    expect(within(flowPanel!).getByText('Checkout implementation card').closest('td'))
+      .toHaveAttribute('title', 'card:card-1');
+    expect(within(readinessPanel!).getByText('Checkout readiness spec').closest('td'))
+      .toHaveAttribute('title', 'spec-1');
+    expect(mockApi.getBoardAnalyticsEntities).toHaveBeenCalledWith(
+      'board-1',
+      'spec',
+      undefined,
+      undefined,
+      1,
+      200,
+    );
+  });
+
+  it('places governed analytics panels after Validation Gates in DOM order', async () => {
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+
+    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+
+    let previousHeading = await screen.findByRole('heading', { name: 'Validation Gates' });
+    for (const headingName of [
+      'Board KG Analytics',
+      'Canonical Coverage & Traceability',
+      'Flow Health',
+      'Spec & Policy Readiness',
+    ]) {
+      const currentHeading = screen.getByRole('heading', { name: headingName });
+      expect(previousHeading.compareDocumentPosition(currentHeading) & Node.DOCUMENT_POSITION_FOLLOWING)
+        .not.toBe(0);
+      previousHeading = currentHeading;
+    }
+  });
+
+  it('maps every canonical obligation type to a descriptive label', async () => {
+    const obligationLabels = [
+      ['ac', 'Acceptance Criteria'],
+      ['fr', 'Functional Requirement'],
+      ['test_scenario', 'Test Scenario'],
+      ['business_rule', 'Business Rule'],
+      ['api_contract', 'API Contract'],
+      ['technical_requirement', 'Technical Requirement'],
+      ['decision', 'Decision'],
+      ['integration_requirement', 'Integration Requirement'],
+      ['observability_requirement', 'Observability Requirement'],
+    ] as const;
+    mockApi.getCanonicalBoardCoverage.mockResolvedValue({
+      query_fingerprint: 'g'.repeat(64),
+      as_of: '2026-05-28T12:00:00.000000Z',
+      totals: {
+        state: 'not_applicable',
+        applicable: 0,
+        covered: 0,
+        uncovered: 0,
+        skipped: 0,
+        value: null,
+        n: 0,
+        reason: 'zero_applicable_obligations',
+      },
+      coverage: obligationLabels.map(([obligationType]) => ({
+        obligation_type: obligationType,
+        state: 'not_applicable',
+        applicable: 0,
+        covered: 0,
+        uncovered: 0,
+        skipped: 0,
+        value: null,
+        n: 0,
+        reason: 'zero_applicable_obligations',
+        rows: [],
+      })),
+    });
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+
+    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+
+    const heading = await screen.findByRole('heading', { name: 'Canonical Coverage & Traceability' });
+    const panel = heading.closest('section');
+    expect(panel).not.toBeNull();
+    for (const [, label] of obligationLabels) {
+      expect(within(panel!).getByText(label)).toBeInTheDocument();
+    }
   });
 
   it('renders IR and OR coverage bars when the board payload exposes them', async () => {
@@ -315,7 +452,7 @@ describe('analytics IR/OR coverage UI', () => {
     expect(panel).toHaveTextContent('Covered0');
     expect(panel).toHaveTextContent('Uncovered2');
     expect(panel).toHaveTextContent('Skipped2');
-    expect(panel).toHaveTextContent('ac2');
+    expect(panel).toHaveTextContent('Acceptance Criteria2');
   });
 
   it('renders unavailable obligation groups without dereferencing absent counts', async () => {
@@ -349,7 +486,7 @@ describe('analytics IR/OR coverage UI', () => {
 
     render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
 
-    const obligation = await screen.findByText('decision');
+    const obligation = await screen.findByText('Decision');
     const row = obligation.closest('tr');
     expect(row).not.toBeNull();
     expect(within(row!).getByText('unavailable')).toBeInTheDocument();
@@ -438,8 +575,9 @@ describe('analytics IR/OR coverage UI', () => {
     expect(scrollIntoView).toHaveBeenCalled();
   });
 
-  it('renders governed Flow Health independently from legacy analytics', async () => {
+  it('renders governed Flow Health independently and falls back to the subject identity when title lookup fails', async () => {
     mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+    mockApi.getBoardAnalyticsEntities.mockRejectedValue(new Error('catalog unavailable'));
 
     render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
 
