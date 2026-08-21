@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import heapq
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
     Card,
+    CardDependency,
     Ideation,
     Refinement,
     Spec,
@@ -29,6 +31,7 @@ from okto_pulse.core.domain.code_traceability import (
 from okto_pulse.core.models import with_knowledge_governance
 from okto_pulse.core.ports.code_traceability import CodeTraceabilityProjectionQuery
 from okto_pulse.core.ports.traceability import (
+    LineageGraphView,
     TraceabilityReadError,
     TraceabilityReport,
 )
@@ -42,6 +45,8 @@ from okto_pulse.core.services.traceability import project_code_traceability_repo
 
 _CODE_TRACEABILITY_REPORT_CONTEXT_LIMIT = 2_000
 _SPEC_DEPENDENCY_REPORT_EDGE_LIMIT = 10_000
+_DEPENDENCY_GRAPH_EDGE_LIMIT = 10_000
+_DEPENDENCY_GRAPH_NODE_LIMIT = 2_000
 
 
 class _LegacyTraceabilityReadError(Exception):
@@ -792,6 +797,459 @@ async def resolve_lineage_root(
     )
 
 
+def _dependency_closure(
+    anchor_id: str,
+    relations: list[tuple[str, str, str]],
+) -> tuple[set[str], set[str], list[tuple[str, str, str]]]:
+    """Return prerequisite/dependent closure and its complete induced edge set."""
+
+    forward: dict[str, set[str]] = {}
+    reverse: dict[str, set[str]] = {}
+    for _, prerequisite_id, dependent_id in relations:
+        forward.setdefault(prerequisite_id, set()).add(dependent_id)
+        reverse.setdefault(dependent_id, set()).add(prerequisite_id)
+
+    ancestors = {anchor_id}
+    pending = [anchor_id]
+    while pending:
+        current = pending.pop()
+        for prerequisite_id in reverse.get(current, ()):
+            if prerequisite_id not in ancestors:
+                ancestors.add(prerequisite_id)
+                pending.append(prerequisite_id)
+
+    descendants = {anchor_id}
+    pending = [anchor_id]
+    while pending:
+        current = pending.pop()
+        for dependent_id in forward.get(current, ()):
+            if dependent_id not in descendants:
+                descendants.add(dependent_id)
+                pending.append(dependent_id)
+
+    node_ids = ancestors | descendants
+    induced = [
+        relation
+        for relation in relations
+        if relation[1] in node_ids and relation[2] in node_ids
+    ]
+    return ancestors, descendants, induced
+
+
+def _dependency_topological_ranks(
+    *,
+    anchor_id: str,
+    ancestors: set[str],
+    descendants: set[str],
+    relations: list[tuple[str, str, str]],
+) -> dict[str, int]:
+    """Rank prerequisites left of the anchor and dependents to its right.
+
+    Longest-path ranks preserve ``source.stage < target.stage`` even when a DAG
+    contains both a direct edge and a longer path between the same two nodes.
+    """
+
+    node_ids = ancestors | descendants
+    successors: dict[str, set[str]] = {node_id: set() for node_id in node_ids}
+    predecessors: dict[str, set[str]] = {node_id: set() for node_id in node_ids}
+    for _, prerequisite_id, dependent_id in relations:
+        if dependent_id not in successors[prerequisite_id]:
+            successors[prerequisite_id].add(dependent_id)
+            predecessors[dependent_id].add(prerequisite_id)
+
+    indegree = {
+        node_id: len(predecessors[node_id])
+        for node_id in node_ids
+    }
+    ready = [node_id for node_id, degree in indegree.items() if degree == 0]
+    heapq.heapify(ready)
+    topological: list[str] = []
+    while ready:
+        node_id = heapq.heappop(ready)
+        topological.append(node_id)
+        for dependent_id in sorted(successors[node_id]):
+            indegree[dependent_id] -= 1
+            if indegree[dependent_id] == 0:
+                heapq.heappush(ready, dependent_id)
+
+    if len(topological) != len(node_ids):
+        raise TraceabilityReadError(
+            "dependency_graph_cycle_detected",
+            "The dependency graph contains a cycle and cannot be ranked.",
+            status_code=409,
+        )
+
+    ranks = {anchor_id: 0}
+    for node_id in reversed(topological):
+        if node_id == anchor_id or node_id not in ancestors:
+            continue
+        ranked_successors = [
+            ranks[dependent_id]
+            for dependent_id in successors[node_id]
+            if dependent_id in ancestors and dependent_id in ranks
+        ]
+        if ranked_successors:
+            ranks[node_id] = min(ranked_successors) - 1
+
+    for node_id in topological:
+        if node_id == anchor_id or node_id not in descendants:
+            continue
+        ranked_predecessors = [
+            ranks[prerequisite_id]
+            for prerequisite_id in predecessors[node_id]
+            if prerequisite_id in descendants and prerequisite_id in ranks
+        ]
+        if ranked_predecessors:
+            ranks[node_id] = max(ranked_predecessors) + 1
+
+    if set(ranks) != node_ids:
+        raise TraceabilityReadError(
+            "dependency_graph_rank_incomplete",
+            "The dependency graph could not be ranked relative to the selected entity.",
+            status_code=409,
+        )
+    return ranks
+
+
+def _card_lineage_entity_type(card_type: Any) -> str:
+    normalized = str(_enum_value(card_type) or "normal")
+    if normalized in {"test", "bug"}:
+        return normalized
+    return "task"
+
+
+def _dependency_closure_edge_query(
+    *,
+    entity_id: str,
+    edge_query: Any,
+) -> Any:
+    """Select only edges induced by the anchor's bidirectional closure.
+
+    The recursive CTEs carry node ids rather than paths and use ``UNION`` so
+    each direction terminates even if invalid legacy data contains a cycle.
+    The final query still returns the complete induced edge set between all
+    reached ancestors and descendants in one database round trip.
+    """
+
+    edge_set = edge_query.cte("dependency_graph_board_edges")
+
+    ancestors = select(
+        literal(entity_id).label("entity_id")
+    ).cte("dependency_graph_ancestors", recursive=True)
+    ancestor_edge = edge_set.alias("dependency_graph_ancestor_edge")
+    ancestors = ancestors.union(
+        select(ancestor_edge.c.prerequisite_id).join(
+            ancestors,
+            ancestor_edge.c.dependent_id == ancestors.c.entity_id,
+        )
+    )
+
+    descendants = select(
+        literal(entity_id).label("entity_id")
+    ).cte("dependency_graph_descendants", recursive=True)
+    descendant_edge = edge_set.alias("dependency_graph_descendant_edge")
+    descendants = descendants.union(
+        select(descendant_edge.c.dependent_id).join(
+            descendants,
+            descendant_edge.c.prerequisite_id == descendants.c.entity_id,
+        )
+    )
+
+    closure_nodes = select(ancestors.c.entity_id).union(
+        select(descendants.c.entity_id)
+    ).cte("dependency_graph_closure_nodes")
+    prerequisite_nodes = closure_nodes.alias(
+        "dependency_graph_prerequisite_nodes"
+    )
+    dependent_nodes = closure_nodes.alias("dependency_graph_dependent_nodes")
+
+    return (
+        select(
+            edge_set.c.dependency_id,
+            edge_set.c.prerequisite_id,
+            edge_set.c.dependent_id,
+        )
+        .select_from(edge_set)
+        .join(
+            prerequisite_nodes,
+            prerequisite_nodes.c.entity_id == edge_set.c.prerequisite_id,
+        )
+        .join(
+            dependent_nodes,
+            dependent_nodes.c.entity_id == edge_set.c.dependent_id,
+        )
+        .order_by(edge_set.c.dependency_id)
+        .limit(_DEPENDENCY_GRAPH_EDGE_LIMIT + 1)
+    )
+
+
+async def build_dependency_graph(
+    db: AsyncSession,
+    board_id: str,
+    *,
+    entity_type: str,
+    entity_id: str,
+) -> dict[str, Any]:
+    """Build one bounded, board-scoped transitive dependency graph.
+
+    The request UoW supplies a single relational snapshot.  Each authoritative
+    set is read once: one edge query followed by one query for every node in the
+    selected entity's ancestor/descendant closure.
+    """
+
+    normalized_type = entity_type.strip().lower()
+    is_spec = normalized_type == "spec"
+    is_card = normalized_type in {"task", "test", "bug", "card"}
+    if not is_spec and not is_card:
+        raise TraceabilityReadError(
+            "dependency_view_unsupported_entity_type",
+            "Dependency view is available only for Specs and Tasks.",
+            status_code=400,
+        )
+
+    if is_spec:
+        dependent = aliased(Spec, name="dependency_graph_dependent_spec")
+        prerequisite = aliased(Spec, name="dependency_graph_prerequisite_spec")
+        edge_query = (
+            select(
+                SpecDependency.id.label("dependency_id"),
+                SpecDependency.prerequisite_spec_id.label("prerequisite_id"),
+                SpecDependency.dependent_spec_id.label("dependent_id"),
+            )
+            .select_from(SpecDependency)
+            .join(
+                dependent,
+                dependent.id == SpecDependency.dependent_spec_id,
+            )
+            .join(
+                prerequisite,
+                prerequisite.id == SpecDependency.prerequisite_spec_id,
+            )
+            .where(
+                SpecDependency.board_id == board_id,
+                SpecDependency.active.is_(True),
+                dependent.board_id == board_id,
+                prerequisite.board_id == board_id,
+            )
+        )
+        edge_rows = (
+            await db.execute(
+                _dependency_closure_edge_query(
+                    entity_id=entity_id,
+                    edge_query=edge_query,
+                )
+            )
+        ).all()
+        relations = [
+            (str(row[0]), str(row[1]), str(row[2]))
+            for row in edge_rows
+        ]
+    else:
+        dependent = aliased(Card, name="dependency_graph_dependent_card")
+        prerequisite = aliased(Card, name="dependency_graph_prerequisite_card")
+        edge_query = (
+            select(
+                CardDependency.id.label("dependency_id"),
+                CardDependency.depends_on_id.label("prerequisite_id"),
+                CardDependency.card_id.label("dependent_id"),
+            )
+            .select_from(CardDependency)
+            .join(dependent, dependent.id == CardDependency.card_id)
+            .join(prerequisite, prerequisite.id == CardDependency.depends_on_id)
+            .where(
+                dependent.board_id == board_id,
+                prerequisite.board_id == board_id,
+            )
+        )
+        edge_rows = (
+            await db.execute(
+                _dependency_closure_edge_query(
+                    entity_id=entity_id,
+                    edge_query=edge_query,
+                )
+            )
+        ).all()
+        relations = [
+            (str(row[0]), str(row[1]), str(row[2]))
+            for row in edge_rows
+        ]
+
+    if len(relations) > _DEPENDENCY_GRAPH_EDGE_LIMIT:
+        raise TraceabilityReadError(
+            "dependency_graph_edge_limit_exceeded",
+            "The selected dependency closure exceeds the bounded edge limit.",
+            status_code=409,
+        )
+
+    ancestors, descendants, induced_relations = _dependency_closure(
+        entity_id,
+        relations,
+    )
+    node_ids = ancestors | descendants
+    if len(node_ids) > _DEPENDENCY_GRAPH_NODE_LIMIT:
+        raise TraceabilityReadError(
+            "dependency_graph_node_limit_exceeded",
+            "The selected dependency closure exceeds the bounded node limit.",
+            status_code=409,
+        )
+    ranks = _dependency_topological_ranks(
+        anchor_id=entity_id,
+        ancestors=ancestors,
+        descendants=descendants,
+        relations=induced_relations,
+    )
+
+    if is_spec:
+        node_rows = (
+            await db.execute(
+                select(
+                    Spec.id,
+                    Spec.title,
+                    Spec.status,
+                    Spec.archived,
+                    Spec.edition,
+                    Spec.version,
+                )
+                .where(Spec.board_id == board_id, Spec.id.in_(node_ids))
+                .order_by(Spec.id)
+            )
+        ).mappings().all()
+        node_by_entity_id = {
+            str(row["id"]): {
+                "id": f"spec:{row['id']}",
+                "entity_type": "spec",
+                "entity_id": str(row["id"]),
+                "title": str(row["title"]),
+                "label": str(row["title"]),
+                "status": _enum_value(row["status"]),
+                "stage": ranks[str(row["id"])],
+                "dependency_role": (
+                    "selected"
+                    if str(row["id"]) == entity_id
+                    else "prerequisite"
+                    if str(row["id"]) in ancestors
+                    else "dependent"
+                ),
+                "summary": {
+                    "archived": bool(row["archived"]),
+                    "edition": int(row["edition"]),
+                    "version": int(row["version"]),
+                },
+            }
+            for row in node_rows
+        }
+        entity_count_key = "specs"
+    else:
+        node_rows = (
+            await db.execute(
+                select(
+                    Card.id,
+                    Card.title,
+                    Card.status,
+                    Card.card_type,
+                    Card.archived,
+                    Card.spec_id,
+                    Card.sprint_id,
+                )
+                .where(Card.board_id == board_id, Card.id.in_(node_ids))
+                .order_by(Card.id)
+            )
+        ).mappings().all()
+        node_by_entity_id = {}
+        for row in node_rows:
+            row_id = str(row["id"])
+            true_entity_type = _card_lineage_entity_type(row["card_type"])
+            node_by_entity_id[row_id] = {
+                "id": f"{true_entity_type}:{row_id}",
+                "entity_type": true_entity_type,
+                "entity_id": row_id,
+                "title": str(row["title"]),
+                "label": str(row["title"]),
+                "status": _enum_value(row["status"]),
+                "stage": ranks[row_id],
+                "card_type": _enum_value(row["card_type"]),
+                "dependency_role": (
+                    "selected"
+                    if row_id == entity_id
+                    else "prerequisite"
+                    if row_id in ancestors
+                    else "dependent"
+                ),
+                "summary": {
+                    "archived": bool(row["archived"]),
+                    "spec_id": row["spec_id"],
+                    "sprint_id": row["sprint_id"],
+                },
+            }
+        entity_count_key = "cards"
+
+    anchor = node_by_entity_id.get(entity_id)
+    if anchor is None:
+        raise TraceabilityReadError(
+            "entity_not_found",
+            "Selected Spec or Task was not found in the requested board.",
+            status_code=404,
+        )
+    if set(node_by_entity_id) != node_ids:
+        raise TraceabilityReadError(
+            "dependency_graph_endpoint_missing",
+            "The dependency graph references an unavailable endpoint.",
+            status_code=409,
+        )
+
+    edges = [
+        {
+            "id": f"dependency:{dependency_id}",
+            "source": node_by_entity_id[prerequisite_id]["id"],
+            "target": node_by_entity_id[dependent_id]["id"],
+            "relationship": "precedes",
+            "dependency_id": dependency_id,
+        }
+        for dependency_id, prerequisite_id, dependent_id in induced_relations
+    ]
+    edges.sort(key=lambda item: (item["source"], item["target"], item["id"]))
+    nodes = sorted(
+        node_by_entity_id.values(),
+        key=lambda item: (item["stage"], item["title"].casefold(), item["entity_id"]),
+    )
+    root_entity = {
+        "type": anchor["entity_type"],
+        "id": anchor["entity_id"],
+        "title": anchor["title"],
+        "status": anchor.get("status"),
+    }
+    return {
+        "view": "dependency",
+        "board_id": board_id,
+        "selected": {
+            "entity_type": anchor["entity_type"],
+            "entity_id": entity_id,
+        },
+        "root_entity": root_entity,
+        # Retain the compatibility header consumed by the current graph modal.
+        "root_ideation": {
+            "id": anchor["entity_id"],
+            "title": anchor["title"],
+            "status": anchor.get("status"),
+            "entity_type": anchor["entity_type"],
+        },
+        "resolution_path": [
+            {"type": anchor["entity_type"], "id": entity_id}
+        ],
+        "nodes": nodes,
+        "edges": edges,
+        "summary": {
+            entity_count_key: len(nodes),
+            "nodes": len(nodes),
+            "edges": len(edges),
+            "prerequisites": len(ancestors - {entity_id}),
+            "dependents": len(descendants - {entity_id}),
+            "artifacts": 0,
+        },
+        "warnings": [],
+    }
+
+
 async def build_lineage_graph(
     db: AsyncSession,
     board_id: str,
@@ -799,6 +1257,7 @@ async def build_lineage_graph(
     entity_type: str,
     entity_id: str,
     include_artifacts: bool = True,
+    view: LineageGraphView = "lineage",
 ) -> dict[str, Any]:
     """Build the UI lineage graph.
 
@@ -806,6 +1265,14 @@ async def build_lineage_graph(
     graph is intentionally limited to SDLC workflow entities:
     ideation -> refinement -> spec -> sprint -> tasks/tests -> bugs.
     """
+    if view == "dependency":
+        return await build_dependency_graph(
+            db,
+            board_id,
+            entity_type=entity_type,
+            entity_id=entity_id,
+        )
+
     root_type, root_id, resolution_path = await resolve_lineage_root(
         db,
         board_id,
@@ -1084,6 +1551,7 @@ async def build_lineage_graph(
         )
 
     return {
+        "view": "lineage",
         "board_id": board_id,
         "selected": {"entity_type": entity_type, "entity_id": entity_id},
         "root_entity": root_entity,

@@ -19,6 +19,7 @@ from okto_pulse.core.application.use_cases.operational_rest import (
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.ports.traceability import (
+    LineageGraphView,
     TraceabilityReadError,
 )
 from okto_pulse.core.services.resource_gate import (
@@ -57,6 +58,7 @@ async def get_lineage_graph(
     entity_type: str = Query(..., min_length=1),
     entity_id: str = Query(..., min_length=1),
     include_artifacts: bool = False,
+    view: LineageGraphView = Query("lineage"),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> dict:
@@ -64,10 +66,11 @@ async def get_lineage_graph(
     try:
         result = await GetLineageGraphUseCase().execute(
             GetLineageGraphCommand(
-                board_id,
-                entity_type,
-                entity_id,
-                include_artifacts,
+                board_id=board_id,
+                entity_type=entity_type,
+                entity_id=entity_id,
+                include_artifacts=include_artifacts,
+                view=view,
             ),
             actor=RESTAdapterContract.actor(user_id, board_id=board_id),
             uow=uow,

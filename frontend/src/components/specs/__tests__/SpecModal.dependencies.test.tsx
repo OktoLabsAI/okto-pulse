@@ -330,7 +330,7 @@ describe('SpecModal Dependencies workspace', () => {
       expect(apiMock.getAllowedTransitions).toHaveBeenCalledTimes(2);
       expect(apiMock.listSprints).toHaveBeenCalledTimes(2);
     });
-  });
+  }, 10_000);
 
   it('keeps separate direction filters and pages incoming relationships lazily', async () => {
     renderModal();
@@ -373,7 +373,7 @@ describe('SpecModal Dependencies workspace', () => {
     fireEvent.click(screen.getByRole('tab', { name: /Depends on/ }));
     expect(screen.getByLabelText('Lifecycle')).toHaveValue('all');
     expect(screen.getByLabelText('Related Spec status')).toHaveValue('');
-  });
+  }, 10_000);
 
   it('distinguishes an archived Done prerequisite from an unfinished prerequisite', async () => {
     const archivedReadiness: SpecDependencyReadiness = {

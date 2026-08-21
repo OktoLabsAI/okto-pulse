@@ -97,6 +97,8 @@ export interface LineageGraphNode {
   label: string;
   status?: string | null;
   stage: number;
+  /** Relative position in dependency view; omitted for origin/derivation. */
+  dependency_role?: 'prerequisite' | 'selected' | 'dependent';
   card_type?: CardType | string;
   artifact_type?: string;
   source_entity_type?: string;
@@ -122,6 +124,8 @@ export interface LineageGraphEdge {
 
 export interface LineageGraphResponse {
   board_id: string;
+  /** Absent on rolling-upgrade servers, where lineage is the only view. */
+  view?: 'lineage' | 'dependency';
   selected: {
     entity_type: string;
     entity_id: string;
