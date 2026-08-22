@@ -606,7 +606,7 @@ assert under(resource_manifest_path, venv), resource_manifest_path
 tool_manifest = json.loads(tool_manifest_path.read_text(encoding="utf-8"))
 resource_manifest = json.loads(resource_manifest_path.read_text(encoding="utf-8"))
 assert tool_manifest["tool_count"] == 13
-assert resource_manifest["resource_count"] == 22
+assert resource_manifest["resource_count"] == 23
 
 semantic_v2_reader_signature = inspect.signature(
     SemanticAssessmentV2ReadPort.get_current_semantic_assessment_v2

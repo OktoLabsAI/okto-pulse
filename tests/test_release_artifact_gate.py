@@ -182,7 +182,7 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     origin = evidence["installed"]["origin_probe"]
     assert origin["about_version"] == "0.3.2"
     assert origin["ska_contract_manifests"]["tool_count"] == 13
-    assert origin["ska_contract_manifests"]["resource_count"] == 22
+    assert origin["ska_contract_manifests"]["resource_count"] == 23
     assert origin["semantic_v2_reader_contract"]["compatible"] is True
     assert "subject_edition" in origin["semantic_v2_reader_contract"]["signature"]
     assert len(origin["required_core_resources"]) == 2
