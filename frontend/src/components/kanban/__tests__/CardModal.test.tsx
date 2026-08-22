@@ -2371,12 +2371,25 @@ describe('ExecutionReportsPanel impact evidence (TS-11)', () => {
     } as unknown as import('@/types').Card;
     render(<ExecutionReportsPanel card={card} />);
     const block = screen.getByTestId('impact-evidence-readonly');
-    expect(block).toHaveTextContent('[core] modified: src/okto_pulse/core/models/schemas.py');
-    expect(block).toHaveTextContent('class/created: ImpactEvidence');
-    expect(block).toHaveTextContent('mcp_tool: okto_pulse_move_card');
+    expect(block).toHaveTextContent('Files (1)');
+    expect(block).toHaveTextContent('Modified');
+    expect(block).toHaveTextContent('src/okto_pulse/core/models/schemas.py');
+    expect(block).toHaveTextContent('Class');
+    expect(block).toHaveTextContent('Created');
+    expect(block).toHaveTextContent('ImpactEvidence');
+    expect(block).toHaveTextContent('Mcp tool');
+    expect(block).toHaveTextContent('okto_pulse_move_card');
     expect(block).toHaveTextContent('ts_8138a59f');
+    expect(block).toHaveTextContent('Agent-declared');
     expect(within(block).queryByRole('button')).toBeNull();
     expect(within(block).queryByRole('textbox')).toBeNull();
+
+    const panel = screen.getByTestId('execution-reports-panel');
+    const scores = screen.getByTestId('execution-report-0-scores');
+    const summary = screen.getByTestId('execution-report-0-summary');
+    expect(panel.compareDocumentPosition(scores) & Node.DOCUMENT_POSITION_CONTAINED_BY).toBeTruthy();
+    expect(scores.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(summary.compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('omits the section entirely when the conclusion has no block', async () => {

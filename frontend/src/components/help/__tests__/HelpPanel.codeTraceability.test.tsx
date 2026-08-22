@@ -17,6 +17,8 @@ describe('HelpPanel Code Traceability guide', () => {
       name: 'Code Traceability — Preserve what the agent learned about the code',
     })).toBeInTheDocument();
     expect(dialog).toHaveTextContent(/does not access, clone, scan, or resolve source code/i);
+    expect(dialog).toHaveTextContent(/Agent-mediated/i);
+    expect(dialog).toHaveTextContent(/cannot detect source changes until an agent submits a newer preflight receipt/i);
     expect(dialog).toHaveTextContent(/Code Evidence is the observation/i);
     expect(dialog).toHaveTextContent(/Code Evidence Matrix is the coverage view/i);
     expect(dialog).toHaveTextContent(/force the repository investigation to be repeated/i);

@@ -287,7 +287,6 @@ def _semantic_subject_payload(
             "action_plan",
             "test_scenario_ids",
             "linked_test_task_ids",
-            "conclusions",
         )
     elif entity_type is PolicyEntityType.SPRINT:
         fields = (

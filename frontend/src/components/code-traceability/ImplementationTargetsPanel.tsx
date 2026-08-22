@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   BookOpenCheck,
+  ChevronDown,
   Clipboard,
   Eye,
   FileCode2,
@@ -12,6 +13,7 @@ import {
   Target,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { ContextualHelpLink } from '@/components/help';
 import { useDashboardApi } from '@/services/api';
 import type {
   CodeTraceabilityProjection,
@@ -34,7 +36,6 @@ import { SubmissionGuideDialog } from './SubmissionGuideDialog';
 import {
   TraceabilityBadge,
   TraceabilityCurrentnessBadge,
-  TraceabilityDisclosure,
 } from './TraceabilityDisclosure';
 import { projectedReceiptCurrentness } from './traceabilityCurrentness';
 import { useCodeTraceabilityAuthority } from './useCodeTraceabilityAuthority';
@@ -476,18 +477,27 @@ function TargetCard({
       )}
 
       {executions && (
-        <section
-          className="mt-3 space-y-2 border-t border-gray-100 pt-3 dark:border-gray-700"
+        <details
+          className="group mt-3 border-t border-gray-100 pt-3 dark:border-gray-700"
           data-testid={`target-executions-${target.id}`}
         >
-          <h4 className="text-[11px] font-semibold text-gray-600 dark:text-gray-300">
-            Agent-submitted execution receipts
-          </h4>
-          {executions.length === 0 ? (
-            <p className="rounded-md border border-dashed border-gray-300 px-3 py-2.5 text-[11px] text-gray-400 dark:border-gray-700">
-              No execution receipt has been accepted for this target.
-            </p>
-          ) : executions.map((execution) => {
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-md px-1 py-1.5 text-[11px] font-semibold text-gray-600 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 dark:text-gray-300 dark:hover:bg-gray-700/50 [&::-webkit-details-marker]:hidden">
+            <span>Agent-submitted execution receipts</span>
+            <span className="flex shrink-0 items-center gap-1.5 text-[10px] font-medium text-gray-400">
+              {executions.length}
+              <ChevronDown
+                size={13}
+                aria-hidden="true"
+                className="transition-transform group-open:rotate-180"
+              />
+            </span>
+          </summary>
+          <div className="mt-2 space-y-2">
+            {executions.length === 0 ? (
+              <p className="rounded-md border border-dashed border-gray-300 px-3 py-2.5 text-[11px] text-gray-400 dark:border-gray-700">
+                No execution receipt has been accepted for this target.
+              </p>
+            ) : executions.map((execution) => {
             const currentTargetRevision = execution.target_revision === target.revision;
             const executionCurrentness = projectedReceiptCurrentness(
               projection,
@@ -539,8 +549,9 @@ function TargetCard({
                 )}
               </article>
             );
-          })}
-        </section>
+            })}
+          </div>
+        </details>
       )}
 
       <dl className="mt-3 grid gap-x-4 gap-y-2 text-[11px] sm:grid-cols-3">
@@ -866,6 +877,14 @@ export function ImplementationTargetsPanel({
           <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
             Semantic target intentions may be added by people; concrete resolutions remain agent-attested.
           </p>
+          <ContextualHelpLink
+            sectionId="code-traceability"
+            ariaLabel="Learn how Implementation Targets work"
+            testId="implementation-targets-help-link"
+            className="mt-1 text-[11px]"
+          >
+            How Implementation Targets work
+          </ContextualHelpLink>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -899,7 +918,6 @@ export function ImplementationTargetsPanel({
         </div>
       </div>
 
-      <TraceabilityDisclosure />
       {operationallyFrozen && (
         <div
           className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] leading-5 text-rose-800 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300"
@@ -911,11 +929,6 @@ export function ImplementationTargetsPanel({
           </span>
         </div>
       )}
-      <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300" role="note">
-        <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-        <span>Pulse cannot detect source changes until an agent submits a newer preflight receipt.</span>
-      </div>
-
       {projection && (
         <HumanWaiverSection
           waivers={projection.waivers ?? []}

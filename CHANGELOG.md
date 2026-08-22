@@ -9,7 +9,7 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
-## [0.3.2] - 2026-08-09
+## [0.3.2] - 2026-08-22
 
 ### Added
 
@@ -27,6 +27,18 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   authorization projection.
 - Audited Spec dependency persistence, REST delivery and an accessible lazy
   Dependencies workspace in the existing Spec modal.
+- Agent-mediated Code Traceability persistence and UI for investigation
+  receipts, classified Code Evidence, Spec coverage dispositions,
+  Implementation Targets, target resolution, overlap, execution receipts and
+  governed human waivers.
+- Canonical Board KG, Coverage & Traceability, Flow Health, Spec & Policy
+  Readiness and Sprint commitment Analytics panels.
+- A full-graph dependency lineage mode with complete dependency scope and
+  conflict-free branch lanes.
+- Fenced offline KG recovery for legacy rebuild queues with exact checkpoints,
+  ACK journals, compensation outcomes, lease ownership and blocker diagnostics.
+- Human-first canonical exports that preserve architecture and governed
+  evidence while omitting empty audit noise.
 
 ### Changed
 
@@ -38,6 +50,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   permission presets, default configuration, design system, runtime, metrics,
   amendments and Knowledge Graph operations.
 - The bundled frontend distribution was rebuilt from the reconciled source.
+- Supported Code Evidence classifications distinguish brownfield AS-IS,
+  greenfield scaffold/base-code and greenfield TO-BE references; authenticated
+  agents can classify evidence without forcing a redundant human decision.
+- Execution Reports place scores before formatted evidence, and agent-submitted
+  execution receipts start collapsed.
+- Agent-boundary and source-change explanations moved from operational card
+  panels into the canonical Code Traceability Help guide.
+- Analytics board drilldown follows the Validation Gates hierarchy and uses
+  human-readable Spec, subject and obligation labels.
 
 ### Fixed
 
@@ -48,13 +69,25 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Inline guidelines no longer present an inapplicable unlink action.
 - Guideline import and export preserve evaluation metrics, immutable identity
   and version creation semantics for repeated IDs.
+- Board guideline saves return a verifiable update projection instead of
+  blocking on an unverifiable response.
+- Policy receipts no longer become stale solely because a Card or Test changes
+  workflow status; semantic subject changes still invalidate them.
+- Analytics drilldown tolerates incomplete readiness projections instead of
+  dereferencing missing applicability data.
+- Dependency lineage no longer hides non-dependency nodes or overlaps derived
+  Tasks, Bugs and Tests with their dependent Spec branch.
+- KG recovery preserves unrelated pending backoff, reconciles legacy queues
+  safely and fences admission to the current service invocation and data home.
 
 ### Validation
 
-- The Board E2E flow proves traceability and semantic-guideline policy blocks,
-  then completes successfully after current independent assessment evidence.
-- Ruff, 65 focused Community regressions, frontend build, distribution
-  verification and the lint ratchet pass after reconciliation with `develop`.
+- Board E2E flows prove traceability and semantic-guideline policy blocks, then
+  complete successfully after current independent assessment evidence.
+- Focused backend/frontend regressions, production frontend builds, wheel
+  reinstalls and direct UI checks cover guideline save/adoption, lifecycle
+  currentness, formatted reports, collapsible receipts, Analytics, Help and
+  lineage behavior.
 
 ## [0.3.1] - 2026-07-27
 

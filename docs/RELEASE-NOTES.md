@@ -5,22 +5,87 @@ Changeset per version, newest first.
 
 ### 0.3.2 - current
 
-This release makes semantic-guideline evidence actionable throughout the local
-Community experience. V2 assessments preserve human-readable anchor snapshots,
-metric rationale, remediation and exact currentness fences.
+Version 0.3.2 turns evidence, delivery readiness and analytics into one governed
+local workflow. Community implements the matching persistence, REST, MCP-host
+and human-first UI for the 0.3.2 Core contracts.
 
-- Policy Compliance renders circular confidence and metric scores alongside
-  issue/evidence pinpoints instead of opaque element identifiers.
-- Card and Spec modals resolve only fields and structured items already visible
-  to the current UI authority, keeping unknown anchors fail-closed.
-- SQLAlchemy persistence and REST/OpenAPI surfaces implement the sealed v2
-  assessment contract and capability rollout switches.
-- FastMCP remains on its supported Authlib 1.6 compatibility line, removing the
-  startup deprecation warning until the joserfc-based host migration.
-- Community requires the matching `okto-pulse-core>=0.3.2` release.
-- The existing Spec modal gains a lazy, accessible Dependencies workspace backed
-  by audited SQLite/PostgreSQL-capable persistence, opaque pagination and the
-  Core-owned Done-only precedence policy.
+#### Semantic guidelines, validation and lifecycle
+
+- Semantic-guideline assessment v2 receipts preserve human-readable anchor
+  snapshots, metric rationale, remediation, confidence and exact currentness
+  fences. Policy Compliance presents those facts instead of opaque ids.
+- Guideline adoption and board updates return verifiable projections, while
+  policy currentness follows semantic subject changes rather than ordinary
+  workflow-column transitions.
+- Card and Spec resolvers remain authority-aware and fail closed for fields that
+  are unavailable to the current UI identity.
+- Human validation is scoped to lifecycle editions. Normal Tasks and Bugs use
+  the governed Rejected rework lane; Tests preserve their dedicated rework
+  semantics. Execution Reports put scores first and render structured evidence
+  for human review.
+- The recursive permission editor covers every exposed permission leaf, and
+  reviewer separation is configurable at board and global-default level.
+
+#### Agent-mediated Code Traceability
+
+- Community persists immutable investigation receipts, Code Evidence,
+  evidence classifications, Spec coverage dispositions, Implementation Targets,
+  target resolutions, overlaps, execution receipts and human waivers.
+- Brownfield, greenfield scaffold/base-code and greenfield TO-BE evidence remain
+  explicitly distinguishable. An authenticated agent may submit the supported
+  classification directly, while an authorized person can review or override
+  it without making human classification the only admission path.
+- Board governance supports advisory or blocking enforcement, accepted-attestor
+  policy, receipt freshness and trust thresholds. Code Evidence coverage can be
+  skipped only through the explicit governed board/Spec control.
+- Execution receipts start collapsed to reduce visual noise. Agent-boundary and
+  source-change limitations live in the Code Traceability Help guide, reached
+  through a small contextual link instead of repeated operational warnings.
+
+#### Specs, exports and lineage
+
+- Specs gain audited same-board dependencies, opaque pagination and a lazy,
+  accessible Dependencies workspace backed by the Core-owned Done-only
+  precedence policy.
+- Human-first exports preserve architecture and governed evidence, format
+  readable reports and omit empty audit noise.
+- The lineage graph can switch between origin/derivation and dependency layout
+  without hiding the rest of the graph. All dependency branches remain visible,
+  and dedicated lanes keep dependent Specs clear of their derived Tasks, Bugs
+  and Tests.
+
+#### Governed analytics
+
+- Analytics now exposes Board KG health, Canonical Coverage & Traceability,
+  Flow Health, Spec & Policy Readiness and immutable Sprint activation
+  commitment/readiness projections.
+- Board drilldown follows the governed Validation Gates hierarchy, uses human
+  labels for Specs and subjects, translates obligation codes into descriptive
+  names and tolerates incomplete projections without crashing the UI.
+- Initiative full views and Delivery Forecast panels follow the approved SDLC
+  mockups and use the same canonical facts exposed by REST and MCP.
+
+#### KG recovery, runtime and packaging
+
+- A fenced offline recovery executor handles legacy rebuild queues without
+  destructive auto-bootstrap. Recovery admission, leases, checkpoints, exact
+  ACK journals, queue CAS, compensation and writer handoff are bound to the
+  current data home and invocation.
+- Recovery fingerprints and schema inventories are bounded, transient Windows
+  artifact replacement is retried, and blocker diagnostics expose exact
+  outcomes instead of ambiguous drain failures.
+- API/UI work is protected from MCP and policy-graph contention, CLI feedback is
+  English, resilient lock recovery is human-readable and the packaged frontend
+  is rebuilt from the reconciled source.
+- Community requires the matching `okto-pulse-core>=0.3.2,<1.0.0`; FastMCP stays
+  on the supported Authlib 1.6 compatibility line.
+
+#### Validation
+
+- Focused backend and frontend regressions, production builds, wheel installs
+  and UI-driven E2E flows on the E2E board cover guideline save/adoption,
+  validation currentness, formatted execution reports, collapsible receipts,
+  Analytics drilldown, Code Traceability Help and lineage layouts.
 
 
 ### 0.3.1

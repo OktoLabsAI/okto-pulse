@@ -692,10 +692,11 @@ When a refinement is "done", you can derive one or more Specs from it. Each spec
 ## Code Traceability — Preserve what the agent learned about the code
 
 Code Traceability keeps repository findings connected to the product entities
-that depend on them. Pulse stores and presents the accepted records, but it
-does **not** access, clone, scan, or resolve source code. An authenticated
-external agent checks access and capabilities in its own environment and then
-submits an **accessible**, **partial**, or **unavailable** attestation.
+that depend on them. **Agent-mediated:** Pulse stores and presents the accepted
+records, but it does **not** access, clone, scan, or resolve source code. An
+authenticated external agent checks access and capabilities in its own
+environment and then submits an **accessible**, **partial**, or **unavailable**
+attestation.
 
 ### Code Evidence in a Refinement
 
@@ -743,6 +744,10 @@ not touched, replaced, created, deleted, or superseded.
 Currentness is evaluated against the source receipt and the entity version.
 When either moves, the earlier evidence remains visible as history but may no
 longer authorize the current lifecycle transition.
+
+Pulse cannot detect source changes until an agent submits a newer preflight
+receipt. This is why currentness describes the latest agent-attested source
+state, rather than continuous repository monitoring.
 
 - **Advisory** reports missing or outdated traceability without blocking the
   transition. The missing trail may still force the repository investigation

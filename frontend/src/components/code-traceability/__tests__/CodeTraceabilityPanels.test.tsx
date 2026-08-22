@@ -361,11 +361,13 @@ describe('Code Traceability passive Community surfaces', () => {
       <>
         <CodeEvidencePanel boardId="board-1" subjectId="ref-1" subjectVersion={3} />
         <EvidenceMatrixPanel boardId="board-1" subjectId="spec-1" subjectVersion={7} />
+        <ImplementationTargetsPanel boardId="board-1" subjectId="card-1" subjectVersion={4} specVersion={7} />
       </>,
     );
 
-    await waitFor(() => expect(apiMock.getCodeTraceabilityProjection).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(apiMock.getCodeTraceabilityProjection).toHaveBeenCalledTimes(3));
     expect(screen.queryByTestId('traceability-agent-mediated-disclosure')).not.toBeInTheDocument();
+    expect(screen.queryByText('Pulse cannot detect source changes until an agent submits a newer preflight receipt.')).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Code evidence matrix' })).toBeInTheDocument();
     expect(screen.getByText(/Maps inherited Code Evidence/i)).toBeInTheDocument();
 
@@ -374,6 +376,10 @@ describe('Code Traceability passive Community surfaces', () => {
 
     fireEvent.click(screen.getByTestId('code-evidence-matrix-help-link'));
     expect(helpListener).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByTestId('implementation-targets-help-link'));
+    expect(helpListener).toHaveBeenCalledTimes(3);
+    expect(helpListener).toHaveBeenLastCalledWith({ sectionId: 'code-traceability' });
     unsubscribe();
   });
 
@@ -394,7 +400,7 @@ describe('Code Traceability passive Community surfaces', () => {
     expect(screen.getByText('Receipt accepted')).toBeInTheDocument();
     expect(screen.getByText('Agent-attested resolution · PF-103')).toBeInTheDocument();
     expect(screen.getByText('Current against preflight PF-103')).toBeInTheDocument();
-    expect(screen.getByText('Pulse cannot detect source changes until an agent submits a newer preflight receipt.')).toBeInTheDocument();
+    expect(screen.queryByText('Pulse cannot detect source changes until an agent submits a newer preflight receipt.')).not.toBeInTheDocument();
 
     for (const button of screen.getAllByRole('button')) {
       expect(button).not.toHaveAccessibleName(/connect|sync|clone|probe|resolve source|submit|start check/i);
@@ -1010,8 +1016,12 @@ describe('Code Traceability passive Community surfaces', () => {
       />,
     );
 
-    expect(await screen.findByText('Agent-submitted execution receipts')).toBeInTheDocument();
-    expect(screen.getByText('Agent-submitted execution · touched')).toBeInTheDocument();
+    const executionDisclosure = await screen.findByTestId('target-executions-target-1');
+    expect(executionDisclosure).not.toHaveAttribute('open');
+    expect(screen.getByText('Agent-submitted execution · touched')).not.toBeVisible();
+    fireEvent.click(screen.getByText('Agent-submitted execution receipts'));
+    expect(executionDisclosure).toHaveAttribute('open');
+    expect(screen.getByText('Agent-submitted execution · touched')).toBeVisible();
     expect(screen.getByText('TokenService.refresh · src/auth/token_service.py')).toBeInTheDocument();
     expect(screen.getByText('Lock acquisition now precedes persistence.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'View execution receipt' })).toBeInTheDocument();

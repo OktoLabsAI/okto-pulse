@@ -83,6 +83,10 @@ function shortId(id: string): string {
   return id.length > 16 ? id.slice(0, 12) + '…' : id;
 }
 
+function humanizeEvidenceToken(value: string): string {
+  return value.replace(/[_-]+/g, ' ').replace(/^./, (character) => character.toUpperCase());
+}
+
 function cardTypeLabel(card: Pick<Card, 'card_type'> | null | undefined): string {
   if (card?.card_type === 'bug') return 'Bug';
   if (card?.card_type === 'test') return 'Test';
@@ -2673,81 +2677,10 @@ export function ExecutionReportsPanel({ card }: { card: Card }) {
             </span>
           </div>
 
-          <Md>{report.text}</Md>
-
-          {report.impact_evidence && (
-            <div
-              className="mt-3 rounded-lg border border-gray-100 bg-gray-50/60 p-3 dark:border-gray-700/50 dark:bg-gray-900/20"
-              data-testid="impact-evidence-readonly"
-            >
-              <p className="text-[11px] font-semibold text-gray-600 dark:text-gray-300">
-                Impact evidence (declared claim)
-              </p>
-              <div className="mt-2 space-y-2 text-[11px] text-gray-600 dark:text-gray-300">
-                {report.impact_evidence.files.length > 0 && (
-                  <div>
-                    <p className="font-medium text-gray-500 dark:text-gray-400">Files</p>
-                    <ul className="mt-0.5 space-y-0.5">
-                      {report.impact_evidence.files.map((f, i) => (
-                        <li key={i} className="font-mono">
-                          [{f.repo}] {f.change_kind}: {f.path}
-                          {f.previous_path ? ` (was ${f.previous_path})` : ''}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {report.impact_evidence.symbols.length > 0 && (
-                  <div>
-                    <p className="font-medium text-gray-500 dark:text-gray-400">Symbols</p>
-                    <ul className="mt-0.5 space-y-0.5">
-                      {report.impact_evidence.symbols.map((sym, i) => (
-                        <li key={i} className="font-mono">
-                          {sym.kind}/{sym.action}: {sym.name} — [{sym.repo}] {sym.file}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {report.impact_evidence.surfaces.length > 0 && (
-                  <div>
-                    <p className="font-medium text-gray-500 dark:text-gray-400">Surfaces</p>
-                    <ul className="mt-0.5 space-y-0.5">
-                      {report.impact_evidence.surfaces.map((sf, i) => (
-                        <li key={i} className="font-mono">{sf.kind}: {sf.identifier}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {report.impact_evidence.tests.length > 0 && (
-                  <div>
-                    <p className="font-medium text-gray-500 dark:text-gray-400">Tests</p>
-                    <ul className="mt-0.5 space-y-0.5">
-                      {report.impact_evidence.tests.map((t, i) => (
-                        <li key={i} className="font-mono">
-                          {t.action} [{t.repo}] {t.test_file_path}
-                          {t.test_function ? `::${t.test_function}` : ''}
-                          {t.scenario_id ? ` (${t.scenario_id})` : ''}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {report.impact_evidence.evidence_refs.length > 0 && (
-                  <div>
-                    <p className="font-medium text-gray-500 dark:text-gray-400">Evidence refs</p>
-                    <ul className="mt-0.5 space-y-0.5">
-                      {report.impact_evidence.evidence_refs.map((ref, i) => (
-                        <li key={i} className="font-mono">{ref}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          <div className="mt-4 grid gap-4 border-t border-gray-100 pt-4 sm:grid-cols-2 dark:border-gray-700/50">
+          <div
+            className="grid gap-4 rounded-lg border border-cyan-100 bg-cyan-50/40 p-3 sm:grid-cols-2 dark:border-cyan-900/60 dark:bg-cyan-950/15"
+            data-testid={`execution-report-${index}-scores`}
+          >
             <div className="flex gap-4">
               <MetricScoreRing
                 label="Completeness"
@@ -2784,6 +2717,119 @@ export function ExecutionReportsPanel({ card }: { card: Card }) {
               </div>
             </div>
           </div>
+
+          <div className="mt-4" data-testid={`execution-report-${index}-summary`}>
+            <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+              Execution summary
+            </p>
+            <Md>{report.text}</Md>
+          </div>
+
+          {report.impact_evidence && (
+            <div
+              className="mt-4 rounded-lg border border-gray-200 bg-gray-50/60 p-3 dark:border-gray-700 dark:bg-gray-900/20"
+              data-testid="impact-evidence-readonly"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-gray-700 dark:text-gray-200">
+                  Impact evidence
+                </p>
+                <span className="rounded-full bg-gray-200/70 px-2 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-gray-700 dark:text-gray-300">
+                  Agent-declared
+                </span>
+              </div>
+              <div className="mt-3 grid gap-3 text-[11px] text-gray-600 dark:text-gray-300 lg:grid-cols-2">
+                {report.impact_evidence.files.length > 0 && (
+                  <section className="rounded-md border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800/70">
+                    <p className="mb-2 font-semibold text-gray-600 dark:text-gray-300">
+                      Files <span className="font-normal text-gray-400">({report.impact_evidence.files.length})</span>
+                    </p>
+                    <ul className="space-y-2">
+                      {report.impact_evidence.files.map((file, evidenceIndex) => (
+                        <li key={evidenceIndex} className="min-w-0">
+                          <div className="mb-1 flex flex-wrap gap-1.5">
+                            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium dark:bg-gray-700">{file.repo}</span>
+                            <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">
+                              {humanizeEvidenceToken(file.change_kind)}
+                            </span>
+                          </div>
+                          <code className="block break-all text-[11px] text-gray-700 dark:text-gray-200">{file.path}</code>
+                          {file.previous_path && (
+                            <p className="mt-1 break-all text-[10px] text-gray-400">Previously {file.previous_path}</p>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+                {report.impact_evidence.symbols.length > 0 && (
+                  <section className="rounded-md border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800/70">
+                    <p className="mb-2 font-semibold text-gray-600 dark:text-gray-300">
+                      Symbols <span className="font-normal text-gray-400">({report.impact_evidence.symbols.length})</span>
+                    </p>
+                    <ul className="space-y-2">
+                      {report.impact_evidence.symbols.map((symbol, evidenceIndex) => (
+                        <li key={evidenceIndex} className="min-w-0">
+                          <div className="mb-1 flex flex-wrap gap-1.5">
+                            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium dark:bg-gray-700">{humanizeEvidenceToken(symbol.kind)}</span>
+                            <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-950/40 dark:text-violet-300">{humanizeEvidenceToken(symbol.action)}</span>
+                          </div>
+                          <code className="block break-all text-gray-700 dark:text-gray-200">{symbol.name}</code>
+                          <p className="mt-1 break-all text-[10px] text-gray-400">{symbol.repo} · {symbol.file}</p>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+                {report.impact_evidence.surfaces.length > 0 && (
+                  <section className="rounded-md border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800/70">
+                    <p className="mb-2 font-semibold text-gray-600 dark:text-gray-300">
+                      Surfaces <span className="font-normal text-gray-400">({report.impact_evidence.surfaces.length})</span>
+                    </p>
+                    <ul className="space-y-2">
+                      {report.impact_evidence.surfaces.map((surface, evidenceIndex) => (
+                        <li key={evidenceIndex}>
+                          <span className="mb-1 inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium dark:bg-gray-700">{humanizeEvidenceToken(surface.kind)}</span>
+                          <code className="block break-all text-gray-700 dark:text-gray-200">{surface.identifier}</code>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+                {report.impact_evidence.tests.length > 0 && (
+                  <section className="rounded-md border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800/70">
+                    <p className="mb-2 font-semibold text-gray-600 dark:text-gray-300">
+                      Tests <span className="font-normal text-gray-400">({report.impact_evidence.tests.length})</span>
+                    </p>
+                    <ul className="space-y-2">
+                      {report.impact_evidence.tests.map((test, evidenceIndex) => (
+                        <li key={evidenceIndex} className="min-w-0">
+                          <div className="mb-1 flex flex-wrap gap-1.5">
+                            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium dark:bg-gray-700">{test.repo}</span>
+                            <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">{humanizeEvidenceToken(test.action)}</span>
+                          </div>
+                          <code className="block break-all text-gray-700 dark:text-gray-200">
+                            {test.test_file_path}{test.test_function ? `::${test.test_function}` : ''}
+                          </code>
+                          {test.scenario_id && <p className="mt-1 text-[10px] text-gray-400">Scenario {test.scenario_id}</p>}
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+                {report.impact_evidence.evidence_refs.length > 0 && (
+                  <section className="rounded-md border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800/70 lg:col-span-2">
+                    <p className="mb-2 font-semibold text-gray-600 dark:text-gray-300">Evidence references</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {report.impact_evidence.evidence_refs.map((reference, evidenceIndex) => (
+                        <code key={evidenceIndex} className="rounded bg-gray-100 px-2 py-1 text-[10px] text-gray-600 dark:bg-gray-700 dark:text-gray-200">{reference}</code>
+                      ))}
+                    </div>
+                  </section>
+                )}
+              </div>
+            </div>
+          )}
         </article>
       ))}
     </div>
