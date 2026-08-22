@@ -35,6 +35,7 @@ import {
   GitBranch,
   Shield,
   Fingerprint,
+  Grid3X3,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { v4 as uuidv4 } from 'uuid';
@@ -43,7 +44,15 @@ import { getErrorMessage } from '@/lib/getErrorMessage';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
 import { openLineageGraph } from '@/components/traceability';
-import type { Refinement, RefinementStatus, RefinementQAItem, RefinementHistoryEntry, RefinementSnapshot, RefinementSnapshotSummary } from '@/types';
+import type {
+  Refinement,
+  RefinementHistoryEntry,
+  RefinementQAItem,
+  RefinementSnapshot,
+  RefinementSnapshotSummary,
+  RefinementStatus,
+  SpecSummary,
+} from '@/types';
 import { REFINEMENT_STATUSES, REFINEMENT_STATUS_LABELS } from '@/types';
 import { MentionInput, type Mentionable } from '@/components/shared/MentionInput';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
@@ -780,6 +789,152 @@ function QATab({
   );
 }
 
+export function RefinementEvidenceMatrixNavigation({
+  specs,
+  onOpenSpec,
+}: {
+  specs: SpecSummary[];
+  onOpenSpec?: (specId: string) => void;
+}) {
+  const modalStack = useOptionalModalStack();
+  const [selectedSpecId, setSelectedSpecId] = useState('');
+  const orderedSpecs = [...specs].sort((left, right) => (
+    left.title.localeCompare(right.title) || left.id.localeCompare(right.id)
+  ));
+  const openSpec = (specId: string) => {
+    if (onOpenSpec) {
+      onOpenSpec(specId);
+      return;
+    }
+    modalStack?.push({
+      type: 'spec',
+      id: specId,
+      initialTab: 'evidence-matrix',
+    });
+  };
+
+  if (orderedSpecs.length === 0) {
+    return (
+      <section
+        aria-label="Derived Spec evidence matrices"
+        className="rounded-lg border border-dashed border-gray-300 bg-gray-50/60 px-3 py-2.5 dark:border-gray-700 dark:bg-gray-900/30"
+        data-testid="refinement-evidence-matrix-navigation"
+      >
+        <div className="flex items-start gap-2">
+          <Grid3X3 size={14} className="mt-0.5 shrink-0 text-gray-400" />
+          <div>
+            <p className="text-xs font-medium text-gray-700 dark:text-gray-200">
+              No derived Spec yet
+            </p>
+            <p className="mt-0.5 text-[11px] leading-4 text-gray-500 dark:text-gray-400">
+              Code Evidence belongs to this Refinement. Its obligation matrix becomes available after a Spec is derived.
+            </p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  if (orderedSpecs.length === 1) {
+    const spec = orderedSpecs[0];
+    return (
+      <section
+        aria-label="Derived Spec evidence matrices"
+        className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-violet-200 bg-violet-50/50 px-3 py-2.5 dark:border-violet-900 dark:bg-violet-950/20"
+        data-testid="refinement-evidence-matrix-navigation"
+      >
+        <div className="min-w-0">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-violet-500">
+            Derived Spec matrix
+          </p>
+          <p className="truncate text-xs font-medium text-gray-800 dark:text-gray-100">
+            {spec.title}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => openSpec(spec.id)}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-violet-200 bg-white px-2.5 py-1.5 text-[11px] font-medium text-violet-700 hover:bg-violet-100 dark:border-violet-800 dark:bg-gray-900 dark:text-violet-300 dark:hover:bg-violet-950/40"
+          aria-label={`Open Code Evidence Matrix for ${spec.title}`}
+        >
+          <Grid3X3 size={12} /> Open matrix
+        </button>
+      </section>
+    );
+  }
+
+  return (
+    <section
+      aria-label="Derived Spec evidence matrices"
+      className="rounded-lg border border-violet-200 bg-violet-50/50 px-3 py-2.5 dark:border-violet-900 dark:bg-violet-950/20"
+      data-testid="refinement-evidence-matrix-navigation"
+    >
+      <div className="flex items-center gap-2">
+        <Grid3X3 size={14} className="shrink-0 text-violet-500" />
+        <div>
+          <p className="text-xs font-medium text-gray-800 dark:text-gray-100">
+            Open a derived Spec matrix
+          </p>
+          <p className="text-[11px] text-gray-500 dark:text-gray-400">
+            This Refinement has {orderedSpecs.length} derived Specs. Choose the obligation context you want to inspect.
+          </p>
+        </div>
+      </div>
+      <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+        <label className="min-w-0 flex-1">
+          <span className="sr-only">Choose a Spec for its Code Evidence Matrix</span>
+          <select
+            value={selectedSpecId}
+            onChange={(event) => setSelectedSpecId(event.target.value)}
+            className="w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs text-gray-800 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+            aria-label="Choose a Spec for its Code Evidence Matrix"
+          >
+            <option value="">Select a Spec…</option>
+            {orderedSpecs.map((spec) => (
+              <option key={spec.id} value={spec.id}>
+                {spec.title} · edition {spec.edition ?? 1}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          disabled={!selectedSpecId}
+          onClick={() => {
+            if (selectedSpecId) openSpec(selectedSpecId);
+          }}
+          className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-violet-200 bg-white px-2.5 py-1.5 text-[11px] font-medium text-violet-700 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-violet-800 dark:bg-gray-900 dark:text-violet-300 dark:hover:bg-violet-950/40"
+        >
+          <Grid3X3 size={12} /> Open matrix
+        </button>
+      </div>
+    </section>
+  );
+}
+
+export function RefinementCodeEvidenceTabContent({
+  boardId,
+  refinementId,
+  refinementVersion,
+  specs,
+}: {
+  boardId: string;
+  refinementId: string;
+  refinementVersion: number;
+  specs: SpecSummary[];
+}) {
+  return (
+    <div className="space-y-4" data-testid="refinement-code-evidence-tab-content">
+      <CodeEvidencePanel
+        boardId={boardId}
+        subjectId={refinementId}
+        subjectVersion={refinementVersion}
+      />
+      <RefinementEvidenceMatrixNavigation specs={specs} />
+    </div>
+  );
+}
+
 /* ============================================================
    Main RefinementModal
    ============================================================ */
@@ -1398,10 +1553,11 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
               value={activeTab}
               mount="lazy-keep"
             >
-              <CodeEvidencePanel
+              <RefinementCodeEvidenceTabContent
                 boardId={refinement.board_id}
-                subjectId={refinement.id}
-                subjectVersion={refinement.version}
+                refinementId={refinement.id}
+                refinementVersion={refinement.version}
+                specs={refinement.specs || []}
               />
             </AccessibleTabPanel>
           )}

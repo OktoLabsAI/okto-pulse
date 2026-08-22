@@ -64,6 +64,8 @@ GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES: tuple[str, ...] = (
     "canonical_debt",
     "cards",
     "code_evidence",
+    "code_evidence_classification_events",
+    "code_evidence_classification_heads",
     "code_evidence_dispositions",
     "code_evidence_spec_links",
     "code_investigation_heads",
@@ -98,7 +100,7 @@ GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES: tuple[str, ...] = (
 )
 GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID = "_global"
 GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION = "gdsr-fence-v2"
-GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v7"
+GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v8"
 GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX = "trg_global_discovery_source_revision"
 
 
@@ -916,6 +918,11 @@ class Refinement(Base):
             "skip_ambiguity_gate_edition IS NULL OR skip_ambiguity_gate_edition >= 1",
             name="ck_refinement_skip_ambiguity_gate_edition",
         ),
+        CheckConstraint(
+            "delivery_context IS NULL OR delivery_context IN "
+            "('brownfield', 'greenfield', 'hybrid')",
+            name="ck_refinement_delivery_context",
+        ),
     )
 
     id: Mapped[str] = mapped_column(
@@ -939,6 +946,9 @@ class Refinement(Base):
     out_of_scope: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     analysis: Mapped[str | None] = mapped_column(Text, nullable=True)
     decisions: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Authored implementation context.  It is deliberately nullable so legacy
+    # rows remain truthful instead of being guessed during migration.
+    delivery_context: Mapped[str | None] = mapped_column(String(16), nullable=True)
     status: Mapped[RefinementStatus] = mapped_column(
         RefinementStatusType(), default=RefinementStatus.DRAFT, nullable=False
     )
@@ -1010,6 +1020,18 @@ class RefinementSnapshot(Base):
         UniqueConstraint(
             "refinement_id", "version", name="uq_refinement_snapshot_version"
         ),
+        CheckConstraint(
+            "delivery_context IS NULL OR delivery_context IN "
+            "('brownfield', 'greenfield', 'hybrid')",
+            name="ck_refinement_snapshot_delivery_context",
+        ),
+        CheckConstraint(
+            "(source_context_manifest IS NULL AND source_context_sha256 IS NULL) "
+            "OR (source_context_manifest IS NOT NULL "
+            "AND source_context_sha256 IS NOT NULL "
+            "AND length(source_context_sha256) = 64)",
+            name="ck_refinement_snapshot_source_context",
+        ),
     )
 
     id: Mapped[str] = mapped_column(
@@ -1036,6 +1058,11 @@ class RefinementSnapshot(Base):
     code_evidence_manifest: Mapped[list | None] = mapped_column(
         JSON,
         nullable=True,
+    )
+    delivery_context: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    source_context_manifest: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    source_context_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
     )
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -1193,6 +1220,24 @@ class Spec(Base):
             "(last_started_edition >= 1 AND last_started_edition <= edition)",
             name="ck_spec_last_started_edition",
         ),
+        CheckConstraint(
+            "delivery_context IS NULL OR delivery_context IN "
+            "('brownfield', 'greenfield', 'hybrid')",
+            name="ck_spec_delivery_context",
+        ),
+        CheckConstraint(
+            "(delivery_context IS NULL AND delivery_context_provenance IS NULL) "
+            "OR (delivery_context IS NOT NULL "
+            "AND delivery_context_provenance IS NOT NULL)",
+            name="ck_spec_delivery_context_provenance",
+        ),
+        CheckConstraint(
+            "(source_context_manifest IS NULL AND source_context_sha256 IS NULL) "
+            "OR (source_context_manifest IS NOT NULL "
+            "AND source_context_sha256 IS NOT NULL "
+            "AND length(source_context_sha256) = 64)",
+            name="ck_spec_source_context",
+        ),
     )
 
     id: Mapped[str] = mapped_column(
@@ -1225,6 +1270,14 @@ class Spec(Base):
     source_refinement_version: Mapped[int | None] = mapped_column(
         Integer,
         nullable=True,
+    )
+    delivery_context: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    delivery_context_provenance: Mapped[dict | None] = mapped_column(
+        JSON, nullable=True
+    )
+    source_context_manifest: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    source_context_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
     )
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -11506,6 +11559,23 @@ class CodeInvestigationReceiptRow(Base):
             name="ck_code_investigation_receipt_outcome",
         ),
         CheckConstraint(
+            "(delivery_context IS NULL AND contextual_outcome IS NULL "
+            "AND context_contract_version IS NULL) OR "
+            "(delivery_context IN ('brownfield', 'greenfield', 'hybrid') "
+            "AND contextual_outcome IN ('evidence_applicable', "
+            "'no_relevant_existing_implementation', 'partial', 'unavailable') "
+            "AND context_contract_version = 2 "
+            "AND ((contextual_outcome IN ('evidence_applicable', "
+            "'no_relevant_existing_implementation') AND outcome = 'accessible') "
+            "OR (contextual_outcome = 'partial' AND outcome = 'partial') "
+            "OR (contextual_outcome = 'unavailable' "
+            "AND outcome = 'unavailable')) "
+            "AND (contextual_outcome <> "
+            "'no_relevant_existing_implementation' "
+            "OR delivery_context = 'greenfield'))",
+            name="ck_code_investigation_receipt_context_v2",
+        ),
+        CheckConstraint(
             "(workspace_state_id IS NULL AND declared_dirty IS NULL "
             "AND reproducibility_claim IS NULL "
             "AND fingerprint_algorithm IS NULL AND manifest_digest IS NULL "
@@ -11596,6 +11666,13 @@ class CodeInvestigationReceiptRow(Base):
     )
     acceptance_status: Mapped[str] = mapped_column(String(16), nullable=False)
     outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    delivery_context: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    contextual_outcome: Mapped[str | None] = mapped_column(
+        String(48), nullable=True
+    )
+    context_contract_version: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
     capabilities: Mapped[list] = mapped_column(JSON, nullable=False)
     source_ref: Mapped[str] = mapped_column(String(512), nullable=False)
     source_identity_digest: Mapped[str | None] = mapped_column(
@@ -11745,6 +11822,44 @@ class CodeEvidenceRow(Base):
             name="ck_code_evidence_type",
         ),
         CheckConstraint(
+            "source_role IN ('current_implementation', 'existing_scaffold', "
+            "'existing_constraint', 'reference_pattern', "
+            "'uncategorized_legacy')",
+            name="ck_code_evidence_source_role",
+        ),
+        CheckConstraint(
+            "(source_role = 'uncategorized_legacy' "
+            "AND relevance_summary IS NULL AND scope_relation IS NULL "
+            "AND source_origin IS NULL AND interpretation_limit IS NULL "
+            "AND baseline_presence IS NULL "
+            "AND baseline_workspace_state_id IS NULL "
+            "AND baseline_provenance_note IS NULL "
+            "AND context_contract_version IS NULL) OR "
+            "(source_role IN ('current_implementation', 'existing_scaffold', "
+            "'existing_constraint', 'reference_pattern') "
+            "AND relevance_summary IS NOT NULL "
+            "AND length(trim(relevance_summary)) >= 1 "
+            "AND scope_relation IS NOT NULL "
+            "AND length(trim(scope_relation)) >= 1 "
+            "AND source_origin IS NOT NULL "
+            "AND length(trim(source_origin)) >= 1 "
+            "AND baseline_presence IN "
+            "('committed_snapshot', 'preexisting_worktree') "
+            "AND baseline_workspace_state_id = workspace_state_id "
+            "AND context_contract_version = 2 "
+            "AND (source_role NOT IN "
+            "('existing_scaffold', 'reference_pattern') "
+            "OR (interpretation_limit IS NOT NULL "
+            "AND length(trim(interpretation_limit)) >= 1)) "
+            "AND ((baseline_presence = 'committed_snapshot' "
+            "AND declared_dirty = false) "
+            "OR (baseline_presence = 'preexisting_worktree' "
+            "AND declared_dirty = true "
+            "AND baseline_provenance_note IS NOT NULL "
+            "AND length(trim(baseline_provenance_note)) >= 1)))",
+            name="ck_code_evidence_context_v2",
+        ),
+        CheckConstraint(
             "reproducibility_claim IN "
             "('committed', 'worktree_snapshot', 'metadata_only')",
             name="ck_code_evidence_reproducibility",
@@ -11848,6 +11963,26 @@ class CodeEvidenceRow(Base):
     parent_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     evidence_type: Mapped[str] = mapped_column(String(32), nullable=False)
     claim: Mapped[str] = mapped_column(Text, nullable=False)
+    source_role: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="uncategorized_legacy",
+        server_default=text("'uncategorized_legacy'"),
+    )
+    relevance_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    scope_relation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_origin: Mapped[str | None] = mapped_column(Text, nullable=True)
+    interpretation_limit: Mapped[str | None] = mapped_column(Text, nullable=True)
+    baseline_presence: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    baseline_workspace_state_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    baseline_provenance_note: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    context_contract_version: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
     declared_revision: Mapped[str | None] = mapped_column(String(255), nullable=True)
     workspace_state_id: Mapped[str] = mapped_column(String(255), nullable=False)
     declared_dirty: Mapped[bool] = mapped_column(Boolean, nullable=False)
@@ -11889,6 +12024,209 @@ class CodeEvidenceRow(Base):
     received_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
+CODE_EVIDENCE_CLASSIFICATION_BATCH_ID_MAX_LENGTH = 255
+CODE_EVIDENCE_CLASSIFICATION_IDEMPOTENCY_KEY_MAX_LENGTH = 512
+
+
+class CodeEvidenceClassificationEventRow(Base):
+    """Immutable human classification of one legacy Code Evidence item.
+
+    Batch identity is repeated on every event by design.  This keeps the
+    authority append-only while allowing the store to write and replay a
+    bounded multi-item classification atomically without a mutable batch row.
+    """
+
+    __tablename__ = "code_evidence_classification_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "board_id",
+            "evidence_id",
+            "revision",
+            name="uq_code_evidence_classification_event_revision",
+        ),
+        UniqueConstraint(
+            "batch_id",
+            "batch_item_index",
+            name="uq_code_evidence_classification_batch_index",
+        ),
+        UniqueConstraint(
+            "batch_id",
+            "evidence_id",
+            name="uq_code_evidence_classification_batch_evidence",
+        ),
+        UniqueConstraint(
+            "predecessor_classification_id",
+            name="uq_code_evidence_classification_predecessor",
+        ),
+        UniqueConstraint(
+            "board_id",
+            "classified_by",
+            "idempotency_key",
+            "batch_item_index",
+            name="uq_code_evidence_classification_replay_item",
+        ),
+        CheckConstraint(
+            "revision >= 1 AND "
+            "((revision = 1 AND predecessor_classification_id IS NULL) OR "
+            "(revision > 1 AND predecessor_classification_id IS NOT NULL))",
+            name="ck_code_evidence_classification_lineage",
+        ),
+        CheckConstraint(
+            "source_role IN ('current_implementation', 'existing_scaffold', "
+            "'existing_constraint', 'reference_pattern')",
+            name="ck_code_evidence_classification_role",
+        ),
+        CheckConstraint(
+            "length(trim(relevance_summary)) >= 1 "
+            "AND length(trim(scope_relation)) >= 1 "
+            "AND length(trim(source_origin)) >= 1 "
+            "AND length(trim(justification)) >= 1 "
+            "AND (source_role NOT IN "
+            "('existing_scaffold', 'reference_pattern') "
+            "OR (interpretation_limit IS NOT NULL "
+            "AND length(trim(interpretation_limit)) >= 1))",
+            name="ck_code_evidence_classification_context",
+        ),
+        CheckConstraint(
+            "baseline_presence IN "
+            "('committed_snapshot', 'preexisting_worktree') "
+            "AND (baseline_presence <> 'preexisting_worktree' "
+            "OR (baseline_provenance_note IS NOT NULL "
+            "AND length(trim(baseline_provenance_note)) >= 1))",
+            name="ck_code_evidence_classification_baseline",
+        ),
+        CheckConstraint(
+            "batch_item_count >= 1 AND batch_item_count <= 100 "
+            "AND batch_item_index >= 1 "
+            "AND batch_item_index <= batch_item_count",
+            name="ck_code_evidence_classification_batch_bounds",
+        ),
+        CheckConstraint(
+            "length(trim(batch_id)) >= 1 "
+            "AND length(batch_id) <= 255 "
+            "AND length(trim(idempotency_key)) >= 1 "
+            "AND length(idempotency_key) <= 512",
+            name="ck_code_evidence_classification_request_identity",
+        ),
+        CheckConstraint(
+            "context_contract_version = 2",
+            name="ck_code_evidence_classification_contract",
+        ),
+        CheckConstraint(
+            "length(evidence_payload_sha256) = 64 "
+            "AND length(request_sha256) = 64 "
+            "AND length(classification_sha256) = 64",
+            name="ck_code_evidence_classification_digests",
+        ),
+        Index(
+            "ix_code_evidence_classification_event_batch",
+            "board_id",
+            "batch_id",
+        ),
+        Index(
+            "ix_code_evidence_classification_event_evidence",
+            "board_id",
+            "evidence_id",
+            "revision",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(
+        String(CODE_EVIDENCE_CLASSIFICATION_BATCH_ID_MAX_LENGTH),
+        nullable=False,
+    )
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    evidence_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("code_evidence.id", ondelete="RESTRICT", onupdate="RESTRICT"),
+        nullable=False,
+    )
+    evidence_payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    predecessor_classification_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey(
+            "code_evidence_classification_events.id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=True,
+    )
+    source_role: Mapped[str] = mapped_column(String(32), nullable=False)
+    relevance_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    scope_relation: Mapped[str] = mapped_column(Text, nullable=False)
+    source_origin: Mapped[str] = mapped_column(Text, nullable=False)
+    interpretation_limit: Mapped[str | None] = mapped_column(Text, nullable=True)
+    baseline_presence: Mapped[str] = mapped_column(String(32), nullable=False)
+    baseline_workspace_state_id: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )
+    baseline_provenance_note: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    classified_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    classified_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    justification: Mapped[str] = mapped_column(Text, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(
+        String(CODE_EVIDENCE_CLASSIFICATION_IDEMPOTENCY_KEY_MAX_LENGTH),
+        nullable=False,
+    )
+    request_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    batch_item_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    batch_item_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    context_contract_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    classification_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class CodeEvidenceClassificationHeadRow(Base):
+    """Strict CAS pointer to the current legacy classification event."""
+
+    __tablename__ = "code_evidence_classification_heads"
+    __table_args__ = (
+        UniqueConstraint(
+            "current_classification_id",
+            name="uq_code_evidence_classification_head_current",
+        ),
+        CheckConstraint(
+            "revision >= 1 AND length(evidence_payload_sha256) = 64",
+            name="ck_code_evidence_classification_head_shape",
+        ),
+        Index(
+            "ix_code_evidence_classification_head_revision",
+            "board_id",
+            "revision",
+        ),
+    )
+
+    board_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("boards.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        primary_key=True,
+    )
+    evidence_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("code_evidence.id", ondelete="RESTRICT", onupdate="RESTRICT"),
+        primary_key=True,
+    )
+    current_classification_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey(
+            "code_evidence_classification_events.id",
+            ondelete="RESTRICT",
+            onupdate="RESTRICT",
+        ),
+        nullable=False,
+    )
+    evidence_payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
 class CodeEvidenceSpecLinkRow(Base):

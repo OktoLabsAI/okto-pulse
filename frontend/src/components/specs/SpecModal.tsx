@@ -143,6 +143,7 @@ import { QABadge } from '@/components/shared/QABadge';
 interface SpecModalProps {
   specId: string;
   boardId: string;
+  initialTab?: 'evidence-matrix';
   onClose: () => void;
   onEscape?: () => void;
   onChanged: () => void;
@@ -1446,7 +1447,14 @@ function KnowledgeTab({
    Main SpecModal
    ============================================================ */
 
-export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChanged }: SpecModalProps) {
+export function SpecModal({
+  specId,
+  boardId: _boardId,
+  initialTab,
+  onClose,
+  onEscape,
+  onChanged,
+}: SpecModalProps) {
   const api = useDashboardApi();
   const modalStack = useOptionalModalStack();
   const currentBoard = useCurrentBoard();
@@ -1499,6 +1507,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
       return `${prefix}-${ordinal}: ${normalized}`;
     };
     const map: Record<string, string> = {
+      [spec.id]: `Spec: ${spec.title}`,
       title: `Title: ${spec.title}`,
       description: spec.description?.trim()
         ? `Description: ${spec.description.trim()}`
@@ -1591,7 +1600,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const specReloadGeneration = useRef(0);
   const currentSpecId = useRef(specId);
   currentSpecId.current = specId;
-  const [activeTab, setActiveTab] = useState<ModalTab>('details');
+  const [activeTab, setActiveTab] = useState<ModalTab>(initialTab ?? 'details');
   const [resourceTab, setResourceTab] =
     useState<ResourceSubTab>('mockups');
   const [referenceTab, setReferenceTab] =
@@ -2753,6 +2762,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
               boardSkipCoverage={boardSettings.skip_code_evidence_coverage_global ?? false}
               skipCoverage={spec.skip_code_evidence_coverage}
               canEditCoverageFlags={canEditCodeEvidenceCoverage}
+              obligationTitles={specAnchorTexts}
               onSkipCoverageChange={async (skip) => {
                 try {
                   const updated = await api.updateSpec(specId, {

@@ -132,15 +132,33 @@ export const SKB_PERMISSION_INTRODUCTION_V1 = {
   },
 } as const satisfies PermissionIntroductionManifest;
 
+/**
+ * Separate introduction for the human-only legacy Evidence classification
+ * action.  It intentionally does not extend CODE-TRACEABILITY/v1: that
+ * manifest remains pinned to its original 22 explicit-grant leaves.
+ */
+export const CODE_EVIDENCE_LEGACY_CLASSIFICATION_PERMISSION_INTRODUCTION_V1 = {
+  version: 'CODE-EVIDENCE-LEGACY-CLASSIFICATION/v1',
+  leaves: [
+    'code_traceability.evidence.classify_legacy',
+  ],
+  historicalAuthorities: {
+    'code_traceability.evidence.classify_legacy': 'spec.entity.edit_fields',
+  },
+} as const satisfies PermissionIntroductionManifest;
+
 export const PERMISSION_INTRODUCTION_MANIFESTS = [
   SKA_PERMISSION_INTRODUCTION_V1,
   SKB_PERMISSION_INTRODUCTION_V1,
+  CODE_EVIDENCE_LEGACY_CLASSIFICATION_PERMISSION_INTRODUCTION_V1,
 ] as const satisfies readonly PermissionIntroductionManifest[];
 
 export const SKA_PERMISSION_INTRODUCTION_V1_LEAVES =
   SKA_PERMISSION_INTRODUCTION_V1.leaves;
 export const SKB_PERMISSION_INTRODUCTION_V1_LEAVES =
   SKB_PERMISSION_INTRODUCTION_V1.leaves;
+export const CODE_EVIDENCE_LEGACY_CLASSIFICATION_PERMISSION_INTRODUCTION_V1_LEAVES =
+  CODE_EVIDENCE_LEGACY_CLASSIFICATION_PERMISSION_INTRODUCTION_V1.leaves;
 
 /**
  * Exact explicit-grant leaves introduced by Core's CODE-TRACEABILITY/v1

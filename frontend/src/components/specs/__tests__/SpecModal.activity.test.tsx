@@ -68,6 +68,7 @@ vi.mock('@/components/code-traceability', () => ({
     boardSkipCoverage?: boolean;
     skipCoverage?: boolean;
     canEditCoverageFlags?: boolean;
+    obligationTitles?: Readonly<Record<string, string>>;
     onSkipCoverageChange?: (skip: boolean) => Promise<void> | void;
   }) => {
     evidenceMatrixPropsSpy(props);
@@ -487,6 +488,51 @@ describe('SpecModal Activity tab', () => {
         boardSkipCoverage: false,
         skipCoverage: true,
         canEditCoverageFlags: true,
+      }));
+    });
+  });
+
+  it('opens directly on the Code Evidence Matrix and supplies human obligation titles', async () => {
+    apiMock.getSpec.mockResolvedValueOnce({
+      ...spec,
+      integration_requirements: [{
+        id: 'ir-checkout',
+        title: 'Payment provider contract',
+        integration_type: 'api',
+        description: 'Keep the provider exchange compatible.',
+        provider: null,
+        consumer: null,
+        contract_ref: null,
+        endpoint: null,
+        method: null,
+        data_contract: null,
+        linked_requirements: null,
+        linked_api_contracts: null,
+        linked_task_ids: null,
+        status: 'active',
+        notes: null,
+      }],
+    });
+
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        initialTab="evidence-matrix"
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    expect(screen.getByRole('tab', { name: 'Code Evidence Matrix' }))
+      .toHaveAttribute('aria-selected', 'true');
+    await waitFor(() => {
+      expect(evidenceMatrixPropsSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+        obligationTitles: expect.objectContaining({
+          [spec.id]: `Spec: ${spec.title}`,
+          'ir-checkout': 'IR-1: Payment provider contract: Keep the provider exchange compatible.',
+        }),
       }));
     });
   });

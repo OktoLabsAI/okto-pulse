@@ -522,7 +522,7 @@ def test_migration_and_global_revision_censuses_include_dependency_authority_onc
     )
     assert GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES.count("spec_dependencies") == 1
     assert GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION == (
-        "gdsr-trigger-manifest-v7"
+        "gdsr-trigger-manifest-v8"
     )
 
 

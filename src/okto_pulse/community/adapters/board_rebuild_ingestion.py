@@ -904,17 +904,22 @@ class CommunityBoardRebuildIngestionAdapter:
         run_id: str,
         sources: Sequence[Mapping[str, Any]],
     ) -> dict[str, int]:
-        """UPSERT one ConsolidationQueue row per source. Returns counts
-        bucketed by (inserted | reset_to_pending | left_alone). Pending and
-        Pending rows are safely adopted and re-enqueued with the current
-        deterministic order and fresh retry budget. Claimed rows have their
-        exact claim token revoked while the rebuild still owns the exclusive
-        admin writer lease, so a stale worker fails its pre-commit CAS instead
-        of writing after quarantine. Terminal/retryable rows are reset to
-        pending. Uses
-        ``priority='high'`` because an explicit rebuild is an operator recovery
-        action; it must preempt unrelated backlog from other boards that may
-        themselves be corrupt."""
+        """Atomically adopt one ConsolidationQueue row per rebuild source.
+
+        Pending target rows are adopted and re-enqueued in the current
+        deterministic order with a fresh retry budget. Claimed target rows
+        have their exact claim token revoked while the rebuild still owns the
+        exclusive admin writer lease, so a stale worker fails its pre-commit
+        CAS instead of writing after quarantine. Any live intent carried by an
+        adopted row is preserved for compensation. Terminal/retryable rows are
+        reset to pending.
+
+        The returned counters distinguish inserts, resets, pending reorders,
+        fenced claims, deferred unrelated work, preserved live intents, and
+        the compatibility ``left_alone`` bucket. ``priority='high'`` is used
+        because an explicit rebuild is an operator recovery action that must
+        preempt unrelated backlog from boards that may themselves be corrupt.
+        """
 
         counts = {
             "inserted": 0,

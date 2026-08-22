@@ -157,7 +157,8 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
         f"missing_steps={sorted(migrate_names - ledger_migrate_ids)} "
         f"orphan_steps={sorted(ledger_migrate_ids - migrate_names)}"
     )
-    # 69 = the historical ledger plus the Code Traceability schema/guard step,
+    # 70 = the historical ledger plus the Code Traceability schema/guard step,
+    # the contextual Evidence persistence/classification authority,
     # the SK-A Refinement ambiguity-skip
     # column, SK-A/C7 quality-assessment persistence schema, the curated Spec
     # checklist mode, the human-facing Spec edition counter, and SK-B's
@@ -171,10 +172,10 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
     # evidence-based legacy Task Validation -> Rejected convergence, and the
     # per-Spec Code Evidence Matrix coverage skip, and the audited restoration
     # of Spec validation pointers lost by historical Code Traceability effects.
-    assert len(migrate_names) == 69, (
-        f"expected 69 _migrate_*, found {len(migrate_names)}"
+    assert len(migrate_names) == 70, (
+        f"expected 70 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 69
+    assert len(ledger_migrate_ids) == 70
     ordered_ids = [step.step_id for step in ledger]
     assert ordered_ids.index(
         "_migrate_guideline_policy_lifecycle_substrate"
@@ -894,6 +895,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         human_lifecycle_convergence_step,
         validation_cycle_convergence_step,
         "_migrate_code_traceability_schema",
+        "_migrate_contextual_code_evidence_schema",
         "_migrate_semantic_pinpoint_v2_schema",
         "_migrate_knowledge_propagation_v2_schema",
         "_migrate_rebuild_guideline_import_candidates_semantic_shape",
@@ -1065,7 +1067,7 @@ def test_v030_installed_schema_upgrades_to_exact_semantic_v2_and_replays(
         )
     # This exact installed-fixture upgrade is the terminal Community schema,
     # including migration-owned indexes and triggers (not merely ORM tables).
-    assert len(schema_objects) == 835
+    assert len(schema_objects) == 862
     assert exact_ack_columns[10:13] == (
         ("membership_content_hash", "VARCHAR(64)", 1),
         ("audit_content_hash", "VARCHAR(64)", 1),

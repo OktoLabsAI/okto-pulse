@@ -679,7 +679,9 @@ def test_legacy_logical_fingerprint_has_nominal_cognitive_byte_cap(
 
     excluded = frozenset({"consolidation_queue", "consolidation_dead_letter"})
     with monkeypatch.context() as bounded:
-        bounded.setattr(recovery, "MAX_LEGACY_PROTECTED_QUEUE_BYTES", 1024)
+        # Keep the generic cap below the 4 KiB control row exercised below,
+        # while leaving enough room for the complete v8 table-name inventory.
+        bounded.setattr(recovery, "MAX_LEGACY_PROTECTED_QUEUE_BYTES", 2048)
         policies = dict(recovery.SQLITE_LOGICAL_STREAMING_POLICIES)
         policies["kg_cognitive_source_revisions"] = replace(
             policies["kg_cognitive_source_revisions"],

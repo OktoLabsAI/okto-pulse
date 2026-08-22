@@ -463,6 +463,7 @@ async def test_rest_mcp_architecture_selection_error_parity_is_atomic(
         "ideation_id": ideation_id,
         "title": "Must not persist",
         "in_scope": ["Prove fail-closed selection"],
+        "delivery_context": "greenfield",
         "architecture_design_ids": [root_design_id, missing_design_id],
         "architecture_propagation_mode": "copy",
     }
@@ -483,6 +484,7 @@ async def test_rest_mcp_architecture_selection_error_parity_is_atomic(
             ideation_id=ideation_id,
             title="Must not persist through MCP",
             in_scope=["Prove fail-closed selection"],
+            delivery_context="greenfield",
             architecture_design_ids=[root_design_id, missing_design_id],
             architecture_propagation_mode="copy",
         )

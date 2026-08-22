@@ -189,6 +189,8 @@ import type {
   ValidationCycleSummary,
   ValidationTechnicalAudit,
   CodeEvidenceRevokeRequest,
+  LegacyEvidenceClassificationBatchRequest,
+  LegacyEvidenceClassificationBatchResult,
   CodeInvestigationReceiptReadResult,
   CodeTraceabilityProfile,
   CodeTraceabilityProjection,
@@ -248,6 +250,94 @@ export type CodeTraceabilityProjectionOptions =
       signal?: AbortSignal;
       contextScope: 'gate';
     };
+
+const legacyEvidenceClassificationConflictKinds = {
+  code_evidence_legacy_classification_payload_conflict: 'payload',
+  code_evidence_legacy_classification_revision_conflict: 'revision',
+  code_evidence_legacy_classification_idempotency_conflict: 'idempotency',
+} as const;
+
+export type LegacyEvidenceClassificationConflictCode =
+  keyof typeof legacyEvidenceClassificationConflictKinds;
+
+export type LegacyEvidenceClassificationConflictKind =
+  (typeof legacyEvidenceClassificationConflictKinds)[LegacyEvidenceClassificationConflictCode];
+
+export class LegacyEvidenceClassificationConflictError extends Error {
+  readonly status = 409;
+  readonly code: LegacyEvidenceClassificationConflictCode;
+  readonly kind: LegacyEvidenceClassificationConflictKind;
+  readonly details: Readonly<Record<string, unknown>>;
+  readonly retryable: boolean;
+  readonly transportError: AuthenticatedFetchError;
+
+  constructor(
+    code: LegacyEvidenceClassificationConflictCode,
+    transportError: AuthenticatedFetchError,
+  ) {
+    super(transportError.message);
+    this.name = 'LegacyEvidenceClassificationConflictError';
+    this.code = code;
+    this.kind = legacyEvidenceClassificationConflictKinds[code];
+    this.details = (
+      typeof transportError.details === 'object'
+      && transportError.details !== null
+    )
+      ? { ...transportError.details as Record<string, unknown> }
+      : {};
+    this.retryable = transportError.retryable;
+    this.transportError = transportError;
+  }
+}
+
+function legacyEvidenceClassificationConflict(
+  error: unknown,
+): LegacyEvidenceClassificationConflictError | null {
+  if (
+    !(error instanceof AuthenticatedFetchError)
+    || error.status !== 409
+    || error.code === null
+    || !(error.code in legacyEvidenceClassificationConflictKinds)
+  ) {
+    return null;
+  }
+  return new LegacyEvidenceClassificationConflictError(
+    error.code as LegacyEvidenceClassificationConflictCode,
+    error,
+  );
+}
+
+function canonicalLegacyEvidenceClassificationBatch(
+  request: LegacyEvidenceClassificationBatchRequest,
+): LegacyEvidenceClassificationBatchRequest {
+  const items = request.items.map((item) => ({
+    evidence_id: item.evidence_id,
+    expected_evidence_payload_sha256: item.expected_evidence_payload_sha256,
+    expected_classification_revision: item.expected_classification_revision,
+    source_role: item.source_role,
+    relevance_summary: item.relevance_summary,
+    scope_relation: item.scope_relation,
+    source_origin: item.source_origin,
+    interpretation_limit: item.interpretation_limit,
+    baseline_provenance: {
+      presence: item.baseline_provenance.presence,
+      workspace_state_id: item.baseline_provenance.workspace_state_id,
+      provenance_note: item.baseline_provenance.provenance_note,
+    },
+  }));
+  items.sort((left, right) => (
+    left.evidence_id < right.evidence_id
+      ? -1
+      : left.evidence_id > right.evidence_id
+        ? 1
+        : 0
+  ));
+  return {
+    items,
+    justification: request.justification,
+    idempotency_key: request.idempotency_key,
+  };
+}
 
 export type StoryPageItem = Omit<
   StorySummary,
@@ -584,6 +674,29 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
         `/boards/${encodeURIComponent(boardId)}/code-investigation-receipts/${encodeURIComponent(receiptId)}/revoke`,
         { method: 'POST', body: JSON.stringify(payload) },
       );
+    },
+
+    async classifyLegacyCodeEvidence(
+      boardId: string,
+      request: LegacyEvidenceClassificationBatchRequest,
+      signal?: AbortSignal,
+    ): Promise<LegacyEvidenceClassificationBatchResult> {
+      const body = JSON.stringify(
+        canonicalLegacyEvidenceClassificationBatch(request),
+      );
+      try {
+        // The receipt is returned unchanged. This client deliberately performs
+        // no optimistic projection update or hidden read, so the consuming
+        // layer can perform exactly one canonical refetch after success.
+        return await apiClient.fetchJson<LegacyEvidenceClassificationBatchResult>(
+          `/boards/${encodeURIComponent(boardId)}/code-evidence/legacy-classifications`,
+          { method: 'POST', body, signal },
+        );
+      } catch (error) {
+        const conflict = legacyEvidenceClassificationConflict(error);
+        if (conflict !== null) throw conflict;
+        throw error;
+      }
     },
 
     async revokeCodeEvidence(

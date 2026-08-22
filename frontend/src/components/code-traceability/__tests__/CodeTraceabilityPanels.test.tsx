@@ -34,6 +34,13 @@ const permissionState = vi.hoisted(() => ({
 
 const clipboardWriteText = vi.fn();
 
+const projectionReadLeaves = new Set([
+  'code_traceability.investigation.read',
+  'code_traceability.evidence.read',
+  'code_traceability.target.read',
+  'code_traceability.overlap.read',
+]);
+
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
 }));
@@ -41,7 +48,8 @@ vi.mock('@/services/api', () => ({
 vi.mock('@/hooks/usePermissions', () => ({
   usePermissions: () => ({
     has: (flag: string) => (
-      (flag === 'code_traceability.investigation.revoke' && permissionState.canRevoke)
+      projectionReadLeaves.has(flag)
+      || (flag === 'code_traceability.investigation.revoke' && permissionState.canRevoke)
       || (flag === 'code_traceability.evidence.revoke' && permissionState.canRevokeEvidence)
       || (flag === 'code_traceability.target.create' && permissionState.canCreateTarget)
       || (flag === 'code_traceability.overlap.acknowledge' && permissionState.canAcknowledgeOverlap)
@@ -191,6 +199,61 @@ const gateProjection: CodeTraceabilityProjection = {
   subject_version: 7,
   profile: 'full',
   context_scope: 'gate',
+  source_context: {
+    delivery_context: 'brownfield',
+    delivery_context_provenance: null,
+    investigation_outcome: 'evidence_applicable',
+    role_counts: {
+      current_implementation_count: 1,
+      existing_scaffold_count: 0,
+      existing_constraint_count: 0,
+      reference_pattern_count: 0,
+      uncategorized_legacy_count: 0,
+    },
+    classification_state: {
+      classified_count: 1,
+      uncategorized_legacy_count: 0,
+    },
+    evidence_applicable: true,
+    interpretation_rule: 'Only current implementation evidence contributes to coverage.',
+    items_not_current_implementation_count: 0,
+    technical_details_available: true,
+  },
+  source_context_items: [{
+    evidence_id: 'evidence-1',
+    source_role: 'current_implementation',
+    relevance_summary: 'Current implementation behavior.',
+    scope_relation: 'Directly implements the refinement scope.',
+    source_origin: 'Existing repository.',
+    interpretation_limit: null,
+    baseline_provenance: null,
+    context_origin: 'authored',
+    context_contract_version: 2,
+    evidence_applicable: true,
+    classification_revision: null,
+    classification_sha256: null,
+  }],
+  contextual_evidence_coverage: {
+    total: 1,
+    linked: 1,
+    dispositioned: 0,
+    pending: 0,
+    pending_ids: [],
+    unresolved_applicability_count: 0,
+    coverage_pct: 100,
+    projection_complete: true,
+  },
+  obligation_evidence_mappings: [{
+    link_id: 'link-1',
+    evidence_id: 'evidence-1',
+    obligation_type: 'technical_requirement',
+    obligation_id: 'TR-2',
+    obligation_ref: 'technical_requirement:TR-2',
+    relation_type: 'supports',
+    evidence_applicable: true,
+    context_origin: 'authored',
+    source_role: 'current_implementation',
+  }],
 };
 
 const receiptResult: CodeInvestigationReceiptReadResult = {
@@ -338,7 +401,7 @@ describe('Code Traceability passive Community surfaces', () => {
     }
   });
 
-  it('renders authoritative inherited-evidence coverage and includes IR/OR link columns', async () => {
+  it('ts_ddfe595b — renders separate authoritative Brownfield coverage fields and human obligation titles', async () => {
     const matrixProjection: CodeTraceabilityProjection = {
       ...gateProjection,
       evidence: [
@@ -366,13 +429,46 @@ describe('Code Traceability passive Community surfaces', () => {
         },
       ],
       coverage: {
+        total: 99,
+        linked: 99,
+        dispositioned: 0,
+        pending: 0,
+        pending_ids: [],
+        coverage_pct: 100,
+      },
+      source_context_items: [
+        ...(gateProjection.source_context_items ?? []),
+        {
+          ...(gateProjection.source_context_items ?? [])[0],
+          evidence_id: 'evidence-2',
+        },
+      ],
+      contextual_evidence_coverage: {
         total: 2,
         linked: 1,
         dispositioned: 0,
         pending: 1,
         pending_ids: ['evidence-2'],
-        coverage_pct: 50,
+        unresolved_applicability_count: 0,
+        coverage_pct: 37.5,
+        projection_complete: true,
       },
+      obligation_evidence_mappings: [
+        {
+          ...(gateProjection.obligation_evidence_mappings ?? [])[0],
+          link_id: 'link-ir',
+          obligation_type: 'integration_requirement',
+          obligation_id: 'IR-7',
+          obligation_ref: 'integration_requirement:IR-7',
+        },
+        {
+          ...(gateProjection.obligation_evidence_mappings ?? [])[0],
+          link_id: 'link-or',
+          obligation_type: 'observability_requirement',
+          obligation_id: 'OR-3',
+          obligation_ref: 'observability_requirement:OR-3',
+        },
+      ],
       gate_readiness: {
         ...gateProjection.gate_readiness,
         receipt_currentness: {
@@ -384,20 +480,33 @@ describe('Code Traceability passive Community surfaces', () => {
     apiMock.getCodeTraceabilityProjection.mockResolvedValue(matrixProjection);
 
     render(
-      <EvidenceMatrixPanel boardId="board-1" subjectId="spec-1" subjectVersion={7} />,
+      <EvidenceMatrixPanel
+        boardId="board-1"
+        subjectId="spec-1"
+        subjectVersion={7}
+        obligationTitles={{
+          'IR-7': 'IR-1: Payment provider contract',
+          'OR-3': 'OR-1: Checkout failure alert',
+        }}
+      />,
     );
 
-    expect(await screen.findByText('1/2')).toBeInTheDocument();
-    expect(screen.getByText('1', { selector: 'p' })).toBeInTheDocument();
-    expect(screen.getByText('50%')).toBeInTheDocument();
+    const coverageRegion = await screen.findByRole('region', { name: 'Code Evidence coverage' });
+    expect(within(coverageRegion).getByTestId('contextual-evidence-total')).toHaveTextContent('2');
+    expect(within(coverageRegion).getByTestId('contextual-evidence-linked')).toHaveTextContent('1');
+    expect(within(coverageRegion).getByTestId('contextual-evidence-dispositioned')).toHaveTextContent('0');
+    expect(within(coverageRegion).getByTestId('contextual-evidence-pending')).toHaveTextContent('1');
+    expect(within(coverageRegion).getByTestId('contextual-evidence-coverage-pct')).toHaveTextContent('37.5%');
     expect(screen.getByTestId('code-evidence-coverage-status')).toHaveTextContent('Pending');
-    expect(screen.getByText('evidence items addressed')).toBeInTheDocument();
-    expect(screen.getByText('evidence item pending')).toBeInTheDocument();
+    expect(within(coverageRegion).queryByText('evidence items addressed')).not.toBeInTheDocument();
+    expect(within(coverageRegion).queryByText('1/2')).not.toBeInTheDocument();
     expect(screen.queryByText('100%')).not.toBeInTheDocument();
     expect(screen.getByRole('columnheader', { name: 'IR' })).toBeInTheDocument();
     expect(screen.getByRole('columnheader', { name: 'OR' })).toBeInTheDocument();
-    expect(screen.getByText('IR-7')).toBeInTheDocument();
-    expect(screen.getByText('OR-3')).toBeInTheDocument();
+    expect(screen.getByText('IR-1: Payment provider contract')).toBeInTheDocument();
+    expect(screen.getByText('OR-1: Checkout failure alert')).toBeInTheDocument();
+    expect(screen.queryByText('IR-7')).not.toBeInTheDocument();
+    expect(screen.queryByText('OR-3')).not.toBeInTheDocument();
     expect(screen.getByText('Current receipt')).toBeInTheDocument();
     expect(screen.getByText('Expired')).toBeInTheDocument();
     expect(apiMock.getCodeTraceabilityProjection).toHaveBeenCalledWith(
@@ -411,6 +520,66 @@ describe('Code Traceability passive Community surfaces', () => {
         contextScope: 'gate',
       },
     );
+  });
+
+  it('ts_07ea0cf3 — never aggregates contextual denominator fields from Evidence, links, mappings, or legacy coverage', async () => {
+    apiMock.getCodeTraceabilityProjection.mockResolvedValue({
+      ...gateProjection,
+      evidence: [projection.evidence[0]],
+      inherited_evidence_ids: ['evidence-1'],
+      coverage: {
+        total: 99,
+        linked: 99,
+        dispositioned: 0,
+        pending: 0,
+        pending_ids: [],
+        coverage_pct: 100,
+      },
+      contextual_evidence_coverage: {
+        total: 7,
+        linked: 2,
+        dispositioned: 3,
+        pending: 2,
+        pending_ids: ['evidence-pending-a', 'evidence-pending-b'],
+        unresolved_applicability_count: 0,
+        coverage_pct: 42.75,
+        projection_complete: true,
+      },
+      links: [{
+        ...projection.links[0],
+        id: 'legacy-link-only',
+        evidence_id: 'evidence-1',
+      }],
+      obligation_evidence_mappings: [{
+        ...(gateProjection.obligation_evidence_mappings ?? [])[0],
+        link_id: 'mapping-only',
+        evidence_id: 'evidence-1',
+        obligation_type: 'technical_requirement',
+        obligation_id: 'TR-2',
+        obligation_ref: 'technical_requirement:TR-2',
+      }],
+    });
+
+    render(
+      <EvidenceMatrixPanel
+        boardId="board-1"
+        subjectId="spec-1"
+        subjectVersion={7}
+        obligationTitles={{ 'TR-2': 'TR-1: Acquire the lock before persistence' }}
+      />,
+    );
+
+    const coverageRegion = await screen.findByRole('region', { name: 'Code Evidence coverage' });
+    expect(within(coverageRegion).getByTestId('contextual-evidence-total')).toHaveTextContent('7');
+    expect(within(coverageRegion).getByTestId('contextual-evidence-linked')).toHaveTextContent('2');
+    expect(within(coverageRegion).getByTestId('contextual-evidence-dispositioned')).toHaveTextContent('3');
+    expect(within(coverageRegion).getByTestId('contextual-evidence-pending')).toHaveTextContent('2');
+    expect(within(coverageRegion).getByTestId('contextual-evidence-coverage-pct')).toHaveTextContent('42.75%');
+    expect(within(coverageRegion).queryByText('5/7')).not.toBeInTheDocument();
+    expect(within(coverageRegion).queryByText('99')).not.toBeInTheDocument();
+    expect(within(coverageRegion).queryByText('100%')).not.toBeInTheDocument();
+    expect(screen.getByText('TR-1: Acquire the lock before persistence')).toBeInTheDocument();
+    expect(screen.queryByText('TR-2')).not.toBeInTheDocument();
   });
 
   it('never presents a truncated gate projection as covered or skippable', async () => {
@@ -433,6 +602,11 @@ describe('Code Traceability passive Community surfaces', () => {
           blocking: false,
         }],
       },
+      contextual_evidence_coverage: {
+        ...gateProjection.contextual_evidence_coverage!,
+        projection_complete: false,
+        coverage_pct: null,
+      },
     });
 
     render(
@@ -448,16 +622,15 @@ describe('Code Traceability passive Community surfaces', () => {
 
     expect(await screen.findByTestId('code-evidence-coverage-status')).toHaveTextContent('Incomplete');
     expect(screen.getByRole('alert')).toHaveTextContent('Validation remains blocked');
-    expect(screen.getByRole('progressbar')).toHaveAttribute(
-      'aria-valuetext',
-      'Coverage projection incomplete',
-    );
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+    expect(screen.getByText('Visible counts are lower bounds. Refresh or narrow the projection.'))
+      .toBeInTheDocument();
   });
 
   it.each([
     { profile: 'detail' as const, contextScope: 'gate' as const },
     { profile: 'full' as const, contextScope: 'default' as const },
-  ])('fails closed when the server returns $profile + $contextScope', async ({
+  ])('does not replace the server-owned contextual aggregate for $profile + $contextScope', async ({
     profile,
     contextScope,
   }) => {
@@ -471,9 +644,120 @@ describe('Code Traceability passive Community surfaces', () => {
       <EvidenceMatrixPanel boardId="board-1" subjectId="spec-1" subjectVersion={7} />,
     );
 
-    expect(await screen.findByTestId('code-evidence-coverage-status')).toHaveTextContent('Incomplete');
-    expect(screen.queryByText('Covered')).not.toBeInTheDocument();
-    expect(screen.getByRole('alert')).toHaveTextContent('Validation remains blocked');
+    expect(await screen.findByTestId('code-evidence-coverage-status')).toHaveTextContent('Covered');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('ts_47048de6 — renders the exact server-owned zero-applicable Matrix without coverage artifacts', async () => {
+    apiMock.getCodeTraceabilityProjection.mockResolvedValue({
+      ...gateProjection,
+      evidence: [],
+      inherited_evidence_ids: [],
+      links: [],
+      obligation_evidence_mappings: [],
+      source_context_items: [],
+      source_context: {
+        ...gateProjection.source_context!,
+        delivery_context: 'greenfield',
+        investigation_outcome: 'no_relevant_existing_implementation',
+        evidence_applicable: false,
+      },
+      contextual_evidence_coverage: {
+        total: 0,
+        linked: 0,
+        dispositioned: 0,
+        pending: 0,
+        pending_ids: [],
+        unresolved_applicability_count: 0,
+        coverage_pct: null,
+        projection_complete: true,
+      },
+      coverage: {
+        total: 9,
+        linked: 9,
+        dispositioned: 0,
+        pending: 0,
+        pending_ids: [],
+        coverage_pct: 100,
+      },
+    });
+
+    render(
+      <EvidenceMatrixPanel
+        boardId="board-1"
+        subjectId="spec-1"
+        subjectVersion={7}
+        boardSkipCoverage
+        skipCoverage
+        canEditCoverageFlags
+        onSkipCoverageChange={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByTestId('code-evidence-coverage-status'))
+      .toHaveTextContent('Not applicable');
+    expect(screen.getByText('No relevant existing implementation was found for this delivery context.'))
+      .toBeInTheDocument();
+    expect(screen.queryByText('100%')).not.toBeInTheDocument();
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('contextual-evidence-total')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('contextual-evidence-linked')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('contextual-evidence-dispositioned')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('contextual-evidence-pending')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('contextual-evidence-coverage-pct')).not.toBeInTheDocument();
+    expect(screen.queryByRole('switch', { name: 'Skip Code Evidence coverage' }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByTestId('code-evidence-board-skip-notice')).not.toBeInTheDocument();
+    expect(screen.queryByText(/no inherited code evidence/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/waiver|warning/i)).not.toBeInTheDocument();
+  });
+
+  it('does not treat raw legacy links as coverage while applicability is unresolved', async () => {
+    apiMock.getCodeTraceabilityProjection.mockResolvedValue({
+      ...gateProjection,
+      source_context: {
+        ...gateProjection.source_context!,
+        delivery_context: 'hybrid',
+        evidence_applicable: null,
+        investigation_outcome: null,
+      },
+      source_context_items: [{
+        ...gateProjection.source_context_items![0],
+        source_role: 'uncategorized_legacy',
+        context_origin: 'unclassified_legacy',
+        evidence_applicable: null,
+        context_contract_version: null,
+      }],
+      contextual_evidence_coverage: {
+        ...gateProjection.contextual_evidence_coverage!,
+        linked: 0,
+        pending: 0,
+        pending_ids: [],
+        unresolved_applicability_count: 1,
+        coverage_pct: null,
+      },
+      obligation_evidence_mappings: [{
+        ...gateProjection.obligation_evidence_mappings![0],
+        evidence_applicable: null,
+        context_origin: 'unclassified_legacy',
+        source_role: 'uncategorized_legacy',
+      }],
+    });
+
+    render(
+      <EvidenceMatrixPanel
+        boardId="board-1"
+        subjectId="spec-1"
+        subjectVersion={7}
+        obligationTitles={{ 'TR-2': 'TR-1: Acquire the lock before persistence' }}
+      />,
+    );
+
+    expect(await screen.findByTestId('code-evidence-coverage-status'))
+      .toHaveTextContent('Needs classification');
+    expect(screen.getAllByText('Needs classification', { selector: 'span' })).toHaveLength(2);
+    expect(screen.queryByText('TR-1: Acquire the lock before persistence')).not.toBeInTheDocument();
+    expect(screen.queryByText('100%')).not.toBeInTheDocument();
   });
 
   it('excludes direct or future evidence outside the authoritative inherited snapshot', async () => {
@@ -509,7 +793,12 @@ describe('Code Traceability passive Community surfaces', () => {
       <EvidenceMatrixPanel boardId="board-1" subjectId="spec-1" subjectVersion={7} />,
     );
 
-    expect(await screen.findByText('1/1')).toBeInTheDocument();
+    const coverageRegion = await screen.findByRole('region', { name: 'Code Evidence coverage' });
+    expect(within(coverageRegion).getByTestId('contextual-evidence-total')).toHaveTextContent('1');
+    expect(within(coverageRegion).getByTestId('contextual-evidence-linked')).toHaveTextContent('1');
+    expect(within(coverageRegion).getByTestId('contextual-evidence-dispositioned')).toHaveTextContent('0');
+    expect(within(coverageRegion).getByTestId('contextual-evidence-pending')).toHaveTextContent('0');
+    expect(within(coverageRegion).getByTestId('contextual-evidence-coverage-pct')).toHaveTextContent('100%');
     expect(screen.getByTestId('code-evidence-coverage-status')).toHaveTextContent('Covered');
     expect(screen.queryByText('A finding recorded after the Spec snapshot.')).not.toBeInTheDocument();
     expect(screen.queryByText('Direct evidence outside inherited matrix coverage.')).not.toBeInTheDocument();

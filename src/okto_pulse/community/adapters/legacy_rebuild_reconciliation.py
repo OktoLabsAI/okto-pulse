@@ -30,7 +30,7 @@ LEGACY_SOURCE_REVISION_QUEUE_TABLE = "consolidation_queue"
 LEGACY_SOURCE_REVISION_TABLE = "global_discovery_source_revision"
 LEGACY_SOURCE_REVISION_SCOPE_ID = "_global"
 LEGACY_SOURCE_REVISION_FENCE_VERSION = "gdsr-fence-v2"
-LEGACY_SOURCE_REVISION_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v7"
+LEGACY_SOURCE_REVISION_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v8"
 LEGACY_QUEUE_ONLY_INTENT_EFFECT = (
     "legacy_manually_restored_blocked_after_enqueue_intent"
 )

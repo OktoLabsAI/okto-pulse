@@ -179,8 +179,10 @@ Adapter source map:
 - Relational mappings and persistence implementations:
   `community/adapters/sqlalchemy_*`.
 - KG source/rebuild ingestion: `community/adapters/board_source_reader.py` and
-  `community/adapters/board_rebuild_ingestion.py`; content ingestion helpers
-  live in `community/adapters/content_ingestion.py`.
+  `community/adapters/board_rebuild_ingestion.py`; the closed legacy recovery
+  intent and source-revision fence live in
+  `community/adapters/legacy_rebuild_reconciliation.py`; content ingestion
+  helpers live in `community/adapters/content_ingestion.py`.
 - Knowledge propagation rollout: `community/adapters/knowledge_propagation_backfill.py`.
 - KG local schema/durability adapters: `community/adapters/global_discovery_*` and
   `community/adapters/rebuild_audit_storage.py`.

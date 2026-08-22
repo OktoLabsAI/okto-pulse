@@ -10,7 +10,11 @@ import shutil
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 
-from okto_pulse.community.adapters.sqlalchemy_models import Base
+from okto_pulse.community.adapters.sqlalchemy_models import (
+    CODE_EVIDENCE_CLASSIFICATION_BATCH_ID_MAX_LENGTH,
+    CODE_EVIDENCE_CLASSIFICATION_IDEMPOTENCY_KEY_MAX_LENGTH,
+    Base,
+)
 from okto_pulse.community.adapters.sqlalchemy_database import (
     get_engine,
     get_session_factory,
@@ -20343,8 +20347,8 @@ def _remove_known_fixture_graph_if_present(engine: object) -> bool:
 CODE_TRACEABILITY_TRIGGER_PREFIX = "trg_code_traceability_v1"
 
 
-def code_traceability_owned_tables() -> tuple[object, ...]:
-    """Return the complete relational Code Traceability table census."""
+def _code_traceability_v1_owned_tables() -> tuple[object, ...]:
+    """Return the original structured-attestation table census."""
 
     from okto_pulse.community.adapters.sqlalchemy_models import (
         CodeEvidenceDispositionRow,
@@ -20381,10 +20385,33 @@ def code_traceability_owned_tables() -> tuple[object, ...]:
     )
 
 
+def contextual_code_evidence_owned_tables() -> tuple[object, ...]:
+    """Return the v2 human legacy-classification authority tables."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        CodeEvidenceClassificationEventRow,
+        CodeEvidenceClassificationHeadRow,
+    )
+
+    return (
+        CodeEvidenceClassificationEventRow.__table__,
+        CodeEvidenceClassificationHeadRow.__table__,
+    )
+
+
+def code_traceability_owned_tables() -> tuple[object, ...]:
+    """Return the complete relational Code Traceability table census."""
+
+    return (
+        *_code_traceability_v1_owned_tables(),
+        *contextual_code_evidence_owned_tables(),
+    )
+
+
 def code_traceability_sqlite_trigger_manifest() -> dict[str, tuple[str, str]]:
     """Return exact, permit-aware SQLite guards for structured attestations."""
 
-    tables = {table.name: table for table in code_traceability_owned_tables()}
+    tables = {table.name: table for table in _code_traceability_v1_owned_tables()}
     permit_table = "kg_board_erasure_permits"
     manifest: dict[str, tuple[str, str]] = {}
 
@@ -21854,7 +21881,87 @@ END $$
             )
 
         existing_tables = await conn.run_sync(table_names)
-        for table in code_traceability_owned_tables():
+        contextual_columns = {
+            "code_investigation_receipts": {
+                "delivery_context",
+                "contextual_outcome",
+                "context_contract_version",
+            },
+            "code_evidence": {
+                "source_role",
+                "relevance_summary",
+                "scope_relation",
+                "source_origin",
+                "interpretation_limit",
+                "baseline_presence",
+                "baseline_workspace_state_id",
+                "baseline_provenance_note",
+                "context_contract_version",
+            },
+        }
+        observed_contextual_columns: dict[str, set[str]] = {}
+        for table_name, expected_columns in contextual_columns.items():
+            if table_name not in existing_tables:
+                continue
+            observed_contextual_columns[table_name] = await conn.run_sync(
+                lambda sync_conn, name=table_name: column_names(sync_conn, name)
+            )
+        contextual_pending = any(
+            not expected_columns.issubset(
+                observed_contextual_columns.get(table_name, set())
+            )
+            for table_name, expected_columns in contextual_columns.items()
+        )
+
+        contextual_check_names = {
+            "code_investigation_receipts": {
+                "ck_code_investigation_receipt_context_v2",
+            },
+            "code_evidence": {
+                "ck_code_evidence_source_role",
+                "ck_code_evidence_context_v2",
+            },
+        }
+
+        def pre_context_compatible_contract(
+            contract: dict[str, dict[str, object]],
+            table_name: str,
+        ) -> dict[str, dict[str, object]]:
+            """Project exact v1 structure while the dedicated v2 step is pending.
+
+            SQLite cannot add table CHECK constraints in place.  Those checks
+            are therefore removed from both sides permanently and are audited
+            by the v2 trigger manifest instead.  Only genuinely absent v2
+            columns are removed from the expected side during the one-step
+            hand-off; all original v1 structure remains exact.
+            """
+
+            checks_to_ignore = contextual_check_names.get(table_name, set())
+            fields = contextual_columns.get(table_name, set())
+            projected = {
+                side: dict(payload) for side, payload in contract.items()
+            }
+            if fields:
+                # Additive ALTER places SQLite columns at the physical tail,
+                # while create_all follows ORM declaration order.  The v2
+                # migration audits this owned overlay independently, so the
+                # v1 fingerprint excludes it on both paths.
+                for side in ("expected", "observed"):
+                    projected[side]["columns"] = tuple(
+                        column
+                        for column in projected[side]["columns"]
+                        if column[0] not in fields
+                    )
+            if checks_to_ignore:
+                for side in ("expected", "observed"):
+                    projected[side]["checks"] = tuple(
+                        check
+                        for check in projected[side]["checks"]
+                        if check[0] not in checks_to_ignore
+                    )
+            return projected
+
+        for table in _code_traceability_v1_owned_tables():
             if table.name not in existing_tables:
                 await conn.run_sync(
                     lambda sync_conn, owned=table: owned.create(
@@ -21877,6 +21984,7 @@ END $$
                     )
                 )
             )
+            contract = pre_context_compatible_contract(contract, table.name)
             if contract["observed"] != contract["expected"]:
                 raise RuntimeError(
                     "Code Traceability table has a non-canonical contract: "
@@ -21907,6 +22015,11 @@ END $$
                 )
             for trigger_name, (table_name, trigger_sql) in manifest.items():
                 observed = existing.get(trigger_name)
+                if contextual_pending:
+                    # The following dedicated step atomically adds all v2
+                    # columns and replaces this entire v1 trigger family.  Do
+                    # not compile a NEW-column reference against the old table.
+                    continue
                 if observed is None:
                     await conn.execute(sa_text(trigger_sql))
                     changed = True
@@ -22008,6 +22121,1218 @@ WHERE NOT trigger.tgisinternal
             raise RuntimeError(
                 "Code Traceability lineage-column convergence is incomplete"
             )
+    return None if changed else "skipped"
+
+
+CONTEXTUAL_CODE_EVIDENCE_TRIGGER_PREFIX = "trg_contextual_code_evidence_v2"
+
+
+def contextual_code_evidence_sqlite_trigger_manifest() -> (
+    dict[str, tuple[str, str]]
+):
+    """Return exact SQLite guards for contextual Evidence persistence.
+
+    Fresh databases also carry ORM CHECK constraints.  These triggers are the
+    equivalent upgrade contract for SQLite, where additive ALTER TABLE cannot
+    install named CHECK constraints without rebuilding governed legacy tables.
+    """
+
+    prefix = CONTEXTUAL_CODE_EVIDENCE_TRIGGER_PREFIX
+    permit_table = "kg_board_erasure_permits"
+    manifest: dict[str, tuple[str, str]] = {}
+
+    refinement_invalid = (
+        "NEW.delivery_context IS NOT NULL "
+        "AND NEW.delivery_context NOT IN ('brownfield', 'greenfield', 'hybrid')"
+    )
+    snapshot_invalid = """(
+    NEW.delivery_context IS NOT NULL
+    AND NEW.delivery_context NOT IN ('brownfield', 'greenfield', 'hybrid')
+) OR NOT (
+    (NEW.source_context_manifest IS NULL AND NEW.source_context_sha256 IS NULL)
+    OR (
+        NEW.source_context_manifest IS NOT NULL
+        AND NEW.source_context_sha256 IS NOT NULL
+        AND length(NEW.source_context_sha256) = 64
+    )
+)"""
+    spec_invalid = """(
+    NEW.delivery_context IS NOT NULL
+    AND NEW.delivery_context NOT IN ('brownfield', 'greenfield', 'hybrid')
+) OR NOT (
+    (NEW.delivery_context IS NULL AND NEW.delivery_context_provenance IS NULL)
+    OR (
+        NEW.delivery_context IS NOT NULL
+        AND NEW.delivery_context_provenance IS NOT NULL
+    )
+) OR NOT (
+    (NEW.source_context_manifest IS NULL AND NEW.source_context_sha256 IS NULL)
+    OR (
+        NEW.source_context_manifest IS NOT NULL
+        AND NEW.source_context_sha256 IS NOT NULL
+        AND length(NEW.source_context_sha256) = 64
+    )
+)"""
+    receipt_invalid = """NOT (
+    (
+        NEW.delivery_context IS NULL
+        AND NEW.contextual_outcome IS NULL
+        AND NEW.context_contract_version IS NULL
+    )
+    OR (
+        NEW.delivery_context IN ('brownfield', 'greenfield', 'hybrid')
+        AND NEW.contextual_outcome IN (
+            'evidence_applicable',
+            'no_relevant_existing_implementation',
+            'partial',
+            'unavailable'
+        )
+        AND NEW.context_contract_version = 2
+        AND (
+            (
+                NEW.contextual_outcome IN (
+                    'evidence_applicable',
+                    'no_relevant_existing_implementation'
+                )
+                AND NEW.outcome = 'accessible'
+            )
+            OR (
+                NEW.contextual_outcome = 'partial'
+                AND NEW.outcome = 'partial'
+            )
+            OR (
+                NEW.contextual_outcome = 'unavailable'
+                AND NEW.outcome = 'unavailable'
+            )
+        )
+        AND (
+            NEW.contextual_outcome <>
+                'no_relevant_existing_implementation'
+            OR NEW.delivery_context = 'greenfield'
+        )
+    )
+)"""
+    evidence_invalid = """NOT (
+    (
+        NEW.source_role = 'uncategorized_legacy'
+        AND NEW.relevance_summary IS NULL
+        AND NEW.scope_relation IS NULL
+        AND NEW.source_origin IS NULL
+        AND NEW.interpretation_limit IS NULL
+        AND NEW.baseline_presence IS NULL
+        AND NEW.baseline_workspace_state_id IS NULL
+        AND NEW.baseline_provenance_note IS NULL
+        AND NEW.context_contract_version IS NULL
+    )
+    OR (
+        NEW.source_role IN (
+            'current_implementation',
+            'existing_scaffold',
+            'existing_constraint',
+            'reference_pattern'
+        )
+        AND NEW.relevance_summary IS NOT NULL
+        AND length(trim(NEW.relevance_summary)) >= 1
+        AND NEW.scope_relation IS NOT NULL
+        AND length(trim(NEW.scope_relation)) >= 1
+        AND NEW.source_origin IS NOT NULL
+        AND length(trim(NEW.source_origin)) >= 1
+        AND NEW.baseline_presence IN (
+            'committed_snapshot',
+            'preexisting_worktree'
+        )
+        AND NEW.baseline_workspace_state_id = NEW.workspace_state_id
+        AND NEW.context_contract_version = 2
+        AND (
+            NEW.source_role NOT IN (
+                'existing_scaffold',
+                'reference_pattern'
+            )
+            OR (
+                NEW.interpretation_limit IS NOT NULL
+                AND length(trim(NEW.interpretation_limit)) >= 1
+            )
+        )
+        AND (
+            (
+                NEW.baseline_presence = 'committed_snapshot'
+                AND NEW.declared_dirty = false
+            )
+            OR (
+                NEW.baseline_presence = 'preexisting_worktree'
+                AND NEW.declared_dirty = true
+                AND NEW.baseline_provenance_note IS NOT NULL
+                AND length(trim(NEW.baseline_provenance_note)) >= 1
+            )
+        )
+    )
+)"""
+
+    for table_name, alias, predicate, message in (
+        (
+            "refinements",
+            "refinement",
+            refinement_invalid,
+            "refinement_delivery_context_invalid",
+        ),
+        (
+            "refinement_snapshots",
+            "snapshot",
+            snapshot_invalid,
+            "refinement_source_context_invalid",
+        ),
+        (
+            "specs",
+            "spec",
+            spec_invalid,
+            "spec_source_context_invalid",
+        ),
+        (
+            "code_investigation_receipts",
+            "receipt",
+            receipt_invalid,
+            "code_investigation_context_invalid",
+        ),
+        (
+            "code_evidence",
+            "evidence",
+            evidence_invalid,
+            "code_evidence_context_invalid",
+        ),
+    ):
+        for operation in ("INSERT", "UPDATE"):
+            trigger_name = f"{prefix}_{alias}_{operation.lower()}"
+            manifest[trigger_name] = (
+                table_name,
+                f'''CREATE TRIGGER "{trigger_name}"
+BEFORE {operation} ON "{table_name}"
+WHEN {predicate}
+BEGIN
+    SELECT RAISE(ABORT, '{message}');
+END''',
+            )
+
+    event_table = "code_evidence_classification_events"
+    head_table = "code_evidence_classification_heads"
+    event_insert = f"{prefix}_classification_event_insert"
+    manifest[event_insert] = (
+        event_table,
+        f'''CREATE TRIGGER "{event_insert}"
+BEFORE INSERT ON "{event_table}"
+WHEN length(trim(NEW."batch_id")) < 1
+OR length(NEW."batch_id") >
+    {CODE_EVIDENCE_CLASSIFICATION_BATCH_ID_MAX_LENGTH}
+OR length(trim(NEW."idempotency_key")) < 1
+OR length(NEW."idempotency_key") >
+    {CODE_EVIDENCE_CLASSIFICATION_IDEMPOTENCY_KEY_MAX_LENGTH}
+OR NOT EXISTS (
+    SELECT 1
+    FROM "code_evidence" AS evidence
+    WHERE evidence."id" = NEW."evidence_id"
+      AND evidence."board_id" = NEW."board_id"
+      AND evidence."payload_sha256" = NEW."evidence_payload_sha256"
+      AND evidence."workspace_state_id" =
+          NEW."baseline_workspace_state_id"
+      AND evidence."source_role" = 'uncategorized_legacy'
+      AND evidence."lifecycle_status" = 'active'
+      AND (
+          (
+              NEW."baseline_presence" = 'committed_snapshot'
+              AND evidence."declared_dirty" = false
+          )
+          OR (
+              NEW."baseline_presence" = 'preexisting_worktree'
+              AND evidence."declared_dirty" = true
+              AND NEW."baseline_provenance_note" IS NOT NULL
+              AND length(trim(NEW."baseline_provenance_note")) >= 1
+          )
+      )
+      AND (
+          (
+              NEW."revision" = 1
+              AND NEW."predecessor_classification_id" IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM "{head_table}" AS head
+                  WHERE head."board_id" = NEW."board_id"
+                    AND head."evidence_id" = NEW."evidence_id"
+              )
+          )
+          OR (
+              NEW."revision" > 1
+              AND EXISTS (
+                  SELECT 1
+                  FROM "{head_table}" AS head
+                  WHERE head."board_id" = NEW."board_id"
+                    AND head."evidence_id" = NEW."evidence_id"
+                    AND head."current_classification_id" =
+                        NEW."predecessor_classification_id"
+                    AND head."revision" = NEW."revision" - 1
+                    AND head."evidence_payload_sha256" =
+                        NEW."evidence_payload_sha256"
+              )
+          )
+      )
+)
+OR EXISTS (
+    SELECT 1
+    FROM "{event_table}" AS batch_item
+    WHERE batch_item."batch_id" = NEW."batch_id"
+      AND (
+          batch_item."board_id" IS NOT NEW."board_id"
+          OR batch_item."classified_by" IS NOT NEW."classified_by"
+          OR batch_item."classified_at" IS NOT NEW."classified_at"
+          OR batch_item."idempotency_key" IS NOT NEW."idempotency_key"
+          OR batch_item."request_sha256" IS NOT NEW."request_sha256"
+          OR batch_item."batch_item_count" <> NEW."batch_item_count"
+          OR batch_item."context_contract_version" <>
+              NEW."context_contract_version"
+      )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_classification_event_invalid');
+END''',
+    )
+    event_update = f"{prefix}_classification_event_update"
+    manifest[event_update] = (
+        event_table,
+        f'''CREATE TRIGGER "{event_update}"
+BEFORE UPDATE ON "{event_table}"
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_classification_event_immutable');
+END''',
+    )
+    event_delete = f"{prefix}_classification_event_delete"
+    manifest[event_delete] = (
+        event_table,
+        f'''CREATE TRIGGER "{event_delete}"
+BEFORE DELETE ON "{event_table}"
+WHEN NOT EXISTS (
+    SELECT 1 FROM "{permit_table}" AS permit
+    WHERE permit."board_id" = OLD."board_id"
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_classification_event_immutable');
+END''',
+    )
+
+    complete_batch = f'''(
+    SELECT count(*)
+    FROM "{event_table}" AS batch_item
+    WHERE batch_item."batch_id" = event."batch_id"
+) = event."batch_item_count"
+AND (
+    SELECT min(batch_item."batch_item_index")
+    FROM "{event_table}" AS batch_item
+    WHERE batch_item."batch_id" = event."batch_id"
+) = 1
+AND (
+    SELECT max(batch_item."batch_item_index")
+    FROM "{event_table}" AS batch_item
+    WHERE batch_item."batch_id" = event."batch_id"
+) = event."batch_item_count"'''
+
+    head_insert = f"{prefix}_classification_head_insert"
+    manifest[head_insert] = (
+        head_table,
+        f'''CREATE TRIGGER "{head_insert}"
+BEFORE INSERT ON "{head_table}"
+WHEN NEW."revision" <> 1
+OR NOT EXISTS (
+    SELECT 1
+    FROM "{event_table}" AS event
+    WHERE event."id" = NEW."current_classification_id"
+      AND event."board_id" = NEW."board_id"
+      AND event."evidence_id" = NEW."evidence_id"
+      AND event."evidence_payload_sha256" =
+          NEW."evidence_payload_sha256"
+      AND event."revision" = NEW."revision"
+      AND event."predecessor_classification_id" IS NULL
+      AND {complete_batch}
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_classification_head_insert_invalid');
+END''',
+    )
+    head_update = f"{prefix}_classification_head_update"
+    manifest[head_update] = (
+        head_table,
+        f'''CREATE TRIGGER "{head_update}"
+BEFORE UPDATE ON "{head_table}"
+WHEN NEW."board_id" IS NOT OLD."board_id"
+OR NEW."evidence_id" IS NOT OLD."evidence_id"
+OR NEW."revision" <> OLD."revision" + 1
+OR NEW."evidence_payload_sha256" IS NOT OLD."evidence_payload_sha256"
+OR julianday(NEW."updated_at") < julianday(OLD."updated_at")
+OR NOT EXISTS (
+    SELECT 1
+    FROM "{event_table}" AS event
+    WHERE event."id" = NEW."current_classification_id"
+      AND event."board_id" = NEW."board_id"
+      AND event."evidence_id" = NEW."evidence_id"
+      AND event."evidence_payload_sha256" =
+          NEW."evidence_payload_sha256"
+      AND event."revision" = NEW."revision"
+      AND event."predecessor_classification_id" =
+          OLD."current_classification_id"
+      AND {complete_batch}
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_classification_head_cas_invalid');
+END''',
+    )
+    head_delete = f"{prefix}_classification_head_delete"
+    manifest[head_delete] = (
+        head_table,
+        f'''CREATE TRIGGER "{head_delete}"
+BEFORE DELETE ON "{head_table}"
+WHEN NOT EXISTS (
+    SELECT 1 FROM "{permit_table}" AS permit
+    WHERE permit."board_id" = OLD."board_id"
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_classification_head_delete_forbidden');
+END''',
+    )
+    return manifest
+
+
+def contextual_code_evidence_postgresql_ddl() -> (
+    tuple[str, dict[str, tuple[str, str, int]]]
+):
+    """Return PostgreSQL CAS/immutability guards for classification rows."""
+
+    function_name = "pulse_contextual_code_evidence_guard_v2"
+    event_table = "code_evidence_classification_events"
+    head_table = "code_evidence_classification_heads"
+    function_sql = f'''CREATE OR REPLACE FUNCTION "{function_name}"()
+RETURNS trigger AS $$
+DECLARE
+    event_row "{event_table}"%ROWTYPE;
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        IF EXISTS (
+            SELECT 1 FROM "kg_board_erasure_permits" AS permit
+            WHERE permit."board_id" = OLD."board_id"
+        ) THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'code_evidence_classification_delete_forbidden';
+    END IF;
+
+    IF TG_TABLE_NAME = '{event_table}' THEN
+        IF TG_OP = 'UPDATE' THEN
+            RAISE EXCEPTION 'code_evidence_classification_event_immutable';
+        END IF;
+        IF length(trim(NEW."batch_id")) < 1
+           OR length(NEW."batch_id") >
+              {CODE_EVIDENCE_CLASSIFICATION_BATCH_ID_MAX_LENGTH}
+           OR length(trim(NEW."idempotency_key")) < 1
+           OR length(NEW."idempotency_key") >
+              {CODE_EVIDENCE_CLASSIFICATION_IDEMPOTENCY_KEY_MAX_LENGTH}
+           OR NOT EXISTS (
+            SELECT 1
+            FROM "code_evidence" AS evidence
+            WHERE evidence."id" = NEW."evidence_id"
+              AND evidence."board_id" = NEW."board_id"
+              AND evidence."payload_sha256" =
+                  NEW."evidence_payload_sha256"
+              AND evidence."workspace_state_id" =
+                  NEW."baseline_workspace_state_id"
+              AND evidence."source_role" = 'uncategorized_legacy'
+              AND evidence."lifecycle_status" = 'active'
+              AND (
+                  (
+                      NEW."baseline_presence" = 'committed_snapshot'
+                      AND evidence."declared_dirty" = false
+                  )
+                  OR (
+                      NEW."baseline_presence" = 'preexisting_worktree'
+                      AND evidence."declared_dirty" = true
+                      AND NEW."baseline_provenance_note" IS NOT NULL
+                      AND length(trim(NEW."baseline_provenance_note")) >= 1
+                  )
+              )
+              AND (
+                  (
+                      NEW."revision" = 1
+                      AND NEW."predecessor_classification_id" IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM "{head_table}" AS head
+                          WHERE head."board_id" = NEW."board_id"
+                            AND head."evidence_id" = NEW."evidence_id"
+                      )
+                  )
+                  OR (
+                      NEW."revision" > 1
+                      AND EXISTS (
+                          SELECT 1 FROM "{head_table}" AS head
+                          WHERE head."board_id" = NEW."board_id"
+                            AND head."evidence_id" = NEW."evidence_id"
+                            AND head."current_classification_id" =
+                                NEW."predecessor_classification_id"
+                            AND head."revision" = NEW."revision" - 1
+                            AND head."evidence_payload_sha256" =
+                                NEW."evidence_payload_sha256"
+                      )
+                  )
+              )
+        ) OR EXISTS (
+            SELECT 1
+            FROM "{event_table}" AS batch_item
+            WHERE batch_item."batch_id" = NEW."batch_id"
+              AND (
+                  batch_item."board_id" IS DISTINCT FROM NEW."board_id"
+                  OR batch_item."classified_by" IS DISTINCT FROM
+                      NEW."classified_by"
+                  OR batch_item."classified_at" IS DISTINCT FROM
+                      NEW."classified_at"
+                  OR batch_item."idempotency_key" IS DISTINCT FROM
+                      NEW."idempotency_key"
+                  OR batch_item."request_sha256" IS DISTINCT FROM
+                      NEW."request_sha256"
+                  OR batch_item."batch_item_count" <>
+                      NEW."batch_item_count"
+                  OR batch_item."context_contract_version" <>
+                      NEW."context_contract_version"
+              )
+        ) THEN
+            RAISE EXCEPTION 'code_evidence_classification_event_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = '{head_table}' THEN
+        SELECT * INTO event_row
+        FROM "{event_table}" AS event
+        WHERE event."id" = NEW."current_classification_id";
+        IF NOT FOUND
+           OR event_row."board_id" IS DISTINCT FROM NEW."board_id"
+           OR event_row."evidence_id" IS DISTINCT FROM NEW."evidence_id"
+           OR event_row."evidence_payload_sha256" IS DISTINCT FROM
+               NEW."evidence_payload_sha256"
+           OR event_row."revision" <> NEW."revision"
+           OR (
+               SELECT count(*) FROM "{event_table}" AS batch_item
+               WHERE batch_item."batch_id" = event_row."batch_id"
+           ) <> event_row."batch_item_count" THEN
+            RAISE EXCEPTION 'code_evidence_classification_head_event_invalid';
+        END IF;
+        IF TG_OP = 'INSERT' THEN
+            IF NEW."revision" <> 1
+               OR event_row."predecessor_classification_id" IS NOT NULL THEN
+                RAISE EXCEPTION
+                    'code_evidence_classification_head_insert_invalid';
+            END IF;
+        ELSIF NEW."board_id" IS DISTINCT FROM OLD."board_id"
+           OR NEW."evidence_id" IS DISTINCT FROM OLD."evidence_id"
+           OR NEW."revision" <> OLD."revision" + 1
+           OR NEW."evidence_payload_sha256" IS DISTINCT FROM
+               OLD."evidence_payload_sha256"
+           OR NEW."updated_at" < OLD."updated_at"
+           OR event_row."predecessor_classification_id" IS DISTINCT FROM
+               OLD."current_classification_id" THEN
+            RAISE EXCEPTION 'code_evidence_classification_head_cas_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+    RAISE EXCEPTION 'contextual_code_evidence_guard_scope_invalid';
+END;
+$$ LANGUAGE plpgsql'''
+    trigger_specs = {
+        "trg_contextual_code_evidence_v2_event_iud": (
+            event_table,
+            "INSERT OR UPDATE OR DELETE",
+            31,
+        ),
+        "trg_contextual_code_evidence_v2_head_iud": (
+            head_table,
+            "INSERT OR UPDATE OR DELETE",
+            31,
+        ),
+    }
+    return function_sql, trigger_specs
+
+
+def contextual_code_evidence_postgresql_width_ddl() -> dict[str, str]:
+    """Return the closed widening artifact for the two Core request IDs."""
+
+    table_name = "code_evidence_classification_events"
+    return {
+        "batch_id": (
+            f'ALTER TABLE "{table_name}" ALTER COLUMN "batch_id" '
+            "TYPE VARCHAR("
+            f"{CODE_EVIDENCE_CLASSIFICATION_BATCH_ID_MAX_LENGTH})"
+        ),
+        "idempotency_key": (
+            f'ALTER TABLE "{table_name}" ALTER COLUMN "idempotency_key" '
+            "TYPE VARCHAR("
+            f"{CODE_EVIDENCE_CLASSIFICATION_IDEMPOTENCY_KEY_MAX_LENGTH})"
+        ),
+        "request_identity_constraint": (
+            f'ALTER TABLE "{table_name}" ADD CONSTRAINT '
+            '"ck_code_evidence_classification_request_identity" CHECK '
+            "(length(trim(batch_id)) >= 1 "
+            "AND length(batch_id) <= "
+            f"{CODE_EVIDENCE_CLASSIFICATION_BATCH_ID_MAX_LENGTH} "
+            "AND length(trim(idempotency_key)) >= 1 "
+            "AND length(idempotency_key) <= "
+            f"{CODE_EVIDENCE_CLASSIFICATION_IDEMPOTENCY_KEY_MAX_LENGTH})"
+        ),
+    }
+
+
+async def _migrate_contextual_code_evidence_schema() -> str | None:
+    """Converge contextual Evidence persistence without inventing AS-IS facts."""
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+
+    engine = get_engine()
+    changed = False
+    added_contextual_column = False
+
+    column_additions: dict[str, tuple[tuple[str, str], ...]] = {
+        "refinements": (("delivery_context", "VARCHAR(16)"),),
+        "refinement_snapshots": (
+            ("delivery_context", "VARCHAR(16)"),
+            ("source_context_manifest", "JSON"),
+            ("source_context_sha256", "VARCHAR(64)"),
+        ),
+        "specs": (
+            ("delivery_context", "VARCHAR(16)"),
+            ("delivery_context_provenance", "JSON"),
+            ("source_context_manifest", "JSON"),
+            ("source_context_sha256", "VARCHAR(64)"),
+        ),
+        "code_investigation_receipts": (
+            ("delivery_context", "VARCHAR(16)"),
+            ("contextual_outcome", "VARCHAR(48)"),
+            ("context_contract_version", "INTEGER"),
+        ),
+        "code_evidence": (
+            (
+                "source_role",
+                "VARCHAR(32) NOT NULL DEFAULT 'uncategorized_legacy'",
+            ),
+            ("relevance_summary", "TEXT"),
+            ("scope_relation", "TEXT"),
+            ("source_origin", "TEXT"),
+            ("interpretation_limit", "TEXT"),
+            ("baseline_presence", "VARCHAR(32)"),
+            ("baseline_workspace_state_id", "VARCHAR(255)"),
+            ("baseline_provenance_note", "TEXT"),
+            ("context_contract_version", "INTEGER"),
+        ),
+    }
+
+    async with engine.begin() as conn:
+        dialect = conn.dialect.name
+        if dialect not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "Contextual Code Evidence migration supports only SQLite "
+                "and PostgreSQL"
+            )
+        if dialect == "sqlite":
+            await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+            await conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+        def table_names(sync_conn: object) -> set[str]:
+            return set(sa_inspect(sync_conn).get_table_names())
+
+        def column_names(sync_conn: object, table_name: str) -> set[str]:
+            return {
+                str(column["name"])
+                for column in sa_inspect(sync_conn).get_columns(table_name)
+            }
+
+        def column_lengths(
+            sync_conn: object,
+            table_name: str,
+        ) -> dict[str, int | None]:
+            return {
+                str(column["name"]): getattr(column["type"], "length", None)
+                for column in sa_inspect(sync_conn).get_columns(table_name)
+            }
+
+        async def rebuild_sqlite_classification_authority() -> None:
+            """Widen the pre-I2 authority without losing append-only rows."""
+
+            event_table, head_table = contextual_code_evidence_owned_tables()
+            event_name = str(event_table.name)
+            head_name = str(head_table.name)
+            trigger_manifest = contextual_code_evidence_sqlite_trigger_manifest()
+            allowed_triggers = {
+                name
+                for name, (table_name, _sql) in trigger_manifest.items()
+                if table_name in {event_name, head_name}
+            }
+            attached_triggers = {
+                str(row[0])
+                for row in (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name FROM sqlite_master "
+                            "WHERE type = 'trigger' "
+                            "AND tbl_name IN (:event_name, :head_name)"
+                        ),
+                        {"event_name": event_name, "head_name": head_name},
+                    )
+                ).all()
+            }
+            unexpected_triggers = attached_triggers - allowed_triggers
+            if unexpected_triggers:
+                raise RuntimeError(
+                    "Contextual Code Evidence width migration found "
+                    "unexpected triggers: "
+                    + ", ".join(sorted(unexpected_triggers))
+                )
+
+            temp_event = "_pulse_contextual_evidence_event_width_v2"
+            temp_head = "_pulse_contextual_evidence_head_width_v2"
+            temp_objects = {
+                str(row[0])
+                for row in (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name FROM sqlite_temp_master "
+                            "WHERE name IN (:temp_event, :temp_head)"
+                        ),
+                        {"temp_event": temp_event, "temp_head": temp_head},
+                    )
+                ).all()
+            }
+            if temp_objects:
+                raise RuntimeError(
+                    "Contextual Code Evidence width migration found stale "
+                    "temporary authority: "
+                    + ", ".join(sorted(temp_objects))
+                )
+
+            await conn.exec_driver_sql("PRAGMA defer_foreign_keys=ON")
+            await conn.execute(
+                sa_text(
+                    f'CREATE TEMP TABLE "{temp_event}" AS '
+                    f'SELECT * FROM "{event_name}"'
+                )
+            )
+            await conn.execute(
+                sa_text(
+                    f'CREATE TEMP TABLE "{temp_head}" AS '
+                    f'SELECT * FROM "{head_name}"'
+                )
+            )
+            await conn.execute(sa_text(f'DROP TABLE "{head_name}"'))
+            await conn.execute(sa_text(f'DROP TABLE "{event_name}"'))
+            await conn.run_sync(
+                lambda sync_conn: event_table.create(sync_conn, checkfirst=False)
+            )
+            await conn.run_sync(
+                lambda sync_conn: head_table.create(sync_conn, checkfirst=False)
+            )
+
+            event_columns = tuple(str(column.name) for column in event_table.columns)
+            head_columns = tuple(str(column.name) for column in head_table.columns)
+
+            def quoted_columns(columns: tuple[str, ...]) -> str:
+                return ", ".join(f'"{column}"' for column in columns)
+
+            await conn.execute(
+                sa_text(
+                    f'INSERT INTO "{event_name}" '
+                    f'({quoted_columns(event_columns)}) '
+                    f'SELECT {quoted_columns(event_columns)} '
+                    f'FROM "{temp_event}" ORDER BY "revision", "id"'
+                )
+            )
+            await conn.execute(
+                sa_text(
+                    f'INSERT INTO "{head_name}" '
+                    f'({quoted_columns(head_columns)}) '
+                    f'SELECT {quoted_columns(head_columns)} '
+                    f'FROM "{temp_head}"'
+                )
+            )
+            await conn.execute(sa_text(f'DROP TABLE "{temp_head}"'))
+            await conn.execute(sa_text(f'DROP TABLE "{temp_event}"'))
+
+        existing_tables = await conn.run_sync(table_names)
+        missing_required = set(column_additions) - existing_tables
+        if "kg_board_erasure_permits" not in existing_tables:
+            missing_required.add("kg_board_erasure_permits")
+        if missing_required:
+            raise RuntimeError(
+                "Contextual Code Evidence requires existing tables: "
+                + ", ".join(sorted(missing_required))
+            )
+
+        event_table_name = "code_evidence_classification_events"
+        head_table_name = "code_evidence_classification_heads"
+        if event_table_name in existing_tables:
+            if head_table_name not in existing_tables:
+                raise RuntimeError(
+                    "Contextual Code Evidence classification authority is "
+                    "incomplete"
+                )
+            widths = await conn.run_sync(
+                lambda sync_conn: column_lengths(sync_conn, event_table_name)
+            )
+            observed_widths = (
+                widths.get("batch_id"),
+                widths.get("idempotency_key"),
+            )
+            canonical_widths = (
+                CODE_EVIDENCE_CLASSIFICATION_BATCH_ID_MAX_LENGTH,
+                CODE_EVIDENCE_CLASSIFICATION_IDEMPOTENCY_KEY_MAX_LENGTH,
+            )
+            accepted_widths = (
+                {64, CODE_EVIDENCE_CLASSIFICATION_BATCH_ID_MAX_LENGTH},
+                {255, CODE_EVIDENCE_CLASSIFICATION_IDEMPOTENCY_KEY_MAX_LENGTH},
+            )
+            if observed_widths != canonical_widths:
+                if any(
+                    observed not in accepted
+                    for observed, accepted in zip(
+                        observed_widths,
+                        accepted_widths,
+                        strict=True,
+                    )
+                ):
+                    raise RuntimeError(
+                        "Contextual Code Evidence classification identifier "
+                        "width is non-canonical: "
+                        + repr(observed_widths)
+                    )
+                if dialect == "sqlite":
+                    await rebuild_sqlite_classification_authority()
+                else:
+                    width_ddl = contextual_code_evidence_postgresql_width_ddl()
+                    for column_name, observed, expected in zip(
+                        ("batch_id", "idempotency_key"),
+                        observed_widths,
+                        canonical_widths,
+                        strict=True,
+                    ):
+                        if observed == expected:
+                            continue
+                        await conn.execute(sa_text(width_ddl[column_name]))
+                changed = True
+            if dialect == "postgresql":
+                request_identity_constraint = (
+                    "ck_code_evidence_classification_request_identity"
+                )
+                constraint_exists = (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT 1 FROM information_schema.table_constraints "
+                            "WHERE table_schema = current_schema() "
+                            "AND table_name = :table_name "
+                            "AND constraint_name = :constraint_name"
+                        ),
+                        {
+                            "table_name": event_table_name,
+                            "constraint_name": request_identity_constraint,
+                        },
+                    )
+                ).scalar_one_or_none()
+                if constraint_exists is None:
+                    await conn.execute(
+                        sa_text(
+                            contextual_code_evidence_postgresql_width_ddl()[
+                                "request_identity_constraint"
+                            ]
+                        )
+                    )
+                    changed = True
+
+        for table_name, additions in column_additions.items():
+            observed = await conn.run_sync(
+                lambda sync_conn, name=table_name: column_names(sync_conn, name)
+            )
+            for column_name, column_type in additions:
+                if column_name in observed:
+                    continue
+                await conn.execute(
+                    sa_text(
+                        f'ALTER TABLE "{table_name}" '
+                        f'ADD COLUMN "{column_name}" {column_type}'
+                    )
+                )
+                observed.add(column_name)
+                added_contextual_column = True
+                changed = True
+
+        # This is the only legacy backfill: no role or delivery context is
+        # inferred.  Old rows are explicitly marked as unclassified legacy.
+        update_result = await conn.execute(
+            sa_text(
+                "UPDATE code_evidence "
+                "SET source_role = 'uncategorized_legacy' "
+                "WHERE source_role IS NULL"
+            )
+        )
+        if int(update_result.rowcount or 0) > 0:
+            changed = True
+
+        existing_tables = await conn.run_sync(table_names)
+        for table in contextual_code_evidence_owned_tables():
+            if table.name not in existing_tables:
+                await conn.run_sync(
+                    lambda sync_conn, owned=table: owned.create(
+                        sync_conn,
+                        checkfirst=True,
+                    )
+                )
+                existing_tables.add(table.name)
+                changed = True
+            contract = await conn.run_sync(
+                (
+                    lambda sync_conn, owned=table: _sqlite_owned_table_contract(
+                        sync_conn,
+                        owned,
+                    )
+                )
+                if dialect == "sqlite"
+                else (
+                    lambda sync_conn, owned=table: _postgresql_owned_table_contract(
+                        sync_conn,
+                        owned,
+                    )
+                )
+            )
+            if contract["observed"] != contract["expected"]:
+                raise RuntimeError(
+                    "Contextual Code Evidence table has a non-canonical "
+                    "contract: "
+                    + table.name
+                )
+
+        if dialect == "sqlite":
+            # Once the overlay exists, the original immutability guards must
+            # compare the newly added Evidence columns too.  Replace only the
+            # recognized predecessor during this same atomic upgrade.
+            v1_manifest = code_traceability_sqlite_trigger_manifest()
+            v1_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, tbl_name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name LIKE :prefix"
+                        ),
+                        {"prefix": f"{CODE_TRACEABILITY_TRIGGER_PREFIX}%"},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            v1_existing = {str(row["name"]): row for row in v1_rows}
+            unexpected_v1 = set(v1_existing) - set(v1_manifest)
+            if unexpected_v1:
+                raise RuntimeError(
+                    "Contextual Code Evidence found unexpected v1 triggers: "
+                    + ", ".join(sorted(unexpected_v1))
+                )
+            for trigger_name, (table_name, trigger_sql) in v1_manifest.items():
+                observed = v1_existing.get(trigger_name)
+                exact = observed is not None and (
+                    str(observed["tbl_name"]) == table_name
+                    and normalize_global_discovery_source_revision_trigger_sql(
+                        observed["sql"]
+                    )
+                    == normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
+                )
+                if exact:
+                    continue
+                if observed is not None and not added_contextual_column:
+                    raise RuntimeError(
+                        "Code Traceability owned trigger is corrupt: "
+                        + trigger_name
+                    )
+                if observed is not None:
+                    await conn.execute(
+                        sa_text(f'DROP TRIGGER "{trigger_name}"')
+                    )
+                await conn.execute(sa_text(trigger_sql))
+                changed = True
+
+            manifest = contextual_code_evidence_sqlite_trigger_manifest()
+            trigger_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, tbl_name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name LIKE :prefix"
+                        ),
+                        {
+                            "prefix": (
+                                f"{CONTEXTUAL_CODE_EVIDENCE_TRIGGER_PREFIX}%"
+                            )
+                        },
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing = {str(row["name"]): row for row in trigger_rows}
+            unexpected = set(existing) - set(manifest)
+            if unexpected:
+                raise RuntimeError(
+                    "Contextual Code Evidence has unexpected triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for trigger_name, (table_name, trigger_sql) in manifest.items():
+                observed = existing.get(trigger_name)
+                if observed is None:
+                    await conn.execute(sa_text(trigger_sql))
+                    changed = True
+                    continue
+                if (
+                    str(observed["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        observed["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
+                ):
+                    raise RuntimeError(
+                        "Contextual Code Evidence trigger is corrupt: "
+                        + trigger_name
+                    )
+            violations = list(
+                (await conn.exec_driver_sql("PRAGMA foreign_key_check")).all()
+            )
+            if violations:
+                raise RuntimeError(
+                    "Contextual Code Evidence migration left foreign-key "
+                    "violations: "
+                    + repr(violations[:10])
+                )
+        else:
+            # PostgreSQL can add the exact modified-table checks in place.
+            constraint_sql = {
+                "ck_refinement_delivery_context": (
+                    "refinements",
+                    "delivery_context IS NULL OR delivery_context IN "
+                    "('brownfield', 'greenfield', 'hybrid')",
+                ),
+                "ck_refinement_snapshot_delivery_context": (
+                    "refinement_snapshots",
+                    "delivery_context IS NULL OR delivery_context IN "
+                    "('brownfield', 'greenfield', 'hybrid')",
+                ),
+                "ck_refinement_snapshot_source_context": (
+                    "refinement_snapshots",
+                    "(source_context_manifest IS NULL AND "
+                    "source_context_sha256 IS NULL) OR "
+                    "(source_context_manifest IS NOT NULL AND "
+                    "source_context_sha256 IS NOT NULL AND "
+                    "length(source_context_sha256) = 64)",
+                ),
+                "ck_spec_delivery_context": (
+                    "specs",
+                    "delivery_context IS NULL OR delivery_context IN "
+                    "('brownfield', 'greenfield', 'hybrid')",
+                ),
+                "ck_spec_delivery_context_provenance": (
+                    "specs",
+                    "(delivery_context IS NULL AND "
+                    "delivery_context_provenance IS NULL) OR "
+                    "(delivery_context IS NOT NULL AND "
+                    "delivery_context_provenance IS NOT NULL)",
+                ),
+                "ck_spec_source_context": (
+                    "specs",
+                    "(source_context_manifest IS NULL AND "
+                    "source_context_sha256 IS NULL) OR "
+                    "(source_context_manifest IS NOT NULL AND "
+                    "source_context_sha256 IS NOT NULL AND "
+                    "length(source_context_sha256) = 64)",
+                ),
+                "ck_code_investigation_receipt_context_v2": (
+                    "code_investigation_receipts",
+                    "(delivery_context IS NULL AND contextual_outcome IS NULL "
+                    "AND context_contract_version IS NULL) OR "
+                    "(delivery_context IN "
+                    "('brownfield', 'greenfield', 'hybrid') AND "
+                    "contextual_outcome IN ('evidence_applicable', "
+                    "'no_relevant_existing_implementation', 'partial', "
+                    "'unavailable') AND context_contract_version = 2 AND "
+                    "((contextual_outcome IN ('evidence_applicable', "
+                    "'no_relevant_existing_implementation') AND "
+                    "outcome = 'accessible') OR "
+                    "(contextual_outcome = 'partial' AND outcome = 'partial') "
+                    "OR (contextual_outcome = 'unavailable' AND "
+                    "outcome = 'unavailable')) AND "
+                    "(contextual_outcome <> "
+                    "'no_relevant_existing_implementation' OR "
+                    "delivery_context = 'greenfield'))",
+                ),
+                "ck_code_evidence_source_role": (
+                    "code_evidence",
+                    "source_role IN ('current_implementation', "
+                    "'existing_scaffold', 'existing_constraint', "
+                    "'reference_pattern', 'uncategorized_legacy')",
+                ),
+                "ck_code_evidence_context_v2": (
+                    "code_evidence",
+                    "(source_role = 'uncategorized_legacy' AND "
+                    "relevance_summary IS NULL AND scope_relation IS NULL "
+                    "AND source_origin IS NULL AND "
+                    "interpretation_limit IS NULL AND "
+                    "baseline_presence IS NULL AND "
+                    "baseline_workspace_state_id IS NULL AND "
+                    "baseline_provenance_note IS NULL AND "
+                    "context_contract_version IS NULL) OR "
+                    "(source_role IN ('current_implementation', "
+                    "'existing_scaffold', 'existing_constraint', "
+                    "'reference_pattern') AND relevance_summary IS NOT NULL "
+                    "AND length(trim(relevance_summary)) >= 1 AND "
+                    "scope_relation IS NOT NULL AND "
+                    "length(trim(scope_relation)) >= 1 AND "
+                    "source_origin IS NOT NULL AND "
+                    "length(trim(source_origin)) >= 1 AND "
+                    "baseline_presence IN ('committed_snapshot', "
+                    "'preexisting_worktree') AND "
+                    "baseline_workspace_state_id = workspace_state_id AND "
+                    "context_contract_version = 2 AND "
+                    "(source_role NOT IN ('existing_scaffold', "
+                    "'reference_pattern') OR "
+                    "(interpretation_limit IS NOT NULL AND "
+                    "length(trim(interpretation_limit)) >= 1)) AND "
+                    "((baseline_presence = 'committed_snapshot' AND "
+                    "declared_dirty = false) OR "
+                    "(baseline_presence = 'preexisting_worktree' AND "
+                    "declared_dirty = true AND "
+                    "baseline_provenance_note IS NOT NULL AND "
+                    "length(trim(baseline_provenance_note)) >= 1)))",
+                ),
+            }
+            existing_constraints = {
+                str(row[0])
+                for row in (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT constraint_name "
+                            "FROM information_schema.table_constraints "
+                            "WHERE table_schema = current_schema()"
+                        )
+                    )
+                ).all()
+            }
+            for constraint_name, (table_name, expression) in (
+                constraint_sql.items()
+            ):
+                if constraint_name in existing_constraints:
+                    continue
+                await conn.execute(
+                    sa_text(
+                        f'ALTER TABLE "{table_name}" ADD CONSTRAINT '
+                        f'"{constraint_name}" CHECK ({expression})'
+                    )
+                )
+                changed = True
+            await conn.execute(
+                sa_text(
+                    "ALTER TABLE code_evidence ALTER COLUMN source_role "
+                    "SET DEFAULT 'uncategorized_legacy'"
+                )
+            )
+            await conn.execute(
+                sa_text(
+                    "ALTER TABLE code_evidence ALTER COLUMN source_role "
+                    "SET NOT NULL"
+                )
+            )
+
+            function_sql, trigger_specs = (
+                contextual_code_evidence_postgresql_ddl()
+            )
+            await conn.execute(sa_text(function_sql))
+            trigger_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            """
+SELECT trigger.tgname AS trigger_name,
+       relation.relname AS table_name,
+       function.proname AS function_name,
+       trigger.tgtype AS trigger_type,
+       trigger.tgenabled AS trigger_enabled
+FROM pg_trigger AS trigger
+JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+JOIN pg_namespace AS namespace_row
+  ON namespace_row.oid = relation.relnamespace
+JOIN pg_proc AS function ON function.oid = trigger.tgfoid
+WHERE NOT trigger.tgisinternal
+  AND namespace_row.nspname = current_schema()
+  AND trigger.tgname LIKE 'trg_contextual_code_evidence_v2_%'
+"""
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing = {str(row["trigger_name"]): row for row in trigger_rows}
+            unexpected = set(existing) - set(trigger_specs)
+            if unexpected:
+                raise RuntimeError(
+                    "Contextual Code Evidence has unexpected PostgreSQL "
+                    "triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for trigger_name, (
+                table_name,
+                operation_clause,
+                expected_type,
+            ) in trigger_specs.items():
+                observed = existing.get(trigger_name)
+                if observed is None:
+                    await conn.execute(
+                        sa_text(
+                            f'CREATE TRIGGER "{trigger_name}" BEFORE '
+                            f'{operation_clause} ON "{table_name}" '
+                            "FOR EACH ROW EXECUTE FUNCTION "
+                            '"pulse_contextual_code_evidence_guard_v2"()'
+                        )
+                    )
+                    changed = True
+                    continue
+                if (
+                    str(observed["table_name"]) != table_name
+                    or str(observed["function_name"])
+                    != "pulse_contextual_code_evidence_guard_v2"
+                    or int(observed["trigger_type"]) != expected_type
+                    or _postgresql_catalog_char(observed["trigger_enabled"])
+                    != "O"
+                ):
+                    raise RuntimeError(
+                        "Contextual Code Evidence PostgreSQL trigger is "
+                        "corrupt: "
+                        + trigger_name
+                    )
+
+        final_tables = await conn.run_sync(table_names)
+        if {
+            table.name for table in contextual_code_evidence_owned_tables()
+        } - final_tables:
+            raise RuntimeError(
+                "Contextual Code Evidence authority tables are incomplete"
+            )
+        for table_name, additions in column_additions.items():
+            final_columns = await conn.run_sync(
+                lambda sync_conn, name=table_name: column_names(sync_conn, name)
+            )
+            missing = {name for name, _ in additions} - final_columns
+            if missing:
+                raise RuntimeError(
+                    "Contextual Code Evidence columns are incomplete on "
+                    + table_name
+                    + ": "
+                    + ", ".join(sorted(missing))
+                )
     return None if changed else "skipped"
 
 
@@ -23844,6 +25169,9 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     ),
     "_migrate_quality_assessment_c7_schema": _migrate_quality_assessment_c7_schema,
     "_migrate_code_traceability_schema": _migrate_code_traceability_schema,
+    "_migrate_contextual_code_evidence_schema": (
+        _migrate_contextual_code_evidence_schema
+    ),
     "_migrate_spec_dependency_schema": _migrate_spec_dependency_schema,
     "_migrate_agent_permissions": _migrate_agent_permissions,
 }

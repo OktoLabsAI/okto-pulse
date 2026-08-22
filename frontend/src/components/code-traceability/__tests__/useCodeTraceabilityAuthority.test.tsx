@@ -19,13 +19,14 @@ const getMyPermissionsMock = vi.mocked(getMyPermissions);
 function response(
   boardId: string,
   flags: Record<string, unknown>,
+  ownerReviewRequired = false,
 ): PermissionsResponse {
   return {
     board_id: boardId,
     preset_name: 'Custom',
     flags,
-    owner_review_required: false,
-    review_reason: null,
+    owner_review_required: ownerReviewRequired,
+    review_reason: ownerReviewRequired ? 'preset_lineage_cycle' : null,
   };
 }
 
@@ -49,6 +50,9 @@ function AuthoritySurfaces({ boardId }: { boardId: string }) {
       {authority.canRevokeEvidence && (
         <button type="button">Revoke evidence</button>
       )}
+      {authority.canClassifyLegacyEvidence && (
+        <button type="button">Review unclassified Evidence</button>
+      )}
       {authority.canCreateTarget && (
         <button type="button">Add semantic target</button>
       )}
@@ -71,6 +75,7 @@ function expectSensitiveSurfacesHidden() {
   expect(screen.queryByRole('tab', { name: 'Implementation Targets' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Revoke receipt' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Revoke evidence' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Review unclassified Evidence' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Add semantic target' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Acknowledge overlap' })).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Create human waiver' })).not.toBeInTheDocument();
@@ -86,7 +91,7 @@ afterEach(() => {
 });
 
 describe('Code Traceability UI authority is fail-closed', () => {
-  it('hides every tab and Revoke while permission loading is unresolved', async () => {
+  it('ts_007019f7 — hides every protected surface while permission loading is unresolved', async () => {
     const boardId = 'ct-authority-loading';
     let resolve!: (value: PermissionsResponse) => void;
     getMyPermissionsMock.mockReturnValueOnce(new Promise((done) => {
@@ -102,7 +107,7 @@ describe('Code Traceability UI authority is fail-closed', () => {
     await waitFor(() => expect(screen.getByTestId('authority-state')).toHaveTextContent('ready'));
   });
 
-  it('hides every tab and Revoke after the permission request errors', async () => {
+  it('ts_007019f7 — hides every protected surface after the permission request errors', async () => {
     getMyPermissionsMock.mockRejectedValueOnce(new Error('authority unavailable'));
     render(<AuthoritySurfaces boardId="ct-authority-error" />);
 
@@ -110,7 +115,7 @@ describe('Code Traceability UI authority is fail-closed', () => {
     expectSensitiveSurfacesHidden();
   });
 
-  it('hides every tab and Revoke when Code Traceability leaves are omitted', async () => {
+  it('ts_007019f7 — hides every protected surface when Code Traceability leaves are denied or omitted', async () => {
     const boardId = 'ct-authority-omitted';
     getMyPermissionsMock.mockResolvedValueOnce(response(boardId, {
       code_traceability: {},
@@ -126,11 +131,12 @@ describe('Code Traceability UI authority is fail-closed', () => {
     getMyPermissionsMock.mockResolvedValueOnce(response(boardId, {
       code_traceability: {
         investigation: { read: true, revoke: true },
-        evidence: { read: true, revoke: true },
+        evidence: { read: true, revoke: true, classify_legacy: true },
         target: { read: true, create: true },
         overlap: { read: true, acknowledge: true },
         waiver: { create: true, clear: true },
       },
+      spec: { entity: { edit_fields: true } },
     }));
     render(<AuthoritySurfaces boardId={boardId} />);
 
@@ -139,6 +145,7 @@ describe('Code Traceability UI authority is fail-closed', () => {
     expect(screen.getByRole('tab', { name: 'Implementation Targets' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Revoke receipt' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Revoke evidence' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Review unclassified Evidence' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add semantic target' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Acknowledge overlap' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Create human waiver' })).toBeInTheDocument();
@@ -160,9 +167,62 @@ describe('Code Traceability UI authority is fail-closed', () => {
     expect(await screen.findByRole('tab', { name: 'Implementation Targets' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Revoke receipt' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Revoke evidence' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review unclassified Evidence' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Add semantic target' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Acknowledge overlap' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Create human waiver' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Clear waiver' })).not.toBeInTheDocument();
+  });
+
+  it('keeps read separate from legacy classification and preserves an explicit deny', async () => {
+    const boardId = 'ct-authority-classify-denied';
+    getMyPermissionsMock.mockResolvedValueOnce(response(boardId, {
+      code_traceability: {
+        investigation: { read: true },
+        evidence: { read: true, classify_legacy: false },
+        target: { read: true },
+        overlap: { read: true },
+      },
+      spec: { entity: { edit_fields: true } },
+    }));
+    render(<AuthoritySurfaces boardId={boardId} />);
+
+    expect(await screen.findByRole('tab', { name: 'Code Evidence' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review unclassified Evidence' }))
+      .not.toBeInTheDocument();
+  });
+
+  it('requires the historical edit authority in addition to the classify leaf', async () => {
+    const boardId = 'ct-authority-classify-no-history';
+    getMyPermissionsMock.mockResolvedValueOnce(response(boardId, {
+      code_traceability: {
+        investigation: { read: true },
+        evidence: { read: true, classify_legacy: true },
+        target: { read: true },
+        overlap: { read: true },
+      },
+    }));
+    render(<AuthoritySurfaces boardId={boardId} />);
+
+    expect(await screen.findByRole('tab', { name: 'Code Evidence' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Review unclassified Evidence' }))
+      .not.toBeInTheDocument();
+  });
+
+  it('fails every Code Evidence surface closed for owner-review lineages', async () => {
+    const boardId = 'ct-authority-owner-review';
+    getMyPermissionsMock.mockResolvedValueOnce(response(boardId, {
+      code_traceability: {
+        investigation: { read: true },
+        evidence: { read: true, classify_legacy: true },
+        target: { read: true },
+        overlap: { read: true },
+      },
+      spec: { entity: { edit_fields: true } },
+    }, true));
+    render(<AuthoritySurfaces boardId={boardId} />);
+
+    await waitFor(() => expect(screen.getByTestId('authority-state')).toHaveTextContent('ready'));
+    expectSensitiveSurfacesHidden();
   });
 });

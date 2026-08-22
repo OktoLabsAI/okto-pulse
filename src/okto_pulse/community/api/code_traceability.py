@@ -33,6 +33,7 @@ from okto_pulse.core.application.use_cases.base import (
 )
 from okto_pulse.core.application.use_cases.code_traceability import (
     AcknowledgeImplementationOverlapUseCase,
+    ClassifyLegacyCodeEvidenceUseCase,
     ClearCodeEvidenceDispositionUseCase,
     ClearCodeTraceabilityNotApplicableUseCase,
     CreateImplementationTargetUseCase,
@@ -67,6 +68,7 @@ from okto_pulse.core.application.use_cases.code_traceability import (
 )
 from okto_pulse.core.domain.code_traceability import (
     CodeEvidenceAttestationState,
+    CodeEvidenceLegacyClassificationHumanRequired,
     CodeInvestigationActorKindRequired,
     CodeInvestigationOutcome,
     CodeTraceabilityContextScope,
@@ -85,14 +87,18 @@ from okto_pulse.core.models.code_traceability import (
     CodeEvidenceSpecLinkInput,
     CodeEvidenceSpecUnlinkInput,
     CodeEvidenceSubmission,
+    CodeEvidenceSubmissionV2,
     CodeEvidenceSupersessionSubmission,
+    CodeEvidenceSupersessionSubmissionV2,
     CodeInvestigationReceiptSubmission,
+    CodeInvestigationReceiptSubmissionV2,
     CodeTraceabilityWaiverClearInput,
     CodeTraceabilityWaiverInput,
     ImplementationTargetCreateInput,
     ImplementationTargetExecutionSubmission,
     ImplementationTargetResolutionSubmission,
     ImplementationTargetUpdateInput,
+    LegacyEvidenceClassificationBatchInput,
     StartCodeInvestigationInput,
     SpecCodeEvidenceRebaseApplyInput,
     SpecCodeEvidenceRebasePreviewInput,
@@ -138,6 +144,7 @@ def _transport_body(
     source: type[BaseModel],
     *,
     server_owned: frozenset[str],
+    required_fields: frozenset[str] = frozenset(),
 ) -> type[BaseModel]:
     """Create a closed OpenAPI body without identifiers owned by the path."""
 
@@ -145,7 +152,12 @@ def _transport_body(
         name,
         __base__=_ClosedBody,
         **{
-            field_name: (field.annotation, field)
+            field_name: (
+                field.annotation,
+                Field(...)
+                if field_name in required_fields
+                else field,
+            )
             for field_name, field in source.model_fields.items()
             if field_name not in server_owned
         },
@@ -162,15 +174,38 @@ CodeInvestigationReceiptBody = _transport_body(
     CodeInvestigationReceiptSubmission,
     server_owned=frozenset({"board_id", "request_id"}),
 )
+CodeInvestigationReceiptBodyV2 = _transport_body(
+    "CodeInvestigationReceiptBodyV2",
+    CodeInvestigationReceiptSubmissionV2,
+    server_owned=frozenset({"board_id", "request_id"}),
+    required_fields=frozenset({"contract_version"}),
+)
 CodeEvidenceBody = _transport_body(
     "CodeEvidenceBody",
     CodeEvidenceSubmission,
     server_owned=frozenset({"board_id"}),
 )
+CodeEvidenceBodyV2 = _transport_body(
+    "CodeEvidenceBodyV2",
+    CodeEvidenceSubmissionV2,
+    server_owned=frozenset({"board_id"}),
+    required_fields=frozenset({"contract_version"}),
+)
 CodeEvidenceSupersessionBody = _transport_body(
     "CodeEvidenceSupersessionBody",
     CodeEvidenceSupersessionSubmission,
     server_owned=frozenset({"board_id", "supersedes_evidence_id"}),
+)
+CodeEvidenceSupersessionBodyV2 = _transport_body(
+    "CodeEvidenceSupersessionBodyV2",
+    CodeEvidenceSupersessionSubmissionV2,
+    server_owned=frozenset({"board_id", "supersedes_evidence_id"}),
+    required_fields=frozenset({"contract_version"}),
+)
+LegacyEvidenceClassificationBody = _transport_body(
+    "LegacyEvidenceClassificationBody",
+    LegacyEvidenceClassificationBatchInput,
+    server_owned=frozenset({"board_id"}),
 )
 CodeEvidenceRevokeBody = _transport_body(
     "CodeEvidenceRevokeBody",
@@ -254,6 +289,13 @@ def _require_agent_submission_principal(principal: Principal) -> None:
 
     if principal.actor_kind != "agent":
         raise _http_error(CodeInvestigationActorKindRequired())
+
+
+def _require_classification_principal(principal: Principal) -> None:
+    """Allow authorized human or agent classification; reject system/unknown."""
+
+    if principal.actor_kind not in {"agent", "human", "user"}:
+        raise _http_error(CodeEvidenceLegacyClassificationHumanRequired())
 
 
 def _investigation_service() -> CodeInvestigationService:
@@ -437,7 +479,11 @@ def _native(value: object, *, cursor_binding: str | None = None) -> object:
 def _http_error(exc: Exception) -> HTTPException:
     """Project the same typed envelope exposed by the Core MCP adapter."""
 
-    if isinstance(exc, CodeInvestigationActorKindRequired):
+    if isinstance(
+        exc,
+        CodeInvestigationActorKindRequired
+        | CodeEvidenceLegacyClassificationHumanRequired,
+    ):
         return HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=exc.to_error_dict(),
@@ -544,7 +590,7 @@ async def start_code_investigation(
 async def submit_code_investigation_receipt(
     board_id: str,
     request_id: str,
-    body: CodeInvestigationReceiptBody,
+    body: CodeInvestigationReceiptBodyV2 | CodeInvestigationReceiptBody,
     principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> object:
@@ -552,7 +598,11 @@ async def submit_code_investigation_receipt(
     return await _execute(
         SubmitCodeInvestigationReceiptUseCase(_investigation_service()),
         _command(
-            CodeInvestigationReceiptSubmission,
+            (
+                CodeInvestigationReceiptSubmissionV2
+                if isinstance(body, CodeInvestigationReceiptBodyV2)
+                else CodeInvestigationReceiptSubmission
+            ),
             body,
             board_id=board_id,
             request_id=request_id,
@@ -642,7 +692,7 @@ async def revoke_code_investigation_receipt(
 @router.post("/{board_id}/code-evidence", status_code=status.HTTP_201_CREATED)
 async def submit_code_evidence(
     board_id: str,
-    body: CodeEvidenceBody,
+    body: CodeEvidenceBodyV2 | CodeEvidenceBody,
     principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> object:
@@ -652,7 +702,38 @@ async def submit_code_evidence(
             _investigation_service(),
             CodeEvidenceService(),
         ),
-        _command(CodeEvidenceSubmission, body, board_id=board_id),
+        _command(
+            (
+                CodeEvidenceSubmissionV2
+                if isinstance(body, CodeEvidenceBodyV2)
+                else CodeEvidenceSubmission
+            ),
+            body,
+            board_id=board_id,
+        ),
+        board_id=board_id,
+        principal=principal,
+        uow=uow,
+    )
+
+
+@router.post("/{board_id}/code-evidence/legacy-classifications")
+async def classify_legacy_code_evidence(
+    board_id: str,
+    body: LegacyEvidenceClassificationBody,
+    principal: Principal = Depends(require_principal),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+) -> object:
+    """Apply an atomic, actor-authored V2 overlay to legacy Evidence."""
+
+    _require_classification_principal(principal)
+    return await _execute(
+        ClassifyLegacyCodeEvidenceUseCase(),
+        _command(
+            LegacyEvidenceClassificationBatchInput,
+            body,
+            board_id=board_id,
+        ),
         board_id=board_id,
         principal=principal,
         uow=uow,
@@ -730,7 +811,7 @@ async def get_code_evidence(
 async def supersede_code_evidence(
     board_id: str,
     evidence_id: str,
-    body: CodeEvidenceSupersessionBody,
+    body: CodeEvidenceSupersessionBodyV2 | CodeEvidenceSupersessionBody,
     principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> object:
@@ -741,7 +822,11 @@ async def supersede_code_evidence(
             CodeEvidenceService(),
         ),
         _command(
-            CodeEvidenceSupersessionSubmission,
+            (
+                CodeEvidenceSupersessionSubmissionV2
+                if isinstance(body, CodeEvidenceSupersessionBodyV2)
+                else CodeEvidenceSupersessionSubmission
+            ),
             body,
             board_id=board_id,
             supersedes_evidence_id=evidence_id,

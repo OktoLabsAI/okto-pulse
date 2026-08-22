@@ -16,6 +16,9 @@ from okto_pulse.community.api import code_traceability as api
 from okto_pulse.core.domain.code_traceability import (
     CodeInvestigationSubmissionLimitExceeded,
     CodeInvestigationUnavailable,
+    CodeEvidenceLegacyClassificationIdempotencyConflict,
+    CodeEvidenceLegacyClassificationPayloadConflict,
+    CodeEvidenceLegacyClassificationRevisionConflict,
     CodeTraceabilityPageCursor,
     CodeTraceabilityRemediation,
 )
@@ -29,11 +32,18 @@ def test_transport_bodies_exclude_every_path_owned_identifier() -> None:
     expectations = {
         api.StartCodeInvestigationBody: {"board_id"},
         api.CodeInvestigationReceiptBody: {"board_id", "request_id"},
+        api.CodeInvestigationReceiptBodyV2: {"board_id", "request_id"},
         api.CodeEvidenceBody: {"board_id"},
+        api.CodeEvidenceBodyV2: {"board_id"},
         api.CodeEvidenceSupersessionBody: {
             "board_id",
             "supersedes_evidence_id",
         },
+        api.CodeEvidenceSupersessionBodyV2: {
+            "board_id",
+            "supersedes_evidence_id",
+        },
+        api.LegacyEvidenceClassificationBody: {"board_id"},
         api.CodeEvidenceRevokeBody: {"board_id", "evidence_id"},
         api.CodeEvidenceSpecLinkBody: {"board_id", "spec_id"},
         api.CodeEvidenceDispositionBody: {
@@ -194,6 +204,58 @@ async def test_projection_route_accepts_full_gate_and_executes_use_case(
     assert received_uow is uow
 
 
+@pytest.mark.asyncio
+async def test_projection_route_preserves_classification_input_payload(
+    monkeypatch,
+) -> None:
+    class Projection:
+        def as_dict(self):
+            return {
+                "subject_type": "refinement",
+                "source_context_classification_inputs": [
+                    {
+                        "evidence_id": "legacy-1",
+                        "expected_evidence_payload_sha256": "a" * 64,
+                        "expected_classification_revision": 0,
+                        "baseline_provenance": {
+                            "presence": "preexisting_worktree",
+                            "workspace_state_id": "workspace-dirty",
+                            "provenance_note": None,
+                            "provenance_note_required": True,
+                        },
+                    }
+                ],
+            }
+
+    class ProjectionUseCaseSpy:
+        async def execute(self, _command, **_kwargs):
+            return Projection()
+
+    monkeypatch.setattr(
+        api,
+        "GetCodeTraceabilityProjectionUseCase",
+        ProjectionUseCaseSpy,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_projection_rest_app(object())),
+        base_url="http://test",
+    ) as client:
+        response = await client.get(
+            "/boards/board-1/code-traceability-projection",
+            params={
+                "subject_type": "refinement",
+                "subject_id": "refinement-1",
+                "subject_version": 3,
+                "profile": "detail",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["source_context_classification_inputs"] == (
+        Projection().as_dict()["source_context_classification_inputs"]
+    )
+
+
 def test_cursor_is_signed_and_bound_to_board_and_filters(monkeypatch) -> None:
     monkeypatch.setattr(
         api,
@@ -241,9 +303,329 @@ def test_routes_are_board_scoped_and_overlap_ack_is_card_scoped() -> None:
         in paths
     )
     assert "/boards/{board_id}/code-evidence/{evidence_id}/revoke" in paths
+    assert "/boards/{board_id}/code-evidence/legacy-classifications" in paths
     assert "/boards/{board_id}/specs/{spec_id}/code-evidence/rebase/preview" in paths
     assert "/boards/{board_id}/specs/{spec_id}/code-evidence/rebase" in paths
     assert "/boards/{board_id}/implementation-overlap-acknowledgements" not in paths
+
+
+def _classification_payload() -> dict[str, object]:
+    return {
+        "items": [
+            {
+                "evidence_id": "evidence-1",
+                "expected_evidence_payload_sha256": "a" * 64,
+                "expected_classification_revision": 0,
+                "source_role": "current_implementation",
+                "relevance_summary": "Existing behavior relevant to the scope.",
+                "scope_relation": "Directly constrains the requested behavior.",
+                "source_origin": "src/example.py",
+                "baseline_provenance": {
+                    "presence": "committed_snapshot",
+                    "workspace_state_id": "workspace-1",
+                },
+            }
+        ],
+        "justification": "Human review of ambiguous legacy Evidence.",
+        "idempotency_key": "classification-1",
+    }
+
+
+def _classification_rest_app(
+    *,
+    actor_kind: str,
+    uow: object,
+) -> FastAPI:
+    app = FastAPI()
+    app.include_router(api.router)
+
+    async def principal() -> Principal:
+        return Principal(
+            subject="reviewer-1",
+            realm_id="local",
+            actor_kind=actor_kind,
+        )
+
+    async def unit_of_work() -> object:
+        return uow
+
+    app.dependency_overrides[api.require_principal] = principal
+    app.dependency_overrides[api.get_unit_of_work] = unit_of_work
+    return app
+
+
+@pytest.mark.asyncio
+async def test_legacy_classification_accepts_agent_principal(
+    monkeypatch,
+) -> None:
+    calls: list[object] = []
+
+    class ClassificationUseCaseSpy:
+        async def execute(self, command, *, actor, uow):
+            calls.append((command, actor, uow))
+            return {"batch_id": "batch-agent", "board_id": command.board_id}
+
+    monkeypatch.setattr(
+        api,
+        "ClassifyLegacyCodeEvidenceUseCase",
+        ClassificationUseCaseSpy,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(
+            app=_classification_rest_app(actor_kind="agent", uow=object())
+        ),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/boards/board-1/code-evidence/legacy-classifications",
+            json=_classification_payload(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"batch_id": "batch-agent", "board_id": "board-1"}
+    assert len(calls) == 1
+    command, actor, received_uow = calls[0]
+    assert command.board_id == "board-1"
+    assert actor.actor_kind == "agent"
+    assert received_uow is not None
+
+
+@pytest.mark.asyncio
+async def test_legacy_classification_delegates_closed_board_scoped_batch(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[object, object, object]] = []
+    uow = object()
+
+    class ClassificationUseCaseSpy:
+        async def execute(self, command, *, actor, uow):
+            calls.append((command, actor, uow))
+            return {
+                "batch_id": "batch-1",
+                "board_id": command.board_id,
+                "replayed": False,
+            }
+
+    monkeypatch.setattr(
+        api,
+        "ClassifyLegacyCodeEvidenceUseCase",
+        ClassificationUseCaseSpy,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(
+            app=_classification_rest_app(actor_kind="human", uow=uow)
+        ),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/boards/board-1/code-evidence/legacy-classifications",
+            json=_classification_payload(),
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "batch_id": "batch-1",
+        "board_id": "board-1",
+        "replayed": False,
+    }
+    assert len(calls) == 1
+    command, actor, received_uow = calls[0]
+    assert command.board_id == "board-1"
+    assert command.items[0].evidence_id == "evidence-1"
+    assert actor.actor_kind == "human"
+    assert received_uow is uow
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_type", "expected_code"),
+    (
+        (
+            CodeEvidenceLegacyClassificationPayloadConflict,
+            "code_evidence_legacy_classification_payload_conflict",
+        ),
+        (
+            CodeEvidenceLegacyClassificationRevisionConflict,
+            "code_evidence_legacy_classification_revision_conflict",
+        ),
+        (
+            CodeEvidenceLegacyClassificationIdempotencyConflict,
+            "code_evidence_legacy_classification_idempotency_conflict",
+        ),
+    ),
+)
+async def test_legacy_classification_conflicts_are_distinct_typed_409s(
+    monkeypatch,
+    error_type,
+    expected_code: str,
+) -> None:
+    calls: list[object] = []
+    uow = SimpleNamespace(commit_count=0, events=[], heads={})
+
+    class ClassificationUseCaseSpy:
+        async def execute(self, command, **_kwargs):
+            calls.append(command)
+            raise error_type(details={"evidence_id": "evidence-1"})
+
+    monkeypatch.setattr(
+        api,
+        "ClassifyLegacyCodeEvidenceUseCase",
+        ClassificationUseCaseSpy,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(
+            app=_classification_rest_app(actor_kind="human", uow=uow)
+        ),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/boards/board-1/code-evidence/legacy-classifications",
+            json=_classification_payload(),
+        )
+
+    assert response.status_code == 409
+    assert (
+        response.json()["detail"]
+        == error_type(details={"evidence_id": "evidence-1"}).to_error_dict()
+    )
+    assert response.json()["detail"]["code"] == expected_code
+    assert len(calls) == 1
+    assert uow.commit_count == 0
+    assert uow.events == []
+    assert uow.heads == {}
+
+
+@pytest.mark.asyncio
+async def test_legacy_classification_rejects_invalid_context_as_422() -> None:
+    payload = _classification_payload()
+    payload["items"][0]["source_role"] = "uncategorized_legacy"  # type: ignore[index]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(
+            app=_classification_rest_app(actor_kind="human", uow=object())
+        ),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            "/boards/board-1/code-evidence/legacy-classifications",
+            json=payload,
+        )
+
+    assert response.status_code == 422
+
+
+def _contextual_evidence_payload() -> dict[str, object]:
+    return {
+        "contract_version": 2,
+        "investigation_receipt_id": "receipt-1",
+        "parent_type": "spec",
+        "parent_id": "spec-1",
+        "evidence_type": "structure",
+        "claim": "The existing boundary constrains this delivery.",
+        "selector": {
+            "kind": "file",
+            "relative_path": "src/module.py",
+        },
+        "declared_source_content_sha256": "b" * 64,
+        "idempotency_key": "contextual-evidence-1",
+        "source_role": "existing_constraint",
+        "relevance_summary": "This boundary is directly relevant.",
+        "scope_relation": "It constrains the target adapter.",
+        "source_origin": "Committed source baseline.",
+        "baseline_provenance": {
+            "presence": "committed_snapshot",
+            "workspace_state_id": "workspace-1",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("path", "use_case_name", "payload", "expected_command"),
+    (
+        pytest.param(
+            "/boards/board-1/code-investigations/request-1/receipts",
+            "SubmitCodeInvestigationReceiptUseCase",
+            {
+                "contract_version": 2,
+                "challenge_token": "challenge",
+                "outcome": "evidence_applicable",
+                "capabilities": [],
+                "tooling": {
+                    "tool_id": "external-agent",
+                    "tool_version": "2",
+                    "method_id": "source-preflight/v2",
+                },
+                "observed_at": "2026-08-22T00:00:00Z",
+                "idempotency_key": "contextual-receipt-1",
+            },
+            "CodeInvestigationReceiptSubmissionV2",
+            id="contextual-investigation-receipt",
+        ),
+        pytest.param(
+            "/boards/board-1/code-evidence",
+            "SubmitCodeEvidenceUseCase",
+            _contextual_evidence_payload(),
+            "CodeEvidenceSubmissionV2",
+            id="contextual-evidence",
+        ),
+        pytest.param(
+            "/boards/board-1/code-evidence/evidence-1/supersede",
+            "SupersedeCodeEvidenceUseCase",
+            {
+                **_contextual_evidence_payload(),
+                "idempotency_key": "contextual-supersession-1",
+                "supersession_reason": "The baseline meaning was refined.",
+            },
+            "CodeEvidenceSupersessionSubmissionV2",
+            id="contextual-evidence-supersession",
+        ),
+    ),
+)
+@pytest.mark.asyncio
+async def test_rest_selects_explicit_v2_command_without_adapter_semantics(
+    monkeypatch,
+    path: str,
+    use_case_name: str,
+    payload: dict[str, object],
+    expected_command: str,
+) -> None:
+    calls: list[object] = []
+
+    class UseCaseSpy:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def execute(self, command, **_kwargs):
+            calls.append(command)
+            return {"command_type": type(command).__name__}
+
+    monkeypatch.setattr(api, use_case_name, UseCaseSpy)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(
+            app=_classification_rest_app(actor_kind="agent", uow=object())
+        ),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(path, json=payload)
+
+    assert response.status_code in {200, 201}, response.text
+    assert response.json()["command_type"] == expected_command
+    assert len(calls) == 1
+    assert type(calls[0]).__name__ == expected_command
+    assert getattr(calls[0], "contract_version") == 2
+
+
+def test_rest_v2_openapi_contracts_are_closed_and_version_visible() -> None:
+    app = FastAPI()
+    app.include_router(api.router)
+    schemas = app.openapi()["components"]["schemas"]
+    for name in (
+        "CodeInvestigationReceiptBodyV2",
+        "CodeEvidenceBodyV2",
+        "CodeEvidenceSupersessionBodyV2",
+    ):
+        assert schemas[name]["additionalProperties"] is False
+        assert "contract_version" in schemas[name]["properties"]
+        assert "contract_version" in schemas[name]["required"]
 
 
 def test_code_traceability_community_modules_have_no_source_acquisition() -> None:
@@ -300,9 +682,7 @@ def test_code_traceability_community_modules_have_no_source_acquisition() -> Non
                 called = (
                     node.func.id
                     if isinstance(node.func, ast.Name)
-                    else node.func.attr
-                    if isinstance(node.func, ast.Attribute)
-                    else ""
+                    else node.func.attr if isinstance(node.func, ast.Attribute) else ""
                 )
                 assert called.lower() not in forbidden_calls, (
                     relative_path,

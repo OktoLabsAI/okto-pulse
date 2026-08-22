@@ -25,7 +25,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     SprintActivationBaseline,
 )
 from okto_pulse.core.domain.enums import CardStatus, SprintStatus
-from okto_pulse.core.kg.query_contract import CognitiveOutcomeType
 from okto_pulse.core.kg.rebuild_audit import (
     CognitiveConsolidationItemStore,
     CognitiveItemStatus,
@@ -66,6 +65,10 @@ from okto_pulse.core.ports.delivery_forecast import (
     ForecastInputState,
     ForecastObservation,
     ForecastReadinessQuery,
+)
+from okto_pulse.core.services.board_kg_analytics import (
+    read_board_kg_health_evidence,
+    resolve_board_kg_cognitive_status,
 )
 
 
@@ -287,13 +290,6 @@ class CommunitySqlAlchemyBoardKgAnalyticsEvidence:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    @staticmethod
-    def _health_state(value: object) -> BoardKgHealthState:
-        try:
-            return BoardKgHealthState(str(value))
-        except ValueError:
-            return BoardKgHealthState.AT_RISK
-
     async def _health(
         self, board_id: str
     ) -> tuple[
@@ -304,9 +300,10 @@ class CommunitySqlAlchemyBoardKgAnalyticsEvidence:
         tuple[BoardKgHealthComponent, ...],
     ]:
         try:
-            from okto_pulse.core.services.kg_health_service import get_kg_health
-
-            payload = await get_kg_health(board_id, self._session)
+            evidence = await read_board_kg_health_evidence(
+                self._session,
+                board_id=board_id,
+            )
         except Exception:
             return (
                 BoardKgHealthState.AT_RISK,
@@ -315,44 +312,13 @@ class CommunitySqlAlchemyBoardKgAnalyticsEvidence:
                 ("kg_health_evidence_unavailable",),
                 (),
             )
-        health_state = self._health_state(payload.get("overall_state"))
-        metric_status = str(payload.get("metric_status") or "unavailable").lower()
-        result_state = (
-            BoardKgAnalyticsResultState.AVAILABLE
-            if metric_status in {"available", "ok"}
-            else BoardKgAnalyticsResultState.UNAVAILABLE
+        return (
+            evidence.health_state,
+            evidence.result_state,
+            evidence.classification_reason,
+            evidence.reason_codes,
+            evidence.components,
         )
-        reason = str(
-            payload.get("classification_reason") or "kg_health_evidence_unavailable"
-        )
-        reasons = tuple(
-            sorted(
-                {
-                    str(item).strip()
-                    for item in (payload.get("classification_reasons") or (reason,))
-                    if str(item).strip()
-                }
-            )
-        )
-        components = tuple(
-            sorted(
-                (
-                    BoardKgHealthComponent(
-                        component=name,
-                        health_state=self._health_state(payload.get(field)),
-                        result_state=result_state,
-                        classification_reason=reason,
-                    )
-                    for name, field in (
-                        ("discovery", "discovery_state"),
-                        ("graph", "graph_state"),
-                    )
-                    if payload.get(field) is not None
-                ),
-                key=lambda item: item.component,
-            )
-        )
-        return health_state, result_state, reason, reasons, components
 
     async def _cognitive_items(
         self, query: BoardKgAnalyticsQuery, *, observed_at: datetime
@@ -370,13 +336,12 @@ class CommunitySqlAlchemyBoardKgAnalyticsEvidence:
         artifact_types = set(query.artifact_types)
         facts: list[BoardKgCognitiveItemFact] = []
         for item in raw_items:
-            if item.outcome_type == CognitiveOutcomeType.NO_ACTION_REQUIRED.value:
-                status = BoardKgCognitiveStatus.NO_ACTION
-            else:
-                try:
-                    status = BoardKgCognitiveStatus(item.status)
-                except ValueError:
-                    continue
+            status = resolve_board_kg_cognitive_status(
+                ledger_status=item.status,
+                outcome_type=item.outcome_type,
+            )
+            if status is None:
+                continue
             artifact_id = str(item.artifact_id or item.source_ref)
             if statuses and status not in statuses:
                 continue

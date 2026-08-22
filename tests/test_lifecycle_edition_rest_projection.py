@@ -144,6 +144,7 @@ def test_refinement_create_get_and_move_project_lifecycle_edition(
         json={
             "ideation_id": "ideation-edition",
             "title": "Lifecycle refinement edition",
+            "delivery_context": "brownfield",
         },
     )
     fetched = projection_client.get("/api/v1/refinements/refinement-edition")

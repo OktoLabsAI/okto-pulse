@@ -4,7 +4,7 @@ import { ContextualHelpLink } from '@/components/help';
 import { useDashboardApi } from '@/services/api';
 import type {
   CodeTraceabilityEvidence,
-  CodeTraceabilityEvidenceLink,
+  ObligationEvidenceMapping,
   CodeTraceabilityProjection,
 } from '@/types';
 import { ReceiptDetailModal } from './ReceiptDetailModal';
@@ -14,6 +14,7 @@ import {
   TraceabilityEmptyState,
 } from './TraceabilityDisclosure';
 import { projectedReceiptCurrentness } from './traceabilityCurrentness';
+import { presentContextualEvidenceCoverage } from './sourceContextPresentation';
 
 interface Props {
   boardId: string;
@@ -23,9 +24,11 @@ interface Props {
   skipCoverage?: boolean;
   canEditCoverageFlags?: boolean;
   onSkipCoverageChange?: (skip: boolean) => Promise<void> | void;
+  obligationTitles?: Readonly<Record<string, string>>;
 }
 
 const ENTITY_COLUMNS = [
+  { label: 'Spec', kinds: ['spec'] },
   { label: 'FR', kinds: ['functional_requirement'] },
   { label: 'TR', kinds: ['technical_requirement'] },
   { label: 'BR', kinds: ['business_rule'] },
@@ -41,19 +44,50 @@ function shortId(value: string) {
   return value.length > 18 ? `${value.slice(0, 14)}…` : value;
 }
 
-function EntityLinks({ links }: { links: CodeTraceabilityEvidenceLink[] }) {
-  if (links.length === 0) return <span className="text-gray-300 dark:text-gray-600">—</span>;
+const OBLIGATION_TYPE_LABELS: Record<string, string> = {
+  spec: 'Spec',
+  functional_requirement: 'Functional requirement',
+  technical_requirement: 'Technical requirement',
+  business_rule: 'Business rule',
+  acceptance_criterion: 'Acceptance criterion',
+  api_contract: 'API contract',
+  integration_requirement: 'Integration requirement',
+  observability_requirement: 'Observability requirement',
+  decision: 'Decision',
+  test_scenario: 'Test scenario',
+};
+
+function obligationTitle(
+  mapping: ObligationEvidenceMapping,
+  titles: Readonly<Record<string, string>>,
+) {
+  return titles[mapping.obligation_ref]
+    || titles[mapping.obligation_id]
+    || `${OBLIGATION_TYPE_LABELS[mapping.obligation_type] || 'Obligation'} ${shortId(mapping.obligation_id)}`;
+}
+
+function EntityLinks({
+  mappings,
+  obligationTitles,
+}: {
+  mappings: ObligationEvidenceMapping[];
+  obligationTitles: Readonly<Record<string, string>>;
+}) {
+  if (mappings.length === 0) return <span className="text-gray-300 dark:text-gray-600">—</span>;
   return (
-    <div className="flex min-w-[3rem] flex-wrap justify-center gap-1">
-      {links.map((link) => (
-        <span
-          key={link.id}
-          title={`${link.entity_type}:${link.entity_id} · ${link.relation_type}`}
-          className="rounded bg-violet-50 px-1.5 py-0.5 font-mono text-[9px] text-violet-700 dark:bg-violet-950/40 dark:text-violet-300"
-        >
-          {shortId(link.entity_id)}
-        </span>
-      ))}
+    <div className="flex min-w-[8rem] flex-col items-stretch gap-1">
+      {mappings.map((mapping) => {
+        const title = obligationTitle(mapping, obligationTitles);
+        return (
+          <span
+            key={mapping.link_id}
+            title={`${title} · ${mapping.relation_type.replace(/_/g, ' ')}`}
+            className="line-clamp-2 max-w-[15rem] rounded bg-violet-50 px-2 py-1 text-left text-[10px] leading-4 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300"
+          >
+            {title}
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -61,13 +95,23 @@ function EntityLinks({ links }: { links: CodeTraceabilityEvidenceLink[] }) {
 function MatrixRow({
   evidence,
   projection,
+  obligationTitles,
   onViewReceipt,
 }: {
   evidence: CodeTraceabilityEvidence;
   projection: CodeTraceabilityProjection;
+  obligationTitles: Readonly<Record<string, string>>;
   onViewReceipt: (receiptId: string) => void;
 }) {
-  const links = projection.links.filter((link) => link.evidence_id === evidence.id);
+  const mappings = (projection.obligation_evidence_mappings ?? []).filter(
+    (mapping) => mapping.evidence_id === evidence.id,
+  );
+  const applicableMappings = mappings.filter(
+    (mapping) => mapping.evidence_applicable === true,
+  );
+  const sourceContextItem = (projection.source_context_items ?? []).find(
+    (item) => item.evidence_id === evidence.id,
+  );
   const disposition = projection.dispositions.find(
     (candidate) => candidate.evidence_id === evidence.id && candidate.active,
   );
@@ -75,7 +119,16 @@ function MatrixRow({
     projection,
     evidence.investigation_receipt_id,
   );
-  const state = links.length > 0 ? 'linked' : disposition?.disposition || 'pending';
+  const state = sourceContextItem?.evidence_applicable === false
+    ? 'context_only'
+    : sourceContextItem?.evidence_applicable === null
+      ? 'needs_classification'
+      : sourceContextItem?.evidence_applicable === true
+        ? applicableMappings.length > 0
+          ? 'linked'
+          : disposition?.disposition || 'pending'
+        : 'context_unavailable';
+  const stateIsResolved = !['pending', 'needs_classification', 'context_unavailable'].includes(state);
 
   return (
     <tr className="border-t border-gray-100 align-top dark:border-gray-700/70">
@@ -94,7 +147,12 @@ function MatrixRow({
       </th>
       {ENTITY_COLUMNS.map((column) => (
         <td key={column.label} className="px-2 py-3 text-center">
-          <EntityLinks links={links.filter((link) => (column.kinds as readonly string[]).includes(link.entity_type))} />
+          <EntityLinks
+            mappings={applicableMappings.filter(
+              (mapping) => (column.kinds as readonly string[]).includes(mapping.obligation_type),
+            )}
+            obligationTitles={obligationTitles}
+          />
         </td>
       ))}
       <td className="min-w-[9rem] px-3 py-3">
@@ -112,11 +170,19 @@ function MatrixRow({
       </td>
       <td className="min-w-[8rem] px-3 py-3">
         <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-          state === 'pending'
+          !stateIsResolved
             ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300'
-            : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300'
+            : state === 'context_only'
+              ? 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+              : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300'
         }`}>
-          {state.replace(/_/g, ' ')}
+          {state === 'context_only'
+            ? 'Context only'
+            : state === 'needs_classification'
+              ? 'Needs classification'
+              : state === 'context_unavailable'
+                ? 'Context unavailable'
+                : state.replace(/_/g, ' ')}
         </span>
       </td>
     </tr>
@@ -131,6 +197,7 @@ export function EvidenceMatrixPanel({
   skipCoverage = false,
   canEditCoverageFlags = false,
   onSkipCoverageChange,
+  obligationTitles = {},
 }: Props) {
   const api = useDashboardApi();
   const [projection, setProjection] = useState<CodeTraceabilityProjection | null>(null);
@@ -174,69 +241,60 @@ export function EvidenceMatrixPanel({
     const inheritedIds = new Set(projection.inherited_evidence_ids);
     return projection.evidence.filter((item) => inheritedIds.has(item.id));
   }, [projection]);
-  const coverage = useMemo(() => {
-    if (!projection) return null;
-    const { total, linked, dispositioned, pending, coverage_pct: coveragePct } = projection.coverage;
-    return {
-      total,
-      addressed: linked + dispositioned,
-      pending,
-      coveragePct,
-    };
-  }, [projection]);
-  const projectionIncomplete = projection !== null && (
-    projection.profile !== 'full'
-    || projection.context_scope !== 'gate'
-    || projection.gate_readiness.blockers.some(
-      (blocker) => blocker.code === 'code_traceability_projection_incomplete',
-    )
+  const coverage = projection?.contextual_evidence_coverage;
+  const coveragePresentation = useMemo(
+    () => presentContextualEvidenceCoverage(coverage, projection?.source_context),
+    [coverage, projection?.source_context],
   );
-  const projectionSkipCoverage = projection?.coverage.skipped
-    || projection?.gate_readiness.evidence_coverage_skipped
+  const projectionIncomplete = coveragePresentation.kind === 'projection_incomplete';
+  const coverageNotApplicable = coveragePresentation.kind === 'not_applicable';
+  const projectionSkipCoverage = projection?.gate_readiness.evidence_coverage_skipped
     || false;
 
   const coverageStatus = useMemo(() => {
-    if (projectionIncomplete) {
-      return {
-        label: 'Incomplete',
-        className: 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300',
-      };
-    }
-    if (boardSkipCoverage) {
+    const semanticStateMustRemainVisible = [
+      'projection_unavailable',
+      'projection_incomplete',
+      'classification_required',
+      'not_applicable',
+      'investigation_partial',
+      'investigation_unavailable',
+      'not_calculated',
+    ].includes(coveragePresentation.kind);
+    if (!semanticStateMustRemainVisible && boardSkipCoverage) {
       return {
         label: 'Skipped by Board',
         className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
       };
     }
-    if (skipCoverage) {
+    if (!semanticStateMustRemainVisible && skipCoverage) {
       return {
         label: 'Skipped for this Spec',
         className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
       };
     }
-    if (projectionSkipCoverage) {
+    if (!semanticStateMustRemainVisible && projectionSkipCoverage) {
       return {
         label: 'Skipped',
         className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
       };
     }
-    if (!coverage || coverage.total === 0) {
-      return {
-        label: 'No evidence',
-        className: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
-      };
-    }
-    if (coverage.pending === 0) {
-      return {
-        label: 'Covered',
-        className: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
-      };
-    }
-    return {
-      label: 'Pending',
-      className: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+    const classNameByKind: Record<typeof coveragePresentation.kind, string> = {
+      projection_unavailable: 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300',
+      projection_incomplete: 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300',
+      classification_required: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+      not_applicable: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
+      investigation_partial: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+      investigation_unavailable: 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300',
+      not_calculated: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
+      covered: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
+      pending: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
     };
-  }, [boardSkipCoverage, coverage, projectionIncomplete, projectionSkipCoverage, skipCoverage]);
+    return {
+      label: coveragePresentation.label,
+      className: classNameByKind[coveragePresentation.kind],
+    };
+  }, [boardSkipCoverage, coveragePresentation, projectionSkipCoverage, skipCoverage]);
 
   const toggleSkipCoverage = useCallback(async () => {
     if (!onSkipCoverageChange || updatingSkipCoverage) return;
@@ -265,7 +323,7 @@ export function EvidenceMatrixPanel({
         </ContextualHelpLink>
       </div>
 
-      {coverage && (
+      {projection && (
         <section
           aria-label="Code Evidence coverage"
           className="rounded-lg border border-gray-200 p-3 dark:border-gray-700"
@@ -281,40 +339,78 @@ export function EvidenceMatrixPanel({
               {coverageStatus.label}
             </span>
           </div>
-          <div className="mb-3 h-2 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
-            <div
-              role="progressbar"
-              aria-label="Code Evidence coverage progress"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={Math.round(coverage.coveragePct)}
-              aria-valuetext={projectionIncomplete ? 'Coverage projection incomplete' : undefined}
-              className={`h-full rounded-full transition-all duration-500 ${
-                projectionIncomplete
-                  ? 'bg-red-500'
-                  : coverage.pending === 0 && coverage.total > 0
+          {coveragePresentation.determinate && coveragePresentation.percentage !== null && (
+            <div className="mb-3 h-2 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
+              <div
+                role="progressbar"
+                aria-label="Code Evidence coverage progress"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={coveragePresentation.percentage}
+                aria-valuetext={coveragePresentation.description}
+                className={`h-full rounded-full transition-all duration-500 ${
+                  coveragePresentation.kind === 'covered'
                     ? 'bg-green-500'
                     : 'bg-amber-500'
-              }`}
-              style={{ width: `${coverage.coveragePct}%` }}
-            />
-          </div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            <div className="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700">
-              <p className="text-lg font-semibold text-gray-900 dark:text-white">
-                {coverage.addressed}/{coverage.total}
-              </p>
-              <p className="text-[11px] text-gray-400">evidence items addressed</p>
+                }`}
+                style={{ width: `${coveragePresentation.percentage}%` }}
+              />
             </div>
-            <div className="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700">
-              <p className="text-lg font-semibold text-amber-600 dark:text-amber-400">{coverage.pending}</p>
-              <p className="text-[11px] text-gray-400">evidence item{coverage.pending === 1 ? '' : 's'} pending</p>
-            </div>
-            <div className="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700">
-              <p className="text-lg font-semibold text-blue-600 dark:text-blue-400">{Math.round(coverage.coveragePct)}%</p>
-              <p className="text-[11px] text-gray-400">coverage</p>
-            </div>
-          </div>
+          )}
+          <p className="mb-3 text-[11px] text-gray-500 dark:text-gray-400">
+            {coveragePresentation.description}
+          </p>
+          {coverage && !coverageNotApplicable && (
+            <dl className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+              <div className="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700">
+                <dt className="text-[11px] text-gray-400">applicable evidence total</dt>
+                <dd
+                  data-testid="contextual-evidence-total"
+                  className="mt-0.5 text-lg font-semibold text-gray-900 dark:text-white"
+                >
+                  {coverage.total}
+                </dd>
+              </div>
+              <div className="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700">
+                <dt className="text-[11px] text-gray-400">linked</dt>
+                <dd
+                  data-testid="contextual-evidence-linked"
+                  className="mt-0.5 text-lg font-semibold text-emerald-600 dark:text-emerald-400"
+                >
+                  {coveragePresentation.countsAreLowerBounds ? '≥' : ''}{coverage.linked}
+                </dd>
+              </div>
+              <div className="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700">
+                <dt className="text-[11px] text-gray-400">dispositioned</dt>
+                <dd
+                  data-testid="contextual-evidence-dispositioned"
+                  className="mt-0.5 text-lg font-semibold text-violet-600 dark:text-violet-400"
+                >
+                  {coveragePresentation.countsAreLowerBounds ? '≥' : ''}{coverage.dispositioned}
+                </dd>
+              </div>
+              <div className="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700">
+                <dt className="text-[11px] text-gray-400">pending</dt>
+                <dd
+                  data-testid="contextual-evidence-pending"
+                  className="mt-0.5 text-lg font-semibold text-amber-600 dark:text-amber-400"
+                >
+                  {coveragePresentation.countsAreLowerBounds ? '≥' : ''}{coverage.pending}
+                </dd>
+              </div>
+              <div className="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700">
+                <dt className="text-[11px] text-gray-400">coverage</dt>
+                <dd
+                  data-testid="contextual-evidence-coverage-pct"
+                  className="mt-0.5 text-lg font-semibold text-blue-600 dark:text-blue-400"
+                >
+                  {coverage.coverage_pct === null
+                    ? '—'
+                    : `${coverage.coverage_pct}%`}
+                </dd>
+              </div>
+            </dl>
+          )}
         </section>
       )}
 
@@ -330,7 +426,7 @@ export function EvidenceMatrixPanel({
         </div>
       )}
 
-      {boardSkipCoverage && (
+      {boardSkipCoverage && !coverageNotApplicable && (
         <div
           data-testid="code-evidence-board-skip-notice"
           className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200"
@@ -345,7 +441,7 @@ export function EvidenceMatrixPanel({
         </div>
       )}
 
-      {canEditCoverageFlags && onSkipCoverageChange && (
+      {canEditCoverageFlags && onSkipCoverageChange && !coverageNotApplicable && (
         <div className="flex items-center justify-between gap-4 rounded-lg border border-gray-200 bg-gray-50/50 px-3 py-2 dark:border-gray-700 dark:bg-gray-700/20">
           <div>
             <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
@@ -385,7 +481,7 @@ export function EvidenceMatrixPanel({
           <span>{error}</span>
         </div>
       )}
-      {!loading && !error && projection && evidence.length === 0 && (
+      {!loading && !error && projection && evidence.length === 0 && !coverageNotApplicable && (
         <TraceabilityEmptyState noun="inherited code evidence" />
       )}
       {!loading && !error && projection && evidence.length > 0 && (
@@ -401,7 +497,13 @@ export function EvidenceMatrixPanel({
             </thead>
             <tbody>
               {evidence.map((item) => (
-                <MatrixRow key={item.id} evidence={item} projection={projection} onViewReceipt={setReceiptId} />
+                <MatrixRow
+                  key={item.id}
+                  evidence={item}
+                  projection={projection}
+                  obligationTitles={obligationTitles}
+                  onViewReceipt={setReceiptId}
+                />
               ))}
             </tbody>
           </table>

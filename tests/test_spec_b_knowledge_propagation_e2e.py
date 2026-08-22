@@ -80,6 +80,15 @@ from okto_pulse.core.domain.knowledge_selection import (
     KnowledgeSelectionState,
     KnowledgeTargetType,
 )
+from okto_pulse.core.domain.code_traceability import (
+    DeliveryContext,
+    RefinementDeliveryContextProvenance,
+    RefinementSourceContextManifestV2,
+    SOURCE_CONTEXT_INTERPRETATION_RULE_V2,
+    SourceContextClassificationStateV2,
+    SourceContextRoleCountsV2,
+    SourceContextSummaryV2,
+)
 from okto_pulse.core.mcp import server as mcp_server
 from okto_pulse.core.models.knowledge_propagation import (
     DeriveSpecKnowledgeRequest,
@@ -224,6 +233,7 @@ async def _seed_refinement_sources(
             ideation_id=ideation_id,
             board_id=BOARD_ID,
             title="Spec B source refinement",
+            delivery_context="greenfield",
             status=RefinementStatus.DONE,
             created_by=ACTOR_ID,
         )
@@ -248,6 +258,29 @@ async def _seed_refinement_sources(
         # version resolved by Spec derivation.
         await session.flush()
         await session.refresh(refinement)
+        source_context = RefinementSourceContextManifestV2(
+            refinement_id=refinement_id,
+            refinement_version=refinement.version,
+            summary=SourceContextSummaryV2(
+                delivery_context=DeliveryContext.GREENFIELD,
+                delivery_context_provenance=RefinementDeliveryContextProvenance(
+                    value=DeliveryContext.GREENFIELD,
+                    source_refinement_id=refinement_id,
+                    source_refinement_version=refinement.version,
+                ),
+                investigation_outcome=None,
+                role_counts=SourceContextRoleCountsV2(),
+                classification_state=SourceContextClassificationStateV2(
+                    classified_count=0,
+                    uncategorized_legacy_count=0,
+                ),
+                evidence_applicable=None,
+                interpretation_rule=SOURCE_CONTEXT_INTERPRETATION_RULE_V2,
+                items_not_current_implementation_count=0,
+                technical_details_available=False,
+            ),
+            current_receipts=(),
+        )
         session.add(
             RefinementSnapshot(
                 refinement_id=refinement_id,
@@ -259,6 +292,9 @@ async def _seed_refinement_sources(
                 analysis=refinement.analysis,
                 decisions=refinement.decisions,
                 labels=refinement.labels,
+                delivery_context=refinement.delivery_context,
+                source_context_manifest=source_context.as_dict(),
+                source_context_sha256=source_context.payload_sha256,
                 created_by=ACTOR_ID,
             )
         )

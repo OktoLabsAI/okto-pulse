@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from datetime import datetime, timezone
 import inspect
 from types import SimpleNamespace
@@ -11,23 +12,34 @@ from typing import Any, get_args, get_type_hints
 
 from fastapi import FastAPI
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from okto_pulse.community.adapters.relational_application import (
+    CommunityRelationalApplicationAdapter,
+)
 from okto_pulse.community.adapters.sqlalchemy_code_traceability_event_effects import (
     CommunitySqlAlchemyCodeTraceabilityEventEffects,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import ActivityLog, Base
+from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork
 from okto_pulse.community.api import code_traceability as rest_api
 from okto_pulse.community.auth import LocalAuthProvider
+from okto_pulse.core.application.use_cases.base import ActorContext
 from okto_pulse.core.domain.code_traceability import (
     CodeInvestigationActorKindRequired,
+    ContextualInvestigationOutcomeV2,
+    CodeTraceabilityContextScope,
+    CodeTraceabilityProjectionProfile,
     CodeTraceabilitySubjectType,
+    DeliveryContext,
+    code_investigation_observation_sha256_v2,
 )
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.mcp import code_traceability_tools as mcp_tools
+from okto_pulse.core.mcp import server as mcp_server
 from okto_pulse.core.mcp.outcome import McpOutcomeKind
 from okto_pulse.core.ports.authentication import (
     AuthenticationPort,
@@ -37,10 +49,15 @@ from okto_pulse.core.ports.authentication import (
 from okto_pulse.core.ports.code_investigation import (
     CodeInvestigationRequestCreateResult,
 )
+from okto_pulse.core.ports.relational_application import (
+    register_relational_application_adapter,
+    reset_relational_application_adapter_for_tests,
+)
 from okto_pulse.core.services.code_investigation import (
     CodeInvestigationService,
     HmacCodeInvestigationChallengePolicy,
 )
+from test_code_traceability_persistence import _attestation_bundle
 
 
 NOW = datetime(2026, 8, 9, 18, 0, tzinfo=timezone.utc)
@@ -492,6 +509,15 @@ def registered_mcp_handlers() -> dict[str, Any]:
     return registry.handlers
 
 
+@pytest.fixture
+def registered_relational_application_adapter() -> None:
+    register_relational_application_adapter(CommunityRelationalApplicationAdapter())
+    try:
+        yield
+    finally:
+        reset_relational_application_adapter_for_tests()
+
+
 def _called_use_case_names(handler: Any) -> set[str]:
     tree = ast.parse(textwrap.dedent(inspect.getsource(handler)))
     names: set[str] = set()
@@ -502,9 +528,7 @@ def _called_use_case_names(handler: Any) -> set[str]:
         name = (
             function.id
             if isinstance(function, ast.Name)
-            else function.attr
-            if isinstance(function, ast.Attribute)
-            else None
+            else function.attr if isinstance(function, ast.Attribute) else None
         )
         if name is not None and name.endswith("UseCase"):
             names.add(name)
@@ -536,10 +560,10 @@ def _assert_closed_model_tree(root: type[BaseModel]) -> None:
 
 def _rest_external_inputs(
     handler: Any,
-) -> tuple[set[str], type[BaseModel] | None, set[str]]:
+) -> tuple[set[str], tuple[type[BaseModel], ...], set[str]]:
     hints = get_type_hints(handler)
     external: set[str] = set()
-    body_model: type[BaseModel] | None = None
+    body_models: tuple[type[BaseModel], ...] = ()
     body_fields: set[str] = set()
     for name, parameter in inspect.signature(handler).parameters.items():
         assert parameter.kind not in {
@@ -552,14 +576,24 @@ def _rest_external_inputs(
             external.add(name)
             continue
         annotation = hints[name]
-        assert isinstance(annotation, type) and issubclass(annotation, BaseModel)
-        body_model = annotation
-        body_fields = set(annotation.model_fields)
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            body_models = (annotation,)
+        else:
+            body_models = tuple(
+                candidate
+                for candidate in get_args(annotation)
+                if isinstance(candidate, type) and issubclass(candidate, BaseModel)
+            )
+            assert body_models and len(body_models) == len(get_args(annotation))
+        body_fields = set().union(*(set(model.model_fields) for model in body_models))
         external.update(body_fields)
 
     if "selector" in external:
-        assert body_model is not None
-        selector_model = body_model.model_fields["selector"].annotation
+        selector_model = next(
+            model.model_fields["selector"].annotation
+            for model in body_models
+            if "selector" in model.model_fields
+        )
         assert isinstance(selector_model, type) and issubclass(
             selector_model,
             BaseModel,
@@ -575,7 +609,7 @@ def _rest_external_inputs(
     if handler is rest_api.supersede_code_evidence:
         external.remove("evidence_id")
         external.add("supersedes_evidence_id")
-    return external, body_model, body_fields
+    return external, body_models, body_fields
 
 
 @pytest.mark.parametrize(
@@ -608,8 +642,8 @@ def test_all_19_capabilities_have_closed_rest_mcp_input_and_core_use_case_parity
         for parameter in mcp_signature.parameters.values()
     )
 
-    rest_inputs, body_model, body_fields = _rest_external_inputs(rest_handler)
-    if body_model is not None:
+    rest_inputs, body_models, body_fields = _rest_external_inputs(rest_handler)
+    for body_model in body_models:
         _assert_closed_model_tree(body_model)
     assert rest_path_owned.isdisjoint(body_fields)
 
@@ -620,6 +654,374 @@ def test_all_19_capabilities_have_closed_rest_mcp_input_and_core_use_case_parity
     assert server_owned.isdisjoint(body_fields)
     assert _called_use_case_names(rest_handler) == {expected_use_case}
     assert _called_use_case_names(mcp_handler) == {expected_use_case}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_role", ("existing_scaffold", "reference_pattern"))
+async def test_contextual_interpretation_limit_rejection_is_transport_identical_and_write_free(
+    source_role: str,
+) -> None:
+    body_payload = {
+        "contract_version": 2,
+        "investigation_receipt_id": "receipt-1",
+        "parent_type": "card",
+        "parent_id": "card-1",
+        "evidence_type": "structure",
+        "claim": "A contextual source that requires a human-readable limit.",
+        "selector": {"kind": "file", "relative_path": "src/context.py"},
+        "declared_source_content_sha256": "a" * 64,
+        "idempotency_key": f"missing-limit-{source_role}",
+        "source_role": source_role,
+        "relevance_summary": "This source shapes the bounded implementation.",
+        "scope_relation": "Inside the accepted delivery scope.",
+        "source_origin": "Accepted repository baseline.",
+        "baseline_provenance": {
+            "presence": "committed_snapshot",
+            "workspace_state_id": "workspace-1",
+        },
+    }
+
+    rest_uow = FakeUnitOfWork()
+    rest_body = rest_api.CodeEvidenceBodyV2.model_validate(body_payload)
+    with pytest.raises(ValidationError) as rest_error:
+        await rest_api.submit_code_evidence(
+            "board-1",
+            rest_body,
+            Principal(
+                subject="agent-1",
+                realm_id=LOCAL_REALM_ID,
+                actor_kind="agent",
+            ),
+            rest_uow,  # type: ignore[arg-type]
+        )
+
+    authentication = InjectedAgentAuthentication()
+    mcp_uow = FakeUnitOfWork()
+    registry, factory = mcp_registry(authentication, mcp_uow)
+    mcp_error = await registry.handlers["okto_pulse_submit_code_evidence"](
+        board_id="board-1",
+        investigation_receipt_id="receipt-1",
+        parent_type="card",
+        parent_id="card-1",
+        evidence_type="structure",
+        claim="A contextual source that requires a human-readable limit.",
+        selector_kind="file",
+        relative_path="src/context.py",
+        declared_source_content_sha256="a" * 64,
+        idempotency_key=f"missing-limit-{source_role}",
+        contract_version=2,
+        source_role=source_role,
+        relevance_summary="This source shapes the bounded implementation.",
+        scope_relation="Inside the accepted delivery scope.",
+        source_origin="Accepted repository baseline.",
+        baseline_provenance={
+            "presence": "committed_snapshot",
+            "workspace_state_id": "workspace-1",
+        },
+    )
+
+    assert "code_evidence_interpretation_limit_required" in str(rest_error.value)
+    assert mcp_error.kind is McpOutcomeKind.ERROR
+    assert mcp_error.code == "validation_failed"
+    assert "code_evidence_interpretation_limit_required" in (
+        mcp_error.details["errors"][0]["msg"]
+    )
+    assert rest_error.value.errors()[0]["type"] == (
+        mcp_error.details["errors"][0]["type"]
+    )
+    assert rest_uow.store.requests == mcp_uow.store.requests == {}
+    assert rest_uow.events == mcp_uow.events == []
+    assert rest_uow.commit_count == mcp_uow.commit_count == 0
+    assert authentication.calls == []
+    assert factory.actors == []
+
+
+@pytest.mark.asyncio
+async def test_projection_output_parity_covers_every_subject_profile_and_scope(
+    monkeypatch,
+) -> None:
+    from okto_pulse.core.application.use_cases.code_traceability import (
+        GetCodeTraceabilityProjectionUseCase,
+    )
+
+    class Projection:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self._payload = payload
+
+        def as_dict(self) -> dict[str, object]:
+            return self._payload
+
+    async def execute(_self, query, *, actor, uow):
+        assert actor is not None
+        assert uow is not None
+        editable = (
+            query.subject_type is CodeTraceabilitySubjectType.REFINEMENT
+            and query.profile
+            in {
+                CodeTraceabilityProjectionProfile.DETAIL,
+                CodeTraceabilityProjectionProfile.FULL,
+            }
+            and query.context_scope is CodeTraceabilityContextScope.DEFAULT
+        )
+        return Projection(
+            {
+                "subject_type": query.subject_type.value,
+                "subject_id": query.subject_id,
+                "subject_version": query.subject_version,
+                "profile": query.profile.value,
+                "context_scope": query.context_scope.value,
+                "source_context_classification_inputs": (
+                    [
+                        {
+                            "evidence_id": "legacy-1",
+                            "expected_evidence_payload_sha256": "a" * 64,
+                            "expected_classification_revision": 0,
+                        }
+                    ]
+                    if editable
+                    else []
+                ),
+                "contextual_evidence_coverage": {
+                    "total": 2,
+                    "linked": 1,
+                    "dispositioned": 0,
+                    "pending": 1,
+                    "pending_ids": ["technical_requirement:tr-2"],
+                    "unresolved_applicability_count": 0,
+                    "coverage_pct": 50.0,
+                    "projection_complete": True,
+                },
+            }
+        )
+
+    monkeypatch.setattr(GetCodeTraceabilityProjectionUseCase, "execute", execute)
+    authentication = InjectedAgentAuthentication()
+    rest_uow = FakeUnitOfWork()
+    cases = tuple(
+        (subject_type, profile, scope)
+        for subject_type in CodeTraceabilitySubjectType
+        for profile, scope in (
+            (
+                CodeTraceabilityProjectionProfile.SUMMARY,
+                CodeTraceabilityContextScope.DEFAULT,
+            ),
+            (
+                CodeTraceabilityProjectionProfile.DETAIL,
+                CodeTraceabilityContextScope.DEFAULT,
+            ),
+            (
+                CodeTraceabilityProjectionProfile.FULL,
+                CodeTraceabilityContextScope.DEFAULT,
+            ),
+            (
+                CodeTraceabilityProjectionProfile.FULL,
+                CodeTraceabilityContextScope.GATE,
+            ),
+        )
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=rest_app(authentication, rest_uow)),
+        base_url="http://test",
+    ) as client:
+        for subject_type, profile, scope in cases:
+            subject_id = f"{subject_type.value}-1"
+            rest_response = await client.get(
+                "/boards/board-1/code-traceability-projection",
+                params={
+                    "subject_type": subject_type.value,
+                    "subject_id": subject_id,
+                    "subject_version": 3,
+                    "profile": profile.value,
+                    "context_scope": scope.value,
+                },
+            )
+            mcp_payload = await mcp_server._mcp_code_traceability_projection(
+                uow=SimpleNamespace(),
+                actor=SimpleNamespace(),
+                board_id="board-1",
+                subject_type=subject_type.value,
+                subject_id=subject_id,
+                subject_version=3,
+                profile=profile.value,
+                context_scope=scope.value,
+            )
+
+            assert rest_response.status_code == 200
+            assert rest_response.json() == mcp_payload
+            editable = (
+                subject_type is CodeTraceabilitySubjectType.REFINEMENT
+                and profile
+                in {
+                    CodeTraceabilityProjectionProfile.DETAIL,
+                    CodeTraceabilityProjectionProfile.FULL,
+                }
+                and scope is CodeTraceabilityContextScope.DEFAULT
+            )
+            assert bool(mcp_payload["source_context_classification_inputs"]) is editable
+            assert mcp_payload["contextual_evidence_coverage"]["coverage_pct"] == 50.0
+
+
+@pytest.mark.asyncio
+async def test_ts_comm_10_greenfield_absence_has_real_rest_mcp_parity(
+    tmp_path,
+    registered_relational_application_adapter,
+) -> None:
+    database_path = tmp_path / "ts-comm-10-greenfield-absence.sqlite3"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path.as_posix()}")
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    request, consumed, receipt, head, _workspace = _attestation_bundle(
+        now,
+        subject_type=CodeTraceabilitySubjectType.REFINEMENT,
+        subject_id="refinement-greenfield",
+        subject_version=3,
+    )
+    contextual_receipt = replace(
+        receipt,
+        context_contract_version=2,
+        delivery_context=DeliveryContext.GREENFIELD,
+        contextual_outcome=(
+            ContextualInvestigationOutcomeV2.NO_RELEVANT_EXISTING_IMPLEMENTATION
+        ),
+        observation_sha256=code_investigation_observation_sha256_v2(
+            source_ref=receipt.source_ref,
+            selector_scope_digest=receipt.selector_scope_digest,
+            delivery_context=DeliveryContext.GREENFIELD,
+            outcome=(
+                ContextualInvestigationOutcomeV2.NO_RELEVANT_EXISTING_IMPLEMENTATION
+            ),
+            capabilities=receipt.capabilities,
+            source_identity_digest=receipt.source_identity_digest,
+            declared_revision=receipt.declared_revision,
+            workspace_state=receipt.workspace_state,
+            omission_manifest=receipt.omission_manifest,
+        ),
+    )
+
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+        await connection.exec_driver_sql(
+            "INSERT INTO boards (id, name, owner_id, realm_id) VALUES (?, ?, ?, ?)",
+            ("board-1", "Board", "owner-1", "local"),
+        )
+        await connection.exec_driver_sql(
+            "INSERT INTO ideations "
+            "(id, board_id, title, status, edition, version, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("ideation-1", "board-1", "Idea", "done", 1, 1, "owner-1"),
+        )
+        await connection.exec_driver_sql(
+            "INSERT INTO refinements "
+            "(id, ideation_id, board_id, title, delivery_context, status, "
+            "edition, version, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "refinement-greenfield",
+                "ideation-1",
+                "board-1",
+                "Greenfield refinement",
+                "greenfield",
+                "done",
+                1,
+                3,
+                "owner-1",
+            ),
+        )
+
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as session:
+        investigations = CommunityRelationalApplicationAdapter().code_investigations(
+            session
+        )
+        await investigations.create_request(request)
+        await investigations.consume_request_append_receipt_and_advance_head(
+            request=consumed,
+            receipt=contextual_receipt,
+            head=head,
+            expected_head_revision=None,
+        )
+        await session.commit()
+
+    permissions = (
+        "code_traceability.investigation.read",
+        "code_traceability.evidence.read",
+        "code_traceability.target.read",
+        "code_traceability.overlap.read",
+    )
+    principal = Principal(
+        subject="owner-1",
+        realm_id=LOCAL_REALM_ID,
+        actor_kind="human",
+        claims={"permissions": permissions},
+    )
+
+    class Authentication:
+        async def authenticate(self, credential: Credential | None) -> Principal | None:
+            assert credential == AGENT_CREDENTIAL
+            return principal
+
+    async with sessions() as rest_session, sessions() as mcp_session:
+        rest_uow = CommunityUnitOfWork(rest_session)
+        mcp_uow = CommunityUnitOfWork(mcp_session)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(
+                app=rest_app(Authentication(), rest_uow)  # type: ignore[arg-type]
+            ),
+            base_url="http://test",
+        ) as client:
+            rest_response = await client.get(
+                "/boards/board-1/code-traceability-projection",
+                params={
+                    "subject_type": "refinement",
+                    "subject_id": "refinement-greenfield",
+                    "subject_version": 3,
+                    "profile": "detail",
+                    "context_scope": "default",
+                },
+            )
+        mcp_payload = await mcp_server._mcp_code_traceability_projection(
+            uow=mcp_uow,
+            actor=ActorContext(
+                "agent-1",
+                "mcp",
+                actor_kind="agent",
+                board_id="board-1",
+                realm_id=LOCAL_REALM_ID,
+            ),
+            board_id="board-1",
+            subject_type="refinement",
+            subject_id="refinement-greenfield",
+            subject_version=3,
+            profile="detail",
+            context_scope="default",
+        )
+
+    assert rest_response.status_code == 200
+    rest_payload = rest_response.json()
+    assert rest_payload == mcp_payload
+    assert rest_payload["source_context"]["delivery_context"] == "greenfield"
+    assert rest_payload["source_context"]["investigation_outcome"] == (
+        "no_relevant_existing_implementation"
+    )
+    assert rest_payload["source_context"]["evidence_applicable"] is False
+    assert rest_payload["evidence"] == []
+    assert rest_payload["source_context_items"] == []
+    assert rest_payload["source_context_classification_inputs"] == []
+    assert rest_payload["waivers"] == []
+    assert rest_payload["coverage"]["skipped"] is False
+    contextual_coverage = rest_payload["contextual_evidence_coverage"]
+    assert contextual_coverage == {
+        "total": 0,
+        "linked": 0,
+        "dispositioned": 0,
+        "pending": 0,
+        "pending_ids": [],
+        "unresolved_applicability_count": 0,
+        "coverage_pct": None,
+        "projection_complete": True,
+    }
+    assert "status" not in contextual_coverage
+    assert "not_applicable" not in contextual_coverage.values()
+    await engine.dispose()
 
 
 def event_snapshot(event: object) -> dict[str, object]:

@@ -509,6 +509,14 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "introducing any repository or filesystem access in Community.",
     ),
     (
+        "_migrate_contextual_code_evidence_schema",
+        "post_create_all",
+        False,
+        "Add conservative delivery-context persistence, contextual Code "
+        "Evidence columns, and the append-only human legacy-classification "
+        "event/head authority.",
+    ),
+    (
         "_migrate_spec_dependency_schema",
         "post_create_all",
         False,
