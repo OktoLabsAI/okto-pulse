@@ -31,6 +31,10 @@ from okto_pulse.core.application.use_cases.kg_health import (
     GetKgHealthUseCase,
 )
 from okto_pulse.core.application.use_cases.base import PermissionDeniedError
+from okto_pulse.core.application.use_cases.code_traceability_kg_access import (
+    EvaluateCodeTraceabilityKGReadAccessUseCase,
+    require_code_traceability_safe_arbitrary_query,
+)
 from okto_pulse.core.application.use_cases.operational_rest import (
     BoardNotFoundError as AccessBoardNotFoundError,
     CognitiveEffectivenessInventoryCommand,
@@ -435,6 +439,12 @@ async def get_kg_health_readiness_endpoint(
             actor=actor,
             uow=db,
         )
+        ct_access = await EvaluateCodeTraceabilityKGReadAccessUseCase().execute(
+            actor=actor,
+            board_id=board_id,
+            uow=db,
+        )
+        require_code_traceability_safe_arbitrary_query(ct_access)
         return result.data
     except InvalidProfileError as exc:
         raise HTTPException(status_code=400, detail="invalid_profile") from exc

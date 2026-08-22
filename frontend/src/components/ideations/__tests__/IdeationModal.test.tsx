@@ -11,6 +11,9 @@ const apiMock = vi.hoisted(() => ({
   listIdeationKnowledge: vi.fn(),
   listIdeationHistory: vi.fn(),
   listIdeationQA: vi.fn(),
+  createIdeationQuestion: vi.fn(),
+  answerIdeationQuestion: vi.fn(),
+  deleteIdeationQuestion: vi.fn(),
   getAllowedTransitions: vi.fn(),
   moveIdeation: vi.fn(),
   deleteIdeation: vi.fn(),
@@ -72,7 +75,21 @@ vi.mock('@/components/specs/MockupsTab', () => ({
 }));
 
 vi.mock('@/components/shared/MentionInput', () => ({
-  MentionInput: () => <div />,
+  MentionInput: ({
+    value,
+    onChange,
+    placeholder,
+  }: {
+    value: string;
+    onChange: (value: string) => void;
+    placeholder?: string;
+  }) => (
+    <input
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={placeholder}
+    />
+  ),
 }));
 
 vi.mock('@/components/shared/MarkdownContent', () => ({
@@ -120,7 +137,7 @@ const baseIdeation: Ideation = {
   qa_items: [],
 };
 
-describe('IdeationModal Markdown export', () => {
+describe('IdeationModal report export', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     apiMock.getIdeation.mockResolvedValue(baseIdeation);
@@ -144,9 +161,9 @@ describe('IdeationModal Markdown export', () => {
       current_status: 'review',
       source: 'core_sdlc_registry_v1',
       allowed_transitions: [
-        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
-        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
-        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null, blocked_facts: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, blocked_facts: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null, blocked_facts: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
       ],
     });
     apiMock.getArchitectureDesign.mockImplementation((id: string) =>
@@ -155,7 +172,7 @@ describe('IdeationModal Markdown export', () => {
     markdownMock.exportIdeation.mockReturnValue('# ideation export');
   });
 
-  it('hydrates full architecture designs before export and downloads with a sanitized filename', async () => {
+  it('delegates export preparation to the canonical report service without client-side hydration', async () => {
     apiMock.getIdeation.mockResolvedValue({
       ...baseIdeation,
       architecture_designs: [{ id: 'arch-1', title: 'Ideation arch', diagrams_count: 1 }] as any,
@@ -164,25 +181,16 @@ describe('IdeationModal Markdown export', () => {
     render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
 
     await screen.findByText('My Ideation');
-    fireEvent.click(screen.getByTitle('Download Markdown'));
-
-    // Architecture summary is hydrated into a full design (entities + diagram payloads).
-    await waitFor(() => expect(apiMock.getArchitectureDesign).toHaveBeenCalledWith('arch-1', true));
-
-    // exportIdeation receives the hydrated full design, not the summary.
-    const lastCall = (markdownMock.exportIdeation.mock.calls.at(-1) ?? []) as any[];
-    const arg = lastCall[0];
-    expect(arg.architecture_designs[0]).toMatchObject({ id: 'arch-1', entities: [{ id: 'arch-1-e', name: 'E' }] });
-
-    await waitFor(() =>
-      expect(markdownMock.downloadMarkdown).toHaveBeenCalledWith('# ideation export', 'ideation_my-ideation_v2.md'),
-    );
+    expect(screen.getByTitle('Export report')).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(apiMock.getArchitectureDesign).not.toHaveBeenCalled();
+    expect(markdownMock.exportIdeation).not.toHaveBeenCalled();
+    expect(markdownMock.downloadMarkdown).not.toHaveBeenCalled();
     expect(apiMock.updateIdeation).not.toHaveBeenCalled();
     expect(apiMock.moveIdeation).not.toHaveBeenCalled();
     expect(apiMock.deleteIdeation).not.toHaveBeenCalled();
   });
 
-  it('exports without architecture calls when the ideation has no architecture designs', async () => {
+  it('keeps the evaluation view and canonical report action available without architecture designs', async () => {
     render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
 
     await screen.findByText('My Ideation');
@@ -196,12 +204,9 @@ describe('IdeationModal Markdown export', () => {
       'Ambiguity (complexity input) score 1 out of 5',
     );
     expect(ambiguityComplexityScore).toHaveClass('h-20', 'w-20', 'rounded-full', 'border-4');
-    fireEvent.click(screen.getByTitle('Download Markdown'));
-
-    await waitFor(() => expect(markdownMock.exportIdeation).toHaveBeenCalled());
+    expect(screen.getByTitle('Export report')).toHaveAttribute('aria-haspopup', 'dialog');
     expect(apiMock.getArchitectureDesign).not.toHaveBeenCalled();
-    const arg = ((markdownMock.exportIdeation.mock.calls.at(-1) ?? []) as any[])[0];
-    expect(arg.architecture_designs).toEqual([]);
+    expect(markdownMock.exportIdeation).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -249,6 +254,67 @@ describe('IdeationModal Markdown export', () => {
     expect(within(qaTab).getByText('1')).toHaveClass(expectedClass);
   });
 
+  it('notifies the board list exactly once after asking and answering Q&A', async () => {
+    const openQuestion = {
+      id: 'qa-open',
+      ideation_id: 'ideation-1',
+      question: 'Which rollout window?',
+      question_type: 'text',
+      choices: null,
+      allow_free_text: false,
+      answer: null,
+      selected: null,
+      asked_by: 'agent-1',
+      answered_by: null,
+      created_at: '2026-08-14T10:00:00Z',
+      answered_at: null,
+    };
+    const answeredQuestion = {
+      ...openQuestion,
+      answer: 'Tonight',
+      answered_by: 'user-1',
+      answered_at: '2026-08-14T11:00:00Z',
+    };
+    apiMock.listIdeationQA
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([openQuestion])
+      .mockResolvedValueOnce([answeredQuestion]);
+    apiMock.createIdeationQuestion.mockResolvedValue(openQuestion);
+    apiMock.answerIdeationQuestion.mockResolvedValue(answeredQuestion);
+    const onChanged = vi.fn();
+
+    render(
+      <IdeationModal
+        ideationId="ideation-1"
+        boardId="board-1"
+        onClose={vi.fn()}
+        onChanged={onChanged}
+      />,
+    );
+
+    await screen.findByText('My Ideation');
+    fireEvent.click(screen.getByRole('tab', { name: /Q&A/ }));
+    onChanged.mockClear();
+
+    fireEvent.change(
+      await screen.findByPlaceholderText('Ask a question... (type @ to mention)'),
+      { target: { value: openQuestion.question } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    fireEvent.click(await screen.findByRole('button', { name: 'Answer this question' }));
+    fireEvent.change(
+      screen.getByPlaceholderText('Type your answer... (@ to mention)'),
+      { target: { value: 'Tonight' } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Answer' }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(2));
+    expect(apiMock.createIdeationQuestion).toHaveBeenCalledTimes(1);
+    expect(apiMock.answerIdeationQuestion).toHaveBeenCalledTimes(1);
+  });
+
   it('renders move actions from the allowed_transitions contract', async () => {
     apiMock.getAllowedTransitions.mockResolvedValueOnce({
       board_id: 'board-1',
@@ -257,7 +323,7 @@ describe('IdeationModal Markdown export', () => {
       current_status: 'review',
       source: 'core_sdlc_registry_v1',
       allowed_transitions: [
-        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, blocked_facts: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
       ],
     });
 

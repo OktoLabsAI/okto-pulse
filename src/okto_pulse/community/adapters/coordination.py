@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import secrets
@@ -39,6 +40,12 @@ from okto_pulse.core.ports.coordination import (
     register_coordination_providers,
 )
 
+from .filesystem_erasure import (
+    contained_lexical_path,
+    contained_resolved_path,
+    validate_scope_id,
+)
+
 # A5R: Windows can transiently deny the writer-manifest atomic os.replace with
 # a sharing violation (PermissionError [WinError 5]) while an unrelated reader
 # briefly holds the destination open.  Only that exact replace is retried, a
@@ -46,9 +53,91 @@ from okto_pulse.core.ports.coordination import (
 # attempt (fresh recovery lock, fresh manifest read, fresh clock), so an
 # expired, replaced or foreign-token manifest can never be resurrected.  Two
 # backoffs mean three total attempts and at most 0.15s of added latency, far
-# below the shortest writer-lease TTL.
+# below the shortest writer-lease TTL.  The same bounded retry covers a busy
+# board recovery mutex during acquisition, renewal and exact-token release: the
+# administrative-reservation and graph-writer heartbeats legitimately share
+# that mutex, and a transient collision is not evidence that another writer
+# owns the graph or that either exact token was lost.  Every retry still
+# re-reads the manifest and current clock, so an expired/replaced token can
+# never be extended or removed.  Acquisition exhaustion is surfaced as a
+# typed recovery failure rather than ordinary writer contention: a caller must
+# never claim that an unobserved owner exists merely because this sidecar mutex
+# stayed busy for the bounded interval.
 _SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS = 3
 _SINGLE_WRITER_RENEW_REPLACE_BACKOFF_SECONDS = (0.05, 0.1)
+
+# The human-readable ``.write.lock.recovering`` marker cannot safely serialize
+# its own stale reclamation: two contenders can both read the old inode before
+# either one unlinks it, and a delayed contender can then unlink its peer's new
+# marker.  A kernel-backed file lock on a stable sibling path closes that ABA
+# window.  The sidecar file is only a rendezvous path; the operating-system lock
+# is released automatically when a process exits.
+_SINGLE_WRITER_RECOVERY_MUTEX_SUFFIX = ".write.lock.recovering.mutex"
+_SINGLE_WRITER_RECOVERY_PROTOCOL = "kernel-file-lock-v1"
+_SINGLE_WRITER_RECOVERY_SCHEMA_VERSION = 1
+_WINDOWS_RESERVED_PATH_SEGMENTS = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{index}" for index in range(1, 10)}
+    | {f"LPT{index}" for index in range(1, 10)}
+)
+
+
+class _SingleWriterRecoveryMutexBusy(Exception):
+    """Another process owns the board's kernel recovery authority."""
+
+
+class _PersistentKernelFileMutex:
+    """Non-blocking cross-process mutex whose rendezvous path is never unlinked.
+
+    The rendezvous pathname stays persistent because unlinking it on release is
+    unsafe: a waiter can retain the old inode while another process creates and
+    locks a new one at the same pathname. Native byte-range/flock locking keeps
+    one persistent inode and lets the kernel release authority automatically
+    when a process crashes.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._fd: int | None = None
+
+    def __enter__(self) -> "_PersistentKernelFileMutex":
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0)
+        fd = os.open(self._path, flags, 0o644)
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            os.close(fd)
+            if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                raise _SingleWriterRecoveryMutexBusy from exc
+            raise
+        self._fd = fd
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        fd = self._fd
+        if fd is None:
+            return None
+        if os.name == "nt":
+            import msvcrt
+
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+        self._fd = None
+        return None
 
 
 class _SingleWriterRenewReplaceDenied(Exception):
@@ -118,12 +207,35 @@ class CommunityLocalWriteLockPort(WriteLockPort):
     local-first semantics without leaking them into core.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        kg_base_dir: str | os.PathLike[str] | None = None,
+    ) -> None:
         self._async_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._sync_locks: dict[tuple[str, str], threading.Lock] = {}
         self._async_handles: dict[tuple[str, str], WriteLockHandle] = {}
         self._sync_handles: dict[tuple[str, str], WriteLockHandle] = {}
         self._registry_lock = threading.Lock()
+        self._bound_kg_base_dir = self._canonical_bound_kg_base_dir(kg_base_dir)
+
+    @staticmethod
+    def _canonical_bound_kg_base_dir(
+        value: str | os.PathLike[str] | None,
+    ) -> Path | None:
+        if value is None:
+            return None
+        raw = os.fspath(value)
+        if not raw.strip() or "://" in raw:
+            raise ValueError("root-bound write lock requires a local kg_base_dir")
+        expanded = Path(raw).expanduser()
+        if not expanded.is_absolute():
+            raise ValueError("root-bound write lock requires an absolute kg_base_dir")
+        lexical = Path(os.path.abspath(expanded))
+        resolved = expanded.resolve(strict=False)
+        if os.path.normcase(str(lexical)) != os.path.normcase(str(resolved)):
+            raise ValueError("root-bound write lock refuses a kg_base_dir alias")
+        return resolved
 
     @staticmethod
     def _key(board_id: str, artifact_id: str) -> tuple[str, str]:
@@ -227,9 +339,7 @@ class CommunityLocalWriteLockPort(WriteLockPort):
         board_dir_resolver: Any | None = None,
     ):
         from okto_pulse.core.kg.single_writer_lock import (
-            LockAcquisition,
             RECOVERY_LOCK_FILENAME,
-            RECOVERY_LOCK_TTL_SECONDS,
             SingleWriterLockError,
             SingleWriterLockErrorCode,
         )
@@ -241,6 +351,66 @@ class CommunityLocalWriteLockPort(WriteLockPort):
         )
         board_dir.mkdir(parents=True, exist_ok=True)
         path = self._single_writer_path(board_dir, artifact_id)
+        recovery_path = board_dir / RECOVERY_LOCK_FILENAME
+        for attempt_index in range(_SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS):
+            if attempt_index:
+                time.sleep(
+                    _SINGLE_WRITER_RENEW_REPLACE_BACKOFF_SECONDS[attempt_index - 1]
+                )
+            try:
+                with self._single_writer_recovery_mutex(board_dir):
+                    recovery_token, recovery_marker_recovered = (
+                        self._claim_single_writer_recovery_marker(
+                            recovery_path=recovery_path,
+                            board_id=board_id,
+                            operation=operation,
+                            owner_id=owner_id,
+                        )
+                    )
+                    if recovery_token is None:
+                        return self._single_writer_contention(path)
+                    try:
+                        return self._acquire_single_writer_under_mutex(
+                            path=path,
+                            board_id=board_id,
+                            operation=operation,
+                            owner_id=owner_id,
+                            ttl_seconds=ttl_seconds,
+                            admin_lane=admin_lane,
+                            recovery_marker_recovered=recovery_marker_recovered,
+                        )
+                    finally:
+                        self._release_single_writer_recovery_marker(
+                            recovery_path,
+                            recovery_token=recovery_token,
+                        )
+            except _SingleWriterRecoveryMutexBusy:
+                if attempt_index + 1 == _SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS:
+                    raise SingleWriterLockError(
+                        SingleWriterLockErrorCode.STALE_LOCK_RECOVERY_FAILED,
+                        retryable=True,
+                        reason="recovery_mutex_busy_exhausted",
+                    ) from None
+                continue
+        raise AssertionError("bounded single-writer acquisition loop did not terminate")
+
+    def _acquire_single_writer_under_mutex(
+        self,
+        *,
+        path: Path,
+        board_id: str,
+        operation: str,
+        owner_id: str,
+        ttl_seconds: int,
+        admin_lane: bool,
+        recovery_marker_recovered: bool,
+    ):
+        from okto_pulse.core.kg.single_writer_lock import (
+            LockAcquisition,
+            SingleWriterLockError,
+            SingleWriterLockErrorCode,
+        )
+
         created = self._create_single_writer_manifest(
             path=path,
             board_id=board_id,
@@ -256,6 +426,7 @@ class CommunityLocalWriteLockPort(WriteLockPort):
                 expires_at=self._iso(created.expires_at_epoch),
                 current_owner=owner_id,
                 admin_lane=admin_lane,
+                stale_recovered=recovery_marker_recovered,
             )
 
         manifest = self._read_single_writer_manifest(path)
@@ -275,6 +446,7 @@ class CommunityLocalWriteLockPort(WriteLockPort):
                     expires_at=self._iso(created.expires_at_epoch),
                     current_owner=owner_id,
                     admin_lane=admin_lane,
+                    stale_recovered=recovery_marker_recovered,
                 )
             raise SingleWriterLockError(
                 SingleWriterLockErrorCode.STALE_LOCK_RECOVERY_FAILED,
@@ -283,103 +455,58 @@ class CommunityLocalWriteLockPort(WriteLockPort):
             )
 
         if manifest.expires_at_epoch > time.time():
+            return self._single_writer_contention(path)
+
+        revalidated = self._read_single_writer_manifest(path)
+        if revalidated is not None and (
+            revalidated.owner_token != manifest.owner_token
+            or revalidated.expires_at_epoch != manifest.expires_at_epoch
+            or revalidated.owner_id != manifest.owner_id
+        ):
             return LockAcquisition(
                 acquired=False,
                 owner_token=None,
-                expires_at=self._iso(manifest.expires_at_epoch),
-                current_owner=manifest.owner_id,
-                admin_lane=manifest.admin_lane,
+                expires_at=self._iso(revalidated.expires_at_epoch),
+                current_owner=revalidated.owner_id,
+                admin_lane=revalidated.admin_lane,
             )
 
-        recovery_path = board_dir / RECOVERY_LOCK_FILENAME
-        recovery_manifest = {
-            "owner_id": owner_id,
-            "operation": operation,
-            "board_id": board_id,
-            "acquired_at_epoch": time.time(),
-            "expires_at_epoch": time.time() + RECOVERY_LOCK_TTL_SECONDS,
-        }
         try:
-            with recovery_path.open("x", encoding="utf-8") as fh:
-                json.dump(recovery_manifest, fh, indent=2)
-        except FileExistsError:
-            current_recovery = self._read_json_file(recovery_path)
-            expires = float((current_recovery or {}).get("expires_at_epoch", 0))
-            if current_recovery is not None and expires <= time.time():
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+        created = self._create_single_writer_manifest(
+            path=path,
+            board_id=board_id,
+            operation=operation,
+            owner_id=owner_id,
+            ttl_seconds=ttl_seconds,
+            admin_lane=admin_lane,
+        )
+        if created is None:
+            current = self._read_single_writer_manifest(path)
+            if current is None:
                 raise SingleWriterLockError(
                     SingleWriterLockErrorCode.STALE_LOCK_RECOVERY_FAILED,
-                    retryable=False,
-                    reason=(
-                        "recovery_lock_stale_manual_intervention_required: "
-                        f"former_owner={current_recovery.get('owner_id')} "
-                        f"expired_at={self._iso(expires)}"
-                    ),
+                    retryable=True,
+                    reason="race_during_recovery_and_manifest_gone",
                 )
-            current = self._read_single_writer_manifest(path)
             return LockAcquisition(
                 acquired=False,
                 owner_token=None,
-                expires_at=(self._iso(current.expires_at_epoch) if current else None),
-                current_owner=current.owner_id if current else None,
-                admin_lane=current.admin_lane if current else False,
+                expires_at=self._iso(current.expires_at_epoch),
+                current_owner=current.owner_id,
+                admin_lane=current.admin_lane,
             )
-
-        try:
-            revalidated = self._read_single_writer_manifest(path)
-            if revalidated is not None and (
-                revalidated.owner_token != manifest.owner_token
-                or revalidated.expires_at_epoch != manifest.expires_at_epoch
-                or revalidated.owner_id != manifest.owner_id
-            ):
-                return LockAcquisition(
-                    acquired=False,
-                    owner_token=None,
-                    expires_at=self._iso(revalidated.expires_at_epoch),
-                    current_owner=revalidated.owner_id,
-                    admin_lane=revalidated.admin_lane,
-                )
-
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-
-            created = self._create_single_writer_manifest(
-                path=path,
-                board_id=board_id,
-                operation=operation,
-                owner_id=owner_id,
-                ttl_seconds=ttl_seconds,
-                admin_lane=admin_lane,
-            )
-            if created is None:
-                current = self._read_single_writer_manifest(path)
-                if current is None:
-                    raise SingleWriterLockError(
-                        SingleWriterLockErrorCode.STALE_LOCK_RECOVERY_FAILED,
-                        retryable=True,
-                        reason="race_during_recovery_and_manifest_gone",
-                    )
-                return LockAcquisition(
-                    acquired=False,
-                    owner_token=None,
-                    expires_at=self._iso(current.expires_at_epoch),
-                    current_owner=current.owner_id,
-                    admin_lane=current.admin_lane,
-                )
-            return LockAcquisition(
-                acquired=True,
-                owner_token=created.owner_token,
-                expires_at=self._iso(created.expires_at_epoch),
-                current_owner=owner_id,
-                admin_lane=admin_lane,
-                stale_recovered=True,
-            )
-        finally:
-            try:
-                recovery_path.unlink()
-            except FileNotFoundError:
-                pass
+        return LockAcquisition(
+            acquired=True,
+            owner_token=created.owner_token,
+            expires_at=self._iso(created.expires_at_epoch),
+            current_owner=owner_id,
+            admin_lane=admin_lane,
+            stale_recovered=True,
+        )
 
     def release_single_writer_sync(
         self,
@@ -398,48 +525,49 @@ class CommunityLocalWriteLockPort(WriteLockPort):
         path = self._single_writer_path(board_dir, artifact_id)
         from okto_pulse.core.kg.single_writer_lock import (
             RECOVERY_LOCK_FILENAME,
-            RECOVERY_LOCK_TTL_SECONDS,
+            SingleWriterLockError,
         )
 
-        recovery_path = board_dir / RECOVERY_LOCK_FILENAME
-        try:
-            with recovery_path.open("x", encoding="utf-8") as stream:
-                json.dump(
-                    {
-                        "owner_id": "exact-token-release",
-                        "operation": "release",
-                        "board_id": board_id,
-                        "acquired_at_epoch": time.time(),
-                        "expires_at_epoch": (time.time() + RECOVERY_LOCK_TTL_SECONDS),
-                    },
-                    stream,
-                )
-        except FileExistsError:
+        if not board_dir.is_dir():
             return False
-        try:
-            manifest = self._read_single_writer_manifest(path)
-            if manifest is None or manifest.owner_token != owner_token:
-                return False
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                return False
-            return True
-        finally:
-            try:
-                recovery_path.unlink()
-            except FileNotFoundError:
-                pass
-            try:
-                board_dir.rmdir()
-            except OSError:
-                pass
-            else:
-                from okto_pulse.community.adapters.filesystem_erasure import (
-                    fsync_directory,
+        recovery_path = board_dir / RECOVERY_LOCK_FILENAME
+        for attempt_index in range(_SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS):
+            if attempt_index:
+                time.sleep(
+                    _SINGLE_WRITER_RENEW_REPLACE_BACKOFF_SECONDS[attempt_index - 1]
                 )
-
-                fsync_directory(board_dir.parent)
+            try:
+                with self._single_writer_recovery_mutex(board_dir):
+                    try:
+                        recovery_token, _ = self._claim_single_writer_recovery_marker(
+                            recovery_path=recovery_path,
+                            board_id=board_id,
+                            operation="release",
+                            owner_id="exact-token-release",
+                        )
+                    except SingleWriterLockError:
+                        return False
+                    if recovery_token is None:
+                        return False
+                    try:
+                        manifest = self._read_single_writer_manifest(path)
+                        if manifest is None or manifest.owner_token != owner_token:
+                            return False
+                        try:
+                            path.unlink()
+                        except FileNotFoundError:
+                            return False
+                        return True
+                    finally:
+                        self._release_single_writer_recovery_marker(
+                            recovery_path,
+                            recovery_token=recovery_token,
+                        )
+            except _SingleWriterRecoveryMutexBusy:
+                if attempt_index + 1 == _SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS:
+                    return False
+                continue
+        raise AssertionError("bounded exact-token release loop did not terminate")
 
     def renew_single_writer_sync(
         self,
@@ -463,6 +591,7 @@ class CommunityLocalWriteLockPort(WriteLockPort):
         from okto_pulse.core.kg.single_writer_lock import (
             MAX_TTL_SECONDS,
             RECOVERY_LOCK_FILENAME,
+            SingleWriterLockError,
         )
 
         if ttl_seconds < 1 or ttl_seconds > MAX_TTL_SECONDS:
@@ -475,13 +604,33 @@ class CommunityLocalWriteLockPort(WriteLockPort):
                     _SINGLE_WRITER_RENEW_REPLACE_BACKOFF_SECONDS[attempt_index - 1]
                 )
             try:
-                return self._renew_single_writer_attempt(
-                    board_id=board_id,
-                    path=path,
-                    recovery_path=recovery_path,
-                    owner_token=owner_token,
-                    ttl_seconds=ttl_seconds,
-                )
+                with self._single_writer_recovery_mutex(board_dir):
+                    try:
+                        recovery_token, _ = self._claim_single_writer_recovery_marker(
+                            recovery_path=recovery_path,
+                            board_id=board_id,
+                            operation="renew",
+                            owner_id="exact-token-renewal",
+                        )
+                    except SingleWriterLockError:
+                        return False
+                    if recovery_token is None:
+                        return False
+                    try:
+                        return self._renew_single_writer_attempt(
+                            path=path,
+                            owner_token=owner_token,
+                            ttl_seconds=ttl_seconds,
+                        )
+                    finally:
+                        self._release_single_writer_recovery_marker(
+                            recovery_path,
+                            recovery_token=recovery_token,
+                        )
+            except _SingleWriterRecoveryMutexBusy:
+                if attempt_index + 1 == _SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS:
+                    return False
+                continue
             except _SingleWriterRenewReplaceDenied as denied:
                 last_denial = denied.original
         assert last_denial is not None
@@ -490,33 +639,13 @@ class CommunityLocalWriteLockPort(WriteLockPort):
     def _renew_single_writer_attempt(
         self,
         *,
-        board_id: str,
         path: Path,
-        recovery_path: Path,
         owner_token: str,
         ttl_seconds: int,
     ) -> bool:
-        from okto_pulse.core.kg.single_writer_lock import (
-            LockManifest,
-            RECOVERY_LOCK_TTL_SECONDS,
-        )
+        from okto_pulse.core.kg.single_writer_lock import LockManifest
 
         now = time.time()
-        try:
-            with recovery_path.open("x", encoding="utf-8") as stream:
-                json.dump(
-                    {
-                        "owner_id": "exact-token-renewal",
-                        "operation": "renew",
-                        "board_id": board_id,
-                        "acquired_at_epoch": now,
-                        "expires_at_epoch": now + RECOVERY_LOCK_TTL_SECONDS,
-                    },
-                    stream,
-                )
-        except FileExistsError:
-            return False
-
         temporary: Path | None = None
         try:
             manifest = self._read_single_writer_manifest(path)
@@ -566,10 +695,6 @@ class CommunityLocalWriteLockPort(WriteLockPort):
                     temporary.unlink()
                 except FileNotFoundError:
                     pass
-            try:
-                recovery_path.unlink()
-            except FileNotFoundError:
-                pass
 
     def inspect_single_writer_sync(
         self,
@@ -601,6 +726,129 @@ class CommunityLocalWriteLockPort(WriteLockPort):
             return None
         return data if isinstance(data, dict) else None
 
+    @staticmethod
+    def _single_writer_recovery_mutex(board_dir: Path) -> _PersistentKernelFileMutex:
+        """Return the stable kernel authority for one board's writer protocol.
+
+        The rendezvous pathname is deliberately persistent: unlinking it while
+        a process owns or waits on it can create a second inode and split mutual
+        exclusion across two independent kernel locks.
+        """
+
+        return _PersistentKernelFileMutex(
+            board_dir / _SINGLE_WRITER_RECOVERY_MUTEX_SUFFIX
+        )
+
+    def _claim_single_writer_recovery_marker(
+        self,
+        *,
+        recovery_path: Path,
+        board_id: str,
+        operation: str,
+        owner_id: str,
+    ) -> tuple[str | None, bool]:
+        """Claim the diagnostic marker while already holding kernel authority.
+
+        Only a marker explicitly created by this protocol may be reclaimed.
+        Legacy or malformed markers remain fail-closed because their producer
+        might be an older live process that never acquired the kernel mutex.
+        """
+
+        from okto_pulse.core.kg.single_writer_lock import (
+            RECOVERY_LOCK_TTL_SECONDS,
+            SingleWriterLockError,
+            SingleWriterLockErrorCode,
+        )
+
+        recovered = False
+        if recovery_path.exists():
+            current = self._read_json_file(recovery_path)
+            if (
+                current is None
+                or current.get("protocol") != _SINGLE_WRITER_RECOVERY_PROTOCOL
+                or current.get("schema_version")
+                != _SINGLE_WRITER_RECOVERY_SCHEMA_VERSION
+                or not isinstance(current.get("recovery_token"), str)
+                or not current["recovery_token"]
+            ):
+                expires = self._safe_recovery_expiry(current)
+                raise SingleWriterLockError(
+                    SingleWriterLockErrorCode.STALE_LOCK_RECOVERY_FAILED,
+                    retryable=False,
+                    reason=(
+                        "recovery_lock_stale_manual_intervention_required: "
+                        "legacy_or_unreadable_marker "
+                        f"former_owner={(current or {}).get('owner_id')} "
+                        f"expired_at={self._iso(expires) if expires else 'unknown'}"
+                    ),
+                )
+            # The matching protocol promises that its producer held this same
+            # mutex. Our successful mutex acquisition therefore proves that the
+            # producer no longer owns the critical section, regardless of its
+            # diagnostic TTL (for example after clock rollback).
+            recovery_path.unlink()
+            recovered = True
+
+        recovery_token = secrets.token_urlsafe(24)
+        now = time.time()
+        payload = {
+            "schema_version": _SINGLE_WRITER_RECOVERY_SCHEMA_VERSION,
+            "protocol": _SINGLE_WRITER_RECOVERY_PROTOCOL,
+            "recovery_token": recovery_token,
+            "owner_id": owner_id,
+            "operation": operation,
+            "board_id": board_id,
+            "acquired_at_epoch": now,
+            "expires_at_epoch": now + RECOVERY_LOCK_TTL_SECONDS,
+        }
+        try:
+            with recovery_path.open("x", encoding="utf-8") as stream:
+                json.dump(payload, stream, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except FileExistsError:
+            return None, recovered
+        return recovery_token, recovered
+
+    @staticmethod
+    def _safe_recovery_expiry(payload: dict[str, Any] | None) -> float | None:
+        try:
+            return float((payload or {}).get("expires_at_epoch"))
+        except (TypeError, ValueError):
+            return None
+
+    def _release_single_writer_recovery_marker(
+        self,
+        recovery_path: Path,
+        *,
+        recovery_token: str,
+    ) -> None:
+        """Remove only the exact marker created by this critical section."""
+
+        current = self._read_json_file(recovery_path)
+        if (
+            current is None
+            or current.get("protocol") != _SINGLE_WRITER_RECOVERY_PROTOCOL
+            or current.get("recovery_token") != recovery_token
+        ):
+            return
+        try:
+            recovery_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def _single_writer_contention(self, path: Path):
+        from okto_pulse.core.kg.single_writer_lock import LockAcquisition
+
+        current = self._read_single_writer_manifest(path)
+        return LockAcquisition(
+            acquired=False,
+            owner_token=None,
+            expires_at=(self._iso(current.expires_at_epoch) if current else None),
+            current_owner=current.owner_id if current else None,
+            admin_lane=current.admin_lane if current else False,
+        )
+
     def _single_writer_board_dir(
         self,
         board_id: str,
@@ -608,6 +856,21 @@ class CommunityLocalWriteLockPort(WriteLockPort):
         base_dir_hint: str | None,
         board_dir_resolver: Any | None,
     ) -> Path:
+        board_id = validate_scope_id(board_id)
+        bound_root = self._bound_kg_base_dir
+        if bound_root is not None:
+            self._validate_root_bound_board_segment(board_id)
+            if base_dir_hint is not None or board_dir_resolver is not None:
+                raise ValueError("root-bound write lock refuses caller path overrides")
+            locks_root = contained_lexical_path(bound_root, bound_root / "locks")
+            board_dir = contained_lexical_path(
+                bound_root,
+                locks_root / board_id,
+            )
+            resolved = contained_resolved_path(bound_root, board_dir)
+            if os.path.normcase(str(board_dir)) != os.path.normcase(str(resolved)):
+                raise ValueError("root-bound write lock refuses a board path alias")
+            return board_dir
         if board_dir_resolver is not None:
             return Path(board_dir_resolver(board_id))
         if base_dir_hint:
@@ -617,6 +880,21 @@ class CommunityLocalWriteLockPort(WriteLockPort):
         )
 
         return default_community_rebuild_base_dir() / "locks" / board_id
+
+    @staticmethod
+    def _validate_root_bound_board_segment(board_id: str) -> None:
+        """Reject Windows filename aliases before resolving a recovery path."""
+
+        stem = board_id.split(".", 1)[0].upper()
+        if (
+            board_id[-1] in {" ", "."}
+            or ":" in board_id
+            or any(
+                character in '<>"|?*' or ord(character) < 32 for character in board_id
+            )
+            or stem in _WINDOWS_RESERVED_PATH_SEGMENTS
+        ):
+            raise ValueError("root-bound write lock refuses a board path alias")
 
     @staticmethod
     def _single_writer_path(board_dir: Path, artifact_id: str) -> Path:
@@ -753,6 +1031,19 @@ class CommunityRuntimeSettingsProvider(RuntimeSettingsProvider, ConfigValidation
         type(configured)(**current)
 
 
+def build_root_bound_community_write_lock_port(
+    kg_base_dir: str | os.PathLike[str],
+) -> CommunityLocalWriteLockPort:
+    """Capture one canonical KG root for recovery threads.
+
+    Core heartbeat workers are raw threads and deliberately do not inherit the
+    runtime-provider ContextVar.  A recovery bundle therefore owns this
+    explicitly rooted port instead of consulting a registry after composition.
+    """
+
+    return CommunityLocalWriteLockPort(kg_base_dir=kg_base_dir)
+
+
 _lease_provider = CommunityLocalLeaseProvider()
 _write_lock_port = CommunityLocalWriteLockPort()
 _claim_repository = CommunitySqlAlchemyClaimRepository()
@@ -822,6 +1113,7 @@ __all__ = [
     "CommunityLocalWriteLockPort",
     "CommunityRuntimeSettingsProvider",
     "CommunitySqlAlchemyClaimRepository",
+    "build_root_bound_community_write_lock_port",
     "community_global_discovery_writer_fence",
     "register_community_coordination_providers",
 ]

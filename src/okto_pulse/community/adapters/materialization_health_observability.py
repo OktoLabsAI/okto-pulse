@@ -13,6 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from okto_pulse.community.adapters.ladybug_writer import (
+    ladybug_writer_activity_snapshot,
+)
 from okto_pulse.core.ports.materialization_health import (
     record_read_side_mutation_guard,
 )
@@ -23,6 +26,9 @@ class FilesystemMetadataSnapshot:
     sha256: str | None
     entries: tuple[tuple[str, tuple[Any, ...]], ...]
     unavailable_reason: str | None = None
+    writer_revision_before: int | None = None
+    writer_revision_after: int | None = None
+    writer_active: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +84,7 @@ class CommunityFilesystemMutationGuard:
         )
 
     def capture(self, board_id: str) -> FilesystemMetadataSnapshot:
+        writer_before = ladybug_writer_activity_snapshot()
         try:
             configured = (
                 *self._board_paths(str(board_id)),
@@ -95,11 +102,16 @@ class CommunityFilesystemMutationGuard:
                 for path in sorted(paths, key=lambda item: str(item).casefold())
             )
         except Exception as exc:
+            writer_after = ladybug_writer_activity_snapshot()
             return FilesystemMetadataSnapshot(
                 sha256=None,
                 entries=(),
                 unavailable_reason=type(exc).__name__,
+                writer_revision_before=writer_before.revision,
+                writer_revision_after=writer_after.revision,
+                writer_active=writer_before.active or writer_after.active,
             )
+        writer_after = ladybug_writer_activity_snapshot()
         encoded = json.dumps(
             entries,
             sort_keys=True,
@@ -109,6 +121,27 @@ class CommunityFilesystemMutationGuard:
         return FilesystemMetadataSnapshot(
             sha256=hashlib.sha256(encoded).hexdigest(),
             entries=entries,
+            writer_revision_before=writer_before.revision,
+            writer_revision_after=writer_after.revision,
+            writer_active=writer_before.active or writer_after.active,
+        )
+
+    @staticmethod
+    def _writer_interleaved(
+        before: FilesystemMetadataSnapshot,
+        after: FilesystemMetadataSnapshot,
+    ) -> bool:
+        revisions = (
+            before.writer_revision_before,
+            before.writer_revision_after,
+            after.writer_revision_before,
+            after.writer_revision_after,
+        )
+        return (
+            before.writer_active
+            or after.writer_active
+            or None in revisions
+            or len(set(revisions)) != 1
         )
 
     @staticmethod
@@ -144,7 +177,17 @@ class CommunityFilesystemMutationGuard:
                 for path in sorted(set(before_map) | set(after_map))
                 if before_map.get(path) != after_map.get(path)
             )
-            outcome = "violation" if changed_paths else "clean"
+            # A filesystem change observed while the process writer was
+            # active (or started/finished between snapshots) cannot be
+            # attributed to the read-side health probe.  Keep the evidence
+            # explicitly unavailable instead of reporting a false violation.
+            outcome = (
+                "unavailable"
+                if changed_paths and self._writer_interleaved(before, after)
+                else "violation"
+                if changed_paths
+                else "clean"
+            )
         record_read_side_mutation_guard(
             board_id=str(board_id),
             outcome=outcome,

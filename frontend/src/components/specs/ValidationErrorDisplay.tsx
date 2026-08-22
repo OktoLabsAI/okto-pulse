@@ -42,6 +42,9 @@ const GATE_TYPE_LABELS: Record<string, string> = {
   spec_qualitative_evaluation: 'Qualitative Evaluation',
   test_card_completion: 'Test Card Completion',
   resource_gate: 'Resource Coverage',
+  code_evidence_disposition_required: 'Code Evidence Coverage',
+  code_evidence_disposition: 'Code Evidence Coverage',
+  spec_evidence_disposition: 'Code Evidence Coverage',
   cognitive_readiness: 'Cognitive Readiness',
   state_transition: 'State Transition',
 };
@@ -108,13 +111,40 @@ export function parseValidationErrorMessage(error: string): ParsedValidationErro
     (Array.isArray(details?.uncovered_resources) ? details?.uncovered_resources : null) ??
     (Array.isArray(detail?.uncovered_resources) ? detail?.uncovered_resources : null) ??
     [];
+  const fromDetails = (key: string): unknown => details?.[key] ?? detail?.[key];
+  const blockerObjects = (Array.isArray(fromDetails('blockers')) ? fromDetails('blockers') : []) as unknown[];
+  const codeEvidenceBlocker = blockerObjects
+    .map(asObject)
+    .find((blocker) => blocker?.code === 'code_evidence_disposition_required');
+  const hintedGateType = _str(fromDetails('gate_type'));
+  const isCodeEvidenceCoverage = (
+    code === 'code_evidence_disposition_required'
+    || Boolean(codeEvidenceBlocker)
+    || hintedGateType === 'code_evidence_disposition_required'
+    || hintedGateType === 'code_evidence_disposition'
+    || hintedGateType === 'spec_evidence_disposition'
+    || /Code Evidence Matrix/i.test(message)
+    || /active inherited Evidence.*(?:link|final disposition)/i.test(message)
+  );
+
+  if (isCodeEvidenceCoverage) {
+    return {
+      gateType: 'Code Evidence Coverage',
+      gateTypeCode: 'code_evidence_disposition_required',
+      issue: _str(codeEvidenceBlocker?.message) ?? message,
+      action:
+        'Open the Code Evidence Matrix tab and link each pending inherited Evidence item to the Spec entities it supports, or record a final disposition. While the Spec is in Draft, an authorized user may intentionally enable Skip Code Evidence coverage for this obligation only.',
+      resources: [],
+      ...(_EMPTY),
+      structured: Boolean(codeEvidenceBlocker || hintedGateType),
+    };
+  }
 
   // R4-IMP2: prefer the STRUCTURED gate contract (gate_contracts.GateContractError
   // envelope) when present — render the real gate, its required tool, operator
   // action, blocked transition, enforcement mode and would_block_done. Read each
   // field from `details` first, falling back to `detail` so we are robust whether
   // the envelope is wrapped under `details` or flattened on the error object.
-  const fromDetails = (key: string): unknown => details?.[key] ?? detail?.[key];
   const gateTypeCode = _str(fromDetails('gate_type'));
   if (gateTypeCode) {
     const reqIdx = message.indexOf('REQUIRED ACTION:');

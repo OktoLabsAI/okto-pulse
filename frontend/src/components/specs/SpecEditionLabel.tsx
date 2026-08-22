@@ -4,16 +4,17 @@ interface SpecEditionLabelProps {
   className?: string;
 }
 
-/** Human-facing Spec edition with its internal revision available on demand. */
+/** Human-facing Spec edition. Technical revision belongs in audit views only. */
 export function SpecEditionLabel({
   edition,
   technicalRevision,
   className,
 }: SpecEditionLabelProps) {
-  const description = `Edition v${edition}; technical revision r${technicalRevision}`;
+  void technicalRevision;
+  const description = `Edition ${edition}`;
   return (
     <span className={className} title={description} aria-label={description}>
-      v{edition}
+      Edition {edition}
     </span>
   );
 }

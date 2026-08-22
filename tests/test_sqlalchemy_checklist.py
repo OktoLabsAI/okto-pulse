@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import event, func, select
+from sqlalchemy import event, func, select, update
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -36,6 +36,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Base,
     Board,
     ChecklistBindingRow,
+    ChecklistExecutionHeadRow,
     ChecklistExecutionRow,
     ChecklistItemResultRow,
     DefaultBoardConfiguration,
@@ -45,12 +46,14 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 )
 from okto_pulse.core.domain.checklist import (
     SPECIFY_CHECKLIST_ITEM_IDS,
+    SPECIFY_CHECKLIST_TEMPLATE_V1,
     ChecklistBinding,
     ChecklistItemOutcome,
     ChecklistItemResult,
     ChecklistMode,
     ChecklistPhase,
     ChecklistPreflight,
+    ChecklistReceiptState,
     ChecklistSubmission,
     ChecklistTargetType,
 )
@@ -75,7 +78,10 @@ from okto_pulse.core.application.use_cases.mcp_board_crud import (
     McpGetBoardDefaultConfigDiffUseCase,
 )
 from okto_pulse.core.models import BoardCreate
-from okto_pulse.core.ports.checklist import ChecklistListQuery
+from okto_pulse.core.ports.checklist import (
+    ChecklistListQuery,
+    ChecklistSpecLifecycleConflict,
+)
 from okto_pulse.core.ports.default_board_configuration import (
     register_default_board_configuration_store,
 )
@@ -226,6 +232,7 @@ async def _complete(
         board_id=BOARD_ID,
         spec_id=SPEC_ID,
         spec_version=preflight.subject.spec_version,
+        spec_edition=preflight.subject.spec_edition,
         content_digest=preflight.subject.content_digest,
         input_digest=preflight.subject.input_digest,
         template_version=started.execution.template_version,
@@ -432,6 +439,213 @@ async def test_complete_receipts_gate_pagination_and_off_zero_write(
     assert off_gate.reason == "checklist_off"
 
 
+async def test_write_fence_refreshes_preloaded_spec_lifecycle(
+    session: AsyncSession,
+) -> None:
+    """A stale ORM identity cannot admit a checklist write after validation."""
+
+    adapter = CommunitySqlAlchemyChecklist(session)
+    service = ChecklistService(id_factory=_Ids(), clock=lambda: NOW)
+    advisory = service.prepare_binding(
+        board_id=BOARD_ID,
+        mode=ChecklistMode.ADVISORY,
+        current_binding=None,
+    )
+    await service.apply_binding(
+        advisory,
+        previous_binding=None,
+        persistence=adapter,
+    )
+    preflight = await _preflight(adapter)
+    execution = service.prepare_execution_start(
+        preflight=preflight,
+        actor_id="agent-checklist",
+        idempotency_key="stale-spec-fence",
+    )
+
+    # Simulate a lifecycle winner without synchronizing the Session identity
+    # map; the adapter's locked reread must refresh the cached approved row.
+    await session.execute(
+        update(Spec)
+        .where(Spec.id == SPEC_ID, Spec.board_id == BOARD_ID)
+        .values(status=SpecStatus.VALIDATED)
+        .execution_options(synchronize_session=False)
+    )
+
+    with pytest.raises(ChecklistSpecLifecycleConflict):
+        await adapter.start_execution_cas(execution)
+    assert await session.scalar(select(func.count(ChecklistExecutionRow.id))) == 0
+
+
+async def test_current_head_refreshes_preloaded_identity(
+    session: AsyncSession,
+) -> None:
+    adapter = CommunitySqlAlchemyChecklist(session)
+    service = ChecklistService(id_factory=_Ids(), clock=lambda: NOW)
+    blocking = service.prepare_binding(
+        board_id=BOARD_ID,
+        mode=ChecklistMode.BLOCKING,
+        current_binding=None,
+    )
+    await service.apply_binding(
+        blocking,
+        previous_binding=None,
+        persistence=adapter,
+    )
+    await _complete(
+        service,
+        adapter,
+        start_key="fresh-head-start",
+        submit_key="fresh-head-submit",
+    )
+    await session.execute(
+        update(ChecklistExecutionHeadRow)
+        .where(
+            ChecklistExecutionHeadRow.board_id == BOARD_ID,
+            ChecklistExecutionHeadRow.spec_id == SPEC_ID,
+            ChecklistExecutionHeadRow.phase
+            == ChecklistPhase.SPEC_VALIDATION.value,
+        )
+        .values(revision=7)
+        .execution_options(synchronize_session=False)
+    )
+
+    current = await adapter.get_current(
+        board_id=BOARD_ID,
+        spec_id=SPEC_ID,
+        phase=ChecklistPhase.SPEC_VALIDATION,
+    )
+    assert current is not None
+    assert current[1].revision == 7
+
+
+async def test_new_spec_edition_resets_current_head_and_projects_prior_history(
+    session: AsyncSession,
+) -> None:
+    adapter = CommunitySqlAlchemyChecklist(session)
+    service = ChecklistService(id_factory=_Ids(), clock=lambda: NOW)
+    blocking = service.prepare_binding(
+        board_id=BOARD_ID,
+        mode=ChecklistMode.BLOCKING,
+        current_binding=None,
+    )
+    await service.apply_binding(
+        blocking,
+        previous_binding=None,
+        persistence=adapter,
+    )
+    _first_start, _first_submission, first_commit = await _complete(
+        service,
+        adapter,
+        start_key="edition-1-start",
+        submit_key="edition-1-submit",
+    )
+    assert first_commit.spec_edition == 1
+
+    spec = await session.get(Spec, SPEC_ID)
+    assert spec is not None
+    spec.status = SpecStatus.DRAFT
+    spec.edition = 2
+    spec.version += 1
+    head = await session.get(
+        ChecklistExecutionHeadRow,
+        (BOARD_ID, SPEC_ID, ChecklistPhase.SPEC_VALIDATION.value),
+    )
+    assert head is not None
+    await session.delete(head)
+    await session.flush()
+    spec.status = SpecStatus.APPROVED
+    spec.version += 1
+    await session.flush()
+
+    snapshot = await adapter.get_spec_snapshot(
+        board_id=BOARD_ID,
+        spec_id=SPEC_ID,
+    )
+    assert snapshot is not None and snapshot.spec_edition == 2
+    probe = ChecklistSubmission(
+        board_id=BOARD_ID,
+        spec_id=SPEC_ID,
+        spec_version=snapshot.spec_version,
+        spec_edition=snapshot.spec_edition,
+        content_digest=snapshot.content_digest,
+        input_digest=snapshot.input_digest,
+        template_version=SPECIFY_CHECKLIST_TEMPLATE_V1.version,
+        template_digest=SPECIFY_CHECKLIST_TEMPLATE_V1.digest,
+        binding_version=blocking.version,
+        binding_digest=blocking.digest or "",
+        expected_head_revision=0,
+        items=_passing_items(),
+        idempotency_key="edition-2-probe",
+    )
+    reopened_current = await adapter.get_current(
+        board_id=BOARD_ID,
+        spec_id=SPEC_ID,
+        phase=ChecklistPhase.SPEC_VALIDATION,
+        spec_edition=2,
+    )
+    assert reopened_current is None
+    reopened_previous = await adapter.list_executions(
+        ChecklistListQuery(
+            board_id=BOARD_ID,
+            spec_id=SPEC_ID,
+            offset=0,
+            limit=25,
+            current_spec_edition=2,
+            state=ChecklistReceiptState.PREVIOUS,
+        )
+    )
+    assert reopened_previous.total == 1
+    assert reopened_previous.items[0].id == first_commit.receipt_id
+    reopened_gate = await service.evaluate_spec_gate(
+        board_id=BOARD_ID,
+        spec_id=SPEC_ID,
+        persistence=adapter,
+    )
+    assert reopened_gate.allowed is False
+    assert reopened_gate.reason == "checklist_receipt_required"
+
+    preflight = await adapter.resolve_checklist_preflight(
+        probe,
+        actor_id="agent-checklist",
+    )
+    assert preflight.current_head_revision == 0
+    assert preflight.current_head_receipt_id is None
+
+    _second_start, _second_submission, second_commit = await _complete(
+        service,
+        adapter,
+        start_key="edition-2-start",
+        submit_key="edition-2-submit",
+    )
+    assert second_commit.spec_edition == 2
+    assert second_commit.head_revision == 1
+
+    current = await adapter.get_current(
+        board_id=BOARD_ID,
+        spec_id=SPEC_ID,
+        phase=ChecklistPhase.SPEC_VALIDATION,
+        spec_edition=2,
+    )
+    assert current is not None
+    assert current[0].id == second_commit.receipt_id
+    assert current[0].spec_edition == 2
+
+    previous = await adapter.list_executions(
+        ChecklistListQuery(
+            board_id=BOARD_ID,
+            spec_id=SPEC_ID,
+            offset=0,
+            limit=25,
+            current_spec_edition=2,
+            state=ChecklistReceiptState.PREVIOUS,
+        )
+    )
+    assert previous.total == 1
+    assert previous.items[0].id == first_commit.receipt_id
+    assert previous.items[0].spec_edition == 1
+
+
 async def test_mode_promotion_replays_open_execution_and_submits_without_reexecution(
     session: AsyncSession,
 ) -> None:
@@ -484,6 +698,7 @@ async def test_mode_promotion_replays_open_execution_and_submits_without_reexecu
         board_id=BOARD_ID,
         spec_id=SPEC_ID,
         spec_version=started.execution.spec_version,
+        spec_edition=started.execution.spec_edition,
         content_digest=started.execution.content_digest,
         input_digest=started.execution.input_digest,
         template_version=started.execution.template_version,
@@ -560,6 +775,7 @@ async def test_mode_revisions_racing_both_adapter_fences_remain_semantic(
         board_id=BOARD_ID,
         spec_id=SPEC_ID,
         spec_version=execution.spec_version,
+        spec_edition=execution.spec_edition,
         content_digest=execution.content_digest,
         input_digest=execution.input_digest,
         template_version=execution.template_version,

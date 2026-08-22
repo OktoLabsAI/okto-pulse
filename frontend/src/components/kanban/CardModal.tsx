@@ -3,9 +3,10 @@
  */
 
 import React, { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { X, HelpCircle, Trash2, Download, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ShieldCheck, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History, Layers, MessageCircleQuestion, MessageSquare, ListChecks } from 'lucide-react';
+import { v4 as uuidv4 } from 'uuid';
+import { X, HelpCircle, Trash2, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ShieldCheck, ShieldX, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History, Layers, MessageCircleQuestion, MessageSquare, ListChecks, Target } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { exportCard, downloadMarkdown, markdownFilenameForCard } from '@/lib/exportMarkdown';
+import { EntityExportButton } from '@/components/export';
 import { useDashboardApi, type ActivityLogEntry } from '@/services/api';
 import {
   useDashboardStore,
@@ -15,7 +16,7 @@ import {
   useCurrentBoard,
 } from '@/store/dashboard';
 import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, Sprint, BugRegressionScenarioPreview, BugWorkflowRemediationMessage, AmendmentRevisionListResponse, ValidationEntry, ImpactEvidence } from '@/types';
-import { STATUS_LABELS, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
+import { CARD_STATUSES, STATUS_LABELS, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
 import { PathBRemediationPanel } from '@/components/kanban/PathBRemediationPanel';
 import {
   ImpactEvidenceEditor,
@@ -46,7 +47,6 @@ import {
 import { MetricScoreRing } from '@/components/shared/MetricScoreRing';
 import {
   PolicyCompliancePanel,
-  PolicyComplianceTransitionPreview,
   policyTransitionRejectionMessage,
   readPolicyTransitionRejection,
   usePolicyTransitionAuthority,
@@ -55,12 +55,18 @@ import type {
   CardModalSubtab,
   CardModalTab,
 } from '@/components/shared/tabRouting';
+import {
+  ImplementationTargetsPanel,
+  useCodeTraceabilityAuthority,
+} from '@/components/code-traceability';
 import { CardResourcesPanel } from './CardResourcesPanel';
 import {
   resolveTaskValidationThresholds,
   type ResolvedTaskValidationThresholds,
   type TaskValidationThresholdSource,
 } from './taskValidationThresholds';
+import { resolveCardSemanticAnchor } from './cardSemanticAnchors';
+import { ContextualHelpLink } from '@/components/help';
 
 /** Resolve an actor ID to a display name using the members list. */
 function resolveActorName(id: string | null | undefined, members: { id: string; name: string }[]): string {
@@ -77,10 +83,27 @@ function shortId(id: string): string {
   return id.length > 16 ? id.slice(0, 12) + '…' : id;
 }
 
+function humanizeEvidenceToken(value: string): string {
+  return value.replace(/[_-]+/g, ' ').replace(/^./, (character) => character.toUpperCase());
+}
+
 function cardTypeLabel(card: Pick<Card, 'card_type'> | null | undefined): string {
   if (card?.card_type === 'bug') return 'Bug';
   if (card?.card_type === 'test') return 'Test';
   return 'Task';
+}
+
+function preserveProjectedOpenQACount(
+  updated: Card,
+  existing: Pick<Card, 'open_qa_count'> | undefined,
+): Card {
+  if (
+    updated.open_qa_count !== undefined
+    || existing?.open_qa_count === undefined
+  ) {
+    return updated;
+  }
+  return { ...updated, open_qa_count: existing.open_qa_count };
 }
 
 type CardTestsTab = Extract<
@@ -285,6 +308,10 @@ interface CardModalProps {
   boardId: string;
   onClose?: () => void;
   onEscape?: () => void;
+  onAuthoritativeStatusChange?: (
+    card: Card,
+    previousStatus: CardStatus,
+  ) => void;
 }
 
 interface TaskValidationHierarchySnapshot {
@@ -295,7 +322,12 @@ interface TaskValidationHierarchySnapshot {
   sprint: Sprint | null;
 }
 
-export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
+export function CardModal({
+  boardId,
+  onClose,
+  onEscape,
+  onAuthoritativeStatusChange,
+}: CardModalProps) {
   const api = useDashboardApi();
   const perms = usePermissions(boardId);
   const tabIdBase = useId();
@@ -304,6 +336,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   selectedCardIdRef.current = selectedCardId;
   const cardLoadGenerationRef = useRef(0);
   const cardDataGenerationRef = useRef(0);
+  const cardStatusRef = useRef<CardStatus | null>(null);
   const isOpen = useIsCardModalOpen();
   const { closeCardModal, removeCardFromColumn, updateCardInColumn } = useDashboardStore();
   const columns = useColumns();
@@ -383,12 +416,27 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const linkedScenarioIds = new Set(card?.test_scenario_ids || []);
   const linkedEvidenceScenarios = specScenarios.filter((scenario) => linkedScenarioIds.has(scenario.id));
   const evidenceProvidedCount = linkedEvidenceScenarios.filter(hasScenarioEvidence).length;
-  const canMutateCard = (action: string) => hasPermissionWithState(
-    perms.has,
-    action,
-    'card',
-    card?.status,
-  );
+  const canMutateCard = (action: string) => {
+    if (
+      card?.status === 'rejected'
+      && ![
+        'card.move.rejected_to_in_progress',
+        'card.qa.ask',
+        'card.qa.answer',
+        'card.comments.create',
+        'card.comments.create_choice',
+        'card.comments.respond_choice',
+      ].includes(action)
+    ) {
+      return false;
+    }
+    return hasPermissionWithState(
+      perms.has,
+      action,
+      'card',
+      card?.status,
+    );
+  };
   const canReadIR = perms.has('spec.integration_requirements.read');
   const canReadOR = perms.has('spec.observability_requirements.read');
   const canLinkIRTasks = perms.has('spec.integration_requirements.link_task') && canMutateCard('card.link_to.ir');
@@ -404,6 +452,8 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const canReadValidation = perms.has('card.validation.read');
   const canReadPolicyCompliance = perms.has('guidelines.assessments.read');
   const canReadActivity = perms.has('card.activity_read');
+  const { canReadProjection: canReadCodeTraceability } =
+    useCodeTraceabilityAuthority(boardId);
   const canEditCardFields = canMutateCard('card.entity.edit_fields');
   const canEditBugFields = canMutateCard('card.entity.edit_bug_fields');
   const canAssignCard = canMutateCard('card.entity.assign');
@@ -423,8 +473,10 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
   const canLinkTRs = canMutateCard('card.link_to.tr');
   const canSubmitValidation = canMutateCard('card.validation.submit');
   const canReadAmendmentRevisions = perms.has('amendment.revision.read');
-  const canCreateAmendment = perms.has('amendment.revision.create');
-  const canAssociateAmendment = perms.has('amendment.revision.associate');
+  const canCreateAmendment = card?.status !== 'rejected'
+    && perms.has('amendment.revision.create');
+  const canAssociateAmendment = card?.status !== 'rejected'
+    && perms.has('amendment.revision.associate');
   const canReadBoardAgents = perms.has('agent.board_access.read');
   const hasAmendmentWorkspace = Boolean(
     bugRegressionPreview?.semantic_gap_required
@@ -444,11 +496,29 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     setPolicyAuthorityRefreshKey((current) => current + 1);
   }, []);
 
+  const withPreservedOpenQACount = useCallback((updated: Card) => {
+    if (!canReadQA || updated.open_qa_count !== undefined) return updated;
+    const localCard = card?.id === updated.id && card.open_qa_count !== undefined
+      ? card
+      : undefined;
+    const projectedCard = localCard
+      ?? CARD_STATUSES
+        .map((status) => (columns[status] ?? []).find((candidate) => candidate.id === updated.id))
+        .find((candidate) => candidate?.open_qa_count !== undefined);
+    return preserveProjectedOpenQACount(updated, projectedCard);
+  }, [canReadQA, card, columns]);
+
   const applyCardUpdate = useCallback((updated: Card) => {
-    setCard(updated);
-    updateCardInColumn(updated);
+    const reconciled = withPreservedOpenQACount(updated);
+    const previousStatus = cardStatusRef.current;
+    cardStatusRef.current = reconciled.status;
+    setCard(reconciled);
+    updateCardInColumn(reconciled);
+    if (previousStatus && previousStatus !== reconciled.status) {
+      onAuthoritativeStatusChange?.(reconciled, previousStatus);
+    }
     notePolicySubjectChanged();
-  }, [notePolicySubjectChanged, updateCardInColumn]);
+  }, [notePolicySubjectChanged, onAuthoritativeStatusChange, updateCardInColumn, withPreservedOpenQACount]);
 
   const resetConclusionPrompt = () => {
     setConclusionDraft('');
@@ -488,7 +558,16 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     api.getCard(cardId)
       .then((data) => {
         if (!isCurrentLoad()) return;
-        setCard(data);
+        const reconciled = withPreservedOpenQACount(data);
+        const projectedStatus = CARD_STATUSES.find((status) =>
+          (columns[status] ?? []).some((candidate) => candidate.id === data.id),
+        );
+        cardStatusRef.current = reconciled.status;
+        setCard(reconciled);
+        updateCardInColumn(reconciled);
+        if (projectedStatus && projectedStatus !== reconciled.status) {
+          onAuthoritativeStatusChange?.(reconciled, projectedStatus);
+        }
         notePolicySubjectChanged();
         if (data.card_type === 'bug') {
           api.getBugRegressionScenarioCandidates(data.id, data.board_id)
@@ -619,10 +698,17 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     api.getCard(cardId)
       .then((data) => {
         if (!isCurrentRefresh()) return;
+        const reconciled = withPreservedOpenQACount(data);
         const subjectChanged =
           card?.id === data.id
           && card.updated_at !== data.updated_at;
-        setCard(data);
+        const previousStatus = cardStatusRef.current;
+        cardStatusRef.current = reconciled.status;
+        setCard(reconciled);
+        updateCardInColumn(reconciled);
+        if (previousStatus && previousStatus !== reconciled.status) {
+          onAuthoritativeStatusChange?.(reconciled, previousStatus);
+        }
         setTaskValidationHierarchyLoading(true);
         setTaskValidationHierarchyError(null);
         if (subjectChanged) {
@@ -734,7 +820,10 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     card?.updated_at,
     isLoading,
     notePolicySubjectChanged,
+    onAuthoritativeStatusChange,
     taskValidationHierarchyLoading,
+    updateCardInColumn,
+    withPreservedOpenQACount,
   ]);
 
   // Path B safe actions (spec be089cd3). User-click only — NO auto-mutation on
@@ -778,6 +867,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     } else {
       cardLoadGenerationRef.current += 1;
       cardDataGenerationRef.current += 1;
+      cardStatusRef.current = null;
       setCard(null);
       setSpecKBsFull([]);
       setTaskValidationHierarchy(null);
@@ -804,6 +894,8 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
       || (activeTab === 'resources' && !hasResources)
       || (activeTab === 'qa' && !canReadQA)
       || (activeTab === 'comments' && !canReadComments)
+      || (activeTab === 'implementation-targets'
+        && (!canReadCodeTraceability || card.card_type !== 'normal'))
       || (activeTab === 'validation' && !hasValidation)
       || (activeTab === 'activity' && !canReadActivity);
 
@@ -849,6 +941,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
     canReadArchitecture,
     canReadAttachments,
     canReadComments,
+    canReadCodeTraceability,
     canReadConclusion,
     canReadKnowledge,
     canReadMockups,
@@ -909,6 +1002,10 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
 
   const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }, cancellationReason?: string, impactEvidence?: ImpactEvidence): Promise<boolean> => {
     if (!card || status === card.status) return false;
+    // Rejected is consequence-only. Even if a rolling-upgrade server were to
+    // project a stale manual edge, the client must never invoke it.
+    if (status === 'rejected') return false;
+    if (card.status === 'rejected' && status !== 'in_progress') return false;
     if (!canMutateCard(`card.move.${card.status}_to_${status}`)) return false;
 
     // ITEM 17: cancelling requires a justification — intercept with the dialog.
@@ -1054,6 +1151,10 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
               Object.prototype.hasOwnProperty.call(STATUS_LABELS, status)
               && status !== card.status,
           )
+          .filter((status) => status !== 'rejected')
+          .filter((status) => (
+            card.status !== 'rejected' || status === 'in_progress'
+          ))
           .filter((status) => canMutateCard(
             `card.move.${card.status}_to_${status}`,
           )),
@@ -1074,6 +1175,15 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
           label: 'Details',
           icon: <FileText size={14} />,
         },
+        ...(
+          canReadCodeTraceability && card.card_type === 'normal'
+            ? [{
+                id: 'implementation-targets' as const,
+                label: 'Implementation Targets',
+                icon: <Target size={14} />,
+              }]
+            : []
+        ),
         ...(
           canReadTests && ['bug', 'test'].includes(card.card_type || 'normal')
             ? [{
@@ -1253,41 +1363,14 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
             >
               <GitBranch size={16} />
             </button>
-            <button
-              onClick={async () => {
-                if (!card) return;
-                try {
-                  const hydrateArchitecture = (designs: any[] | null | undefined) =>
-                    Promise.all(
-                      (designs || []).map((d) =>
-                        api.getArchitectureDesign(d.id, true).catch(() => d)
-                      )
-                    );
-                  // Architecture designs arrive as summaries (no entities/diagrams);
-                  // hydrate full designs for both card-owned and inherited spec context
-                  // so the Markdown export can render the Mermaid diagram.
-                  const cardArchitecture = await hydrateArchitecture(card.architecture_designs);
-                  const baseSpec = fullSpec && specKBsFull.length
-                    ? { ...fullSpec, knowledge_bases: specKBsFull as any }
-                    : fullSpec;
-                  const specForExport = baseSpec
-                    ? { ...baseSpec, architecture_designs: (await hydrateArchitecture(baseSpec.architecture_designs)) as any }
-                    : baseSpec;
-                  const md = exportCard(
-                    { ...card, architecture_designs: cardArchitecture as any },
-                    specForExport as any,
-                  );
-                  downloadMarkdown(md, markdownFilenameForCard(card));
-                } catch {
-                  toast.error('Failed to prepare markdown export');
-                }
-              }}
-              disabled={!card}
-              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"
-              title="Download Markdown"
-            >
-              <Download size={16} />
-            </button>
+            {card && (
+              <EntityExportButton
+                boardId={card.board_id || boardId}
+                entityType="card"
+                entityId={card.id}
+                entityTitle={card.title}
+              />
+            )}
             <button onClick={handleRefresh} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="Refresh card">
               <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''} />
             </button>
@@ -1345,9 +1428,10 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                       />
                       <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
                         Cancelling a card can return a validated parent spec to
-                        Approved and make its previous evaluations stale. The
-                        resulting lifecycle changes remain available in
-                        Activity.
+                        Approved. Its earlier evaluation results remain under
+                        Previous, and a new Current result is required when the
+                        spec enters Validation again. The lifecycle change
+                        remains available in Activity.
                       </p>
                     </div>
                   )}
@@ -1548,6 +1632,27 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                   )}
                 </div>
               </AccessibleTabPanel>
+
+              {canReadCodeTraceability && card.card_type === 'normal' && (
+                <AccessibleTabPanel
+                  idBase={`${tabIdBase}-card-${card.id}`}
+                  tabId="implementation-targets"
+                  value={activeTab}
+                  mount="lazy-keep"
+                >
+                  <ImplementationTargetsPanel
+                    boardId={card.board_id}
+                    subjectId={card.id}
+                    subjectVersion={card.subject_version ?? 1}
+                    specVersion={fullSpec?.version}
+                    operationallyFrozen={card.status === 'rejected'}
+                    onCreateDependency={canManageDependencies ? () => {
+                      setActiveTab('references');
+                      setReferencesTab('dependencies');
+                    } : undefined}
+                  />
+                </AccessibleTabPanel>
+              )}
 
               <AccessibleTabPanel
                 idBase={`${tabIdBase}-card-${card.id}`}
@@ -2038,8 +2143,9 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                     canUploadAttachments={canUploadAttachments}
                     canDeleteAttachments={canDeleteAttachments}
                     onCardChanged={(updated) => {
-                      setCard(updated);
-                      updateCardInColumn(updated);
+                      const reconciled = withPreservedOpenQACount(updated);
+                      setCard(reconciled);
+                      updateCardInColumn(reconciled);
                     }}
                     onSubjectChanged={notePolicySubjectChanged}
                     onBusyChange={setKnowledgeMutationBusy}
@@ -2056,7 +2162,7 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                 >
                 <QATab
                   card={card}
-                  setCard={setCard}
+                  onCardChanged={applyCardUpdate}
                   api={api}
                   members={boardMembers}
                   seenStatus={seenStatus}
@@ -2154,6 +2260,9 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                           thresholdsLoading={taskValidationHierarchyLoading}
                           thresholdsError={taskValidationHierarchyError}
                           onRetryThresholds={() => loadCard(card.id)}
+                          canStartRework={allowedStatuses.includes('in_progress')}
+                          reworkBusy={movingStatus === 'in_progress'}
+                          onStartRework={() => handleStatusChange('in_progress')}
                         />
                       </AccessibleTabPanel>
                     )}
@@ -2166,16 +2275,16 @@ export function CardModal({ boardId, onClose, onEscape }: CardModalProps) {
                         mount="lazy-keep"
                         className="space-y-4"
                       >
-                        <PolicyComplianceTransitionPreview
-                          preview={policyTransitionAuthority.preview}
-                          rejection={policyTransitionAuthority.rejection}
-                        />
                         <PolicyCompliancePanel
                           boardId={card.board_id}
                           entityType="card"
                           subjectId={card.id}
                           transitionPreview={policyTransitionAuthority.preview}
                           refreshKey={policyAuthorityRefreshKey}
+                          resolveSemanticAnchor={resolveCardSemanticAnchor}
+                          onNavigateSemanticAnchor={() => {
+                            setActiveTab('details');
+                          }}
                           onEvaluated={() => {
                             policyTransitionAuthority.clearRejection();
                             void policyTransitionAuthority.refresh();
@@ -2568,81 +2677,10 @@ export function ExecutionReportsPanel({ card }: { card: Card }) {
             </span>
           </div>
 
-          <Md>{report.text}</Md>
-
-          {report.impact_evidence && (
-            <div
-              className="mt-3 rounded-lg border border-gray-100 bg-gray-50/60 p-3 dark:border-gray-700/50 dark:bg-gray-900/20"
-              data-testid="impact-evidence-readonly"
-            >
-              <p className="text-[11px] font-semibold text-gray-600 dark:text-gray-300">
-                Impact evidence (declared claim)
-              </p>
-              <div className="mt-2 space-y-2 text-[11px] text-gray-600 dark:text-gray-300">
-                {report.impact_evidence.files.length > 0 && (
-                  <div>
-                    <p className="font-medium text-gray-500 dark:text-gray-400">Files</p>
-                    <ul className="mt-0.5 space-y-0.5">
-                      {report.impact_evidence.files.map((f, i) => (
-                        <li key={i} className="font-mono">
-                          [{f.repo}] {f.change_kind}: {f.path}
-                          {f.previous_path ? ` (was ${f.previous_path})` : ''}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {report.impact_evidence.symbols.length > 0 && (
-                  <div>
-                    <p className="font-medium text-gray-500 dark:text-gray-400">Symbols</p>
-                    <ul className="mt-0.5 space-y-0.5">
-                      {report.impact_evidence.symbols.map((sym, i) => (
-                        <li key={i} className="font-mono">
-                          {sym.kind}/{sym.action}: {sym.name} — [{sym.repo}] {sym.file}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {report.impact_evidence.surfaces.length > 0 && (
-                  <div>
-                    <p className="font-medium text-gray-500 dark:text-gray-400">Surfaces</p>
-                    <ul className="mt-0.5 space-y-0.5">
-                      {report.impact_evidence.surfaces.map((sf, i) => (
-                        <li key={i} className="font-mono">{sf.kind}: {sf.identifier}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {report.impact_evidence.tests.length > 0 && (
-                  <div>
-                    <p className="font-medium text-gray-500 dark:text-gray-400">Tests</p>
-                    <ul className="mt-0.5 space-y-0.5">
-                      {report.impact_evidence.tests.map((t, i) => (
-                        <li key={i} className="font-mono">
-                          {t.action} [{t.repo}] {t.test_file_path}
-                          {t.test_function ? `::${t.test_function}` : ''}
-                          {t.scenario_id ? ` (${t.scenario_id})` : ''}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {report.impact_evidence.evidence_refs.length > 0 && (
-                  <div>
-                    <p className="font-medium text-gray-500 dark:text-gray-400">Evidence refs</p>
-                    <ul className="mt-0.5 space-y-0.5">
-                      {report.impact_evidence.evidence_refs.map((ref, i) => (
-                        <li key={i} className="font-mono">{ref}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          <div className="mt-4 grid gap-4 border-t border-gray-100 pt-4 sm:grid-cols-2 dark:border-gray-700/50">
+          <div
+            className="grid gap-4 rounded-lg border border-cyan-100 bg-cyan-50/40 p-3 sm:grid-cols-2 dark:border-cyan-900/60 dark:bg-cyan-950/15"
+            data-testid={`execution-report-${index}-scores`}
+          >
             <div className="flex gap-4">
               <MetricScoreRing
                 label="Completeness"
@@ -2679,6 +2717,119 @@ export function ExecutionReportsPanel({ card }: { card: Card }) {
               </div>
             </div>
           </div>
+
+          <div className="mt-4" data-testid={`execution-report-${index}-summary`}>
+            <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+              Execution summary
+            </p>
+            <Md>{report.text}</Md>
+          </div>
+
+          {report.impact_evidence && (
+            <div
+              className="mt-4 rounded-lg border border-gray-200 bg-gray-50/60 p-3 dark:border-gray-700 dark:bg-gray-900/20"
+              data-testid="impact-evidence-readonly"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-semibold text-gray-700 dark:text-gray-200">
+                  Impact evidence
+                </p>
+                <span className="rounded-full bg-gray-200/70 px-2 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-gray-700 dark:text-gray-300">
+                  Agent-declared
+                </span>
+              </div>
+              <div className="mt-3 grid gap-3 text-[11px] text-gray-600 dark:text-gray-300 lg:grid-cols-2">
+                {report.impact_evidence.files.length > 0 && (
+                  <section className="rounded-md border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800/70">
+                    <p className="mb-2 font-semibold text-gray-600 dark:text-gray-300">
+                      Files <span className="font-normal text-gray-400">({report.impact_evidence.files.length})</span>
+                    </p>
+                    <ul className="space-y-2">
+                      {report.impact_evidence.files.map((file, evidenceIndex) => (
+                        <li key={evidenceIndex} className="min-w-0">
+                          <div className="mb-1 flex flex-wrap gap-1.5">
+                            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium dark:bg-gray-700">{file.repo}</span>
+                            <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">
+                              {humanizeEvidenceToken(file.change_kind)}
+                            </span>
+                          </div>
+                          <code className="block break-all text-[11px] text-gray-700 dark:text-gray-200">{file.path}</code>
+                          {file.previous_path && (
+                            <p className="mt-1 break-all text-[10px] text-gray-400">Previously {file.previous_path}</p>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+                {report.impact_evidence.symbols.length > 0 && (
+                  <section className="rounded-md border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800/70">
+                    <p className="mb-2 font-semibold text-gray-600 dark:text-gray-300">
+                      Symbols <span className="font-normal text-gray-400">({report.impact_evidence.symbols.length})</span>
+                    </p>
+                    <ul className="space-y-2">
+                      {report.impact_evidence.symbols.map((symbol, evidenceIndex) => (
+                        <li key={evidenceIndex} className="min-w-0">
+                          <div className="mb-1 flex flex-wrap gap-1.5">
+                            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium dark:bg-gray-700">{humanizeEvidenceToken(symbol.kind)}</span>
+                            <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-950/40 dark:text-violet-300">{humanizeEvidenceToken(symbol.action)}</span>
+                          </div>
+                          <code className="block break-all text-gray-700 dark:text-gray-200">{symbol.name}</code>
+                          <p className="mt-1 break-all text-[10px] text-gray-400">{symbol.repo} · {symbol.file}</p>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+                {report.impact_evidence.surfaces.length > 0 && (
+                  <section className="rounded-md border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800/70">
+                    <p className="mb-2 font-semibold text-gray-600 dark:text-gray-300">
+                      Surfaces <span className="font-normal text-gray-400">({report.impact_evidence.surfaces.length})</span>
+                    </p>
+                    <ul className="space-y-2">
+                      {report.impact_evidence.surfaces.map((surface, evidenceIndex) => (
+                        <li key={evidenceIndex}>
+                          <span className="mb-1 inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium dark:bg-gray-700">{humanizeEvidenceToken(surface.kind)}</span>
+                          <code className="block break-all text-gray-700 dark:text-gray-200">{surface.identifier}</code>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+                {report.impact_evidence.tests.length > 0 && (
+                  <section className="rounded-md border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800/70">
+                    <p className="mb-2 font-semibold text-gray-600 dark:text-gray-300">
+                      Tests <span className="font-normal text-gray-400">({report.impact_evidence.tests.length})</span>
+                    </p>
+                    <ul className="space-y-2">
+                      {report.impact_evidence.tests.map((test, evidenceIndex) => (
+                        <li key={evidenceIndex} className="min-w-0">
+                          <div className="mb-1 flex flex-wrap gap-1.5">
+                            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium dark:bg-gray-700">{test.repo}</span>
+                            <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">{humanizeEvidenceToken(test.action)}</span>
+                          </div>
+                          <code className="block break-all text-gray-700 dark:text-gray-200">
+                            {test.test_file_path}{test.test_function ? `::${test.test_function}` : ''}
+                          </code>
+                          {test.scenario_id && <p className="mt-1 text-[10px] text-gray-400">Scenario {test.scenario_id}</p>}
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+                {report.impact_evidence.evidence_refs.length > 0 && (
+                  <section className="rounded-md border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-800/70 lg:col-span-2">
+                    <p className="mb-2 font-semibold text-gray-600 dark:text-gray-300">Evidence references</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {report.impact_evidence.evidence_refs.map((reference, evidenceIndex) => (
+                        <code key={evidenceIndex} className="rounded bg-gray-100 px-2 py-1 text-[10px] text-gray-600 dark:bg-gray-700 dark:text-gray-200">{reference}</code>
+                      ))}
+                    </div>
+                  </section>
+                )}
+              </div>
+            </div>
+          )}
         </article>
       ))}
     </div>
@@ -3063,6 +3214,7 @@ function DependenciesSection({
 
   const statusColor = (s: string) => {
     if (s === 'done') return 'text-green-600';
+    if (s === 'rejected') return 'text-rose-600 dark:text-rose-400';
     if (s === 'cancelled') return 'text-gray-400 dark:text-gray-500';
     return 'text-amber-600';
   };
@@ -3195,7 +3347,7 @@ function SeenByIndicator({ itemId, seenStatus }: { itemId: string; seenStatus: S
 
 function QATab({
   card,
-  setCard,
+  onCardChanged,
   api,
   members,
   seenStatus,
@@ -3203,7 +3355,7 @@ function QATab({
   canAnswer,
 }: {
   card: Card;
-  setCard: (c: Card) => void;
+  onCardChanged: (card: Card) => void;
   api: ReturnType<typeof useDashboardApi>;
   members: { id: string; name: string }[];
   seenStatus: SeenMap;
@@ -3213,12 +3365,20 @@ function QATab({
   const [newQuestion, setNewQuestion] = useState('');
   const [answerInput, setAnswerInput] = useState<Record<string, string>>({});
 
+  const reconcileQAItems = (qaItems: Card['qa_items']) => {
+    onCardChanged({
+      ...card,
+      qa_items: qaItems,
+      open_qa_count: qaItems.filter((qa) => qa.answered_at == null).length,
+    });
+  };
+
   const handleAskQuestion = async () => {
     if (!newQuestion.trim()) return;
 
     try {
       const qa = await api.createQuestion(card.id, { question: newQuestion });
-      setCard({ ...card, qa_items: [...card.qa_items, qa] });
+      reconcileQAItems([...card.qa_items, qa]);
       setNewQuestion('');
       toast.success('Question added');
     } catch {
@@ -3232,10 +3392,9 @@ function QATab({
 
     try {
       const updated = await api.answerQuestion(qaId, { answer });
-      setCard({
-        ...card,
-        qa_items: card.qa_items.map((q) => (q.id === qaId ? updated : q)),
-      });
+      reconcileQAItems(
+        card.qa_items.map((q) => (q.id === qaId ? updated : q)),
+      );
       setAnswerInput({ ...answerInput, [qaId]: '' });
       toast.success('Answer saved');
     } catch {
@@ -3426,16 +3585,24 @@ function ValidationHistoryMetric({
   testId: string;
 }) {
   return (
-    <div className="flex gap-4 rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900/20">
-      <MetricScoreRing
-        label={label}
-        value={value}
-        direction={direction}
-        threshold={threshold}
-        status={status}
-        testId={testId}
-      />
-      <div className="min-w-0 flex-1">
+    <div
+      className="flex h-full flex-col rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900/20"
+      data-testid={`${testId}-metric`}
+    >
+      <div className="flex justify-center">
+        <MetricScoreRing
+          label={label}
+          value={value}
+          direction={direction}
+          threshold={threshold}
+          status={status}
+          testId={testId}
+        />
+      </div>
+      <div
+        className="mt-3 min-w-0 border-t border-gray-100 pt-3 dark:border-gray-700"
+        data-testid={`${testId}-justification`}
+      >
         {thresholdSource && (
           <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
             Threshold source: {thresholdSource}
@@ -3463,6 +3630,9 @@ function ValidationsTab({
   thresholdsLoading,
   thresholdsError,
   onRetryThresholds,
+  canStartRework,
+  reworkBusy,
+  onStartRework,
 }: {
   card: Card;
   onCardChanged: (card: Card) => void;
@@ -3473,6 +3643,9 @@ function ValidationsTab({
   thresholdsLoading: boolean;
   thresholdsError: string | null;
   onRetryThresholds: () => void;
+  canStartRework: boolean;
+  reworkBusy: boolean;
+  onStartRework: () => Promise<boolean>;
 }) {
   const [confidence, setConfidence] = useState(80);
   const [completeness, setCompleteness] = useState(80);
@@ -3485,17 +3658,52 @@ function ValidationsTab({
     useState<'approve' | 'reject'>('approve');
   const [submitting, setSubmitting] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const validationIntentRef = useRef({ signature: '', idempotencyKey: '' });
+  const validations = card.validations || [];
+  const latestFailedValidation = [...validations]
+    .reverse()
+    .find((validation) => validationVerdict(validation) === 'fail') ?? null;
+  const currentRejectionRecord = card.current_rejection_id
+    ? (card.rejection_records || []).find(
+      (record) => record.id === card.current_rejection_id,
+    ) ?? null
+    : null;
+  const currentRejectionValidation = card.status === 'rejected'
+    ? [...validations].reverse().find((validation) => (
+      validation.id === card.current_rejection_id
+      || validation.id === currentRejectionRecord?.source_id
+      || validation.rejection_cause?.id === card.current_rejection_id
+      || (
+        validation.card_status === 'rejected'
+        && validation.completion_outcome === 'rejected'
+      )
+    )) ?? null
+    : null;
+  const rejectionFeedbackValidation =
+    currentRejectionValidation ?? latestFailedValidation;
+  const rejectionFeedbackValidationId = rejectionFeedbackValidation?.id ?? null;
   const formValid =
     confidenceJustification.trim().length >= 10
     && completenessJustification.trim().length >= 10
     && driftJustification.trim().length >= 10
     && generalJustification.trim().length >= 20;
 
+  useEffect(() => {
+    if (card.status === 'rejected' && rejectionFeedbackValidationId) {
+      setExpandedId(rejectionFeedbackValidationId);
+    }
+  }, [card.id, card.status, rejectionFeedbackValidationId]);
+
   const handleSubmit = async () => {
     if (!formValid || !thresholds || thresholdsLoading || thresholdsError) return;
+    if (!Number.isInteger(card.subject_version) || Number(card.subject_version) < 1) {
+      toast.error('Reload the card before submitting validation; its current version is unavailable.');
+      return;
+    }
     setSubmitting(true);
     try {
-      const data = {
+      const request = {
+        expected_subject_version: Number(card.subject_version),
         confidence,
         confidence_justification: confidenceJustification.trim(),
         estimated_completeness: completeness,
@@ -3505,14 +3713,43 @@ function ValidationsTab({
         general_justification: generalJustification.trim(),
         recommendation,
       };
+      const signature = JSON.stringify(request);
+      if (
+        validationIntentRef.current.signature !== signature
+        || !validationIntentRef.current.idempotencyKey
+      ) {
+        validationIntentRef.current = {
+          signature,
+          idempotencyKey: uuidv4(),
+        };
+      }
+      const data = {
+        ...request,
+        idempotency_key: validationIntentRef.current.idempotencyKey,
+      };
       const validation = await api.submitTaskValidation(card.id, data);
       let updatedCard: Card;
       try {
         updatedCard = await api.getCard(card.id);
       } catch {
+        const cause = validation.rejection_cause ?? null;
+        const rejected = validation.card_status === 'rejected';
         updatedCard = {
           ...card,
           status: validation.card_status || card.status,
+          subject_version: validation.subject_version ?? card.subject_version,
+          current_rejection_kind: rejected
+            ? cause?.kind ?? card.current_rejection_kind ?? null
+            : null,
+          current_rejection_id: rejected
+            ? cause?.id ?? card.current_rejection_id ?? null
+            : null,
+          current_rejection_code: rejected
+            ? cause?.code ?? card.current_rejection_code ?? null
+            : null,
+          current_rejection_summary: rejected
+            ? cause?.summary ?? card.current_rejection_summary ?? null
+            : null,
           validations: [...(card.validations || []), validation],
         };
       }
@@ -3527,6 +3764,7 @@ function ValidationsTab({
       setDriftJustification('');
       setGeneralJustification('');
       setRecommendation('approve');
+      validationIntentRef.current = { signature: '', idempotencyKey: '' };
       toast.success('Validation submitted');
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to submit validation');
@@ -3535,10 +3773,87 @@ function ValidationsTab({
     }
   };
 
-  const validations = card.validations || [];
-
   return (
     <div className="space-y-6">
+      {card.status === 'rejected' && card.card_type !== 'test' && (
+        <section
+          role="alert"
+          aria-labelledby={`rejected-rework-${card.id}`}
+          data-testid="task-rejected-rework-panel"
+          className="rounded-xl border border-rose-300 bg-rose-50 p-4 text-rose-900 dark:border-rose-800 dark:bg-rose-950/25 dark:text-rose-100"
+        >
+          <div className="flex items-start gap-3">
+            <ShieldX size={20} className="mt-0.5 shrink-0 text-rose-600 dark:text-rose-300" />
+            <div className="min-w-0 flex-1">
+              <h3 id={`rejected-rework-${card.id}`} className="text-sm font-semibold">
+                Rejected — rework required
+              </h3>
+              <p className="mt-1 text-xs text-rose-800 dark:text-rose-200">
+                {card.current_rejection_summary
+                  || (rejectionFeedbackValidation
+                  ? rejectionFeedbackValidation.summary
+                    || rejectionFeedbackValidation.general_justification
+                    || 'The latest Task Validation did not pass.'
+                  : 'The latest governed completion attempt did not pass. Review the available validation, policy and activity feedback before rework.')}
+              </p>
+              {(rejectionFeedbackValidation?.threshold_violations?.length || 0) > 0 && (
+                <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-rose-800 dark:text-rose-200">
+                  {rejectionFeedbackValidation!.threshold_violations!.map((violation) => (
+                    <li key={violation}>{violation}</li>
+                  ))}
+                </ul>
+              )}
+              {(rejectionFeedbackValidation?.completion_gate_failures?.length || 0) > 0 && (
+                <div className="mt-3 rounded-md border border-rose-300/80 bg-white/55 p-3 dark:border-rose-800 dark:bg-rose-950/30">
+                  <p className="text-xs font-semibold text-rose-900 dark:text-rose-100">
+                    Completion gates requiring action
+                  </p>
+                  <ul className="mt-1.5 space-y-2 text-xs text-rose-800 dark:text-rose-200">
+                    {rejectionFeedbackValidation!.completion_gate_failures!.map((failure) => (
+                      <li key={`${failure.code}:${failure.summary}`}>
+                        <span className="font-semibold">{failure.summary}</span>
+                        {(failure.reason_codes?.length || 0) > 0 && (
+                          <span className="mt-0.5 block text-[11px] text-rose-700 dark:text-rose-300">
+                            {failure.reason_codes!.join(' · ')}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <p className="mt-2 text-xs text-rose-700 dark:text-rose-300">
+                Move to In Progress to begin a new execution attempt. A new
+                execution report and Current technical traceability are
+                required before the card can return to Validation.
+              </p>
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => { void onStartRework(); }}
+                  disabled={!canStartRework || reworkBusy}
+                  className="rounded-md bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {reworkBusy ? 'Starting rework…' : 'Move to In Progress for rework'}
+                </button>
+                <ContextualHelpLink
+                  sectionId="tasks"
+                  className="text-xs text-rose-700 dark:text-rose-200"
+                  ariaLabel="Open help about Rejected task rework"
+                >
+                  Rejected lifecycle help
+                </ContextualHelpLink>
+              </div>
+              {!canStartRework && (
+                <p className="mt-2 text-[11px] text-rose-700 dark:text-rose-300">
+                  Your current role cannot start this rework attempt.
+                </p>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Section A: Submit Validation Form — only when status === 'validation' */}
       {card.status === 'validation' && canSubmit && thresholds && (
         <div
@@ -3697,7 +4012,7 @@ function ValidationsTab({
           <div className="text-center py-8">
             <Shield size={32} className="mx-auto text-gray-300 dark:text-gray-600 mb-2" />
             <p className="text-sm text-gray-500 dark:text-gray-400">No validations yet</p>
-            {card.status !== 'validation' && (
+            {card.status !== 'validation' && card.status !== 'rejected' && (
               <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
                 Move this card to "Validation" status to submit a validation
               </p>
@@ -3814,6 +4129,25 @@ function ValidationsTab({
                           <ul className="mt-1 list-disc space-y-1 pl-4 text-xs text-red-700 dark:text-red-300">
                             {v.threshold_violations!.map((violation) => (
                               <li key={violation}>{violation}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {(v.completion_gate_failures?.length || 0) > 0 && (
+                        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/20">
+                          <p className="text-xs font-semibold text-amber-800 dark:text-amber-200">
+                            Completion gate failures
+                          </p>
+                          <ul className="mt-1.5 space-y-2 text-xs text-amber-800 dark:text-amber-200">
+                            {v.completion_gate_failures!.map((failure) => (
+                              <li key={`${failure.code}:${failure.summary}`}>
+                                <span className="font-medium">{failure.summary}</span>
+                                {(failure.reason_codes?.length || 0) > 0 && (
+                                  <span className="mt-0.5 block text-[11px] text-amber-700 dark:text-amber-300">
+                                    {failure.reason_codes!.join(' · ')}
+                                  </span>
+                                )}
+                              </li>
                             ))}
                           </ul>
                         </div>

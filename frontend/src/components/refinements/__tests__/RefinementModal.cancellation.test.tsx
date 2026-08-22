@@ -115,6 +115,7 @@ const transitionsResponse = (allowed: string[]) => ({
     label: to_status,
     gate: 'none',
     blocked_reason: null,
+    blocked_facts: null,
     preconditions: [],
     capabilities: [],
     effects: [],

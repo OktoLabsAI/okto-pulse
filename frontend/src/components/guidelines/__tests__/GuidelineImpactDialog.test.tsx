@@ -92,12 +92,43 @@ function authority(metrics: GuidelineMetric[] = [metric]) {
 }
 
 function preview(
-  nextCursor: string | null = null,
+  {
+    priority = 2,
+    enforcement = 'advisory',
+    minimumConfidence = 70,
+    overrides = {},
+  }: {
+    priority?: number;
+    enforcement?: 'advisory' | 'blocking';
+    minimumConfidence?: number;
+    overrides?: Record<string, number>;
+  } = {},
 ): GuidelineImpactPreviewResponse {
   return {
-    preview_id: 'preview-1',
-    preview_digest: 'b'.repeat(64),
-    items_page: {
+    receipt: {
+      impact_receipt_id: 'preview-1',
+      board_id: 'board-1',
+      guideline_id: 'guideline-1',
+      binding_id: 'binding-1',
+      to_revision_id: 'revision-2',
+      to_revision_number: 2,
+      to_semantic_version: '2.0.0',
+      to_revision_digest: 'a'.repeat(64),
+      expected_head_revision: 2,
+      expected_binding_revision: 4,
+      expected_binding_state: 'active',
+      binding_digest: 'e'.repeat(64),
+      binding_head_digest_before: '1'.repeat(64),
+      binding_head_digest_after: '2'.repeat(64),
+      policy_set_digest_before: '3'.repeat(64),
+      policy_set_digest_after: '4'.repeat(64),
+      artifact_snapshot_digest: '5'.repeat(64),
+      waiver_snapshot_digest: '6'.repeat(64),
+      proposed_priority: priority,
+      proposed_enforcement: enforcement,
+      proposed_minimum_confidence: minimumConfidence,
+      proposed_metric_threshold_overrides: overrides,
+      affected_entity_types: ['spec'],
       items: [{
         impact_item_id: 'impact-1',
         item_kind: 'binding',
@@ -107,8 +138,44 @@ function preview(
         entity_version: 4,
         details_digest: 'c'.repeat(64),
       }],
-      next_cursor: nextCursor,
+      added_metric_ids: [],
+      changed_metric_ids: [],
+      removed_metric_ids: [],
+      requested_by: 'owner-1',
+      created_at: '2026-07-30T12:00:00Z',
+      impact_digest: 'b'.repeat(64),
+      from_revision_id: 'revision-1',
+      from_semantic_version: '1.0.0',
+      from_revision_digest: 'd'.repeat(64),
+      requires_explicit_adoption: true,
     },
+  };
+}
+
+function adoption(
+  impact: GuidelineImpactPreviewResponse = preview(),
+): GuidelineAdoptionResponse {
+  return {
+    binding: {
+      binding_id: 'binding-1',
+      board_id: 'board-1',
+      guideline_id: 'guideline-1',
+      revision_id: 'revision-2',
+      semantic_version: '2.0.0',
+      revision_digest: 'a'.repeat(64),
+      priority: impact.receipt.proposed_priority,
+      binding_revision: 5,
+      adopted_by: 'owner-1',
+      adopted_at: '2026-07-30T12:01:00Z',
+      enforcement: impact.receipt.proposed_enforcement,
+      minimum_confidence: impact.receipt.proposed_minimum_confidence,
+      metric_threshold_overrides:
+        impact.receipt.proposed_metric_threshold_overrides,
+      configuration_digest: '7'.repeat(64),
+      state: 'active',
+      source_kind: 'native',
+    },
+    receipt: impact.receipt,
   };
 }
 
@@ -136,6 +203,7 @@ function renderDialog({
         guidelineTitle="Delivery quality"
         targetRevisionId="revision-2"
         targetSemanticVersion="2.0.0"
+        proposedPriority={2}
         adoptedBinding={adopted
           ? {
               bindingId: 'binding-1',
@@ -171,15 +239,15 @@ describe('GuidelineImpactDialog semantic board configuration', () => {
       'guidelines.adoption.manage',
     );
     policyApiMock.previewGuidelineImpact.mockResolvedValue(preview());
-    policyApiMock.adoptGuidelineRevision.mockResolvedValue({
-      binding_id: 'binding-1',
-      binding_revision: 5,
-      configuration_digest: 'e'.repeat(64),
-      replayed: false,
-    });
+    policyApiMock.adoptGuidelineRevision.mockResolvedValue(adoption());
   });
 
   it('previews the exact semantic configuration without legacy aliases', async () => {
+    policyApiMock.previewGuidelineImpact.mockResolvedValue(preview({
+      enforcement: 'blocking',
+      minimumConfidence: 82,
+      overrides: { evidence_strength: 76 },
+    }));
     renderDialog();
     expect(await screen.findByText('Evidence strength')).toBeInTheDocument();
     expect(screen.getByText(/Confidence is system-owned/i)).toBeInTheDocument();
@@ -203,22 +271,24 @@ describe('GuidelineImpactDialog semantic board configuration', () => {
         'board-1',
         'guideline-1',
         {
-          target_revision_id: 'revision-2',
-          expected_binding_head_revision: 4,
-          enforcement: 'blocking',
-          minimum_confidence: 82,
-          metric_threshold_overrides: {
+          proposed_priority: 2,
+          proposed_enforcement: 'blocking',
+          proposed_minimum_confidence: 82,
+          proposed_metric_threshold_overrides: {
             evidence_strength: 76,
           },
+          idempotency_key: expect.stringMatching(
+            /^guideline-impact-preview-/,
+          ),
+          to_revision_id: 'revision-2',
         },
         expect.any(AbortSignal),
       );
     });
     const request = policyApiMock.previewGuidelineImpact.mock.calls[0][2];
-    expect(request).not.toHaveProperty('proposed_default_enforcement');
-    expect(request).not.toHaveProperty('proposed_priority');
-    expect(request).not.toHaveProperty('to_revision_id');
-    expect(request).not.toHaveProperty('idempotency_key');
+    expect(request).not.toHaveProperty('target_revision_id');
+    expect(request).not.toHaveProperty('expected_binding_head_revision');
+    expect(request).not.toHaveProperty('metric_threshold_overrides');
     expect(await screen.findByText('Impact preview is ready.'))
       .toBeInTheDocument();
   });
@@ -236,20 +306,14 @@ describe('GuidelineImpactDialog semantic board configuration', () => {
         'board-1',
         'guideline-1',
         {
-          preview_id: 'preview-1',
-          preview_digest: 'b'.repeat(64),
-          expected_binding_head_revision: 4,
+          impact_receipt_id: 'preview-1',
+          impact_digest: 'b'.repeat(64),
           idempotency_key: expect.stringMatching(/^guideline-adoption-/),
         },
         expect.any(AbortSignal),
       );
     });
-    expect(onAdopted).toHaveBeenCalledWith({
-      binding_id: 'binding-1',
-      binding_revision: 5,
-      configuration_digest: 'e'.repeat(64),
-      replayed: false,
-    });
+    expect(onAdopted).toHaveBeenCalledWith(adoption());
   });
 
   it('invalidates a preview whenever a board setting changes', async () => {
@@ -314,17 +378,14 @@ describe('GuidelineImpactDialog semantic board configuration', () => {
     expect(screen.getByTestId('guideline-impact-adopt')).toBeDisabled();
   });
 
-  it('does not invent continuation pagination when preview exposes a cursor', async () => {
-    policyApiMock.previewGuidelineImpact.mockResolvedValue(
-      preview('opaque-next'),
-    );
+  it('uses the immutable affected-item set sealed by the receipt', async () => {
     renderDialog();
     await screen.findByText('Evidence strength');
     fireEvent.click(screen.getByTestId('guideline-impact-preview'));
 
-    expect(await screen.findByTestId('guideline-impact-more-items'))
-      .toHaveTextContent(/Adoption stays disabled/i);
+    expect(await screen.findByTestId('guideline-impact-item-impact-1'))
+      .toHaveTextContent(/Board configuration/i);
     expect(policyApiMock).not.toHaveProperty('listGuidelineImpactItems');
-    expect(screen.getByTestId('guideline-impact-adopt')).toBeDisabled();
+    expect(screen.getByTestId('guideline-impact-adopt')).toBeEnabled();
   });
 });

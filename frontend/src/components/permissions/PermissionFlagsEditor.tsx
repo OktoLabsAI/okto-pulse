@@ -9,34 +9,7 @@
 import { useState } from 'react';
 import { ChevronRight, ChevronDown } from 'lucide-react';
 import type { PermissionFlags, PermissionFlagTree } from '@/types';
-
-const ENTITY_LABELS: Record<string, string> = {
-  board: 'Board',
-  story: 'Stories',
-  topic: 'Topics',
-  spec: 'Specs',
-  card: 'Cards',
-  ideation: 'Ideations',
-  refinement: 'Refinements',
-  sprint: 'Sprints',
-  profile: 'Profile',
-  guidelines: 'Guidelines',
-  kg: 'Knowledge Graphs',
-};
-
-const ENTITY_COLORS: Record<string, string> = {
-  board: 'text-blue-600 dark:text-blue-400',
-  story: 'text-sky-600 dark:text-sky-300',
-  topic: 'text-teal-600 dark:text-teal-300',
-  spec: 'text-violet-600 dark:text-violet-400',
-  card: 'text-green-600 dark:text-green-400',
-  ideation: 'text-amber-600 dark:text-amber-400',
-  refinement: 'text-cyan-600 dark:text-cyan-400',
-  sprint: 'text-orange-600 dark:text-orange-400',
-  profile: 'text-gray-600 dark:text-gray-400',
-  guidelines: 'text-pink-600 dark:text-pink-400',
-  kg: 'text-indigo-600 dark:text-indigo-400',
-};
+import { getEntityLabel, getEntityTextClasses } from './permissionLabels';
 
 type FlagValue = boolean;
 // The canonical registry may introduce groups at any depth (for example
@@ -142,6 +115,7 @@ export function PermissionFlagsEditor({ flags, onChange, readOnly = false }: Per
     <div className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
       {entities.map((entity) => {
         const entityData = flags[entity];
+        const entityLabel = getEntityLabel(entity);
         const isExpanded = expandedEntity === entity;
         const { total, enabled } = countFlags(entityData);
 
@@ -149,15 +123,15 @@ export function PermissionFlagsEditor({ flags, onChange, readOnly = false }: Per
           <div key={entity} className="border-b last:border-b-0 border-gray-200 dark:border-gray-700">
             <button
               type="button"
-              aria-label={`Edit ${ENTITY_LABELS[entity] || entity} permissions`}
+              aria-label={`Edit ${entityLabel} permissions`}
               aria-expanded={isExpanded}
               onClick={() => setExpandedEntity(isExpanded ? null : entity)}
               className="w-full flex items-center justify-between px-4 py-2.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-700/30"
             >
               <div className="flex items-center gap-2">
                 {isExpanded ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
-                <span className={`font-medium ${ENTITY_COLORS[entity] || 'text-gray-600'}`}>
-                  {ENTITY_LABELS[entity] || entity}
+                <span className={`font-medium ${getEntityTextClasses(entity)}`}>
+                  {entityLabel}
                 </span>
               </div>
               <span className={`text-[10px] px-1.5 py-0.5 rounded ${countBadgeColor(enabled, total)}`}>
@@ -343,4 +317,5 @@ export function setAllFlags(flags: FlagsMap, value: boolean): FlagsMap {
   );
 }
 
-export { ENTITY_LABELS, ENTITY_COLORS, countFlags, countBadgeColor };
+export { countFlags, countBadgeColor };
+export { ENTITY_COLORS, ENTITY_LABELS } from './permissionLabels';

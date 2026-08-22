@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import re
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import event, func, select
+from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from okto_pulse.community.adapters.relational_effects import (
@@ -50,6 +52,7 @@ def _upsert(
     priority: str = "normal",
     source: str = "event:spec.moved",
     triggered_by_event: str = "spec.moved",
+    payload: dict | None = None,
 ) -> ConsolidationQueueUpsert:
     return ConsolidationQueueUpsert(
         board_id="board-1",
@@ -58,7 +61,148 @@ def _upsert(
         priority=priority,
         source=source,
         triggered_by_event=triggered_by_event,
+        payload=payload,
     )
+
+
+@pytest.mark.asyncio
+async def test_queue_upsert_compiles_with_its_bound_sql_dialect() -> None:
+    class _CompileResult:
+        @staticmethod
+        def scalar_one_or_none() -> str:
+            return "compiled-row"
+
+    class _CompileSession:
+        def __init__(self, dialect) -> None:  # noqa: ANN001
+            self._bind = SimpleNamespace(dialect=dialect)
+            self.sql = ""
+
+        def get_bind(self):  # noqa: ANN201
+            return self._bind
+
+        async def execute(self, statement):  # noqa: ANN001, ANN201
+            self.sql = str(statement.compile(dialect=self._bind.dialect))
+            return _CompileResult()
+
+    adapter = CommunitySqlAlchemyRelationalEffects()
+    for dialect in (sqlite.dialect(), postgresql.dialect()):
+        session = _CompileSession(dialect)
+        assert await adapter.upsert_consolidation_queue_unless_tombstoned(
+            session,
+            _upsert("dialect-compile", payload={"revision": 1}),
+        )
+        assert "ON CONFLICT" in session.sql
+
+
+@pytest.mark.asyncio
+async def test_live_events_racing_rebuild_membership_survive_claim_and_ack(
+    tmp_path,
+):
+    engine, factory = await _database(tmp_path)
+    admission = CommunitySqlAlchemyRelationalEffects()
+    persistence = CommunitySqlAlchemyConsolidationPersistence()
+    try:
+        async with factory() as session:
+            session.add(
+                ConsolidationQueue(
+                    id="rebuild-member",
+                    board_id="board-1",
+                    artifact_type="card",
+                    artifact_id="card-race",
+                    work_kind="consolidate",
+                    generation=0,
+                    priority="high",
+                    source="rebuild:manifest-1",
+                    payload={"_rebuild_membership": {"run_id": "manifest-1"}},
+                    status="pending",
+                    attempts=0,
+                )
+            )
+            await session.commit()
+
+        async with factory() as session:
+            first = await admission.upsert_consolidation_queue_unless_tombstoned(
+                session,
+                _upsert(
+                    "card-race",
+                    source="event:card.updated:first",
+                    triggered_by_event="card.updated",
+                    payload={"revision": 1},
+                ),
+            )
+            await session.commit()
+        assert first is True
+
+        async with factory() as session:
+            row = await session.get(ConsolidationQueue, "rebuild-member")
+            assert row is not None
+            assert row.status == "pending"
+            assert row.source == "rebuild:manifest-1"
+            assert row.payload == {
+                "_rebuild_deferred_live": {
+                    "source": "event:card.updated:first",
+                    "triggered_by_event": "card.updated",
+                    "payload": {"revision": 1},
+                }
+            }
+            row.status = "claimed"
+            row.claim_token = "stale-rebuild-claim"
+            row.claimed_by_session_id = "stale-session"
+            row.worker_id = "stale-worker"
+            await session.commit()
+
+        async with factory() as session:
+            second = await admission.upsert_consolidation_queue_unless_tombstoned(
+                session,
+                _upsert(
+                    "card-race",
+                    source="event:card.updated:second",
+                    triggered_by_event="card.updated",
+                    payload={"revision": 2},
+                ),
+            )
+            await session.commit()
+        assert second is True
+
+        async with factory() as session:
+            row = await session.get(ConsolidationQueue, "rebuild-member")
+            assert row is not None
+            assert row.status == "pending"
+            assert row.claim_token is None
+            assert row.source == "rebuild:manifest-1"
+            assert row.payload["_rebuild_deferred_live"]["source"] == (
+                "event:card.updated:second"
+            )
+            assert row.payload["_rebuild_deferred_live"]["payload"] == {"revision": 2}
+            row.status = "claimed"
+            row.claim_token = "current-rebuild-claim"
+            row.claimed_by_session_id = "current-session"
+            row.worker_id = "current-worker"
+            await session.commit()
+
+        async with factory() as session:
+            acknowledged = await persistence.ack_claimed_queue_entry(
+                session,
+                entry_id="rebuild-member",
+                claim_token="current-rebuild-claim",
+                board_id="board-1",
+                source="rebuild:manifest-1",
+                work_kind="consolidate",
+                generation=0,
+                delete_event_id=None,
+            )
+            await session.commit()
+        assert acknowledged is True
+
+        async with factory() as session:
+            row = await session.get(ConsolidationQueue, "rebuild-member")
+            assert row is not None
+            assert row.status == "pending"
+            assert row.source == "event:card.updated:second"
+            assert row.payload == {"revision": 2}
+            assert row.claim_token is None
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

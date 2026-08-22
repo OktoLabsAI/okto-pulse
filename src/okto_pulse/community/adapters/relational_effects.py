@@ -7,7 +7,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import exists, func, literal, select, update
+from sqlalchemy import JSON, case, exists, func, literal, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ArtifactDeletionTombstone,
@@ -49,6 +51,9 @@ from okto_pulse.core.ports.discovery_catalog import (
 )
 from okto_pulse.core.ports.amendment_revision import (
     register_amendment_revision_store,
+)
+from okto_pulse.core.ports.sprint_activation_baseline import (
+    register_sprint_activation_baseline_store,
 )
 from okto_pulse.core.ports.parent_artifact import register_parent_artifact_read_port
 from okto_pulse.core.ports.architecture_legacy import (
@@ -111,6 +116,9 @@ from okto_pulse.core.ports.realm_access import register_realm_access_port
 from okto_pulse.core.ports.policy_constraint_projection import (
     register_policy_constraint_projection_port,
 )
+from okto_pulse.core.ports.code_traceability_event_effects import (
+    register_code_traceability_event_effects_port,
+)
 
 
 class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
@@ -137,6 +145,32 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
     ) -> bool:
         insert = _upsert_insert_for_session(session)
         candidate_id = str(uuid.uuid4())
+        payload_expression = (
+            literal(None)
+            if upsert.payload is None
+            else literal(dict(upsert.payload), type_=JSON)
+        )
+        rebuild_source = ConsolidationQueue.source.like("rebuild:%")
+        deferred_live_payload = literal(
+            {
+                "_rebuild_deferred_live": {
+                    "source": upsert.source,
+                    "triggered_by_event": upsert.triggered_by_event,
+                    "payload": (
+                        dict(upsert.payload) if upsert.payload is not None else None
+                    ),
+                }
+            },
+            type_=JSON,
+        )
+        source_expression = case(
+            (rebuild_source, ConsolidationQueue.source),
+            else_=upsert.source,
+        )
+        update_payload_expression = case(
+            (rebuild_source, deferred_live_payload),
+            else_=payload_expression,
+        )
         admitted_values = select(
             literal(candidate_id),
             literal(upsert.board_id),
@@ -147,6 +181,7 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
             literal(upsert.priority),
             literal(upsert.source),
             literal(upsert.triggered_by_event),
+            payload_expression,
             literal("pending"),
             literal(0),
         ).where(
@@ -171,6 +206,7 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
                     "priority",
                     "source",
                     "triggered_by_event",
+                    "payload",
                     "status",
                     "attempts",
                 ),
@@ -184,9 +220,25 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
                     "status": "pending",
                     "attempts": 0,
                     "last_error": None,
-                    "priority": upsert.priority,
-                    "source": upsert.source,
-                    "triggered_by_event": upsert.triggered_by_event,
+                    "priority": case(
+                        (rebuild_source, ConsolidationQueue.priority),
+                        else_=upsert.priority,
+                    ),
+                    # A live event racing rebuild membership is never a
+                    # duplicate no-op.  It revokes a stale claim and leaves a
+                    # distinct durable live intent.  The exact rebuild source
+                    # remains until ACK so drain membership cannot disappear;
+                    # ACK atomically re-pends the preserved live intent, which
+                    # the reservation-aware worker then defers until release.
+                    "source": source_expression,
+                    "triggered_by_event": case(
+                        (
+                            rebuild_source,
+                            ConsolidationQueue.triggered_by_event,
+                        ),
+                        else_=upsert.triggered_by_event,
+                    ),
+                    "payload": update_payload_expression,
                     "claimed_by_session_id": None,
                     "claim_token": None,
                     "claimed_at": None,
@@ -201,7 +253,10 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
                 # The Core worker's final claim fence and compare-and-delete
                 # ACK then either abort before graph commit or compensate its
                 # deferred graph mutation after losing the ACK CAS.
-                where=ConsolidationQueue.status != "pending",
+                where=or_(
+                    ConsolidationQueue.status != "pending",
+                    rebuild_source,
+                ),
             )
             .returning(ConsolidationQueue.id)
         )
@@ -296,10 +351,17 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
 
 
 def _upsert_insert_for_session(session: Any):
-    del session
-    from sqlalchemy.dialects.sqlite import insert
-
-    return insert
+    get_bind = getattr(session, "get_bind", None)
+    bind = get_bind() if callable(get_bind) else getattr(session, "bind", None)
+    dialect_name = str(getattr(getattr(bind, "dialect", None), "name", ""))
+    if dialect_name == "sqlite":
+        return sqlite_insert
+    if dialect_name == "postgresql":
+        return postgresql_insert
+    raise RuntimeError(
+        "community_relational_effects_upsert_dialect_unsupported:"
+        f"{dialect_name or 'unknown'}"
+    )
 
 
 _relational_effects = CommunitySqlAlchemyRelationalEffects()
@@ -343,6 +405,9 @@ def register_community_relational_effects(
     )
     from okto_pulse.community.adapters.sqlalchemy_amendment_revision import (
         CommunitySqlAlchemyAmendmentRevisionStore,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_sprint_activation_baseline import (
+        CommunitySqlAlchemySprintActivationBaselineStore,
     )
     from okto_pulse.community.adapters.sqlalchemy_parent_artifact import (
         CommunitySqlAlchemyParentArtifactReader,
@@ -416,6 +481,9 @@ def register_community_relational_effects(
     from okto_pulse.community.adapters.sqlalchemy_policy_constraint_projection import (
         CommunitySqlAlchemyPolicyConstraintProjection,
     )
+    from okto_pulse.community.adapters.sqlalchemy_code_traceability_event_effects import (
+        CommunitySqlAlchemyCodeTraceabilityEventEffects,
+    )
     from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import (
         CommunitySqlAlchemyResourceGateAdapter,
     )
@@ -460,6 +528,9 @@ def register_community_relational_effects(
     register_skip_override_read_port(CommunitySqlAlchemySkipOverrideReader())
     register_discovery_catalog_read_port(CommunitySqlAlchemyDiscoveryCatalogReader())
     register_amendment_revision_store(CommunitySqlAlchemyAmendmentRevisionStore())
+    register_sprint_activation_baseline_store(
+        CommunitySqlAlchemySprintActivationBaselineStore()
+    )
     register_parent_artifact_read_port(CommunitySqlAlchemyParentArtifactReader())
     register_architecture_legacy_snapshot_read_port(
         CommunitySqlAlchemyArchitectureLegacySnapshotReader()
@@ -513,6 +584,9 @@ def register_community_relational_effects(
     register_realm_access_port(CommunitySqlAlchemyRealmAccess())
     register_policy_constraint_projection_port(
         CommunitySqlAlchemyPolicyConstraintProjection()
+    )
+    register_code_traceability_event_effects_port(
+        CommunitySqlAlchemyCodeTraceabilityEventEffects()
     )
     return _relational_effects
 

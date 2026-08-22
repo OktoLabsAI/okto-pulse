@@ -3,7 +3,7 @@
 Covers the three reproduced blockers:
 1. TR1/AC13 — the statement budget counts REAL SQL executions (loader
    queries from ``includes`` and direct ``session.execute`` included),
-   proves the exact 6/23/4 caps fail-closed, and aborts BEFORE the
+   proves the exact list/dynamic-batch/column caps fail-closed, and aborts BEFORE the
    over-budget statement.
 2. FR2 — the ``linked`` story filter is a SERVER-SIDE correlated EXISTS with
    page/count parity for true and false.
@@ -30,6 +30,10 @@ from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
 from okto_pulse.community.adapters.sqlalchemy_models import Base
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     CommunitySemanticSession,
+)
+from okto_pulse.community.api.columns_pagination import (
+    BATCH_COLUMNS_STATEMENT_BUDGET,
+    KANBAN_STATUSES,
 )
 from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.ports.application_persistence import (
@@ -417,31 +421,31 @@ async def test_budget_enforces_exact_caps_on_real_compositions(rig) -> None:
         assert budget.used == 4
         with pytest.raises(StatementBudgetExceeded):
             await session.execute(text("SELECT 1"))
-    # KANBAN BATCH composition (cap 23): 6 column pages = 12 real statements
-    # fit; the 24th statement of the request crosses the cap and is refused.
-    async with statement_budget(session, 23) as budget:
-        for status in ("not_started", "started", "done"):
-            for _ in range(2):
-                await list_entities_page(
-                    session,
-                    PageRequest(
-                        surface="kanban_column",
-                        scope=(
-                            ApplicationFilter("board_id", "eq", "b1"),
-                            ApplicationFilter("status", "eq", status),
-                            ApplicationFilter("archived", "is_false", None),
-                        ),
-                        offset=0,
-                        limit=25,
+    # KANBAN BATCH composition derives its ceiling from the authored status
+    # census (three possible reads per status plus two aggregate facets).
+    assert BATCH_COLUMNS_STATEMENT_BUDGET == 3 * len(KANBAN_STATUSES) + 2
+    async with statement_budget(session, BATCH_COLUMNS_STATEMENT_BUDGET) as budget:
+        for status in KANBAN_STATUSES:
+            await list_entities_page(
+                session,
+                PageRequest(
+                    surface="kanban_column",
+                    scope=(
+                        ApplicationFilter("board_id", "eq", "b1"),
+                        ApplicationFilter("status", "eq", status),
+                        ApplicationFilter("archived", "is_false", None),
                     ),
-                )
-        assert budget.used == 12
-        for _ in range(11):
+                    offset=0,
+                    limit=25,
+                ),
+            )
+        assert budget.used == 2 * len(KANBAN_STATUSES)
+        for _ in range(BATCH_COLUMNS_STATEMENT_BUDGET - budget.used):
             await session.execute(text("SELECT 1"))
-        assert budget.used == 23
+        assert budget.used == BATCH_COLUMNS_STATEMENT_BUDGET
         with pytest.raises(StatementBudgetExceeded):
             await session.execute(text("SELECT 1"))
-        assert budget.used == 24
+        assert budget.used == BATCH_COLUMNS_STATEMENT_BUDGET + 1
 
 
 async def test_linked_filter_is_server_side_exists(rig) -> None:

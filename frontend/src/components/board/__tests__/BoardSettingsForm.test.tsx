@@ -9,6 +9,7 @@ const baseSettings: BoardSettings = {
   skip_test_coverage_global: false,
   skip_rules_coverage_global: false,
   skip_trs_coverage_global: false,
+  skip_code_evidence_coverage_global: false,
   skip_contract_coverage_global: false,
   skip_ir_coverage_global: false,
   skip_or_coverage_global: false,
@@ -19,6 +20,27 @@ const baseSettings: BoardSettings = {
   min_completeness: 70,
   max_drift: 30,
 };
+
+describe('BoardSettingsForm — coverage overrides', () => {
+  it('configures the Board-wide Code Evidence Matrix skip independently', () => {
+    const onChange = vi.fn();
+    render(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
+
+    const toggle = screen.getByRole('switch', {
+      name: 'Skip Code Evidence Matrix coverage',
+    });
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+
+    fireEvent.click(toggle);
+
+    expect(onChange).toHaveBeenCalledWith({
+      skip_code_evidence_coverage_global: true,
+    });
+    expect(onChange).not.toHaveBeenCalledWith(
+      expect.objectContaining({ skip_trs_coverage_global: true }),
+    );
+  });
+});
 
 describe('BoardSettingsForm — independent reviewer policy', () => {
   it('renders the persisted mode and offers all three policies', () => {
@@ -103,6 +125,60 @@ describe('BoardSettingsForm — requirement lint languages', () => {
   });
 });
 
+describe('BoardSettingsForm — spec validation metric gates', () => {
+  it('renders the five canonical thresholds without the legacy completeness threshold', () => {
+    render(
+      <BoardSettingsForm
+        settings={{ ...baseSettings, require_spec_validation: true }}
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('bsf-num-min_spec_confidence')).toHaveValue(70);
+    expect(screen.getByTestId('bsf-num-min_spec_clarity')).toHaveValue(80);
+    expect(screen.getByTestId('bsf-num-min_spec_assertiveness')).toHaveValue(80);
+    expect(screen.getByTestId('bsf-num-min_spec_decidability')).toHaveValue(80);
+    expect(screen.getByTestId('bsf-num-max_spec_ambiguity')).toHaveValue(30);
+    expect(screen.queryByTestId('bsf-num-min_spec_completeness')).not.toBeInTheDocument();
+
+    const thresholds = screen.getByTestId('spec-validation-thresholds');
+    expect(thresholds.children).toHaveLength(5);
+    for (const metric of [
+      'min_spec_confidence',
+      'min_spec_clarity',
+      'min_spec_assertiveness',
+      'min_spec_decidability',
+      'max_spec_ambiguity',
+    ]) {
+      expect(screen.getByTestId(`bsf-row-${metric}`)).toContainElement(
+        screen.getByTestId(`bsf-num-${metric}`),
+      );
+    }
+  });
+
+  it.each([
+    ['bsf-num-min_spec_confidence', 'min_spec_confidence', 73],
+    ['bsf-num-min_spec_clarity', 'min_spec_clarity', 81],
+    ['bsf-num-min_spec_assertiveness', 'min_spec_assertiveness', 82],
+    ['bsf-num-min_spec_decidability', 'min_spec_decidability', 83],
+    ['bsf-num-max_spec_ambiguity', 'max_spec_ambiguity', 24],
+  ] as const)('commits %s on blur', (testId, key, value) => {
+    const onChange = vi.fn();
+    render(
+      <BoardSettingsForm
+        settings={{ ...baseSettings, require_spec_validation: true }}
+        onChange={onChange}
+      />,
+    );
+
+    const input = screen.getByTestId(testId);
+    fireEvent.change(input, { target: { value: String(value) } });
+    fireEvent.blur(input);
+
+    expect(onChange).toHaveBeenCalledWith({ [key]: value });
+  });
+});
+
 describe('BoardSettingsForm — execution report evidence mode', () => {
   it('defaults to off and offers the three modes', () => {
     render(<BoardSettingsForm settings={baseSettings} onChange={vi.fn()} />);
@@ -149,6 +225,109 @@ describe('BoardSettingsForm — execution report evidence mode', () => {
     expect(screen.getByTestId('impact-evidence-mode-off')).toHaveAttribute(
       'aria-pressed',
       'true',
+    );
+  });
+});
+
+describe('BoardSettingsForm — agent-mediated Code Traceability', () => {
+  it('renders the permanent source-blind disclosure without repository controls', () => {
+    render(<BoardSettingsForm settings={baseSettings} onChange={vi.fn()} />);
+
+    expect(screen.getByText('Agent-mediated Code Traceability')).toBeInTheDocument();
+    expect(screen.getByTestId('code-traceability-source-blind-disclosure')).toHaveTextContent(
+      'Pulse does not access source code',
+    );
+    expect(screen.queryByLabelText(/repository|provider|checkout|filesystem/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /connect|sync|clone|probe|submit|check/i })).not.toBeInTheDocument();
+  });
+
+  it('offers only Advisory and Blocking, with Advisory as the safe default', () => {
+    const onChange = vi.fn();
+    render(<BoardSettingsForm settings={baseSettings} onChange={onChange} />);
+
+    const mode = screen.getByLabelText<HTMLSelectElement>(
+      'Code Traceability enforcement mode',
+    );
+    expect(mode).toHaveValue('advisory');
+    expect(Array.from(mode.options, (option) => option.value)).toEqual([
+      'advisory',
+      'blocking',
+    ]);
+    expect(
+      screen.getByTestId('code-traceability-enforcement-guidance'),
+    ).toHaveTextContent(
+      'Missing Technical Anchors or Code Evidence does not block applicable transitions',
+    );
+    expect(
+      screen.getByTestId('code-traceability-enforcement-guidance'),
+    ).toHaveTextContent(
+      'repeat repository analysis after entity-version or source-head drift',
+    );
+
+    fireEvent.change(mode, { target: { value: 'blocking' } });
+
+    expect(onChange).toHaveBeenCalledWith({
+      code_traceability: expect.objectContaining({
+        mode: 'blocking',
+        evidence_attestation: 'preferred',
+        target_resolution: 'advisory',
+        accepted_attestor_policy: 'granular_permission',
+        receipt_content: 'safe_excerpt',
+      }),
+    });
+  });
+
+  it('projects the retired Off value as Advisory', () => {
+    render(
+      <BoardSettingsForm
+        settings={{
+          ...baseSettings,
+          code_traceability: {
+            mode: 'off',
+            evidence_attestation: 'preferred',
+            target_resolution: 'advisory',
+            accepted_attestor_policy: 'granular_permission',
+            minimum_trust: 'single_attestation',
+            preflight_freshness_seconds: 1800,
+            overlap_policy: 'warn',
+            observed_state_policy: 'allow_dirty_attestation',
+            receipt_content: 'safe_excerpt',
+          },
+        }}
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByLabelText('Code Traceability enforcement mode'),
+    ).toHaveValue('advisory');
+  });
+
+  it('explains the current-coverage requirement in Blocking mode', () => {
+    render(
+      <BoardSettingsForm
+        settings={{
+          ...baseSettings,
+          code_traceability: {
+            mode: 'blocking',
+            evidence_attestation: 'required',
+            target_resolution: 'required_current_receipt',
+            accepted_attestor_policy: 'granular_permission',
+            minimum_trust: 'single_attestation',
+            preflight_freshness_seconds: 1800,
+            overlap_policy: 'warn',
+            observed_state_policy: 'allow_dirty_attestation',
+            receipt_content: 'safe_excerpt',
+          },
+        }}
+        onChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByTestId('code-traceability-enforcement-guidance'),
+    ).toHaveTextContent(
+      'Missing requirements selected by the Code Evidence, Technical Anchor and attestation sub-policies become blockers',
     );
   });
 });

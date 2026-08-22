@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Sequence
+from dataclasses import asdict, is_dataclass
+from enum import Enum
 from typing import Any, TypeVar
 
 from sqlalchemy import select
@@ -32,6 +34,7 @@ from okto_pulse.core.domain.entities import (
     Ideation as IdeationEntity,
     Spec as SpecEntity,
 )
+from okto_pulse.core.domain.code_traceability import DeliveryContext
 from okto_pulse.core.domain.realm import (
     RealmIsolationViolation,
     RealmScope,
@@ -63,6 +66,7 @@ _IDEATION_FIELDS = (
     "scope_assessment",
     "complexity",
     "status",
+    "edition",
     "version",
     "assignee_id",
     "created_by",
@@ -73,6 +77,7 @@ _IDEATION_FIELDS = (
     "archived",
     "pre_archive_status",
     "skip_ambiguity_gate",
+    "skip_ambiguity_gate_edition",
     "cancellation_reason",
     "cancelled_at",
     "cancelled_by",
@@ -83,6 +88,12 @@ _SPEC_FIELDS = (
     "board_id",
     "ideation_id",
     "refinement_id",
+    "source_refinement_snapshot_id",
+    "source_refinement_version",
+    "delivery_context",
+    "delivery_context_provenance",
+    "source_context_manifest",
+    "source_context_sha256",
     "title",
     "description",
     "context",
@@ -103,6 +114,7 @@ _SPEC_FIELDS = (
     "skip_contract_coverage",
     "skip_ir_coverage",
     "skip_or_coverage",
+    "skip_code_evidence_coverage",
     "skip_qualitative_validation",
     "validation_threshold",
     "require_task_validation",
@@ -119,6 +131,7 @@ _SPEC_FIELDS = (
     "cancelled_by",
     "status",
     "edition",
+    "last_started_edition",
     "version",
     "assignee_id",
     "created_by",
@@ -167,13 +180,37 @@ def ideation_to_row(entity: IdeationEntity) -> Ideation:
 def spec_to_domain(row: Spec) -> SpecEntity:
     """Project a Community Spec row into the Core domain aggregate."""
 
-    return SpecEntity(**_values(row, _SPEC_FIELDS))
+    values = _values(row, _SPEC_FIELDS)
+    if values["delivery_context"] is not None:
+        values["delivery_context"] = DeliveryContext(values["delivery_context"])
+    return SpecEntity(**values)
 
 
 def spec_to_row(entity: SpecEntity) -> Spec:
     """Project a Core Spec aggregate into a new Community row."""
 
-    return Spec(**_row_values(entity, _SPEC_FIELDS))
+    values = _row_values(entity, _SPEC_FIELDS)
+    delivery_context = values.get("delivery_context")
+    if isinstance(delivery_context, DeliveryContext):
+        values["delivery_context"] = delivery_context.value
+
+    provenance = values.get("delivery_context_provenance")
+    if provenance is not None and is_dataclass(provenance):
+        provenance = asdict(provenance)
+
+    def json_value(value: object) -> object:
+        if isinstance(value, Enum):
+            return value.value
+        if isinstance(value, dict):
+            return {str(key): json_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [json_value(item) for item in value]
+        if isinstance(value, tuple):
+            return [json_value(item) for item in value]
+        return value
+
+    values["delivery_context_provenance"] = json_value(provenance)
+    return Spec(**values)
 
 
 class CommunityBoardRepository:
@@ -221,9 +258,12 @@ class CommunityIdeationRepository:
         return ideation_to_domain(row) if row is not None else None
 
     async def add(self, ideation: IdeationEntity) -> None:
-        if await CommunityBoardRepository(
-            self._session, self.realm_scope
-        ).get(ideation.board_id) is None:
+        if (
+            await CommunityBoardRepository(self._session, self.realm_scope).get(
+                ideation.board_id
+            )
+            is None
+        ):
             raise RealmIsolationViolation()
         self._session.add(ideation_to_row(ideation))
 
@@ -248,9 +288,12 @@ class CommunitySpecRepository:
         return spec_to_domain(row) if row is not None else None
 
     async def add(self, spec: SpecEntity) -> None:
-        if await CommunityBoardRepository(
-            self._session, self.realm_scope
-        ).get(spec.board_id) is None:
+        if (
+            await CommunityBoardRepository(self._session, self.realm_scope).get(
+                spec.board_id
+            )
+            is None
+        ):
             raise RealmIsolationViolation()
         self._session.add(spec_to_row(spec))
 

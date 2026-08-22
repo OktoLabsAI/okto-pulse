@@ -1,0 +1,866 @@
+{
+  "components": {
+    "schemas": {
+      "PolicyEntityType": {
+        "enum": [
+          "ideation",
+          "refinement",
+          "spec",
+          "sprint",
+          "card",
+          "test_scenario"
+        ],
+        "title": "PolicyEntityType",
+        "type": "string"
+      },
+      "PolicyErrorDetail": {
+        "additionalProperties": false,
+        "description": "Canonical bounded B13 error projected identically by REST and MCP.",
+        "properties": {
+          "category": {
+            "enum": [
+              "invalid_argument",
+              "permission_denied",
+              "not_found",
+              "conflict",
+              "unprocessable_entity",
+              "service_unavailable"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "details": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Details",
+            "type": "object"
+          },
+          "error": {
+            "enum": [
+              "validation_failed",
+              "under_bump",
+              "permission_denied",
+              "not_found",
+              "conflict",
+              "service_unavailable",
+              "invalid_cursor",
+              "semantic_anchor_missing",
+              "semantic_anchor_forbidden",
+              "semantic_assessment_contract_invalid",
+              "unsupported_contract_version",
+              "v2_writer_not_ready"
+            ],
+            "title": "Error",
+            "type": "string"
+          },
+          "error_code": {
+            "title": "Error Code",
+            "type": "string"
+          },
+          "http_status": {
+            "enum": [
+              400,
+              401,
+              403,
+              404,
+              409,
+              422,
+              503
+            ],
+            "title": "Http Status",
+            "type": "integer"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "next_action": {
+            "title": "Next Action",
+            "type": "string"
+          },
+          "outcome": {
+            "const": "error",
+            "title": "Outcome",
+            "type": "string"
+          },
+          "retryable": {
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "status_category": {
+            "title": "Status Category",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "error",
+          "code",
+          "error_code",
+          "message",
+          "category",
+          "status_category",
+          "http_status",
+          "retryable",
+          "next_action",
+          "details"
+        ],
+        "title": "PolicyErrorDetail",
+        "type": "object"
+      },
+      "PolicyErrorEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/PolicyErrorDetail"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "PolicyErrorEnvelope",
+        "type": "object"
+      },
+      "RecordSemanticGuidelineAssessmentV2Request": {
+        "additionalProperties": false,
+        "properties": {
+          "binding_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Binding Id",
+            "type": "string"
+          },
+          "confidence": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "integer"
+          },
+          "contract_version": {
+            "const": "v2",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "expected_binding_revision": {
+            "maximum": 2147483647.0,
+            "minimum": 1.0,
+            "title": "Expected Binding Revision",
+            "type": "integer"
+          },
+          "expected_subject_edition": {
+            "anyOf": [
+              {
+                "maximum": 2147483647.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Subject Edition"
+          },
+          "expected_subject_version": {
+            "maximum": 2147483647.0,
+            "minimum": 1.0,
+            "title": "Expected Subject Version",
+            "type": "integer"
+          },
+          "guideline_revision_id": {
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Guideline Revision Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "metric_results": {
+            "items": {
+              "$ref": "#/components/schemas/SemanticMetricAssessmentV2Request"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Metric Results",
+            "type": "array"
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Id"
+          },
+          "subject_id": {
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Subject Id",
+            "type": "string"
+          },
+          "subject_type": {
+            "$ref": "#/components/schemas/PolicyEntityType"
+          }
+        },
+        "required": [
+          "contract_version",
+          "subject_type",
+          "subject_id",
+          "expected_subject_version",
+          "binding_id",
+          "expected_binding_revision",
+          "guideline_revision_id",
+          "idempotency_key",
+          "confidence",
+          "metric_results"
+        ],
+        "title": "RecordSemanticGuidelineAssessmentV2Request",
+        "type": "object"
+      },
+      "RecordedSemanticAssessmentV2Response": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_version": {
+            "const": "v2",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "currentness": {
+            "const": "current",
+            "title": "Currentness",
+            "type": "string"
+          },
+          "lifecycle_state": {
+            "const": "current",
+            "title": "Lifecycle State",
+            "type": "string"
+          },
+          "metrics": {
+            "items": {
+              "$ref": "#/components/schemas/SemanticMetricResultV2Response"
+            },
+            "title": "Metrics",
+            "type": "array"
+          },
+          "receipt_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Receipt Digest",
+            "type": "string"
+          },
+          "receipt_id": {
+            "title": "Receipt Id",
+            "type": "string"
+          },
+          "request_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Request Digest",
+            "type": "string"
+          },
+          "validation_edition": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validation Edition"
+          }
+        },
+        "required": [
+          "contract_version",
+          "receipt_id",
+          "request_digest",
+          "receipt_digest",
+          "currentness",
+          "validation_edition",
+          "lifecycle_state",
+          "metrics"
+        ],
+        "title": "RecordedSemanticAssessmentV2Response",
+        "type": "object"
+      },
+      "SemanticAnchorSnapshotV2Response": {
+        "additionalProperties": false,
+        "properties": {
+          "availability_at_seal": {
+            "enum": [
+              "available",
+              "removed",
+              "inaccessible"
+            ],
+            "title": "Availability At Seal",
+            "type": "string"
+          },
+          "excerpt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Excerpt"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "source_version": {
+            "title": "Source Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "excerpt",
+          "source_version",
+          "availability_at_seal"
+        ],
+        "title": "SemanticAnchorSnapshotV2Response",
+        "type": "object"
+      },
+      "SemanticAnchorV2Request": {
+        "additionalProperties": false,
+        "properties": {
+          "anchor_ref": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchor Ref"
+          },
+          "anchor_type": {
+            "enum": [
+              "whole_artifact",
+              "field",
+              "structured_child",
+              "qa"
+            ],
+            "title": "Anchor Type",
+            "type": "string"
+          },
+          "excerpt_hash": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Excerpt Hash"
+          }
+        },
+        "required": [
+          "anchor_type"
+        ],
+        "title": "SemanticAnchorV2Request",
+        "type": "object"
+      },
+      "SemanticEvidenceRefRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "content_hash": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "source_id": {
+            "minLength": 1,
+            "title": "Source Id",
+            "type": "string"
+          },
+          "source_type": {
+            "minLength": 1,
+            "title": "Source Type",
+            "type": "string"
+          },
+          "source_version": {
+            "maximum": 2147483647.0,
+            "minimum": 1.0,
+            "title": "Source Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "source_type",
+          "source_id",
+          "source_version",
+          "content_hash"
+        ],
+        "title": "SemanticEvidenceRefRequest",
+        "type": "object"
+      },
+      "SemanticMetricAssessmentV2Request": {
+        "additionalProperties": false,
+        "properties": {
+          "contract_version": {
+            "const": "v2",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "evidence_refs": {
+            "items": {
+              "$ref": "#/components/schemas/SemanticEvidenceRefRequest"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Evidence Refs",
+            "type": "array"
+          },
+          "metric_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Metric Id",
+            "type": "string"
+          },
+          "pinpoints": {
+            "items": {
+              "$ref": "#/components/schemas/SemanticPinpointV2Request"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Pinpoints",
+            "type": "array"
+          },
+          "rationale": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Rationale",
+            "type": "string"
+          },
+          "score": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Score",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "contract_version",
+          "metric_id",
+          "score",
+          "rationale",
+          "evidence_refs",
+          "pinpoints"
+        ],
+        "title": "SemanticMetricAssessmentV2Request",
+        "type": "object"
+      },
+      "SemanticMetricResultV2Response": {
+        "additionalProperties": false,
+        "properties": {
+          "blocking": {
+            "title": "Blocking",
+            "type": "boolean"
+          },
+          "default_threshold": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Default Threshold",
+            "type": "integer"
+          },
+          "direction": {
+            "enum": [
+              "minimum",
+              "maximum"
+            ],
+            "title": "Direction",
+            "type": "string"
+          },
+          "effective_threshold": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Effective Threshold",
+            "type": "integer"
+          },
+          "metric_code": {
+            "title": "Metric Code",
+            "type": "string"
+          },
+          "metric_id": {
+            "title": "Metric Id",
+            "type": "string"
+          },
+          "metric_result_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Metric Result Digest",
+            "type": "string"
+          },
+          "metric_result_id": {
+            "title": "Metric Result Id",
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "pass",
+              "fail"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "pinpoints": {
+            "items": {
+              "$ref": "#/components/schemas/SemanticPinpointV2Response"
+            },
+            "title": "Pinpoints",
+            "type": "array"
+          },
+          "score": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Score",
+            "type": "integer"
+          },
+          "threshold_source": {
+            "enum": [
+              "default",
+              "override"
+            ],
+            "title": "Threshold Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "metric_result_id",
+          "metric_result_digest",
+          "metric_id",
+          "metric_code",
+          "score",
+          "direction",
+          "default_threshold",
+          "effective_threshold",
+          "threshold_source",
+          "outcome",
+          "blocking",
+          "pinpoints"
+        ],
+        "title": "SemanticMetricResultV2Response",
+        "type": "object"
+      },
+      "SemanticPinpointV2Request": {
+        "additionalProperties": false,
+        "properties": {
+          "anchor": {
+            "$ref": "#/components/schemas/SemanticAnchorV2Request"
+          },
+          "contract_version": {
+            "const": "v2",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "detail": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Detail",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "evidence",
+              "issue"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "pinpoint_key": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Pinpoint Key",
+            "type": "string"
+          },
+          "remediation": {
+            "anyOf": [
+              {
+                "maxLength": 10000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remediation"
+          },
+          "severity": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Severity"
+          },
+          "title": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "contract_version",
+          "pinpoint_key",
+          "kind",
+          "title",
+          "detail",
+          "anchor"
+        ],
+        "title": "SemanticPinpointV2Request",
+        "type": "object"
+      },
+      "SemanticPinpointV2Response": {
+        "additionalProperties": false,
+        "properties": {
+          "anchor": {
+            "$ref": "#/components/schemas/SemanticAnchorV2Request"
+          },
+          "anchor_snapshot": {
+            "$ref": "#/components/schemas/SemanticAnchorSnapshotV2Response"
+          },
+          "blocking": {
+            "title": "Blocking",
+            "type": "boolean"
+          },
+          "contract_version": {
+            "const": "v2",
+            "title": "Contract Version",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "evidence",
+              "issue"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "pinpoint_key": {
+            "title": "Pinpoint Key",
+            "type": "string"
+          },
+          "remediation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remediation"
+          },
+          "severity": {
+            "anyOf": [
+              {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Severity"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "contract_version",
+          "pinpoint_key",
+          "kind",
+          "title",
+          "detail",
+          "severity",
+          "remediation",
+          "anchor",
+          "anchor_snapshot",
+          "blocking"
+        ],
+        "title": "SemanticPinpointV2Response",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "title": "Okto Pulse semantic guideline assessment v2",
+    "version": "2.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/boards/{board_id}/semantic-guideline-assessments/v2": {
+      "post": {
+        "operationId": "record_semantic_guideline_assessment_v2_boards__board_id__semantic_guideline_assessments_v2_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "board_id",
+            "required": true,
+            "schema": {
+              "maxLength": 36,
+              "minLength": 1,
+              "title": "Board Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecordSemanticGuidelineAssessmentV2Request"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordedSemanticAssessmentV2Response"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyErrorEnvelope"
+                }
+              }
+            },
+            "description": "Canonical guideline-policy error."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyErrorEnvelope"
+                }
+              }
+            },
+            "description": "Canonical guideline-policy error."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyErrorEnvelope"
+                }
+              }
+            },
+            "description": "Canonical guideline-policy error."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyErrorEnvelope"
+                }
+              }
+            },
+            "description": "Canonical guideline-policy error."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyErrorEnvelope"
+                }
+              }
+            },
+            "description": "Canonical guideline-policy error."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyErrorEnvelope"
+                }
+              }
+            },
+            "description": "The authorized semantic anchor is missing."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyErrorEnvelope"
+                }
+              }
+            },
+            "description": "Canonical guideline-policy error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyErrorEnvelope"
+                }
+              }
+            },
+            "description": "Canonical guideline-policy error."
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Record Semantic Guideline Assessment V2"
+      }
+    }
+  }
+}

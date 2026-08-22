@@ -14,7 +14,7 @@ from fastapi import (
     Request,
     status,
 )
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory
 from okto_pulse.community.adapters.sqlalchemy_quality_assessment import (
@@ -22,11 +22,16 @@ from okto_pulse.community.adapters.sqlalchemy_quality_assessment import (
 )
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.community.api.deps import get_unit_of_work_factory
+from okto_pulse.community.api.validation_observability import (
+    observe_external_validation_write,
+)
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.inbound.quality_assessment_error import (
     project_quality_assessment_error,
 )
 from okto_pulse.core.application.use_cases.quality_assessment import (
+    GetRequirementLintPreflightCommand,
+    GetRequirementLintPreflightUseCase,
     GetCurrentQualityAssessmentCommand,
     GetQualityAssessmentReceiptCommand,
     ListQualityAssessmentsCommand,
@@ -35,6 +40,8 @@ from okto_pulse.core.application.use_cases.quality_assessment import (
     QualityAssessmentReadUseCases,
     RecordAmbiguityAssessmentCommand,
     RecordAmbiguityAssessmentUseCase,
+    RecordRequirementLintCommand,
+    RecordRequirementLintUseCase,
 )
 from okto_pulse.core.domain.quality_assessment import (
     AssessmentKind,
@@ -56,10 +63,23 @@ from okto_pulse.core.models.quality_assessment import (
     project_quality_receipt_currentness,
     project_quality_receipt_view,
 )
+from okto_pulse.core.models.validation_cycle import (
+    project_requirement_lint_preflight,
+)
 from okto_pulse.core.models.schemas import PageEnvelope
 from okto_pulse.core.ports.quality_assessment import (
+    AssessmentAuthorityConflict,
+    AssessmentHeadRevisionConflict,
+    AssessmentIdempotencyConflict,
+    AssessmentInputDigestConflict,
+    AssessmentReadAccessDenied,
+    AssessmentSubjectEditionConflict,
+    AssessmentSubjectLifecycleConflict,
     AssessmentSubjectNotFound,
+    AssessmentSubjectStatusConflict,
+    AssessmentSubjectVersionConflict,
     QualityAssessmentPersistenceError,
+    RequirementLintSubjectNotApproved,
 )
 from okto_pulse.core.services.quality_assessment import (
     QualityAssessmentError,
@@ -72,37 +92,93 @@ router = APIRouter()
 _REST_PAGE_LIMITS = frozenset({25, 50, 100})
 
 
-class RecordAmbiguityAssessmentRequest(BaseModel):
-    """Caller-owned assessment data; subject identities are path/server-owned."""
-
+class AmbiguityAssessmentInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    idempotency_key: str = Field(min_length=1)
-    expected_subject_version: int = Field(ge=1)
-    expected_head_revision: int = Field(ge=0)
-    score: float = Field(ge=1, le=5)
+    score: float = Field(ge=0, le=5)
+    summary: str = Field(min_length=1)
     findings: list[QualityFindingInput] = Field(default_factory=list)
     proposed_questions: list[QualityProposedQuestionInput] = Field(
         default_factory=list,
-        json_schema_extra={
-            "maxItems": MAX_PROPOSED_QUESTIONS_PER_ASSESSMENT_V1
-        },
+        json_schema_extra={"maxItems": MAX_PROPOSED_QUESTIONS_PER_ASSESSMENT_V1},
     )
 
 
+class RecordAmbiguityAssessmentRequest(BaseModel):
+    """Canonical nested assessment plus a narrow legacy normalization."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    assessment_kind: Literal["ambiguity"]
+    idempotency_key: str = Field(min_length=1)
+    expected_subject_version: int = Field(ge=1)
+    expected_subject_edition: int = Field(ge=1)
+    expected_head_revision: int = Field(ge=0)
+    assessment: AmbiguityAssessmentInput
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_flattened(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or "assessment" in value:
+            return value
+        if "score" not in value:
+            return value
+        normalized = dict(value)
+        normalized["assessment"] = {
+            "score": normalized.pop("score"),
+            "summary": normalized.pop(
+                "summary", "Ambiguity assessment recorded."
+            ),
+            "findings": normalized.pop("findings", []),
+            "proposed_questions": normalized.pop("proposed_questions", []),
+        }
+        return normalized
+
+
 class RecordAmbiguityAssessmentResponse(BaseModel):
-    outcome: Literal["success"]
-    replayed: bool
-    receipt_id: str
-    head_revision: int
-    qa_id_map: dict[str, str]
+    model_config = ConfigDict(extra="forbid")
+
+    result_id: str
+    subject_edition: int
+    status: Literal["accepted"]
+
+
+class RequirementLintAssessmentInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    score: float = Field(ge=0)
+    summary: str = Field(min_length=1)
+    findings: list[QualityFindingInput] = Field(default_factory=list)
+
+
+class RecordRequirementLintRequest(BaseModel):
+    """Evidence produced by an external agent; Community never runs lint."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    assessment_kind: Literal["requirement_lint"]
+    idempotency_key: str = Field(min_length=1)
+    expected_subject_version: int = Field(ge=1)
+    expected_subject_edition: int = Field(ge=1)
+    expected_head_revision: int = Field(ge=0)
+    ruleset_digest: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+    assessment: RequirementLintAssessmentInput
+
+
+class RecordRequirementLintResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    result_id: str
+    subject_edition: int
+    status: Literal["accepted"]
+    idempotent_replay: bool
 
 
 class QualityCurrentnessResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     current: bool
-    state: Literal["current", "stale"]
+    state: Literal["current", "previous"]
     stale_reasons: list[AssessmentStaleReason]
 
 
@@ -138,8 +214,10 @@ class CurrentQualityAssessmentResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     receipt: dict[str, Any]
+    edition: int | None
+    lifecycle_state: Literal["current", "previous"]
     head_revision: int
-    currentness: Literal["current", "stale"]
+    currentness: Literal["current", "previous"]
     stale_reasons: list[AssessmentStaleReason]
     gate_preview: QualityGatePreviewResponse
 
@@ -148,7 +226,7 @@ class QualityAssessmentReceiptResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     receipt: dict[str, Any]
-    currentness: Literal["current", "stale"]
+    currentness: Literal["current", "previous"]
     stale_reasons: list[AssessmentStaleReason]
 
 
@@ -228,9 +306,40 @@ def _quality_http_error(exc: Exception) -> HTTPException:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=project_quality_assessment_error(exc),
         )
+    if isinstance(exc, AssessmentReadAccessDenied):
+        return HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=project_quality_assessment_error(exc),
+        )
+    if isinstance(exc, RequirementLintSubjectNotApproved):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=project_quality_assessment_error(exc),
+        )
     if isinstance(exc, QualityAssessmentContractError):
         return HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=project_quality_assessment_error(exc),
+        )
+    if isinstance(
+        exc,
+        (
+            AssessmentHeadRevisionConflict,
+            AssessmentIdempotencyConflict,
+            AssessmentInputDigestConflict,
+            AssessmentSubjectEditionConflict,
+            AssessmentSubjectLifecycleConflict,
+            AssessmentSubjectStatusConflict,
+            AssessmentSubjectVersionConflict,
+        ),
+    ):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=project_quality_assessment_error(exc),
+        )
+    if isinstance(exc, AssessmentAuthorityConflict):
+        return HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
             detail=project_quality_assessment_error(exc),
         )
     if isinstance(exc, QualityAssessmentPersistenceError):
@@ -285,7 +394,7 @@ def _validate_rest_page_query(request: Request) -> None:
 def _validate_question_budget(
     data: RecordAmbiguityAssessmentRequest,
 ) -> None:
-    actual = len(data.proposed_questions)
+    actual = len(data.assessment.proposed_questions)
     if actual > MAX_PROPOSED_QUESTIONS_PER_ASSESSMENT_V1:
         raise _quality_http_error(
             QualityAssessmentValidationError(
@@ -384,33 +493,40 @@ async def _record_ambiguity(
     )
     actor = RESTAdapterContract.actor(user_id, board_id=board_id)
     try:
-        result = await RecordAmbiguityAssessmentUseCase(
-            preflight_reader=reader,
-            uow_factory=get_unit_of_work_factory(request),
-        ).execute(
-            RecordAmbiguityAssessmentCommand(
-                board_id=board_id,
-                subject_type=subject_type,
-                subject_id=subject_id,
-                idempotency_key=data.idempotency_key,
-                expected_subject_version=data.expected_subject_version,
-                expected_head_revision=data.expected_head_revision,
-                score=data.score,
-                findings=tuple(item.to_domain() for item in data.findings),
-                proposed_questions=tuple(
-                    item.to_domain() for item in data.proposed_questions
+        with observe_external_validation_write(
+            assessment_kind="ambiguity",
+            subject_type=subject_type.value,
+        ):
+            result = await RecordAmbiguityAssessmentUseCase(
+                preflight_reader=reader,
+                uow_factory=get_unit_of_work_factory(request),
+            ).execute(
+                RecordAmbiguityAssessmentCommand(
+                    board_id=board_id,
+                    subject_type=subject_type,
+                    subject_id=subject_id,
+                    idempotency_key=data.idempotency_key,
+                    expected_subject_version=data.expected_subject_version,
+                    expected_subject_edition=data.expected_subject_edition,
+                    expected_head_revision=data.expected_head_revision,
+                    score=data.assessment.score,
+                    summary=data.assessment.summary,
+                    findings=tuple(
+                        item.to_domain() for item in data.assessment.findings
+                    ),
+                    proposed_questions=tuple(
+                        item.to_domain()
+                        for item in data.assessment.proposed_questions
+                    ),
                 ),
-            ),
-            actor=actor,
-        )
+                actor=actor,
+            )
     except Exception as exc:
         raise _quality_http_error(exc) from exc
     return RecordAmbiguityAssessmentResponse(
-        outcome="success",
-        replayed=result.replayed,
-        receipt_id=result.receipt_id,
-        head_revision=result.head_revision,
-        qa_id_map=dict(result.qa_id_map),
+        result_id=result.receipt_id,
+        subject_edition=result.subject_edition,
+        status="accepted",
     )
 
 
@@ -459,6 +575,114 @@ async def record_refinement_ambiguity_assessment(
         subject_type=AssessmentSubjectType.REFINEMENT,
         subject_id=refinement_id,
         data=data,
+    )
+
+
+@router.get("/specs/{spec_id}/requirement-lint/preflight")
+async def get_requirement_lint_preflight(
+    spec_id: str,
+    user_id: str = Depends(require_user),
+    reader: CommunitySqlAlchemyQualityAssessmentPreflightReader = Depends(
+        _preflight_reader
+    ),
+) -> dict[str, Any]:
+    try:
+        result = await GetRequirementLintPreflightUseCase(
+            preflight_reader=reader
+        ).execute(
+            GetRequirementLintPreflightCommand(spec_id=spec_id),
+            actor=RESTAdapterContract.actor(user_id),
+        )
+    except Exception as exc:
+        raise _quality_http_error(exc) from exc
+    return project_requirement_lint_preflight(result)
+
+
+@router.get("/specs/{spec_id}/quality-assessments/preflight")
+async def get_spec_quality_assessment_preflight(
+    spec_id: str,
+    assessment_kind: AssessmentKind = Query(...),
+    user_id: str = Depends(require_user),
+    reader: CommunitySqlAlchemyQualityAssessmentPreflightReader = Depends(
+        _preflight_reader
+    ),
+) -> dict[str, Any]:
+    if assessment_kind is not AssessmentKind.REQUIREMENT_LINT:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error_code": "assessment_preflight_kind_unsupported",
+                "retryable": False,
+            },
+        )
+    return await get_requirement_lint_preflight(
+        spec_id=spec_id,
+        user_id=user_id,
+        reader=reader,
+    )
+
+
+@router.post(
+    "/specs/{spec_id}/requirement-lint",
+    response_model=RecordRequirementLintResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+@router.post(
+    "/specs/{spec_id}/quality-assessments",
+    response_model=RecordRequirementLintResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def record_requirement_lint(
+    spec_id: str,
+    data: RecordRequirementLintRequest,
+    request: Request,
+    user_id: str = Depends(require_user),
+    reader: CommunitySqlAlchemyQualityAssessmentPreflightReader = Depends(
+        _preflight_reader
+    ),
+) -> RecordRequirementLintResponse:
+    board_id = await _subject_board_id(
+        reader=reader,
+        subject_type=AssessmentSubjectType.SPEC,
+        subject_id=spec_id,
+    )
+    try:
+        with observe_external_validation_write(
+            assessment_kind="requirement_lint",
+            subject_type="spec",
+        ):
+            result = await RecordRequirementLintUseCase(
+                preflight_reader=reader,
+                uow_factory=get_unit_of_work_factory(request),
+            ).execute(
+                RecordRequirementLintCommand(
+                    board_id=board_id,
+                    spec_id=spec_id,
+                    idempotency_key=data.idempotency_key,
+                    expected_subject_version=data.expected_subject_version,
+                    expected_subject_edition=data.expected_subject_edition,
+                    expected_head_revision=data.expected_head_revision,
+                    ruleset_digest=data.ruleset_digest,
+                    score=data.assessment.score,
+                    summary=data.assessment.summary,
+                    findings=tuple(
+                        item.to_domain() for item in data.assessment.findings
+                    ),
+                ),
+                actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            )
+    except Exception as exc:
+        raise _quality_http_error(exc) from exc
+    if result.subject_edition is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error_code": "requirement_lint_edition_missing"},
+        )
+    return RecordRequirementLintResponse(
+        result_id=result.receipt_id,
+        subject_edition=result.subject_edition,
+        status="accepted",
+        idempotent_replay=result.replayed,
     )
 
 
@@ -776,5 +1000,7 @@ async def list_quality_assessment_receipt_findings(
 __all__ = [
     "RecordAmbiguityAssessmentRequest",
     "RecordAmbiguityAssessmentResponse",
+    "RecordRequirementLintRequest",
+    "RecordRequirementLintResponse",
     "router",
 ]

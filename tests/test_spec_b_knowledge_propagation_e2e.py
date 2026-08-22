@@ -55,6 +55,8 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     KnowledgeTombstoneRecord,
     Refinement,
     RefinementKnowledgeBase,
+    RefinementSnapshot,
+    ResearchDecisionSnapshotRow,
     Spec,
     SpecKnowledgeBase,
 )
@@ -77,6 +79,15 @@ from okto_pulse.core.domain.knowledge_selection import (
     KnowledgePropagationMode,
     KnowledgeSelectionState,
     KnowledgeTargetType,
+)
+from okto_pulse.core.domain.code_traceability import (
+    DeliveryContext,
+    RefinementDeliveryContextProvenance,
+    RefinementSourceContextManifestV2,
+    SOURCE_CONTEXT_INTERPRETATION_RULE_V2,
+    SourceContextClassificationStateV2,
+    SourceContextRoleCountsV2,
+    SourceContextSummaryV2,
 )
 from okto_pulse.core.mcp import server as mcp_server
 from okto_pulse.core.models.knowledge_propagation import (
@@ -217,16 +228,16 @@ async def _seed_refinement_sources(
             )
         )
         await session.flush()
-        session.add(
-            Refinement(
-                id=refinement_id,
-                ideation_id=ideation_id,
-                board_id=BOARD_ID,
-                title="Spec B source refinement",
-                status=RefinementStatus.DONE,
-                created_by=ACTOR_ID,
-            )
+        refinement = Refinement(
+            id=refinement_id,
+            ideation_id=ideation_id,
+            board_id=BOARD_ID,
+            title="Spec B source refinement",
+            delivery_context="greenfield",
+            status=RefinementStatus.DONE,
+            created_by=ACTOR_ID,
         )
+        session.add(refinement)
         await session.flush()
         session.add_all(
             [
@@ -241,6 +252,61 @@ async def _seed_refinement_sources(
                 )
                 for root in roots
             ]
+        )
+        # The production lifecycle creates the immutable snapshot only after
+        # every child mutation has been flushed, so it pins the post-mutation
+        # version resolved by Spec derivation.
+        await session.flush()
+        await session.refresh(refinement)
+        source_context = RefinementSourceContextManifestV2(
+            refinement_id=refinement_id,
+            refinement_version=refinement.version,
+            summary=SourceContextSummaryV2(
+                delivery_context=DeliveryContext.GREENFIELD,
+                delivery_context_provenance=RefinementDeliveryContextProvenance(
+                    value=DeliveryContext.GREENFIELD,
+                    source_refinement_id=refinement_id,
+                    source_refinement_version=refinement.version,
+                ),
+                investigation_outcome=None,
+                role_counts=SourceContextRoleCountsV2(),
+                classification_state=SourceContextClassificationStateV2(
+                    classified_count=0,
+                    uncategorized_legacy_count=0,
+                ),
+                evidence_applicable=None,
+                interpretation_rule=SOURCE_CONTEXT_INTERPRETATION_RULE_V2,
+                items_not_current_implementation_count=0,
+                technical_details_available=False,
+            ),
+            current_receipts=(),
+        )
+        session.add(
+            RefinementSnapshot(
+                refinement_id=refinement_id,
+                version=refinement.version,
+                title=refinement.title,
+                description=refinement.description,
+                in_scope=refinement.in_scope,
+                out_of_scope=refinement.out_of_scope,
+                analysis=refinement.analysis,
+                decisions=refinement.decisions,
+                labels=refinement.labels,
+                delivery_context=refinement.delivery_context,
+                source_context_manifest=source_context.as_dict(),
+                source_context_sha256=source_context.payload_sha256,
+                created_by=ACTOR_ID,
+            )
+        )
+        session.add(
+            ResearchDecisionSnapshotRow(
+                id=f"{refinement_id}-research-decisions-v{refinement.version}",
+                board_id=BOARD_ID,
+                refinement_id=refinement_id,
+                refinement_version=refinement.version,
+                heads_json=[],
+                created_at=NOW,
+            )
         )
         await session.commit()
 
@@ -399,7 +465,7 @@ async def test_ts_9e54d02f_tri_state_v2_end_to_end(
             ),
         )
     )
-    assert omitted_payload["success"] is True
+    assert omitted_payload.get("success") is True, omitted_payload
     assert omitted_payload["selection_state"] == "omitted"
 
     request = SimpleNamespace()

@@ -54,14 +54,20 @@ def test_ts04_consolidated_golden_replay_effective_community_catalog(
 
     # (c) tool-doc link resolution: each tool resolves to a catalogued URI.
     catalogued = set(by_uri)
-    for tool in ("okto_pulse_get_board", "okto_pulse_kg_health",
-                 "okto_pulse_create_card", "okto_pulse_add_decision"):
+    for tool in (
+        "okto_pulse_get_board",
+        "okto_pulse_kg_health",
+        "okto_pulse_create_card",
+        "okto_pulse_add_decision",
+    ):
         assert srv.tool_docs_uri(tool) in catalogued
 
     # (d) byte-equivalence: each operational overlay's merged content == the
     #     byte-exact pre-split original (today's content).
     for uri, rel, _cap in _COMMUNITY_REPLACEMENT_TABLE:
-        assert by_uri[uri].read() == (_OPERATIONAL_DIR / rel).read_text(encoding="utf-8")
+        assert by_uri[uri].read() == (_OPERATIONAL_DIR / rel).read_text(
+            encoding="utf-8"
+        )
 
     # (e) selective scan: effective catalog is clean (operational replacements are
     #     exempt; no COMMON spec leaks a backend term), links resolve, no conflict.
@@ -73,3 +79,31 @@ def test_ts04_consolidated_golden_replay_effective_community_catalog(
     snap = payload_budget.snapshot_resources(srv)
     assert len(snap) == len(specs)
     assert all(len(v) > 0 for v in snap.values())
+
+
+def test_rejected_card_runbook_is_present_in_effective_errors_overlay(
+    active_runtime_registry,
+):
+    """The replacing Community resource must carry the full rework protocol."""
+
+    register_and_freeze_community_resource_catalog(active_runtime_registry)
+    body = {spec.uri: spec.read() for spec in srv.effective_resource_catalog().specs()}[
+        "okto-pulse://reference/errors"
+    ]
+
+    required_fragments = (
+        "For **Normal and Bug** cards",
+        "from `validation` to `rejected`",
+        "The only public rework",
+        "`rejected` → `in_progress`",
+        "new executor report",
+        "consequence-only",
+        "card_rejected_rework_handoff_required",
+        "current_rejection_cause_missing",
+        "task_validation_subject_version_conflict",
+        "task_validation_idempotency_conflict",
+        "task_validation_history_append_only",
+        "append-only",
+    )
+    assert all(fragment in body for fragment in required_fragments)
+    assert "Tried to move a normal card directly" not in body

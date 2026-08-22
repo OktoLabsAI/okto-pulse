@@ -106,11 +106,14 @@ LEGACY_CORE_SCHEMA_SHA256 = (
 )
 
 # Current inherited schema after the governed tenant-scope/Knowledge Base
-# migrations and the SK-B internal policy-version fences on Spec and Card.
+# migrations, the SK-B internal policy-version fences, and lifecycle-edition
+# columns on human-reviewed artifacts, including the fail-closed per-Spec Code
+# Evidence Matrix coverage skip and the nullable delivery/source-context
+# overlay on Refinement snapshots and Specs.
 # Keep the pre-extraction hash above immutable so migration provenance remains
 # independently verifiable.
 CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
-    "8b85622b7a469e814de9326ddf196903d5aaa9c419f3d875d9012b02a977aac5"
+    "577049d24a6315f44ba2f358c15dc3fa8fe7edf51fb5f29a2d7a8d26a25f4b4d"
 )
 
 # Additive Community-owned tables introduced after the F01 extraction. They
@@ -144,6 +147,7 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "checklist_item_results",
         "checklist_receipts",
         "checklist_template_versions",
+        "checklist_validation_binding_snapshots",
         "guideline_revisions",
         "guideline_heads",
         "guideline_revision_noop_replays",
@@ -156,6 +160,8 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "guideline_retirement_impacts",
         "guideline_retirements",
         "permission_introduction_audit",
+        "card_rejected_lifecycle_migrations",
+        "spec_validation_pointer_repairs",
         "policy_compliance_receipts",
         "policy_compliance_adopted_revisions",
         "policy_compliance_findings",
@@ -172,6 +178,10 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "semantic_guideline_waiver_events",
         "semantic_guideline_skips",
         "semantic_guideline_legacy_migrations",
+        "semantic_guideline_assessments_v2",
+        "semantic_guideline_findings_v2",
+        "semantic_guideline_metric_results_v2",
+        "semantic_guideline_validation_scopes",
         "quality_assessment_heads",
         "quality_assessment_legacy_import_candidates",
         "quality_assessment_legacy_import_checkpoints",
@@ -186,6 +196,7 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "quality_finding_qa_links",
         "quality_findings",
         "quality_proposed_questions",
+        "requirement_lint_validation_snapshots",
         "research_decision_derivations",
         "research_decision_entries",
         "research_decision_heads",
@@ -193,12 +204,31 @@ COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
         "research_decision_idempotency",
         "research_decision_outbox",
         "research_decision_snapshots",
+        "spec_dependency_board_locks",
+        "spec_dependencies",
+        "spec_dependency_operations",
         "knowledge_propagation_scopes",
         "knowledge_propagation_assignments",
         "knowledge_propagation_snapshots",
         "knowledge_propagation_tombstones",
         "knowledge_mutation_ledger",
         "knowledge_mutation_attempts",
+        "code_investigation_requests",
+        "code_investigation_receipts",
+        "code_investigation_receipt_revocations",
+        "code_investigation_heads",
+        "code_evidence",
+        "code_evidence_classification_events",
+        "code_evidence_classification_heads",
+        "code_evidence_spec_links",
+        "code_evidence_dispositions",
+        "implementation_targets",
+        "implementation_target_spec_links",
+        "implementation_target_evidence_links",
+        "implementation_target_resolutions",
+        "implementation_target_execution_records",
+        "target_overlap_acknowledgements",
+        "code_traceability_waivers",
     }
 )
 

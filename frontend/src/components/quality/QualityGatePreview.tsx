@@ -16,7 +16,7 @@ type ApplicableGateReason = Exclude<
 const REASON_LABELS: Record<ApplicableGateReason, string> = {
   ambiguity_gate_disabled: 'Disabled by board policy',
   ambiguity_gate_skipped: 'Skipped by recorded override',
-  ambiguity_assessment_stale: 'Blocked — assessment is stale',
+  ambiguity_assessment_stale: 'Blocked — current-edition assessment required',
   ambiguity_score_exceeds_threshold: 'Blocked — score exceeds threshold',
   ambiguity_gate_ready: 'Ready',
 };
@@ -84,16 +84,17 @@ export function QualityGatePreviewCard({
           </dd>
         </div>
         <div>
-          <dt className="inline opacity-70">Currentness: </dt>
-          <dd className="inline font-semibold">{assessment.currentness}</dd>
+          <dt className="inline opacity-70">Result: </dt>
+          <dd className="inline font-semibold">
+            {assessment.currentness === 'current' ? 'Current' : 'Previous'}
+          </dd>
         </div>
       </dl>
       {assessment.stale_reasons.length > 0 && (
-        <ul className="mt-2 list-disc space-y-0.5 pl-4 text-xs" data-testid="quality-stale-reasons">
-          {assessment.stale_reasons.map((reason) => (
-            <li key={reason}>{reason.split('_').join(' ')}</li>
-          ))}
-        </ul>
+        <p className="mt-2 text-xs" data-testid="quality-previous-result-guidance">
+          This assessment is available under Previous. Complete a new
+          assessment for the current validation edition.
+        </p>
       )}
     </section>
   );

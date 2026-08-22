@@ -15,10 +15,6 @@ from okto_pulse.core.application.use_cases.base import ActorContext
 from okto_pulse.core.domain.spec_materialization import SpecMaterializationPlan
 from okto_pulse.core.events import publish as event_publish
 from okto_pulse.core.events.types import SpecVersionBumped
-from okto_pulse.core.ports.requirement_lint import RequirementLintWriter
-from okto_pulse.core.services.requirement_lint_writer import (
-    stage_spec_requirement_lint,
-)
 
 
 LEGACY_SPEC_MATERIALIZER_ACTOR_ID = "system:legacy-spec-materializer"
@@ -142,13 +138,6 @@ class CommunitySqlAlchemySpecMaterializationStore:
                 )
             )
             await self._session.flush()
-            await stage_spec_requirement_lint(
-                self._session,
-                change.spec,
-                actor_id=self._actor.actor_id,
-                writer=RequirementLintWriter.LEGACY_MATERIALIZER,
-                changed_fields=tuple(changed_fields),
-            )
 
 
 __all__ = [

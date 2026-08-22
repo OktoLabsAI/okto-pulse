@@ -23,7 +23,7 @@ def client() -> TestClient:
     return TestClient(app, raise_server_exceptions=False)
 
 
-def test_openapi_publishes_narrow_request_and_receipt_response(
+def test_openapi_publishes_narrow_edition_fenced_contract(
     client: TestClient,
 ) -> None:
     schema = client.get("/openapi.json").json()
@@ -46,6 +46,7 @@ def test_openapi_publishes_narrow_request_and_receipt_response(
         "skip_ambiguity_gate",
         "reason",
         "expected_refinement_version",
+        "expected_refinement_edition",
     }
 
     response_schema = schema["components"]["schemas"][
@@ -55,6 +56,7 @@ def test_openapi_publishes_narrow_request_and_receipt_response(
         "skipped",
         "activity_id",
         "version",
+        "edition",
     }
 
 
@@ -66,21 +68,31 @@ def test_openapi_publishes_narrow_request_and_receipt_response(
             "skip_ambiguity_gate": True,
             "reason": "",
             "expected_refinement_version": 1,
+            "expected_refinement_edition": 1,
         },
         {
             "skip_ambiguity_gate": True,
             "reason": " ",
             "expected_refinement_version": 1,
+            "expected_refinement_edition": 1,
         },
         {
             "skip_ambiguity_gate": True,
             "reason": "stale",
             "expected_refinement_version": 0,
+            "expected_refinement_edition": 1,
+        },
+        {
+            "skip_ambiguity_gate": True,
+            "reason": "wrong lifecycle edition",
+            "expected_refinement_version": 1,
+            "expected_refinement_edition": 0,
         },
         {
             "skip_ambiguity_gate": True,
             "reason": "smuggled edit",
             "expected_refinement_version": 1,
+            "expected_refinement_edition": 1,
             "analysis": "must not be writable",
         },
     ],
@@ -103,6 +115,7 @@ def test_valid_payload_reaches_use_case_boundary(client: TestClient) -> None:
             "skip_ambiguity_gate": True,
             "reason": "Human accepted the residual ambiguity.",
             "expected_refinement_version": 1,
+            "expected_refinement_edition": 1,
         },
     )
     # The inert UoW has no services. A 500 proves parsing succeeded and the
@@ -129,6 +142,7 @@ def test_status_conflict_is_a_non_retryable_409(
             "skip_ambiguity_gate": True,
             "reason": "Human accepted the residual ambiguity.",
             "expected_refinement_version": 1,
+            "expected_refinement_edition": 1,
         },
     )
 

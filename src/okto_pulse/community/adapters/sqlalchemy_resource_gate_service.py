@@ -8,25 +8,30 @@ from __future__ import annotations
 
 import copy
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, func, select, true, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from okto_pulse.core.domain.enums import CardStatus, CardType
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ArchitectureDesign,
+    ArchitectureFindingRun,
     Card,
     Ideation,
     IdeationKnowledgeBase,
+    KnowledgeAssignmentRecord,
     Refinement,
     RefinementKnowledgeBase,
     ResourceNotApplicable,
     Spec,
     SpecKnowledgeBase,
+    KnowledgeSnapshotRecord,
     KnowledgePropagationScopeRecord,
+    KnowledgeTombstoneRecord,
 )
 from okto_pulse.core.models import with_knowledge_governance
 from okto_pulse.core.services.resource_gate_contracts import (
@@ -55,6 +60,10 @@ from okto_pulse.core.services.knowledge_propagation import (
 )
 
 
+RESOURCE_GATE_METADATA_COLLECTION_LIMIT = 256
+RESOURCE_GATE_METADATA_OVERFLOW_CODE = "resource_gate_metadata_collection_overflow"
+
+
 def _knowledge_lineage_aliases(item: Mapping[str, Any]) -> dict[str, Any]:
     """Project KB-specific storage fields into the neutral lineage contract."""
 
@@ -70,6 +79,35 @@ def _knowledge_lineage_aliases(item: Mapping[str, Any]) -> dict[str, Any]:
         "source_revision": source_version,
         "source_content_sha256": content_hash,
     }
+
+
+def _persisted_knowledge_lineage_aliases(
+    item: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project only durable identity stamps; never derive a hash from content."""
+
+    root_source_kb_id = item.get("root_source_kb_id")
+    source_kb_id = item.get("source_kb_id")
+    immediate_parent_kb_id = item.get("immediate_parent_kb_id")
+    source_version = item.get("source_version")
+    content_hash = item.get("content_hash")
+    return {
+        "root_resource_id": root_source_kb_id or item.get("id"),
+        "immediate_parent_resource_id": immediate_parent_kb_id or source_kb_id,
+        "source_revision": source_version,
+        "source_content_sha256": content_hash,
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class _ResourceGateEntityMetadata:
+    """Minimal owner shape needed for lineage traversal and scoped queries."""
+
+    board_id: str
+    title: str | None
+    ideation_id: str | None = None
+    refinement_id: str | None = None
+    spec_id: str | None = None
 
 
 def _knowledge_stamp_aliases(stamp: Any) -> dict[str, Any]:
@@ -111,8 +149,20 @@ def _resolved_knowledge_payload(
 class CommunitySqlAlchemyResourceGateAdapter:
     """Persist and project local Resource Gate evidence."""
 
-    def __init__(self, db: AsyncSession):
+    def __init__(
+        self,
+        db: AsyncSession,
+        *,
+        metadata_collection_limit: int = RESOURCE_GATE_METADATA_COLLECTION_LIMIT,
+    ):
+        if (
+            isinstance(metadata_collection_limit, bool)
+            or not isinstance(metadata_collection_limit, int)
+            or metadata_collection_limit <= 0
+        ):
+            raise ValueError("metadata_collection_limit must be a positive integer")
         self.db = db
+        self._metadata_collection_limit = metadata_collection_limit
         self._knowledge_read_cache: dict[
             tuple[str, str, str],
             KnowledgePropagationReadResult | None,
@@ -121,6 +171,35 @@ class CommunitySqlAlchemyResourceGateAdapter:
             tuple[str, str, str, str],
             dict[str, Any],
         ] = {}
+        self._knowledge_metadata_scope_cache: dict[
+            tuple[str, str, str],
+            dict[str, Any] | None,
+        ] = {}
+
+    def _bounded_metadata_rows(
+        self,
+        rows: list[Any],
+        *,
+        ref: LineageEntityRef,
+        resource_type: str,
+    ) -> list[Any]:
+        """Reject limit+1 probes so a gate never decides from truncated facts."""
+
+        if len(rows) <= self._metadata_collection_limit:
+            return rows
+        raise ResourceGateError(
+            RESOURCE_GATE_METADATA_OVERFLOW_CODE,
+            (
+                f"Metadata-only Resource Gate collection '{resource_type}' "
+                f"exceeds the limit for {ref.ref}."
+            ),
+            details={
+                "resource_type": resource_type,
+                "limit": self._metadata_collection_limit,
+                "owner_ref": ref.ref,
+                "observed_at_least": self._metadata_collection_limit + 1,
+            },
+        )
 
     async def save_not_applicable(
         self,
@@ -267,6 +346,191 @@ class CommunitySqlAlchemyResourceGateAdapter:
         ref: LineageEntityRef,
     ) -> dict[str, list[dict[str, Any]]]:
         return await self._collect_refs(ref)
+
+    async def load_entity_ref_metadata(
+        self,
+        board_id: str,
+        entity_type: str,
+        entity_id: str,
+    ) -> LineageEntityRef:
+        """Load only owner identity and parent foreign keys for gate checks."""
+
+        self._validate_entity_type(entity_type)
+        model = self._model_options(entity_type)[0]
+        columns = [model.id, model.board_id, model.title]
+        for field_name in ("ideation_id", "refinement_id", "spec_id"):
+            column = getattr(model, field_name, None)
+            if column is not None:
+                columns.append(column)
+        row = (
+            await self.db.execute(
+                select(*columns).where(
+                    model.id == entity_id,
+                    model.board_id == board_id,
+                )
+            )
+        ).mappings().one_or_none()
+        if row is None:
+            raise ResourceGateNotFound(entity_type, entity_id, board_id)
+        entity = _ResourceGateEntityMetadata(
+            board_id=str(row["board_id"]),
+            title=row.get("title"),
+            ideation_id=row.get("ideation_id"),
+            refinement_id=row.get("refinement_id"),
+            spec_id=row.get("spec_id"),
+        )
+        return LineageEntityRef(
+            entity_type=entity_type,
+            entity_id=entity_id,
+            title=entity.title,
+            entity=entity,
+        )
+
+    async def load_parent_refs_metadata(
+        self,
+        board_id: str,
+        root: LineageEntityRef,
+    ) -> list[LineageEntityRef]:
+        """Traverse the same hierarchy without hydrating ORM entities."""
+
+        entity = root.entity
+        parents: list[LineageEntityRef] = []
+        seen: set[tuple[str, str]] = set()
+
+        async def add_parent(entity_type: str, entity_id: str | None) -> None:
+            if not entity_id or (entity_type, entity_id) in seen:
+                return
+            parent = await self.load_entity_ref_metadata(
+                board_id,
+                entity_type,
+                entity_id,
+            )
+            seen.add((entity_type, entity_id))
+            parents.append(parent)
+
+        if root.entity_type == "refinement":
+            await add_parent("ideation", getattr(entity, "ideation_id", None))
+        elif root.entity_type == "spec":
+            await add_parent("refinement", getattr(entity, "refinement_id", None))
+            await add_parent("ideation", getattr(entity, "ideation_id", None))
+            if getattr(entity, "refinement_id", None):
+                refinement = next(
+                    (
+                        parent.entity
+                        for parent in parents
+                        if parent.entity_type == "refinement"
+                    ),
+                    None,
+                )
+                await add_parent(
+                    "ideation",
+                    getattr(refinement, "ideation_id", None),
+                )
+        elif root.entity_type == "card":
+            await add_parent("spec", getattr(entity, "spec_id", None))
+            spec = next(
+                (
+                    parent.entity
+                    for parent in parents
+                    if parent.entity_type == "spec"
+                ),
+                None,
+            )
+            await add_parent("refinement", getattr(spec, "refinement_id", None))
+            await add_parent("ideation", getattr(spec, "ideation_id", None))
+            refinement = next(
+                (
+                    parent.entity
+                    for parent in parents
+                    if parent.entity_type == "refinement"
+                ),
+                None,
+            )
+            await add_parent(
+                "ideation",
+                getattr(refinement, "ideation_id", None),
+            )
+        return parents
+
+    async def collect_refs_metadata(
+        self,
+        ref: LineageEntityRef,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Collect bounded refs without selecting architecture/KB bodies."""
+
+        return {
+            "architecture": await self._architecture_refs_metadata(ref),
+            "mockup": await self._mockup_refs_metadata(ref),
+            "knowledge_base": await self._knowledge_refs_metadata(ref),
+        }
+
+    async def filter_inherited_refs_metadata(
+        self,
+        root: LineageEntityRef,
+        parent: LineageEntityRef,
+        refs: dict[str, list[dict[str, Any]]],
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Apply persisted v2 assignment metadata without resolving content."""
+
+        scope = await self._knowledge_scope_metadata(root)
+        if scope is None:
+            return refs
+
+        assignments = list(scope["assignments"])
+        projected: list[dict[str, Any]] = []
+        matched_assignment_ids: set[str] = set()
+        for raw in refs.get("knowledge_base") or []:
+            item = dict(raw)
+            matches = [
+                assignment
+                for assignment in assignments
+                if self._metadata_assignment_matches_ref(assignment, item)
+            ]
+            if len(matches) != 1:
+                item["effective"] = False
+                projected.append(item)
+                continue
+            assignment = matches[0]
+            projected.append(
+                self._assignment_ref_metadata(
+                    root=root,
+                    parent=parent,
+                    assignment=assignment,
+                    base=item,
+                )
+            )
+            matched_assignment_ids.add(str(assignment["assignment_id"]))
+
+        # A Card can select an effective inherited Spec assignment that has no
+        # physical Spec row. Its durable assignment stamp is sufficient for a
+        # gate decision and avoids loading snapshot/reference content bytes.
+        if self._is_immediate_knowledge_parent(root, parent):
+            parent_scope = await self._knowledge_scope_metadata(parent)
+            for assignment in assignments:
+                if str(assignment["assignment_id"]) in matched_assignment_ids:
+                    continue
+                if root.entity_type != "card" or parent.entity_type != "spec":
+                    continue
+                if parent_scope is None or not any(
+                    self._metadata_assignments_share_identity(
+                        assignment,
+                        parent_assignment,
+                    )
+                    for parent_assignment in parent_scope["assignments"]
+                ):
+                    # No direct row and no effective parent assignment means
+                    # the source cannot be proven available metadata-only.
+                    continue
+                projected.append(
+                    self._assignment_ref_metadata(
+                        root=root,
+                        parent=parent,
+                        assignment=assignment,
+                        base=None,
+                    )
+                )
+
+        return {**refs, "knowledge_base": projected}
 
     async def filter_inherited_refs(
         self,
@@ -571,6 +835,598 @@ class CommunitySqlAlchemyResourceGateAdapter:
             "mockup": self._mockup_refs(ref),
             "knowledge_base": await self._knowledge_refs(ref),
         }
+
+    async def _architecture_refs_metadata(
+        self,
+        ref: LineageEntityRef,
+    ) -> list[dict[str, Any]]:
+        result = await self.db.execute(
+            select(
+                ArchitectureDesign.id,
+                ArchitectureDesign.title,
+                ArchitectureDesign.source_design_id,
+                ArchitectureDesign.source_ref,
+                ArchitectureDesign.source_version,
+                ArchitectureDesign.version.label("design_version"),
+            )
+            .where(
+                ArchitectureDesign.board_id == getattr(ref.entity, "board_id"),
+                ArchitectureDesign.parent_type == ref.entity_type,
+                self._architecture_parent_column(ref.entity_type) == ref.entity_id,
+            )
+            .order_by(ArchitectureDesign.created_at.asc())
+            .limit(self._metadata_collection_limit + 1)
+        )
+        rows = self._bounded_metadata_rows(
+            list(result.mappings().all()),
+            ref=ref,
+            resource_type="architecture",
+        )
+        design_ids = [str(row["id"]) for row in rows if row.get("id")]
+        finding_runs_by_design: dict[str, dict[str, Any]] = {}
+        if design_ids:
+            finding_result = await self.db.execute(
+                select(
+                    ArchitectureFindingRun.design_id,
+                    ArchitectureFindingRun.critic_run_id,
+                    ArchitectureFindingRun.design_version,
+                    ArchitectureFindingRun.is_current,
+                    ArchitectureFindingRun.active_count,
+                    ArchitectureFindingRun.resolved_count,
+                    ArchitectureFindingRun.superseded_count,
+                    func.json_extract(
+                        ArchitectureFindingRun.validator_summary,
+                        "$.valid",
+                    ).label("validator_valid"),
+                    func.json_array_length(
+                        func.json_extract(
+                            ArchitectureFindingRun.validator_summary,
+                            "$.issues",
+                        )
+                    ).label("validator_issue_count"),
+                )
+                .where(
+                    ArchitectureFindingRun.design_id.in_(design_ids),
+                    ArchitectureFindingRun.is_current.is_(True),
+                )
+                .order_by(
+                    ArchitectureFindingRun.design_id.asc(),
+                    ArchitectureFindingRun.created_at.desc(),
+                    ArchitectureFindingRun.id.asc(),
+                )
+                .limit(self._metadata_collection_limit + 1)
+            )
+            finding_rows = self._bounded_metadata_rows(
+                list(finding_result.mappings().all()),
+                ref=ref,
+                resource_type="architecture_finding_run",
+            )
+            for raw_finding_run in finding_rows:
+                finding_run = dict(raw_finding_run)
+                design_id = str(finding_run["design_id"])
+                if design_id in finding_runs_by_design:
+                    raise ResourceGateError(
+                        "resource_gate_metadata_current_finding_run_ambiguous",
+                        (
+                            "Metadata-only Resource Gate found multiple current "
+                            f"finding runs for architecture '{design_id}'."
+                        ),
+                        details={
+                            "resource_type": "architecture_finding_run",
+                            "limit": 1,
+                            "owner_ref": ref.ref,
+                            "design_id": design_id,
+                        },
+                    )
+                valid_raw = finding_run.get("validator_valid")
+                validator_valid = (
+                    True
+                    if valid_raw in (True, 1)
+                    else (False if valid_raw in (False, 0) else None)
+                )
+                issue_count_raw = finding_run.get("validator_issue_count")
+                finding_runs_by_design[design_id] = {
+                    "critic_run_id": finding_run.get("critic_run_id"),
+                    "design_version": finding_run.get("design_version"),
+                    "is_current": bool(finding_run.get("is_current")),
+                    "active_count": finding_run.get("active_count"),
+                    "resolved_count": finding_run.get("resolved_count"),
+                    "superseded_count": finding_run.get("superseded_count"),
+                    "validator_valid": validator_valid,
+                    "validator_issue_count": (
+                        None
+                        if issue_count_raw is None
+                        else int(issue_count_raw)
+                    ),
+                }
+        refs: list[dict[str, Any]] = []
+        for row in rows:
+            item = self._artifact_ref(
+                ref,
+                artifact_id=row.get("id"),
+                title=row.get("title"),
+            )
+            for key in (
+                "source_design_id",
+                "source_ref",
+                "source_version",
+                "design_version",
+            ):
+                if row.get(key) not in (None, ""):
+                    item[key] = row[key]
+            item["current_finding_run"] = finding_runs_by_design.get(
+                str(row.get("id") or "")
+            )
+            item["effective"] = True
+            refs.append(item)
+        return refs
+
+    async def _json_array_metadata_rows(
+        self,
+        ref: LineageEntityRef,
+        *,
+        attribute_name: str,
+        field_names: tuple[str, ...],
+        resource_type: str,
+    ) -> list[dict[str, Any]]:
+        """Project JSON object fields in SQLite without returning object bodies."""
+
+        model = self._model_options(ref.entity_type)[0]
+        json_column = getattr(model, attribute_name)
+        elements = func.json_each(
+            func.coalesce(json_column, "[]")
+        ).table_valued("key", "value", joins_implicitly=True)
+        columns = [
+            func.json_extract(elements.c.value, f"$.{field_name}").label(
+                field_name
+            )
+            for field_name in field_names
+        ]
+        result = await self.db.execute(
+            select(*columns)
+            .select_from(model)
+            .join(elements, true())
+            .where(
+                model.id == ref.entity_id,
+                model.board_id == getattr(ref.entity, "board_id"),
+            )
+            .order_by(elements.c.key.asc())
+            .limit(self._metadata_collection_limit + 1)
+        )
+        rows = self._bounded_metadata_rows(
+            list(result.mappings().all()),
+            ref=ref,
+            resource_type=resource_type,
+        )
+        return [dict(row) for row in rows]
+
+    async def _mockup_refs_metadata(
+        self,
+        ref: LineageEntityRef,
+    ) -> list[dict[str, Any]]:
+        rows = await self._json_array_metadata_rows(
+            ref,
+            attribute_name="screen_mockups",
+            resource_type="mockup",
+            field_names=(
+                "id",
+                "title",
+                "name",
+                "root_source_mockup_id",
+                "immediate_parent_mockup_id",
+                "source_mockup_id",
+                "origin_id",
+                "origin_ref",
+                "source_ref",
+                "source",
+                "source_version",
+                "content_hash",
+            ),
+        )
+        refs: list[dict[str, Any]] = []
+        for row in rows:
+            item = self._artifact_ref(
+                ref,
+                artifact_id=row.get("id"),
+                title=row.get("title") or row.get("name"),
+            )
+            for key in (
+                "root_source_mockup_id",
+                "immediate_parent_mockup_id",
+                "source_mockup_id",
+                "origin_id",
+                "origin_ref",
+                "source_ref",
+                "source",
+                "source_version",
+                "content_hash",
+            ):
+                if row.get(key) not in (None, ""):
+                    item[key] = row[key]
+            item["effective"] = True
+            refs.append(item)
+        return refs
+
+    async def _knowledge_refs_metadata(
+        self,
+        ref: LineageEntityRef,
+    ) -> list[dict[str, Any]]:
+        scope = await self._knowledge_scope_metadata(ref)
+        if ref.entity_type == "card":
+            rows = await self._json_array_metadata_rows(
+                ref,
+                attribute_name="knowledge_bases",
+                resource_type="knowledge_base",
+                field_names=(
+                    "id",
+                    "title",
+                    "root_source_kb_id",
+                    "source_kb_id",
+                    "immediate_parent_kb_id",
+                    "source_version",
+                    "content_hash",
+                    "origin_ref",
+                    "source_ref",
+                    "source",
+                    "source_type",
+                    "source_id",
+                ),
+            )
+        else:
+            kb_model, fk_column = {
+                "ideation": (
+                    IdeationKnowledgeBase,
+                    IdeationKnowledgeBase.ideation_id,
+                ),
+                "refinement": (
+                    RefinementKnowledgeBase,
+                    RefinementKnowledgeBase.refinement_id,
+                ),
+                "spec": (SpecKnowledgeBase, SpecKnowledgeBase.spec_id),
+            }[ref.entity_type]
+            result = await self.db.execute(
+                select(
+                    kb_model.id,
+                    kb_model.title,
+                    kb_model.source_version,
+                    kb_model.source_kb_id,
+                    kb_model.root_source_kb_id,
+                    kb_model.immediate_parent_kb_id,
+                    kb_model.content_hash,
+                    kb_model.source_type,
+                    kb_model.source_id,
+                    kb_model.created_at,
+                )
+                .where(fk_column == ref.entity_id)
+                .order_by(kb_model.created_at.asc(), kb_model.id.asc())
+                .limit(self._metadata_collection_limit + 1)
+            )
+            rows = [
+                dict(row)
+                for row in self._bounded_metadata_rows(
+                    list(result.mappings().all()),
+                    ref=ref,
+                    resource_type="knowledge_base",
+                )
+            ]
+
+        refs: list[dict[str, Any]] = []
+        for row in rows:
+            item = self._artifact_ref(
+                ref,
+                artifact_id=row.get("id"),
+                title=row.get("title"),
+            )
+            for key in (
+                "root_source_kb_id",
+                "source_kb_id",
+                "immediate_parent_kb_id",
+                "source_version",
+                "content_hash",
+                "origin_ref",
+                "source_ref",
+                "source",
+                "source_type",
+                "source_id",
+            ):
+                if row.get(key) not in (None, ""):
+                    item[key] = row[key]
+            item.update(_persisted_knowledge_lineage_aliases(row))
+            if scope is None:
+                item.update(effective=True, origin_class="legacy_all")
+            elif self._metadata_is_local_spec_attachment(row, ref, scope):
+                item.update(
+                    effective=True,
+                    origin_class="v2",
+                    knowledge_resolution="local",
+                )
+            else:
+                item.update(
+                    effective=False,
+                    origin_class="legacy_all",
+                    knowledge_resolution="history",
+                )
+            refs.append(item)
+        return refs
+
+    async def _knowledge_scope_metadata(
+        self,
+        ref: LineageEntityRef,
+    ) -> dict[str, Any] | None:
+        if ref.entity_type not in {"spec", "card"}:
+            return None
+        board_id = str(getattr(ref.entity, "board_id", "") or "")
+        if not board_id:
+            return None
+        cache_key = (board_id, ref.entity_type, ref.entity_id)
+        if cache_key in self._knowledge_metadata_scope_cache:
+            return self._knowledge_metadata_scope_cache[cache_key]
+
+        scope_row = (
+            await self.db.execute(
+                select(
+                    KnowledgePropagationScopeRecord.id,
+                    KnowledgePropagationScopeRecord.v2_active,
+                    KnowledgePropagationScopeRecord.v2_activated_at,
+                ).where(
+                    KnowledgePropagationScopeRecord.board_id == board_id,
+                    KnowledgePropagationScopeRecord.target_type == ref.entity_type,
+                    KnowledgePropagationScopeRecord.target_id == ref.entity_id,
+                )
+            )
+        ).mappings().one_or_none()
+        if scope_row is None or not bool(scope_row["v2_active"]):
+            self._knowledge_metadata_scope_cache[cache_key] = None
+            return None
+
+        scope_id = str(scope_row["id"])
+        assignment_rows = (
+            await self.db.execute(
+                select(
+                    KnowledgeAssignmentRecord.assignment_id,
+                    KnowledgeAssignmentRecord.source_knowledge_id,
+                    KnowledgeAssignmentRecord.root_id,
+                    KnowledgeAssignmentRecord.immediate_parent_id,
+                    KnowledgeAssignmentRecord.source_revision,
+                    KnowledgeAssignmentRecord.source_content_sha256,
+                    KnowledgeAssignmentRecord.mode,
+                    KnowledgeAssignmentRecord.state,
+                    KnowledgeAssignmentRecord.origin_class,
+                    KnowledgeAssignmentRecord.revision,
+                    KnowledgeSnapshotRecord.root_id.label("snapshot_root_id"),
+                    KnowledgeSnapshotRecord.immediate_parent_id.label(
+                        "snapshot_immediate_parent_id"
+                    ),
+                    KnowledgeSnapshotRecord.source_revision.label(
+                        "snapshot_source_revision"
+                    ),
+                    KnowledgeSnapshotRecord.source_content_sha256.label(
+                        "snapshot_source_content_sha256"
+                    ),
+                )
+                .outerjoin(
+                    KnowledgeSnapshotRecord,
+                    and_(
+                        KnowledgeSnapshotRecord.assignment_id
+                        == KnowledgeAssignmentRecord.assignment_id,
+                        KnowledgeSnapshotRecord.effective_to.is_(None),
+                    ),
+                )
+                .where(
+                    KnowledgeAssignmentRecord.scope_id == scope_id,
+                    KnowledgeAssignmentRecord.effective_to.is_(None),
+                )
+                .order_by(KnowledgeAssignmentRecord.assignment_id.asc())
+                .limit(self._metadata_collection_limit + 1)
+            )
+        ).mappings().all()
+        assignment_rows = self._bounded_metadata_rows(
+            list(assignment_rows),
+            ref=ref,
+            resource_type="knowledge_assignment",
+        )
+        tombstone_result = await self.db.execute(
+            select(KnowledgeTombstoneRecord.root_id)
+            .where(
+                KnowledgeTombstoneRecord.scope_id == scope_id,
+                KnowledgeTombstoneRecord.effective_to.is_(None),
+            )
+            .order_by(KnowledgeTombstoneRecord.tombstone_id.asc())
+            .limit(self._metadata_collection_limit + 1)
+        )
+        tombstone_roots = self._bounded_metadata_rows(
+            list(tombstone_result.scalars().all()),
+            ref=ref,
+            resource_type="knowledge_tombstone",
+        )
+        global_drop = any(root_id is None for root_id in tombstone_roots)
+        dropped_roots = {
+            str(root_id) for root_id in tombstone_roots if root_id is not None
+        }
+        assignments: list[dict[str, Any]] = []
+        for raw in assignment_rows:
+            row = dict(raw)
+            if (
+                global_drop
+                or str(row["root_id"]) in dropped_roots
+                or row["mode"] == "drop"
+                or row["state"] in {"inactive", "source_deleted", "dropped"}
+            ):
+                continue
+            if row["mode"] == "snapshot":
+                if row.get("snapshot_root_id") in (None, ""):
+                    continue
+                stamp = {
+                    "root_id": row["snapshot_root_id"],
+                    "immediate_parent_id": row.get(
+                        "snapshot_immediate_parent_id"
+                    ),
+                    "source_revision": row.get("snapshot_source_revision"),
+                    "source_content_sha256": row.get(
+                        "snapshot_source_content_sha256"
+                    ),
+                }
+            else:
+                stamp = {
+                    "root_id": row["root_id"],
+                    "immediate_parent_id": row.get("immediate_parent_id"),
+                    "source_revision": row.get("source_revision"),
+                    "source_content_sha256": row.get(
+                        "source_content_sha256"
+                    ),
+                }
+            assignments.append(
+                {
+                    "assignment_id": row["assignment_id"],
+                    "source_knowledge_id": row["source_knowledge_id"],
+                    "mode": row["mode"],
+                    "state": row["state"],
+                    "origin_class": row["origin_class"],
+                    "revision": row["revision"],
+                    **stamp,
+                }
+            )
+        resolved = {
+            "activated_at": scope_row.get("v2_activated_at"),
+            "assignments": assignments,
+        }
+        self._knowledge_metadata_scope_cache[cache_key] = resolved
+        return resolved
+
+    @staticmethod
+    def _metadata_is_local_spec_attachment(
+        row: Mapping[str, Any],
+        ref: LineageEntityRef,
+        scope: Mapping[str, Any],
+    ) -> bool:
+        if ref.entity_type != "spec":
+            return False
+        activated_at = scope.get("activated_at")
+        created_at = row.get("created_at")
+        if not isinstance(activated_at, datetime) or not isinstance(
+            created_at, datetime
+        ):
+            return False
+        if activated_at.tzinfo is None:
+            activated_at = activated_at.replace(tzinfo=timezone.utc)
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        if created_at <= activated_at:
+            return False
+        identity = str(row.get("id") or "")
+        root_id = row.get("root_source_kb_id")
+        if root_id not in (None, "", identity):
+            return False
+        return not any(
+            row.get(field_name) not in (None, "")
+            for field_name in (
+                "source_kb_id",
+                "immediate_parent_kb_id",
+                "source_type",
+                "source_id",
+                "origin_ref",
+                "source_ref",
+                "source",
+            )
+        )
+
+    @staticmethod
+    def _metadata_assignment_matches_ref(
+        assignment: Mapping[str, Any],
+        ref: Mapping[str, Any],
+    ) -> bool:
+        assignment_values = {
+            str(value)
+            for value in (
+                assignment.get("source_knowledge_id"),
+                assignment.get("root_id"),
+            )
+            if value not in (None, "")
+        }
+        ref_values = {
+            str(value)
+            for value in (
+                ref.get("id"),
+                ref.get("root_source_kb_id"),
+                ref.get("root_resource_id"),
+            )
+            if value not in (None, "")
+        }
+        return bool(assignment_values & ref_values)
+
+    @staticmethod
+    def _metadata_assignments_share_identity(
+        assignment: Mapping[str, Any],
+        other: Mapping[str, Any],
+    ) -> bool:
+        left = {
+            str(value)
+            for value in (
+                assignment.get("source_knowledge_id"),
+                assignment.get("root_id"),
+            )
+            if value not in (None, "")
+        }
+        right = {
+            str(value)
+            for value in (
+                other.get("source_knowledge_id"),
+                other.get("root_id"),
+            )
+            if value not in (None, "")
+        }
+        return bool(left & right)
+
+    def _assignment_ref_metadata(
+        self,
+        *,
+        root: LineageEntityRef,
+        parent: LineageEntityRef,
+        assignment: Mapping[str, Any],
+        base: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        item = dict(base or {})
+        source_id = str(
+            item.get("id") or assignment.get("source_knowledge_id") or ""
+        )
+        item.update(
+            self._artifact_ref(
+                parent,
+                artifact_id=source_id or None,
+                title=item.get("title"),
+            )
+        )
+        mode = str(assignment.get("mode") or "")
+        if mode == "reference" and base is not None:
+            source_revision = base.get("source_revision")
+            source_content_sha256 = base.get("source_content_sha256")
+        else:
+            source_revision = assignment.get("source_revision")
+            source_content_sha256 = assignment.get("source_content_sha256")
+        root_id = assignment.get("root_id")
+        immediate_parent_id = assignment.get("immediate_parent_id")
+        item.update(
+            {
+                "effective": True,
+                "origin_class": assignment.get("origin_class"),
+                "root_source_kb_id": root_id,
+                "source_kb_id": assignment.get("source_knowledge_id"),
+                "immediate_parent_kb_id": immediate_parent_id,
+                "source_version": source_revision,
+                "content_hash": source_content_sha256,
+                "root_resource_id": root_id,
+                "immediate_parent_resource_id": immediate_parent_id,
+                "source_revision": source_revision,
+                "source_content_sha256": source_content_sha256,
+                "knowledge_assignment_id": assignment.get("assignment_id"),
+                "knowledge_assignment_mode": mode,
+                "knowledge_assignment_state": assignment.get("state"),
+                "knowledge_assignment_revision": assignment.get("revision"),
+                "knowledge_target_type": root.entity_type,
+                "knowledge_target_id": root.entity_id,
+            }
+        )
+        return item
 
     async def _load_spec_task_cards(self, spec_id: str) -> list[Card]:
         result = await self.db.execute(

@@ -33,6 +33,7 @@ import {
 } from '@/store/dashboard';
 import {
   CARD_STATUSES,
+  CREATABLE_CARD_STATUSES,
   STATUS_LABELS,
   type CardStatus,
   type CardSummary,
@@ -63,6 +64,7 @@ interface KanbanBoardProps {
 }
 
 const CARD_TYPE_FILTERS: KanbanCardFilterType[] = ['task', 'test', 'bug'];
+const REJECTED_CARD_TYPE_FILTERS: KanbanCardFilterType[] = ['task', 'bug'];
 const KANBAN_COLUMN_LIMIT = 10;
 
 type CardTypeFiltersByStatus = Record<CardStatus, Set<KanbanCardFilterType>>;
@@ -89,9 +91,15 @@ function apiCardType(type: KanbanCardFilterType): CardType {
   return type === 'task' ? 'normal' : type;
 }
 
+function availableCardTypes(status: CardStatus): KanbanCardFilterType[] {
+  return status === 'rejected'
+    ? REJECTED_CARD_TYPE_FILTERS
+    : CARD_TYPE_FILTERS;
+}
+
 function createDefaultCardTypeFilters(): CardTypeFiltersByStatus {
   return CARD_STATUSES.reduce<CardTypeFiltersByStatus>((acc, status) => {
-    acc[status] = new Set(CARD_TYPE_FILTERS);
+    acc[status] = new Set(availableCardTypes(status));
     return acc;
   }, {} as CardTypeFiltersByStatus);
 }
@@ -175,14 +183,19 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
   const canMoveCard = useCallback((
     sourceStatus: CardStatus,
     targetStatus: CardStatus,
-  ) => hasPermissionWithState(
-    hasPermission,
-    sourceStatus === targetStatus
-      ? 'card.entity.edit_fields'
-      : `card.move.${sourceStatus}_to_${targetStatus}`,
-    'card',
-    sourceStatus,
-  ), [hasPermission]);
+  ) => {
+    if (sourceStatus === 'rejected' && targetStatus === 'rejected') {
+      return hasPermission('card.interact_in.rejected');
+    }
+    return hasPermissionWithState(
+      hasPermission,
+      sourceStatus === targetStatus
+        ? 'card.entity.edit_fields'
+        : `card.move.${sourceStatus}_to_${targetStatus}`,
+      'card',
+      sourceStatus,
+    );
+  }, [hasPermission]);
   const canStartCardDrag = useCallback(
     (card: CardSummary) => hasPermission(`card.interact_in.${card.status}`),
     [hasPermission],
@@ -232,8 +245,11 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
   const columnsQuery = useMemo<BoardColumnsQuery>(() => {
     const cardTypesByStatus: Partial<Record<CardStatus, CardType[]>> = {};
     for (const status of CARD_STATUSES) {
-      const active = cardTypeFilters[status] ?? new Set(CARD_TYPE_FILTERS);
-      if (active.size < CARD_TYPE_FILTERS.length) {
+      const available = availableCardTypes(status);
+      const active = cardTypeFilters[status] ?? new Set(available);
+      // Rejected is explicitly restricted to Tasks and Bugs so a malformed
+      // legacy Test Card can never acquire a Rejected UI affordance.
+      if (status === 'rejected' || active.size < available.length) {
         cardTypesByStatus[status] = [...active].map(apiCardType);
       }
     }
@@ -307,7 +323,13 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
   useEffect(() => {
     if (!boardId) return undefined;
     const controller = new AbortController();
-    const generation = beginColumnsGeneration();
+    const generation = beginColumnsGeneration({
+      specIds: columnsQuery.specIds,
+      includeUnlinked: columnsQuery.includeUnlinked,
+      cardTypesByStatus: columnsQuery.cardTypesByStatus,
+      search: columnsQuery.search,
+      includeArchived: columnsQuery.includeArchived,
+    });
     setColumnsLoading(true);
     setColumnsError(null);
 
@@ -372,8 +394,10 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
   };
 
   const toggleCardTypeFilter = (status: CardStatus, type: KanbanCardFilterType) => {
+    const available = availableCardTypes(status);
+    if (!available.includes(type)) return;
     setCardTypeFilters((prev) => {
-      const next = new Set(prev[status] ?? CARD_TYPE_FILTERS);
+      const next = new Set(prev[status] ?? available);
       if (next.has(type)) {
         // The transport omits an empty type set, which means "all". Keep at
         // least one type selected so the UI never sends a misleading filter.
@@ -501,7 +525,7 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
   };
 
   const handleAddCard = (status: CardStatus) => {
-    if (!canCreateCard) return;
+    if (!canCreateCard || !CREATABLE_CARD_STATUSES.includes(status)) return;
     setCreateCardStatus(status);
   };
 
@@ -737,10 +761,17 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
                 totalCount,
                 cardTypeFacets: columnsMeta[status]?.facets.card_type,
                 activeCardTypes: cardTypeFilters[status],
+                availableCardTypes: availableCardTypes(status),
                 onToggleCardType: (type: KanbanCardFilterType) => toggleCardTypeFilter(status, type),
                 onCardClick: handleCardClick,
                 onAddCard: handleAddCard,
                 canAddCard: canCreateCard,
+                allowCardCreation: CREATABLE_CARD_STATUSES.includes(status),
+                canAcceptDrop: !activeCard || (
+                  status === 'rejected'
+                    ? activeCard.status === 'rejected'
+                    : activeCard.status !== 'rejected' || status === 'in_progress'
+                ),
                 canDragCard: canStartCardDrag,
                 nameMap,
                 cognitiveBadges,
@@ -783,7 +814,7 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
       </div>
 
       {/* Card Detail Modal */}
-      <CardModal boardId={boardId} />
+      <CardModal boardId={boardId} onAuthoritativeStatusChange={refreshColumns} />
 
       {/* Create Card Modal */}
       {createCardStatus && (

@@ -48,6 +48,7 @@ interface CardKnowledgeTabProps {
   }[];
   onUpdate: () => Promise<void>;
   onBusyChange?: (busy: boolean) => void;
+  readOnly?: boolean;
 }
 
 const ORIGIN_CLASS_LABELS: Record<string, string> = {
@@ -101,6 +102,7 @@ export function CardKnowledgeTab({
   specKnowledgeBases,
   onUpdate,
   onBusyChange,
+  readOnly = false,
 }: CardKnowledgeTabProps) {
   const api = useDashboardApi();
   const apiRef = useRef(api);
@@ -255,6 +257,8 @@ export function CardKnowledgeTab({
 
   const handleSaveDecision = async () => {
     if (
+      readOnly
+      ||
       !technicalRead
       || choice.action === 'omitted'
       || !isKnowledgePropagationChoiceValid(choice)
@@ -303,7 +307,7 @@ export function CardKnowledgeTab({
   };
 
   const handleRefresh = async (rootKnowledgeId: string) => {
-    if (!technicalRead) return;
+    if (readOnly || !technicalRead) return;
     const fingerprint = `${rootKnowledgeId}:${technicalRead.revision}`;
     if (refreshIntentRef.current?.fingerprint !== fingerprint) {
       refreshIntentRef.current = {
@@ -336,7 +340,9 @@ export function CardKnowledgeTab({
     <div className="modal-body space-y-4">
       <div className="px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 text-sm text-gray-600 dark:text-gray-300 flex items-center gap-2">
         <Shield size={15} />
-        Knowledge content is read-only; propagation decisions are governed below.
+        {readOnly
+          ? 'Knowledge is read-only while this card is Rejected. Move it to In Progress before changing propagation decisions.'
+          : 'Knowledge content is read-only; propagation decisions are governed below.'}
       </div>
 
       {loading && (
@@ -413,7 +419,7 @@ export function CardKnowledgeTab({
                       stale
                     </span>
                   )}
-                  {assignment.mode === 'snapshot' && assignment.stale && (
+                  {!readOnly && assignment.mode === 'snapshot' && assignment.stale && (
                     <button
                       type="button"
                       onClick={() => void handleRefresh(assignment.root_knowledge_id)}
@@ -446,7 +452,7 @@ export function CardKnowledgeTab({
         fallbackItems={card.knowledge_bases || []}
       />
 
-      {!loading && technicalRead && (
+      {!loading && technicalRead && !readOnly && (
         <>
           <KnowledgePropagationSelector
             items={candidates}

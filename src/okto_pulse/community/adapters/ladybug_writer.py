@@ -27,6 +27,7 @@ DEFAULT_WRITER_TIMEOUT_S = 30.0
 _writer_lock = threading.Lock()
 _writer_owner_guard = threading.Lock()
 _writer_owner: tuple[str, str, int, float] | None = None
+_writer_activity_revision = 0
 _writer_lease_active: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "community_ladybug_writer_lease_active",
     default=False,
@@ -39,6 +40,29 @@ def writer_lease_is_active() -> bool:
     return _writer_lease_active.get()
 
 
+@dataclass(frozen=True, slots=True)
+class LadybugWriterActivitySnapshot:
+    """Bounded process-local evidence of writer activity.
+
+    The monotonic revision advances on both acquire and release.  Consumers
+    can therefore detect a writer that started and completed between two
+    observations without opening Ladybug or contending on its writer lease.
+    """
+
+    revision: int
+    active: bool
+
+
+def ladybug_writer_activity_snapshot() -> LadybugWriterActivitySnapshot:
+    """Observe writer activity without acquiring the process writer lease."""
+
+    with _writer_owner_guard:
+        return LadybugWriterActivitySnapshot(
+            revision=_writer_activity_revision,
+            active=_writer_owner is not None,
+        )
+
+
 def _owner_snapshot() -> tuple[str, str, int, int] | None:
     with _writer_owner_guard:
         owner = _writer_owner
@@ -49,15 +73,24 @@ def _owner_snapshot() -> tuple[str, str, int, int] | None:
 
 
 def _set_owner(*, scope: str, phase: str) -> None:
-    global _writer_owner
+    global _writer_activity_revision, _writer_owner
     with _writer_owner_guard:
+        _writer_activity_revision += 1
         _writer_owner = (scope, phase, threading.get_ident(), time.monotonic())
 
 
-def _clear_owner() -> None:
-    global _writer_owner
+def _release_owned_lock(lock: threading.Lock) -> None:
+    """Publish release and unlock as one observable writer-fence change."""
+
+    global _writer_activity_revision, _writer_owner
     with _writer_owner_guard:
         _writer_owner = None
+        _writer_activity_revision += 1
+        # A succeeding writer can acquire the raw lock immediately, but it
+        # cannot publish its owner until this guard is released.  Health
+        # observers therefore never see an inactive owner while the prior
+        # lease still holds the process writer lock.
+        lock.release()
 
 
 def _running_event_loop_on_current_thread() -> bool:
@@ -134,8 +167,7 @@ class LadybugWriterLease:
             if self._released:
                 return
             self._released = True
-            _clear_owner()
-            self._lock.release()
+            _release_owned_lock(self._lock)
         logger.debug(
             "kg.ladybug_writer.released scope=%s phase=%s "
             "statement_kind=none wait_ms=%d",
@@ -373,10 +405,12 @@ def ladybug_writer_scope(
 
 __all__ = [
     "DEFAULT_WRITER_TIMEOUT_S",
+    "LadybugWriterActivitySnapshot",
     "LadybugWriterLease",
     "acquire_ladybug_writer",
     "acquire_ladybug_writer_async",
     "activate_ladybug_writer_lease",
+    "ladybug_writer_activity_snapshot",
     "ladybug_writer_scope",
     "writer_lease_is_active",
 ]

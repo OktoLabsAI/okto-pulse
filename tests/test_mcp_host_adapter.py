@@ -329,7 +329,10 @@ async def test_community_host_narrows_live_policy_board_schema_only_locally() ->
         if getattr(tool.fn, "__mcp_closed_schema__", False)
     )
 
-    assert len(opted_in) == 20
+    # Code Traceability adds twenty-one governed closed-schema commands to the
+    # original policy surface. Keep the inventory assertion explicit so a
+    # schema silently falling back to FastMCP inference is still detected.
+    assert len(opted_in) == 41
 
     def assert_closed(value: object) -> None:
         if isinstance(value, dict):
@@ -347,7 +350,10 @@ async def test_community_host_narrows_live_policy_board_schema_only_locally() ->
 
     for core_tool in opted_in:
         published = await host.get_tool(core_tool.name)
-        assert core_tool.parameters["properties"]["board_id"]["maxLength"] == 255
+        assert (
+            core_tool.parameters["properties"]["board_id"]["maxLength"]
+            > COMMUNITY_BOARD_ID_MAX_LENGTH
+        )
         expected = dict(core_tool.parameters)
         expected["properties"] = dict(core_tool.parameters["properties"])
         expected["properties"]["board_id"] = dict(

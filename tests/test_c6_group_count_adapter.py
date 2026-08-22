@@ -79,6 +79,57 @@ async def _seed(engine: AsyncEngine) -> None:
                 "('qx', 'x1', 'Foreign?', 'u', NULL)"
             )
         )
+        await connection.execute(
+            text(
+                "INSERT INTO ideations "
+                "(id, board_id, title, status, version, created_by, archived) VALUES "
+                "('i1', 'b1', 'Ideation', 'draft', 1, 'u', 0)"
+            )
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO refinements "
+                "(id, ideation_id, board_id, title, status, version, created_by, "
+                "archived) VALUES "
+                "('r1', 'i1', 'b1', 'Refinement', 'draft', 1, 'u', 0)"
+            )
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO specs "
+                "(id, board_id, ideation_id, refinement_id, title, status, version, "
+                "created_by, archived) VALUES "
+                "('s1', 'b1', 'i1', 'r1', 'Spec', 'draft', 1, 'u', 0)"
+            )
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO sprints "
+                "(id, spec_id, board_id, title, spec_version, status, lane_type, "
+                "version, created_by, archived) VALUES "
+                "('sp1', 's1', 'b1', 'Sprint', 1, 'draft', 'normal', 1, 'u', 0)"
+            )
+        )
+        for table, parent_field, parent_id in (
+            ("ideation_qa_items", "ideation_id", "i1"),
+            ("refinement_qa_items", "refinement_id", "r1"),
+            ("spec_qa_items", "spec_id", "s1"),
+            ("sprint_qa_items", "sprint_id", "sp1"),
+        ):
+            await connection.execute(
+                text(
+                    f"INSERT INTO {table} "
+                    f"(id, {parent_field}, question, question_type, answer, selected, "
+                    "asked_by, answered_at) VALUES "
+                    f"('{table}-open', :parent_id, 'Open?', 'text', NULL, NULL, "
+                    "'u', NULL), "
+                    f"('{table}-text', :parent_id, 'Text?', 'text', 'Done', NULL, "
+                    "'u', '2026-07-20 08:00:00'), "
+                    f"('{table}-choice', :parent_id, 'Choice?', 'choice', NULL, "
+                    "'[\"a\"]', 'u', '2026-07-20 08:00:00')"
+                ),
+                {"parent_id": parent_id},
+            )
 
 
 @pytest.fixture
@@ -108,10 +159,7 @@ def _plain(value: Any) -> Any:
 
 
 def _counts(rows: tuple[ApplicationGroupCount, ...]) -> dict[tuple[Any, ...], int]:
-    return {
-        tuple(_plain(value) for value in row.values): row.count
-        for row in rows
-    }
+    return {tuple(_plain(value) for value in row.values): row.count for row in rows}
 
 
 def _base_scope() -> tuple[ApplicationFilter, ...]:
@@ -227,3 +275,34 @@ async def test_open_qa_count_is_a_correlated_single_statement_projection(rig) ->
     assert budget.used == 1
     counts = {row.id: row.open_qa_count for row in rows}
     assert counts == {"c1": 1, "c2": 2, "c3": 0, "c4": 0, "c5": 0, "c6": 0}
+
+
+@pytest.mark.parametrize(
+    ("entity", "record_id"),
+    (
+        ("card", "c1"),
+        ("ideation", "i1"),
+        ("refinement", "r1"),
+        ("spec", "s1"),
+        ("sprint", "sp1"),
+    ),
+)
+async def test_all_qa_families_count_only_answered_at_null_in_one_statement(
+    rig,
+    entity: str,
+    record_id: str,
+) -> None:
+    adapter, session = rig
+    async with statement_budget(session, 1) as budget:
+        rows = await adapter.list(
+            session,
+            ApplicationQuery(
+                entity=entity,
+                filters=(ApplicationFilter("id", "eq", record_id),),
+                select_fields=("id", "open_qa_count"),
+            ),
+        )
+
+    assert budget.used == 1
+    assert len(rows) == 1
+    assert rows[0].open_qa_count == 1

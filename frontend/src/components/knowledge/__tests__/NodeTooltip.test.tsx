@@ -66,4 +66,13 @@ describe('NodeTooltip — S5.1 / AC-7', () => {
       'Tooltip for Pick PostgreSQL over Mongo',
     );
   });
+
+  it('identifies the logical Code Traceability subtype instead of only Entity', () => {
+    const { getByText, queryByText } = render(
+      <NodeTooltip node={{ ...BASE_NODE, node_type: 'Entity', kind_of: 'implementation_target' }} />,
+    );
+
+    expect(getByText('Implementation Target')).toBeInTheDocument();
+    expect(queryByText('Entity')).not.toBeInTheDocument();
+  });
 });

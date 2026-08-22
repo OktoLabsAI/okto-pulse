@@ -1083,9 +1083,11 @@ the optional resume reason without changing the original actor binding.
 
 Run the KG rebuild preflight for a board — gemelar do REST POST /api/v1/kg/rebuild/preflight.
 
-Executes the pre-rebuild check (read-only, TR13): enumerates real sources
-via BoardSourceStore (SQLite), classifies the KG health state, and persists
-the immutable manifest needed for /confirm.
+Executes a diagnostic pre-rebuild check: enumerates real sources and classifies
+KG health without persisting a manifest or confirmation artifact. The local
+one-shot executor performs its own fresh preflight/manifest/confirmation/run,
+or resumes the one verified active receipt before a governed fresh run, only
+after proving Pulse and SDLC writers are offline.
 
 **Admission gate (FR8):** refuses with `rebuild_refused_quarantined` when
 `graph_state == 'quarantined'`. Board `graph_state=recovery_needed` is admitted.
@@ -1093,81 +1095,97 @@ If the board graph is healthy and only Global Discovery requires recovery, the
 tool returns `board_rebuild_wrong_recovery_scope` and points to the global
 recovery preflight; rebuilding one board cannot repair the global cache.
 
-**Flow:** call `okto_pulse_kg_health` first. If `overall_state == quarantined`
-stop. Otherwise: preflight → confirm → run.
+**Flow:** call `okto_pulse_kg_health` first and branch on the component state,
+not generic `overall_state`. For board-graph recovery, stop Pulse and use the
+installed local executor; online confirm/run are terminal denials and must not
+be retried.
+
+Keep Pulse/API/MCP and SDLC writers offline through these three stages:
+
+```powershell
+okto-pulse-kg-recovery-only --data-home <ABS_LIVE_HOME> --board-id <UUID> --inspect-install
+```
+
+After reviewing the SHA-256 fingerprint, make a physical isolated copy and
+rehearse while writing a new receipt:
+
+```powershell
+okto-pulse-kg-recovery-only --data-home <ABS_COPY_HOME> --board-id <UUID> --rehearsal-copy-of <ABS_LIVE_HOME> --rehearsal-receipt-out <NEW_ABS_RECEIPT.json> --expected-install-fingerprint <SHA256>
+```
+
+Execute against the exact live home within 2 hours:
+
+```powershell
+okto-pulse-kg-recovery-only --data-home <ABS_LIVE_HOME> --board-id <UUID> --execute --rehearsal-receipt <ABS_RECEIPT.json> --expected-install-fingerprint <SHA256>
+```
+
+The 7200-second receipt is single-use and bound to its exact receipt path,
+board, installation fingerprint, live data-home path/storage hashes and
+terminal rehearsal evidence. The physical-copy relationship is verified at
+rehearsal; the copy path is not persisted as a binding. Never copy, rename or reuse it. Online
+`preflight_hash`, `manifest_ref`, and `confirmation_id` values are not executor
+inputs.
 
 Args:
     board_id: UUID of the board to preflight.
 
 Returns:
-    JSON with `outcome`, `action_required`, `base_state`,
-    `eligible_source_count`, `preflight_hash`, `manifest_ref`,
-    `source_set_hash`. Pass `manifest_ref` + `preflight_hash` to
-    `okto_pulse_kg_rebuild_confirm`.
+    JSON with `outcome=diagnostic_complete`, original `preflight_outcome`,
+    `action_required`, `base_state`, `eligible_source_count`, `preflight_hash`,
+    null `manifest_ref` and `source_set_hash`, offline execution mode and
+    remediation.
 
 Errors:
+    `board_rebuild_wrong_recovery_scope` — board graph healthy, discovery failed.
     `rebuild_refused_quarantined` — graph is quarantined; use KG reset flow first.
     `preflight_enumerate_failed` — source enumeration failed (detail in response).
     `preflight_service_failed` — preflight service error (detail in response).
-    `preflight_manifest_failed` — manifest persistence failed (detail in response).
 
 ## `okto_pulse_kg_rebuild_confirm`
 
-Emit the single-use confirmation token for a rebuild — gemelar do REST POST /api/v1/kg/rebuild/confirm.
+Validate online request syntax, then deny confirmation — REST twin POST /api/v1/kg/rebuild/confirm.
 
-Loads the manifest persisted in /preflight via `manifest_ref` (NEVER
-re-enumerates), verifies that `preflight_hash` matches, and issues the
-confirmation token. Pass the token to `okto_pulse_kg_rebuild_run`.
+Validates operation and SHA-256 shape, but never loads/persists a manifest or
+issues a token online. The local one-shot owns internal authorization.
 
 Args:
     board_id: UUID of the board (same used in /preflight).
     operation: Canonical operation (e.g. `'rebuild'`).
-    preflight_hash: SHA-256 hex received from /preflight (64 chars).
-    manifest_ref: Manifest identifier received from /preflight.
+    preflight_hash: Compatibility SHA-256 syntax field; not an executor input.
+    manifest_ref: Compatibility-only legacy field; not an executor input.
 
 Returns:
-    JSON with `confirmation_id`, `manifest_ref`, `source_set_hash`,
-    `expires_at`. Pass `confirmation_id` to `okto_pulse_kg_rebuild_run`.
+    `recovery_execution_required`, `execution_mode=recovery_only_offline`,
+    remediation and `operator_action=run_local_offline_kg_recovery_executor`.
 
 Errors:
     `unsupported_operation` — operation not in canonical set.
     `operation_pending_implementation` — operation valid but not yet implemented.
     `invalid_preflight_hash` — hash format invalid.
-    `manifest_not_found` — manifest_ref does not exist on disk.
-    `manifest_board_mismatch` — manifest_ref belongs to a different board.
-    `preflight_hash_mismatch` — hash does not match manifest binding.
-    `confirm_failed` — unexpected error (detail in response).
 
 ## `okto_pulse_kg_rebuild_run`
 
-Execute the KG rebuild — gemelar do REST POST /api/v1/kg/rebuild/run.
+Reject online KG rebuild execution — REST twin POST /api/v1/kg/rebuild/run.
 
-Consumes the single-use token emitted by `okto_pulse_kg_rebuild_confirm`
-and executes the full rebuild under the admin lane KG-01. NEVER mutates
-the graph if the token is invalid, the manifest has changed, or the
-exclusive lock cannot be acquired.
-
-**Admission gate (FR8):** re-checks quarantine even before consuming the
-token. `recovery_needed` IS ADMITTED.
+Returns `recovery_execution_required` without consuming legacy tokens. Request
+data cannot carry the opaque recovery capability. Stop Pulse and use the
+installed local one-shot; never retry online in a loop.
 
 Args:
     board_id: UUID of the board.
-    confirmation_id: Token emitted by /confirm.
-    operation: Canonical operation (must match /confirm).
-    preflight_hash: SHA-256 hex (must match /confirm).
-    manifest_ref: Manifest identifier (must match /confirm).
+    confirmation_id: Compatibility-only legacy token; it is not consumed.
+    operation: Compatibility operation field.
+    preflight_hash: Compatibility SHA-256 field.
+    manifest_ref: Compatibility manifest field.
     reason: Human-readable description for audit (max 512 chars).
 
 Returns:
-    JSON with `run_id`, `outcome`, `reason`, `audit_ref`,
-    `previous_kg_generation_id`, `current_kg_generation_id`,
-    `started_at`, `finished_at`, `affected_files`, `report_ref`,
-    `report_id`, `publishable_status`, `promotion_outcome`,
-    `operator_action`, `event_emitted`.
+    `recovery_execution_required`, `execution_mode=recovery_only_offline`,
+    remediation and `operator_action=run_local_offline_kg_recovery_executor`.
 
 Errors:
-    `rebuild_refused_quarantined` — graph is quarantined; use KG reset flow first.
-    `rebuild_run_failed` — unexpected error during rebuild (detail in response).
+    `recovery_execution_required` — online execution is disabled; use the local
+    executor while Pulse and SDLC writers are offline.
 
 ## `okto_pulse_kg_verify_grounding`
 

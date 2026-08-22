@@ -20,6 +20,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.core.ports.relational_effects import (
     ConsolidationQueueUpsert,
     KGTickRunUpsert,
+    SpecDependencyProjectionQueueMetadata,
     get_relational_effects_port,
 )
 from okto_pulse.core.ports.consolidation import get_consolidation_persistence_port
@@ -50,6 +51,13 @@ async def test_af30_3c_community_relational_effects_register_and_persist(tmp_pat
     board_id = str(uuid.uuid4())
     tick_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
+    dependency_payload = SpecDependencyProjectionQueueMetadata(
+        mutation_event_id="dependency-mutation-1",
+        mutation_event_type="spec.dependency_added",
+        dependency_id="dependency-1",
+        projection_owner_spec_id="spec-1",
+        target_role="projection_owner",
+    ).to_payload()
     async with factory() as session:
         session.add(Board(id=board_id, name="AF30-3cR", owner_id="test-owner"))
         await session.commit()
@@ -63,11 +71,12 @@ async def test_af30_3c_community_relational_effects_register_and_persist(tmp_pat
             session,
             ConsolidationQueueUpsert(
                 board_id=board_id,
-                artifact_type="card",
-                artifact_id="card-1",
+                artifact_type="spec",
+                artifact_id="spec-1",
                 priority="normal",
-                source="event:card.moved",
-                triggered_by_event="card.moved",
+                source="event:spec.dependency_added",
+                triggered_by_event="spec.dependency_added",
+                payload=dependency_payload,
             ),
         )
         assert changed is True
@@ -92,7 +101,8 @@ async def test_af30_3c_community_relational_effects_register_and_persist(tmp_pat
 
     assert queue_row.board_id == board_id
     assert queue_row.status == "pending"
-    assert queue_row.triggered_by_event == "card.moved"
+    assert queue_row.triggered_by_event == "spec.dependency_added"
+    assert queue_row.payload == dependency_payload
     assert tick_row.tick_id == tick_id
     assert tick_row.nodes_recomputed == 3
     assert latest_tick is not None

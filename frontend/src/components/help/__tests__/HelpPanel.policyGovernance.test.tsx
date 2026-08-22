@@ -73,7 +73,7 @@ describe('HelpPanel Policy Governance guide', () => {
     );
     expect(dialog).toHaveTextContent(/Ready with waivers/i);
     expect(dialog).toHaveTextContent(
-      /Stale history remains auditable but never authorizes a transition/i,
+      /earlier results remain available for review and never authorize the new edition/i,
     );
     expect(dialog).toHaveTextContent(/Advisory findings never block/i);
     expect(dialog).toHaveTextContent(

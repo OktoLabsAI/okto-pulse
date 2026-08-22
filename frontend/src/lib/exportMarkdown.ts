@@ -28,6 +28,7 @@ import type {
   ArchitectureEntity,
   ArchitectureInterface,
 } from '@/types';
+import { STATUS_LABELS } from '@/types';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2171,7 +2172,7 @@ export function exportCard(card: Card, spec?: Spec | null): string {
   let md = `# ${isBug ? '[BUG] ' : ''}${card.title}\n\n`;
 
   md += metaTable([
-    ['Status', card.status],
+    ['Status', STATUS_LABELS[card.status]],
     ['Priority', card.priority !== 'none' ? card.priority : ''],
     ['Type', typeLabel],
     ['Assignee', card.assignee_id || ''],
@@ -2192,6 +2193,47 @@ export function exportCard(card: Card, spec?: Spec | null): string {
 
   body += renderCardDependencies(card);
   body += renderTestCardDetails(card);
+
+  if (card.status === 'rejected' && card.card_type !== 'test') {
+    const currentRejectionRecord = (card.rejection_records || []).find(
+      (record) => (
+        record.kind === card.current_rejection_kind
+        && record.id === card.current_rejection_id
+      ),
+    );
+    const sourceValidationId = currentRejectionRecord?.source_id;
+    const currentAttempt = [...(card.validations || [])]
+      .reverse()
+      .find((validation) => validation.id === sourceValidationId)
+      || [...(card.validations || [])]
+        .reverse()
+        .find((validation) => (
+          validation.card_status === 'rejected'
+          || validation.completion_outcome === 'rejected'
+          || validation.verdict === 'fail'
+          || validation.outcome === 'failed'
+          || validation.recommendation === 'reject'
+        ));
+    body += '## Rework Required\n\n';
+    body += card.current_rejection_summary
+      || currentAttempt?.rejection_cause?.summary
+      || currentAttempt?.summary
+      || currentAttempt?.general_justification
+      || 'The latest governed completion attempt did not pass.';
+    if (currentAttempt?.completion_gate_failures?.length) {
+      body += '\n\n**Completion gates requiring action:**\n\n';
+      body += currentAttempt.completion_gate_failures.map((failure) => {
+        const reasons = failure.reason_codes?.length
+          ? ` (${failure.reason_codes.join(', ')})`
+          : '';
+        return `- **${failure.code}:** ${failure.summary}${reasons}`;
+      }).join('\n');
+    }
+    body += '\n\nMove this card to In Progress, complete a new execution attempt, and record a new handoff before returning it to Validation.\n\n';
+    if (currentAttempt?.threshold_violations?.length) {
+      body += `**Thresholds not met:**\n\n${currentAttempt.threshold_violations.map((violation) => `- ${violation}`).join('\n')}\n\n`;
+    }
+  }
 
   // Bug-specific fields
   if (isBug) {
@@ -2228,13 +2270,35 @@ export function exportCard(card: Card, spec?: Spec | null): string {
   // Validations
   if (card.validations?.length) {
     const entries = card.validations.map((v: ValidationEntry, i: number) => {
-      let e = `### Validation ${i + 1} — ${v.verdict === 'pass' ? 'PASSED' : 'FAILED'}\n\n`;
+      const passed = v.verdict === 'pass'
+        || v.outcome === 'success'
+        || v.recommendation === 'approve';
+      const completionRejected = v.completion_outcome === 'rejected';
+      const completeness = v.completeness ?? v.estimated_completeness;
+      const drift = v.drift ?? v.estimated_drift;
+      const reviewerName = v.evaluator_name || v.reviewer_name;
+      const resultLabel = completionRejected && passed
+        ? 'ASSESSMENT PASSED — COMPLETION REJECTED'
+        : passed ? 'PASSED' : 'FAILED';
+      let e = `### Validation ${i + 1} — ${resultLabel}\n\n`;
       e += `| Metric | Score |\n|--------|-------|\n`;
       e += `| Confidence | ${v.confidence} |\n`;
-      e += `| Completeness | ${v.completeness} |\n`;
-      e += `| Drift | ${v.drift} |\n\n`;
-      if (v.summary) e += `**Summary:** ${v.summary}\n\n`;
-      e += `*Reviewer: ${v.evaluator_id} | ${fmtDate(v.created_at)}*\n\n`;
+      e += `| Completeness | ${completeness ?? 'Not reported'} |\n`;
+      e += `| Drift | ${drift ?? 'Not reported'} |\n\n`;
+      const summary = v.summary || v.general_justification;
+      if (summary) e += `**Summary:** ${summary}\n\n`;
+      if (v.completion_gate_failures?.length) {
+        e += '**Completion gates requiring action:**\n\n';
+        e += `${v.completion_gate_failures.map((failure) => {
+          const reasons = failure.reason_codes?.length
+            ? ` (${failure.reason_codes.join(', ')})`
+            : '';
+          return `- **${failure.code}:** ${failure.summary}${reasons}`;
+        }).join('\n')}\n\n`;
+      }
+      e += reviewerName
+        ? `*Reviewer: ${reviewerName} | ${fmtDate(v.created_at)}*\n\n`
+        : `*Recorded: ${fmtDate(v.created_at)}*\n\n`;
       return e;
     }).join('');
     body += `## Validations\n\n${entries}`;

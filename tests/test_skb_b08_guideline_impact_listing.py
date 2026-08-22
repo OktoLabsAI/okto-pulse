@@ -319,6 +319,7 @@ async def test_b08_large_impact_keysets_are_stable_and_board_scoped(
                 entity_type=PolicyEntityType.SPEC,
                 subject_id=f"spec-b08-{index:03d}",
                 subject_version=1,
+                subject_edition=1,
             )
             for index in range(205)
         )
@@ -334,6 +335,7 @@ async def test_b08_large_impact_keysets_are_stable_and_board_scoped(
                 entity_type=PolicyEntityType.SPEC,
                 subject_id=f"spec-b08-other-{index:03d}",
                 subject_version=1,
+                subject_edition=1,
             )
             for index in range(3)
         ),

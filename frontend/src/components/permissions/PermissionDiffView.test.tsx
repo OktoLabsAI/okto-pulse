@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { PermissionDiffView } from './PermissionDiffView';
+import { getEntityTextClasses } from './permissionLabels';
 
 describe('PermissionDiffView', () => {
   it('compares exact base and effective leaves even when enabled counts cancel', () => {
@@ -37,5 +38,18 @@ describe('PermissionDiffView', () => {
       '1 flag enabled by direct customization',
     );
     expect(screen.queryByText(/No effective changes/)).not.toBeInTheDocument();
+  });
+
+  it('uses the shared light and dark palette for newly introduced policy groups', () => {
+    render(
+      <PermissionDiffView
+        baseFlags={{ permission_preset: { read: true } }}
+        effectiveFlags={{ permission_preset: { read: false } }}
+      />,
+    );
+
+    expect(screen.getByText('Permission Presets', { exact: true })).toHaveClass(
+      ...getEntityTextClasses('permission_preset').split(' '),
+    );
   });
 });

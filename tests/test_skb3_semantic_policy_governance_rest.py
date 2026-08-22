@@ -23,10 +23,12 @@ from okto_pulse.community.api.policy_governance import (
     GuidelineExportMetricV3,
     GuidelineMetricRequest,
     PreviewGuidelineImpactRequest,
+    RecordSemanticGuidelineAssessmentRequest,
     SemanticAssessmentPageResponse,
     SemanticFindingPageResponse,
     SemanticSkipPageResponse,
     SemanticWaiverPageResponse,
+    _adapt_semantic_values,
     _project_core_result,
     get_policy_governance_facade,
     router,
@@ -107,6 +109,7 @@ def _valid_record_payload() -> dict:
         "subject_type": "spec",
         "subject_id": "spec-skb3",
         "expected_subject_version": 3,
+        "expected_subject_edition": 1,
         "binding_id": "binding-skb3",
         "expected_binding_revision": 2,
         "guideline_revision_id": "revision-skb3",
@@ -418,6 +421,7 @@ def test_semantic_mutation_bodies_are_exact_recursively_closed() -> None:
             "subject_type",
             "subject_id",
             "expected_subject_version",
+            "expected_subject_edition",
             "binding_id",
             "expected_binding_revision",
             "guideline_revision_id",
@@ -491,6 +495,46 @@ def test_semantic_mutation_bodies_are_exact_recursively_closed() -> None:
         schema,
         "RequestSemanticWaiverRequest",
     )["required"]
+
+
+@pytest.mark.parametrize("subject_type", ("ideation", "refinement", "spec"))
+def test_v1_rest_contract_requires_edition_for_lifecycle_subjects(
+    subject_type: str,
+) -> None:
+    payload = _valid_record_payload()
+    payload["subject_type"] = subject_type
+    payload.pop("expected_subject_edition")
+
+    with pytest.raises(ValidationError, match="expected_subject_edition_required"):
+        RecordSemanticGuidelineAssessmentRequest.model_validate(payload)
+
+
+@pytest.mark.parametrize("subject_type", ("sprint", "card", "test_scenario"))
+def test_v1_rest_contract_preserves_non_edition_subject_compatibility(
+    subject_type: str,
+) -> None:
+    payload = _valid_record_payload()
+    payload["subject_type"] = subject_type
+    payload.pop("expected_subject_edition")
+
+    request = RecordSemanticGuidelineAssessmentRequest.model_validate(payload)
+
+    assert request.expected_subject_edition is None
+
+
+def test_v1_rest_adapter_carries_edition_into_core_submission() -> None:
+    request = RecordSemanticGuidelineAssessmentRequest.model_validate(
+        _valid_record_payload()
+    )
+
+    adapted = _adapt_semantic_values(
+        "record_semantic_assessment",
+        {"board_id": _BOARD_ID, **request.model_dump(mode="python")},
+        codec=None,
+        actor=SimpleNamespace(actor_id="agent-skb3"),
+    )
+
+    assert adapted["submission"].subject.subject_edition == 1
 
 
 def test_semantic_mutation_response_allowlists_are_flat_and_closed() -> None:
@@ -1098,6 +1142,7 @@ def test_semantic_detail_page_preserves_nested_required_nulls() -> None:
     )
     from okto_pulse.core.domain.guideline_semantic_projection import (
         SemanticAssessmentDetail,
+        SemanticAssessmentLifecycleState,
         SemanticEvidenceProjection,
         SemanticGuidelineProjection,
         SemanticMetricResultDetail,
@@ -1112,6 +1157,8 @@ def test_semantic_detail_page_preserves_nested_required_nulls() -> None:
         entity_type=PolicyEntityType("spec"),
         subject_id="spec-nested-null",
         subject_version=73,
+        subject_edition=1,
+        lifecycle_state=SemanticAssessmentLifecycleState.CURRENT,
         binding_id="binding-nested-null",
         guideline_id="guideline-nested-null",
         guideline_revision_id="revision-nested-null",

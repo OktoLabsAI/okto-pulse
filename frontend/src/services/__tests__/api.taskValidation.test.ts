@@ -21,6 +21,8 @@ describe('task validation REST client', () => {
 
   it('sends the backend write contract and returns the validation entry', async () => {
     const payload: TaskValidationSubmitPayload = {
+      expected_subject_version: 4,
+      idempotency_key: 'task-validation-card-1-attempt-1',
       confidence: 91,
       confidence_justification: 'The evidence is complete and reproducible.',
       estimated_completeness: 94,

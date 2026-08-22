@@ -7,14 +7,19 @@
 //   - Global Default passes createActiveTemplateVersion (new template version)
 // Both receive a Partial<BoardSettings> patch from the same controls.
 import { type ReactNode, useEffect, useState } from 'react';
-import { BookOpen, ClipboardCheck, Image, Languages, Network, Palette, Shield, SlidersHorizontal, Users } from 'lucide-react';
+import { BookOpen, ClipboardCheck, Fingerprint, Image, Info, Languages, Network, Palette, Shield, SlidersHorizontal, Users } from 'lucide-react';
 import { normalizeRefinementAmbiguityThreshold } from '@/components/board/refinementAmbiguitySettings';
 import {
   normalizeReviewerSeparationMode,
   REVIEWER_SEPARATION_MODES,
 } from '@/components/board/reviewerSeparationSettings';
+import {
+  normalizeCodeTraceabilitySettings,
+  type CodeTraceabilityEnforcementMode,
+} from '@/components/board/codeTraceabilitySettings';
 import type {
   BoardSettings,
+  CodeTraceabilitySettings,
   LintLanguageCode,
   ReviewerSeparationMode,
   SpecResourceAutoDeriveType,
@@ -109,6 +114,29 @@ function SettingRow({
   );
 }
 
+function SettingsSelect({
+  ariaLabel,
+  value,
+  onChange,
+  children,
+}: {
+  ariaLabel: string;
+  value: string;
+  onChange: (value: string) => void;
+  children: ReactNode;
+}) {
+  return (
+    <select
+      aria-label={ariaLabel}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      className="max-w-52 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs text-gray-800 shadow-sm outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-200 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:focus:ring-violet-900"
+    >
+      {children}
+    </select>
+  );
+}
+
 const SPEC_RESOURCE_OPTIONS: Array<{
   type: SpecResourceAutoDeriveType;
   label: string;
@@ -157,8 +185,10 @@ type NumericSettingKey =
   | 'min_confidence'
   | 'min_completeness'
   | 'max_drift'
-  | 'min_spec_completeness'
+  | 'min_spec_confidence'
+  | 'min_spec_clarity'
   | 'min_spec_assertiveness'
+  | 'min_spec_decidability'
   | 'max_spec_ambiguity';
 
 export interface BoardSettingsFormProps {
@@ -178,14 +208,18 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
   const [minConfidenceDraft, setMinConfidenceDraft] = useState<string>(String(settings.min_confidence));
   const [minCompletenessDraft, setMinCompletenessDraft] = useState<string>(String(settings.min_completeness));
   const [maxDriftDraft, setMaxDriftDraft] = useState<string>(String(settings.max_drift));
-  const [minSpecCompletenessDraft, setMinSpecCompletenessDraft] = useState<string>(String(settings.min_spec_completeness ?? 80));
+  const [minSpecConfidenceDraft, setMinSpecConfidenceDraft] = useState<string>(String(settings.min_spec_confidence ?? 70));
+  const [minSpecClarityDraft, setMinSpecClarityDraft] = useState<string>(String(settings.min_spec_clarity ?? 80));
   const [minSpecAssertivenessDraft, setMinSpecAssertivenessDraft] = useState<string>(String(settings.min_spec_assertiveness ?? 80));
+  const [minSpecDecidabilityDraft, setMinSpecDecidabilityDraft] = useState<string>(String(settings.min_spec_decidability ?? 80));
   const [maxSpecAmbiguityDraft, setMaxSpecAmbiguityDraft] = useState<string>(String(settings.max_spec_ambiguity ?? 30));
   useEffect(() => { setMinConfidenceDraft(String(settings.min_confidence)); }, [settings.min_confidence]);
   useEffect(() => { setMinCompletenessDraft(String(settings.min_completeness)); }, [settings.min_completeness]);
   useEffect(() => { setMaxDriftDraft(String(settings.max_drift)); }, [settings.max_drift]);
-  useEffect(() => { setMinSpecCompletenessDraft(String(settings.min_spec_completeness ?? 80)); }, [settings.min_spec_completeness]);
+  useEffect(() => { setMinSpecConfidenceDraft(String(settings.min_spec_confidence ?? 70)); }, [settings.min_spec_confidence]);
+  useEffect(() => { setMinSpecClarityDraft(String(settings.min_spec_clarity ?? 80)); }, [settings.min_spec_clarity]);
   useEffect(() => { setMinSpecAssertivenessDraft(String(settings.min_spec_assertiveness ?? 80)); }, [settings.min_spec_assertiveness]);
+  useEffect(() => { setMinSpecDecidabilityDraft(String(settings.min_spec_decidability ?? 80)); }, [settings.min_spec_decidability]);
   useEffect(() => { setMaxSpecAmbiguityDraft(String(settings.max_spec_ambiguity ?? 30)); }, [settings.max_spec_ambiguity]);
 
   const autoDeriveEnabled = settings.auto_derive_spec_resources_enabled ?? false;
@@ -213,6 +247,20 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
   };
 
   const lintLanguages = settings.lint_languages ?? [];
+  const codeTraceability = normalizeCodeTraceabilitySettings(
+    settings.code_traceability,
+  );
+
+  const updateCodeTraceability = (
+    patch: Partial<CodeTraceabilitySettings>,
+  ) => {
+    onChange({
+      code_traceability: {
+        ...codeTraceability,
+        ...patch,
+      },
+    });
+  };
 
   const toggleLintLanguage = (code: LintLanguageCode) => {
     const next = lintLanguages.includes(code)
@@ -230,8 +278,10 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
       if (key === 'min_confidence') setMinConfidenceDraft(String(safe));
       if (key === 'min_completeness') setMinCompletenessDraft(String(safe));
       if (key === 'max_drift') setMaxDriftDraft(String(safe));
-      if (key === 'min_spec_completeness') setMinSpecCompletenessDraft(String(safe));
+      if (key === 'min_spec_confidence') setMinSpecConfidenceDraft(String(safe));
+      if (key === 'min_spec_clarity') setMinSpecClarityDraft(String(safe));
       if (key === 'min_spec_assertiveness') setMinSpecAssertivenessDraft(String(safe));
+      if (key === 'min_spec_decidability') setMinSpecDecidabilityDraft(String(safe));
       if (key === 'max_spec_ambiguity') setMaxSpecAmbiguityDraft(String(safe));
       return;
     }
@@ -273,7 +323,7 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
 
       <SettingsSection
         title="Requirement Lint Languages"
-        description="Languages the deterministic requirement lint analyzes with native lexicons. Requirements are checked against the union of the selected languages; with none selected, only language-neutral signals (numbers, comparators, units) are detected."
+        description="Language profiles exposed during preflight for an external agent to evaluate requirement lint. Pulse Community stores this configuration and the evidence returned by the agent; it does not run the analysis. With no language selected, the agent receives only the language-neutral profile (numbers, comparators and units)."
         icon={<Languages size={12} />}
       >
         <div className="grid grid-cols-5 gap-2" aria-label="Requirement lint languages" data-testid="lint-languages">
@@ -326,6 +376,20 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
             checked={settings.skip_trs_coverage_global}
             onChange={() => onChange({ skip_trs_coverage_global: !settings.skip_trs_coverage_global })}
             ariaLabel="Skip TRs coverage"
+            activeColor="amber"
+          />
+        </SettingRow>
+        <SettingRow
+          label="Skip Code Evidence Matrix coverage"
+          description="Bypass pending Code Evidence Matrix coverage checks for all specs. Projection integrity and independently applicable technical gates remain enforced."
+        >
+          <SettingsToggle
+            checked={settings.skip_code_evidence_coverage_global ?? false}
+            onChange={() => onChange({
+              skip_code_evidence_coverage_global:
+                !(settings.skip_code_evidence_coverage_global ?? false),
+            })}
+            ariaLabel="Skip Code Evidence Matrix coverage"
             activeColor="amber"
           />
         </SettingRow>
@@ -481,6 +545,214 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
       </SettingsSection>
 
       <SettingsSection
+        title="Agent-mediated Code Traceability"
+        description="Policy for structured observations submitted by authenticated external agents."
+        icon={<Fingerprint size={12} />}
+        className="lg:col-span-2"
+      >
+        <div
+          className="flex items-start gap-2 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2.5 text-[11px] leading-4 text-sky-900 dark:border-sky-900/70 dark:bg-sky-950/30 dark:text-sky-200"
+          role="note"
+          data-testid="code-traceability-source-blind-disclosure"
+        >
+          <Info size={14} className="mt-0.5 shrink-0" aria-hidden />
+          <p>
+            Pulse does not access source code. An authenticated external agent
+            checks access and capabilities in its own environment, then submits
+            an <strong>accessible</strong>, <strong>partial</strong>, or{' '}
+            <strong>unavailable</strong> attestation. Pulse Community only
+            accepts, stores, and presents those receipts.
+          </p>
+        </div>
+
+        <div className="grid gap-x-8 gap-y-3 lg:grid-cols-2">
+          <div>
+            <SettingRow
+              label="Enforcement mode"
+              description="Advise about missing traceability by default, or block gated transitions."
+            >
+              <SettingsSelect
+                ariaLabel="Code Traceability enforcement mode"
+                value={codeTraceability.mode}
+                onChange={(value) => updateCodeTraceability({
+                  mode: value as CodeTraceabilityEnforcementMode,
+                })}
+              >
+                <option value="advisory">Advisory</option>
+                <option value="blocking">Blocking</option>
+              </SettingsSelect>
+            </SettingRow>
+
+            <p
+              className={`mt-2 rounded-md border px-2.5 py-2 text-[10px] leading-4 ${
+                codeTraceability.mode === 'blocking'
+                  ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-900/70 dark:bg-red-950/25 dark:text-red-300'
+                  : 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/70 dark:bg-amber-950/25 dark:text-amber-200'
+              }`}
+              role="note"
+              data-testid="code-traceability-enforcement-guidance"
+            >
+              {codeTraceability.mode === 'blocking'
+                ? 'Blocking: Missing requirements selected by the Code Evidence, Technical Anchor and attestation sub-policies become blockers on applicable gated transitions.'
+                : 'Advisory: Missing Technical Anchors or Code Evidence does not block applicable transitions, but it removes the reusable investigation trail and may force the agent to repeat repository analysis after entity-version or source-head drift, or when this policy is later promoted to Blocking.'}
+            </p>
+          </div>
+
+          <SettingRow
+            label="Accepted attestors"
+            description="Require granular agent permission, with an optional board allowlist."
+          >
+            <SettingsSelect
+              ariaLabel="Accepted attestor policy"
+              value={codeTraceability.accepted_attestor_policy}
+              onChange={(value) => updateCodeTraceability({
+                accepted_attestor_policy:
+                  value as CodeTraceabilitySettings['accepted_attestor_policy'],
+              })}
+            >
+              <option value="granular_permission">Permission</option>
+              <option value="granular_permission_and_board_allowlist">
+                Permission + allowlist
+              </option>
+            </SettingsSelect>
+          </SettingRow>
+
+          <SettingRow
+            label="Evidence receipt requirement"
+            description="Controls whether Code Evidence needs a current accepted agent receipt."
+          >
+            <SettingsSelect
+              ariaLabel="Evidence receipt requirement"
+              value={codeTraceability.evidence_attestation}
+              onChange={(value) => updateCodeTraceability({
+                evidence_attestation:
+                  value as CodeTraceabilitySettings['evidence_attestation'],
+              })}
+            >
+              <option value="none">None</option>
+              <option value="preferred">Preferred</option>
+              <option value="required">Required</option>
+            </SettingsSelect>
+          </SettingRow>
+
+          <SettingRow
+            label="Target resolution receipt"
+            description="Requires agent-attested target resolutions, optionally against the current receipt."
+          >
+            <SettingsSelect
+              ariaLabel="Target resolution receipt requirement"
+              value={codeTraceability.target_resolution}
+              onChange={(value) => updateCodeTraceability({
+                target_resolution:
+                  value as CodeTraceabilitySettings['target_resolution'],
+              })}
+            >
+              <option value="advisory">Advisory</option>
+              <option value="required">Required</option>
+              <option value="required_current_receipt">Required + current</option>
+            </SettingsSelect>
+          </SettingRow>
+
+          <SettingRow
+            label="Receipt freshness"
+            description="Maximum age of an accepted agent check receipt (60 seconds to 24 hours)."
+          >
+            <div className="flex items-center gap-1.5">
+              <input
+                aria-label="Receipt freshness in minutes"
+                type="number"
+                min={1}
+                max={1440}
+                value={Math.round(codeTraceability.preflight_freshness_seconds / 60)}
+                onChange={(event) => {
+                  const minutes = Math.max(
+                    1,
+                    Math.min(1440, Number(event.target.value) || 1),
+                  );
+                  updateCodeTraceability({
+                    preflight_freshness_seconds: minutes * 60,
+                  });
+                }}
+                className="w-20 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-right text-xs text-gray-800 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+              />
+              <span className="text-[10px] text-gray-400">min</span>
+            </div>
+          </SettingRow>
+
+          <SettingRow
+            label="Minimum trust"
+            description="Accept one agent attestation or require corroboration by another agent."
+          >
+            <SettingsSelect
+              ariaLabel="Minimum receipt trust"
+              value={codeTraceability.minimum_trust}
+              onChange={(value) => updateCodeTraceability({
+                minimum_trust: value as CodeTraceabilitySettings['minimum_trust'],
+              })}
+            >
+              <option value="single_attestation">Single attestation</option>
+              <option value="corroborated">Corroborated</option>
+            </SettingsSelect>
+          </SettingRow>
+
+          <SettingRow
+            label="Overlap policy"
+            description="Controls guidance when Tasks target the same agent-attested symbol or file."
+          >
+            <SettingsSelect
+              ariaLabel="Implementation overlap policy"
+              value={codeTraceability.overlap_policy}
+              onChange={(value) => updateCodeTraceability({
+                overlap_policy: value as CodeTraceabilitySettings['overlap_policy'],
+              })}
+            >
+              <option value="off">Off</option>
+              <option value="warn">Warn</option>
+              <option value="block_parallel">Block parallel</option>
+            </SettingsSelect>
+          </SettingRow>
+
+          <SettingRow
+            label="Observed state"
+            description="Allow dirty-state attestations or require the agent to declare a committed state."
+          >
+            <SettingsSelect
+              ariaLabel="Observed source state policy"
+              value={codeTraceability.observed_state_policy}
+              onChange={(value) => updateCodeTraceability({
+                observed_state_policy:
+                  value as CodeTraceabilitySettings['observed_state_policy'],
+              })}
+            >
+              <option value="allow_dirty_attestation">Allow dirty attestation</option>
+              <option value="require_committed_attestation">Require committed</option>
+            </SettingsSelect>
+          </SettingRow>
+
+          <SettingRow
+            label="Receipt content"
+            description="Retain metadata only, or a defensively sanitized excerpt submitted by the agent."
+          >
+            <SettingsSelect
+              ariaLabel="Receipt content retention"
+              value={codeTraceability.receipt_content}
+              onChange={(value) => updateCodeTraceability({
+                receipt_content: value as CodeTraceabilitySettings['receipt_content'],
+              })}
+            >
+              <option value="metadata_only">Metadata only</option>
+              <option value="safe_excerpt">Safe excerpt</option>
+            </SettingsSelect>
+          </SettingRow>
+        </div>
+
+        <p className="border-t border-gray-100 pt-2 text-[10px] leading-4 text-gray-400 dark:border-gray-800 dark:text-gray-500">
+          No repository binding, provider credential, local checkout, filesystem
+          search, or source resolver is configured in Pulse Community.
+        </p>
+      </SettingsSection>
+
+      <SettingsSection
         title="Task Validation Gate"
         description="Controls the gate before execution work can be completed."
         icon={<Shield size={12} />}
@@ -609,7 +881,7 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
           />
         </SettingRow>
 
-        <SettingRow label="Require spec validation" description="Specs must pass Completeness, Assertiveness and Ambiguity gates before Validated.">
+        <SettingRow label="Require spec validation" description="Specs must pass Confidence, Clarity, Assertiveness, Decidability and Ambiguity gates before Validated.">
           <SettingsToggle
             checked={settings.require_spec_validation ?? true}
             onChange={() => onChange({ require_spec_validation: !(settings.require_spec_validation ?? true) })}
@@ -618,32 +890,72 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
         </SettingRow>
 
         {settings.require_spec_validation && (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <div>
-              <label className="mb-1 block text-[10px] font-medium text-gray-500 dark:text-gray-400">
-                Min Completeness
+          <div className="space-y-2" data-testid="spec-validation-thresholds">
+            <div
+              className="flex items-center justify-between gap-4"
+              data-testid="bsf-row-min_spec_confidence"
+            >
+              <label
+                htmlFor="bsf-num-min_spec_confidence"
+                className="min-w-0 text-xs font-medium text-gray-500 dark:text-gray-400"
+              >
+                Min Confidence
               </label>
-              <div className="flex items-center gap-2">
+              <div className="flex shrink-0 items-center gap-2">
                 <input
+                  id="bsf-num-min_spec_confidence"
                   type="number"
                   min={0}
                   max={100}
-                  value={minSpecCompletenessDraft}
-                  data-testid="bsf-num-min_spec_completeness"
-                  onChange={(e) => setMinSpecCompletenessDraft(e.target.value)}
-                  onBlur={(e) => commitNumericSetting('min_spec_completeness', e.target.value)}
+                  value={minSpecConfidenceDraft}
+                  data-testid="bsf-num-min_spec_confidence"
+                  onChange={(e) => setMinSpecConfidenceDraft(e.target.value)}
+                  onBlur={(e) => commitNumericSetting('min_spec_confidence', e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                  className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                  className="w-20 rounded border border-gray-300 bg-white px-2 py-1 text-right text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
                 />
-                <span className="text-[10px] text-gray-400">/ 100</span>
+                <span className="w-8 text-[10px] text-gray-400">/ 100</span>
               </div>
             </div>
-            <div>
-              <label className="mb-1 block text-[10px] font-medium text-gray-500 dark:text-gray-400">
+            <div
+              className="flex items-center justify-between gap-4"
+              data-testid="bsf-row-min_spec_clarity"
+            >
+              <label
+                htmlFor="bsf-num-min_spec_clarity"
+                className="min-w-0 text-xs font-medium text-gray-500 dark:text-gray-400"
+              >
+                Min Clarity
+              </label>
+              <div className="flex shrink-0 items-center gap-2">
+                <input
+                  id="bsf-num-min_spec_clarity"
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={minSpecClarityDraft}
+                  data-testid="bsf-num-min_spec_clarity"
+                  onChange={(e) => setMinSpecClarityDraft(e.target.value)}
+                  onBlur={(e) => commitNumericSetting('min_spec_clarity', e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                  className="w-20 rounded border border-gray-300 bg-white px-2 py-1 text-right text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                />
+                <span className="w-8 text-[10px] text-gray-400">/ 100</span>
+              </div>
+            </div>
+            <div
+              className="flex items-center justify-between gap-4"
+              data-testid="bsf-row-min_spec_assertiveness"
+            >
+              <label
+                htmlFor="bsf-num-min_spec_assertiveness"
+                className="min-w-0 text-xs font-medium text-gray-500 dark:text-gray-400"
+              >
                 Min Assertiveness
               </label>
-              <div className="flex items-center gap-2">
+              <div className="flex shrink-0 items-center gap-2">
                 <input
+                  id="bsf-num-min_spec_assertiveness"
                   type="number"
                   min={0}
                   max={100}
@@ -652,17 +964,50 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
                   onChange={(e) => setMinSpecAssertivenessDraft(e.target.value)}
                   onBlur={(e) => commitNumericSetting('min_spec_assertiveness', e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                  className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                  className="w-20 rounded border border-gray-300 bg-white px-2 py-1 text-right text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
                 />
-                <span className="text-[10px] text-gray-400">/ 100</span>
+                <span className="w-8 text-[10px] text-gray-400">/ 100</span>
               </div>
             </div>
-            <div>
-              <label className="mb-1 block text-[10px] font-medium text-gray-500 dark:text-gray-400">
+            <div
+              className="flex items-center justify-between gap-4"
+              data-testid="bsf-row-min_spec_decidability"
+            >
+              <label
+                htmlFor="bsf-num-min_spec_decidability"
+                className="min-w-0 text-xs font-medium text-gray-500 dark:text-gray-400"
+              >
+                Min Decidability
+              </label>
+              <div className="flex shrink-0 items-center gap-2">
+                <input
+                  id="bsf-num-min_spec_decidability"
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={minSpecDecidabilityDraft}
+                  data-testid="bsf-num-min_spec_decidability"
+                  onChange={(e) => setMinSpecDecidabilityDraft(e.target.value)}
+                  onBlur={(e) => commitNumericSetting('min_spec_decidability', e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+                  className="w-20 rounded border border-gray-300 bg-white px-2 py-1 text-right text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                />
+                <span className="w-8 text-[10px] text-gray-400">/ 100</span>
+              </div>
+            </div>
+            <div
+              className="flex items-center justify-between gap-4"
+              data-testid="bsf-row-max_spec_ambiguity"
+            >
+              <label
+                htmlFor="bsf-num-max_spec_ambiguity"
+                className="min-w-0 text-xs font-medium text-gray-500 dark:text-gray-400"
+              >
                 Max Ambiguity
               </label>
-              <div className="flex items-center gap-2">
+              <div className="flex shrink-0 items-center gap-2">
                 <input
+                  id="bsf-num-max_spec_ambiguity"
                   type="number"
                   min={0}
                   max={100}
@@ -671,9 +1016,9 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
                   onChange={(e) => setMaxSpecAmbiguityDraft(e.target.value)}
                   onBlur={(e) => commitNumericSetting('max_spec_ambiguity', e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
-                  className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                  className="w-20 rounded border border-gray-300 bg-white px-2 py-1 text-right text-xs text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
                 />
-                <span className="text-[10px] text-gray-400">/ 100</span>
+                <span className="w-8 text-[10px] text-gray-400">/ 100</span>
               </div>
             </div>
           </div>

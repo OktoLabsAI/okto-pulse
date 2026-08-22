@@ -30,6 +30,18 @@ function displayName(id: string, nameMap: Record<string, string>): string {
   return id.slice(0, 8);
 }
 
+function validationFailed(validation: NonNullable<CardSummary['validations']>[number]): boolean {
+  if (validation.verdict) return validation.verdict === 'fail';
+  if (validation.outcome) return validation.outcome === 'failed';
+  return validation.recommendation === 'reject';
+}
+
+function validationPassed(validation: NonNullable<CardSummary['validations']>[number]): boolean {
+  if (validation.verdict) return validation.verdict === 'pass';
+  if (validation.outcome) return validation.outcome === 'success';
+  return validation.recommendation === 'approve';
+}
+
 export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBadge }: KanbanCardProps) {
   const {
     attributes,
@@ -43,15 +55,13 @@ export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBa
   const isBug = card.card_type === 'bug';
   const isTest = card.card_type === 'test';
   const isInValidation = card.status === 'validation';
-  const hasFailedValidation = card.status === 'not_started'
-    && card.validations?.some((v) => v.verdict === 'fail');
-  const validationAttemptCount = hasFailedValidation
-    ? (card.validations?.filter((v) => v.verdict === 'fail').length ?? 0) + 1
-    : 0;
+  const isRejected = card.status === 'rejected' && !isTest;
+  const validations = card.validations ?? [];
+  const rejectedAttemptNumber = validations.filter(validationFailed).length || null;
   const hasPassed = card.status === 'done'
-    && card.validations?.some((v) => v.verdict === 'pass');
+    && validations.some(validationPassed);
   const passedEntry = hasPassed
-    ? card.validations?.find((v) => v.verdict === 'pass')
+    ? [...validations].reverse().find(validationPassed)
     : null;
 
   const priorityColor = card.priority && card.priority !== 'none'
@@ -65,6 +75,7 @@ export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBa
     ...(isBug ? { borderLeft: '4px solid #ef4444' } : {}),
     ...(isTest ? { borderLeft: '4px solid #8b5cf6' } : {}),
     ...(isInValidation && !isBug && !isTest ? { borderLeft: '4px solid #8b5cf6' } : {}),
+    ...(isRejected && !isBug ? { borderLeft: '4px solid #e11d48' } : {}),
   };
 
   const formattedDueDate = card.due_date
@@ -78,7 +89,7 @@ export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBa
     <div
       ref={setNodeRef}
       style={style}
-      className={`kanban-card ${isDragging ? 'dragging' : ''} ${isBug ? 'border-red-300 dark:border-red-500/40' : ''} ${isTest ? 'border-purple-300 dark:border-purple-500/40' : ''} ${isInValidation && !isBug && !isTest ? 'border-violet-300 dark:border-violet-500/40' : ''} ${card.archived ? 'opacity-50' : ''}`}
+      className={`kanban-card ${isDragging ? 'dragging' : ''} ${isBug ? 'border-red-300 dark:border-red-500/40' : ''} ${isTest ? 'border-purple-300 dark:border-purple-500/40' : ''} ${isInValidation && !isBug && !isTest ? 'border-violet-300 dark:border-violet-500/40' : ''} ${isRejected ? 'ring-1 ring-rose-300/70 dark:ring-rose-700/70' : ''} ${card.archived ? 'opacity-50' : ''}`}
       {...attributes}
     >
       <div className="flex items-start gap-2">
@@ -114,10 +125,14 @@ export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBa
                 validation
               </span>
             )}
-            {hasFailedValidation && (
-              <span className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 uppercase tracking-wide">
+            {isRejected && (
+              <span
+                className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300 uppercase tracking-wide"
+                aria-label="Rejected: rework required"
+                title="Rejected — move to In Progress before starting a new execution attempt"
+              >
                 <ShieldX size={10} />
-                validation failed
+                rejected
               </span>
             )}
             {hasPassed && (
@@ -203,11 +218,13 @@ export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBa
           )}
 
           {/* Validation detail badges */}
-          {hasFailedValidation && (
+          {isRejected && (
             <div className="flex gap-1 mt-1.5">
-              <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 inline-flex items-center gap-0.5">
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300 inline-flex items-center gap-0.5">
                 <ShieldX size={9} />
-                {validationAttemptCount === 2 ? '2nd' : validationAttemptCount === 3 ? '3rd' : `${validationAttemptCount}th`} attempt
+                {rejectedAttemptNumber == null
+                  ? 'Rework required'
+                  : `Attempt ${rejectedAttemptNumber} rejected · rework required`}
               </span>
             </div>
           )}

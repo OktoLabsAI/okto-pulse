@@ -26,6 +26,11 @@ from okto_pulse.core.ports.application_persistence import (
 
 KANBAN_STATUSES: tuple[str, ...] = tuple(item.value for item in CardStatus)
 KANBAN_CARD_TYPES: frozenset[str] = frozenset(item.value for item in CardType)
+# Each column page consumes at most three statements (items/count/derived
+# summary), followed by the two board-wide facet aggregations. Keep the budget
+# derived from the authored lifecycle so adding Rejected cannot silently turn a
+# healthy request into a false budget violation.
+BATCH_COLUMNS_STATEMENT_BUDGET = 3 * len(KANBAN_STATUSES) + 2
 _NEW_QUERY_KEYS: tuple[str, ...] = (
     "spec_ids",
     "card_types",
@@ -58,6 +63,10 @@ CARD_SUMMARY_FIELDS: tuple[str, ...] = (
     "linked_test_task_ids",
     "archived",
     "open_qa_count",
+    "current_rejection_kind",
+    "current_rejection_id",
+    "current_rejection_code",
+    "current_rejection_summary",
 )
 
 
@@ -326,7 +335,7 @@ def _wire_value(value: Any) -> Any:
 
 
 def card_summary(record: Any) -> dict[str, Any]:
-    """Project the exact 22-field legacy card wire from a scalar record."""
+    """Project the bounded card wire, including the human Current cause."""
 
     values = record.values
     result = {field: _wire_value(values.get(field)) for field in CARD_SUMMARY_FIELDS}
@@ -350,6 +359,7 @@ def page_meta(
 
 
 __all__ = [
+    "BATCH_COLUMNS_STATEMENT_BUDGET",
     "CARD_SUMMARY_FIELDS",
     "KANBAN_STATUSES",
     "ColumnsParameters",

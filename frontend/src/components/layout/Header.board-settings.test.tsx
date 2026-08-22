@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Header } from './Header';
 import { openContextualHelp } from '@/components/help';
-import type { Board, BoardSettings } from '@/types';
+import type { Board, BoardSettings, CodeTraceabilitySettings } from '@/types';
 
 const apiMock = vi.hoisted(() => ({
   updateBoard: vi.fn(),
@@ -131,6 +131,7 @@ const baseSettings: BoardSettings = {
   skip_test_coverage_global: false,
   skip_rules_coverage_global: false,
   skip_trs_coverage_global: false,
+  skip_code_evidence_coverage_global: false,
   skip_contract_coverage_global: false,
   skip_ir_coverage_global: false,
   skip_or_coverage_global: false,
@@ -166,6 +167,22 @@ function boardWith(settings: Partial<BoardSettings>): Board {
     updated_at: '2026-05-14T00:00:00Z',
     cards: [],
     agents: [],
+  };
+}
+
+function codeTraceabilitySettings(
+  mode: CodeTraceabilitySettings['mode'],
+): CodeTraceabilitySettings {
+  return {
+    mode,
+    evidence_attestation: 'preferred',
+    target_resolution: 'advisory',
+    accepted_attestor_policy: 'granular_permission',
+    minimum_trust: 'single_attestation',
+    preflight_freshness_seconds: 1800,
+    overlap_policy: 'warn',
+    observed_state_policy: 'allow_dirty_attestation',
+    receipt_content: 'safe_excerpt',
   };
 }
 
@@ -375,7 +392,7 @@ describe('Header Board settings resource automation', () => {
 
     expect(
       screen.getByRole('heading', {
-        name: /Requirement lint — deterministic advisory analysis/i,
+        name: /Requirement lint — Edition-based advisory findings/i,
       }),
     ).toBeInTheDocument();
   });
@@ -572,6 +589,35 @@ describe('Header Board settings resource automation', () => {
         }),
       }),
     );
+  });
+
+  it.each([
+    ['legacy null', null, 'advisory'],
+    ['retired explicit off', codeTraceabilitySettings('off'), 'advisory'],
+    ['stored blocking policy', codeTraceabilitySettings('blocking'), 'blocking'],
+  ] as const)(
+    'projects the %s Code Traceability setting into the board form',
+    (_label, storedSetting, expectedMode) => {
+      boardState.currentBoard = boardWith({ code_traceability: storedSetting });
+      renderOpenHeader();
+
+      expect(screen.getByRole('combobox', {
+        name: 'Code Traceability enforcement mode',
+      })).toHaveValue(expectedMode);
+    },
+  );
+
+  it('persists the Board-wide Code Evidence Matrix coverage skip', async () => {
+    renderOpenHeader();
+
+    fireEvent.click(screen.getByRole('switch', {
+      name: 'Skip Code Evidence Matrix coverage',
+    }));
+
+    await waitFor(() => expect(apiMock.updateBoard).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateBoard).toHaveBeenCalledWith('board-1', {
+      settings: { skip_code_evidence_coverage_global: true },
+    });
   });
 
   it('persists ideation ambiguity threshold 1 without using free-text input', async () => {

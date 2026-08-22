@@ -3,6 +3,8 @@ import {
 } from '@/services/policy-governance-api';
 import type { BoardGuidelineEntry } from '@/types';
 import type {
+  GuidelineImpactItem,
+  GuidelineImpactReceipt,
   GuidelineAdoptionResponse,
   GuidelineEnforcement,
   GuidelineImpactItemKind,
@@ -46,6 +48,13 @@ function hasOnlyKeys(
 ): boolean {
   const expected = new Set(keys);
   return Object.keys(value).every((key) => expected.has(key));
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): boolean {
+  return Object.keys(value).length === keys.length && hasOnlyKeys(value, keys);
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -171,26 +180,195 @@ export function isGuidelineImpactPageItem(
 
 export function isGuidelineImpactPreviewResponse(
   value: unknown,
+  expected: {
+    boardId: string;
+    guidelineId: string;
+    targetRevisionId: string;
+    targetSemanticVersion: string;
+    targetRevisionDigest: string;
+    proposedPriority: number;
+    proposedEnforcement: GuidelineEnforcement;
+    proposedMinimumConfidence: number;
+    proposedMetricThresholdOverrides: GuidelineMetricThresholdOverrides;
+    bindingId: string | null;
+    bindingRevision: number | null;
+    fromRevisionId: string | null;
+    fromSemanticVersion: string | null;
+    fromRevisionDigest: string | null;
+  },
 ): value is GuidelineImpactPreviewResponse {
   if (
     !isRecord(value)
-    || !hasOnlyKeys(value, ['preview_id', 'preview_digest', 'items_page'])
-    || !isNonEmptyString(value.preview_id)
-    || !isSha256(value.preview_digest)
-    || !isRecord(value.items_page)
-    || !hasOnlyKeys(value.items_page, ['items', 'next_cursor'])
-    || !Array.isArray(value.items_page.items)
-    || !value.items_page.items.every(isGuidelineImpactPageItem)
+    || !hasExactKeys(value, ['receipt'])
+    || !isGuidelineImpactReceiptFor(value.receipt, expected)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+const IMPACT_RECEIPT_KEYS = [
+  'impact_receipt_id',
+  'board_id',
+  'guideline_id',
+  'binding_id',
+  'to_revision_id',
+  'to_revision_number',
+  'to_semantic_version',
+  'to_revision_digest',
+  'expected_head_revision',
+  'expected_binding_revision',
+  'expected_binding_state',
+  'binding_digest',
+  'binding_head_digest_before',
+  'binding_head_digest_after',
+  'policy_set_digest_before',
+  'policy_set_digest_after',
+  'artifact_snapshot_digest',
+  'waiver_snapshot_digest',
+  'proposed_priority',
+  'proposed_enforcement',
+  'proposed_minimum_confidence',
+  'proposed_metric_threshold_overrides',
+  'affected_entity_types',
+  'items',
+  'added_metric_ids',
+  'changed_metric_ids',
+  'removed_metric_ids',
+  'requested_by',
+  'created_at',
+  'impact_digest',
+  'from_revision_id',
+  'from_semantic_version',
+  'from_revision_digest',
+  'requires_explicit_adoption',
+] as const;
+
+function isNullableText(value: unknown): value is string | null {
+  return value === null || isNonEmptyString(value);
+}
+
+function isGuidelineImpactReceiptItem(
+  value: unknown,
+): value is GuidelineImpactItem {
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, [
+      'impact_item_id',
+      'item_kind',
+      'entity_type',
+      'entity_id',
+      'details_digest',
+      'related_id',
+      'entity_version',
+    ])
+    || !isNonEmptyString(value.impact_item_id)
+    || !isNonEmptyString(value.entity_id)
+    || !isSha256(value.details_digest)
+    || typeof value.item_kind !== 'string'
+    || !ITEM_KINDS.has(value.item_kind as GuidelineImpactItemKind)
+    || !isNullableText(value.related_id)
     || (
-      value.items_page.next_cursor !== null
-      && !isNonEmptyString(value.items_page.next_cursor)
+      value.entity_version !== null
+      && !isIntegerAtLeast(value.entity_version, 0)
     )
   ) {
     return false;
   }
-  return hasUniqueStrings(
-    value.items_page.items.map((item) => item.impact_item_id),
-  );
+  if (value.item_kind === 'waiver' && !isNonEmptyString(value.related_id)) {
+    return false;
+  }
+  if (value.item_kind === 'binding') return value.entity_type === 'board';
+  return isEntityType(value.entity_type);
+}
+
+function isGuidelineImpactReceiptFor(
+  value: unknown,
+  expected: Parameters<typeof isGuidelineImpactPreviewResponse>[1],
+): value is GuidelineImpactReceipt {
+  if (!isRecord(value) || !hasExactKeys(value, IMPACT_RECEIPT_KEYS)) {
+    return false;
+  }
+  const digestFields = [
+    value.to_revision_digest,
+    value.binding_digest,
+    value.binding_head_digest_before,
+    value.binding_head_digest_after,
+    value.policy_set_digest_before,
+    value.policy_set_digest_after,
+    value.artifact_snapshot_digest,
+    value.waiver_snapshot_digest,
+    value.impact_digest,
+  ];
+  if (
+    !isNonEmptyString(value.impact_receipt_id)
+    || !isNonEmptyString(value.binding_id)
+    || value.board_id !== expected.boardId
+    || value.guideline_id !== expected.guidelineId
+    || value.to_revision_id !== expected.targetRevisionId
+    || value.to_semantic_version !== expected.targetSemanticVersion
+    || value.to_revision_digest !== expected.targetRevisionDigest
+    || !isIntegerAtLeast(value.to_revision_number, 1)
+    || !isIntegerAtLeast(value.expected_head_revision, 1)
+    || value.expected_binding_revision !== expected.bindingRevision
+    || value.expected_binding_state
+      !== (expected.bindingRevision === null ? null : 'active')
+    || digestFields.some((digest) => !isSha256(digest))
+    || value.proposed_priority !== expected.proposedPriority
+    || value.proposed_enforcement !== expected.proposedEnforcement
+    || value.proposed_minimum_confidence
+      !== expected.proposedMinimumConfidence
+    || !isMetricThresholdOverrides(
+      value.proposed_metric_threshold_overrides,
+    )
+    || JSON.stringify(value.proposed_metric_threshold_overrides)
+      !== JSON.stringify(expected.proposedMetricThresholdOverrides)
+    || !Array.isArray(value.affected_entity_types)
+    || !value.affected_entity_types.every(isEntityType)
+    || !hasUniqueStrings(value.affected_entity_types as string[])
+    || !Array.isArray(value.items)
+    || !value.items.every(isGuidelineImpactReceiptItem)
+    || !hasUniqueStrings(
+      (value.items as GuidelineImpactItem[])
+        .map((item) => item.impact_item_id),
+    )
+    || !Array.isArray(value.added_metric_ids)
+    || !value.added_metric_ids.every(isNonEmptyString)
+    || !Array.isArray(value.changed_metric_ids)
+    || !value.changed_metric_ids.every(isNonEmptyString)
+    || !Array.isArray(value.removed_metric_ids)
+    || !value.removed_metric_ids.every(isNonEmptyString)
+    || !isNonEmptyString(value.requested_by)
+    || !isNonEmptyString(value.created_at)
+    || !isNullableText(value.from_revision_id)
+    || !isNullableText(value.from_semantic_version)
+    || (
+      value.from_revision_digest !== null
+      && !isSha256(value.from_revision_digest)
+    )
+    || value.from_revision_id !== expected.fromRevisionId
+    || value.from_semantic_version !== expected.fromSemanticVersion
+    || value.from_revision_digest !== expected.fromRevisionDigest
+    || value.requires_explicit_adoption !== true
+  ) {
+    return false;
+  }
+  const metricSets = [
+    value.added_metric_ids as string[],
+    value.changed_metric_ids as string[],
+    value.removed_metric_ids as string[],
+  ];
+  if (
+    metricSets.some((set) => !hasUniqueStrings(set))
+    || metricSets.some((set, index) => metricSets.some(
+      (other, otherIndex) => (
+        index !== otherIndex && set.some((metricId) => other.includes(metricId))
+      ),
+    ))
+  ) {
+    return false;
+  }
+  return expected.bindingId === null || value.binding_id === expected.bindingId;
 }
 
 function isMetricForRevision(value: unknown): boolean {
@@ -454,27 +632,66 @@ export function isCompleteBoardGuidelineBindingAuthority(
 
 export function isGuidelineAdoptionResponseForPreview(
   value: unknown,
+  preview: GuidelineImpactPreviewResponse,
   expectedBindingRevision: number,
 ): value is GuidelineAdoptionResponse {
-  return (
-    isRecord(value)
-    && hasOnlyKeys(value, [
+  if (
+    !isRecord(value)
+    || !hasExactKeys(value, ['binding', 'receipt'])
+    || !isRecord(value.binding)
+    || !hasExactKeys(value.binding, [
       'binding_id',
+      'board_id',
+      'guideline_id',
+      'revision_id',
+      'semantic_version',
+      'revision_digest',
+      'priority',
       'binding_revision',
+      'adopted_by',
+      'adopted_at',
+      'enforcement',
+      'minimum_confidence',
+      'metric_threshold_overrides',
       'configuration_digest',
-      'replayed',
+      'state',
+      'source_kind',
     ])
-    && isNonEmptyString(value.binding_id)
-    && value.binding_revision === expectedBindingRevision
-    && isNonEmptyString(value.configuration_digest)
-    && typeof value.replayed === 'boolean'
+    || JSON.stringify(value.receipt) !== JSON.stringify(preview.receipt)
+  ) {
+    return false;
+  }
+  const binding = value.binding;
+  const receipt = preview.receipt;
+  return (
+    binding.binding_id === receipt.binding_id
+    && binding.board_id === receipt.board_id
+    && binding.guideline_id === receipt.guideline_id
+    && binding.revision_id === receipt.to_revision_id
+    && binding.semantic_version === receipt.to_semantic_version
+    && binding.revision_digest === receipt.to_revision_digest
+    && binding.priority === receipt.proposed_priority
+    && binding.binding_revision === expectedBindingRevision
+    && isNonEmptyString(binding.adopted_by)
+    && isNonEmptyString(binding.adopted_at)
+    && binding.enforcement === receipt.proposed_enforcement
+    && binding.minimum_confidence === receipt.proposed_minimum_confidence
+    && isMetricThresholdOverrides(binding.metric_threshold_overrides)
+    && JSON.stringify(binding.metric_threshold_overrides)
+      === JSON.stringify(receipt.proposed_metric_threshold_overrides)
+    && isSha256(binding.configuration_digest)
+    && binding.state === 'active'
+    && (
+      binding.source_kind === 'native'
+      || binding.source_kind === 'default_materialization'
+    )
   );
 }
 
 export type GuidelineImpactCounts = Record<GuidelineImpactItemKind, number>;
 
 export function countGuidelineImpactItems(
-  items: readonly GuidelineImpactPageItem[],
+  items: readonly (GuidelineImpactItem | GuidelineImpactPageItem)[],
 ): GuidelineImpactCounts {
   const counts: GuidelineImpactCounts = {
     binding: 0,

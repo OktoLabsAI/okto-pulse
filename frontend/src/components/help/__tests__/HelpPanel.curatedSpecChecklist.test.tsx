@@ -31,6 +31,12 @@ describe('HelpPanel Curated Spec Checklist guide', () => {
       /Changing only the policy from Advisory to Blocking/i,
     );
     expect(guideHeading.parentElement).toHaveTextContent(
+      /Current checklist result moves to Previous/i,
+    );
+    expect(guideHeading.parentElement).not.toHaveTextContent(
+      /stale|current passing receipt|receipt history/i,
+    );
+    expect(guideHeading.parentElement).toHaveTextContent(
       /Turning off the score-based gate does not turn off this checklist/i,
     );
     expect(guideHeading.parentElement).toHaveTextContent(

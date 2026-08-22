@@ -7,6 +7,11 @@ from typing import Any
 
 from sqlalchemy import and_, distinct, func, or_, select
 
+from okto_pulse.community.adapters.code_traceability_kg_sql import (
+    exclude_code_traceability_artifact,
+    exclude_code_traceability_outbox_payload,
+)
+
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ConsolidationDeadLetter,
     ConsolidationQueue,
@@ -65,11 +70,18 @@ class CommunitySqlAlchemyQueueHealthReader:
         now: datetime,
         stuck_before: datetime,
         item_limit: int,
+        include_code_traceability: bool = True,
     ) -> ActiveQueueStorageSnapshot:
         def queue_filters(*extra: Any) -> list[Any]:
             filters = list(extra)
             if board_id is not None:
                 filters.append(ConsolidationQueue.board_id == board_id)
+            if not include_code_traceability:
+                filters.append(
+                    exclude_code_traceability_artifact(
+                        ConsolidationQueue.artifact_type
+                    )
+                )
             return filters
 
         by_status: dict[str, int] = {}
@@ -201,6 +213,12 @@ class CommunitySqlAlchemyQueueHealthReader:
         ]
         if board_id is not None:
             outbox_filters.append(GlobalUpdateOutbox.board_id == board_id)
+        if not include_code_traceability:
+            outbox_filters.append(
+                exclude_code_traceability_outbox_payload(
+                    GlobalUpdateOutbox.payload
+                )
+            )
         outbox_depth = await context.scalar(
             select(func.count()).where(*outbox_filters)
         )

@@ -2,7 +2,8 @@
  * PermissionDiffView — Shows diff between base agent permissions and effective board permissions.
  */
 
-import { countPerEntity, countAllFlags, ENTITY_LABELS, ENTITY_COLORS } from './PermissionFlagsEditor';
+import { countPerEntity, countAllFlags } from './PermissionFlagsEditor';
+import { getEntityLabel, getEntityTextClasses } from './permissionLabels';
 import type { FlagsMap } from './PermissionFlagsEditor';
 
 interface PermissionDiffViewProps {
@@ -124,8 +125,8 @@ export function PermissionDiffView({
 
           return (
             <div key={entity} className="flex items-center justify-between px-2 py-1.5 rounded hover:bg-white dark:hover:bg-gray-700/30">
-              <span className={`text-xs font-medium ${ENTITY_COLORS[entity] || 'text-gray-600'}`}>
-                {ENTITY_LABELS[entity] || entity}
+              <span className={`text-xs font-medium ${getEntityTextClasses(entity)}`}>
+                {getEntityLabel(entity)}
               </span>
               <div className="flex items-center gap-2">
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">

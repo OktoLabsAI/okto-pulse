@@ -19,6 +19,7 @@ const columnColors: Record<CardStatus, string> = {
   started: 'border-t-blue-500',
   in_progress: 'border-t-amber-500',
   validation: 'border-t-violet-500',
+  rejected: 'border-t-rose-600',
   on_hold: 'border-t-red-500',
   done: 'border-t-green-500',
   cancelled: 'border-t-gray-500',
@@ -85,10 +86,13 @@ export interface KanbanColumnProps {
   canViewAll?: boolean;
   onViewAll?: () => void;
   activeCardTypes?: ReadonlySet<KanbanCardFilterType>;
+  availableCardTypes?: readonly KanbanCardFilterType[];
   onToggleCardType?: (type: KanbanCardFilterType) => void;
   onCardClick: (cardId: string) => void;
   onAddCard: (status: CardStatus) => void;
   canAddCard?: boolean;
+  allowCardCreation?: boolean;
+  canAcceptDrop?: boolean;
   canDragCard?: (card: CardSummary) => boolean;
   nameMap: Record<string, string>;
   /** Optional controls rendered after the cards, inside the column scroll area. */
@@ -108,16 +112,22 @@ export function KanbanColumn({
   canViewAll = false,
   onViewAll,
   activeCardTypes = DEFAULT_ACTIVE_CARD_TYPES,
+  availableCardTypes = CARD_TYPE_TOGGLES.map(({ type }) => type),
   onToggleCardType,
   onCardClick,
   onAddCard,
   canAddCard = true,
+  allowCardCreation = true,
+  canAcceptDrop = true,
   canDragCard,
   nameMap,
   footer,
   cognitiveBadges,
 }: KanbanColumnProps) {
-  const { setNodeRef, isOver } = useDroppable({ id: status });
+  const { setNodeRef, isOver } = useDroppable({
+    id: status,
+    disabled: !canAcceptDrop,
+  });
   const localCounts = deriveKanbanCardTypeCounts(countCards ?? cards);
   const counts: KanbanCardTypeCounts = cardTypeFacets
     ? {
@@ -134,7 +144,13 @@ export function KanbanColumn({
   return (
     <div
       ref={setNodeRef}
-      data-tour-id={status === 'validation' ? 'tasks.validation.column' : undefined}
+      data-tour-id={
+        status === 'validation'
+          ? 'tasks.validation.column'
+          : status === 'rejected'
+            ? 'tasks.rejected.column'
+            : undefined
+      }
       className={`kanban-column h-full min-h-0 border-t-4 ${columnColors[status]} transition-all duration-200 ${
         isOver ? 'ring-2 ring-blue-400 ring-inset bg-blue-50/50 dark:bg-blue-900/20' : ''
       }`}
@@ -155,8 +171,12 @@ export function KanbanColumn({
                 {counts.total}
               </span>
             </div>
-            <div className="mt-2 grid grid-cols-3 gap-1.5 text-[10px] font-semibold">
-              {CARD_TYPE_TOGGLES.map(({ type, label, icon: Icon, activeClass }) => {
+            <div className={`mt-2 grid gap-1.5 text-[10px] font-semibold ${
+              availableCardTypes.length === 2 ? 'grid-cols-2' : 'grid-cols-3'
+            }`}>
+              {CARD_TYPE_TOGGLES.filter(({ type }) => (
+                availableCardTypes.includes(type)
+              )).map(({ type, label, icon: Icon, activeClass }) => {
                 const active = activeCardTypes.has(type);
                 const count = counts[type];
                 return (
@@ -183,14 +203,17 @@ export function KanbanColumn({
               })}
             </div>
           </div>
-          <button
-            onClick={() => onAddCard(status)}
-            disabled={!canAddCard}
-            className="shrink-0 rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-gray-700 dark:hover:text-gray-300"
-            title={canAddCard ? 'Add card' : 'Missing card creation permission'}
-          >
-            <Plus size={16} />
-          </button>
+          {allowCardCreation && (
+            <button
+              onClick={() => onAddCard(status)}
+              disabled={!canAddCard}
+              className="shrink-0 rounded p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-gray-700 dark:hover:text-gray-300"
+              title={canAddCard ? 'Add card' : 'Missing card creation permission'}
+              aria-label={`Add card to ${STATUS_LABELS[status]}`}
+            >
+              <Plus size={16} />
+            </button>
+          )}
         </div>
       </div>
 
@@ -230,7 +253,11 @@ export function KanbanColumn({
                 : 'border-gray-300 text-gray-400 dark:border-gray-600 dark:text-gray-500'
             }`}
           >
-            {isOver ? 'Drop here' : 'No cards'}
+            {isOver
+              ? 'Drop here'
+              : status === 'rejected'
+                ? 'No cards requiring rework'
+                : 'No cards'}
           </div>
         )}
 

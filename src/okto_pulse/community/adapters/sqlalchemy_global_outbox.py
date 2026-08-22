@@ -11,6 +11,9 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     GlobalUpdateOutbox,
     KuzuNodeRef,
 )
+from okto_pulse.community.adapters.code_traceability_kg_sql import (
+    exclude_code_traceability_outbox_payload,
+)
 from okto_pulse.core.ports.global_outbox import (
     GLOBAL_OUTBOX_DEAD_LETTER_SENTINEL,
     GLOBAL_OUTBOX_MAX_RETRIES,
@@ -52,6 +55,7 @@ class CommunitySqlAlchemyGlobalOutboxStore:
         limit: int,
         error_markers: Sequence[str],
         after: GlobalOutboxDeadLetterCursor | None = None,
+        include_code_traceability: bool = True,
     ) -> tuple[GlobalOutboxEventRecord, ...]:
         predicates = [
             func.instr(
@@ -68,6 +72,12 @@ class CommunitySqlAlchemyGlobalOutboxStore:
         )
         if predicates:
             query = query.where(or_(*predicates))
+        if not include_code_traceability:
+            query = query.where(
+                exclude_code_traceability_outbox_payload(
+                    GlobalUpdateOutbox.payload
+                )
+            )
         if after is not None:
             query = query.where(
                 or_(
@@ -98,6 +108,7 @@ class CommunitySqlAlchemyGlobalOutboxStore:
         *,
         limit: int,
         after: GlobalOutboxDeadLetterCursor | None = None,
+        include_code_traceability: bool = True,
     ) -> tuple[GlobalOutboxEventRecord, ...]:
         query = select(GlobalUpdateOutbox).where(
             GlobalUpdateOutbox.processed_at.is_(None),
@@ -106,6 +117,12 @@ class CommunitySqlAlchemyGlobalOutboxStore:
                 GlobalUpdateOutbox.retry_count >= GLOBAL_OUTBOX_MAX_RETRIES,
             ),
         )
+        if not include_code_traceability:
+            query = query.where(
+                exclude_code_traceability_outbox_payload(
+                    GlobalUpdateOutbox.payload
+                )
+            )
         if after is not None:
             query = query.where(
                 or_(
@@ -135,13 +152,23 @@ class CommunitySqlAlchemyGlobalOutboxStore:
         context: Any,
         *,
         ids: tuple[str, ...],
+        include_code_traceability: bool = True,
     ) -> tuple[GlobalOutboxEventRecord, ...]:
         if not ids:
             return ()
+        query = select(GlobalUpdateOutbox).where(
+            GlobalUpdateOutbox.id.in_(ids)
+        )
+        if not include_code_traceability:
+            query = query.where(
+                exclude_code_traceability_outbox_payload(
+                    GlobalUpdateOutbox.payload
+                )
+            )
         rows = (
             (
                 await context.execute(
-                    select(GlobalUpdateOutbox).where(GlobalUpdateOutbox.id.in_(ids))
+                    query
                 )
             )
             .scalars()
@@ -172,6 +199,9 @@ class CommunitySqlAlchemyGlobalOutboxStore:
                             GlobalUpdateOutbox.retry_count
                             == GLOBAL_OUTBOX_DEAD_LETTER_SENTINEL,
                             GlobalUpdateOutbox.retry_count >= GLOBAL_OUTBOX_MAX_RETRIES,
+                        ),
+                        exclude_code_traceability_outbox_payload(
+                            GlobalUpdateOutbox.payload
                         ),
                     )
                     .values(

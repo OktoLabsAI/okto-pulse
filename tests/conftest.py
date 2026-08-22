@@ -10,9 +10,19 @@ import pytest_asyncio
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = REPO_ROOT.parent
+CONFIGURED_CORE_REPO = os.environ.get("OKTO_PULSE_CORE_REPO")
+CORE_REPO = (
+    Path(CONFIGURED_CORE_REPO).expanduser().resolve()
+    if CONFIGURED_CORE_REPO
+    else (
+        WORKSPACE_ROOT / "okto_labs_pulse_core"
+        if REPO_ROOT.name.casefold() == "okto_labs_pulse_community"
+        else WORKSPACE_ROOT / "okto-pulse-core"
+    )
+)
 LOCAL_IMPORT_PATHS = (
     REPO_ROOT / "src",
-    WORKSPACE_ROOT / "okto-pulse-core" / "src",
+    CORE_REPO / "src",
 )
 
 for path in reversed(LOCAL_IMPORT_PATHS):
@@ -80,26 +90,6 @@ _STRICT_RUNTIME_LEAKS = os.environ.get(
 ) == "1"
 
 
-class _ContractTestRequirementLintHook:
-    """Hook de lint deterministico usado por toda a suite de contrato."""
-
-    async def stage_requirement_lint(self, context, command):  # noqa: ANN001
-        from okto_pulse.core.ports.requirement_lint import (
-            RequirementLintWriteResult,
-        )
-
-        del context
-        return RequirementLintWriteResult(
-            receipt_id=(
-                f"qar_test_{command.spec_id}_{command.spec_version}_"
-                f"{command.writer.value}"
-            ),
-            head_revision=command.spec_version,
-            evaluated_rule_count=1,
-            finding_count=0,
-        )
-
-
 def _stage_runtime_value_baseline(registry: RuntimeValueRegistry) -> None:
     """Deixa o registry EXATAMENTE no baseline deterministico da suite.
 
@@ -111,9 +101,6 @@ def _stage_runtime_value_baseline(registry: RuntimeValueRegistry) -> None:
 
     from okto_pulse.core import runtime_registry as _runtime_registry
     from okto_pulse.core.infra.config import configure_settings
-    from okto_pulse.core.ports.requirement_lint import (
-        register_requirement_lint_writer_hook,
-    )
     from okto_pulse.community.adapters.sqlalchemy_database import (
         configure_community_database,
     )
@@ -129,7 +116,6 @@ def _stage_runtime_value_baseline(registry: RuntimeValueRegistry) -> None:
     _runtime_registry.register_relational_runtime_factory(
         lambda url, echo=False: configure_community_database(url, echo=echo)
     )
-    register_requirement_lint_writer_hook(_ContractTestRequirementLintHook())
     configure_settings(CommunitySettings())
 
 

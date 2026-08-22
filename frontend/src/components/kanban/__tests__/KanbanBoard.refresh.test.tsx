@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => {
     started: [],
     in_progress: [],
     validation: [],
+    rejected: [],
     on_hold: [],
     done: [],
     cancelled: [],
@@ -166,7 +167,10 @@ describe('KanbanBoard filtered refresh', () => {
     await waitFor(() => expect(mocks.getBoardColumns).toHaveBeenCalledTimes(1));
     expect(mocks.getBoardColumns).toHaveBeenLastCalledWith(
       'board-1',
-      expect.objectContaining({ specIds: [] }),
+      expect.objectContaining({
+        specIds: [],
+        cardTypesByStatus: { rejected: ['normal', 'bug'] },
+      }),
     );
 
     await selectSpec();

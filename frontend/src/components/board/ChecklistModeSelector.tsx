@@ -18,7 +18,7 @@ const CHECKLIST_MODE_OPTIONS: Array<{
   {
     value: 'blocking',
     label: 'Blocking',
-    description: 'Requires a current passing receipt before validation.',
+    description: 'Requires a passing result for the current validation edition.',
   },
 ];
 

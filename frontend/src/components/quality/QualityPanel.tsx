@@ -22,11 +22,19 @@ import {
 } from '@/services/api';
 import { AccessiblePaginator } from '@/components/shared/AccessiblePaginator';
 import { CollapsibleEvidenceSection } from '@/components/shared/CollapsibleEvidenceSection';
+import {
+  PreviousResultsSection,
+  TechnicalAuditSection,
+  ValidationCycleHeader,
+  ValidationCycleStatusBadge,
+  type ValidationCycleState,
+} from '@/components/validation-cycle/ValidationCyclePrimitives';
 import type { PaginationPageSize } from '@/hooks/usePersistedPagination';
 import { getErrorMessage } from '@/lib/getErrorMessage';
 import type {
   CurrentQualityAssessment,
   IdeationStatus,
+  QualityValidationCycleSummary,
   QualityAssessmentKind,
   QualityAssessmentListItem,
   QualityAssessmentReceiptState,
@@ -37,6 +45,8 @@ import type {
   RefinementStatus,
   RecordAmbiguityAssessmentRequest,
   SpecStatus,
+  ValidationCycleResultSummary,
+  ValidationTechnicalAudit,
 } from '@/types';
 import { QualityGatePreviewCard } from './QualityGatePreview';
 
@@ -199,7 +209,7 @@ function currentReceiptHeadline(
   kind: VisibleQualityAssessmentKind,
 ): string {
   const label = KIND_LABELS[kind];
-  if (assessment.currentness !== 'current') return `${label} assessment is stale`;
+  if (assessment.currentness !== 'current') return `${label} assessment is a previous result`;
   if (kind === 'requirement_lint') return 'Requirement lint assessment';
   switch (assessment.gate_preview.reason_code) {
     case 'ambiguity_score_exceeds_threshold':
@@ -211,7 +221,7 @@ function currentReceiptHeadline(
     case 'ambiguity_gate_disabled':
       return `${label} gate is disabled`;
     case 'ambiguity_assessment_stale':
-      return `${label} assessment is stale`;
+      return `${label} assessment is a previous result`;
     default:
       return `${label} assessment`;
   }
@@ -365,6 +375,7 @@ function ManualAssessmentForm({
   subjectType,
   subjectId,
   subjectVersion,
+  subjectEdition,
   expectedHeadRevision,
   canProposeQuestions,
   disabled,
@@ -373,6 +384,7 @@ function ManualAssessmentForm({
   subjectType: 'ideation' | 'refinement';
   subjectId: string;
   subjectVersion: number;
+  subjectEdition: number;
   expectedHeadRevision: number;
   canProposeQuestions: boolean;
   disabled: boolean;
@@ -450,6 +462,7 @@ function ManualAssessmentForm({
 
     const intent: Omit<RecordAmbiguityAssessmentRequest, 'idempotency_key'> = {
       expected_subject_version: subjectVersion,
+      expected_subject_edition: subjectEdition,
       expected_head_revision: expectedHeadRevision,
       score,
       findings: findings.map((finding) => ({
@@ -531,10 +544,10 @@ function ManualAssessmentForm({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold text-blue-900 dark:text-blue-100">
-            Governed manual assessment
+              New assessment
           </h3>
           <p className="mt-0.5 text-xs text-blue-700 dark:text-blue-300">
-            Records an immutable receipt against subject v{subjectVersion} and head r{expectedHeadRevision}.
+            Records a new result for Edition {subjectEdition}.
           </p>
         </div>
         <button
@@ -698,7 +711,7 @@ function ManualAssessmentForm({
                   Proposed clarification questions
                 </h4>
                 <p className="text-[11px] text-surface-500 dark:text-surface-400">
-                  Optional; up to five questions are created through the governed receipt.
+                  Optional; attach up to five clarification suggestions to this assessment. They do not create Q&amp;A items.
                 </p>
               </div>
               <button
@@ -820,9 +833,11 @@ function HistoryItems({ page }: { page: PageEnvelope<QualityAssessmentListItem> 
 function FindingItems({
   page,
   anchorTexts,
+  showTechnicalMetadata = true,
 }: {
   page: PageEnvelope<QualityFinding>;
   anchorTexts?: Record<string, string>;
+  showTechnicalMetadata?: boolean;
 }) {
   if (page.items.length === 0) return null;
   return (
@@ -867,11 +882,13 @@ function FindingItems({
               {anchorTexts[finding.anchor.anchor_ref]}
             </blockquote>
           )}
-          <p className="mt-2 text-[11px] text-surface-500 dark:text-surface-400">
-            Anchor: {finding.anchor.anchor_type.split('_').join(' ')}
-            {finding.anchor.anchor_ref ? ` · ${finding.anchor.anchor_ref}` : ''}
-            {' '}· subject v{finding.anchor.subject_version}
-          </p>
+          {showTechnicalMetadata && (
+            <p className="mt-2 text-[11px] text-surface-500 dark:text-surface-400">
+              Anchor: {finding.anchor.anchor_type.split('_').join(' ')}
+              {finding.anchor.anchor_ref ? ` · ${finding.anchor.anchor_ref}` : ''}
+              {' '}· subject v{finding.anchor.subject_version}
+            </p>
+          )}
           {finding.remediation && (
             <p className="mt-1 text-xs text-emerald-700 dark:text-emerald-300">
               Suggested remediation: {finding.remediation}
@@ -883,10 +900,145 @@ function FindingItems({
   );
 }
 
+function lifecycleQualityState(
+  assessment: CurrentQualityAssessment | null,
+  kind: VisibleQualityAssessmentKind,
+): ValidationCycleState {
+  if (!assessment || assessment.currentness !== 'current') return 'not_started';
+  if (kind === 'requirement_lint') {
+    return assessment.receipt.score === 0 ? 'passed' : 'needs_attention';
+  }
+  if (
+    assessment.gate_preview.applicable
+    && assessment.gate_preview.enabled
+    && !assessment.gate_preview.allowed
+  ) {
+    return 'failed';
+  }
+  return 'passed';
+}
+
+function summaryValue(
+  result: ValidationCycleResultSummary | null,
+  key: string,
+): unknown {
+  return result?.summary[key];
+}
+
+function summaryNumber(
+  result: ValidationCycleResultSummary | null,
+  key: string,
+): number | null {
+  const value = summaryValue(result, key);
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function summaryText(
+  result: ValidationCycleResultSummary | null,
+  key: string,
+): string | null {
+  const value = summaryValue(result, key);
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+function lifecycleSummaryState(
+  result: ValidationCycleResultSummary | null,
+): ValidationCycleState {
+  if (!result) return 'not_started';
+  switch (result.status.trim().toLowerCase()) {
+    case 'success':
+    case 'pass':
+    case 'passed':
+    case 'approved':
+      return 'passed';
+    case 'failed':
+    case 'fail':
+    case 'rejected':
+      return 'failed';
+    case 'pending':
+    case 'running':
+    case 'in_progress':
+      return 'in_progress';
+    case 'blocked':
+    case 'warning':
+    case 'needs_attention':
+      return 'needs_attention';
+    default:
+      return 'completed';
+  }
+}
+
+function LifecyclePreviousQualityResults({
+  results,
+  currentReceiptId,
+}: {
+  results: ValidationCycleResultSummary[];
+  currentReceiptId?: string;
+}) {
+  const previous = results.filter(
+    (item) => item.result_id !== currentReceiptId,
+  );
+  if (previous.length === 0) {
+    return (
+      <p className="text-xs text-surface-500 dark:text-surface-400">
+        No previous results are available.
+      </p>
+    );
+  }
+  return (
+    <ol className="space-y-2" data-testid="quality-previous-results">
+      {previous.map((item) => {
+        const edition = item.subject_edition;
+        const state = lifecycleSummaryState(item);
+        const score = summaryNumber(item, 'score');
+        const scaleMaximum = summaryNumber(item, 'scale_maximum') ?? 5;
+        const createdAt = summaryText(item, 'created_at')
+          ?? summaryText(item, 'recorded_at');
+        const createdBy = summaryText(item, 'created_by')
+          ?? summaryText(item, 'recorded_by');
+        const justification = summaryText(item, 'justification');
+        return (
+          <li
+            key={item.result_id}
+            className="rounded-lg border border-surface-200 bg-surface-50/70 p-3 dark:border-surface-700 dark:bg-surface-800/40"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-semibold text-surface-800 dark:text-surface-100">
+                  {edition == null ? 'Legacy' : `Edition ${edition}`}
+                </span>
+                <ValidationCycleStatusBadge state={state} />
+              </span>
+              {createdAt && (
+                <time className="text-[11px] text-surface-500 dark:text-surface-400">
+                  {formatTimestamp(createdAt)}
+                </time>
+              )}
+            </div>
+            {score !== null && (
+              <p className="mt-1 text-xs text-surface-600 dark:text-surface-300">
+                Score {formatScore(score)} of {formatScore(scaleMaximum)}
+                {createdBy ? ` · evaluated by ${createdBy}` : ''}
+              </p>
+            )}
+            {justification && (
+              <p className="mt-1 text-xs text-surface-600 dark:text-surface-300">
+                {justification}
+              </p>
+            )}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 export interface QualityPanelProps {
   subjectType: QualitySubjectType;
   subjectId: string;
   subjectVersion: number;
+  /** Human validation edition. Defaults to 1 for legacy hosts. */
+  subjectEdition?: number;
   subjectStatus: IdeationStatus | RefinementStatus | SpecStatus;
   subjectArchived: boolean;
   canRead: boolean;
@@ -901,6 +1053,10 @@ export interface QualityPanelProps {
   onAssessmentRecorded?: () => void;
   onOpenHelp?: () => void;
   refreshKey?: number;
+  /** Edition-first UI; the legacy technical evidence view remains opt-in. */
+  presentationMode?: 'legacy' | 'lifecycle-edition';
+  /** Suppresses the repeated title when rendered inside a validation row. */
+  embedded?: boolean;
 }
 
 function RequirementLintAdvisoryNotice({
@@ -918,9 +1074,10 @@ function RequirementLintAdvisoryNotice({
         Advisory requirement lint
       </h4>
       <p className="mt-1 text-xs">
-        This automated assessment highlights potential requirement issues but
-        never changes transition eligibility. Checklist and Spec Validation,
-        when available, are the authoritative controls in the neighboring tabs.
+        An external agent evaluates the requirements for the current edition
+        and submits the result to Pulse. An accepted result for the current
+        edition is required to continue. Individual findings remain advisory
+        and do not block by count or severity.
       </p>
       {onOpenHelp && (
         <button
@@ -939,6 +1096,7 @@ export function QualityPanel({
   subjectType,
   subjectId,
   subjectVersion,
+  subjectEdition = 1,
   subjectStatus,
   subjectArchived,
   canRead,
@@ -948,6 +1106,8 @@ export function QualityPanel({
   onAssessmentRecorded,
   onOpenHelp,
   refreshKey = 0,
+  presentationMode = 'legacy',
+  embedded = false,
 }: QualityPanelProps) {
   const kinds: VisibleQualityAssessmentKind[] = subjectType === 'spec'
     ? ['requirement_lint']
@@ -957,9 +1117,13 @@ export function QualityPanel({
   apiRef.current = api;
   const [kind, setKind] = useState<VisibleQualityAssessmentKind>(kinds[0]);
   const [current, setCurrent] = useState<CurrentQualityAssessment | null>(null);
+  const [cycleSummary, setCycleSummary] =
+    useState<QualityValidationCycleSummary | null>(null);
   const [history, setHistory] = useState<PageEnvelope<QualityAssessmentListItem>>(
     () => emptyPage(),
   );
+  const [lifecycleHistory, setLifecycleHistory] =
+    useState<ValidationCycleResultSummary[]>([]);
   const [findings, setFindings] = useState<PageEnvelope<QualityFinding>>(
     () => emptyPage(),
   );
@@ -973,9 +1137,21 @@ export function QualityPanel({
   const [currentReceiptOnly, setCurrentReceiptOnly] = useState(false);
   const [historyExpanded, setHistoryExpanded] = useState(false);
   const [findingsExpanded, setFindingsExpanded] = useState(false);
+  const [technicalAuditExpanded, setTechnicalAuditExpanded] = useState(false);
+  const [technicalAudit, setTechnicalAudit] =
+    useState<ValidationTechnicalAudit | null>(null);
+  const [technicalAuditLoading, setTechnicalAuditLoading] = useState(false);
+  const [technicalAuditError, setTechnicalAuditError] = useState<string | null>(null);
   const [loading, setLoading] = useState(canRead);
   const [error, setError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const cycleSummaryCacheRef = useRef<{
+    key: string;
+    value: QualityValidationCycleSummary;
+  } | null>(null);
+  const lifecycleHistoryLoadKeyRef = useRef<string | null>(null);
+  const lifecycleFindingsLoadKeyRef = useRef<string | null>(null);
+  const technicalAuditLoadKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!kinds.includes(kind)) setKind(kinds[0]);
@@ -984,7 +1160,9 @@ export function QualityPanel({
   useEffect(() => {
     if (!canRead) {
       setCurrent(null);
+      setCycleSummary(null);
       setHistory(emptyPage());
+      setLifecycleHistory([]);
       setFindings(emptyPage());
       setLoading(false);
       setError(null);
@@ -997,36 +1175,168 @@ export function QualityPanel({
     const historyOffset = (historyPage - 1) * historyPageSize;
     const findingOffset = (findingPage - 1) * findingPageSize;
     void (async () => {
+      if (
+        presentationMode === 'lifecycle-edition'
+        && subjectType !== 'spec'
+      ) {
+        const cycleKey = [
+          subjectType,
+          subjectId,
+          subjectEdition,
+          refreshKey,
+          reloadKey,
+        ].join(':');
+        let cycle = cycleSummaryCacheRef.current?.key === cycleKey
+          ? cycleSummaryCacheRef.current.value
+          : null;
+        if (!cycle) {
+          setCycleSummary(null);
+          setHistory(emptyPage());
+          setLifecycleHistory([]);
+          setFindings(emptyPage());
+          lifecycleHistoryLoadKeyRef.current = null;
+          lifecycleFindingsLoadKeyRef.current = null;
+          const resolved = await apiRef.current.getValidationCycle(
+            subjectType,
+            subjectId,
+            { includePrevious: false, signal: controller.signal },
+          );
+          if (
+            resolved.subject_type !== subjectType
+            || resolved.subject_id !== subjectId
+            || resolved.edition !== subjectEdition
+          ) {
+            throw new Error(
+              'The validation-cycle summary does not match this subject edition.',
+            );
+          }
+          cycle = resolved;
+          cycleSummaryCacheRef.current = { key: cycleKey, value: resolved };
+        }
+        if (controller.signal.aborted) return;
+        setCurrent(null);
+        setCycleSummary(cycle);
+
+        const currentResult = cycle.current_result?.subject_edition === subjectEdition
+          && cycle.current_result.result_type === 'ambiguity_assessment'
+          ? cycle.current_result
+          : null;
+        const historyLoadKey = [
+          cycleKey,
+          historyPage,
+          historyPageSize,
+        ].join(':');
+        const findingsLoadKey = [
+          cycleKey,
+          currentResult?.result_id ?? 'none',
+          findingPage,
+          findingPageSize,
+          findingCategory,
+          findingSeverity,
+        ].join(':');
+        const historyRequest = historyExpanded
+          && lifecycleHistoryLoadKeyRef.current !== historyLoadKey
+          ? apiRef.current.getValidationCycle(subjectType, subjectId, {
+              includePrevious: true,
+              offset: historyOffset,
+              limit: historyPageSize,
+              signal: controller.signal,
+            })
+          : null;
+        const findingsRequest = findingsExpanded
+          && currentResult
+          && lifecycleFindingsLoadKeyRef.current !== findingsLoadKey
+          ? apiRef.current.listQualityFindings(subjectType, subjectId, {
+              offset: findingOffset,
+              limit: findingPageSize,
+              assessmentKind: kind,
+              receiptId: currentResult.result_id,
+              categoryCode: findingCategory || undefined,
+              severity: findingSeverity || undefined,
+              subjectEdition,
+              signal: controller.signal,
+            })
+          : null;
+        const [historyResult, findingResult] = await Promise.all([
+          historyRequest,
+          findingsRequest,
+        ]);
+        if (controller.signal.aborted) return;
+        if (historyResult) {
+          if (
+            historyResult.subject_type !== subjectType
+            || historyResult.subject_id !== subjectId
+            || historyResult.edition !== subjectEdition
+          ) {
+            throw new Error(
+              'The validation-cycle history does not match this subject edition.',
+            );
+          }
+          lifecycleHistoryLoadKeyRef.current = historyLoadKey;
+          setLifecycleHistory(historyResult.previous_results.filter(
+            (result) => result.result_type === 'ambiguity_assessment',
+          ));
+          setCycleSummary(historyResult);
+        }
+        if (findingResult) {
+          lifecycleFindingsLoadKeyRef.current = findingsLoadKey;
+          setFindings(findingResult);
+        }
+        return;
+      }
+
+      setCycleSummary(null);
       const currentResult = await apiRef.current.getCurrentQualityAssessment(
         subjectType,
         subjectId,
         kind,
         controller.signal,
+        presentationMode === 'lifecycle-edition' ? subjectEdition : undefined,
       );
       if (controller.signal.aborted) return;
       setCurrent(currentResult);
 
-      const findingsRequest = currentReceiptOnly && !currentResult
+      const currentForRequestedEdition = presentationMode === 'lifecycle-edition'
+        && currentResult?.lifecycle_state === 'current'
+        && currentResult.currentness === 'current'
+        && currentResult.edition === subjectEdition
+        ? currentResult
+        : null;
+
+      const findingsRequest = !findingsExpanded
+        ? Promise.resolve(emptyPage<QualityFinding>())
+        : presentationMode === 'lifecycle-edition' && !currentForRequestedEdition
+          ? Promise.resolve(emptyPage<QualityFinding>())
+        : presentationMode === 'legacy' && currentReceiptOnly && !currentResult
         ? Promise.resolve(emptyPage<QualityFinding>())
         : apiRef.current.listQualityFindings(subjectType, subjectId, {
             offset: findingOffset,
             limit: findingPageSize,
             assessmentKind: kind,
-            receiptId: currentReceiptOnly
-              ? currentResult?.receipt.id
-              : undefined,
+            receiptId: presentationMode === 'lifecycle-edition'
+              ? currentForRequestedEdition?.receipt.id
+              : currentReceiptOnly
+                ? currentResult?.receipt.id
+                : undefined,
             categoryCode: findingCategory || undefined,
             severity: findingSeverity || undefined,
+            subjectEdition: presentationMode === 'lifecycle-edition'
+              ? subjectEdition
+              : undefined,
             signal: controller.signal,
           });
       const [historyResult, findingResult] = await Promise.all([
-        apiRef.current.listQualityAssessments(subjectType, subjectId, {
-          offset: historyOffset,
-          limit: historyPageSize,
-          assessmentKind: kind,
-          state: historyState || undefined,
-          signal: controller.signal,
-        }),
+        historyExpanded
+          ? apiRef.current.listQualityAssessments(subjectType, subjectId, {
+              offset: historyOffset,
+              limit: historyPageSize,
+              assessmentKind: kind,
+              state: presentationMode === 'legacy'
+                ? historyState || undefined
+                : undefined,
+              signal: controller.signal,
+            })
+          : Promise.resolve(emptyPage<QualityAssessmentListItem>()),
         findingsRequest,
       ]);
       if (controller.signal.aborted) return;
@@ -1042,17 +1352,95 @@ export function QualityPanel({
     canRead,
     currentReceiptOnly,
     findingCategory,
+    findingsExpanded,
     findingPage,
     findingPageSize,
     findingSeverity,
     historyPage,
     historyPageSize,
     historyState,
+    historyExpanded,
     kind,
     reloadKey,
     refreshKey,
+    presentationMode,
+    subjectEdition,
     subjectId,
     subjectType,
+  ]);
+
+  useEffect(() => {
+    if (presentationMode !== 'lifecycle-edition' || !technicalAuditExpanded) {
+      return undefined;
+    }
+    const summarizedResult = cycleSummary?.current_result?.subject_edition === subjectEdition
+      ? cycleSummary.current_result
+      : null;
+    const legacyResult = current?.lifecycle_state === 'current'
+      && current.currentness === 'current'
+      && current.edition === subjectEdition
+      ? current
+      : null;
+    const resultId = summarizedResult?.result_id ?? legacyResult?.receipt.id;
+    const resultType = kind === 'requirement_lint'
+      ? 'requirement_lint'
+      : 'ambiguity_assessment';
+    if (!resultId) {
+      setTechnicalAudit(null);
+      setTechnicalAuditError(null);
+      setTechnicalAuditLoading(false);
+      return undefined;
+    }
+    const loadKey = [
+      subjectType,
+      subjectId,
+      subjectEdition,
+      resultType,
+      resultId,
+    ].join(':');
+    if (technicalAuditLoadKeyRef.current === loadKey) return undefined;
+
+    const controller = new AbortController();
+    setTechnicalAuditLoading(true);
+    setTechnicalAuditError(null);
+    apiRef.current.getValidationTechnicalAudit(
+      subjectType,
+      subjectId,
+      resultId,
+      resultType,
+      controller.signal,
+    ).then((audit) => {
+      if (controller.signal.aborted) return;
+      if (
+        audit.result_id !== resultId
+        || audit.subject_type !== subjectType
+        || audit.subject_id !== subjectId
+        || audit.result_type !== resultType
+        || audit.subject_edition !== subjectEdition
+      ) {
+        throw new Error(
+          'The technical audit does not match the current validation result.',
+        );
+      }
+      technicalAuditLoadKeyRef.current = loadKey;
+      setTechnicalAudit(audit);
+    }).catch((reason: unknown) => {
+      if (!controller.signal.aborted) {
+        setTechnicalAudit(null);
+        setTechnicalAuditError(getErrorMessage(reason));
+      }
+    }).finally(() => {
+      if (!controller.signal.aborted) setTechnicalAuditLoading(false);
+    });
+    return () => controller.abort();
+  }, [
+    current,
+    cycleSummary,
+    presentationMode,
+    subjectEdition,
+    subjectId,
+    subjectType,
+    technicalAuditExpanded,
   ]);
 
   if (!canRead) return null;
@@ -1081,14 +1469,344 @@ export function QualityPanel({
   );
   const canWriteAssessment = canAssess && acceptedAssessmentState;
   const writeUnavailableReason = subjectType === 'spec'
-    ? 'Read-only: requirement lint is generated automatically by governed semantic Spec changes.'
+    ? 'Read-only: an external agent records requirement lint after the Spec enters its validation stage.'
     : subjectArchived
       ? 'Read-only: archived subjects cannot receive manual quality assessments.'
       : !canAssess
         ? 'Read-only: your effective board permissions do not allow recording assessments.'
-        : subjectType === 'ideation'
-          ? 'Read-only: manual ambiguity assessment is available only while the Ideation is Evaluating.'
-          : 'Read-only: manual ambiguity assessment is available only while the Refinement is Approved.';
+        : null;
+
+  if (presentationMode === 'lifecycle-edition') {
+    const currentForEdition = current?.lifecycle_state === 'current'
+      && current.currentness === 'current'
+      && current.edition === subjectEdition
+      ? current
+      : null;
+    const summarizedCurrent = cycleSummary?.current_result?.subject_edition === subjectEdition
+      && cycleSummary.current_result.result_type === 'ambiguity_assessment'
+      ? cycleSummary.current_result
+      : null;
+    const hasCurrent = Boolean(currentForEdition || summarizedCurrent);
+    const lifecycleState = summarizedCurrent
+      ? lifecycleSummaryState(summarizedCurrent)
+      : lifecycleQualityState(currentForEdition, kind);
+    const currentResultId = summarizedCurrent?.result_id
+      ?? currentForEdition?.receipt.id;
+    const summaryScore = summaryNumber(summarizedCurrent, 'score');
+    const summaryThreshold = summaryNumber(summarizedCurrent, 'threshold');
+    const summaryCreatedAt = summaryText(summarizedCurrent, 'created_at')
+      ?? summaryText(summarizedCurrent, 'recorded_at');
+    const summaryCreatedBy = summaryText(summarizedCurrent, 'created_by')
+      ?? summaryText(summarizedCurrent, 'recorded_by');
+    const summaryJustification = summaryText(summarizedCurrent, 'justification');
+    const summaryHeadline = summaryText(summarizedCurrent, 'headline')
+      ?? (lifecycleState === 'passed'
+        ? 'Ambiguity within the allowed limit'
+        : lifecycleState === 'failed'
+          ? 'Ambiguity exceeds the allowed limit'
+          : lifecycleState === 'needs_attention'
+            ? 'Ambiguity needs attention'
+            : 'Ambiguity assessment complete');
+    const summaryCardTone = lifecycleState === 'passed'
+      ? 'border-emerald-200 bg-emerald-50/60 dark:border-emerald-800 dark:bg-emerald-950/20'
+      : lifecycleState === 'failed'
+        ? 'border-red-200 bg-red-50/60 dark:border-red-800 dark:bg-red-950/20'
+        : lifecycleState === 'needs_attention'
+          ? 'border-amber-200 bg-amber-50/60 dark:border-amber-800 dark:bg-amber-950/20'
+          : 'border-surface-200 bg-white dark:border-surface-700 dark:bg-surface-900/30';
+    const previousCount = cycleSummary?.previous_result_count
+      ?? (historyExpanded
+        ? history.items.filter(
+            (item) => item.receipt.id !== currentResultId,
+          ).length
+        : undefined);
+    const title = kind === 'requirement_lint'
+      ? 'Requirement lint'
+      : 'Ambiguity assessment';
+
+    return (
+      <div className="space-y-4" data-testid="quality-panel" data-presentation="lifecycle-edition">
+        {!embedded && <ValidationCycleHeader
+          title={title}
+          edition={subjectEdition}
+          description={kind === 'requirement_lint'
+            ? 'One current lint result is kept for each validation edition.'
+            : 'One current ambiguity result is kept for each lifecycle edition.'}
+          icon={(
+            <ClipboardCheck
+              size={18}
+              className={kind === 'requirement_lint'
+                ? 'text-blue-600 dark:text-blue-400'
+                : 'text-violet-600 dark:text-violet-300'}
+              aria-hidden="true"
+            />
+          )}
+          actions={(
+            <button
+              type="button"
+              onClick={() => setReloadKey((value) => value + 1)}
+              disabled={loading}
+              className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-surface-300 bg-white px-2.5 py-1 text-xs text-surface-700 hover:bg-surface-100 disabled:opacity-50 dark:border-surface-600 dark:bg-surface-800 dark:text-surface-200"
+            >
+              <RefreshCw size={13} className={loading ? 'animate-spin' : ''} aria-hidden="true" />
+              Refresh
+            </button>
+          )}
+        />}
+
+        {error && (
+          <div
+            role="alert"
+            className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300"
+          >
+            Could not load the current result. {error}
+          </div>
+        )}
+
+        <section
+          className={`rounded-xl border p-4 ${
+            currentForEdition
+              ? currentReceiptTone(currentForEdition, kind).card
+              : summarizedCurrent
+                ? summaryCardTone
+                : 'border-surface-200 bg-white dark:border-surface-700 dark:bg-surface-900/30'
+          }`}
+          data-testid="quality-current-result"
+          aria-busy={loading && !hasCurrent}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-surface-500 dark:text-surface-400">
+                Current assessment
+              </p>
+              <h4 className="mt-1 text-sm font-semibold text-surface-900 dark:text-white">
+                {currentForEdition
+                  ? kind === 'requirement_lint'
+                    ? currentForEdition.receipt.score === 0
+                      ? 'No lint findings'
+                      : `${formatScore(currentForEdition.receipt.score)} lint finding${currentForEdition.receipt.score === 1 ? '' : 's'}`
+                    : currentReceiptHeadline(currentForEdition, kind)
+                  : summarizedCurrent
+                    ? summaryHeadline
+                  : loading
+                    ? 'Loading current assessment…'
+                    : `No result for Edition ${subjectEdition}`}
+              </h4>
+            </div>
+            <ValidationCycleStatusBadge
+              state={loading && !hasCurrent ? 'in_progress' : lifecycleState}
+              testId="quality-current-status"
+            />
+          </div>
+
+          {currentForEdition ? (
+            <div className="mt-4 flex flex-wrap items-center gap-4">
+              <QualityScoreRing assessment={currentForEdition} kind={kind} />
+              <div className="min-w-0 flex-1">
+                <p className="text-xs text-surface-700 dark:text-surface-200">
+                  {kind === 'requirement_lint'
+                    ? `${formatScore(currentForEdition.receipt.scale.maximum)} rules evaluated · lower is better`
+                    : currentForEdition.gate_preview.threshold == null
+                      ? `Scale ${currentForEdition.receipt.scale.minimum}–${currentForEdition.receipt.scale.maximum}`
+                      : `Maximum accepted score ${currentForEdition.gate_preview.threshold}`}
+                </p>
+                <p className="mt-1 text-[11px] text-surface-500 dark:text-surface-400">
+                  Evaluated {formatTimestamp(currentForEdition.receipt.created_at)} by{' '}
+                  {currentForEdition.receipt.created_by}
+                </p>
+                {currentForEdition.receipt.justification && (
+                  <p className="mt-2 text-xs text-surface-600 dark:text-surface-300">
+                    {currentForEdition.receipt.justification}
+                  </p>
+                )}
+              </div>
+            </div>
+          ) : summarizedCurrent ? (
+            <div className="mt-4 flex flex-wrap items-center gap-4">
+              {summaryScore !== null && (
+                <div
+                  role="img"
+                  aria-label={`Ambiguity score ${formatScore(summaryScore)} out of 5`}
+                  className={`flex h-20 w-20 shrink-0 items-center justify-center rounded-full border-4 ${
+                    lifecycleState === 'passed'
+                      ? 'border-emerald-400 text-emerald-700 dark:text-emerald-300'
+                      : lifecycleState === 'failed'
+                        ? 'border-red-400 text-red-700 dark:text-red-300'
+                        : 'border-amber-400 text-amber-700 dark:text-amber-200'
+                  }`}
+                >
+                  <span aria-hidden="true" className="text-2xl font-bold">
+                    {formatScore(summaryScore)}
+                    <span className="text-sm text-surface-400">/5</span>
+                  </span>
+                </div>
+              )}
+              <div className="min-w-0 flex-1">
+                {summaryThreshold !== null && (
+                  <p className="text-xs text-surface-700 dark:text-surface-200">
+                    Maximum accepted score {formatScore(summaryThreshold)}
+                  </p>
+                )}
+                {(summaryCreatedAt || summaryCreatedBy) && (
+                  <p className="mt-1 text-[11px] text-surface-500 dark:text-surface-400">
+                    {summaryCreatedAt
+                      ? `Evaluated ${formatTimestamp(summaryCreatedAt)}`
+                      : 'Evaluated'}
+                    {summaryCreatedBy ? ` by ${summaryCreatedBy}` : ''}
+                  </p>
+                )}
+                {summaryJustification && (
+                  <p className="mt-2 text-xs text-surface-600 dark:text-surface-300">
+                    {summaryJustification}
+                  </p>
+                )}
+              </div>
+            </div>
+          ) : !loading && (
+            <p className="mt-3 max-w-2xl text-xs text-surface-500 dark:text-surface-400">
+              This edition has not been assessed yet. A new result is recorded
+              when the entity enters its validation stage.
+            </p>
+          )}
+        </section>
+
+        {kind === 'requirement_lint' && (
+          <RequirementLintAdvisoryNotice onOpenHelp={onOpenHelp} />
+        )}
+
+        {subjectType !== 'spec' && (
+          canWriteAssessment ? (
+            <ManualAssessmentForm
+              subjectType={subjectType}
+              subjectId={subjectId}
+              subjectVersion={
+                cycleSummary?.submission_fence.expected_subject_version
+                ?? subjectVersion
+              }
+              subjectEdition={
+                cycleSummary?.submission_fence.expected_validation_edition
+                ?? subjectEdition
+              }
+              expectedHeadRevision={
+                cycleSummary?.submission_fence.expected_head_revision
+                ?? currentForEdition?.head_revision
+                ?? 0
+              }
+              canProposeQuestions={canProposeQuestions}
+              disabled={loading || Boolean(error)}
+              onRecorded={reload}
+            />
+          ) : writeUnavailableReason ? (
+            <p className="rounded-lg border border-surface-200 bg-surface-50 p-3 text-xs text-surface-600 dark:border-surface-700 dark:bg-surface-900/40 dark:text-surface-300">
+              {writeUnavailableReason}
+            </p>
+          ) : null
+        )}
+
+        <CollapsibleEvidenceSection
+          title="Findings"
+          description="Open the findings only when you need the detailed observations."
+          expanded={findingsExpanded}
+          onToggle={() => setFindingsExpanded((value) => !value)}
+          testId="quality-findings"
+        >
+          {loading && findings.items.length === 0 ? (
+            <p className="text-xs text-surface-500 dark:text-surface-400">
+              Loading findings…
+            </p>
+          ) : findings.items.length === 0 ? (
+            <p className="text-xs text-surface-500 dark:text-surface-400">
+              No findings were recorded for this edition.
+            </p>
+          ) : (
+            <FindingItems
+              page={findings}
+              anchorTexts={anchorTexts}
+              showTechnicalMetadata={false}
+            />
+          )}
+        </CollapsibleEvidenceSection>
+
+        <PreviousResultsSection
+          expanded={historyExpanded}
+          onToggle={() => setHistoryExpanded((value) => !value)}
+          count={previousCount}
+          testId="quality-previous-results"
+        >
+          {loading && history.items.length === 0 ? (
+            <p className="text-xs text-surface-500 dark:text-surface-400">
+              Loading previous results…
+            </p>
+          ) : (
+            <LifecyclePreviousQualityResults
+              results={lifecycleHistory}
+              currentReceiptId={currentResultId}
+            />
+          )}
+          {previousCount !== undefined && previousCount > historyPageSize && (
+            <AccessiblePaginator
+              page={historyPage}
+              pageSize={historyPageSize}
+              totalFiltered={previousCount}
+              totalOverall={previousCount}
+              itemCount={lifecycleHistory.length}
+              loading={loading}
+              error={error}
+              onRetry={() => setReloadKey((value) => value + 1)}
+              onPaginationChange={(intent) => {
+                setHistoryPage(intent.page);
+                setHistoryPageSize(intent.pageSize);
+              }}
+              ariaLabel="Previous validation results pagination"
+              emptyMessage="No previous results are available."
+              testId="quality-previous-results-paginator"
+              compact
+            />
+          )}
+        </PreviousResultsSection>
+
+        <TechnicalAuditSection
+          expanded={technicalAuditExpanded}
+          onToggle={() => setTechnicalAuditExpanded((value) => !value)}
+        >
+          {technicalAuditLoading ? (
+            <p role="status" className="text-xs text-surface-500 dark:text-surface-400">
+              Loading technical audit…
+            </p>
+          ) : technicalAuditError ? (
+            <p role="alert" className="text-xs text-red-700 dark:text-red-300">
+              Technical audit could not be loaded. {technicalAuditError}
+            </p>
+          ) : technicalAudit && technicalAudit.result_id === currentResultId ? (
+            <dl className="grid gap-2 text-xs sm:grid-cols-2">
+              <div>
+                <dt className="text-surface-500 dark:text-surface-400">Result identifier</dt>
+                <dd className="mt-0.5 break-all font-mono text-surface-800 dark:text-surface-100">
+                  {technicalAudit.result_id}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-surface-500 dark:text-surface-400">Processing fence</dt>
+                <dd className="mt-0.5 font-mono text-surface-800 dark:text-surface-100">
+                  subject r{technicalAudit.technical_audit.subject_version} · head r{technicalAudit.technical_audit.head_revision}
+                </dd>
+              </div>
+              <div className="sm:col-span-2">
+                <dt className="text-surface-500 dark:text-surface-400">Immutable record</dt>
+                <dd className="mt-0.5 break-all font-mono text-surface-800 dark:text-surface-100">
+                  {technicalAudit.technical_audit.receipt_id}
+                </dd>
+              </div>
+            </dl>
+          ) : (
+            <p className="text-xs text-surface-500 dark:text-surface-400">
+              No technical record exists for the current edition.
+            </p>
+          )}
+        </TechnicalAuditSection>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5" data-testid="quality-panel">
@@ -1235,19 +1953,20 @@ export function QualityPanel({
             subjectType={subjectType}
             subjectId={subjectId}
             subjectVersion={subjectVersion}
+            subjectEdition={subjectEdition}
             expectedHeadRevision={current?.head_revision ?? 0}
             canProposeQuestions={canProposeQuestions}
             disabled={loading || Boolean(error)}
             onRecorded={reload}
           />
-        ) : (
+        ) : writeUnavailableReason ? (
           <p
             className="rounded-lg border border-surface-200 bg-surface-50 p-3 text-xs text-surface-600 dark:border-surface-700 dark:bg-surface-900/40 dark:text-surface-300"
             data-testid="quality-read-only"
           >
             {writeUnavailableReason}
           </p>
-        )
+        ) : null
       )}
 
       <CollapsibleEvidenceSection

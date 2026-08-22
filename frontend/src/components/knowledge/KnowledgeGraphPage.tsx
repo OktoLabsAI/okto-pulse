@@ -35,6 +35,7 @@ import * as kgApi from '@/services/kg-api';
 import { getKGHealth, type KGHealth } from '@/services/kg-health-api';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { usePermissions } from '@/hooks/usePermissions';
+import { useCodeTraceabilityAuthority } from '@/components/code-traceability';
 
 interface Props {
   boardId: string;
@@ -51,6 +52,7 @@ const HIDE_ALL_NODE_TYPE = '__hide_all__';
 const DEFAULT_FILTERS: Filters = {
   types: [],
   edgeTypes: [],
+  codeTraceabilityKinds: [],
   graphLayer: 'canonical',
   // Default 0% so the slider doesn't hide nodes until the user opts in.
   // Backend currently sends constant relevance_score for most nodes, so a
@@ -133,6 +135,8 @@ export function GraphVisibilityMismatchState({
 
 export function KnowledgeGraphPage({ boardId }: Props) {
   const permissions = usePermissions(boardId);
+  const { canReadProjection: canReadCodeTraceability } =
+    useCodeTraceabilityAuthority(boardId);
   const policyReady = (
     !permissions.isLoading
     && !permissions.error
@@ -155,6 +159,31 @@ export function KnowledgeGraphPage({ boardId }: Props) {
   const [subView, setSubView] = useState<SubView>('graph');
   const [nodeLimit, setNodeLimit] = useState<number>(DEFAULT_NODE_LIMIT);
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
+
+  const authorityNodes = useMemo(
+    () => canReadCodeTraceability
+      ? nodes
+      : nodes.filter((node) => !node.kind_of),
+    [canReadCodeTraceability, nodes],
+  );
+  const authorityEdges = useMemo(() => {
+    if (canReadCodeTraceability) return edges;
+    const visibleIds = new Set(authorityNodes.map((node) => node.id));
+    return edges.filter(
+      (edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target),
+    );
+  }, [authorityNodes, canReadCodeTraceability, edges]);
+
+  useEffect(() => {
+    if (canReadCodeTraceability) return;
+    setFilters((current) => (
+      (current.codeTraceabilityKinds?.length ?? 0) > 0
+        ? { ...current, codeTraceabilityKinds: [] }
+        : current
+    ));
+    setSelectedNode((current) => current?.kind_of ? null : current);
+    setModalNode((current) => current?.kind_of ? null : current);
+  }, [canReadCodeTraceability]);
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
     if (typeof window === 'undefined') return SIDEBAR_DEFAULT;
     const stored = window.localStorage.getItem(SIDEBAR_WIDTH_KEY);
@@ -305,8 +334,14 @@ export function KnowledgeGraphPage({ boardId }: Props) {
 
   const visibleNodeCount = useMemo(() => {
     const search = filters.searchQuery.trim().toLowerCase();
-    return nodes.filter((node) => {
+    return authorityNodes.filter((node) => {
       if (filters.types.length > 0 && !filters.types.includes(node.node_type)) return false;
+      if (
+        (filters.codeTraceabilityKinds?.length ?? 0) > 0
+        && !filters.codeTraceabilityKinds?.includes(
+          node.kind_of as NonNullable<Filters['codeTraceabilityKinds']>[number],
+        )
+      ) return false;
       if ((node.relevance_score ?? 0) < filters.minRelevance) return false;
       if (!search) return true;
       return (
@@ -315,7 +350,13 @@ export function KnowledgeGraphPage({ boardId }: Props) {
         (node.justification ?? '').toLowerCase().includes(search)
       );
     }).length;
-  }, [filters.minRelevance, filters.searchQuery, filters.types, nodes]);
+  }, [
+    filters.codeTraceabilityKinds,
+    filters.minRelevance,
+    filters.searchQuery,
+    filters.types,
+    authorityNodes,
+  ]);
 
   const handleAdjustRelevance = useCallback((value: number) => {
     setFilters((prev) => ({ ...prev, minRelevance: value }));
@@ -449,14 +490,19 @@ export function KnowledgeGraphPage({ boardId }: Props) {
             onFiltersChange={setFilters}
             subView={subView}
             onSubViewChange={setSubView}
-            nodeCount={nodes.length}
+            nodeCount={authorityNodes.length}
             nodeLimit={nodeLimit}
             onNodeLimitChange={handleNodeLimitChange}
             boardId={boardId}
-            relevanceScores={nodes.map((n) => n.relevance_score ?? 0)}
+            showCodeTraceabilityFacets={canReadCodeTraceability}
+            relevanceScores={authorityNodes.map((n) => n.relevance_score ?? 0)}
             visibleNodeCount={visibleNodeCount}
-            nodeTypeCounts={statsSnapshot?.node_counts_by_type}
-            totalNodeCount={healthSnapshot?.total_nodes ?? undefined}
+            nodeTypeCounts={canReadCodeTraceability
+              ? statsSnapshot?.node_counts_by_type
+              : undefined}
+            totalNodeCount={canReadCodeTraceability
+              ? healthSnapshot?.total_nodes ?? undefined
+              : undefined}
           />
         </div>
       </div>
@@ -541,7 +587,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
                 >
                   {loadingMore
                     ? 'Loading…'
-                    : `Load more (${nodes.length}${nextCursor ? '+' : ''})`}
+                    : `Load more (${authorityNodes.length}${nextCursor ? '+' : ''})`}
                 </button>
               )}
             </div>
@@ -565,8 +611,8 @@ export function KnowledgeGraphPage({ boardId }: Props) {
               </div>
             )}
             <GraphCanvas
-              nodes={nodes}
-              edges={edges}
+              nodes={authorityNodes}
+              edges={authorityEdges}
               filters={filters}
               onSelect={setSelectedNode}
               initialSelectedNodeId={selectedNode?.id ?? null}
@@ -598,7 +644,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
             boardId={boardId}
             onClose={() => setSelectedNode(null)}
             onNodeNavigate={(nodeId) => {
-              const target = nodes.find((n) => n.id === nodeId);
+              const target = authorityNodes.find((n) => n.id === nodeId);
               if (target) setSelectedNode(target);
             }}
           />

@@ -54,6 +54,7 @@ describe('dashboard paginated column store', () => {
       currentBoard: { id: 'board-a' } as Board,
       columns: emptyColumns(),
       columnsMeta: {},
+      columnsProjection: null,
       columnsGeneration: 1,
       columnPageState: loadState(),
     });
@@ -180,5 +181,85 @@ describe('dashboard paginated column store', () => {
 
     useDashboardStore.getState().optimisticMoveCard('a', 'in_progress', 1);
     expect(useDashboardStore.getState().columns.in_progress.map(({ id }) => id)).toEqual(['b', 'a']);
+  });
+
+  it('reconciles an authoritative cross-column move exactly once and in position order', () => {
+    const moving = card('moving', 'validation', 0);
+    useDashboardStore.setState({
+      columns: {
+        ...emptyColumns(),
+        validation: [moving],
+        rejected: [
+          card('later', 'rejected', 2),
+          { ...moving, status: 'rejected', position: 9 },
+        ],
+      },
+    });
+
+    useDashboardStore.getState().updateCardInColumn({
+      ...moving,
+      status: 'rejected',
+      position: 1,
+      title: 'Authoritative rejected card',
+    });
+
+    const state = useDashboardStore.getState();
+    expect(state.columns.validation).toEqual([]);
+    expect(state.columns.rejected.map(({ id }) => id)).toEqual(['moving', 'later']);
+    expect(state.columns.rejected[0].title).toBe('Authoritative rejected card');
+    expect(CARD_STATUSES.flatMap((status) => state.columns[status])
+      .filter(({ id }) => id === 'moving')).toHaveLength(1);
+  });
+
+  it('does not inject a modal-only card or a card incompatible with loaded filters', () => {
+    useDashboardStore.getState().addCardToColumn(card('invalid-create', 'rejected'));
+    expect(useDashboardStore.getState().columns.rejected).toEqual([]);
+
+    useDashboardStore.getState().updateCardInColumn(card('modal-only', 'rejected'));
+    expect(useDashboardStore.getState().columns.rejected).toEqual([]);
+
+    const moving = card('filtered-out', 'validation');
+    useDashboardStore.setState({
+      columns: { ...emptyColumns(), validation: [moving] },
+    });
+    useDashboardStore.getState().beginColumnsGeneration({
+      cardTypesByStatus: { rejected: ['bug'] },
+    });
+    useDashboardStore.getState().updateCardInColumn({
+      ...moving,
+      status: 'rejected',
+    });
+
+    expect(useDashboardStore.getState().columns.validation).toEqual([]);
+    expect(useDashboardStore.getState().columns.rejected).toEqual([]);
+  });
+
+  it('removes a moved card without injecting it into a partial target page', () => {
+    const moving = card('beyond-window', 'validation');
+    useDashboardStore.setState({
+      columns: { ...emptyColumns(), validation: [moving] },
+      columnsMeta: {
+        rejected: {
+          total_filtered: 20,
+          total_overall: 20,
+          has_more: true,
+          facets: { card_type: { normal: 20 } },
+        },
+      },
+    });
+
+    useDashboardStore.getState().updateCardInColumn({
+      ...moving,
+      status: 'rejected',
+      position: 19,
+    });
+
+    expect(useDashboardStore.getState().columns.validation).toEqual([]);
+    expect(useDashboardStore.getState().columns.rejected).toEqual([]);
+    expect(useDashboardStore.getState().columnsMeta.rejected).toMatchObject({
+      total_filtered: 21,
+      total_overall: 21,
+      facets: { card_type: { normal: 21 } },
+    });
   });
 });

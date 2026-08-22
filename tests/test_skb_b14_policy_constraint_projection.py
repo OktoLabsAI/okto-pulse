@@ -8,10 +8,13 @@ old rule ``Constraint`` nodes remain terminal audit history.
 
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import threading
 from typing import Any
 
 import pytest
@@ -65,13 +68,16 @@ class _SemanticGraphScope:
             "Entity": {},
             "Constraint": {},
         }
-        self.edges: dict[
-            tuple[str, str, str, str, str], dict[str, Any]
-        ] = {}
-        self._before: tuple[
-            dict[str, dict[str, dict[str, Any]]],
-            dict[tuple[str, str, str, str, str], dict[str, Any]],
-        ] | None = None
+        self.edges: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+        self.edge_read_queries: list[str] = []
+        self.edge_exists_calls = 0
+        self._before: (
+            tuple[
+                dict[str, dict[str, dict[str, Any]]],
+                dict[tuple[str, str, str, str, str], dict[str, Any]],
+            ]
+            | None
+        ) = None
 
     async def __aenter__(self) -> "_SemanticGraphScope":
         return self
@@ -125,9 +131,7 @@ class _SemanticGraphScope:
                     attrs.get("revocation_reason"),
                     attrs.get("superseded_by"),
                 )
-                for node_id, attrs in sorted(
-                    self.nodes["Constraint"].items()
-                )
+                for node_id, attrs in sorted(self.nodes["Constraint"].items())
             ]
             return GraphStatementResult.from_rows(rows)
         if normalized.startswith(
@@ -139,6 +143,28 @@ class _SemanticGraphScope:
                 if attrs.get("source_artifact_ref") == params["source_ref"]
             ]
             return GraphStatementResult.from_rows(rows)
+        for edge_type in ("belongs_to", "supersedes"):
+            if normalized.startswith(
+                f"MATCH (source:Entity)-[r:{edge_type}]->(target:Entity)"
+            ):
+                self.edge_read_queries.append(edge_type)
+                source_ids = {str(value) for value in params["source_ids"]}
+                target_ids = {str(value) for value in params["target_ids"]}
+                rows = [
+                    (from_id, to_id)
+                    for (
+                        stored_edge_type,
+                        from_type,
+                        to_type,
+                        from_id,
+                        to_id,
+                    ) in self.edges
+                    if stored_edge_type == edge_type
+                    and from_type == to_type == "Entity"
+                    and from_id in source_ids
+                    and to_id in target_ids
+                ]
+                return GraphStatementResult.from_rows(sorted(rows))
         if normalized.startswith("MATCH (n:Entity {id: $node_id}) SET"):
             node = self.nodes["Entity"][str(params["node_id"])]
             if "ended_at" not in params:
@@ -149,9 +175,7 @@ class _SemanticGraphScope:
                     node["superseded_by"] = None
                     node["revocation_reason"] = params["reason"]
             return GraphStatementResult()
-        if normalized.startswith(
-            "MATCH (n:Constraint {id: $node_id}) SET"
-        ):
+        if normalized.startswith("MATCH (n:Constraint {id: $node_id}) SET"):
             node = self.nodes["Constraint"][str(params["node_id"])]
             node["superseded_by"] = None
             node["superseded_at"] = params["ended_at"]
@@ -189,13 +213,8 @@ class _SemanticGraphScope:
         from_id: str,
         to_id: str,
     ) -> bool:
-        return (
-            edge_type,
-            from_type,
-            to_type,
-            from_id,
-            to_id,
-        ) in self.edges
+        self.edge_exists_calls += 1
+        raise AssertionError("semantic projection must batch edge reads")
 
     def create_edge(
         self,
@@ -221,11 +240,170 @@ class _SemanticGraph:
         return self.scope
 
 
+@pytest.mark.asyncio
+async def test_policy_projection_keeps_api_loop_responsive_during_graph_write():
+    """The complete native graph scope must run on one non-loop thread."""
+
+    loop_thread_id = threading.get_ident()
+    graph_entered = threading.Event()
+    release_graph = threading.Event()
+    graph_thread_ids: list[int] = []
+    graph_context_values: list[str | None] = []
+    projection_context: ContextVar[str | None] = ContextVar(
+        "test_policy_projection_context",
+        default=None,
+    )
+
+    class _BlockingScope(_SemanticGraphScope):
+        def execute(
+            self,
+            statement: str,
+            params: dict[str, Any] | None = None,
+        ) -> GraphStatementResult:
+            graph_thread_ids.append(threading.get_ident())
+            graph_context_values.append(projection_context.get())
+            if " ".join(statement.split()) == "BEGIN TRANSACTION":
+                graph_entered.set()
+                if not release_graph.wait(timeout=5.0):
+                    raise AssertionError("graph test worker was not released")
+            return super().execute(statement, params)
+
+        async def __aenter__(self) -> "_BlockingScope":
+            graph_thread_ids.append(threading.get_ident())
+            graph_context_values.append(projection_context.get())
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            graph_thread_ids.append(threading.get_ident())
+            graph_context_values.append(projection_context.get())
+
+    class _BlockingGraph:
+        def __init__(self) -> None:
+            self.scope = _BlockingScope()
+
+        async def begin(self, board_id: str) -> _BlockingScope:
+            assert board_id == BOARD_ID
+            graph_thread_ids.append(threading.get_ident())
+            graph_context_values.append(projection_context.get())
+            return self.scope
+
+    graph = _BlockingGraph()
+
+    def _resolve_graph() -> _BlockingGraph:
+        graph_thread_ids.append(threading.get_ident())
+        graph_context_values.append(projection_context.get())
+        return graph
+
+    projector = CommunitySqlAlchemyPolicyConstraintProjection(
+        graph_transaction_resolver=_resolve_graph
+    )
+    context_token = projection_context.set("assessment-event")
+    try:
+        projection = asyncio.create_task(
+            projector._reconcile(  # noqa: SLF001
+                board_id=BOARD_ID,
+                operation="sync",
+                event_id="event-off-loop",
+                desired=(),
+                projected_at=NOW,
+            )
+        )
+        try:
+            for _ in range(200):
+                if graph_entered.is_set():
+                    break
+                await asyncio.sleep(0.005)
+            assert graph_entered.is_set()
+
+            loop_probe = asyncio.Event()
+            asyncio.get_running_loop().call_soon(loop_probe.set)
+            await asyncio.wait_for(loop_probe.wait(), timeout=0.25)
+            assert not projection.done()
+        finally:
+            release_graph.set()
+
+        result = await asyncio.wait_for(projection, timeout=2.0)
+    finally:
+        projection_context.reset(context_token)
+
+    assert result.active_count == 0
+    assert result.node_ids == ()
+    assert graph_thread_ids
+    assert set(graph_thread_ids) == {graph_thread_ids[0]}
+    assert graph_thread_ids[0] != loop_thread_id
+    assert set(graph_context_values) == {"assessment-event"}
+
+
+@pytest.mark.asyncio
+async def test_policy_projection_cancellation_waits_for_graph_scope_close():
+    """Cancellation cannot detach a graph transaction that still owns I/O."""
+
+    graph_entered = threading.Event()
+    release_graph = threading.Event()
+    graph_closed = threading.Event()
+    statements: list[str] = []
+
+    class _CancellationScope(_SemanticGraphScope):
+        def execute(
+            self,
+            statement: str,
+            params: dict[str, Any] | None = None,
+        ) -> GraphStatementResult:
+            normalized = " ".join(statement.split())
+            statements.append(normalized)
+            if normalized == "BEGIN TRANSACTION":
+                graph_entered.set()
+                if not release_graph.wait(timeout=5.0):
+                    raise AssertionError("graph cancellation worker was not released")
+            return super().execute(statement, params)
+
+        async def __aexit__(self, *_exc: object) -> None:
+            graph_closed.set()
+
+    class _CancellationGraph:
+        def __init__(self) -> None:
+            self.scope = _CancellationScope()
+
+        async def begin(self, board_id: str) -> _CancellationScope:
+            assert board_id == BOARD_ID
+            return self.scope
+
+    graph = _CancellationGraph()
+    projector = CommunitySqlAlchemyPolicyConstraintProjection(
+        graph_transaction_resolver=lambda: graph
+    )
+    projection = asyncio.create_task(
+        projector._reconcile(  # noqa: SLF001
+            board_id=BOARD_ID,
+            operation="sync",
+            event_id="event-cancel-drain",
+            desired=(),
+            projected_at=NOW,
+        )
+    )
+    try:
+        for _ in range(200):
+            if graph_entered.is_set():
+                break
+            await asyncio.sleep(0.005)
+        assert graph_entered.is_set()
+
+        projection.cancel()
+        await asyncio.sleep(0.02)
+        assert not projection.done()
+        assert not graph_closed.is_set()
+    finally:
+        release_graph.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(projection, timeout=2.0)
+    assert "COMMIT" in statements
+    assert graph_closed.is_set()
+
+
 def _desired_chain() -> tuple[Any, ...]:
     revision = _semantic_node_id("revision", "revision-1")
-    metric = _semantic_node_id(
-        "metric_definition", "revision-1:metric-1"
-    )
+    metric = _semantic_node_id("metric_definition", "revision-1:metric-1")
     binding = _semantic_node_id("binding_configuration", "binding-1:1")
     receipt = _semantic_node_id("assessment_receipt", "receipt-1")
     result = _semantic_node_id("metric_result", "result-1")
@@ -256,6 +434,107 @@ def _desired_chain() -> tuple[Any, ...]:
         )
         for index, (kind, identity, lineage) in enumerate(identities, start=1)
     )
+
+
+def _desired_edge_batch(extra_nodes: int) -> tuple[Any, ...]:
+    current_id = _semantic_node_id("revision", "revision-current")
+    previous = _desired_semantic_node(
+        kind="revision",
+        identity="revision-previous",
+        digest="a" * 64,
+        generation=1,
+        active=False,
+        reason="semantic_guideline_revision_superseded",
+        successor_id=current_id,
+        title="Previous revision",
+        content="Terminal revision in the semantic lineage.",
+        payload={"revision_id": "revision-previous"},
+        created_at=NOW,
+        projected_at=NOW,
+    )
+    current = _desired_semantic_node(
+        kind="revision",
+        identity="revision-current",
+        digest="b" * 64,
+        generation=2,
+        active=True,
+        reason=None,
+        successor_id=None,
+        title="Current revision",
+        content="Current semantic authority.",
+        payload={"revision_id": "revision-current"},
+        created_at=NOW,
+        projected_at=NOW,
+    )
+    metrics = tuple(
+        _desired_semantic_node(
+            kind="metric_definition",
+            identity=f"revision-current:metric-{index}",
+            digest=f"{index % 16:x}" * 64,
+            generation=2,
+            active=True,
+            reason=None,
+            successor_id=None,
+            lineage_ids=(current_id,),
+            title=f"Metric {index}",
+            content="Metric with a revision lineage edge.",
+            payload={"metric_id": f"metric-{index}"},
+            created_at=NOW,
+            projected_at=NOW,
+        )
+        for index in range(extra_nodes)
+    )
+    return (previous, current, *metrics)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra_nodes", (1, 64))
+async def test_semantic_projection_prefetches_edges_in_constant_reads_and_replays(
+    extra_nodes: int,
+):
+    graph = _SemanticGraph()
+    projector = CommunitySqlAlchemyPolicyConstraintProjection(
+        graph_transaction_resolver=lambda: graph
+    )
+    desired = _desired_edge_batch(extra_nodes)
+
+    first = await projector._reconcile(  # noqa: SLF001
+        board_id=BOARD_ID,
+        operation="sync",
+        event_id=f"event-batch-{extra_nodes}",
+        desired=desired,
+        projected_at=NOW,
+    )
+
+    assert first.active_count == extra_nodes + 1
+    assert graph.scope.edge_read_queries == ["belongs_to", "supersedes"]
+    assert graph.scope.edge_exists_calls == 0
+    expected_root_edges = len(desired)
+    expected_lineage_edges = extra_nodes
+    expected_supersedes_edges = 1
+    assert len(graph.scope.edges) == (
+        expected_root_edges + expected_lineage_edges + expected_supersedes_edges
+    )
+    edges_after_first = deepcopy(graph.scope.edges)
+
+    replay = await projector._reconcile(  # noqa: SLF001
+        board_id=BOARD_ID,
+        operation="sync",
+        event_id=f"event-batch-{extra_nodes}-replay",
+        desired=desired,
+        projected_at=NOW,
+    )
+
+    assert replay.replayed is True
+    assert replay.activated_count == replay.ended_count == 0
+    assert graph.scope.edge_read_queries == [
+        "belongs_to",
+        "supersedes",
+        "belongs_to",
+        "supersedes",
+    ]
+    assert graph.scope.edge_exists_calls == 0
+    assert graph.scope.edges == edges_after_first
 
 
 @pytest.mark.parametrize(
@@ -290,14 +569,17 @@ def test_waiver_projection_tombstone_precedence(
 ) -> None:
     active_bindings = {("binding-1", 1)} if binding_active else set()
 
-    assert _waiver_projection_state(
-        status=status,
-        expires_at=expires_at,
-        binding_id="binding-1",
-        binding_revision=1,
-        active_binding_keys=active_bindings,
-        projected_at=NOW,
-    ) == expected
+    assert (
+        _waiver_projection_state(
+            status=status,
+            expires_at=expires_at,
+            binding_id="binding-1",
+            binding_revision=1,
+            active_binding_keys=active_bindings,
+            projected_at=NOW,
+        )
+        == expected
+    )
 
 
 @pytest.mark.asyncio
@@ -331,18 +613,18 @@ async def test_semantic_projection_is_entity_only_complete_and_replay_safe():
         if node_id.startswith("semantic-guideline:")
     )
     assert len(graph.scope.nodes["Constraint"]) == 1
-    legacy = graph.scope.nodes["Constraint"][
-        "guideline-revision:old:rule:old"
-    ]
-    assert (
-        legacy["revocation_reason"]
-        == SEMANTIC_GUIDELINE_LEGACY_TERMINATED_REASON
-    )
+    legacy = graph.scope.nodes["Constraint"]["guideline-revision:old:rule:old"]
+    assert legacy["revocation_reason"] == SEMANTIC_GUIDELINE_LEGACY_TERMINATED_REASON
 
     lineage_edges = {
         (from_id, to_id)
-        for (edge, from_type, to_type, from_id, to_id), attrs
-        in graph.scope.edges.items()
+        for (
+            edge,
+            from_type,
+            to_type,
+            from_id,
+            to_id,
+        ), attrs in graph.scope.edges.items()
         if edge == "belongs_to"
         and from_type == to_type == "Entity"
         and attrs.get("rule_id", "").startswith(
@@ -350,9 +632,7 @@ async def test_semantic_projection_is_entity_only_complete_and_replay_safe():
         )
     }
     assert lineage_edges == {
-        (node.node_id, target)
-        for node in desired
-        for target in node.lineage_ids
+        (node.node_id, target) for node in desired for target in node.lineage_ids
     }
 
     replay = await projector._reconcile(  # noqa: SLF001
@@ -377,10 +657,7 @@ async def test_semantic_projection_is_entity_only_complete_and_replay_safe():
         projected_at=NOW,
     )
     assert repaired.activated_count == repaired.ended_count == 0
-    assert (
-        graph.scope.nodes["Entity"][repaired_node_id]["source_content_hash"]
-        is None
-    )
+    assert graph.scope.nodes["Entity"][repaired_node_id]["source_content_hash"] is None
 
     removed = await projector._reconcile(  # noqa: SLF001
         board_id=BOARD_ID,
@@ -449,9 +726,7 @@ async def test_semantic_projection_outbox_is_atomic_and_causation_idempotent(
     )
     await writer.flush()
     async with factory() as reader:
-        assert (
-            await reader.scalar(select(func.count(DomainEventRow.id)))
-        ) == 0
+        assert (await reader.scalar(select(func.count(DomainEventRow.id)))) == 0
     await writer.rollback()
     await writer.close()
 
@@ -535,15 +810,12 @@ def test_semantic_context_envelope_is_strict_and_reserves_authority_fields():
         PolicyConstraintProjectionConflict,
         match="semantic_guideline_graph_context_invalid",
     ):
-        _decode_semantic_context(
-            "{contract: semantic-guideline-kg/v1, kind: revision}"
-        )
+        _decode_semantic_context("{contract: semantic-guideline-kg/v1, kind: revision}")
 
     for invalid_json in (
         '{"contract":"semantic-guideline-kg/v1",'
         '"contract":"semantic-guideline-kg/v1","kind":"revision"}',
-        '{"contract":"semantic-guideline-kg/v1",'
-        '"kind":"revision","score":NaN}',
+        '{"contract":"semantic-guideline-kg/v1","kind":"revision","score":NaN}',
     ):
         with pytest.raises(
             PolicyConstraintProjectionConflict,
@@ -610,8 +882,7 @@ async def test_semantic_projection_kuzu_round_trip_is_replay_safe_and_not_audit_
 
         with kg_runtime.open_board_connection(board_id) as (_db, connection):
             result = connection.execute(
-                "MATCH (n:Entity) RETURN n.id, n.context, "
-                "n.source_content_hash"
+                "MATCH (n:Entity) RETURN n.id, n.context, n.source_content_hash"
             )
             rows = []
             while result.has_next():
@@ -628,10 +899,7 @@ async def test_semantic_projection_kuzu_round_trip_is_replay_safe_and_not_audit_
             assert encoded_context.startswith("json:")
             context = json.loads(encoded_context.removeprefix("json:"))
             assert context["contract"] == SEMANTIC_GUIDELINE_KG_CONTRACT
-            assert (
-                context["authority_digest"]
-                == desired_by_id[str(node_id)].digest
-            )
+            assert context["authority_digest"] == desired_by_id[str(node_id)].digest
             assert source_content_hash is None
     finally:
         kg_runtime.close_all_connections(board_id)

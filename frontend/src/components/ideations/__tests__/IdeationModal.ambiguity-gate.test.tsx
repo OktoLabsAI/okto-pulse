@@ -19,6 +19,8 @@ const apiMock = vi.hoisted(() => ({
   deleteIdeation: vi.fn(),
   updateIdeation: vi.fn(),
   setIdeationAmbiguityGateSkip: vi.fn(),
+  getValidationCycle: vi.fn(),
+  getValidationTechnicalAudit: vi.fn(),
   getCurrentQualityAssessment: vi.fn(),
   listQualityAssessments: vi.fn(),
   listQualityFindings: vi.fn(),
@@ -95,26 +97,23 @@ vi.mock('@/components/policy-compliance', () => ({
     boardId,
     entityType,
     subjectId,
+    subjectEdition,
+    presentationMode,
   }: {
     boardId: string;
     entityType: string;
     subjectId: string;
+    subjectEdition?: number;
+    presentationMode?: string;
   }) => (
     <div
       data-testid="policy-compliance-panel"
       data-board-id={boardId}
       data-entity-type={entityType}
       data-subject-id={subjectId}
+      data-subject-edition={subjectEdition}
+      data-presentation-mode={presentationMode}
     />
-  ),
-  PolicyComplianceTransitionPreview: ({
-    rejection,
-  }: {
-    rejection?: { code: string } | null;
-  }) => (
-    <div data-testid="policy-transition-preview">
-      {rejection?.code}
-    </div>
   ),
 }));
 
@@ -280,12 +279,35 @@ describe('IdeationModal Max ambiguity gate panel', () => {
       current_status: 'evaluating',
       source: 'core_sdlc_registry_v1',
       allowed_transitions: [
-        { to_status: 'done', label: 'Done', gate: 'ambiguity_resource_cognitive', blocked_reason: null, policy_compliance: false, policy_compliance_decision: null },
-        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null, policy_compliance: false, policy_compliance_decision: null },
-        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null, policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'done', label: 'Done', gate: 'ambiguity_resource_cognitive', blocked_reason: null, blocked_facts: null, policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null, blocked_facts: null, policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null, blocked_facts: null, policy_compliance: false, policy_compliance_decision: null },
       ],
     });
     apiMock.getCurrentQualityAssessment.mockResolvedValue(currentAssessment());
+    apiMock.getValidationCycle.mockResolvedValue({
+      subject_type: 'ideation',
+      subject_id: 'ideation-1',
+      edition: 1,
+      subject_status: 'evaluating',
+      visible_sections: ['ambiguity_assessment'],
+      cycle_state: 'completed',
+      current_result: {
+        result_id: 'receipt-1',
+        result_type: 'ambiguity_assessment',
+        subject_edition: 1,
+        status: 'failed',
+        summary: { score: 4, threshold: 3 },
+      },
+      previous_result_count: 0,
+      previous_results: [],
+      submission_fence: {
+        expected_validation_edition: 1,
+        expected_subject_version: 2,
+        expected_head_revision: 3,
+      },
+    });
+    apiMock.getValidationTechnicalAudit.mockResolvedValue(null);
     apiMock.listQualityAssessments.mockResolvedValue(page([]));
     apiMock.listQualityFindings.mockResolvedValue(page([]));
     apiMock.recordAmbiguityAssessment.mockResolvedValue({
@@ -297,25 +319,30 @@ describe('IdeationModal Max ambiguity gate panel', () => {
     });
   });
 
-  it('shows the server-projected score, threshold and gate result when the board gate is enabled', async () => {
+  it('shows the current-edition assessment without receipt or stale gate noise', async () => {
     render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
 
     await screen.findByText('My Ideation');
     expect(screen.queryByTestId('ambiguity-gate-panel')).not.toBeInTheDocument();
     openAmbiguityAssessment();
     const panel = await screen.findByTestId('ambiguity-gate-panel');
-    await screen.findByTestId('quality-gate-preview');
-    expect(apiMock.getCurrentQualityAssessment).toHaveBeenCalledWith(
+    await screen.findByTestId('quality-current-result');
+    expect(apiMock.getValidationCycle).toHaveBeenCalledWith(
       'ideation',
       'ideation-1',
-      'ambiguity',
-      expect.any(AbortSignal),
+      expect.objectContaining({
+        includePrevious: false,
+        signal: expect.any(AbortSignal),
+      }),
     );
-    expect(panel).toHaveTextContent('Score: 4');
-    expect(panel).toHaveTextContent('Threshold: 3');
-    expect(screen.getByTestId('quality-gate-preview-status')).toHaveTextContent(
-      'Blocked — score exceeds threshold',
-    );
+    expect(panel).toHaveTextContent('Ambiguity exceeds the allowed limit');
+    expect(screen.getByRole('img', {
+      name: 'Ambiguity score 4 out of 5',
+    })).toBeInTheDocument();
+    expect(panel).toHaveTextContent('Maximum accepted score 3');
+    expect(screen.queryByText(/stale/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/receipt-1/i)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quality-gate-preview')).not.toBeInTheDocument();
     expect(screen.getByTestId('toggle-skip-ambiguity-gate')).toHaveAttribute('role', 'switch');
     expect(screen.getByTestId('toggle-skip-ambiguity-gate')).toHaveAttribute('aria-checked', 'false');
   });
@@ -341,9 +368,17 @@ describe('IdeationModal Max ambiguity gate panel', () => {
       'data-subject-id',
       'ideation-1',
     );
+    expect(screen.getByTestId('policy-compliance-panel')).toHaveAttribute(
+      'data-subject-edition',
+      '1',
+    );
+    expect(screen.getByTestId('policy-compliance-panel')).toHaveAttribute(
+      'data-presentation-mode',
+      'lifecycle-edition',
+    );
     expect(
-      screen.getByTestId('policy-transition-preview'),
-    ).toBeInTheDocument();
+      screen.queryByTestId('policy-transition-preview'),
+    ).not.toBeInTheDocument();
   });
 
   it('does not expose Policy Compliance without its exact read capability', async () => {
@@ -428,30 +463,33 @@ describe('IdeationModal Max ambiguity gate panel', () => {
     fireEvent.click(
       screen.getByRole('tab', { name: 'Policy Compliance' }),
     );
-    expect(screen.getByTestId('policy-transition-preview'))
-      .toHaveTextContent('policy_compliance_blocked');
+    expect(screen.queryByTestId('policy-transition-preview'))
+      .not.toBeInTheDocument();
   });
 
   it('persists skip through the dedicated endpoint and refreshes state', async () => {
-    apiMock.getCurrentQualityAssessment
-      .mockResolvedValueOnce(currentAssessment())
-      .mockResolvedValue(currentAssessment('ambiguity_gate_skipped'));
     apiMock.setIdeationAmbiguityGateSkip.mockResolvedValue(ideationWith({ skip_ambiguity_gate: true }));
     const onChanged = vi.fn();
     render(<IdeationModal ideationId="ideation-1" boardId="board-1" onClose={vi.fn()} onChanged={onChanged} />);
 
     await screen.findByText('My Ideation');
     openAmbiguityAssessment();
-    await screen.findByTestId('quality-gate-preview');
+    await screen.findByTestId('quality-current-result');
     fireEvent.click(screen.getByTestId('toggle-skip-ambiguity-gate'));
 
-    await waitFor(() => expect(apiMock.setIdeationAmbiguityGateSkip).toHaveBeenCalledWith('ideation-1', true));
-    expect(onChanged).toHaveBeenCalled();
-    // Entity skip state refreshes the server preview; the client never infers it.
-    await waitFor(() => expect(screen.getByTestId('quality-gate-preview-status')).toHaveTextContent(
-      'Skipped by recorded override',
+    await waitFor(() => expect(apiMock.setIdeationAmbiguityGateSkip).toHaveBeenCalledWith(
+      'ideation-1',
+      {
+        skip_ambiguity_gate: true,
+        reason: 'Max ambiguity gate skipped from the ideation UI.',
+        expected_ideation_version: 2,
+        expected_ideation_edition: 1,
+      },
     ));
-    expect(apiMock.getCurrentQualityAssessment).toHaveBeenCalledTimes(2);
+    expect(onChanged).toHaveBeenCalled();
+    await waitFor(() => expect(
+      screen.getByTestId('toggle-skip-ambiguity-gate'),
+    ).toHaveAttribute('aria-checked', 'true'));
     expect(apiMock.updateIdeation).not.toHaveBeenCalled();
   });
 
@@ -461,7 +499,7 @@ describe('IdeationModal Max ambiguity gate panel', () => {
 
     await screen.findByText('My Ideation');
     openAmbiguityAssessment();
-    await screen.findByTestId('quality-gate-preview');
+    await screen.findByTestId('quality-current-result');
     fireEvent.click(screen.getByTestId('toggle-skip-ambiguity-gate'));
 
     await waitFor(() =>
@@ -507,7 +545,7 @@ describe('IdeationModal Max ambiguity gate panel', () => {
     openAmbiguityAssessment();
     const panel = screen.getByTestId('ambiguity-gate-panel');
     expect(panel).toHaveTextContent(
-      'The assessment and server gate preview are omitted because Quality read permission is not available.',
+      'The current assessment is omitted because Quality read permission is not available.',
     );
     expect(screen.getByTestId('toggle-skip-ambiguity-gate')).toBeInTheDocument();
     expect(apiMock.getCurrentQualityAssessment).not.toHaveBeenCalled();

@@ -3,26 +3,44 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
-from datetime import datetime
-from typing import Any, Sequence
+from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
+from typing import Any, Callable
 
-from sqlalchemy import and_, case, delete, exists, func, or_, select, update
+from sqlalchemy import Text, and_, case, cast, delete, exists, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     AmendmentHotfixRevision,
+    AppSetting,
     ArtifactDeletionTombstone,
     Board,
     CanonicalDebt,
     Card,
+    CodeEvidenceRow,
+    CodeEvidenceSpecLinkRow,
+    CodeInvestigationHeadRow,
+    CodeInvestigationReceiptRevocationRow,
+    CodeInvestigationReceiptRow,
+    ConsolidationAudit,
     ConsolidationDeadLetter,
     ConsolidationQueue,
+    DomainEventHandlerExecution,
+    DomainEventRow,
+    ExactRebuildConsolidationAckJournal,
+    ExactRebuildConsolidationCompensation,
+    GlobalUpdateOutbox,
     Ideation,
     IdeationQAItem,
     KGTakedownStateEvent,
+    KuzuNodeRef,
+    ImplementationTargetEvidenceLinkRow,
+    ImplementationTargetResolutionRow,
+    ImplementationTargetRow,
     QualityAssessmentHeadRow,
     QualityAssessmentReceiptRow,
     Refinement,
@@ -30,6 +48,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ResearchDecisionEntryRow,
     ResearchDecisionHeadRow,
     Spec,
+    SpecDependency,
     SpecQAItem,
     Sprint,
     Story,
@@ -40,6 +59,13 @@ from okto_pulse.core.ports.consolidation import (
     ConsolidationQueueRecord,
     CurrentQualityAssessmentSummary,
     CurrentResearchDecisionSummary,
+    CurrentSpecDependencyProjection,
+    ExactConsolidationAckIntegrityError,
+    ExactConsolidationAckReceipt,
+    ExactConsolidationCompensationError,
+    ExactConsolidationCompensationReceipt,
+    ExactConsolidationCompensationResult,
+    exact_consolidation_ack_receipts_sha256,
 )
 from okto_pulse.core.kg.board_source_store import (
     quality_current_head_fingerprint,
@@ -99,6 +125,256 @@ _DELETION_INTENT_SCHEMA_VERSION = 1
 _GOVERNED_DELETION_ARTIFACT_TYPES = frozenset(
     {"card", "spec", "ideation", "refinement", "sprint"}
 )
+_EXACT_ACK_JOURNAL_MAX_ROWS = 50_000
+_EXACT_SQL_CHUNK_SIZE = 400
+_EXACT_NODE_REFS_DIGEST_DOMAIN = b"okto-pulse.exact-consolidation.node-refs.v1\x00"
+_SHA256_HEX = frozenset("0123456789abcdef")
+
+
+def _exact_authority_valid(probe: Callable[[], bool]) -> bool:
+    try:
+        result = probe()
+    except BaseException:
+        return False
+    return type(result) is bool and result
+
+
+def _aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        type(value) is str
+        and len(value) == 64
+        and all(character in _SHA256_HEX for character in value)
+    )
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _same_optional_timestamp(left: object, right: object) -> bool:
+    if left is None or right is None:
+        return left is None and right is None
+    return (
+        type(left) is datetime
+        and type(right) is datetime
+        and _aware_utc(left) == _aware_utc(right)
+    )
+
+
+def _canonical_node_refs_sha256(
+    *,
+    audit: ConsolidationAudit,
+    refs: Sequence[KuzuNodeRef],
+) -> str:
+    """Bind an audit and its complete node-ref multiset to one digest domain."""
+
+    canonical_refs = sorted(
+        (
+            {
+                "board_id": str(ref.board_id),
+                "kuzu_node_id": str(ref.kuzu_node_id),
+                "kuzu_node_type": str(ref.kuzu_node_type),
+                "operation": str(ref.operation),
+                "session_id": str(ref.session_id),
+            }
+            for ref in refs
+        ),
+        key=lambda value: (
+            value["board_id"],
+            value["session_id"],
+            value["kuzu_node_type"],
+            value["kuzu_node_id"],
+            value["operation"],
+        ),
+    )
+    payload = {
+        "agent_id": str(audit.agent_id),
+        "artifact_id": str(audit.artifact_id),
+        "artifact_type": str(audit.artifact_type),
+        "audit_content_hash": str(audit.content_hash),
+        "board_id": str(audit.board_id),
+        "committed_at": _aware_utc(audit.committed_at).isoformat(),
+        "edges_added": int(audit.edges_added),
+        "nodes_added": int(audit.nodes_added),
+        "nodes_superseded": int(audit.nodes_superseded),
+        "nodes_updated": int(audit.nodes_updated),
+        "refs": canonical_refs,
+        "schema": "exact_consolidation_node_refs.v1",
+        "session_id": str(audit.session_id),
+        "started_at": _aware_utc(audit.started_at).isoformat(),
+        "summary_text": audit.summary_text,
+    }
+    rendered = _canonical_json(payload).encode("utf-8")
+    digest = hashlib.sha256()
+    digest.update(_EXACT_NODE_REFS_DIGEST_DOMAIN)
+    digest.update(rendered)
+    return digest.hexdigest()
+
+
+def _exact_ack_receipt_from_row(
+    row: ExactRebuildConsolidationAckJournal,
+) -> ExactConsolidationAckReceipt:
+    try:
+        return ExactConsolidationAckReceipt.from_payload(
+            {
+                "schema": "exact_consolidation_ack_receipt.v2",
+                "queue_id": row.queue_id,
+                "board_id": row.board_id,
+                "source": row.source,
+                "reservation_lineage_id": row.reservation_lineage_id,
+                "work_kind": row.work_kind,
+                "artifact_type": row.artifact_type,
+                "artifact_id": row.artifact_id,
+                "generation": row.generation,
+                "membership_source_ref": row.membership_source_ref,
+                "membership_source_version": row.membership_source_version,
+                "membership_content_hash": row.membership_content_hash,
+                "audit_content_hash": row.audit_content_hash,
+                "consolidation_session_id": row.consolidation_session_id,
+                "outbox_event_id": row.outbox_event_id,
+                "generation_event_id": row.generation_event_id,
+                "previous_materialization_generation": (
+                    row.previous_materialization_generation
+                ),
+                "materialization_generation": row.materialization_generation,
+                "node_ref_count": row.node_ref_count,
+                "node_refs_sha256": row.node_refs_sha256,
+                "receipt_sha256": row.receipt_sha256,
+            }
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ExactConsolidationCompensationError(
+            "exact_consolidation_ack_journal_invalid"
+        ) from exc
+
+
+def _ordered_exact_ack_receipts(
+    receipts: Sequence[ExactConsolidationAckReceipt],
+    *,
+    board_id: str,
+    source: str,
+    reservation_lineage_id: str,
+) -> tuple[ExactConsolidationAckReceipt, ...]:
+    if len(receipts) > _EXACT_ACK_JOURNAL_MAX_ROWS:
+        raise ExactConsolidationCompensationError(
+            "exact_consolidation_ack_journal_limit_exceeded"
+        )
+    if not receipts:
+        return ()
+    if any(type(receipt) is not ExactConsolidationAckReceipt for receipt in receipts):
+        raise ExactConsolidationCompensationError(
+            "exact_consolidation_ack_journal_invalid"
+        )
+
+    queue_ids: set[str] = set()
+    session_ids: set[str] = set()
+    outbox_ids: set[str] = set()
+    event_ids: set[str] = set()
+    generations: set[str] = set()
+    by_previous: dict[str, ExactConsolidationAckReceipt] = {}
+    for receipt in receipts:
+        if (
+            receipt.board_id != board_id
+            or receipt.source != source
+            or receipt.reservation_lineage_id != reservation_lineage_id
+            or receipt.work_kind != "consolidate"
+            or receipt.queue_id in queue_ids
+            or receipt.consolidation_session_id in session_ids
+            or receipt.outbox_event_id in outbox_ids
+            or receipt.generation_event_id in event_ids
+            or receipt.materialization_generation in generations
+            or receipt.previous_materialization_generation in by_previous
+        ):
+            raise ExactConsolidationCompensationError(
+                "exact_consolidation_ack_journal_invalid"
+            )
+        queue_ids.add(receipt.queue_id)
+        session_ids.add(receipt.consolidation_session_id)
+        outbox_ids.add(receipt.outbox_event_id)
+        event_ids.add(receipt.generation_event_id)
+        generations.add(receipt.materialization_generation)
+        by_previous[receipt.previous_materialization_generation] = receipt
+
+    starts = [
+        receipt
+        for receipt in receipts
+        if receipt.previous_materialization_generation not in generations
+    ]
+    if len(starts) != 1:
+        raise ExactConsolidationCompensationError(
+            "exact_consolidation_ack_journal_chain_invalid"
+        )
+    ordered: list[ExactConsolidationAckReceipt] = []
+    visited_queue_ids: set[str] = set()
+    current = starts[0]
+    while True:
+        if current.queue_id in visited_queue_ids:
+            raise ExactConsolidationCompensationError(
+                "exact_consolidation_ack_journal_chain_invalid"
+            )
+        ordered.append(current)
+        visited_queue_ids.add(current.queue_id)
+        successor = by_previous.get(current.materialization_generation)
+        if successor is None:
+            break
+        current = successor
+    if len(ordered) != len(receipts):
+        raise ExactConsolidationCompensationError(
+            "exact_consolidation_ack_journal_chain_invalid"
+        )
+    return tuple(ordered)
+
+
+def _exact_compensation_receipt_from_row(
+    row: ExactRebuildConsolidationCompensation,
+) -> ExactConsolidationCompensationReceipt:
+    try:
+        compensated_at = row.compensated_at
+        if type(compensated_at) is not datetime:
+            raise TypeError
+        return ExactConsolidationCompensationReceipt(
+            board_id=str(row.board_id),
+            source=str(row.source),
+            reservation_lineage_id=str(row.reservation_lineage_id),
+            baseline_materialization_generation=str(
+                row.baseline_materialization_generation
+            ),
+            terminal_materialization_generation=str(
+                row.terminal_materialization_generation
+            ),
+            ack_count=int(row.ack_count),
+            node_ref_count=int(row.node_ref_count),
+            ack_receipts_sha256=str(row.ack_receipts_sha256),
+            audit_session_ids=tuple(row.audit_session_ids),
+            outbox_event_ids=tuple(row.outbox_event_ids),
+            generation_event_ids=tuple(row.generation_event_ids),
+            compensation_id=str(row.compensation_id),
+            compensated_at=_aware_utc(compensated_at),
+            receipt_sha256=str(row.receipt_sha256),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ExactConsolidationCompensationError(
+            "exact_consolidation_compensation_receipt_invalid"
+        ) from exc
+
+
+def _chunked(values: Sequence[str]) -> tuple[tuple[str, ...], ...]:
+    return tuple(
+        tuple(values[offset : offset + _EXACT_SQL_CHUNK_SIZE])
+        for offset in range(0, len(values), _EXACT_SQL_CHUNK_SIZE)
+    )
 
 
 def _event_trigger_marker(event_id: str) -> str:
@@ -173,12 +449,36 @@ def _queue_record(row: Any) -> ConsolidationQueueRecord:
         claimed_by_session_id=row.claimed_by_session_id,
         triggered_at=row.triggered_at,
         priority=str(getattr(row.priority, "value", row.priority)),
+        source=str(getattr(row, "source", None) or "state_transition"),
         work_kind=str(row.work_kind),
         generation=int(row.generation or 0),
         payload=row.payload,
         delete_event_id=row.delete_event_id,
         claim_token=row.claim_token,
+        triggered_by_event=row.triggered_by_event,
     )
+
+
+def _deferred_rebuild_live_intent(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, Mapping):
+        return None
+    candidate = payload.get("_rebuild_deferred_live")
+    if not isinstance(candidate, Mapping):
+        return None
+    source = str(candidate.get("source") or "").strip()
+    if not source or source.startswith("rebuild:"):
+        raise RuntimeError("rebuild_deferred_live_source_invalid")
+    live_payload = candidate.get("payload")
+    if live_payload is not None and not isinstance(live_payload, Mapping):
+        raise RuntimeError("rebuild_deferred_live_payload_invalid")
+    triggered_by_event = candidate.get("triggered_by_event")
+    return {
+        "source": source,
+        "triggered_by_event": (
+            str(triggered_by_event) if triggered_by_event is not None else None
+        ),
+        "payload": dict(live_payload) if live_payload is not None else None,
+    }
 
 
 async def _stage_intent_created_transition(
@@ -236,9 +536,285 @@ def _apply_queue(row: Any, record: ConsolidationQueueRecord) -> None:
 
 
 class CommunitySqlAlchemyConsolidationPersistence:
+    async def _load_code_investigation_receipt(
+        self,
+        context: Any,
+        *,
+        artifact_id: str,
+    ) -> dict[str, Any] | None:
+        row = (
+            await context.execute(
+                select(
+                    CodeInvestigationReceiptRow,
+                    CodeInvestigationReceiptRevocationRow,
+                    CodeInvestigationHeadRow,
+                )
+                .outerjoin(
+                    CodeInvestigationReceiptRevocationRow,
+                    CodeInvestigationReceiptRevocationRow.receipt_id
+                    == CodeInvestigationReceiptRow.id,
+                )
+                .outerjoin(
+                    CodeInvestigationHeadRow,
+                    and_(
+                        CodeInvestigationHeadRow.board_id
+                        == CodeInvestigationReceiptRow.board_id,
+                        CodeInvestigationHeadRow.source_ref
+                        == CodeInvestigationReceiptRow.source_ref,
+                    ),
+                )
+                .where(CodeInvestigationReceiptRow.id == artifact_id)
+            )
+        ).first()
+        if row is None:
+            return None
+        receipt, revocation, head = row
+        status = "accepted"
+        if revocation is not None:
+            status = "revoked"
+        elif receipt.trust_level == "conflicted" or (
+            head is not None
+            and head.latest_receipt_id == receipt.id
+            and head.state == "conflicted"
+        ):
+            status = "conflicted"
+        return {
+            "id": receipt.id,
+            "board_id": receipt.board_id,
+            "status": status,
+            "investigation_source_ref": receipt.source_ref,
+            "attestor_actor_id": receipt.attestor_actor_id,
+            "declared_revision": receipt.declared_revision,
+            "workspace_state_id": receipt.workspace_state_id,
+            "trust_level": receipt.trust_level,
+            "outcome": receipt.outcome,
+            "generation": receipt.generation,
+            "payload_sha256": receipt.payload_sha256,
+            "content_hash": receipt.payload_sha256,
+        }
+
+    async def _load_code_evidence(
+        self,
+        context: Any,
+        *,
+        artifact_id: str,
+    ) -> dict[str, Any] | None:
+        row = (
+            await context.execute(
+                select(CodeEvidenceRow, CodeInvestigationReceiptRow)
+                .join(
+                    CodeInvestigationReceiptRow,
+                    CodeInvestigationReceiptRow.id
+                    == CodeEvidenceRow.investigation_receipt_id,
+                )
+                .where(CodeEvidenceRow.id == artifact_id)
+            )
+        ).first()
+        if row is None:
+            return None
+        evidence, receipt = row
+        if (
+            evidence.board_id != receipt.board_id
+            or evidence.source_ref != receipt.source_ref
+        ):
+            raise RuntimeError("code_evidence_projection_receipt_scope_mismatch")
+        links = tuple(
+            (
+                await context.execute(
+                    select(CodeEvidenceSpecLinkRow)
+                    .where(CodeEvidenceSpecLinkRow.evidence_id == evidence.id)
+                    .order_by(CodeEvidenceSpecLinkRow.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return {
+            "id": evidence.id,
+            "board_id": evidence.board_id,
+            "lifecycle_status": evidence.lifecycle_status,
+            "investigation_receipt_id": evidence.investigation_receipt_id,
+            "investigation_source_ref": evidence.source_ref,
+            "declared_revision": evidence.declared_revision,
+            "workspace_state_id": evidence.workspace_state_id,
+            "relative_path": evidence.relative_path,
+            "qualified_symbol": evidence.qualified_symbol,
+            "symbol_kind": evidence.symbol_kind,
+            "selector_kind": evidence.selector_kind,
+            "snapshot_line_start": evidence.snapshot_line_start,
+            "snapshot_line_end": evidence.snapshot_line_end,
+            "declared_source_content_sha256": (evidence.declared_source_content_sha256),
+            "evidence_type": evidence.evidence_type,
+            "claim": evidence.claim,
+            "supersedes_evidence_id": evidence.supersedes_evidence_id,
+            "content_hash": evidence.payload_sha256,
+            "spec_links": [
+                {
+                    "id": link.id,
+                    "spec_id": link.spec_id,
+                    "entity_type": link.entity_type,
+                    "entity_id": link.entity_id,
+                    "relation_type": link.relation_type,
+                }
+                for link in links
+            ],
+        }
+
+    async def _load_implementation_target(
+        self,
+        context: Any,
+        *,
+        artifact_id: str,
+    ) -> dict[str, Any] | None:
+        row = (
+            await context.execute(
+                select(
+                    ImplementationTargetRow,
+                    Card,
+                    ImplementationTargetResolutionRow,
+                )
+                .join(Card, Card.id == ImplementationTargetRow.card_id)
+                .outerjoin(
+                    ImplementationTargetResolutionRow,
+                    and_(
+                        ImplementationTargetResolutionRow.id
+                        == ImplementationTargetRow.current_resolution_id,
+                        ImplementationTargetResolutionRow.target_id
+                        == ImplementationTargetRow.id,
+                        ImplementationTargetResolutionRow.board_id
+                        == ImplementationTargetRow.board_id,
+                        ImplementationTargetResolutionRow.target_revision
+                        == ImplementationTargetRow.revision,
+                    ),
+                )
+                .where(ImplementationTargetRow.id == artifact_id)
+            )
+        ).first()
+        if row is None:
+            return None
+        target, card, resolution = row
+        if target.board_id != card.board_id:
+            raise RuntimeError("implementation_target_projection_card_scope_mismatch")
+        if target.current_resolution_id is not None and resolution is None:
+            raise RuntimeError("implementation_target_projection_resolution_dangling")
+        if resolution is not None and resolution.source_ref != target.source_ref:
+            raise RuntimeError("implementation_target_projection_source_mismatch")
+
+        evidence_links = tuple(
+            (
+                await context.execute(
+                    select(ImplementationTargetEvidenceLinkRow)
+                    .where(ImplementationTargetEvidenceLinkRow.target_id == target.id)
+                    .order_by(ImplementationTargetEvidenceLinkRow.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        overlap_target_ids: list[str] = []
+        if target.lifecycle_status == "active":
+            from okto_pulse.community.adapters.sqlalchemy_code_traceability import (
+                CommunitySqlAlchemyCodeTraceabilityStore,
+            )
+            from okto_pulse.core.ports.code_traceability import TargetOverlapQuery
+
+            overlaps = await CommunitySqlAlchemyCodeTraceabilityStore(
+                context
+            ).overlap_report(
+                TargetOverlapQuery(
+                    board_id=target.board_id,
+                    card_id=target.card_id,
+                    include_informational=True,
+                )
+            )
+            overlap_target_ids = sorted(
+                {
+                    (
+                        overlap.target_b_id
+                        if overlap.target_a_id == target.id
+                        else overlap.target_a_id
+                    )
+                    for overlap in overlaps
+                    if target.id in {overlap.target_a_id, overlap.target_b_id}
+                }
+            )
+
+        card_type = getattr(card.card_type, "value", card.card_type)
+        payload: dict[str, Any] = {
+            "id": target.id,
+            "board_id": target.board_id,
+            "card_id": target.card_id,
+            "card_node_type": "Bug" if card_type == "bug" else "Entity",
+            "investigation_source_ref": target.source_ref,
+            "selector_kind": target.selector_kind,
+            "relative_path_hint": target.relative_path_hint,
+            "qualified_symbol": target.qualified_symbol,
+            "symbol_kind": target.symbol_kind,
+            "role": target.role,
+            "intent": target.intent,
+            "lifecycle_status": target.lifecycle_status,
+            "revision": target.revision,
+            "baseline_evidence_id": target.baseline_evidence_id,
+            "resolution_state": None,
+            "investigation_receipt_id": None,
+            "declared_revision": None,
+            "workspace_state_id": None,
+            "selector_fingerprint": None,
+            "resolved_relative_path": None,
+            "resolved_qualified_symbol": None,
+            "resolved_symbol_kind": None,
+            "resolved_line_start": None,
+            "resolved_line_end": None,
+            "payload_sha256": None,
+            "content_hash": None,
+            "evidence_links": [
+                {
+                    "id": link.id,
+                    "evidence_id": link.evidence_id,
+                    "relation_type": link.relation_type,
+                }
+                for link in evidence_links
+            ],
+            "overlap_target_ids": overlap_target_ids,
+        }
+        if resolution is not None:
+            payload.update(
+                {
+                    "resolution_state": resolution.state,
+                    "investigation_receipt_id": (resolution.investigation_receipt_id),
+                    "declared_revision": resolution.declared_revision,
+                    "workspace_state_id": resolution.workspace_state_id,
+                    "selector_fingerprint": resolution.selector_fingerprint,
+                    "resolved_relative_path": resolution.resolved_relative_path,
+                    "resolved_qualified_symbol": (resolution.resolved_qualified_symbol),
+                    "resolved_symbol_kind": resolution.resolved_symbol_kind,
+                    "resolved_line_start": resolution.resolved_line_start,
+                    "resolved_line_end": resolution.resolved_line_end,
+                    "payload_sha256": resolution.payload_sha256,
+                    "content_hash": resolution.payload_sha256,
+                }
+            )
+        return payload
+
     async def load_artifact(
         self, context: Any, *, artifact_type: str, artifact_id: str
     ) -> Any | None:
+        if artifact_type == "code_investigation_receipt":
+            return await self._load_code_investigation_receipt(
+                context,
+                artifact_id=artifact_id,
+            )
+        if artifact_type == "code_evidence":
+            return await self._load_code_evidence(
+                context,
+                artifact_id=artifact_id,
+            )
+        if artifact_type == "implementation_target":
+            return await self._load_implementation_target(
+                context,
+                artifact_id=artifact_id,
+            )
         model = _MODELS.get(artifact_type)
         if model is None:
             return None
@@ -357,15 +933,14 @@ class CommunitySqlAlchemyConsolidationPersistence:
                     taxonomy_digest=receipt.taxonomy_digest,
                     policy_digest=receipt.policy_digest,
                     input_digest=receipt.input_digest,
-                    canonicalization_version=(
-                        receipt.canonicalization_version
-                    ),
+                    canonicalization_version=(receipt.canonicalization_version),
                 )
                 currentness = evaluate_quality_projection_currentness(
                     board_id=board_id,
                     subject_type=artifact_type,
                     subject_id=artifact_id,
                     assessed_subject_version=receipt.subject_version,
+                    assessed_subject_edition=receipt.subject_edition,
                     assessed_digests=assessed_digests,
                     assessment_kind=receipt.assessment_kind,
                     origin=receipt.origin,
@@ -385,6 +960,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
                 "subject_type": receipt.subject_type,
                 "subject_id": receipt.subject_id,
                 "subject_version": receipt.subject_version,
+                "subject_edition": receipt.subject_edition,
                 "assessment_kind": receipt.assessment_kind,
                 "receipt_id": receipt.id,
                 "head_revision": head.revision,
@@ -415,6 +991,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
                     subject_type=receipt.subject_type,
                     subject_id=receipt.subject_id,
                     subject_version=receipt.subject_version,
+                    subject_edition=receipt.subject_edition,
                     assessment_kind=receipt.assessment_kind,
                     receipt_id=receipt.id,
                     head_revision=head.revision,
@@ -431,9 +1008,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
                     taxonomy_digest=receipt.taxonomy_digest,
                     policy_digest=receipt.policy_digest,
                     input_digest=receipt.input_digest,
-                    canonicalization_version=(
-                        receipt.canonicalization_version
-                    ),
+                    canonicalization_version=(receipt.canonicalization_version),
                     ruleset_version=receipt.ruleset_version,
                     taxonomy_version=receipt.taxonomy_version,
                     analyzer_version=receipt.analyzer_version,
@@ -444,6 +1019,55 @@ class CommunitySqlAlchemyConsolidationPersistence:
                         quality_current_head_fingerprint(fingerprint_payload)
                     ),
                 )
+            )
+
+        if artifact_type == "spec":
+            prerequisite = aliased(Spec)
+            dependency_rows = (
+                await context.execute(
+                    select(SpecDependency, prerequisite)
+                    .join(
+                        prerequisite,
+                        prerequisite.id == SpecDependency.prerequisite_spec_id,
+                    )
+                    .where(
+                        SpecDependency.board_id == board_id,
+                        SpecDependency.dependent_spec_id == artifact_id,
+                        SpecDependency.active.is_(True),
+                    )
+                    .order_by(
+                        SpecDependency.prerequisite_spec_ref.asc(),
+                        SpecDependency.id.asc(),
+                    )
+                )
+            ).all()
+            dependencies: list[CurrentSpecDependencyProjection] = []
+            for dependency, target in dependency_rows:
+                target_id = str(dependency.prerequisite_spec_id or "")
+                if (
+                    not target_id
+                    or target_id != str(dependency.prerequisite_spec_ref)
+                    or str(target.id) != target_id
+                    or str(target.board_id) != board_id
+                    or str(dependency.dependent_spec_id) != artifact_id
+                ):
+                    raise RuntimeError("spec_dependency_projection_scope_mismatch")
+                dependencies.append(
+                    CurrentSpecDependencyProjection(
+                        dependency_id=str(dependency.id),
+                        board_id=board_id,
+                        dependent_spec_id=artifact_id,
+                        prerequisite_spec_id=target_id,
+                        prerequisite_title=str(target.title or ""),
+                        prerequisite_status=str(
+                            getattr(target.status, "value", target.status)
+                        ),
+                        prerequisite_version=int(target.version),
+                    )
+                )
+            return ConsolidationProjectionInputs(
+                quality_assessments=tuple(quality_assessments),
+                spec_dependencies=tuple(dependencies),
             )
 
         if artifact_type != "refinement":
@@ -475,9 +1099,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
         research_decisions: list[CurrentResearchDecisionSummary] = []
         for head, entry in research_rows:
             if entry is None:
-                raise RuntimeError(
-                    "research_decision_projection_head_dangling"
-                )
+                raise RuntimeError("research_decision_projection_head_dangling")
             if (
                 entry.id != head.current_entry_id
                 or entry.ledger_id != head.ledger_id
@@ -486,9 +1108,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
                 or entry.refinement_version != head.refinement_version
                 or entry.status != head.status
             ):
-                raise RuntimeError(
-                    "research_decision_projection_scope_mismatch"
-                )
+                raise RuntimeError("research_decision_projection_scope_mismatch")
             evidence_refs = tuple(str(value) for value in entry.evidence_refs or ())
             alternatives = tuple(str(value) for value in entry.alternatives or ())
             fingerprint_payload = {
@@ -540,9 +1160,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
                     created_at=entry.created_at,
                     updated_at=head.updated_at,
                     projection_fingerprint=(
-                        research_decision_current_head_fingerprint(
-                            fingerprint_payload
-                        )
+                        research_decision_current_head_fingerprint(fingerprint_payload)
                     ),
                 )
             )
@@ -626,14 +1244,11 @@ class CommunitySqlAlchemyConsolidationPersistence:
                     select(ConsolidationQueue)
                     .where(
                         ConsolidationQueue.status == "pending",
-                        or_(
-                            ConsolidationQueue.next_retry_at.is_(None),
-                            ConsolidationQueue.next_retry_at <= now,
-                        ),
                     )
                     .order_by(
                         ConsolidationQueue.priority.asc(),
                         ConsolidationQueue.triggered_at.asc(),
+                        ConsolidationQueue.id.asc(),
                     )
                 )
             )
@@ -641,6 +1256,213 @@ class CommunitySqlAlchemyConsolidationPersistence:
             .all()
         )
         return tuple(_queue_record(row) for row in rows)
+
+    async def list_ready_pending_exact(
+        self,
+        context: Any,
+        *,
+        now,
+        board_id: str,
+        source: str,
+        work_kind: str,
+    ) -> tuple[ConsolidationQueueRecord, ...]:
+        """List one recovery fence without exposing unrelated ready work."""
+
+        row = (
+            (
+                await context.execute(
+                    select(ConsolidationQueue)
+                    .where(
+                        ConsolidationQueue.status.in_(("pending", "claimed")),
+                        ConsolidationQueue.board_id == board_id,
+                        ConsolidationQueue.source == source,
+                        ConsolidationQueue.work_kind == work_kind,
+                    )
+                    .order_by(
+                        ConsolidationQueue.priority.asc(),
+                        ConsolidationQueue.triggered_at.asc(),
+                        ConsolidationQueue.id.asc(),
+                    )
+                    .limit(1)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if row is None or row.status != "pending":
+            return ()
+        comparable_now = now
+        if row.next_retry_at is not None:
+            if row.next_retry_at.tzinfo is None and now.tzinfo is not None:
+                comparable_now = now.replace(tzinfo=None)
+            if row.next_retry_at > comparable_now:
+                return ()
+        return (_queue_record(row),)
+
+    async def list_pending_exact(
+        self,
+        context: Any,
+        *,
+        board_id: str,
+        source: str,
+        work_kind: str,
+    ) -> tuple[ConsolidationQueueRecord, ...]:
+        """List every pending member of one exact recovery fence.
+
+        Unlike the ready-head listing, this inventory deliberately includes
+        delayed rows.  Core uses it to replay durable exact dispositions
+        before attempting another claim, so order must match the claim head
+        order and no unrelated board/source may be exposed.
+        """
+
+        rows = (
+            (
+                await context.execute(
+                    select(ConsolidationQueue)
+                    .where(
+                        ConsolidationQueue.status == "pending",
+                        ConsolidationQueue.board_id == board_id,
+                        ConsolidationQueue.source == source,
+                        ConsolidationQueue.work_kind == work_kind,
+                    )
+                    .order_by(
+                        ConsolidationQueue.priority.asc(),
+                        ConsolidationQueue.triggered_at.asc(),
+                        ConsolidationQueue.id.asc(),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return tuple(_queue_record(row) for row in rows)
+
+    async def list_claimed_exact(
+        self,
+        context: Any,
+        *,
+        board_id: str,
+        source: str,
+        work_kind: str,
+    ) -> tuple[ConsolidationQueueRecord, ...]:
+        """List claimed membership for one offline recovery reservation."""
+
+        rows = (
+            (
+                await context.execute(
+                    select(ConsolidationQueue)
+                    .where(
+                        ConsolidationQueue.status == "claimed",
+                        ConsolidationQueue.board_id == board_id,
+                        ConsolidationQueue.source == source,
+                        ConsolidationQueue.work_kind == work_kind,
+                    )
+                    .order_by(
+                        ConsolidationQueue.priority.asc(),
+                        ConsolidationQueue.triggered_at.asc(),
+                        ConsolidationQueue.id.asc(),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return tuple(_queue_record(row) for row in rows)
+
+    async def claim_ready_pending_exact(
+        self,
+        context: Any,
+        *,
+        entry_id: str,
+        board_id: str,
+        source: str,
+        work_kind: str,
+        generation: int,
+        now,
+        claim_timeout_at,
+        worker_id: str,
+        claim_token: str,
+    ) -> ConsolidationQueueRecord | None:
+        """CAS an exact recovery head after listing and before graph work."""
+
+        active_head_id = (
+            select(ConsolidationQueue.id)
+            .where(
+                ConsolidationQueue.status.in_(("pending", "claimed")),
+                ConsolidationQueue.board_id == board_id,
+                ConsolidationQueue.source == source,
+                ConsolidationQueue.work_kind == work_kind,
+            )
+            .order_by(
+                ConsolidationQueue.priority.asc(),
+                ConsolidationQueue.triggered_at.asc(),
+                ConsolidationQueue.id.asc(),
+            )
+            .limit(1)
+            .scalar_subquery()
+        )
+        row = (
+            await context.execute(
+                update(ConsolidationQueue)
+                .where(
+                    ConsolidationQueue.id == entry_id,
+                    ConsolidationQueue.id == active_head_id,
+                    ConsolidationQueue.status == "pending",
+                    ConsolidationQueue.board_id == board_id,
+                    ConsolidationQueue.source == source,
+                    ConsolidationQueue.work_kind == work_kind,
+                    ConsolidationQueue.generation == generation,
+                    or_(
+                        ConsolidationQueue.next_retry_at.is_(None),
+                        ConsolidationQueue.next_retry_at <= now,
+                    ),
+                )
+                .values(
+                    status="claimed",
+                    claimed_at=now,
+                    claim_timeout_at=claim_timeout_at,
+                    worker_id=worker_id,
+                    claimed_by_session_id=worker_id,
+                    claim_token=claim_token,
+                )
+                .returning(ConsolidationQueue)
+                .execution_options(synchronize_session=False)
+            )
+        ).scalar_one_or_none()
+        return _queue_record(row) if row is not None else None
+
+    async def board_administrative_rebuild_source(
+        self,
+        context: Any,
+        *,
+        board_id: str,
+    ) -> str | None:
+        """Read the canonical reservation used by rebuild and erasure.
+
+        ``context`` is intentionally accepted for the Core persistence seam;
+        the reservation itself is owned by the configured coordination port,
+        not by the relational transaction.
+        """
+
+        del context
+        from okto_pulse.core.kg.single_writer_lock import (
+            KGAdministrativeOperationReservation,
+        )
+
+        reservation = KGAdministrativeOperationReservation().inspect(board_id=board_id)
+        if (
+            reservation is None
+            or reservation.expires_at_epoch <= datetime.now(timezone.utc).timestamp()
+        ):
+            return None
+        prefix = "kg02_rebuild_reservation:"
+        if reservation.operation.startswith(prefix):
+            manifest_ref = reservation.operation.removeprefix(prefix)
+            if manifest_ref:
+                return f"rebuild:{manifest_ref}"
+        # A different/invalid administrative operation still reserves the
+        # board, but authorizes no queue membership.
+        return ""
 
     async def get_queue_entry(
         self, context: Any, *, entry_id: str
@@ -658,6 +1480,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
         artifact_type: str,
         artifact_id: str,
         work_kind: str,
+        source: str,
         generation: int,
         delete_event_id: str | None,
     ) -> bool:
@@ -674,6 +1497,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
             ConsolidationQueue.artifact_type == artifact_type,
             ConsolidationQueue.artifact_id == artifact_id,
             ConsolidationQueue.work_kind == work_kind,
+            ConsolidationQueue.source == source,
             ConsolidationQueue.generation == generation,
             (
                 ConsolidationQueue.delete_event_id.is_(None)
@@ -736,6 +1560,9 @@ class CommunitySqlAlchemyConsolidationPersistence:
         *,
         entry_id: str,
         claim_token: str,
+        board_id: str,
+        source: str,
+        work_kind: str,
         generation: int,
         delete_event_id: str | None,
     ) -> bool:
@@ -748,16 +1575,1329 @@ class CommunitySqlAlchemyConsolidationPersistence:
             if delete_event_id is None
             else ConsolidationQueue.delete_event_id == delete_event_id
         )
+        claim_predicates = (
+            ConsolidationQueue.id == entry_id,
+            ConsolidationQueue.status == "claimed",
+            ConsolidationQueue.claim_token == claim_token,
+            ConsolidationQueue.board_id == board_id,
+            ConsolidationQueue.source == source,
+            ConsolidationQueue.work_kind == work_kind,
+            ConsolidationQueue.generation == generation,
+            delete_event_predicate,
+        )
+        claimed = (
+            await context.execute(
+                select(ConsolidationQueue).where(*claim_predicates).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if claimed is None:
+            return False
+        deferred_live = (
+            _deferred_rebuild_live_intent(claimed.payload)
+            if source.startswith("rebuild:")
+            else None
+        )
+        if deferred_live is not None:
+            result = await context.execute(
+                update(ConsolidationQueue)
+                .where(*claim_predicates)
+                .values(
+                    status="pending",
+                    attempts=0,
+                    last_error=None,
+                    next_retry_at=None,
+                    source=deferred_live["source"],
+                    triggered_by_event=deferred_live["triggered_by_event"],
+                    payload=deferred_live["payload"],
+                    triggered_at=func.now(),
+                    claimed_by_session_id=None,
+                    claim_token=None,
+                    claimed_at=None,
+                    worker_id=None,
+                    claim_timeout_at=None,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            return int(result.rowcount or 0) == 1
         result = await context.execute(
             delete(ConsolidationQueue).where(
                 ConsolidationQueue.id == entry_id,
                 ConsolidationQueue.status == "claimed",
                 ConsolidationQueue.claim_token == claim_token,
+                ConsolidationQueue.board_id == board_id,
+                ConsolidationQueue.source == source,
+                ConsolidationQueue.work_kind == work_kind,
                 ConsolidationQueue.generation == generation,
                 delete_event_predicate,
             )
         )
         return int(result.rowcount or 0) == 1
+
+    async def ack_exact_rebuild_commit(
+        self,
+        context: Any,
+        *,
+        entry_id: str,
+        claim_token: str,
+        board_id: str,
+        artifact_type: str,
+        artifact_id: str,
+        source: str,
+        work_kind: str,
+        generation: int,
+        delete_event_id: str | None,
+        reservation_lineage_id: str,
+        membership_source_ref: str,
+        membership_source_version: str,
+        membership_content_hash: str,
+        consolidation_session_id: str,
+        expected_attempts: int,
+        expected_last_error: str | None,
+        expected_next_retry_at: datetime | None,
+        expected_payload: dict[str, Any],
+        reservation_authority_probe: Callable[[], bool],
+    ) -> ExactConsolidationAckReceipt | None:
+        """Bind one exact relational commit to its queue ACK atomically."""
+
+        if not callable(reservation_authority_probe):
+            raise TypeError("exact_consolidation_reservation_authority_required")
+        required_strings = (
+            entry_id,
+            claim_token,
+            board_id,
+            artifact_type,
+            artifact_id,
+            source,
+            work_kind,
+            reservation_lineage_id,
+            membership_source_ref,
+            membership_source_version,
+            membership_content_hash,
+            consolidation_session_id,
+        )
+        if (
+            any(type(value) is not str or not value for value in required_strings)
+            or not source.startswith("rebuild:")
+            or work_kind != "consolidate"
+            or type(generation) is not int
+            or generation != 0
+            or delete_event_id is not None
+            or not _is_sha256(reservation_lineage_id)
+            or not _is_sha256(membership_content_hash)
+            or type(expected_attempts) is not int
+            or expected_attempts < 0
+            or (
+                expected_last_error is not None and type(expected_last_error) is not str
+            )
+            or (
+                expected_next_retry_at is not None
+                and type(expected_next_retry_at) is not datetime
+            )
+            or type(expected_payload) is not dict
+        ):
+            raise ValueError("exact_consolidation_ack_identity_invalid")
+        try:
+            expected_payload_json = _canonical_json(expected_payload)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("exact_consolidation_ack_payload_invalid") from exc
+        if not _exact_authority_valid(reservation_authority_probe):
+            return None
+
+        # The audit adapter normally flushed these rows already. Keep the
+        # boundary correct for any equivalent borrowed transaction context.
+        await context.flush()
+        if not _exact_authority_valid(reservation_authority_probe):
+            return None
+
+        last_error_predicate = (
+            ConsolidationQueue.last_error.is_(None)
+            if expected_last_error is None
+            else ConsolidationQueue.last_error == expected_last_error
+        )
+        retry_predicate = (
+            ConsolidationQueue.next_retry_at.is_(None)
+            if expected_next_retry_at is None
+            else ConsolidationQueue.next_retry_at == expected_next_retry_at
+        )
+        deletion_fence = ~exists(
+            select(1).where(
+                ArtifactDeletionTombstone.board_id == board_id,
+                ArtifactDeletionTombstone.artifact_type == artifact_type,
+                ArtifactDeletionTombstone.artifact_id == artifact_id,
+            )
+        )
+        claim_predicates = (
+            ConsolidationQueue.id == entry_id,
+            ConsolidationQueue.status == "claimed",
+            ConsolidationQueue.claim_token == claim_token,
+            ConsolidationQueue.board_id == board_id,
+            ConsolidationQueue.artifact_type == artifact_type,
+            ConsolidationQueue.artifact_id == artifact_id,
+            ConsolidationQueue.source == source,
+            ConsolidationQueue.work_kind == work_kind,
+            ConsolidationQueue.generation == generation,
+            ConsolidationQueue.delete_event_id.is_(None),
+            ConsolidationQueue.attempts == expected_attempts,
+            last_error_predicate,
+            retry_predicate,
+            deletion_fence,
+        )
+        claimed_result = (
+            await context.execute(
+                select(
+                    ConsolidationQueue,
+                    cast(ConsolidationQueue.payload, Text).label(
+                        "claimed_payload_text"
+                    ),
+                )
+                .where(*claim_predicates)
+                .with_for_update()
+            )
+        ).one_or_none()
+        if claimed_result is None:
+            return None
+        claimed, claimed_payload_text = claimed_result
+        if (
+            type(claimed.payload) is not dict
+            or type(claimed_payload_text) is not str
+            or _canonical_json(claimed.payload) != expected_payload_json
+            or type(claimed.attempts) is not int
+            or claimed.attempts != expected_attempts
+            or type(claimed.last_error) is not type(expected_last_error)
+            or claimed.last_error != expected_last_error
+            or not _same_optional_timestamp(
+                claimed.next_retry_at, expected_next_retry_at
+            )
+        ):
+            return None
+        membership = claimed.payload.get("_rebuild_membership")
+        expected_membership = {
+            "content_hash": membership_content_hash,
+            "run_id": source.removeprefix("rebuild:"),
+            "source_ref": membership_source_ref,
+            "source_version": membership_source_version,
+        }
+        if (
+            type(membership) is not dict
+            or set(membership) != set(expected_membership)
+            or any(
+                type(membership.get(key)) is not type(value)
+                or membership.get(key) != value
+                for key, value in expected_membership.items()
+            )
+        ):
+            return None
+
+        already_compensated = await context.scalar(
+            select(func.count())
+            .select_from(ExactRebuildConsolidationCompensation)
+            .where(
+                ExactRebuildConsolidationCompensation.board_id == board_id,
+                ExactRebuildConsolidationCompensation.source == source,
+                ExactRebuildConsolidationCompensation.reservation_lineage_id
+                == reservation_lineage_id,
+            )
+        )
+        if int(already_compensated or 0) != 0:
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_after_compensation"
+            )
+
+        prior_receipts = await self.list_exact_rebuild_ack_receipts(
+            context,
+            board_id=board_id,
+            source=source,
+            reservation_lineage_id=reservation_lineage_id,
+        )
+        if any(receipt.queue_id == entry_id for receipt in prior_receipts):
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_queue_reused"
+            )
+
+        audit = await context.get(
+            ConsolidationAudit,
+            consolidation_session_id,
+            with_for_update=True,
+        )
+        if (
+            audit is None
+            or audit.board_id != board_id
+            or audit.artifact_type != artifact_type
+            or audit.artifact_id != artifact_id
+            or type(audit.agent_id) is not str
+            or not audit.agent_id
+            or type(audit.started_at) is not datetime
+            or type(audit.committed_at) is not datetime
+            or _aware_utc(audit.started_at) > _aware_utc(audit.committed_at)
+            or not _is_sha256(audit.content_hash)
+            or audit.undo_status != "none"
+            or audit.undone_at is not None
+            or audit.error_details is not None
+            or any(
+                type(value) is not int or value < 0
+                for value in (
+                    audit.nodes_added,
+                    audit.nodes_updated,
+                    audit.nodes_superseded,
+                    audit.edges_added,
+                )
+            )
+        ):
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_audit_invalid"
+            )
+        audit_content_hash = audit.content_hash
+
+        refs = tuple(
+            (
+                await context.execute(
+                    select(KuzuNodeRef)
+                    .where(KuzuNodeRef.session_id == consolidation_session_id)
+                    .order_by(
+                        KuzuNodeRef.kuzu_node_type.asc(),
+                        KuzuNodeRef.kuzu_node_id.asc(),
+                        KuzuNodeRef.operation.asc(),
+                        KuzuNodeRef.id.asc(),
+                    )
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if any(
+            ref.board_id != board_id
+            or ref.session_id != consolidation_session_id
+            or type(ref.kuzu_node_id) is not str
+            or not ref.kuzu_node_id
+            or type(ref.kuzu_node_type) is not str
+            or not ref.kuzu_node_type
+            or ref.operation != "add"
+            for ref in refs
+        ):
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_node_refs_invalid"
+            )
+        if len(refs) != audit.nodes_added:
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_node_ref_counts_invalid"
+            )
+
+        outboxes = tuple(
+            (
+                await context.execute(
+                    select(GlobalUpdateOutbox)
+                    .where(GlobalUpdateOutbox.session_id == consolidation_session_id)
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if len(outboxes) != 1:
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_outbox_invalid"
+            )
+        outbox = outboxes[0]
+        expected_outbox_payload = {
+            "artifact_id": artifact_id,
+            "edges_added": audit.edges_added,
+            "nodes_added": audit.nodes_added,
+            "nodes_superseded": audit.nodes_superseded,
+            "nodes_updated": audit.nodes_updated,
+            "session_id": consolidation_session_id,
+        }
+        if (
+            outbox.board_id != board_id
+            or outbox.event_type != "consolidation_committed"
+            or type(outbox.event_id) is not str
+            or not outbox.event_id
+            or type(outbox.payload) is not dict
+            or _canonical_json(outbox.payload)
+            != _canonical_json(expected_outbox_payload)
+            or outbox.processed_at is not None
+            or outbox.retry_count != 0
+            or outbox.last_error is not None
+        ):
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_outbox_invalid"
+            )
+
+        generation_events = tuple(
+            (
+                await context.execute(
+                    select(DomainEventRow)
+                    .where(
+                        DomainEventRow.board_id == board_id,
+                        DomainEventRow.event_type
+                        == "kg.materialization_generation_advanced",
+                        DomainEventRow.payload_json["correlation_id"].as_string()
+                        == consolidation_session_id,
+                    )
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if len(generation_events) != 1:
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_generation_event_invalid"
+            )
+        generation_event = generation_events[0]
+        payload = generation_event.payload_json
+        if (
+            type(payload) is not dict
+            or set(payload)
+            != {
+                "correlation_id",
+                "materialization_generation",
+                "previous_materialization_generation",
+            }
+            or payload.get("correlation_id") != consolidation_session_id
+            or type(payload.get("materialization_generation")) is not str
+            or not payload.get("materialization_generation")
+            or type(payload.get("previous_materialization_generation")) is not str
+            or not payload.get("previous_materialization_generation")
+            or payload.get("materialization_generation")
+            == payload.get("previous_materialization_generation")
+            or generation_event.actor_id is not None
+            or generation_event.actor_type != "agent"
+            or type(generation_event.occurred_at) is not datetime
+            or not _same_optional_timestamp(
+                generation_event.occurred_at, audit.committed_at
+            )
+        ):
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_generation_event_invalid"
+            )
+        handler_count = await context.scalar(
+            select(func.count())
+            .select_from(DomainEventHandlerExecution)
+            .where(DomainEventHandlerExecution.event_id == generation_event.id)
+        )
+        if int(handler_count or 0) != 0:
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_generation_event_published"
+            )
+
+        from okto_pulse.community.adapters.materialization_health import (
+            materialization_generation_key,
+        )
+
+        generation_head = await context.get(
+            AppSetting,
+            materialization_generation_key(board_id),
+            with_for_update=True,
+        )
+        previous_generation = str(payload["previous_materialization_generation"])
+        materialization_generation = str(payload["materialization_generation"])
+        if (
+            generation_head is None
+            or generation_head.value != materialization_generation
+            or (
+                prior_receipts
+                and prior_receipts[-1].materialization_generation != previous_generation
+            )
+        ):
+            raise ExactConsolidationAckIntegrityError(
+                "exact_consolidation_ack_generation_head_invalid"
+            )
+
+        node_refs_sha256 = _canonical_node_refs_sha256(audit=audit, refs=refs)
+        receipt = ExactConsolidationAckReceipt.create(
+            queue_id=entry_id,
+            board_id=board_id,
+            source=source,
+            reservation_lineage_id=reservation_lineage_id,
+            work_kind=work_kind,
+            artifact_type=artifact_type,
+            artifact_id=artifact_id,
+            generation=generation,
+            membership_source_ref=membership_source_ref,
+            membership_source_version=membership_source_version,
+            membership_content_hash=membership_content_hash,
+            audit_content_hash=audit_content_hash,
+            consolidation_session_id=consolidation_session_id,
+            outbox_event_id=str(outbox.event_id),
+            generation_event_id=str(generation_event.id),
+            previous_materialization_generation=previous_generation,
+            materialization_generation=materialization_generation,
+            node_ref_count=len(refs),
+            node_refs_sha256=node_refs_sha256,
+        )
+        context.add(
+            ExactRebuildConsolidationAckJournal(
+                queue_id=receipt.queue_id,
+                board_id=receipt.board_id,
+                source=receipt.source,
+                reservation_lineage_id=receipt.reservation_lineage_id,
+                work_kind=receipt.work_kind,
+                artifact_type=receipt.artifact_type,
+                artifact_id=receipt.artifact_id,
+                generation=receipt.generation,
+                membership_source_ref=receipt.membership_source_ref,
+                membership_source_version=receipt.membership_source_version,
+                membership_content_hash=receipt.membership_content_hash,
+                audit_content_hash=receipt.audit_content_hash,
+                consolidation_session_id=receipt.consolidation_session_id,
+                outbox_event_id=receipt.outbox_event_id,
+                generation_event_id=receipt.generation_event_id,
+                previous_materialization_generation=(
+                    receipt.previous_materialization_generation
+                ),
+                materialization_generation=receipt.materialization_generation,
+                node_ref_count=receipt.node_ref_count,
+                node_refs_sha256=receipt.node_refs_sha256,
+                receipt_sha256=receipt.receipt_sha256,
+            )
+        )
+        await context.flush()
+        if not _exact_authority_valid(reservation_authority_probe):
+            return None
+
+        # Bind the final CAS to the exact SQLite JSON text captured by the
+        # locked read.  Admission writes compact canonical JSON directly;
+        # rebinding the Python dict through SQLAlchemy's JSON serializer would
+        # add whitespace and make an unchanged row compare unequal.
+        result = await context.execute(
+            delete(ConsolidationQueue).where(
+                *claim_predicates,
+                cast(ConsolidationQueue.payload, Text) == claimed_payload_text,
+            )
+        )
+        if int(result.rowcount or 0) != 1:
+            return None
+        await context.flush()
+        if not _exact_authority_valid(reservation_authority_probe):
+            return None
+        return receipt
+
+    async def list_exact_rebuild_ack_receipts(
+        self,
+        context: Any,
+        *,
+        board_id: str,
+        source: str,
+        reservation_lineage_id: str,
+    ) -> tuple[ExactConsolidationAckReceipt, ...]:
+        """Load a bounded journal and derive order from its generation chain."""
+
+        if (
+            type(board_id) is not str
+            or not board_id
+            or type(source) is not str
+            or not source.startswith("rebuild:")
+            or not _is_sha256(reservation_lineage_id)
+        ):
+            raise ValueError("exact_consolidation_ack_scope_invalid")
+        rows = tuple(
+            (
+                await context.execute(
+                    select(ExactRebuildConsolidationAckJournal)
+                    .where(
+                        ExactRebuildConsolidationAckJournal.board_id == board_id,
+                        ExactRebuildConsolidationAckJournal.source == source,
+                        ExactRebuildConsolidationAckJournal.reservation_lineage_id
+                        == reservation_lineage_id,
+                    )
+                    .order_by(
+                        ExactRebuildConsolidationAckJournal.created_at.asc(),
+                        ExactRebuildConsolidationAckJournal.queue_id.asc(),
+                    )
+                    .limit(_EXACT_ACK_JOURNAL_MAX_ROWS + 1)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if len(rows) > _EXACT_ACK_JOURNAL_MAX_ROWS:
+            raise ExactConsolidationCompensationError(
+                "exact_consolidation_ack_journal_limit_exceeded"
+            )
+        return _ordered_exact_ack_receipts(
+            tuple(_exact_ack_receipt_from_row(row) for row in rows),
+            board_id=board_id,
+            source=source,
+            reservation_lineage_id=reservation_lineage_id,
+        )
+
+    async def compensate_exact_rebuild_commits(
+        self,
+        context: Any,
+        *,
+        board_id: str,
+        source: str,
+        reservation_lineage_id: str,
+        expected_receipts: tuple[ExactConsolidationAckReceipt, ...],
+        reservation_authority_probe: Callable[[], bool],
+    ) -> ExactConsolidationCompensationResult | None:
+        """Reverse only a complete, still-unpublished exact ACK chain."""
+
+        if not callable(reservation_authority_probe):
+            raise TypeError("exact_consolidation_reservation_authority_required")
+        if (
+            type(board_id) is not str
+            or not board_id
+            or type(source) is not str
+            or not source.startswith("rebuild:")
+            or not _is_sha256(reservation_lineage_id)
+            or type(expected_receipts) is not tuple
+            or not expected_receipts
+        ):
+            raise ValueError("exact_consolidation_compensation_scope_invalid")
+        ordered = _ordered_exact_ack_receipts(
+            expected_receipts,
+            board_id=board_id,
+            source=source,
+            reservation_lineage_id=reservation_lineage_id,
+        )
+        if not _exact_authority_valid(reservation_authority_probe):
+            return None
+        persisted = await self.list_exact_rebuild_ack_receipts(
+            context,
+            board_id=board_id,
+            source=source,
+            reservation_lineage_id=reservation_lineage_id,
+        )
+        if persisted != ordered:
+            raise ExactConsolidationCompensationError(
+                "exact_consolidation_ack_journal_changed"
+            )
+
+        baseline_generation = ordered[0].previous_materialization_generation
+        terminal_generation = ordered[-1].materialization_generation
+        session_ids = tuple(item.consolidation_session_id for item in ordered)
+        outbox_ids = tuple(item.outbox_event_id for item in ordered)
+        generation_event_ids = tuple(item.generation_event_id for item in ordered)
+        ack_receipts_sha256 = exact_consolidation_ack_receipts_sha256(ordered)
+        expected_node_ref_count = sum(item.node_ref_count for item in ordered)
+
+        from okto_pulse.community.adapters.materialization_health import (
+            materialization_generation_key,
+        )
+
+        head_key = materialization_generation_key(board_id)
+        compensation_row = (
+            await context.execute(
+                select(ExactRebuildConsolidationCompensation)
+                .where(
+                    ExactRebuildConsolidationCompensation.board_id == board_id,
+                    ExactRebuildConsolidationCompensation.source == source,
+                    ExactRebuildConsolidationCompensation.reservation_lineage_id
+                    == reservation_lineage_id,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        lock_generation = (
+            baseline_generation if compensation_row is not None else terminal_generation
+        )
+        head_lock = await context.execute(
+            update(AppSetting)
+            .where(AppSetting.key == head_key, AppSetting.value == lock_generation)
+            .values(value=AppSetting.value)
+            .execution_options(synchronize_session=False)
+        )
+        if int(head_lock.rowcount or 0) != 1:
+            return None
+        if not _exact_authority_valid(reservation_authority_probe):
+            return None
+
+        async def _load_audits_and_refs() -> tuple[
+            dict[str, ConsolidationAudit], dict[str, tuple[KuzuNodeRef, ...]]
+        ]:
+            audit_rows: list[ConsolidationAudit] = []
+            ref_rows: list[KuzuNodeRef] = []
+            for chunk in _chunked(session_ids):
+                audit_rows.extend(
+                    (
+                        (
+                            await context.execute(
+                                select(ConsolidationAudit)
+                                .where(ConsolidationAudit.session_id.in_(chunk))
+                                .with_for_update()
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                )
+                ref_rows.extend(
+                    (
+                        (
+                            await context.execute(
+                                select(KuzuNodeRef)
+                                .where(KuzuNodeRef.session_id.in_(chunk))
+                                .with_for_update()
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                )
+            audits = {str(row.session_id): row for row in audit_rows}
+            refs_by_session: dict[str, list[KuzuNodeRef]] = {
+                session_id: [] for session_id in session_ids
+            }
+            for ref in ref_rows:
+                refs_by_session.setdefault(str(ref.session_id), []).append(ref)
+            return audits, {
+                session_id: tuple(refs) for session_id, refs in refs_by_session.items()
+            }
+
+        async def _load_target_outboxes() -> tuple[GlobalUpdateOutbox, ...]:
+            rows: list[GlobalUpdateOutbox] = []
+            for offset in range(0, len(ordered), _EXACT_SQL_CHUNK_SIZE):
+                event_chunk = outbox_ids[offset : offset + _EXACT_SQL_CHUNK_SIZE]
+                session_chunk = session_ids[offset : offset + _EXACT_SQL_CHUNK_SIZE]
+                rows.extend(
+                    (
+                        (
+                            await context.execute(
+                                select(GlobalUpdateOutbox)
+                                .where(
+                                    or_(
+                                        GlobalUpdateOutbox.event_id.in_(event_chunk),
+                                        GlobalUpdateOutbox.session_id.in_(
+                                            session_chunk
+                                        ),
+                                    )
+                                )
+                                .with_for_update()
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                )
+            return tuple({str(row.id): row for row in rows}.values())
+
+        async def _load_target_generation_events() -> tuple[DomainEventRow, ...]:
+            rows: list[DomainEventRow] = []
+            for offset in range(0, len(ordered), _EXACT_SQL_CHUNK_SIZE):
+                event_chunk = generation_event_ids[
+                    offset : offset + _EXACT_SQL_CHUNK_SIZE
+                ]
+                session_chunk = session_ids[offset : offset + _EXACT_SQL_CHUNK_SIZE]
+                rows.extend(
+                    (
+                        (
+                            await context.execute(
+                                select(DomainEventRow)
+                                .where(
+                                    or_(
+                                        DomainEventRow.id.in_(event_chunk),
+                                        and_(
+                                            DomainEventRow.event_type
+                                            == "kg.materialization_generation_advanced",
+                                            DomainEventRow.payload_json[
+                                                "correlation_id"
+                                            ]
+                                            .as_string()
+                                            .in_(session_chunk),
+                                        ),
+                                    )
+                                )
+                                .with_for_update()
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                )
+            return tuple({str(row.id): row for row in rows}.values())
+
+        async def _handler_execution_count() -> int:
+            total = 0
+            for chunk in _chunked(generation_event_ids):
+                total += int(
+                    await context.scalar(
+                        select(func.count())
+                        .select_from(DomainEventHandlerExecution)
+                        .where(DomainEventHandlerExecution.event_id.in_(chunk))
+                    )
+                    or 0
+                )
+            return total
+
+        def _validate_receipt_binding(
+            receipt: ExactConsolidationCompensationReceipt,
+        ) -> None:
+            if (
+                receipt.board_id != board_id
+                or receipt.source != source
+                or receipt.reservation_lineage_id != reservation_lineage_id
+                or receipt.baseline_materialization_generation != baseline_generation
+                or receipt.terminal_materialization_generation != terminal_generation
+                or receipt.ack_count != len(ordered)
+                or receipt.node_ref_count != expected_node_ref_count
+                or receipt.ack_receipts_sha256 != ack_receipts_sha256
+                or receipt.audit_session_ids != session_ids
+                or receipt.outbox_event_ids != outbox_ids
+                or receipt.generation_event_ids != generation_event_ids
+            ):
+                raise ExactConsolidationCompensationError(
+                    "exact_consolidation_compensation_receipt_mismatch"
+                )
+
+        async def _validate_audits_and_refs(
+            *,
+            compensated_at: datetime | None,
+            refs_must_exist: bool,
+        ) -> tuple[dict[str, ConsolidationAudit], dict[str, tuple[KuzuNodeRef, ...]]]:
+            audits, refs_by_session = await _load_audits_and_refs()
+            if len(audits) != len(ordered):
+                raise ExactConsolidationCompensationError(
+                    "exact_consolidation_compensation_audit_missing"
+                )
+            for item in ordered:
+                audit = audits.get(item.consolidation_session_id)
+                refs = refs_by_session.get(item.consolidation_session_id, ())
+                expected_undo = "undone" if compensated_at is not None else "none"
+                if (
+                    audit is None
+                    or audit.board_id != board_id
+                    or audit.artifact_type != item.artifact_type
+                    or audit.artifact_id != item.artifact_id
+                    or type(audit.started_at) is not datetime
+                    or type(audit.committed_at) is not datetime
+                    or _aware_utc(audit.started_at) > _aware_utc(audit.committed_at)
+                    or not _is_sha256(audit.content_hash)
+                    or audit.content_hash != item.audit_content_hash
+                    or audit.undo_status != expected_undo
+                    or (compensated_at is None and audit.undone_at is not None)
+                    or (
+                        compensated_at is not None
+                        and (
+                            type(audit.undone_at) is not datetime
+                            or _aware_utc(audit.undone_at) != _aware_utc(compensated_at)
+                        )
+                    )
+                    or audit.error_details is not None
+                ):
+                    raise ExactConsolidationCompensationError(
+                        "exact_consolidation_compensation_audit_or_refs_changed"
+                    )
+                if audit.nodes_added != item.node_ref_count:
+                    raise ExactConsolidationCompensationError(
+                        "exact_consolidation_compensation_node_ref_counts_changed"
+                    )
+                if refs_must_exist:
+                    if (
+                        len(refs) != item.node_ref_count
+                        or any(
+                            ref.board_id != board_id
+                            or ref.session_id != item.consolidation_session_id
+                            or ref.operation != "add"
+                            or type(ref.id) is not str
+                            or not ref.id
+                            or type(ref.kuzu_node_id) is not str
+                            or not ref.kuzu_node_id
+                            or type(ref.kuzu_node_type) is not str
+                            or not ref.kuzu_node_type
+                            for ref in refs
+                        )
+                        or _canonical_node_refs_sha256(audit=audit, refs=refs)
+                        != item.node_refs_sha256
+                    ):
+                        raise ExactConsolidationCompensationError(
+                            "exact_consolidation_compensation_audit_or_refs_changed"
+                        )
+                elif refs:
+                    raise ExactConsolidationCompensationError(
+                        "exact_consolidation_compensation_replay_post_state_invalid"
+                    )
+            return audits, refs_by_session
+
+        if compensation_row is not None:
+            replay_receipt = _exact_compensation_receipt_from_row(compensation_row)
+            _validate_receipt_binding(replay_receipt)
+            await _validate_audits_and_refs(
+                compensated_at=replay_receipt.compensated_at,
+                refs_must_exist=False,
+            )
+            if (
+                await _load_target_outboxes()
+                or await _load_target_generation_events()
+                or await _handler_execution_count() != 0
+            ):
+                raise ExactConsolidationCompensationError(
+                    "exact_consolidation_compensation_replay_post_state_invalid"
+                )
+            if not _exact_authority_valid(reservation_authority_probe):
+                return None
+            return ExactConsolidationCompensationResult(
+                receipt=replay_receipt,
+                replayed=True,
+            )
+
+        audits, refs_by_session = await _validate_audits_and_refs(
+            compensated_at=None,
+            refs_must_exist=True,
+        )
+        outboxes = await _load_target_outboxes()
+        events = await _load_target_generation_events()
+        if len(outboxes) != len(ordered) or len(events) != len(ordered):
+            raise ExactConsolidationCompensationError(
+                "exact_consolidation_compensation_integration_fact_missing"
+            )
+        outbox_by_id = {str(row.event_id): row for row in outboxes}
+        event_by_id = {str(row.id): row for row in events}
+        for item in ordered:
+            audit = audits[item.consolidation_session_id]
+            outbox = outbox_by_id.get(item.outbox_event_id)
+            event = event_by_id.get(item.generation_event_id)
+            expected_outbox_payload = {
+                "artifact_id": item.artifact_id,
+                "edges_added": audit.edges_added,
+                "nodes_added": audit.nodes_added,
+                "nodes_superseded": audit.nodes_superseded,
+                "nodes_updated": audit.nodes_updated,
+                "session_id": item.consolidation_session_id,
+            }
+            expected_event_payload = {
+                "correlation_id": item.consolidation_session_id,
+                "materialization_generation": item.materialization_generation,
+                "previous_materialization_generation": (
+                    item.previous_materialization_generation
+                ),
+            }
+            if (
+                outbox is None
+                or outbox.board_id != board_id
+                or outbox.session_id != item.consolidation_session_id
+                or outbox.event_type != "consolidation_committed"
+                or type(outbox.payload) is not dict
+                or _canonical_json(outbox.payload)
+                != _canonical_json(expected_outbox_payload)
+                or outbox.processed_at is not None
+                or outbox.retry_count != 0
+                or outbox.last_error is not None
+                or event is None
+                or event.board_id != board_id
+                or event.event_type != "kg.materialization_generation_advanced"
+                or event.actor_id is not None
+                or event.actor_type != "agent"
+                or type(event.payload_json) is not dict
+                or _canonical_json(event.payload_json)
+                != _canonical_json(expected_event_payload)
+                or type(event.occurred_at) is not datetime
+                or not _same_optional_timestamp(event.occurred_at, audit.committed_at)
+            ):
+                raise ExactConsolidationCompensationError(
+                    "exact_consolidation_compensation_integration_fact_changed"
+                )
+        if await _handler_execution_count() != 0:
+            raise ExactConsolidationCompensationError(
+                "exact_consolidation_compensation_event_already_dispatched"
+            )
+        if not _exact_authority_valid(reservation_authority_probe):
+            return None
+
+        compensated_at = datetime.now(timezone.utc)
+        deleted_refs = 0
+        for item in ordered:
+            governed_refs = refs_by_session[item.consolidation_session_id]
+            governed_ref_ids = tuple(str(ref.id) for ref in governed_refs)
+            for ref_id_chunk in _chunked(governed_ref_ids):
+                ref_delete = await context.execute(
+                    delete(KuzuNodeRef).where(
+                        KuzuNodeRef.id.in_(ref_id_chunk),
+                        KuzuNodeRef.board_id == board_id,
+                        KuzuNodeRef.session_id == item.consolidation_session_id,
+                        KuzuNodeRef.operation == "add",
+                    )
+                )
+                deleted_refs += int(ref_delete.rowcount or 0)
+        if deleted_refs != expected_node_ref_count:
+            raise ExactConsolidationCompensationError(
+                "exact_consolidation_compensation_node_ref_cas_lost"
+            )
+        remaining_refs = 0
+        for chunk in _chunked(session_ids):
+            remaining_refs += int(
+                await context.scalar(
+                    select(func.count())
+                    .select_from(KuzuNodeRef)
+                    .where(KuzuNodeRef.session_id.in_(chunk))
+                )
+                or 0
+            )
+        if remaining_refs != 0:
+            raise ExactConsolidationCompensationError(
+                "exact_consolidation_compensation_node_ref_cas_lost"
+            )
+
+        updated_audits = 0
+        for chunk in _chunked(session_ids):
+            result = await context.execute(
+                update(ConsolidationAudit)
+                .where(
+                    ConsolidationAudit.session_id.in_(chunk),
+                    ConsolidationAudit.board_id == board_id,
+                    ConsolidationAudit.undo_status == "none",
+                    ConsolidationAudit.undone_at.is_(None),
+                )
+                .values(undo_status="undone", undone_at=compensated_at)
+                .execution_options(synchronize_session=False)
+            )
+            updated_audits += int(result.rowcount or 0)
+        if updated_audits != len(ordered):
+            raise ExactConsolidationCompensationError(
+                "exact_consolidation_compensation_audit_cas_lost"
+            )
+
+        deleted_outboxes = 0
+        deleted_events = 0
+        for offset in range(0, len(ordered), _EXACT_SQL_CHUNK_SIZE):
+            receipt_chunk = ordered[offset : offset + _EXACT_SQL_CHUNK_SIZE]
+            outbox_identity = or_(
+                *(
+                    and_(
+                        GlobalUpdateOutbox.event_id == item.outbox_event_id,
+                        GlobalUpdateOutbox.session_id == item.consolidation_session_id,
+                    )
+                    for item in receipt_chunk
+                )
+            )
+            outbox_delete = await context.execute(
+                delete(GlobalUpdateOutbox).where(
+                    GlobalUpdateOutbox.board_id == board_id,
+                    GlobalUpdateOutbox.event_type == "consolidation_committed",
+                    GlobalUpdateOutbox.processed_at.is_(None),
+                    GlobalUpdateOutbox.retry_count == 0,
+                    GlobalUpdateOutbox.last_error.is_(None),
+                    outbox_identity,
+                )
+            )
+            deleted_outboxes += int(outbox_delete.rowcount or 0)
+
+            event_identity = or_(
+                *(
+                    and_(
+                        DomainEventRow.id == item.generation_event_id,
+                        DomainEventRow.payload_json["correlation_id"].as_string()
+                        == item.consolidation_session_id,
+                        DomainEventRow.payload_json[
+                            "previous_materialization_generation"
+                        ].as_string()
+                        == item.previous_materialization_generation,
+                        DomainEventRow.payload_json[
+                            "materialization_generation"
+                        ].as_string()
+                        == item.materialization_generation,
+                    )
+                    for item in receipt_chunk
+                )
+            )
+            event_delete = await context.execute(
+                delete(DomainEventRow).where(
+                    DomainEventRow.board_id == board_id,
+                    DomainEventRow.event_type
+                    == "kg.materialization_generation_advanced",
+                    event_identity,
+                    ~exists(
+                        select(1).where(
+                            DomainEventHandlerExecution.event_id == DomainEventRow.id
+                        )
+                    ),
+                )
+            )
+            deleted_events += int(event_delete.rowcount or 0)
+        if deleted_outboxes != len(ordered) or deleted_events != len(ordered):
+            raise ExactConsolidationCompensationError(
+                "exact_consolidation_compensation_integration_fact_cas_lost"
+            )
+
+        head_cas = await context.execute(
+            update(AppSetting)
+            .where(AppSetting.key == head_key, AppSetting.value == terminal_generation)
+            .values(value=baseline_generation)
+            .execution_options(synchronize_session=False)
+        )
+        if int(head_cas.rowcount or 0) != 1:
+            raise ExactConsolidationCompensationError(
+                "exact_consolidation_compensation_generation_head_cas_lost"
+            )
+
+        compensation_seed = _canonical_json(
+            {
+                "ack_receipts_sha256": ack_receipts_sha256,
+                "board_id": board_id,
+                "reservation_lineage_id": reservation_lineage_id,
+                "schema": "exact_consolidation_compensation_id.v1",
+                "source": source,
+            }
+        )
+        compensation_id = (
+            "erc_" + hashlib.sha256(compensation_seed.encode("utf-8")).hexdigest()[:60]
+        )
+        compensation_receipt = ExactConsolidationCompensationReceipt.create(
+            board_id=board_id,
+            source=source,
+            reservation_lineage_id=reservation_lineage_id,
+            baseline_materialization_generation=baseline_generation,
+            terminal_materialization_generation=terminal_generation,
+            ack_count=len(ordered),
+            node_ref_count=expected_node_ref_count,
+            ack_receipts_sha256=ack_receipts_sha256,
+            audit_session_ids=session_ids,
+            outbox_event_ids=outbox_ids,
+            generation_event_ids=generation_event_ids,
+            compensation_id=compensation_id,
+            compensated_at=compensated_at,
+        )
+        context.add(
+            ExactRebuildConsolidationCompensation(
+                compensation_id=compensation_receipt.compensation_id,
+                board_id=compensation_receipt.board_id,
+                source=compensation_receipt.source,
+                reservation_lineage_id=(compensation_receipt.reservation_lineage_id),
+                baseline_materialization_generation=(
+                    compensation_receipt.baseline_materialization_generation
+                ),
+                terminal_materialization_generation=(
+                    compensation_receipt.terminal_materialization_generation
+                ),
+                ack_count=compensation_receipt.ack_count,
+                node_ref_count=compensation_receipt.node_ref_count,
+                ack_receipts_sha256=compensation_receipt.ack_receipts_sha256,
+                audit_session_ids=list(compensation_receipt.audit_session_ids),
+                outbox_event_ids=list(compensation_receipt.outbox_event_ids),
+                generation_event_ids=list(compensation_receipt.generation_event_ids),
+                compensated_at=compensation_receipt.compensated_at,
+                receipt_sha256=compensation_receipt.receipt_sha256,
+            )
+        )
+        await context.flush()
+        if not _exact_authority_valid(reservation_authority_probe):
+            return None
+        return ExactConsolidationCompensationResult(
+            receipt=compensation_receipt,
+            replayed=False,
+        )
+
+    async def repend_claimed_queue_entry(
+        self,
+        context: Any,
+        *,
+        entry_id: str,
+        claim_token: str,
+        board_id: str,
+        source: str,
+        work_kind: str,
+        generation: int,
+        delete_event_id: str | None,
+    ) -> bool:
+        """Release one exact claim without changing its durable work intent."""
+
+        if not entry_id or not claim_token:
+            return False
+        delete_event_predicate = (
+            ConsolidationQueue.delete_event_id.is_(None)
+            if delete_event_id is None
+            else ConsolidationQueue.delete_event_id == delete_event_id
+        )
+        result = await context.execute(
+            update(ConsolidationQueue)
+            .where(
+                ConsolidationQueue.id == entry_id,
+                ConsolidationQueue.status == "claimed",
+                ConsolidationQueue.claim_token == claim_token,
+                ConsolidationQueue.board_id == board_id,
+                ConsolidationQueue.source == source,
+                ConsolidationQueue.work_kind == work_kind,
+                ConsolidationQueue.generation == generation,
+                delete_event_predicate,
+            )
+            .values(
+                status="pending",
+                claimed_by_session_id=None,
+                claim_token=None,
+                claimed_at=None,
+                worker_id=None,
+                claim_timeout_at=None,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        return int(result.rowcount or 0) == 1
+
+    async def save_exact_rebuild_disposition(
+        self,
+        context: Any,
+        *,
+        entry_id: str,
+        claim_token: str,
+        board_id: str,
+        artifact_type: str,
+        artifact_id: str,
+        source: str,
+        work_kind: str,
+        generation: int,
+        delete_event_id: str | None,
+        expected_attempts: int,
+        expected_last_error: str | None,
+        expected_next_retry_at: datetime | None,
+        expected_payload: dict[str, Any],
+        reservation_authority_probe: Callable[[], bool],
+        payload: dict[str, Any],
+        attempts: int,
+        last_error: str,
+        next_retry_at: datetime | None,
+    ) -> ConsolidationQueueRecord | None:
+        """Persist one typed exact disposition by full-state CAS.
+
+        The administrative reservation is re-read immediately before the
+        conditional UPDATE.  The caller's claim, immutable queue identity,
+        prior failure state and complete JSON payload must all still match;
+        otherwise this is a neutral ownership/fence loss and no column is
+        changed.
+        """
+
+        required_strings = (
+            entry_id,
+            claim_token,
+            board_id,
+            artifact_type,
+            artifact_id,
+            source,
+            work_kind,
+            last_error,
+        )
+        if (
+            any(type(value) is not str or not value for value in required_strings)
+            or type(generation) is not int
+            or generation < 0
+            or (
+                delete_event_id is not None
+                and (type(delete_event_id) is not str or not delete_event_id)
+            )
+            or type(expected_attempts) is not int
+            or expected_attempts < 0
+            or type(attempts) is not int
+            or attempts != expected_attempts + 1
+            or (
+                expected_last_error is not None and type(expected_last_error) is not str
+            )
+            or (
+                expected_next_retry_at is not None
+                and type(expected_next_retry_at) is not datetime
+            )
+            or (next_retry_at is not None and type(next_retry_at) is not datetime)
+            or type(expected_payload) is not dict
+            or type(payload) is not dict
+            or payload == expected_payload
+            or type(payload.get("_exact_rebuild_disposition")) is not dict
+            or not callable(reservation_authority_probe)
+        ):
+            raise TypeError("exact_rebuild_disposition_transition_invalid")
+        try:
+            expected_payload_json = _canonical_json(expected_payload)
+            _canonical_json(payload)
+        except (TypeError, ValueError) as exc:
+            raise TypeError("exact_rebuild_disposition_transition_invalid") from exc
+
+        try:
+            authority_live = reservation_authority_probe() is True
+        except BaseException:
+            authority_live = False
+        if not authority_live:
+            return None
+
+        reserved_source = await self.board_administrative_rebuild_source(
+            context,
+            board_id=board_id,
+        )
+        if reserved_source != source:
+            return None
+
+        try:
+            authority_live = reservation_authority_probe() is True
+        except BaseException:
+            authority_live = False
+        if not authority_live:
+            return None
+
+        delete_event_predicate = (
+            ConsolidationQueue.delete_event_id.is_(None)
+            if delete_event_id is None
+            else ConsolidationQueue.delete_event_id == delete_event_id
+        )
+        prior_error_predicate = (
+            ConsolidationQueue.last_error.is_(None)
+            if expected_last_error is None
+            else ConsolidationQueue.last_error == expected_last_error
+        )
+        prior_retry_predicate = (
+            ConsolidationQueue.next_retry_at.is_(None)
+            if expected_next_retry_at is None
+            else ConsolidationQueue.next_retry_at == expected_next_retry_at
+        )
+        prior_state_predicates = (
+            ConsolidationQueue.id == entry_id,
+            ConsolidationQueue.status == "claimed",
+            ConsolidationQueue.claim_token == claim_token,
+            ConsolidationQueue.board_id == board_id,
+            ConsolidationQueue.artifact_type == artifact_type,
+            ConsolidationQueue.artifact_id == artifact_id,
+            ConsolidationQueue.source == source,
+            ConsolidationQueue.work_kind == work_kind,
+            ConsolidationQueue.generation == generation,
+            delete_event_predicate,
+            ConsolidationQueue.attempts == expected_attempts,
+            prior_error_predicate,
+            prior_retry_predicate,
+        )
+        captured_payload_text = (
+            await context.execute(
+                select(cast(ConsolidationQueue.payload, Text))
+                .where(*prior_state_predicates)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if type(captured_payload_text) is not str:
+            return None
+        try:
+            captured_payload = json.loads(captured_payload_text)
+            captured_payload_json = _canonical_json(captured_payload)
+        except (TypeError, ValueError):
+            return None
+        if (
+            type(captured_payload) is not dict
+            or captured_payload_json != expected_payload_json
+        ):
+            return None
+        if not _exact_authority_valid(reservation_authority_probe):
+            return None
+
+        row = (
+            await context.execute(
+                update(ConsolidationQueue)
+                .where(
+                    *prior_state_predicates,
+                    cast(ConsolidationQueue.payload, Text) == captured_payload_text,
+                )
+                .values(
+                    status="pending",
+                    payload=payload,
+                    attempts=attempts,
+                    last_error=last_error,
+                    next_retry_at=next_retry_at,
+                    claimed_by_session_id=None,
+                    claim_token=None,
+                    claimed_at=None,
+                    worker_id=None,
+                    claim_timeout_at=None,
+                )
+                .returning(ConsolidationQueue)
+                .execution_options(
+                    synchronize_session=False,
+                    populate_existing=True,
+                )
+            )
+        ).scalar_one_or_none()
+        return _queue_record(row) if row is not None else None
 
     async def save_queue_entries(
         self, context: Any, entries: Sequence[ConsolidationQueueRecord]

@@ -129,6 +129,13 @@ _BOARD_SCOPED_CASES = (
     ),
 )
 
+# Raw Cypher is intentionally absent: unlike the bounded semantic readers it
+# cannot safely exclude CT subtypes atomically, so the P1 all-of CT read guard
+# applies even to historical board:read principals.
+_LEGACY_COMPATIBILITY_CASES = tuple(
+    case for case in _DENIAL_CASES if case[0] != "kg.power.cypher"
+)
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -201,8 +208,8 @@ async def test_board_read_denial_stops_exact_kg_operation_before_service(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("operation", "invoke"),
-    _DENIAL_CASES,
-    ids=[case[0] for case in _DENIAL_CASES],
+    _LEGACY_COMPATIBILITY_CASES,
+    ids=[case[0] for case in _LEGACY_COMPATIBILITY_CASES],
 )
 async def test_legacy_board_read_remains_compatible(
     operation: str,

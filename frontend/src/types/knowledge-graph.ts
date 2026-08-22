@@ -11,10 +11,15 @@ export type KGNodeType =
 export type KGEdgeType =
   | 'supersedes' | 'contradicts' | 'derives_from' | 'relates_to'
   | 'mentions' | 'depends_on' | 'violates' | 'implements'
-  | 'tests' | 'validates' | 'belongs_to' | 'originates_from'
-  | 'covered_by';
+  | 'tests' | 'validates' | 'precedes' | 'supports' | 'overlaps'
+  | 'belongs_to' | 'originates_from' | 'covered_by';
 
 export type GraphLayerMode = 'canonical' | 'working' | 'all';
+
+export type CodeTraceabilityKGKind =
+  | 'code_investigation_receipt'
+  | 'code_evidence'
+  | 'implementation_target';
 
 export interface KGNode {
   id: string;
@@ -31,6 +36,19 @@ export interface KGNode {
   superseded_by?: string;
   graph_layer?: 'canonical' | 'working';
   maturity_status?: string | null;
+  /** Semantic subtype; Code Traceability remains on the physical Entity node type. */
+  kind_of?: string | null;
+  investigation_receipt_id?: string | null;
+  source_ref?: string | null;
+  attestor_actor_id?: string | null;
+  declared_revision?: string | null;
+  workspace_state_id?: string | null;
+  code_path?: string | null;
+  symbol_qualified_name?: string | null;
+  symbol_kind?: string | null;
+  selector_kind?: string | null;
+  selector_fingerprint?: string | null;
+  resolution_state?: string | null;
   node_type: KGNodeType;
 }
 
@@ -120,6 +138,61 @@ export const NODE_TYPE_CONFIG: Record<KGNodeType, {
     description: 'An option that was considered but not chosen. Preserved alongside Decisions so future reviewers can see the full decision space, not just the winner.' },
 };
 
+/** Visual identities for logical Code Traceability subtypes that continue to
+ * use the physical Entity node. They intentionally build on the existing KG
+ * palette while remaining distinguishable at graph scale. */
+export const CODE_TRACEABILITY_KIND_CONFIG: Record<CodeTraceabilityKGKind, {
+  color: string;
+  darkColor: string;
+  shape: string;
+  icon: string;
+  label: string;
+  description: string;
+}> = {
+  code_investigation_receipt: {
+    color: '#0284C7',
+    darkColor: '#38BDF8',
+    shape: 'circle',
+    icon: '🧾',
+    label: 'Investigation Receipt',
+    description: 'An immutable attestation accepted from an authenticated external agent. Pulse stores the receipt but does not inspect the source itself.',
+  },
+  code_evidence: {
+    color: '#7C3AED',
+    darkColor: '#A78BFA',
+    shape: 'circle',
+    icon: '🔎',
+    label: 'Code Evidence',
+    description: 'An agent-attested observation linked to a structured Spec entity.',
+  },
+  implementation_target: {
+    color: '#D97706',
+    darkColor: '#FBBF24',
+    shape: 'circle',
+    icon: '🎯',
+    label: 'Implementation Target',
+    description: 'A human- or agent-authored semantic implementation intent whose concrete location is resolved by an external agent.',
+  },
+};
+
+export function codeTraceabilityKindConfig(kindOf: string | null | undefined) {
+  return kindOf && kindOf in CODE_TRACEABILITY_KIND_CONFIG
+    ? CODE_TRACEABILITY_KIND_CONFIG[kindOf as CodeTraceabilityKGKind]
+    : null;
+}
+
+export function kgNodeVisualConfig(
+  node: Pick<KGNode, 'node_type' | 'kind_of'>,
+) {
+  return codeTraceabilityKindConfig(node.kind_of) ?? NODE_TYPE_CONFIG[node.node_type];
+}
+
+export function kgNodeDisplayType(
+  node: Pick<KGNode, 'node_type' | 'kind_of'>,
+): string {
+  return codeTraceabilityKindConfig(node.kind_of)?.label ?? node.node_type;
+}
+
 /**
  * Edge type visual config — one entry for each KGEdgeType value.
  * `color` drives the chip swatch in GraphControlsPanel AND the stroke in
@@ -151,12 +224,18 @@ export const EDGE_TYPE_CONFIG: Record<KGEdgeType, {
     description: 'A TestScenario exercises a Requirement, Business Rule, or API Contract. Key edge for coverage reporting.' },
   validates:    { color: '#7C3AED', label: 'validates',
     description: 'A successful validation run vouches for the target node. Similar to `tests` but aimed at gate outcomes rather than scenarios.' },
+  precedes:     { color: '#0EA5E9', label: 'precedes',
+    description: 'A prerequisite Spec must be satisfied before the dependent Spec can start execution. Projected from the authoritative Spec dependency DAG.' },
+  supports:     { color: '#8B5CF6', label: 'supports',
+    description: 'Agent-attested Code Evidence supports a structured Spec entity. The link is projected from accepted Pulse records.' },
+  overlaps:     { color: '#F59E0B', label: 'overlaps',
+    description: 'Two Implementation Targets affect an overlapping submitted path or symbol resolution.' },
+  belongs_to:   { color: '#64748B', label: 'belongs_to',
+    description: 'Hierarchy backbone linking KG nodes to their parent artifact or grouping entity.' },
   originates_from: { color: '#F97316', label: 'originates_from',
     description: 'A Bug points to the entity or card where the defect originated. Used for lineage and root-cause tracing from bug reports.' },
   covered_by:   { color: '#22C55E', label: 'covered_by',
     description: 'A Bug is covered by a regression test card or TestScenario, making the defect visible in coverage and revalidation flows.' },
-  belongs_to:   { color: '#64748B', label: 'belongs_to',
-    description: 'Hierarchy backbone linking KG nodes to their parent artifact or grouping entity.' },
 };
 
 export const ALL_EDGE_TYPES = Object.keys(EDGE_TYPE_CONFIG) as KGEdgeType[];

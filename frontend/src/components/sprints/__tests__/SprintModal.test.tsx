@@ -4,10 +4,7 @@ import { SprintModal } from '../SprintModal';
 import { deriveSprintDisplayCounts } from '../sprintDisplayCounts';
 import type { CardSummaryForSpec, Sprint } from '@/types';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
-import type {
-  PolicyCompliancePanelProps,
-  PolicyComplianceTransitionPreviewProps,
-} from '@/components/policy-compliance';
+import type { PolicyCompliancePanelProps } from '@/components/policy-compliance';
 
 const apiMock = vi.hoisted(() => ({
   getSprint: vi.fn(),
@@ -75,17 +72,6 @@ vi.mock('@/components/policy-compliance', async (importOriginal) => {
         />
       );
     },
-    PolicyComplianceTransitionPreview: ({
-      preview,
-      rejection,
-    }: PolicyComplianceTransitionPreviewProps) => (
-      <div
-        data-testid="policy-transition-preview"
-        data-status={preview.status}
-      >
-        {rejection?.code || ''}
-      </div>
-    ),
   };
 });
 
@@ -169,6 +155,7 @@ function transition(
     label: toStatus.charAt(0).toUpperCase() + toStatus.slice(1),
     gate: 'none',
     blocked_reason: null,
+    blocked_facts: null,
     preconditions: [],
     capabilities: [],
     effects: [],
@@ -181,6 +168,7 @@ function transition(
 
 function policyDecision(allowed: boolean) {
   return {
+    projection: 'full',
     state: allowed
       ? 'policy_compliance_ready'
       : 'policy_compliance_blocked',
@@ -444,6 +432,70 @@ describe('SprintModal display counts', () => {
     expect(screen.queryByText('Regression two')).not.toBeInTheDocument();
   });
 
+  it('uses answered_at as Q&A state and renders selected choices plus free text', async () => {
+    await renderSprint({
+      qa_items: [
+        {
+          id: 'qa-choice',
+          sprint_id: 'sprint-1',
+          question: 'Which database?',
+          question_type: 'choice',
+          choices: [
+            { id: 'postgres', label: 'PostgreSQL' },
+            { id: 'mysql', label: 'MySQL' },
+          ],
+          allow_free_text: false,
+          answer: null,
+          selected: ['postgres'],
+          asked_by: 'agent-1',
+          answered_by: 'user-1',
+          created_at: '2026-05-28T10:00:00Z',
+          answered_at: '2026-05-28T11:00:00Z',
+        },
+        {
+          id: 'qa-multi',
+          sprint_id: 'sprint-1',
+          question: 'Which deployment modes?',
+          question_type: 'multi_choice',
+          choices: [
+            { id: 'primary', label: 'Primary' },
+            { id: 'replica', label: 'Replica' },
+          ],
+          allow_free_text: true,
+          answer: 'Prefer a managed service',
+          selected: ['primary', 'replica'],
+          asked_by: 'agent-1',
+          answered_by: 'user-1',
+          created_at: '2026-05-28T10:00:00Z',
+          answered_at: '2026-05-28T11:00:00Z',
+        },
+        {
+          id: 'qa-open',
+          sprint_id: 'sprint-1',
+          question: 'Still open?',
+          question_type: 'text',
+          choices: null,
+          allow_free_text: false,
+          answer: 'Legacy value without canonical timestamp',
+          selected: null,
+          asked_by: 'agent-1',
+          answered_by: null,
+          created_at: '2026-05-28T10:00:00Z',
+          answered_at: null,
+        },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Q&A/ }));
+
+    expect(screen.getByTestId('sprint-qa-answer-qa-choice')).toBeInTheDocument();
+    expect(screen.getByText('PostgreSQL').closest('[data-selected]')).toHaveAttribute('data-selected', 'true');
+    expect(screen.getByText('MySQL').closest('[data-selected]')).toHaveAttribute('data-selected', 'false');
+    expect(screen.getByText('Prefer a managed service')).toBeInTheDocument();
+    expect(screen.getAllByText('Awaiting answer')).toHaveLength(1);
+    expect(screen.getByText('Still open?')).toBeInTheDocument();
+  });
+
   it('counts bug cards separately from Tasks while still rendering them in Cards', async () => {
     await renderSprint({
       cards: [
@@ -470,7 +522,7 @@ describe('SprintModal display counts', () => {
     await renderSprint({
       cards: [
         card({ id: 'normal-1', title: 'Implement feature', status: 'done', card_type: 'normal' }),
-        card({ id: 'bug-1', title: 'Fix defect', status: 'validation', card_type: 'bug' }),
+        card({ id: 'bug-1', title: 'Fix defect', status: 'rejected', card_type: 'bug' }),
         card({ id: 'test-1', title: 'Regression test', status: 'done', card_type: 'test' }),
         card({ id: 'legacy-1', title: 'Legacy card', status: 'done', card_type: undefined }),
       ],
@@ -489,6 +541,8 @@ describe('SprintModal display counts', () => {
     expect(rows).toHaveLength(3);
     expect(screen.getByText('Implement feature')).toBeInTheDocument();
     expect(screen.getByText('Fix defect')).toBeInTheDocument();
+    const rejectedRow = rows.find((row) => within(row).queryByText('Fix defect'));
+    expect(rejectedRow?.querySelector('.bg-rose-600')).not.toBeNull();
     expect(screen.getByText('Legacy card')).toBeInTheDocument();
     expect(screen.queryByText('Regression test')).not.toBeInTheDocument();
   });
@@ -612,10 +666,10 @@ describe('SprintModal Policy Compliance', () => {
       'data-subject-id',
       'sprint-1',
     );
-    expect(screen.getByTestId('policy-transition-preview')).toHaveAttribute(
-      'data-status',
-      'ready',
+    expect(policyComponentState.panelProps?.transitionPreview).toEqual(
+      expect.objectContaining({ status: 'ready' }),
     );
+    expect(screen.queryByTestId('policy-transition-preview')).not.toBeInTheDocument();
     expect(apiMock.getAllowedTransitions).toHaveBeenCalledWith('board-1', {
       entity_type: 'sprint',
       entity_id: 'sprint-1',
@@ -710,10 +764,10 @@ describe('SprintModal Policy Compliance', () => {
     fireEvent.click(screen.getByRole('tab', {
       name: 'Policy Compliance',
     }));
-    expect(screen.getByTestId('policy-transition-preview')).toHaveAttribute(
-      'data-status',
-      'error',
+    expect(policyComponentState.panelProps?.transitionPreview).toEqual(
+      expect.objectContaining({ status: 'error' }),
     );
+    expect(screen.queryByTestId('policy-transition-preview')).not.toBeInTheDocument();
   });
 
   it('does not invent a cancellation action when the backend omits that edge', async () => {
@@ -738,7 +792,7 @@ describe('SprintModal Policy Compliance', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('persists a structured 409 rejection and refreshes transition authority', async () => {
+  it('reports a structured 409 rejection and refreshes authority without a readiness card', async () => {
     permissionState.flags = new Set(['guidelines.assessments.read']);
     apiMock.moveSprint.mockRejectedValue(structuredPolicyRejection());
     await renderSprint({ status: 'review' });
@@ -762,9 +816,7 @@ describe('SprintModal Policy Compliance', () => {
     fireEvent.click(screen.getByRole('tab', {
       name: 'Policy Compliance',
     }));
-    expect(screen.getByTestId('policy-transition-preview')).toHaveTextContent(
-      'policy_compliance_blocked',
-    );
+    expect(screen.queryByTestId('policy-transition-preview')).not.toBeInTheDocument();
   });
 
   it('refreshes evidence and lifecycle authority even when sprint.version is unchanged', async () => {

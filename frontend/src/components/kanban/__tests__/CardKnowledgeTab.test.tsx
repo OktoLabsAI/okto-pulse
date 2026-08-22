@@ -96,11 +96,13 @@ function renderTab({
   specKnowledgeBases = [],
   onUpdate = vi.fn().mockResolvedValue(undefined),
   onBusyChange = vi.fn(),
+  readOnly = false,
 }: {
   card?: any;
   specKnowledgeBases?: any[];
   onUpdate?: () => Promise<void>;
   onBusyChange?: (busy: boolean) => void;
+  readOnly?: boolean;
 } = {}) {
   return render(
     <CardKnowledgeTab
@@ -108,6 +110,7 @@ function renderTab({
       specKnowledgeBases={specKnowledgeBases}
       onUpdate={onUpdate}
       onBusyChange={onBusyChange}
+      readOnly={readOnly}
     />,
   );
 }
@@ -148,6 +151,31 @@ describe('CardKnowledgeTab', () => {
 
     fireEvent.click(screen.getByTestId('kb-row-kb_existing'));
     expect(screen.getByText('orig content')).toBeInTheDocument();
+  });
+
+  it('hides governed propagation mutations while a Rejected card is frozen', async () => {
+    apiMock.getCardKnowledgeAssignments.mockResolvedValue({
+      ...emptyTechnicalRead,
+      assignments: [{
+        root_knowledge_id: 'kb_existing',
+        mode: 'snapshot',
+        origin_class: 'v2',
+        stale: true,
+      }],
+    });
+
+    renderTab({ readOnly: true });
+
+    expect(await screen.findByText('Current governed selection')).toBeInTheDocument();
+    expect(screen.getByText(/Knowledge is read-only while this card is Rejected/))
+      .toBeInTheDocument();
+    expect(within(screen.getByTestId('knowledge-assignment-kb_existing'))
+      .queryByRole('button', { name: 'Refresh' }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Save explicit decision' }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByTestId('card-knowledge-propagation'))
+      .not.toBeInTheDocument();
   });
 
   it('downloads the existing snapshot as Markdown', async () => {

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import multiprocessing
+import os
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -20,11 +22,69 @@ from okto_pulse.core.ports.global_discovery_recovery_control import (
 from okto_pulse.core.kg.rebuild_generation import (
     RebuildAuditKGGenerationRepository,
 )
+from repo_layout import resolve_core_repo
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _configured_checkout_sources() -> tuple[Path, Path]:
+    community_src = (ROOT / "src").resolve()
+    core_src = (resolve_core_repo(ROOT) / "src").resolve()
+    return community_src, core_src
+
+
+def _is_checkout_source_path(raw: str, selected: frozenset[Path]) -> bool:
+    try:
+        resolved = Path(raw or os.curdir).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if resolved in selected:
+        return True
+    return resolved.name.casefold() == "src" and any(
+        (resolved / "okto_pulse" / edition).is_dir()
+        for edition in ("core", "community")
+    )
+
+
+@pytest.fixture
+def hermetic_spawn_imports(monkeypatch):
+    """Give Windows spawn children one explicit paired-checkout import path."""
+
+    community_src, core_src = _configured_checkout_sources()
+    selected = frozenset((community_src, core_src))
+    retained = [raw for raw in sys.path if not _is_checkout_source_path(raw, selected)]
+    monkeypatch.setattr(
+        sys,
+        "path",
+        [str(community_src), str(core_src), *retained],
+    )
+    monkeypatch.setenv("OKTO_PULSE_COMMUNITY_REPO", str(ROOT.resolve()))
+    monkeypatch.setenv("OKTO_PULSE_CORE_REPO", str(core_src.parent))
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join((str(community_src), str(core_src))),
+    )
+
+
+def _assert_spawned_from_configured_checkouts() -> None:
+    community_src, core_src = _configured_checkout_sources()
+    modules = (
+        (CommunityFileSystemRebuildAuditArtifactStore.__module__, community_src),
+        (RebuildAuditKey.__module__, core_src),
+    )
+    for module_name, expected_src in modules:
+        module_file = Path(sys.modules[module_name].__file__).resolve()
+        try:
+            module_file.relative_to(expected_src)
+        except ValueError as exc:
+            raise AssertionError(
+                f"spawn imported {module_name} from {module_file}, "
+                f"expected checkout {expected_src}"
+            ) from exc
+
+
 def _append_from_process(base_dir: str, index: int, start) -> None:
+    _assert_spawned_from_configured_checkouts()
     store = CommunityFileSystemRebuildAuditArtifactStore(Path(base_dir))
     key = RebuildAuditKey(
         namespace="global_discovery_recovery",
@@ -35,13 +95,12 @@ def _append_from_process(base_dir: str, index: int, start) -> None:
         raise RuntimeError("multiprocess start gate timed out")
     store.replace_json(
         key,
-        lambda current: {
-            "items": sorted([*(current or {}).get("items", []), index])
-        },
+        lambda current: {"items": sorted([*(current or {}).get("items", []), index])},
     )
 
 
 def _consume_from_process(base_dir: str, start, outcomes) -> None:
+    _assert_spawned_from_configured_checkouts()
     store = CommunityFileSystemRebuildAuditArtifactStore(Path(base_dir))
     token_key = RebuildAuditKey(
         namespace="confirmation_token",
@@ -75,7 +134,9 @@ def test_af27_community_rebuild_audit_storage_preserves_local_layout(tmp_path):
         artifact_id="evt_1",
     )
     store.write_json_atomic(event_key, {"event_id": "evt_1"})
-    assert (tmp_path / "rebuild" / "audit" / "events" / board_id / "evt_1.json").exists()
+    assert (
+        tmp_path / "rebuild" / "audit" / "events" / board_id / "evt_1.json"
+    ).exists()
 
     pending_key = RebuildAuditKey(
         namespace="cognitive_pending",
@@ -94,9 +155,12 @@ def test_af27_community_rebuild_audit_storage_preserves_local_layout(tmp_path):
     assert (
         tmp_path / "rebuild" / "audit" / "cognitive_pending" / board_id / "kg_1.json"
     ).exists()
-    assert store.list_json(RebuildAuditKey("cognitive_pending", board_id))[0][
-        "kg_generation_id"
-    ] == "kg_1"
+    assert (
+        store.list_json(RebuildAuditKey("cognitive_pending", board_id))[0][
+            "kg_generation_id"
+        ]
+        == "kg_1"
+    )
 
     confirmation_key = RebuildAuditKey(
         namespace="confirmation_audit",
@@ -105,13 +169,220 @@ def test_af27_community_rebuild_audit_storage_preserves_local_layout(tmp_path):
     )
     store.write_json_atomic(confirmation_key, {"audit_id": "audit_1"})
     assert (
+        tmp_path / "rebuild" / "audit" / "confirmation" / board_id / "audit_1.json"
+    ).exists()
+
+    receipt_key = RebuildAuditKey(
+        namespace="rebuild_confirmation_receipt",
+        board_id=board_id,
+        artifact_id="run_1",
+    )
+    receipt = {
+        "schema_version": "kg_rebuild_confirmation_receipt.v1",
+        "board_id": board_id,
+        "run_id": "run_1",
+    }
+    store.write_json_atomic(receipt_key, receipt)
+    assert store.read_json(receipt_key) == receipt
+    assert store.list_json(
+        RebuildAuditKey(
+            namespace="rebuild_confirmation_receipt",
+            board_id=board_id,
+        )
+    ) == [receipt]
+    assert (
         tmp_path
         / "rebuild"
         / "audit"
-        / "confirmation"
+        / "confirmation_receipts"
         / board_id
-        / "audit_1.json"
+        / "run_1.json"
     ).exists()
+
+
+def test_rebuild_confirmation_receipt_is_atomic_with_token_consumption(tmp_path):
+    store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
+    board_id = "board-receipt"
+    token_key = RebuildAuditKey(
+        namespace="confirmation_token",
+        board_id="_global",
+        artifact_id="conf-board-receipt",
+    )
+    receipt_key = RebuildAuditKey(
+        namespace="rebuild_confirmation_receipt",
+        board_id=board_id,
+        artifact_id="run-board-receipt",
+    )
+    token = {"confirmation_id": "conf-board-receipt", "expected_board_id": board_id}
+    receipt = {
+        "schema_version": "kg_rebuild_confirmation_receipt.v1",
+        "board_id": board_id,
+        "run_id": "run-board-receipt",
+    }
+    store.write_json_atomic(token_key, token)
+
+    assert (
+        store.consume_json_with_receipt(
+            source_key=token_key,
+            expected_source=token,
+            receipt_key=receipt_key,
+            receipt_payload=receipt,
+        )
+        == "consumed"
+    )
+    assert store.read_json(token_key) is None
+    assert store.read_json(receipt_key) == receipt
+    assert (
+        store.consume_json_with_receipt(
+            source_key=token_key,
+            expected_source=token,
+            receipt_key=receipt_key,
+            receipt_payload=receipt,
+        )
+        == "receipt_exists"
+    )
+
+
+def test_terminal_receipt_rotation_consumes_token_under_one_store_lock(tmp_path):
+    store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
+    token_key = RebuildAuditKey(
+        namespace="confirmation_token",
+        board_id="_global",
+        artifact_id="conf-next",
+    )
+    active_key = RebuildAuditKey(
+        namespace="rebuild_confirmation_receipt",
+        board_id="board-rotation",
+        artifact_id="active",
+    )
+    token = {"confirmation_id": "conf-next", "board_id": "board-rotation"}
+    terminal = {
+        "run_id": "run-old",
+        "board_id": "board-rotation",
+        "receipt_state": "terminal",
+    }
+    replacement = {
+        "run_id": "run-next",
+        "board_id": "board-rotation",
+        "receipt_state": "active",
+    }
+    store.write_json_atomic(token_key, token)
+    store.write_json_atomic(active_key, terminal)
+
+    outcome = store.consume_json_replacing_terminal_receipt(
+        source_key=token_key,
+        expected_source=token,
+        receipt_key=active_key,
+        expected_terminal_receipt=terminal,
+        receipt_payload=replacement,
+    )
+
+    assert outcome == "consumed"
+    assert store.read_json(token_key) is None
+    assert store.read_json(active_key) == replacement
+
+
+def test_terminal_receipt_rotation_conflict_preserves_marker_and_token(tmp_path):
+    store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
+    token_key = RebuildAuditKey(
+        namespace="confirmation_token",
+        board_id="_global",
+        artifact_id="conf-conflict",
+    )
+    active_key = RebuildAuditKey(
+        namespace="rebuild_confirmation_receipt",
+        board_id="board-rotation",
+        artifact_id="active",
+    )
+    token = {"confirmation_id": "conf-conflict"}
+    terminal = {"run_id": "run-old", "receipt_state": "terminal"}
+    store.write_json_atomic(token_key, token)
+    store.write_json_atomic(active_key, terminal)
+
+    outcome = store.consume_json_replacing_terminal_receipt(
+        source_key=token_key,
+        expected_source=token,
+        receipt_key=active_key,
+        expected_terminal_receipt={**terminal, "run_id": "forged"},
+        receipt_payload={"run_id": "run-next", "receipt_state": "active"},
+    )
+
+    assert outcome == "receipt_conflict"
+    assert store.read_json(token_key) == token
+    assert store.read_json(active_key) == terminal
+
+
+def test_terminal_receipt_rotation_write_failure_preserves_marker_and_token(
+    tmp_path,
+    monkeypatch,
+):
+    store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
+    token_key = RebuildAuditKey(
+        namespace="confirmation_token",
+        board_id="_global",
+        artifact_id="conf-write-failure",
+    )
+    active_key = RebuildAuditKey(
+        namespace="rebuild_confirmation_receipt",
+        board_id="board-rotation",
+        artifact_id="active",
+    )
+    token = {"confirmation_id": "conf-write-failure"}
+    terminal = {"run_id": "run-old", "receipt_state": "terminal"}
+    store.write_json_atomic(token_key, token)
+    store.write_json_atomic(active_key, terminal)
+
+    def fail_receipt_write(_key, _payload):  # noqa: ANN001, ANN202
+        raise OSError("injected receipt write failure")
+
+    monkeypatch.setattr(store, "_write_json_atomic_unlocked", fail_receipt_write)
+
+    with pytest.raises(OSError, match="injected receipt write failure"):
+        store.consume_json_replacing_terminal_receipt(
+            source_key=token_key,
+            expected_source=token,
+            receipt_key=active_key,
+            expected_terminal_receipt=terminal,
+            receipt_payload={"run_id": "run-next", "receipt_state": "active"},
+        )
+
+    assert store.read_json(token_key) == token
+    assert store.read_json(active_key) == terminal
+
+
+def test_terminal_receipt_rotation_recovers_crash_after_replace_before_unlink(
+    tmp_path,
+):
+    store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
+    token_key = RebuildAuditKey(
+        namespace="confirmation_token",
+        board_id="_global",
+        artifact_id="conf-crash-cut",
+    )
+    active_key = RebuildAuditKey(
+        namespace="rebuild_confirmation_receipt",
+        board_id="board-rotation",
+        artifact_id="active",
+    )
+    token = {"confirmation_id": "conf-crash-cut"}
+    terminal = {"run_id": "run-old", "receipt_state": "terminal"}
+    replacement = {"run_id": "run-next", "receipt_state": "active"}
+    store.write_json_atomic(token_key, token)
+    # Exact durable state left by a crash after receipt replacement and before
+    # token unlink. The second invocation receives the original CAS witness.
+    store.write_json_atomic(active_key, replacement)
+
+    outcome = store.consume_json_replacing_terminal_receipt(
+        source_key=token_key,
+        expected_source=token,
+        receipt_key=active_key,
+        expected_terminal_receipt=terminal,
+        receipt_payload=replacement,
+    )
+
+    assert outcome == "consumed"
+    assert store.read_json(token_key) is None
+    assert store.read_json(active_key) == replacement
 
 
 def test_af16_community_generation_storage_preserves_legacy_layout(tmp_path):
@@ -138,9 +409,7 @@ def test_af16_community_generation_storage_preserves_legacy_layout(tmp_path):
     history = repo.load_history(board_id, generation_id)
     assert history is not None
     assert history["kg_generation_id"] == generation_id
-    assert (
-        tmp_path / "rebuild" / "generations" / board_id / "current.json"
-    ).exists()
+    assert (tmp_path / "rebuild" / "generations" / board_id / "current.json").exists()
     assert (
         tmp_path
         / "rebuild"
@@ -170,11 +439,7 @@ def test_af38_community_reindex_and_contingency_layout(tmp_path):
         },
     )
     assert (
-        tmp_path
-        / "rebuild"
-        / "discovery_reindex"
-        / board_id
-        / f"{generation_id}.json"
+        tmp_path / "rebuild" / "discovery_reindex" / board_id / f"{generation_id}.json"
     ).exists()
     assert store.read_json(reindex_key)["status"] == "reindex_pending"
 
@@ -191,12 +456,7 @@ def test_af38_community_reindex_and_contingency_layout(tmp_path):
             "quarantine_ids": ["q_af38"],
         },
     )
-    assert (
-        tmp_path
-        / "contingency"
-        / "contingency_af38"
-        / "contingency.json"
-    ).exists()
+    assert (tmp_path / "contingency" / "contingency_af38" / "contingency.json").exists()
     rows = store.list_json(RebuildAuditKey(namespace="contingency", board_id=board_id))
     assert [row["contingency_id"] for row in rows] == ["contingency_af38"]
     assert not list(tmp_path.rglob("*.tmp"))
@@ -208,11 +468,7 @@ def test_af38_community_reads_existing_reindex_and_contingency_artifacts(tmp_pat
     generation_id = "33333333-3333-4333-8333-333333333333"
 
     historical_reindex = (
-        tmp_path
-        / "rebuild"
-        / "discovery_reindex"
-        / board_id
-        / f"{generation_id}.json"
+        tmp_path / "rebuild" / "discovery_reindex" / board_id / f"{generation_id}.json"
     )
     historical_reindex.parent.mkdir(parents=True)
     historical_reindex.write_text(
@@ -233,15 +489,15 @@ def test_af38_community_reads_existing_reindex_and_contingency_artifacts(tmp_pat
         kg_generation_id=generation_id,
     )
     assert store.read_json(reindex_key)["status"] == "reindexed"
-    assert store.list_json(
-        RebuildAuditKey(namespace="global_discovery_reindex", board_id=board_id)
-    )[0]["kg_generation_id"] == generation_id
+    assert (
+        store.list_json(
+            RebuildAuditKey(namespace="global_discovery_reindex", board_id=board_id)
+        )[0]["kg_generation_id"]
+        == generation_id
+    )
 
     historical_contingency = (
-        tmp_path
-        / "contingency"
-        / "contingency_history"
-        / "contingency.json"
+        tmp_path / "contingency" / "contingency_history" / "contingency.json"
     )
     historical_contingency.parent.mkdir(parents=True)
     historical_contingency.write_text(
@@ -288,7 +544,10 @@ def test_rebuild_store_survives_restart_at_same_typed_kg_root(tmp_path):
     assert str(restarted._base_dir).startswith(str(root))  # noqa: SLF001
 
 
-def test_replace_json_is_serialized_across_spawned_processes(tmp_path):
+def test_replace_json_is_serialized_across_spawned_processes(
+    tmp_path,
+    hermetic_spawn_imports,
+):
     context = multiprocessing.get_context("spawn")
     start = context.Event()
     processes = [
@@ -350,7 +609,10 @@ def test_confirmation_receipt_consume_is_cross_instance_exactly_once(tmp_path):
     assert second.read_json(receipt_key) == receipt
 
 
-def test_confirmation_receipt_consume_is_exactly_once_across_processes(tmp_path):
+def test_confirmation_receipt_consume_is_exactly_once_across_processes(
+    tmp_path,
+    hermetic_spawn_imports,
+):
     store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
     token_key = RebuildAuditKey(
         namespace="confirmation_token",
@@ -414,6 +676,110 @@ def test_atomic_write_orders_file_fsync_replace_and_directory_fsync(
 
     assert events.index("file_fsync") < events.index("replace")
     assert events.index("replace") < events.index("directory_fsync")
+
+
+def _synthetic_windows_error(code: int) -> OSError:
+    exc = OSError(f"synthetic Windows error {code}")
+    exc.winerror = code
+    return exc
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing semantics")
+def test_atomic_write_retries_transient_windows_sharing_denial(tmp_path, monkeypatch):
+    from okto_pulse.community.adapters import rebuild_audit_storage as module
+
+    store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
+    key = RebuildAuditKey(
+        namespace="global_discovery_recovery",
+        board_id="_global",
+        artifact_id="windows-sharing-retry",
+    )
+    store.write_json_atomic(key, {"version": "old"})
+    path = Path(store.reference(key))
+    attempts = 0
+    sleeps: list[float] = []
+
+    def replace(source, destination):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise _synthetic_windows_error(5)
+        module.os.replace(source, destination)
+
+    monkeypatch.setattr(module, "_windows_replace_write_through_once", replace)
+    monkeypatch.setattr(module.time, "sleep", sleeps.append)
+
+    store.write_json_atomic(key, {"version": "new"})
+
+    assert attempts == 2
+    assert sleeps == [0.05]
+    assert store.read_json(key) == {"version": "new"}
+    assert not list(path.parent.glob(f".{path.name}.*.tmp"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing semantics")
+def test_atomic_write_exhausts_windows_sharing_retry_without_replacing(
+    tmp_path, monkeypatch
+):
+    from okto_pulse.community.adapters import rebuild_audit_storage as module
+
+    store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
+    key = RebuildAuditKey(
+        namespace="global_discovery_recovery",
+        board_id="_global",
+        artifact_id="windows-sharing-exhausted",
+    )
+    store.write_json_atomic(key, {"version": "committed"})
+    path = Path(store.reference(key))
+    before = path.read_bytes()
+    attempts = 0
+    sleeps: list[float] = []
+
+    def replace(_source, _destination):
+        nonlocal attempts
+        attempts += 1
+        raise _synthetic_windows_error(32)
+
+    monkeypatch.setattr(module, "_windows_replace_write_through_once", replace)
+    monkeypatch.setattr(module.time, "sleep", sleeps.append)
+
+    with pytest.raises(OSError) as raised:
+        store.write_json_atomic(key, {"version": "uncommitted"})
+
+    assert raised.value.winerror == 32
+    assert attempts == 3
+    assert sleeps == [0.05, 0.10]
+    assert path.read_bytes() == before
+    assert not list(path.parent.glob(f".{path.name}.*.tmp"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing semantics")
+def test_atomic_write_does_not_retry_other_windows_errors(tmp_path, monkeypatch):
+    from okto_pulse.community.adapters import rebuild_audit_storage as module
+
+    store = CommunityFileSystemRebuildAuditArtifactStore(tmp_path)
+    key = RebuildAuditKey(
+        namespace="global_discovery_recovery",
+        board_id="_global",
+        artifact_id="windows-non-sharing-error",
+    )
+    attempts = 0
+    sleeps: list[float] = []
+
+    def replace(_source, _destination):
+        nonlocal attempts
+        attempts += 1
+        raise _synthetic_windows_error(87)
+
+    monkeypatch.setattr(module, "_windows_replace_write_through_once", replace)
+    monkeypatch.setattr(module.time, "sleep", sleeps.append)
+
+    with pytest.raises(OSError) as raised:
+        store.write_json_atomic(key, {"version": "never-committed"})
+
+    assert raised.value.winerror == 87
+    assert attempts == 1
+    assert sleeps == []
 
 
 def test_next_mutation_removes_orphan_unique_temp_without_promoting_it(tmp_path):

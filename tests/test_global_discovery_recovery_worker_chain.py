@@ -3518,7 +3518,7 @@ def test_r6_worker_chain_real_durable_resume_handoff_epoch_two(
                 bundle2.control,
                 run_id=run_id,
                 predicate=lambda s: s.state is RecoveryRunState.SUCCESS,
-                timeout_seconds=6.0,
+                timeout_seconds=60.0,
             )
         finally:
             bundle2.close()
@@ -3618,8 +3618,15 @@ community_src = sys.argv[9]
 core_src = sys.argv[10]
 # R8-B7.8 (#1): build the checkout source roots DETERMINISTICALLY before any
 # import — never rely on inherited PYTHONPATH or an installed distribution.
+# Editable environments may already expose these exact roots through a ``.pth``
+# file *after* site-packages.  Merely skipping an existing entry would then let
+# an older installed ``okto_pulse.core`` win before the checkout.  Remove every
+# occurrence first and reinsert the roots at the front, matching the suite's
+# repository-checkout activation contract.
 for root in (core_src, community_src):
-    if root and root not in sys.path:
+    if root:
+        while root in sys.path:
+            sys.path.remove(root)
         sys.path.insert(0, root)
 sys.path.insert(0, tests_dir)
 

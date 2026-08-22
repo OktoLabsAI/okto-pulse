@@ -542,6 +542,8 @@ export function ContractsTab({
                                 <span className={`text-[10px] px-1 py-0.5 rounded ${
                                   card.status === 'done' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' :
                                   card.status === 'in_progress' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' :
+                                  card.status === 'validation' ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300' :
+                                  card.status === 'rejected' ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300' :
                                   'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400'
                                 }`}>
                                   {card.status.replace('_', ' ')}

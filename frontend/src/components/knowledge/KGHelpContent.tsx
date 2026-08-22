@@ -7,7 +7,7 @@
  * as real DOM — the markdown renderer strips raw HTML for XSS safety.
  *
  * Adding a new NodeType or RelationType? Update two places in lockstep:
- *   1. okto_labs_pulse_core/src/okto_pulse/core/kg/schema.py
+ *   1. okto_labs_pulse_core/src/okto_pulse/core/kg/schema_contract.py
  *   2. frontend/src/types/knowledge-graph.ts (NODE_TYPE_CONFIG or EDGE_TYPE_CONFIG)
  * The catalogues below resolve their rows from those configs automatically.
  * Bump SCHEMA_VERSION in frontend/src/constants/kg.ts to match backend.
@@ -217,7 +217,7 @@ heading shows the current page size (not the total in the board).
 
 ### Edge type chips
 
-The **Edge Types** row below is ten colored pills, one per connection type.
+The **Edge Types** row below has one colored pill per connection type.
 Click to toggle. Active pills carry a ✓ prefix and a ring so the "all on"
 default is visually distinct from "I disabled some".
 

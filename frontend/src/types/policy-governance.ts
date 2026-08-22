@@ -77,6 +77,7 @@ export interface PolicyComplianceBindingDecision {
 }
 
 export interface PolicyComplianceTransitionDecision {
+  projection: 'full';
   state: PolicyTransitionReasonCode;
   allowed: boolean | null;
   policy_compliance_required: boolean;
@@ -95,6 +96,13 @@ export interface PolicyComplianceTransitionDecision {
   skipped_binding_count: number | null;
   diagnostic_codes: PolicyTransitionDiagnosticCode[];
   binding_decisions: PolicyComplianceBindingDecision[];
+}
+
+export interface RedactedPolicyComplianceTransitionDecision {
+  projection: 'redacted';
+  state: 'policy_compliance_redacted' | 'policy_subject_required';
+  allowed: boolean | null;
+  policy_compliance_required: boolean;
 }
 
 export type PolicyWaiverStatus =
@@ -206,6 +214,10 @@ interface SemanticAssessmentBase {
   entity_type: PolicyEntityType;
   subject_id: string;
   subject_version: number;
+  /** Spec validation edition; null is legacy history-only evidence. */
+  validation_edition: number | null;
+  /** Human lifecycle placement, separate from technical currentness drift. */
+  lifecycle_state: 'current' | 'previous' | 'history_only';
   binding_id: string;
   guideline_id: string;
   guideline_revision_id: string;
@@ -264,6 +276,8 @@ interface SemanticFindingBase {
   entity_type: PolicyEntityType;
   subject_id: string;
   subject_version: number;
+  validation_edition: number | null;
+  lifecycle_state: 'current' | 'previous' | 'history_only';
   guideline_id: string;
   guideline_revision_id: string;
   binding_id: string;
@@ -330,6 +344,8 @@ interface SemanticWaiverBase {
   entity_type: PolicyEntityType;
   subject_id: string;
   subject_version: number;
+  validation_edition: number | null;
+  lifecycle_state: 'current' | 'previous' | 'history_only';
   finding_id: string;
   receipt_id: string;
   guideline_id: string;
@@ -406,6 +422,8 @@ interface SemanticSkipBase {
   entity_type: PolicyEntityType;
   subject_id: string;
   subject_version: number;
+  validation_edition: number | null;
+  lifecycle_state: 'current' | 'previous' | 'history_only';
   guideline_id: string;
   guideline_revision_id: string;
   binding_id: string;
@@ -460,6 +478,84 @@ export interface SemanticCursorPage<T> {
 export interface SemanticAssessmentResponse {
   assessment: SemanticAssessmentListItem;
 }
+
+export type SemanticAssessmentContractVersion = 'v1' | 'v2';
+export type SemanticPinpointKind = 'evidence' | 'issue';
+export type SemanticPinpointSeverity = 'low' | 'medium' | 'high' | 'critical';
+export type SemanticAnchorAvailability =
+  | 'available'
+  | 'removed'
+  | 'inaccessible';
+
+export interface SemanticAnchorV2 {
+  anchor_type: SemanticPinpointAnchorType;
+  anchor_ref: string | null;
+  excerpt_hash: string | null;
+}
+
+export interface SemanticAnchorSnapshotV2 {
+  label: string;
+  excerpt: string | null;
+  source_version: string;
+  availability_at_seal: SemanticAnchorAvailability;
+}
+
+export interface SemanticPinpointV2 {
+  contract_version: 'v2';
+  pinpoint_key: string;
+  kind: SemanticPinpointKind;
+  title: string;
+  detail: string;
+  severity: SemanticPinpointSeverity | null;
+  remediation: string | null;
+  anchor: SemanticAnchorV2;
+  anchor_snapshot: SemanticAnchorSnapshotV2;
+  blocking: boolean;
+}
+
+export interface SemanticMetricResultV2 {
+  metric_result_id: string;
+  metric_result_digest: string;
+  metric_id: string;
+  metric_code: string;
+  score: number;
+  direction: GuidelineMetricDirection;
+  default_threshold: number;
+  effective_threshold: number;
+  threshold_source: SemanticThresholdSource;
+  outcome: SemanticMetricOutcome;
+  blocking: boolean;
+  pinpoints: SemanticPinpointV2[];
+}
+
+export interface SemanticAssessmentCurrentV2 {
+  receipt_id: string;
+  receipt_digest: string;
+  currentness: 'current';
+  board_id: string;
+  subject_type: PolicyEntityType;
+  subject_id: string;
+  subject_version: number;
+  /** Validation edition when the subject participates in editioned lifecycle validation. */
+  validation_edition: number | null;
+  lifecycle_state: 'current';
+  binding_id: string;
+  guideline_id: string;
+  guideline_revision_id: string;
+  confidence: number;
+  recorded_at: string;
+  metrics: SemanticMetricResultV2[];
+}
+
+export type SemanticCurrentAssessmentResponse =
+  | {
+      contract_version: 'v1';
+      assessment: SemanticAssessmentDetail;
+    }
+  | {
+      contract_version: 'v2';
+      assessment: SemanticAssessmentCurrentV2;
+    };
 
 export interface SemanticWaiverResponse {
   waiver: SemanticWaiverListItem;
@@ -531,6 +627,7 @@ export interface BoardGuidelineBinding {
   enforcement: GuidelineEnforcement;
   minimum_confidence: number;
   metric_threshold_overrides: GuidelineMetricThresholdOverrides;
+  configuration_digest: string | null;
   state: GuidelineBindingState;
   source_kind: GuidelineBindingProvenance;
 }
@@ -640,11 +737,13 @@ export interface RetirementResponse {
 }
 
 export interface PreviewGuidelineImpactRequest {
-  target_revision_id: string;
-  expected_binding_head_revision: number | null;
-  enforcement: GuidelineEnforcement;
-  minimum_confidence: number;
-  metric_threshold_overrides: GuidelineMetricThresholdOverrides;
+  proposed_priority: number;
+  proposed_enforcement: GuidelineEnforcement;
+  proposed_minimum_confidence: number;
+  proposed_metric_threshold_overrides: GuidelineMetricThresholdOverrides;
+  idempotency_key: string;
+  to_revision_id?: string | null;
+  requested_at?: string | null;
 }
 
 interface GuidelineImpactItemBase {
@@ -692,24 +791,57 @@ export interface GuidelineImpactPreviewItemsPage {
   next_cursor: string | null;
 }
 
+export interface GuidelineImpactReceipt {
+  impact_receipt_id: string;
+  board_id: string;
+  guideline_id: string;
+  binding_id: string;
+  to_revision_id: string;
+  to_revision_number: number;
+  to_semantic_version: string;
+  to_revision_digest: string;
+  expected_head_revision: number;
+  expected_binding_revision: number | null;
+  expected_binding_state: GuidelineBindingState | null;
+  binding_digest: string;
+  binding_head_digest_before: string;
+  binding_head_digest_after: string;
+  policy_set_digest_before: string;
+  policy_set_digest_after: string;
+  artifact_snapshot_digest: string;
+  waiver_snapshot_digest: string;
+  proposed_priority: number;
+  proposed_enforcement: GuidelineEnforcement;
+  proposed_minimum_confidence: number;
+  proposed_metric_threshold_overrides: GuidelineMetricThresholdOverrides;
+  affected_entity_types: PolicyEntityType[];
+  items: GuidelineImpactItem[];
+  added_metric_ids: string[];
+  changed_metric_ids: string[];
+  removed_metric_ids: string[];
+  requested_by: string;
+  created_at: string;
+  impact_digest: string;
+  from_revision_id: string | null;
+  from_semantic_version: string | null;
+  from_revision_digest: string | null;
+  requires_explicit_adoption: true;
+}
+
 export interface GuidelineImpactPreviewResponse {
-  preview_id: string;
-  preview_digest: string;
-  items_page: GuidelineImpactPreviewItemsPage;
+  receipt: GuidelineImpactReceipt;
 }
 
 export interface AdoptGuidelineRevisionRequest {
-  preview_id: string;
-  preview_digest: string;
-  expected_binding_head_revision: number | null;
+  impact_receipt_id: string;
+  impact_digest: string;
   idempotency_key: string;
+  occurred_at?: string | null;
 }
 
 export interface GuidelineAdoptionResponse {
-  binding_id: string;
-  binding_revision: number;
-  configuration_digest: string;
-  replayed: boolean;
+  binding: BoardGuidelineBinding & { configuration_digest: string };
+  receipt: GuidelineImpactReceipt;
 }
 
 export type GuidelineHistoryStatus = 'complete' | 'baseline_only';
@@ -915,6 +1047,7 @@ export interface SemanticAssessmentPageOptions extends PolicyPageOptions {
   bindingId?: string;
   outcome?: SemanticAssessmentOutcome;
   currentness?: PolicyCurrentness;
+  validationEdition?: number;
 }
 
 export interface SemanticFindingPageOptions extends PolicyPageOptions {
