@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -292,6 +293,32 @@ def test_cursor_is_signed_and_bound_to_board_and_filters(monkeypatch) -> None:
             ),
         )
     assert cross_scope.value.status_code == 400
+
+
+def test_cursor_decode_uses_fixed_signature_boundary(monkeypatch) -> None:
+    monkeypatch.setattr(
+        api,
+        "get_settings",
+        lambda: SimpleNamespace(
+            guideline_policy_cursor_signing_key=SecretStr("k" * 64)
+        ),
+    )
+    binding = api._cursor_binding("code_evidence", "board-1")
+    for index in range(1_000):
+        cursor = CodeTraceabilityPageCursor(
+            created_at=datetime(2026, 8, 9, tzinfo=timezone.utc),
+            item_id=f"evidence-{index}",
+        )
+        encoded = api._encode_cursor(cursor, binding=binding)
+        assert encoded is not None
+        decoded = base64.urlsafe_b64decode(
+            (encoded + "=" * (-len(encoded) % 4)).encode("ascii")
+        )
+        if b"." in decoded[-32:]:
+            assert api._decode_cursor(encoded, binding=binding) == cursor
+            break
+    else:
+        pytest.fail("fixture did not produce a signature containing the delimiter byte")
 
 
 def test_routes_are_board_scoped_and_overlap_ack_is_card_scoped() -> None:

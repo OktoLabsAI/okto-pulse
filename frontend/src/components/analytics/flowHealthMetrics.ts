@@ -70,6 +70,16 @@ function reportRecords(
   });
 }
 
+function completeRecordNumbers(
+  records: CanonicalAnalyticsRecord[],
+  keys: string[],
+): number[] | null {
+  if (records.length === 0) return null;
+  const values = records.map((record) => firstNumber(record, keys));
+  if (values.some((value) => value === null)) return null;
+  return values as number[];
+}
+
 export function flowHealthAuthorityState(data: FlowHealthResponse): FlowHealthAuthorityState {
   const summary = data.summary ?? {};
   if ((finiteNumber(summary.inconsistent) ?? 0) > 0) return 'inconsistent';
@@ -109,41 +119,55 @@ export function deriveFlowHealthMetrics(data: FlowHealthResponse): FlowHealthMet
   const rejectedP95Hours = firstNumber(summary, [
     'rejected_age_p95_hours',
     'rejected_wip_p95_hours',
-  ]) ?? percentile(rejectedAgesHours, 0.95);
+  ]) ?? (canInferRows ? percentile(rejectedAgesHours, 0.95) : null);
 
   const rework = data.items.flatMap((item) => item.rework ?? []);
   const recovered = rework.filter(isRecovered).length;
   const recoverySample = firstNumber(summary, ['recovery_n', 'recovery_sample', 'rework_episodes'])
     ?? (canInferRows ? rework.length : null);
   const recoveryRate = firstNumber(summary, ['recovery_rate', 'rework_recovery_rate'])
-    ?? (rework.length > 0 ? recovered / rework.length : null);
+    ?? (canInferRows && rework.length > 0 ? recovered / rework.length : null);
 
   const dependencies = reportRecords(data, 'dependency');
-  const dependencyWaitP50Hours = firstNumber(summary, [
-    'dependency_wait_p50_hours',
-    'dependency_p50_hours',
-  ]) ?? dependencies.map((record) => firstNumber(record, [
+  const dependencyWaitValues = completeRecordNumbers(dependencies, [
     'wait_p50_hours',
     'p50_hours',
     'wait_hours',
-  ])).find((value): value is number => value !== null) ?? null;
+  ]);
+  const dependencyWaitP50Hours = firstNumber(summary, [
+    'dependency_wait_p50_hours',
+    'dependency_p50_hours',
+  ]) ?? (canInferRows && dependencyWaitValues
+    ? percentile(dependencyWaitValues, 0.5)
+    : null);
+  const dependencyDepthValues = completeRecordNumbers(dependencies, [
+    'max_depth',
+    'depth',
+    'longest_chain',
+  ]);
   const dependencyDepth = firstNumber(summary, [
     'dependency_depth',
     'dependency_max_depth',
     'longest_dependency_chain',
-  ]) ?? dependencies.map((record) => firstNumber(record, [
-    'max_depth',
-    'depth',
-    'longest_chain',
-  ])).find((value): value is number => value !== null) ?? null;
+  ]) ?? (canInferRows && dependencyDepthValues
+    ? Math.max(...dependencyDepthValues)
+    : null);
 
   const defects = reportRecords(data, 'defect');
+  const openBugValues = completeRecordNumbers(defects, ['open_bugs', 'open_count', 'open']);
   const openBugs = firstNumber(summary, ['open_bugs', 'open_defects'])
-    ?? defects.map((record) => firstNumber(record, ['open_bugs', 'open_count', 'open']))
-      .find((value): value is number => value !== null) ?? null;
+    ?? (canInferRows && openBugValues
+      ? openBugValues.reduce((total, value) => total + value, 0)
+      : null);
+  const highSeverityBugValues = completeRecordNumbers(defects, [
+    'high_severity',
+    'high_count',
+    'critical_and_high',
+  ]);
   const highSeverityBugs = firstNumber(summary, ['high_severity_bugs', 'high_severity_defects'])
-    ?? defects.map((record) => firstNumber(record, ['high_severity', 'high_count', 'critical_and_high']))
-      .find((value): value is number => value !== null) ?? null;
+    ?? (canInferRows && highSeverityBugValues
+      ? highSeverityBugValues.reduce((total, value) => total + value, 0)
+      : null);
 
   return {
     blockerOccurrences,

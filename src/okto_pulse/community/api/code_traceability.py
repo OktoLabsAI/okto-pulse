@@ -393,7 +393,13 @@ def _decode_cursor(
     try:
         padded = value + "=" * (-len(value) % 4)
         decoded = base64.urlsafe_b64decode(padded.encode("ascii"))
-        payload_bytes, signature = decoded.rsplit(b".", 1)
+        if len(decoded) < hashlib.sha256().digest_size + 1:
+            raise ValueError
+        delimiter_index = -(hashlib.sha256().digest_size + 1)
+        if decoded[delimiter_index : delimiter_index + 1] != b".":
+            raise ValueError
+        payload_bytes = decoded[:delimiter_index]
+        signature = decoded[-hashlib.sha256().digest_size :]
         expected_signature = hmac.new(
             _cursor_key(),
             payload_bytes,

@@ -1056,6 +1056,36 @@ def _emit_code_traceability_diagnostics(payload, *, emit_json: bool) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True, default=str))
 
 
+def _configured_code_traceability_database_path(database_url: str) -> Path:
+    """Resolve the configured Community SQLite database for diagnostics."""
+
+    from urllib.parse import unquote
+
+    from sqlalchemy.engine import make_url
+
+    from okto_pulse.community.commands.code_traceability_diagnostics import (
+        CodeTraceabilityDiagnosticsError,
+    )
+
+    try:
+        url = make_url(str(database_url))
+    except Exception as exc:
+        raise CodeTraceabilityDiagnosticsError(
+            "code_traceability_database_url_invalid",
+            "The configured database URL is invalid",
+        ) from exc
+    database = unquote(str(url.database or ""))
+    if url.get_backend_name() != "sqlite" or database in {"", ":memory:"}:
+        raise CodeTraceabilityDiagnosticsError(
+            "code_traceability_database_url_unsupported",
+            "Diagnostics require a configured file-backed SQLite database",
+        )
+    if os.name == "nt" and database.startswith("/") and len(database) > 2:
+        if database[2] == ":":
+            database = database[1:]
+    return Path(database).expanduser().resolve()
+
+
 def cmd_code_traceability(args):
     """Inspect Pulse-owned Code Traceability state without investigating source."""
 
@@ -1070,10 +1100,10 @@ def cmd_code_traceability(args):
     from okto_pulse.community.config import CommunitySettings
 
     settings = CommunitySettings()
-    db_path = Path(settings.data_dir) / "data" / "pulse.db"
     command = args.code_traceability_command
     emit_json = bool(getattr(args, "json", False))
     try:
+        db_path = _configured_code_traceability_database_path(settings.database_url)
         with open_read_only_database(str(db_path)) as connection:
             if command == "requests":
                 payload = list_requests(

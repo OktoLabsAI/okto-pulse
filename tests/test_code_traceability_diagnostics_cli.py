@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from okto_pulse.community import cli
+
 from okto_pulse.community.commands.code_traceability_diagnostics import (
     CodeTraceabilityDiagnosticsError,
     diagnose,
@@ -132,6 +134,16 @@ def test_database_is_opened_read_only(tmp_path: Path) -> None:
     with open_read_only_database(str(path)) as connection:
         with pytest.raises(sqlite3.OperationalError):
             connection.execute("INSERT INTO marker DEFAULT VALUES")
+
+
+def test_cli_diagnostics_use_the_configured_sqlite_database(tmp_path: Path) -> None:
+    database = tmp_path / "custom" / "pulse.sqlite3"
+
+    resolved = cli._configured_code_traceability_database_path(
+        f"sqlite+aiosqlite:///{database.as_posix()}"
+    )
+
+    assert resolved == database.resolve()
 
 
 def test_diagnose_applies_open_limit_per_actor_and_ignores_expired(
