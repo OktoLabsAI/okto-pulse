@@ -132,15 +132,63 @@ export const SKB_PERMISSION_INTRODUCTION_V1 = {
   },
 } as const satisfies PermissionIntroductionManifest;
 
+/**
+ * Separate introduction for the human-only legacy Evidence classification
+ * action.  It intentionally does not extend CODE-TRACEABILITY/v1: that
+ * manifest remains pinned to its original 22 explicit-grant leaves.
+ */
+export const CODE_EVIDENCE_LEGACY_CLASSIFICATION_PERMISSION_INTRODUCTION_V1 = {
+  version: 'CODE-EVIDENCE-LEGACY-CLASSIFICATION/v1',
+  leaves: [
+    'code_traceability.evidence.classify_legacy',
+  ],
+  historicalAuthorities: {
+    'code_traceability.evidence.classify_legacy': 'spec.entity.edit_fields',
+  },
+} as const satisfies PermissionIntroductionManifest;
+
 export const PERMISSION_INTRODUCTION_MANIFESTS = [
   SKA_PERMISSION_INTRODUCTION_V1,
   SKB_PERMISSION_INTRODUCTION_V1,
+  CODE_EVIDENCE_LEGACY_CLASSIFICATION_PERMISSION_INTRODUCTION_V1,
 ] as const satisfies readonly PermissionIntroductionManifest[];
 
 export const SKA_PERMISSION_INTRODUCTION_V1_LEAVES =
   SKA_PERMISSION_INTRODUCTION_V1.leaves;
 export const SKB_PERMISSION_INTRODUCTION_V1_LEAVES =
   SKB_PERMISSION_INTRODUCTION_V1.leaves;
+export const CODE_EVIDENCE_LEGACY_CLASSIFICATION_PERMISSION_INTRODUCTION_V1_LEAVES =
+  CODE_EVIDENCE_LEGACY_CLASSIFICATION_PERMISSION_INTRODUCTION_V1.leaves;
+
+/**
+ * Exact explicit-grant leaves introduced by Core's CODE-TRACEABILITY/v1
+ * manifest. Unlike SK-A/SK-B migration leaves, these have no historical
+ * fallback authority: absence must remain denied for every preset lineage.
+ */
+export const CODE_TRACEABILITY_PERMISSION_INTRODUCTION_V1_LEAVES = [
+  'code_traceability.investigation.start',
+  'code_traceability.investigation.read',
+  'code_traceability.investigation.receipt_submit',
+  'code_traceability.investigation.revoke',
+  'code_traceability.evidence.read',
+  'code_traceability.evidence.submit',
+  'code_traceability.evidence.supersede',
+  'code_traceability.evidence.revoke',
+  'code_traceability.spec_link.create',
+  'code_traceability.spec_link.delete',
+  'code_traceability.spec_link.set_disposition',
+  'code_traceability.spec_link.rebase',
+  'code_traceability.target.read',
+  'code_traceability.target.suggest',
+  'code_traceability.target.create',
+  'code_traceability.target.edit',
+  'code_traceability.target.resolution_submit',
+  'code_traceability.target.execution_submit',
+  'code_traceability.overlap.read',
+  'code_traceability.overlap.acknowledge',
+  'code_traceability.waiver.create',
+  'code_traceability.waiver.clear',
+] as const;
 
 const COMPOSED_PERMISSION_INTRODUCTIONS =
   composePermissionIntroductionManifests(
@@ -173,6 +221,9 @@ const POST_SKB_INTRODUCED_PREFIXES = [
   'ideation.knowledge.',
   'story.mockups.',
   'test_scenario.interact_in.',
+  // Core introduces this namespace through an explicit-grant manifest. Keep
+  // future leaves fail-closed even before the frontend consumes them.
+  'code_traceability.',
 ] as const;
 
 const POST_SKB_INTRODUCED_EXACT_LEAVES = new Set([
@@ -183,9 +234,11 @@ const POST_SKB_INTRODUCED_EXACT_LEAVES = new Set([
   'spec.tests.execute',
   'spec.tests.edit',
   'spec.tests.delete',
+  'spec.entity.manage_dependencies',
   'sprint.tasks.assign',
   'ideation.interact_in.review',
   'ideation.interact_in.approved',
+  'card.interact_in.rejected',
 ]);
 
 const SDLC_TRANSITION_ENTITIES = new Set([

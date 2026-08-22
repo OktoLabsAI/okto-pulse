@@ -101,6 +101,22 @@ def test_ts_33e252d6_current_private_core_reach_ins_are_ledgered() -> None:
     }
 
 
+def test_board_kg_analytics_adapter_uses_only_the_public_analytics_facade() -> None:
+    adapter = (
+        REPO_ROOT
+        / "src"
+        / "okto_pulse"
+        / "community"
+        / "adapters"
+        / "sqlalchemy_analytics_evidence.py"
+    )
+    source = adapter.read_text(encoding="utf-8")
+
+    assert "okto_pulse.core.services.board_kg_analytics" in source
+    assert "okto_pulse.core.kg.query_contract" not in source
+    assert "okto_pulse.core.services.kg_health_service" not in source
+
+
 def test_af42_full_inventory_classifies_every_core_import(tmp_path: Path) -> None:
     adapter = tmp_path / "src" / "okto_pulse" / "community" / "adapter.py"
     adapter.parent.mkdir(parents=True)

@@ -105,4 +105,15 @@ describe('NodePreviewPanel — S5.2 / AC-8', () => {
 
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it('uses the distinct semantic subtype identity for traceability nodes', () => {
+    const { getByText } = render(
+      <NodePreviewPanel
+        node={{ ...NODE, node_type: 'Entity', kind_of: 'code_investigation_receipt' }}
+        onClose={() => {}}
+      />,
+    );
+
+    expect(getByText(/Investigation Receipt/)).toBeInTheDocument();
+  });
 });

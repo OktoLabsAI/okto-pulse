@@ -16,6 +16,7 @@ import { SprintModal } from './SprintModal';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { AccessiblePaginator } from '@/components/shared/AccessiblePaginator';
 import { usePersistedPagination } from '@/hooks/usePersistedPagination';
+import { QABadge } from '@/components/shared/QABadge';
 
 interface SprintsPanelProps {
   boardId: string;
@@ -305,6 +306,11 @@ export function SprintsPanel({ boardId }: SprintsPanelProps) {
                   <h3 className="text-sm font-semibold text-gray-900 dark:text-white truncate">{sprint.title}</h3>
                   {sprint.description && (
                     <p className="text-xs text-gray-500 dark:text-gray-400 truncate mt-0.5">{sprint.description}</p>
+                  )}
+                  {(sprint.open_qa_count ?? 0) > 0 && (
+                    <div className="mt-2">
+                      <QABadge count={sprint.open_qa_count} />
+                    </div>
                   )}
                   <div className="flex items-center gap-3 mt-1 text-xs text-gray-400">
                     {!groupBySpec && <span>Spec: {specTitleById(sprint.spec_id)}</span>}

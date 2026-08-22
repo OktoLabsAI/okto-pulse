@@ -34,13 +34,12 @@ import {
   RefreshCw,
   Maximize2,
   Minimize2,
-  Download,
   GitBranch,
   FolderOpen,
   Link2,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { exportIdeation, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
+import { EntityExportButton } from '@/components/export';
 import { getErrorMessage } from '@/lib/getErrorMessage';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
@@ -81,12 +80,10 @@ import { usePermissions } from '@/hooks/usePermissions';
 import { QualityPanel } from '@/components/quality';
 import {
   PolicyCompliancePanel,
-  PolicyComplianceTransitionPreview,
   isAllowedTransitionActionable,
   policyTransitionRejectionMessage,
   readPolicyTransitionRejection,
   requirePolicyTransitionEnvelope,
-  type PolicyTransitionRejection,
   type PolicyTransitionPreviewLoadState,
 } from '@/components/policy-compliance';
 import { IdeationReferencesPanel } from './IdeationReferencesPanel';
@@ -620,7 +617,15 @@ function ChoiceAnswerForm({
   );
 }
 
-function QATab({ ideationId, mentionables }: { ideationId: string; mentionables: Mentionable[] }) {
+function QATab({
+  ideationId,
+  mentionables,
+  onChanged,
+}: {
+  ideationId: string;
+  mentionables: Mentionable[];
+  onChanged: () => void;
+}) {
   const api = useDashboardApi();
   const [items, setItems] = useState<IdeationQAItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -651,6 +656,7 @@ function QATab({ ideationId, mentionables }: { ideationId: string; mentionables:
       setNewQuestion('');
       toast.success('Question posted');
       await load();
+      onChanged();
     } catch { toast.error('Failed to post question'); }
   };
 
@@ -668,6 +674,7 @@ function QATab({ ideationId, mentionables }: { ideationId: string; mentionables:
       setNewQuestion(''); setNewOptions(''); setNewMulti(false); setNewAllowFreeText(false);
       toast.success('Choice question posted');
       await load();
+      onChanged();
     } catch { toast.error('Failed to post choice question'); }
   };
 
@@ -678,6 +685,7 @@ function QATab({ ideationId, mentionables }: { ideationId: string; mentionables:
       setAnswerDraft('');
       toast.success('Answer posted');
       await load();
+      onChanged();
     } catch { toast.error('Failed to post answer'); }
   };
 
@@ -691,6 +699,7 @@ function QATab({ ideationId, mentionables }: { ideationId: string; mentionables:
     try {
       await api.deleteIdeationQuestion(ideationId, qaId);
       await load();
+      onChanged();
     } catch { toast.error('Failed to delete'); }
   };
 
@@ -959,10 +968,6 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
     transitions: [],
     error: null,
   });
-  const [
-    policyTransitionRejection,
-    setPolicyTransitionRejection,
-  ] = useState<PolicyTransitionRejection | null>(null);
   const lastTransitionSubjectKey = useRef<string | null>(null);
   const transitionRequestId = useRef(0);
   const [savingSkip, setSavingSkip] = useState(false);
@@ -1026,7 +1031,6 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
       data.version,
       data.status,
     ].join(':');
-    setPolicyTransitionRejection(null);
     setNextStatuses([]);
     setPolicyTransitionPreview({
       status: 'loading',
@@ -1100,7 +1104,6 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
   const performMove = async (status: IdeationStatus, cancellationReason?: string) => {
     if (!ideation) return;
     setMovingTo(status);
-    setPolicyTransitionRejection(null);
     try {
       const updated = await api.moveIdeation(ideationId, {
         status,
@@ -1120,11 +1123,10 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
       });
       toast.error(
         rejection
-          ? policyTransitionRejectionMessage(rejection)
+          ? policyTransitionRejectionMessage(rejection, 'lifecycle-edition')
           : getErrorMessage(err),
       );
       await loadAllowedTransitions(ideation);
-      setPolicyTransitionRejection(rejection);
     } finally { setMovingTo(null); }
   };
 
@@ -1145,7 +1147,14 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
     if (!ideation) return;
     setSavingSkip(true);
     try {
-      const updated = await api.setIdeationAmbiguityGateSkip(ideationId, next);
+      const updated = await api.setIdeationAmbiguityGateSkip(ideationId, {
+        skip_ambiguity_gate: next,
+        reason: next
+          ? 'Max ambiguity gate skipped from the ideation UI.'
+          : 'Max ambiguity gate re-enabled from the ideation UI.',
+        expected_ideation_version: ideation.version,
+        expected_ideation_edition: ideation.edition ?? 1,
+      });
       setIdeation(updated);
       await loadAllowedTransitions(updated);
       onChanged();
@@ -1280,7 +1289,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
             </span>
             <DerivationPendingBadge label={getIdeationPendingDerivationLabel(ideation)} />
             <h2 className="text-lg font-semibold text-gray-900 dark:text-white truncate">{ideation.title}</h2>
-            <span className="text-xs text-gray-400 shrink-0">v{ideation.version}</span>
+            <span className="text-xs text-gray-400 shrink-0">Edition {ideation.edition ?? 1}</span>
           </div>
           <div className="flex items-center gap-1">
             <button
@@ -1290,29 +1299,13 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
             >
               <GitBranch size={16} />
             </button>
-            <button
-              onClick={async () => {
-                try {
-                  // Hydrate architecture design summaries into full designs (entities,
-                  // interfaces, diagram payloads) so the Markdown export renders the
-                  // Mermaid diagram — same pattern as Spec/Card export.
-                  const fullArchitecture = await Promise.all(
-                    (ideation.architecture_designs || []).map((d) =>
-                      api.getArchitectureDesign(d.id, true).catch(() => d)
-                    )
-                  );
-                  const md = exportIdeation({ ...ideation, architecture_designs: fullArchitecture as any });
-                  downloadMarkdown(md, `ideation_${slugify(ideation.title)}_v${ideation.version}.md`);
-                } catch {
-                  toast.error('Failed to prepare markdown export');
-                }
-              }}
+            <EntityExportButton
+              boardId={ideation.board_id || _boardId}
+              entityType="ideation"
+              entityId={ideation.id}
+              entityTitle={ideation.title}
               disabled={loading}
-              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"
-              title="Download Markdown"
-            >
-              <Download size={16} />
-            </button>
+            />
             <button onClick={loadIdeation} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="Refresh">
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
             </button>
@@ -1651,6 +1644,8 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
                           subjectType="ideation"
                           subjectId={ideationId}
                           subjectVersion={ideation.version}
+                          subjectEdition={ideation.edition ?? 1}
+                          presentationMode="lifecycle-edition"
                           subjectStatus={ideation.status}
                           subjectArchived={ideation.archived ?? false}
                           canRead={canReadQuality}
@@ -1663,7 +1658,7 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
                         />
                       ) : (
                         <p className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300">
-                          The assessment and server gate preview are omitted because Quality read permission is not available.
+                          The current assessment is omitted because Quality read permission is not available.
                         </p>
                       )}
                       <AmbiguityGateSkipToggle
@@ -1680,6 +1675,8 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
                       subjectType="ideation"
                       subjectId={ideationId}
                       subjectVersion={ideation.version}
+                      subjectEdition={ideation.edition ?? 1}
+                      presentationMode="lifecycle-edition"
                       subjectStatus={ideation.status}
                       subjectArchived={ideation.archived ?? false}
                       canRead={canReadQuality}
@@ -1702,15 +1699,13 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
                   mount="lazy-keep"
                   className="space-y-4"
                 >
-                  <PolicyComplianceTransitionPreview
-                    preview={policyTransitionPreview}
-                    rejection={policyTransitionRejection}
-                  />
                   <PolicyCompliancePanel
                     boardId={ideation.board_id || _boardId}
                     entityType="ideation"
                     subjectId={ideation.id}
                     subjectVersion={ideation.version}
+                    subjectEdition={ideation.edition ?? 1}
+                    presentationMode="lifecycle-edition"
                     transitionPreview={policyTransitionPreview}
                     refreshKey={ideation.version}
                     onEvaluated={() => {
@@ -1725,7 +1720,13 @@ export function IdeationModal({ ideationId, boardId: _boardId, onClose, onEscape
             </div>
           )}
 
-          {activeTab === 'qa' && <QATab ideationId={ideationId} mentionables={mentionables} />}
+          {activeTab === 'qa' && (
+            <QATab
+              ideationId={ideationId}
+              mentionables={mentionables}
+              onChanged={onChanged}
+            />
+          )}
           {activeTab === 'references' && <IdeationReferencesPanel ideation={ideation} />}
           {activeTab === 'versions' && <VersionsTab ideationId={ideationId} />}
           {activeTab === 'activity' && <HistoryTab ideationId={ideationId} />}

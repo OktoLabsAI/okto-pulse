@@ -23,6 +23,10 @@ from okto_pulse.community.adapters.sqlalchemy_repositories import (
     ConsolidationQueue,
     GlobalUpdateOutbox,
 )
+from okto_pulse.community.adapters.code_traceability_kg_sql import (
+    exclude_code_traceability_artifact,
+    exclude_code_traceability_outbox_payload,
+)
 
 logger = logging.getLogger("okto_pulse.community.adapters.kg_events")
 
@@ -96,6 +100,7 @@ class CommunityKGEventsReader:
         after: datetime,
         after_event_id: str | None = None,
         limit: int,
+        include_code_traceability: bool = True,
     ) -> KGEventsPoll:
         async with cancel_safe_community_session_scope(self._session_factory) as session:
             events = await self._query_outbox_rows(
@@ -104,8 +109,13 @@ class CommunityKGEventsReader:
                 after=after,
                 after_event_id=after_event_id,
                 limit=limit,
+                include_code_traceability=include_code_traceability,
             )
-            progress = await self._query_queue_snapshot(session, board_id=board_id)
+            progress = await self._query_queue_snapshot(
+                session,
+                board_id=board_id,
+                include_code_traceability=include_code_traceability,
+            )
         return KGEventsPoll(events=events, progress=progress)
 
     async def replay(
@@ -115,6 +125,7 @@ class CommunityKGEventsReader:
         after: datetime,
         after_event_id: str | None = None,
         limit: int,
+        include_code_traceability: bool = True,
     ) -> Sequence[KGOutboxEvent]:
         async with cancel_safe_community_session_scope(self._session_factory) as session:
             return await self._query_outbox_rows(
@@ -123,6 +134,7 @@ class CommunityKGEventsReader:
                 after=after,
                 after_event_id=after_event_id,
                 limit=limit,
+                include_code_traceability=include_code_traceability,
             )
 
     async def _query_outbox_rows(
@@ -133,6 +145,7 @@ class CommunityKGEventsReader:
         after: datetime,
         after_event_id: str | None,
         limit: int,
+        include_code_traceability: bool,
     ) -> list[KGOutboxEvent]:
         cursor_predicate = GlobalUpdateOutbox.created_at > after
         if after_event_id is not None:
@@ -143,16 +156,21 @@ class CommunityKGEventsReader:
                     GlobalUpdateOutbox.event_id > after_event_id,
                 ),
             )
+        query = select(GlobalUpdateOutbox).where(
+            and_(
+                GlobalUpdateOutbox.board_id == board_id,
+                cursor_predicate,
+            )
+        )
+        if not include_code_traceability:
+            query = query.where(
+                exclude_code_traceability_outbox_payload(
+                    GlobalUpdateOutbox.payload
+                )
+            )
         rows = (
             await session.execute(
-                select(GlobalUpdateOutbox)
-                .where(
-                    and_(
-                        GlobalUpdateOutbox.board_id == board_id,
-                        cursor_predicate,
-                    )
-                )
-                .order_by(
+                query.order_by(
                     asc(GlobalUpdateOutbox.created_at),
                     asc(GlobalUpdateOutbox.event_id),
                 )
@@ -179,11 +197,19 @@ class CommunityKGEventsReader:
         session: Any,
         *,
         board_id: str,
+        include_code_traceability: bool,
     ) -> dict[str, int]:
+        predicates = [ConsolidationQueue.board_id == board_id]
+        if not include_code_traceability:
+            predicates.append(
+                exclude_code_traceability_artifact(
+                    ConsolidationQueue.artifact_type
+                )
+            )
         rows = (
             await session.execute(
                 select(ConsolidationQueue.status, ConsolidationQueue.source, func.count())
-                .where(ConsolidationQueue.board_id == board_id)
+                .where(*predicates)
                 .group_by(ConsolidationQueue.status, ConsolidationQueue.source)
             )
         ).all()
@@ -240,14 +266,22 @@ async def poll_community_kg_events(
     after: datetime,
     after_event_id: str | None = None,
     limit: int,
+    include_code_traceability: bool = True,
 ) -> KGEventsPoll:
     """Perform one finite read through the reader selected by composition."""
 
-    return await get_kg_events_reader_port().poll(
-        board_id=board_id,
-        after=after,
-        after_event_id=after_event_id,
-        limit=limit,
+    reader = get_kg_events_reader_port()
+    kwargs = {
+        "board_id": board_id,
+        "after": after,
+        "after_event_id": after_event_id,
+        "limit": limit,
+    }
+    if include_code_traceability:
+        return await reader.poll(**kwargs)
+    return await reader.poll(
+        **kwargs,
+        include_code_traceability=False,
     )
 
 

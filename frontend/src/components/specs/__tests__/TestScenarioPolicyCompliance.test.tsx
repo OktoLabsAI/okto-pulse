@@ -35,30 +35,23 @@ vi.mock('react-hot-toast', () => ({
 vi.mock('@/components/policy-compliance', () => ({
   usePolicyTransitionAuthority: (...args: unknown[]) =>
     mocks.useAuthority(...args),
-  PolicyComplianceTransitionPreview: ({
-    rejection,
-  }: {
-    rejection: unknown;
-  }) => (
-    <div
-      data-testid="policy-transition-preview"
-      data-rejection={rejection ? 'present' : 'none'}
-    />
-  ),
   PolicyCompliancePanel: ({
     boardId,
     entityType,
     subjectId,
+    transitionPreview,
   }: {
     boardId: string;
     entityType: string;
     subjectId: string;
+    transitionPreview: { status: string };
   }) => (
     <div
       data-testid="policy-compliance-panel"
       data-board-id={boardId}
       data-entity-type={entityType}
       data-subject-id={subjectId}
+      data-transition-status={transitionPreview.status}
     />
   ),
 }));
@@ -78,6 +71,7 @@ function transition(
     label: toStatus[0].toUpperCase() + toStatus.slice(1),
     gate: policyCompliance ? 'test_scenario_progression' : 'none',
     blocked_reason: null,
+    blocked_facts: null,
     preconditions,
     capabilities: [],
     effects: ['status_changed', 'activity_logged'],
@@ -85,6 +79,7 @@ function transition(
     policy_compliance: policyCompliance,
     policy_compliance_decision: policyCompliance
       ? {
+        projection: 'full',
         state: 'policy_compliance_ready',
         allowed: true,
         policy_compliance_required: true,
@@ -228,10 +223,12 @@ describe('TestScenarioPolicyCompliance', () => {
       'data-subject-id',
       'scenario-1',
     );
-    expect(screen.getByTestId('policy-transition-preview')).toHaveAttribute(
-      'data-rejection',
-      'present',
+    expect(screen.getByTestId('policy-compliance-panel')).toHaveAttribute(
+      'data-transition-status',
+      'ready',
     );
+    expect(screen.queryByTestId('policy-transition-preview'))
+      .not.toBeInTheDocument();
   });
 
   it('does not expose policy evidence without the exact read permission', () => {

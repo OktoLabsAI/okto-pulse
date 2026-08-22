@@ -1,12 +1,16 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  ENTITY_LABELS,
   PermissionFlagsEditor,
   countAllFlags,
   setAllFlags,
   type FlagsMap,
 } from './PermissionFlagsEditor';
+import {
+  ENTITY_LABELS,
+  getEntityLabel,
+  getEntityTextClasses,
+} from './permissionLabels';
 
 const storyTopicFlags: FlagsMap = {
   story: {
@@ -73,6 +77,24 @@ const structuredSpecFlags: FlagsMap = {
   },
 };
 
+const codeTraceabilityFlags: FlagsMap = {
+  code_traceability: {
+    investigation: { request: true, revoke: false },
+    evidence: { read: true },
+  },
+};
+
+const extendedPolicyGroupFlags: FlagsMap = {
+  agent: { read: true },
+  permission_preset: { read: true },
+  default_board_config: { read: true },
+  design_system: { read: true },
+  runtime: { read: true },
+  metrics: { read: true },
+  amendment: { read: true },
+  test_scenario: { read: true },
+};
+
 /**
  * Deterministic stand-in for the canonical base registry. Its 397 boolean
  * leaves deliberately live below entity.group.type, so the former two-level
@@ -124,6 +146,47 @@ describe('PermissionFlagsEditor', () => {
     expect(ENTITY_LABELS.topic).toBe('Topics');
     expect(screen.getByRole('button', { name: /Stories/i })).toHaveTextContent('4/5');
     expect(screen.getByRole('button', { name: /Topics/i })).toHaveTextContent('2/4');
+  });
+
+  it('renders Code Traceability as a friendly permission category', () => {
+    render(<PermissionFlagsEditor flags={codeTraceabilityFlags} readOnly />);
+
+    expect(ENTITY_LABELS.code_traceability).toBe('Code Traceability');
+    expect(screen.getByRole('button', {
+      name: 'Edit Code Traceability permissions',
+    })).toHaveTextContent('2/3');
+    expect(screen.queryByText('code_traceability')).not.toBeInTheDocument();
+  });
+
+  it('formats every canonical policy group with a friendly label', () => {
+    const expectedLabels = {
+      agent: 'Agents',
+      permission_preset: 'Permission Presets',
+      default_board_config: 'Default Board Configuration',
+      design_system: 'Design Systems',
+      runtime: 'Runtime',
+      metrics: 'Metrics',
+      amendment: 'Amendments',
+      test_scenario: 'Test Scenarios',
+    } as const;
+
+    render(<PermissionFlagsEditor flags={extendedPolicyGroupFlags} readOnly />);
+
+    for (const [entity, label] of Object.entries(expectedLabels)) {
+      expect(getEntityLabel(entity)).toBe(label);
+      const section = screen.getByRole('button', {
+        name: `Edit ${label} permissions`,
+      });
+      expect(section).toHaveTextContent(label);
+      expect(within(section).getByText(label, { exact: true })).toHaveClass(
+        ...getEntityTextClasses(entity).split(' '),
+      );
+      expect(screen.queryByText(entity, { exact: true })).not.toBeInTheDocument();
+    }
+  });
+
+  it('formats unknown future policy groups instead of exposing snake_case', () => {
+    expect(getEntityLabel('future_policy_group')).toBe('Future Policy Group');
   });
 
   it('renders nested Story flags and toggles them in custom presets', () => {

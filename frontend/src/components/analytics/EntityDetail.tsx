@@ -192,6 +192,7 @@ function statusBadge(status: string | null): JSX.Element {
     review: { bg: 'bg-blue-100 dark:bg-blue-900/30', text: 'text-blue-700 dark:text-blue-300' },
     approved: { bg: 'bg-indigo-100 dark:bg-indigo-900/30', text: 'text-indigo-700 dark:text-indigo-300' },
     in_progress: { bg: 'bg-amber-100 dark:bg-amber-900/30', text: 'text-amber-700 dark:text-amber-300' },
+    rejected: { bg: 'bg-rose-100 dark:bg-rose-900/30', text: 'text-rose-700 dark:text-rose-300' },
     done: { bg: 'bg-emerald-100 dark:bg-emerald-900/30', text: 'text-emerald-700 dark:text-emerald-300' },
     cancelled: { bg: 'bg-red-100 dark:bg-red-900/30', text: 'text-red-700 dark:text-red-300' },
     evaluating: { bg: 'bg-purple-100 dark:bg-purple-900/30', text: 'text-purple-700 dark:text-purple-300' },
@@ -1228,6 +1229,7 @@ function SprintDetailView({ data }: { data: SprintAnalytics }) {
               <span className={`w-2 h-2 rounded-full ${
                 c.status === 'done' ? 'bg-emerald-500' :
                 c.status === 'in_progress' ? 'bg-blue-500' :
+                c.status === 'rejected' ? 'bg-rose-600' :
                 c.status === 'cancelled' ? 'bg-red-500' : 'bg-gray-400'
               }`} />
               <span className="text-gray-700 dark:text-gray-300 truncate flex-1">{c.title}</span>
@@ -1387,6 +1389,7 @@ function CardDetailView({ data }: { data: CardAnalytics }) {
   const statusColor = (() => {
     if (data.status === 'done') return 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300';
     if (data.status === 'validation') return 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300';
+    if (data.status === 'rejected') return 'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300';
     if (data.status === 'in_progress') return 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300';
     if (data.status === 'cancelled') return 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400';
     return 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300';
@@ -1404,7 +1407,7 @@ function CardDetailView({ data }: { data: CardAnalytics }) {
       <Card>
         <div className="flex items-start gap-3 mb-3">
           <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${statusColor}`}>
-            {data.status || 'unknown'}
+            {data.status ? data.status.replace(/[_-]+/g, ' ').replace(/\b\w/g, (character) => character.toUpperCase()) : 'Unknown'}
           </span>
           <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${typeColor}`}>
             {data.card_type}

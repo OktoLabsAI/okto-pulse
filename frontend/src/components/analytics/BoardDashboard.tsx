@@ -16,13 +16,28 @@ import {
   CheckSquare,
   Target,
   AlertTriangle,
-  FlaskConical,
   Bug,
   Clock,
+  Download,
   HelpCircle,
+  RefreshCw,
 } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
 import { PulseLoader } from '@/components/shared/PulseLoader';
+import { CanonicalCoveragePanel } from './CanonicalCoveragePanel';
+import { DeliveryForecastPanel } from './DeliveryForecastPanel';
+import { FlowHealthSummary } from './FlowHealthSummary';
+import { KgEffectivenessPanel } from './KgEffectivenessPanel';
+import type { CanonicalCoverageQueryState } from './canonicalCoverageQueryState';
+import type {
+  BoardKgAnalyticsResponse,
+  CanonicalCoverageResponse,
+  FlowHealthResponse,
+} from './analyticsCanonicalTypes';
+import type {
+  DeliveryForecastResponse,
+  SprintAnalyticsResponse,
+} from './analyticsDeliveryTypes';
 
 // ---------------------------------------------------------------------------
 // Types matching backend responses
@@ -140,68 +155,53 @@ interface ValidationsResponse {
   };
 }
 
-interface SprintsResponse {
-  summary: {
-    total_sprints: number;
-    status_breakdown: Record<string, number>;
-    avg_completion_rate: number | null;
-    sprint_evaluation: {
-      total_submitted: number;
-      approve_rate: number | null;
-      avg_overall_score: number | null;
-    };
-  };
-  sprints: Array<{
-    sprint_id: string;
-    title: string;
-    status: string;
+interface SpecReadinessResponse {
+  query_fingerprint: string;
+  as_of: string;
+  specs: Array<{
     spec_id: string;
-    total_cards: number;
-    done_cards: number;
-    completion_rate: number;
-    card_status_breakdown: Record<string, number>;
-    evaluations_count: number;
-    last_evaluation: { overall_score: number | null; recommendation: string | null; evaluator_name: string | null; created_at: string | null } | null;
-    task_validation_gate: {
-      total_submitted: number;
-      total_success: number;
-      total_failed: number;
-      rejection_reasons: Record<string, number>;
-      first_pass_rate: number | null;
+    edition: number;
+    validation: {
+      state: string;
+      measures: {
+        confidence: number | null;
+        clarity: number | null;
+        assertiveness: number | null;
+        decidability: number | null;
+        ambiguity: number | null;
+      };
+      attempts: number;
+      lifecycle_ready: boolean | null;
     };
+    lifecycle: { spec_pending_validation: boolean | null };
   }>;
 }
 
-interface CoverageSpec {
-  spec_id: string;
-  title: string;
-  total_ac: number;
-  covered_ac: number;
-  total_scenarios: number;
-  scenario_status_counts: Record<string, number>;
-  business_rules_count: number;
-  api_contracts_count: number;
-  fr_with_rules_pct: number;
-  fr_with_contracts_pct: number;
-  // Spec 233eaad3: 4 novos campos vindo do spec_coverage_summary —
-  // refletem cancelled-card filter (gates e dashboard usam mesma fonte).
-  decisions_coverage_pct?: number;
-  decisions_total?: number;
-  tr_task_linkage_pct?: number;
-  trs_total?: number;
-  ir_task_linkage_pct?: number;
-  irs_total?: number;
-  irs_linked?: number;
-  irs_uncovered_ids?: string[];
-  skip_ir_coverage?: boolean;
-  or_task_linkage_pct?: number;
-  ors_total?: number;
-  ors_linked?: number;
-  ors_uncovered_ids?: string[];
-  skip_or_coverage?: boolean;
-  // Bug 6f152627: AC/FR coverage explícitos para o painel nível 2.
-  ac_coverage_pct?: number;
-  fr_coverage_pct?: number;
+interface PolicyResourceReadinessResponse {
+  query_fingerprint: string;
+  as_of: string;
+  specs: Array<{
+    spec_id: string;
+    edition: number;
+    policy: {
+      totals: {
+        native_pass: number;
+        blocking_pending: number;
+        blocking_failed: number;
+        stale: number;
+        inconsistent: number;
+      };
+    };
+    resources: {
+      l1: Array<{ resource_type: string; state: string }>;
+      l2: Array<{
+        resource_type: string;
+        state: string;
+        covered_only_by_cancelled_task: boolean | null;
+      }>;
+      covered_only_by_cancelled_task: number;
+    };
+  }>;
 }
 
 interface AgentRow {
@@ -248,7 +248,11 @@ interface BoardDashboardProps {
   boardId: string;
   from: string;
   to: string;
-  onSelectEntity: (type: 'ideation' | 'spec' | 'refinement' | 'card', id: string, name: string) => void;
+  onSelectEntity: (type: 'ideation' | 'spec' | 'refinement' | 'sprint' | 'card', id: string, name: string) => void;
+  onOpenFlowHealth?: () => void;
+  onOpenCanonicalCoverage?: (query: CanonicalCoverageQueryState) => void;
+  onOpenKgEffectiveness?: () => void;
+  onOpenDeliveryIntelligence?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -293,16 +297,16 @@ function formatCycleTime(hours: number): string {
   return `${(hours / 24).toFixed(1)}d`;
 }
 
-function coverageBarColor(pct: number): string {
-  if (pct >= 95) return 'bg-green-500';
-  if (pct >= 80) return 'bg-amber-500';
-  return 'bg-red-500';
-}
-
 function scatterDotColor(completeness: number, drift: number): string {
   // Green quadrant: high completeness + low drift
   if (completeness >= 70 && drift <= 25) return '#22c55e';
   return '#ef4444';
+}
+
+type AnalyticsEntityCatalogKind = 'spec' | 'card';
+
+function analyticsEntityCatalogKey(kind: string, id: string): string {
+  return `${kind}:${id}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,22 +374,58 @@ type EntityTab = 'spec' | 'ideation' | 'card';
 // Main component
 // ---------------------------------------------------------------------------
 
-export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashboardProps) {
+export function BoardDashboard({
+  boardId,
+  from,
+  to,
+  onSelectEntity,
+  onOpenFlowHealth = () => {},
+  onOpenCanonicalCoverage,
+  onOpenKgEffectiveness,
+  onOpenDeliveryIntelligence,
+}: BoardDashboardProps) {
   const api = useDashboardApi();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [funnel, setFunnel] = useState<FunnelData | null>(null);
   const [quality, setQuality] = useState<QualityPoint[]>([]);
-  const [coverage, setCoverage] = useState<CoverageSpec[]>([]);
   const [agents, setAgents] = useState<AgentRow[]>([]);
   const [validations, setValidations] = useState<ValidationsResponse | null>(null);
-  const [sprints, setSprints] = useState<SprintsResponse | null>(null);
+  const [sprints, setSprints] = useState<SprintAnalyticsResponse | null>(null);
+  const [deliveryForecast, setDeliveryForecast] = useState<DeliveryForecastResponse | null>(null);
+  const [deliveryForecastLoading, setDeliveryForecastLoading] = useState(true);
+  const [deliveryForecastError, setDeliveryForecastError] = useState<string | null>(null);
+  const [deliveryForecastRetry, setDeliveryForecastRetry] = useState(0);
+  const [deliveryForecastExporting, setDeliveryForecastExporting] = useState(false);
+  const [kgAnalytics, setKgAnalytics] = useState<BoardKgAnalyticsResponse | null>(null);
+  const [kgLoading, setKgLoading] = useState(true);
+  const [kgError, setKgError] = useState<string | null>(null);
+  const [kgRetry, setKgRetry] = useState(0);
+  const [kgExporting, setKgExporting] = useState(false);
+  const [canonicalCoverage, setCanonicalCoverage] = useState<CanonicalCoverageResponse | null>(null);
+  const [canonicalCoverageError, setCanonicalCoverageError] = useState<string | null>(null);
+  const [canonicalCoverageLoading, setCanonicalCoverageLoading] = useState(true);
+  const [canonicalCoverageRetry, setCanonicalCoverageRetry] = useState(0);
+  const [canonicalCoverageExporting, setCanonicalCoverageExporting] = useState(false);
+  const [flowHealth, setFlowHealth] = useState<FlowHealthResponse | null>(null);
+  const [flowHealthError, setFlowHealthError] = useState<string | null>(null);
+  const [flowHealthLoading, setFlowHealthLoading] = useState(true);
+  const [flowHealthRetry, setFlowHealthRetry] = useState(0);
+  const [readiness, setReadiness] = useState<{
+    spec: SpecReadinessResponse;
+    policyResource: PolicyResourceReadinessResponse;
+  } | null>(null);
+  const [readinessError, setReadinessError] = useState<string | null>(null);
+  const [readinessLoading, setReadinessLoading] = useState(true);
+  const [readinessRetry, setReadinessRetry] = useState(0);
+  const [readinessExporting, setReadinessExporting] = useState<'spec' | 'policy-resource' | null>(null);
   const [entities, setEntities] = useState<Record<EntityTab, EntityListResponse | null>>({
     spec: null,
     ideation: null,
     card: null,
   });
+  const [entityTitleCatalog, setEntityTitleCatalog] = useState<Record<string, string>>({});
 
   const [activeTab, setActiveTab] = useState<EntityTab>('spec');
   const [entitySearch, setEntitySearch] = useState('');
@@ -401,22 +441,20 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
     Promise.all([
       api.getBoardAnalyticsFunnel(boardId, from, to),
       api.getBoardAnalyticsQuality(boardId, from, to),
-      api.getBoardAnalyticsCoverage(boardId, from, to),
       api.getBoardAnalyticsAgents(boardId, from, to),
       api.getBoardAnalyticsValidations(boardId, from, to),
       api.getBoardAnalyticsSprints(boardId, from, to),
     ])
-      .then(([funnelRes, qualityRes, coverageRes, agentsRes, validationsRes, sprintsRes]) => {
+      .then(([funnelRes, qualityRes, agentsRes, validationsRes, sprintsRes]) => {
         if (cancelled) return;
         setFunnel(funnelRes as FunnelData);
         // Quality endpoint now returns {conclusion_reported, validation_reported}.
         // Prefer validation data; fall back to conclusions when absent.
         const q = qualityRes as QualityResponse;
         setQuality(q.validation_reported.length > 0 ? q.validation_reported : q.conclusion_reported);
-        setCoverage(coverageRes as CoverageSpec[]);
         setAgents(agentsRes as AgentRow[]);
         setValidations(validationsRes as ValidationsResponse);
-        setSprints(sprintsRes as SprintsResponse);
+        setSprints(sprintsRes);
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load board analytics');
@@ -428,6 +466,171 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, from, to]);
+
+  // KG Analytics has an independent lifecycle: failure here must not hide the
+  // usable funnel, coverage, validation or Sprint panels.
+  useEffect(() => {
+    let cancelled = false;
+    setKgLoading(true);
+    setKgError(null);
+    api.getBoardKgAnalytics(boardId, from, to)
+      .then((payload) => {
+        if (!cancelled) setKgAnalytics(payload);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setKgError(err instanceof Error ? err.message : 'Failed to load KG analytics');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setKgLoading(false);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, from, to, kgRetry]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDeliveryForecastLoading(true);
+    setDeliveryForecastError(null);
+    api.getBoardDeliveryForecast(boardId, from, to)
+      .then((payload) => {
+        if (!cancelled) setDeliveryForecast(payload);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setDeliveryForecast(null);
+          setDeliveryForecastError(err instanceof Error ? err.message : 'Delivery forecast is unavailable.');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setDeliveryForecastLoading(false);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, from, to, deliveryForecastRetry]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCanonicalCoverageLoading(true);
+    setCanonicalCoverageError(null);
+    api.getCanonicalBoardCoverage(boardId, from, to)
+      .then((payload) => {
+        if (!cancelled) setCanonicalCoverage(payload);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setCanonicalCoverageError(err instanceof Error ? err.message : 'Failed to load canonical coverage');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCanonicalCoverageLoading(false);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, from, to, canonicalCoverageRetry]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setFlowHealthLoading(true);
+    setFlowHealthError(null);
+    api.getBoardFlowHealth(boardId, from, to)
+      .then((payload) => {
+        if (!cancelled) setFlowHealth(payload);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setFlowHealthError(err instanceof Error ? err.message : 'Failed to load Flow Health');
+      })
+      .finally(() => {
+        if (!cancelled) setFlowHealthLoading(false);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, from, to, flowHealthRetry]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setReadinessLoading(true);
+    setReadinessError(null);
+    Promise.all([api.getSpecReadiness(boardId, from, to), api.getPolicyResourceReadiness(boardId, from, to)])
+      .then(([spec, policyResource]) => {
+        if (!cancelled) {
+          setReadiness({
+            spec: spec as SpecReadinessResponse,
+            policyResource: policyResource as PolicyResourceReadinessResponse
+          });
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setReadinessError(err instanceof Error ? err.message : 'Failed to load readiness');
+      })
+      .finally(() => {
+        if (!cancelled) setReadinessLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId, from, to, readinessRetry]);
+
+  // Canonical Flow Health and readiness projections intentionally expose only
+  // stable entity identities. Resolve human-readable titles through the
+  // paginated analytics catalog and fail soft to those identities when either
+  // catalog is unavailable.
+  useEffect(() => {
+    let cancelled = false;
+    const CATALOG_PAGE_SIZE = 200;
+    setEntityTitleCatalog({});
+
+    const loadCatalog = async (kind: AnalyticsEntityCatalogKind): Promise<EntityItem[]> => {
+      const items: EntityItem[] = [];
+      let offset = 0;
+
+      while (!cancelled) {
+        const response = await api.getBoardAnalyticsEntities(
+          boardId,
+          kind,
+          undefined,
+          undefined,
+          offset,
+          CATALOG_PAGE_SIZE,
+        ) as EntityListResponse;
+        if (cancelled) return [];
+
+        const pageItems = Array.isArray(response.items) ? response.items : [];
+        items.push(...pageItems);
+        const nextOffset = offset + pageItems.length;
+        const total = Number.isInteger(response.total) && response.total >= 0
+          ? response.total
+          : nextOffset;
+        if (pageItems.length === 0 || nextOffset <= offset || nextOffset >= total) break;
+        offset = nextOffset;
+      }
+
+      return items;
+    };
+
+    Promise.allSettled([loadCatalog('spec'), loadCatalog('card')]).then((results) => {
+      if (cancelled) return;
+      const nextCatalog: Record<string, string> = {};
+      results.forEach((result, index) => {
+        if (result.status !== 'fulfilled') return;
+        const kind: AnalyticsEntityCatalogKind = index === 0 ? 'spec' : 'card';
+        result.value.forEach((item) => {
+          const title = typeof item.title === 'string' ? item.title.trim() : '';
+          if (item.id && title) {
+            nextCatalog[analyticsEntityCatalogKey(kind, item.id)] = title;
+          }
+        });
+      });
+      setEntityTitleCatalog(nextCatalog);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardId]);
 
   // Load entities separately — responds to tab, search, page changes
   useEffect(() => {
@@ -469,12 +672,6 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
       ? Math.round(driftVals.reduce((a, b) => a + b, 0) / driftVals.length)
       : null;
 
-    // Coverage: % of specs that have at least one test scenario
-    const specsWithTests = coverage.filter((s) => s.total_scenarios > 0).length;
-    const coberturaPct = coverage.length > 0
-      ? Math.round((specsWithTests / coverage.length) * 100)
-      : 0;
-
     return {
       stories: funnel.stories || 0,
       storiesConvertedPct: Math.round(funnel.story_conversion_pct || 0),
@@ -486,9 +683,8 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
       tasksDonePct,
       avgCompleteness,
       avgDrift,
-      coberturaPct,
     };
-  }, [funnel, quality, coverage]);
+  }, [funnel, quality]);
 
   // Sorted entity items for current tab
   const sortedEntities = useMemo(() => {
@@ -496,16 +692,6 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
     if (!current) return [];
     return [...current.items].sort((a, b) => (a.title || '').localeCompare(b.title || ''));
   }, [entities, activeTab]);
-
-  // Coverage bars sorted by coverage %
-  const coverageBars = useMemo(() => {
-    return [...coverage]
-      .map((s) => {
-        const pct = s.total_ac > 0 ? Math.round((s.covered_ac / s.total_ac) * 100) : 0;
-        return { ...s, pct };
-      })
-      .sort((a, b) => b.pct - a.pct);
-  }, [coverage]);
 
   // ---------------------------------------------------------------------------
   // Render
@@ -525,15 +711,201 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
   if (!kpis) return null;
 
   const tabLabels: Record<EntityTab, string> = { spec: 'Specs', ideation: 'Ideations', card: 'Tasks' };
-  const hasIrCoverageMetrics = coverage.some((s) =>
-    s.irs_total !== undefined || s.ir_task_linkage_pct !== undefined || s.skip_ir_coverage === true
-  );
-  const hasOrCoverageMetrics = coverage.some((s) =>
-    s.ors_total !== undefined || s.or_task_linkage_pct !== undefined || s.skip_or_coverage === true
+  const readinessSummary = readiness
+    ? {
+        specs: readiness.spec.specs.length,
+        current: readiness.spec.specs.filter((item) => item.validation.state === 'current').length,
+        ready: readiness.spec.specs.filter((item) => item.validation.lifecycle_ready === true).length,
+        pending: readiness.spec.specs.filter((item) => item.lifecycle.spec_pending_validation === true).length,
+        nativePass: readiness.policyResource.specs.reduce((total, item) => total + item.policy.totals.native_pass, 0),
+        policyPending: readiness.policyResource.specs.reduce((total, item) => total + item.policy.totals.blocking_pending, 0),
+        policyFailed: readiness.policyResource.specs.reduce((total, item) => total + item.policy.totals.blocking_failed, 0),
+        resourcesProvided: readiness.policyResource.specs.reduce((total, item) => total + item.resources.l1.filter((resource) => resource.state === 'provided').length, 0),
+        resourcesMissing: readiness.policyResource.specs.reduce((total, item) => total + item.resources.l1.filter((resource) => resource.state === 'missing').length, 0),
+        cancelledOnly: readiness.policyResource.specs.reduce((total, item) => total + item.resources.covered_only_by_cancelled_task, 0)
+      }
+    : null;
+
+  const governedAnalyticsSections = (
+    <>
+      <KgEffectivenessPanel
+        data={kgAnalytics}
+        loading={kgLoading}
+        error={kgError}
+        exporting={kgExporting}
+        from={from}
+        to={to}
+        mode="compact"
+        onOpenFullView={onOpenKgEffectiveness}
+        onRetry={() => setKgRetry((value) => value + 1)}
+        onExport={async () => {
+          if (kgExporting) return;
+          setKgExporting(true);
+          try {
+            await api.exportBoardKgAnalyticsCsv(boardId, from, to);
+          } catch (err) {
+            setKgError(err instanceof Error ? err.message : 'KG effectiveness export failed');
+          } finally {
+            setKgExporting(false);
+          }
+        }}
+      />
+
+      <CanonicalCoveragePanel
+        data={canonicalCoverage}
+        loading={canonicalCoverageLoading}
+        error={canonicalCoverageError}
+        exporting={canonicalCoverageExporting}
+        from={from}
+        to={to}
+        specTitles={Object.fromEntries(
+          Object.entries(entityTitleCatalog)
+            .filter(([key]) => key.startsWith('spec:'))
+            .map(([key, value]) => [key.slice('spec:'.length), value]),
+        )}
+        onRetry={() => setCanonicalCoverageRetry((value) => value + 1)}
+        onExport={async () => {
+          if (canonicalCoverageExporting) return;
+          setCanonicalCoverageExporting(true);
+          try {
+            await api.exportCanonicalBoardCoverageCsv(boardId, from, to);
+          } catch (err) {
+            setCanonicalCoverageError(err instanceof Error ? err.message : 'Coverage export failed');
+          } finally {
+            setCanonicalCoverageExporting(false);
+          }
+        }}
+        onOpenSpec={(specId, title) => onSelectEntity('spec', specId, title)}
+        onOpenFullView={onOpenCanonicalCoverage}
+        viewMode="summary"
+      />
+
+      <FlowHealthSummary
+        data={flowHealth}
+        loading={flowHealthLoading}
+        error={flowHealthError}
+        from={from}
+        to={to}
+        onRetry={() => setFlowHealthRetry((value) => value + 1)}
+        onOpenFullView={onOpenFlowHealth}
+        subjectTitles={entityTitleCatalog}
+        onOpenSubject={(type, id, title) => {
+          const normalized = type === 'task' ? 'card' : type;
+          if (normalized === 'spec' || normalized === 'card' || normalized === 'ideation' || normalized === 'refinement') {
+            onSelectEntity(normalized, id, title);
+          }
+        }}
+      />
+
+      <section aria-labelledby="readiness-heading" className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 id="readiness-heading" className="text-sm font-semibold text-gray-700 dark:text-gray-200">
+              Spec &amp; Policy Readiness
+            </h3>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Current-edition validation, native policy outcomes and governed L1/L2 resource evidence.</p>
+          </div>
+          <div className="flex flex-wrap justify-end gap-2">
+            {(['spec', 'policy-resource'] as const).map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                disabled={readinessExporting !== null || readinessLoading || readiness === null}
+                onClick={async () => {
+                  if (readinessExporting !== null) return;
+                  setReadinessExporting(kind);
+                  try {
+                    await api.exportReadinessCsv(boardId, kind, from, to);
+                  } catch (err) {
+                    setReadinessError(err instanceof Error ? err.message : 'Readiness export failed');
+                  } finally {
+                    setReadinessExporting(null);
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-gray-200 dark:border-gray-600 disabled:opacity-50"
+              >
+                <Download className="w-3.5 h-3.5" />
+                {readinessExporting === kind ? 'Exporting…' : kind === 'spec' ? 'Spec CSV' : 'Policy/resource CSV'}
+              </button>
+            ))}
+          </div>
+        </div>
+        {readinessLoading && (
+          <p className="mt-4 text-xs text-gray-500" role="status">
+            Loading readiness…
+          </p>
+        )}
+        {!readinessLoading && readinessError && (
+          <div className="mt-4 flex items-center justify-between rounded-md bg-red-50 dark:bg-red-900/20 px-3 py-2" role="alert">
+            <span className="text-xs text-red-700 dark:text-red-300">{readinessError}</span>
+            <button type="button" onClick={() => setReadinessRetry((value) => value + 1)} className="inline-flex items-center gap-1 text-xs text-red-700 dark:text-red-300">
+              <RefreshCw className="w-3.5 h-3.5" /> Retry
+            </button>
+          </div>
+        )}
+        {!readinessLoading && !readinessError && readiness && readinessSummary && (
+          <div className="mt-4 space-y-3">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3" aria-label="Readiness facts">
+              {[
+                ['Ready specs', `${readinessSummary.ready}/${readinessSummary.specs}`],
+                ['Pending validation', readinessSummary.pending],
+                ['Native policy pass', readinessSummary.nativePass],
+                ['Resources provided', readinessSummary.resourcesProvided],
+                ['Resources missing', readinessSummary.resourcesMissing]
+              ].map(([label, value]) => (
+                <div key={String(label)} className="rounded-md bg-gray-50 dark:bg-gray-900/40 p-3">
+                  <p className="text-[10px] uppercase text-gray-400">{label}</p>
+                  <p className="mt-1 text-lg font-semibold text-gray-800 dark:text-gray-100">{value}</p>
+                </div>
+              ))}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-gray-200 dark:border-gray-700 text-left text-[10px] uppercase text-gray-400">
+                    <th className="py-2">Spec</th>
+                    <th>Edition</th>
+                    <th>Validation</th>
+                    <th>Attempts</th>
+                    <th>Policy</th>
+                    <th>Resources L1</th>
+                    <th>Cancelled-only</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {readiness.spec.specs.map((spec) => {
+                    const policy = readiness.policyResource.specs.find((item) => item.spec_id === spec.spec_id && item.edition === spec.edition);
+                    const provided = policy?.resources.l1.filter((item) => item.state === 'provided').length ?? 0;
+                    const specTitle = entityTitleCatalog[analyticsEntityCatalogKey('spec', spec.spec_id)];
+                    return (
+                      <tr key={`${spec.spec_id}:${spec.edition}`} className="border-b border-gray-100 dark:border-gray-700/50">
+                        <td className="py-2 font-medium" title={specTitle ? spec.spec_id : undefined}>
+                          {specTitle ?? spec.spec_id}
+                        </td>
+                        <td>{spec.edition}</td>
+                        <td>{spec.validation.lifecycle_ready === true ? 'ready' : spec.validation.state}</td>
+                        <td>{spec.validation.attempts}</td>
+                        <td>{policy ? `${policy.policy.totals.native_pass} pass / ${policy.policy.totals.blocking_pending} pending / ${policy.policy.totals.blocking_failed} failed` : 'unavailable'}</td>
+                        <td>{policy ? `${provided}/${policy.resources.l1.length}` : '—'}</td>
+                        <td>{policy?.resources.covered_only_by_cancelled_task ?? '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="text-[10px] text-gray-400">
+              current {readinessSummary.current} · policy pending {readinessSummary.policyPending} · policy failed {readinessSummary.policyFailed} · cancelled-only resources {readinessSummary.cancelledOnly} · as_of {readiness.spec.as_of} · query {readiness.spec.query_fingerprint.slice(0, 12)}…
+            </p>
+          </div>
+        )}
+      </section>
+    </>
   );
 
   return (
     <div className="space-y-6">
+
       {/* ------------------------------------------------------------------ */}
       {/* KPI Cards                                                          */}
       {/* ------------------------------------------------------------------ */}
@@ -638,23 +1010,6 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
           </span>
         </div>
 
-        {/* Coverage */}
-        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
-          <div className="flex items-center gap-1.5 mb-1">
-            <FlaskConical className="w-4 h-4 text-emerald-500" />
-            <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Coverage</span>
-            <DashboardMetricHelp
-              label="Coverage"
-              description="Shows objective spec coverage. Open the chart to inspect AC, FR, TR, IR, OR, and decision coverage per spec."
-              targetId="analytics-coverage-by-spec"
-            />
-          </div>
-          <span className="text-2xl font-bold text-gray-800 dark:text-gray-100">
-            {kpis.coberturaPct}%
-          </span>
-          <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">specs with tests</p>
-        </div>
-
         {/* Bugs */}
         <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4">
           <div className="flex items-center gap-1.5 mb-1">
@@ -695,9 +1050,9 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
       </div>
 
       {/* ------------------------------------------------------------------ */}
-      {/* Scatter + Coverage Charts                                          */}
+      {/* Canonical coverage lives above; this chart is quality-only.         */}
       {/* ------------------------------------------------------------------ */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4">
         {/* Scatter Completeness x Drift */}
         <div id="analytics-quality-scatter" className="scroll-mt-20 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-4">
@@ -747,133 +1102,6 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
           )}
         </div>
 
-        {/* Coverage by Spec (Tests, Rules, Contracts) */}
-        <div id="analytics-coverage-by-spec" className="scroll-mt-20 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
-          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-2">
-            Coverage by Spec
-          </h3>
-          <div className="flex items-center gap-4 mb-3 text-[10px] text-gray-500 dark:text-gray-400 flex-wrap">
-            <span className="flex items-center gap-1" title="Acceptance Criteria covered by Test Scenarios"><span className="w-2 h-2 rounded-full bg-green-500 inline-block" /> AC</span>
-            <span className="flex items-center gap-1" title="Functional Requirements covered by Business Rules"><span className="w-2 h-2 rounded-full bg-amber-500 inline-block" /> FR</span>
-            <span className="flex items-center gap-1" title="Technical Requirements with active linked tasks"><span className="w-2 h-2 rounded-full bg-purple-500 inline-block" /> TRs</span>
-            {hasIrCoverageMetrics && (
-              <span className="flex items-center gap-1" title="Integration Requirements with active linked tasks"><span className="w-2 h-2 rounded-full bg-sky-500 inline-block" /> IRs</span>
-            )}
-            {hasOrCoverageMetrics && (
-              <span className="flex items-center gap-1" title="Observability Requirements with active linked tasks"><span className="w-2 h-2 rounded-full bg-teal-500 inline-block" /> ORs</span>
-            )}
-            <span className="flex items-center gap-1" title="Decisions with active linked tasks"><span className="w-2 h-2 rounded-full bg-indigo-500 inline-block" /> Decisions</span>
-          </div>
-          {coverageBars.length > 0 ? (
-            <div className="space-y-3 max-h-[260px] overflow-y-auto pr-1">
-              {coverageBars.map((s) => {
-                const acPct = s.ac_coverage_pct ?? s.pct;
-                const frPct = s.fr_coverage_pct ?? s.fr_with_rules_pct ?? 0;
-                const trPct = s.tr_task_linkage_pct ?? 0;
-                const irPct = s.ir_task_linkage_pct ?? 0;
-                const orPct = s.or_task_linkage_pct ?? 0;
-                const irSkipped = s.skip_ir_coverage === true;
-                const orSkipped = s.skip_or_coverage === true;
-                const decPct = s.decisions_coverage_pct ?? 0;
-                return (
-                  <div key={s.spec_id}>
-                    <span className="text-xs text-gray-600 dark:text-gray-300 truncate block mb-1" title={s.title}>
-                      {s.title}
-                    </span>
-                    <div className="space-y-0.5">
-                      {/* AC coverage bar */}
-                      <div className="flex items-center gap-2" title={`ACs: ${s.covered_ac}/${s.total_ac} covered by Test Scenarios`}>
-                        <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
-                          <div
-                            className={`h-full rounded transition-all duration-500 ${coverageBarColor(acPct)}`}
-                            style={{ width: `${acPct}%` }}
-                          />
-                        </div>
-                        <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
-                          {acPct}%
-                        </span>
-                      </div>
-                      {/* FR coverage bar */}
-                      <div className="flex items-center gap-2" title={`FRs covered by Business Rules`}>
-                        <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
-                          <div
-                            className="h-full rounded transition-all duration-500 bg-amber-500"
-                            style={{ width: `${frPct}%` }}
-                          />
-                        </div>
-                        <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
-                          {frPct}%
-                        </span>
-                      </div>
-                      {/* TR coverage bar (spec 233eaad3) */}
-                      <div className="flex items-center gap-2" title={`TRs: ${s.trs_total ?? 0} total`}>
-                        <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
-                          <div
-                            className="h-full rounded transition-all duration-500 bg-purple-500"
-                            style={{ width: `${trPct}%` }}
-                          />
-                        </div>
-                        <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
-                          {trPct}%
-                        </span>
-                      </div>
-                      {/* IR coverage bar */}
-                      {hasIrCoverageMetrics && (
-                        <div
-                          className="flex items-center gap-2"
-                          title={irSkipped ? 'IR coverage skipped by coverage calculator' : `IRs: ${s.irs_linked ?? 0}/${s.irs_total ?? 0} linked to active tasks`}
-                        >
-                          <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
-                            <div
-                              className={`h-full rounded transition-all duration-500 ${irSkipped ? 'bg-gray-400 dark:bg-gray-500' : 'bg-sky-500'}`}
-                              style={{ width: `${irSkipped ? 100 : irPct}%` }}
-                            />
-                          </div>
-                          <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
-                            {irSkipped ? 'skip' : `${irPct}%`}
-                          </span>
-                        </div>
-                      )}
-                      {/* OR coverage bar */}
-                      {hasOrCoverageMetrics && (
-                        <div
-                          className="flex items-center gap-2"
-                          title={orSkipped ? 'OR coverage skipped by coverage calculator' : `ORs: ${s.ors_linked ?? 0}/${s.ors_total ?? 0} linked to active tasks`}
-                        >
-                          <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
-                            <div
-                              className={`h-full rounded transition-all duration-500 ${orSkipped ? 'bg-gray-400 dark:bg-gray-500' : 'bg-teal-500'}`}
-                              style={{ width: `${orSkipped ? 100 : orPct}%` }}
-                            />
-                          </div>
-                          <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
-                            {orSkipped ? 'skip' : `${orPct}%`}
-                          </span>
-                        </div>
-                      )}
-                      {/* Decisions coverage bar (spec 233eaad3) */}
-                      <div className="flex items-center gap-2" title={`Decisions: ${s.decisions_total ?? 0} total`}>
-                        <div className="flex-1 h-3 bg-gray-100 dark:bg-gray-700 rounded overflow-hidden">
-                          <div
-                            className="h-full rounded transition-all duration-500 bg-indigo-500"
-                            style={{ width: `${decPct}%` }}
-                          />
-                        </div>
-                        <span className="w-10 text-[10px] font-medium text-gray-700 dark:text-gray-300 text-right shrink-0">
-                          {decPct}%
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="h-56 flex items-center justify-center text-sm text-gray-400 dark:text-gray-500">
-              No specs with acceptance criteria
-            </div>
-          )}
-        </div>
       </div>
 
       {/* ------------------------------------------------------------------ */}
@@ -1183,93 +1411,31 @@ export function BoardDashboard({ boardId, from, to, onSelectEntity }: BoardDashb
         </div>
       )}
 
-      {/* ------------------------------------------------------------------ */}
-      {/* Sprints panel                                                      */}
-      {/* ------------------------------------------------------------------ */}
-      {sprints && sprints.summary.total_sprints > 0 && (
-        <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">
-              Sprints
-            </h3>
-            <div className="flex items-center gap-3 text-xs text-gray-500 dark:text-gray-400">
-              <span>{sprints.summary.total_sprints} total</span>
-              <span>·</span>
-              <span>avg completion: {sprints.summary.avg_completion_rate !== null ? `${sprints.summary.avg_completion_rate}%` : '--'}</span>
-              {sprints.summary.sprint_evaluation.total_submitted > 0 && (
-                <>
-                  <span>·</span>
-                  <span>eval approve: {sprints.summary.sprint_evaluation.approve_rate !== null ? `${sprints.summary.sprint_evaluation.approve_rate}%` : '--'}</span>
-                </>
-              )}
-            </div>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-left text-[10px] uppercase text-gray-400 border-b border-gray-200 dark:border-gray-700">
-                  <th className="py-2 font-medium">Sprint</th>
-                  <th className="py-2 font-medium text-center">Status</th>
-                  <th className="py-2 font-medium text-center">Cards</th>
-                  <th className="py-2 font-medium text-center">Completion</th>
-                  <th className="py-2 font-medium text-center">Task Gate</th>
-                  <th className="py-2 font-medium text-center">Last Eval</th>
-                </tr>
-              </thead>
-              <tbody>
-                {sprints.sprints.map((sp) => (
-                  <tr key={sp.sprint_id} className="border-b border-gray-100 dark:border-gray-700/50">
-                    <td className="py-2 truncate max-w-[250px]" title={sp.title}>{sp.title}</td>
-                    <td className="py-2 text-center">
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                        sp.status === 'active' ? 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300' :
-                        sp.status === 'closed' ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300' :
-                        sp.status === 'review' ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300' :
-                        'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400'
-                      }`}>{sp.status}</span>
-                    </td>
-                    <td className="py-2 text-center text-gray-600 dark:text-gray-400">
-                      {sp.done_cards}/{sp.total_cards}
-                    </td>
-                    <td className="py-2 text-center">
-                      <div className="flex items-center justify-center gap-1.5">
-                        <div className="w-16 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                          <div className="h-full bg-indigo-500" style={{ width: `${sp.completion_rate}%` }} />
-                        </div>
-                        <span className="text-[10px] font-medium">{sp.completion_rate}%</span>
-                      </div>
-                    </td>
-                    <td className="py-2 text-center">
-                      {sp.task_validation_gate.total_submitted > 0 ? (
-                        <span className="text-[10px]">
-                          <span className="text-green-600 dark:text-green-400">{sp.task_validation_gate.total_success}</span>
-                          /
-                          <span className="text-red-500 dark:text-red-400">{sp.task_validation_gate.total_failed}</span>
-                        </span>
-                      ) : (
-                        <span className="text-[10px] text-gray-400">—</span>
-                      )}
-                    </td>
-                    <td className="py-2 text-center">
-                      {sp.last_evaluation ? (
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                          sp.last_evaluation.recommendation === 'approve'
-                            ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300'
-                            : 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300'
-                        }`}>
-                          {sp.last_evaluation.recommendation} ({sp.last_evaluation.overall_score}%)
-                        </span>
-                      ) : (
-                        <span className="text-[10px] text-gray-400">—</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+      {governedAnalyticsSections}
+
+      <DeliveryForecastPanel
+        sprints={sprints}
+        forecast={deliveryForecast}
+        forecastLoading={deliveryForecastLoading}
+        forecastError={deliveryForecastError}
+        forecastExporting={deliveryForecastExporting}
+        from={from}
+        to={to}
+        compact
+        onOpenFullView={onOpenDeliveryIntelligence}
+        onRetryForecast={() => setDeliveryForecastRetry((value) => value + 1)}
+        onExportForecast={async () => {
+          if (deliveryForecastExporting) return;
+          setDeliveryForecastExporting(true);
+          try {
+            await api.exportBoardDeliveryForecastCsv(boardId, from, to);
+          } catch (err) {
+            setDeliveryForecastError(err instanceof Error ? err.message : 'Delivery forecast export failed');
+          } finally {
+            setDeliveryForecastExporting(false);
+          }
+        }}
+      />
     </div>
   );
 }

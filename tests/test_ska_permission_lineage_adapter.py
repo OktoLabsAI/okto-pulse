@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from repo_layout import resolve_core_repo
 
 from okto_pulse.core.domain.permissions import (
     SKA_PERMISSION_INTRODUCTION_V1,
@@ -43,11 +46,9 @@ async def _factory():
 
 def test_ska_tests_import_core_from_the_active_sibling_checkout() -> None:
     import okto_pulse.core.domain.permissions as permissions_module
-    from pathlib import Path
 
     expected = (
-        Path(__file__).resolve().parents[2]
-        / "okto-pulse-core"
+        resolve_core_repo(Path(__file__).resolve().parents[1])
         / "src"
         / "okto_pulse"
         / "core"

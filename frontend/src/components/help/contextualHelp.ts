@@ -6,6 +6,7 @@ export const HELP_SECTION_IDS = [
   'agents',
   'ideations',
   'refinements',
+  'code-traceability',
   'specs',
   'tasks',
   'bugs',

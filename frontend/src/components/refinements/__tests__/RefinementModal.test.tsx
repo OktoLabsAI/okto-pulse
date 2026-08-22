@@ -13,6 +13,9 @@ const apiMock = vi.hoisted(() => ({
   listRefinementSnapshots: vi.fn(),
   listRefinementHistory: vi.fn(),
   listRefinementQA: vi.fn(),
+  createRefinementQuestion: vi.fn(),
+  answerRefinementQuestion: vi.fn(),
+  deleteRefinementQuestion: vi.fn(),
   getAllowedTransitions: vi.fn(),
   moveRefinement: vi.fn(),
   deleteRefinement: vi.fn(),
@@ -63,7 +66,21 @@ vi.mock('@/components/ideations/IdeationModal', () => ({
 }));
 
 vi.mock('@/components/shared/MentionInput', () => ({
-  MentionInput: () => <div />,
+  MentionInput: ({
+    value,
+    onChange,
+    placeholder,
+  }: {
+    value: string;
+    onChange: (value: string) => void;
+    placeholder?: string;
+  }) => (
+    <input
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={placeholder}
+    />
+  ),
 }));
 
 vi.mock('@/components/shared/ContextSelector', () => ({
@@ -201,9 +218,9 @@ describe('RefinementModal handleMove error surfacing (AC1)', () => {
       current_status: 'review',
       source: 'core_sdlc_registry_v1',
       allowed_transitions: [
-        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
-        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
-        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null, blocked_facts: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, blocked_facts: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null, blocked_facts: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
       ],
     });
     apiMock.getArchitectureDesign.mockResolvedValue(null);
@@ -277,9 +294,70 @@ describe('RefinementModal handleMove error surfacing (AC1)', () => {
     const qaTab = screen.getByRole('tab', { name: /Q&A/ });
     expect(qaTab.querySelector('.rounded-full')).toHaveClass(expectedClass);
   });
+
+  it('notifies the board list exactly once after asking and answering Q&A', async () => {
+    const openQuestion = {
+      id: 'qa-open',
+      refinement_id: 'refinement-1',
+      question: 'Which rollout window?',
+      question_type: 'text',
+      choices: null,
+      allow_free_text: false,
+      answer: null,
+      selected: null,
+      asked_by: 'agent-1',
+      answered_by: null,
+      created_at: '2026-08-14T10:00:00Z',
+      answered_at: null,
+    };
+    const answeredQuestion = {
+      ...openQuestion,
+      answer: 'Tonight',
+      answered_by: 'user-1',
+      answered_at: '2026-08-14T11:00:00Z',
+    };
+    apiMock.listRefinementQA
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([openQuestion])
+      .mockResolvedValueOnce([answeredQuestion]);
+    apiMock.createRefinementQuestion.mockResolvedValue(openQuestion);
+    apiMock.answerRefinementQuestion.mockResolvedValue(answeredQuestion);
+    const onChanged = vi.fn();
+
+    render(
+      <RefinementModal
+        refinementId="refinement-1"
+        boardId="board-1"
+        onClose={vi.fn()}
+        onChanged={onChanged}
+      />,
+    );
+
+    await screen.findByText('My Refinement');
+    fireEvent.click(screen.getByRole('tab', { name: /Q&A/ }));
+    onChanged.mockClear();
+
+    fireEvent.change(
+      await screen.findByPlaceholderText('Ask a question... (type @ to mention)'),
+      { target: { value: openQuestion.question } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    fireEvent.click(await screen.findByRole('button', { name: 'Answer this question' }));
+    fireEvent.change(
+      screen.getByPlaceholderText('Type your answer... (@ to mention)'),
+      { target: { value: 'Tonight' } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Answer' }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(2));
+    expect(apiMock.createRefinementQuestion).toHaveBeenCalledTimes(1);
+    expect(apiMock.answerRefinementQuestion).toHaveBeenCalledTimes(1);
+  });
 });
 
-describe('RefinementModal Markdown export', () => {
+describe('RefinementModal report export', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     apiMock.getRefinement.mockResolvedValue(baseRefinement);
@@ -296,9 +374,9 @@ describe('RefinementModal Markdown export', () => {
       current_status: 'review',
       source: 'core_sdlc_registry_v1',
       allowed_transitions: [
-        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
-        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
-        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'approved', label: 'Approved', gate: 'none', blocked_reason: null, blocked_facts: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, blocked_facts: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'cancelled', label: 'Cancelled', gate: 'none', blocked_reason: null, blocked_facts: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
       ],
     });
     apiMock.getArchitectureDesign.mockImplementation((id: string) =>
@@ -307,7 +385,7 @@ describe('RefinementModal Markdown export', () => {
     markdownMock.exportRefinement.mockReturnValue('# refinement export');
   });
 
-  it('hydrates full architecture designs (alongside knowledge bases) before export', async () => {
+  it('delegates export preparation to the canonical report service without local hydration', async () => {
     apiMock.getRefinement.mockResolvedValue({
       ...baseRefinement,
       architecture_designs: [{ id: 'arch-1', title: 'Refinement arch', diagrams_count: 1 }] as any,
@@ -317,36 +395,23 @@ describe('RefinementModal Markdown export', () => {
     render(<RefinementModal refinementId="refinement-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
 
     await screen.findByText('My Refinement');
-    fireEvent.click(screen.getByTitle('Download Markdown'));
-
-    // Architecture summary is hydrated into a full design (entities + diagram payloads).
-    await waitFor(() => expect(apiMock.getArchitectureDesign).toHaveBeenCalledWith('arch-1', true));
-    // Knowledge bases are still hydrated too (existing behavior preserved).
-    expect(apiMock.getRefinementKnowledge).toHaveBeenCalledWith('refinement-1', 'kb-1');
-
-    // exportRefinement receives the hydrated full design, not the summary.
-    const lastCall = (markdownMock.exportRefinement.mock.calls.at(-1) ?? []) as any[];
-    const arg = lastCall[0];
-    expect(arg.architecture_designs[0]).toMatchObject({ id: 'arch-1', entities: [{ id: 'arch-1-e', name: 'E' }] });
-
-    await waitFor(() =>
-      expect(markdownMock.downloadMarkdown).toHaveBeenCalledWith('# refinement export', 'refinement_my-refinement_v3.md'),
-    );
+    expect(screen.getByTitle('Export report')).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(apiMock.getArchitectureDesign).not.toHaveBeenCalled();
+    expect(apiMock.getRefinementKnowledge).not.toHaveBeenCalled();
+    expect(markdownMock.exportRefinement).not.toHaveBeenCalled();
+    expect(markdownMock.downloadMarkdown).not.toHaveBeenCalled();
     expect(apiMock.updateRefinement).not.toHaveBeenCalled();
     expect(apiMock.moveRefinement).not.toHaveBeenCalled();
     expect(apiMock.deleteRefinement).not.toHaveBeenCalled();
   });
 
-  it('exports without architecture calls when the refinement has no architecture designs', async () => {
+  it('exposes the same report action when the refinement has no architecture designs', async () => {
     render(<RefinementModal refinementId="refinement-1" boardId="board-1" onClose={vi.fn()} onChanged={vi.fn()} />);
 
     await screen.findByText('My Refinement');
-    fireEvent.click(screen.getByTitle('Download Markdown'));
-
-    await waitFor(() => expect(markdownMock.exportRefinement).toHaveBeenCalled());
+    expect(screen.getByTitle('Export report')).toHaveAttribute('aria-haspopup', 'dialog');
     expect(apiMock.getArchitectureDesign).not.toHaveBeenCalled();
-    const arg = ((markdownMock.exportRefinement.mock.calls.at(-1) ?? []) as any[])[0];
-    expect(arg.architecture_designs).toEqual([]);
+    expect(markdownMock.exportRefinement).not.toHaveBeenCalled();
   });
 
   it('renders move actions from the allowed_transitions contract', async () => {
@@ -357,7 +422,7 @@ describe('RefinementModal Markdown export', () => {
       current_status: 'review',
       source: 'core_sdlc_registry_v1',
       allowed_transitions: [
-        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
+        { to_status: 'draft', label: 'Draft', gate: 'none', blocked_reason: null, blocked_facts: null, preconditions: [], capabilities: [], effects: [], reason_codes: [], policy_compliance: false, policy_compliance_decision: null },
       ],
     });
 

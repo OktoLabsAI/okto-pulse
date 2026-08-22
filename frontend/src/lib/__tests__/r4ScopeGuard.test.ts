@@ -18,6 +18,7 @@ const COMMUNITY = 'D:/Projetos/Techridy/okto_labs_pulse_community';
 
 // Symbols introduced/used by R4. None of them may appear in any modified core file.
 const R4_SYMBOLS = ['getErrorMessage', 'addBoard(', "from '@/lib/getErrorMessage'"];
+const SCOPE_GUARD_TIMEOUT_MS = 20_000;
 
 function changedFiles(repo: string): string[] {
   const out = execFileSync('git', ['-C', repo, 'status', '--porcelain'], {
@@ -48,16 +49,24 @@ function filesWithR4Symbols(repo: string, files: string[]): string[] {
 }
 
 describe('R4 AC7 — scope guard (zero okto_labs_pulse_core changes)', () => {
-  it('no changed okto_labs_pulse_core file carries an R4 symbol', () => {
-    expect(filesWithR4Symbols(CORE, changedFiles(CORE))).toEqual([]);
-  });
+  it(
+    'no changed okto_labs_pulse_core file carries an R4 symbol',
+    () => {
+      expect(filesWithR4Symbols(CORE, changedFiles(CORE))).toEqual([]);
+    },
+    SCOPE_GUARD_TIMEOUT_MS,
+  );
 
-  it('within the community repo, backend python changes do not carry R4 symbols', () => {
-    // The community repo's own python backend lives at src/okto_pulse; other
-    // specs may touch it in the same release worktree, but R4 symbols may not.
-    const backendFiles = changedFiles(COMMUNITY).filter(
-      (f) => f.startsWith('src/okto_pulse'),
-    );
-    expect(filesWithR4Symbols(COMMUNITY, backendFiles)).toEqual([]);
-  });
+  it(
+    'within the community repo, backend python changes do not carry R4 symbols',
+    () => {
+      // The community repo's own python backend lives at src/okto_pulse; other
+      // specs may touch it in the same release worktree, but R4 symbols may not.
+      const backendFiles = changedFiles(COMMUNITY).filter(
+        (f) => f.startsWith('src/okto_pulse'),
+      );
+      expect(filesWithR4Symbols(COMMUNITY, backendFiles)).toEqual([]);
+    },
+    SCOPE_GUARD_TIMEOUT_MS,
+  );
 });

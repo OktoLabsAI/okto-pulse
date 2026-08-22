@@ -14,6 +14,7 @@ import {
   BoardSettingsForm,
   normalizeDesignSystemGateMode,
 } from '@/components/board/BoardSettingsForm';
+import { normalizeCodeTraceabilitySettings } from '@/components/board/codeTraceabilitySettings';
 import { normalizeRefinementAmbiguityThreshold } from '@/components/board/refinementAmbiguitySettings';
 import {
   HelpPanel,
@@ -238,6 +239,8 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         skip_test_coverage_global: currentBoard.settings.skip_test_coverage_global ?? false,
         skip_rules_coverage_global: currentBoard.settings.skip_rules_coverage_global ?? false,
         skip_trs_coverage_global: currentBoard.settings.skip_trs_coverage_global ?? false,
+        skip_code_evidence_coverage_global:
+          currentBoard.settings.skip_code_evidence_coverage_global ?? false,
         skip_contract_coverage_global: currentBoard.settings.skip_contract_coverage_global ?? false,
         skip_ir_coverage_global: currentBoard.settings.skip_ir_coverage_global ?? false,
         skip_or_coverage_global: currentBoard.settings.skip_or_coverage_global ?? false,
@@ -254,8 +257,10 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         min_completeness: currentBoard.settings.min_completeness ?? 80,
         max_drift: currentBoard.settings.max_drift ?? 50,
         require_spec_validation: currentBoard.settings.require_spec_validation ?? true,
-        min_spec_completeness: currentBoard.settings.min_spec_completeness ?? 80,
+        min_spec_confidence: currentBoard.settings.min_spec_confidence ?? 70,
+        min_spec_clarity: currentBoard.settings.min_spec_clarity ?? 80,
         min_spec_assertiveness: currentBoard.settings.min_spec_assertiveness ?? 80,
+        min_spec_decidability: currentBoard.settings.min_spec_decidability ?? 80,
         max_spec_ambiguity: currentBoard.settings.max_spec_ambiguity ?? 30,
         require_ideation_ambiguity_gate: currentBoard.settings.require_ideation_ambiguity_gate ?? false,
         max_ideation_ambiguity: currentBoard.settings.max_ideation_ambiguity ?? 3,
@@ -269,12 +274,16 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         design_system_gate_mode: normalizeDesignSystemGateMode(currentBoard.settings.design_system_gate_mode),
         lint_languages: currentBoard.settings.lint_languages ?? [],
         impact_evidence_mode: currentBoard.settings.impact_evidence_mode ?? 'off',
+        code_traceability: normalizeCodeTraceabilitySettings(
+          currentBoard.settings.code_traceability,
+        ),
       }
     : {
         max_scenarios_per_card: 3,
         skip_test_coverage_global: false,
         skip_rules_coverage_global: false,
         skip_trs_coverage_global: false,
+        skip_code_evidence_coverage_global: false,
         skip_contract_coverage_global: false,
         skip_ir_coverage_global: false,
         skip_or_coverage_global: false,
@@ -291,8 +300,10 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         min_completeness: 80,
         max_drift: 50,
         require_spec_validation: true,
-        min_spec_completeness: 80,
+        min_spec_confidence: 70,
+        min_spec_clarity: 80,
         min_spec_assertiveness: 80,
+        min_spec_decidability: 80,
         max_spec_ambiguity: 30,
         require_ideation_ambiguity_gate: false,
         max_ideation_ambiguity: 3,
@@ -304,6 +315,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
         design_system_gate_mode: 'off',
         lint_languages: [],
         impact_evidence_mode: 'off',
+        code_traceability: normalizeCodeTraceabilitySettings(null),
       };
 
   const updateSettings = async (patch: Partial<BoardSettings>) => {

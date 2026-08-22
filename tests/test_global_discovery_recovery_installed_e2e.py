@@ -52,10 +52,10 @@ MANIFEST_PATH = Path(__file__).with_name(
 )
 OPT_OUT_ENV = "OKTO_SKIP_GLOBAL_DISCOVERY_INSTALLED_E2E"
 BOARD_CENSUS_SIZE = 1_500
-EXPECTED_TOOL_COUNT = 312
-EXPECTED_CANONICAL_TOOL_COUNT = 304
+EXPECTED_TOOL_COUNT = 337
+EXPECTED_CANONICAL_TOOL_COUNT = 329
 EXPECTED_TOOL_INVENTORY_SHA256 = (
-    "33bbc30ad65fff13a305e4c5f48def9917443dc54354b39a2a94caa5b07356ce"
+    "26bdba0847de93fc375ac6748965310da451119fd8af60c862f8fcda811bfef1"
 )
 EXPECTED_TOOL_ALIASES = {
     "okto_pulse_ask_ideation_question": "okto_pulse_ask",
@@ -234,8 +234,8 @@ def installed_runtime(
         assert len(community_candidates) == 1, all_wheels
         core_wheel = core_candidates[0]
         community_wheel = community_candidates[0]
-        assert "-0.3.1-" in core_wheel.name, core_wheel.name
-        assert "-0.3.1-" in community_wheel.name, community_wheel.name
+        assert "-0.3.2-" in core_wheel.name, core_wheel.name
+        assert "-0.3.2-" in community_wheel.name, community_wheel.name
         expected_core_sha = os.environ.get("OKTO_E2E_FINAL_CORE_WHEEL_SHA256")
         expected_community_sha = os.environ.get("OKTO_E2E_FINAL_COMMUNITY_WHEEL_SHA256")
         if expected_core_sha:
@@ -374,7 +374,7 @@ for direct_dependency in (
 core_requirement = next(
     row for row in requirements if row.startswith("okto-pulse-core")
 )
-assert ">=0.3.1" in core_requirement and "<1.0.0" in core_requirement
+assert ">=0.3.2" in core_requirement and "<1.0.0" in core_requirement
 console_scripts = {
     entry.name: entry.value
     for entry in community.entry_points
@@ -389,7 +389,7 @@ for package_path in community.files or ():
         javascript.append(community.locate_file(package_path).read_text(encoding="utf-8"))
 about = [source for source in javascript if "Community Edition — v" in source]
 assert len(about) == 1
-assert "0.3.1" in about[0]
+assert "0.3.2" in about[0]
 assert "Community Edition — v0.2.5" not in "".join(javascript)
 
 print(json.dumps({
@@ -414,7 +414,7 @@ print(json.dumps({
         env=origin_env,
     )
     origin_report = json.loads(origin_result.stdout.strip().splitlines()[-1])
-    assert origin_report["versions"] == {"community": "0.3.1", "core": "0.3.1"}
+    assert origin_report["versions"] == {"community": "0.3.2", "core": "0.3.2"}
     assert origin_report["about_bundle_count"] == 1
 
     resource_manifest_script = r"""
@@ -452,7 +452,7 @@ with runtime_value_scope(runtime_values):
     version_result = _run_checked(
         [str(console), "--version"], cwd=root, env=runtime_env, timeout=60
     )
-    assert version_result.stdout.strip() == "okto-pulse 0.3.1 (okto-pulse-core 0.3.1)"
+    assert version_result.stdout.strip() == "okto-pulse 0.3.2 (okto-pulse-core 0.3.2)"
 
     initialized = _run_checked(
         [str(console), "init"],
@@ -1307,7 +1307,7 @@ async def _assert_served_about(server: RunningServer) -> None:
             bundles.append(response.text)
     about = [source for source in bundles if "Community Edition — v" in source]
     assert len(about) == 1
-    assert "0.3.1" in about[0]
+    assert "0.3.2" in about[0]
     assert "Community Edition — v0.2.5" not in "".join(bundles)
 
 
@@ -1378,7 +1378,7 @@ async def _assert_mcp_inventory(
     names = sorted(tool.name for tool in tools)
     resource = await client.read_resource("okto-pulse://server-manifest")
     manifest = json.loads(resource[0].text)
-    assert client.initialize_result.serverInfo.version == "0.3.1"
+    assert client.initialize_result.serverInfo.version == "0.3.2"
     assert len(names) == EXPECTED_TOOL_COUNT
     assert len(names) == manifest["tool_inventory"]["count"]
     assert manifest["tool_inventory"]["aliases"] == EXPECTED_TOOL_ALIASES
@@ -1418,8 +1418,8 @@ async def test_installed_wheels_serve_exact_frozen_resource_manifest_over_real_h
 ) -> None:
     runtime = installed_runtime
     assert runtime.origin_report["versions"] == {
-        "community": "0.3.1",
-        "core": "0.3.1",
+        "community": "0.3.2",
+        "core": "0.3.2",
     }
     assert _sha256(runtime.core_wheel)
     assert _sha256(runtime.community_wheel)
@@ -1438,8 +1438,8 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
 ) -> None:
     runtime = installed_runtime
     assert runtime.origin_report["versions"] == {
-        "community": "0.3.1",
-        "core": "0.3.1",
+        "community": "0.3.2",
+        "core": "0.3.2",
     }
     assert _sha256(runtime.core_wheel)
     assert _sha256(runtime.community_wheel)

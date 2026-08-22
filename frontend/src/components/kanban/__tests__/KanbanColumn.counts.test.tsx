@@ -101,4 +101,28 @@ describe('KanbanColumn card-type counters', () => {
 
     expect(onToggleCardType).toHaveBeenCalledWith('test');
   });
+
+  it('renders Rejected as a Task/Bug-only rework queue without create affordance', () => {
+    render(
+      <DndContext>
+        <KanbanColumn
+          status="rejected"
+          cards={[]}
+          availableCardTypes={['task', 'bug']}
+          allowCardCreation={false}
+          onCardClick={vi.fn()}
+          onAddCard={vi.fn()}
+          nameMap={{}}
+        />
+      </DndContext>,
+    );
+
+    expect(screen.getByText('Rejected')).toBeInTheDocument();
+    expect(screen.getByText('No cards requiring rework')).toBeInTheDocument();
+    expect(screen.queryByLabelText(/test cards/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Add card to Rejected/i }))
+      .not.toBeInTheDocument();
+    expect(document.querySelector('[data-tour-id="tasks.rejected.column"]'))
+      .toBeInTheDocument();
+  });
 });

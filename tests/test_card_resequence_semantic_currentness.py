@@ -22,7 +22,7 @@ from okto_pulse.community.adapters.sqlalchemy_unit_of_work import (
     CommunityUnitOfWorkFactory,
 )
 from okto_pulse.core.application.use_cases.base import ActorContext
-from okto_pulse.core.domain.enums import CardStatus
+from okto_pulse.core.domain.enums import CardStatus, CardType
 from okto_pulse.core.domain.guideline_policy import PolicyEntityType
 from okto_pulse.core.ports.card_repository import (
     ColumnResequenceOp,
@@ -181,11 +181,20 @@ async def test_cross_column_move_preserves_bystander_heads_and_receipt(tmp_path)
         await _author_card_heads(
             factory,
             board_id=seed.board_id,
-            card_ids=(bystander_b_id, bystander_c_id),
+            card_ids=(seed.card_id, bystander_b_id, bystander_c_id),
             actor_id="baseline-author",
         )
 
         async with sessions() as session, session.begin():
+            await _assert_blocking_assessment_can_be_saved(
+                session,
+                seed=seed,
+                entity_type=PolicyEntityType.CARD,
+                subject_id=seed.card_id,
+                revision=revision,
+                binding=binding,
+                expected_editor="baseline-author",
+            )
             await _assert_blocking_assessment_can_be_saved(
                 session,
                 seed=seed,
@@ -204,6 +213,17 @@ async def test_cross_column_move_preserves_bystander_heads_and_receipt(tmp_path)
                 binding_id=binding.binding_id,
             )
             assert receipt_before is not None
+            moved_receipt_before = (
+                await CommunitySqlAlchemySemanticGuidelineAssessment(
+                    session
+                ).get_current_semantic_assessment_receipt(
+                    board_id=seed.board_id,
+                    entity_type=PolicyEntityType.CARD,
+                    subject_id=seed.card_id,
+                    binding_id=binding.binding_id,
+                )
+            )
+            assert moved_receipt_before is not None
             moved_before = await _card_fence(
                 session,
                 board_id=seed.board_id,
@@ -252,8 +272,7 @@ async def test_cross_column_move_preserves_bystander_heads_and_receipt(tmp_path)
                 board_id=seed.board_id,
                 card_id=seed.card_id,
             )
-            assert moved_after.policy_version == moved_before.policy_version + 1
-            assert moved_after.event_count == moved_before.event_count + 1
+            assert moved_after == moved_before
             assert moved_after.head_revision == 1
             assert (
                 await _card_fence(
@@ -279,6 +298,120 @@ async def test_cross_column_move_preserves_bystander_heads_and_receipt(tmp_path)
                 entity_type=PolicyEntityType.CARD,
                 subject_id=bystander_b_id,
                 binding_id=binding.binding_id,
+            )
+            assert receipt_after is not None
+            assert receipt_after.receipt_id == receipt_before.receipt_id
+            moved_receipt_after = (
+                await CommunitySqlAlchemySemanticGuidelineAssessment(
+                    session
+                ).get_current_semantic_assessment_receipt(
+                    board_id=seed.board_id,
+                    entity_type=PolicyEntityType.CARD,
+                    subject_id=seed.card_id,
+                    binding_id=binding.binding_id,
+                )
+            )
+            assert moved_receipt_after is not None
+            assert moved_receipt_after.receipt_id == moved_receipt_before.receipt_id
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("card_type", (CardType.NORMAL, CardType.TEST, CardType.BUG))
+async def test_completion_audit_preserves_current_policy_receipt_for_every_card_type(
+    tmp_path,
+    card_type: CardType,
+):
+    engine, sessions = await _database(
+        tmp_path / f"{card_type.value}-completion-currentness.db"
+    )
+    try:
+        async with sessions() as session, session.begin():
+            seed = await _seed_subjects(session)
+            revision, binding = await _seed_authority(
+                session,
+                board_id=seed.board_id,
+            )
+            card = await session.get(Card, seed.card_id)
+            assert card is not None
+            card.card_type = card_type
+
+        factory = CommunityUnitOfWorkFactory(sessions)
+        await _author_card_heads(
+            factory,
+            board_id=seed.board_id,
+            card_ids=(seed.card_id,),
+            actor_id="baseline-author",
+        )
+
+        async with sessions() as session, session.begin():
+            await _assert_blocking_assessment_can_be_saved(
+                session,
+                seed=seed,
+                entity_type=PolicyEntityType.CARD,
+                subject_id=seed.card_id,
+                revision=revision,
+                binding=binding,
+                expected_editor="baseline-author",
+            )
+            receipt_before = (
+                await CommunitySqlAlchemySemanticGuidelineAssessment(
+                    session
+                ).get_current_semantic_assessment_receipt(
+                    board_id=seed.board_id,
+                    entity_type=PolicyEntityType.CARD,
+                    subject_id=seed.card_id,
+                    binding_id=binding.binding_id,
+                )
+            )
+            assert receipt_before is not None
+            fence_before = await _card_fence(
+                session,
+                board_id=seed.board_id,
+                card_id=seed.card_id,
+            )
+
+        actor = ActorContext("completion-reviewer", "mcp", board_id=seed.board_id)
+        async with factory(actor=actor) as uow:
+            card = await uow._session.get(Card, seed.card_id)
+            assert card is not None
+            card.status = CardStatus.DONE
+            card.validations = [
+                {
+                    "id": "validation-1",
+                    "reviewer_id": "completion-reviewer",
+                    "approved": True,
+                }
+            ]
+            card.conclusions = [
+                {
+                    "text": "Operational execution report",
+                    "author_id": "completion-reviewer",
+                    "completeness": 100,
+                    "drift": 0,
+                }
+            ]
+            await uow.commit()
+
+        async with sessions() as session:
+            assert (
+                await _card_fence(
+                    session,
+                    board_id=seed.board_id,
+                    card_id=seed.card_id,
+                )
+                == fence_before
+            )
+            receipt_after = (
+                await CommunitySqlAlchemySemanticGuidelineAssessment(
+                    session
+                ).get_current_semantic_assessment_receipt(
+                    board_id=seed.board_id,
+                    entity_type=PolicyEntityType.CARD,
+                    subject_id=seed.card_id,
+                    binding_id=binding.binding_id,
+                )
             )
             assert receipt_after is not None
             assert receipt_after.receipt_id == receipt_before.receipt_id

@@ -51,6 +51,9 @@ def _spec_fact(row: Any) -> DiscoverySpecFact:
         skip_ir_coverage=bool(row.skip_ir_coverage),
         skip_or_coverage=bool(row.skip_or_coverage),
         skip_decisions_coverage=bool(row.skip_decisions_coverage),
+        skip_code_evidence_coverage=bool(
+            getattr(row, "skip_code_evidence_coverage", False)
+        ),
     )
 
 
@@ -89,13 +92,17 @@ class CommunitySqlAlchemyDiscoveryExecutionReader:
         self, context: Any, *, board_id: str, limit: int
     ) -> tuple[DiscoveryActivityFact, ...]:
         rows = (
-            await context.execute(
-                select(ActivityLog)
-                .where(ActivityLog.board_id == board_id)
-                .order_by(ActivityLog.created_at.desc())
-                .limit(limit)
+            (
+                await context.execute(
+                    select(ActivityLog)
+                    .where(ActivityLog.board_id == board_id)
+                    .order_by(ActivityLog.created_at.desc())
+                    .limit(limit)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return tuple(
             DiscoveryActivityFact(
                 id=str(row.id),
@@ -132,7 +139,9 @@ class CommunitySqlAlchemyDiscoveryExecutionReader:
             if model is None or not ids:
                 continue
             rows = (
-                await context.execute(select(model.id, model.title).where(model.id.in_(ids)))
+                await context.execute(
+                    select(model.id, model.title).where(model.id.in_(ids))
+                )
             ).all()
             for row_id, title in rows:
                 output[(entity_type, str(row_id))] = title or ""
@@ -142,14 +151,20 @@ class CommunitySqlAlchemyDiscoveryExecutionReader:
         self, context: Any, *, board_id: str
     ) -> tuple[DiscoverySprintFact, ...]:
         rows = (
-            await context.execute(
-                select(Sprint).where(
-                    Sprint.board_id == board_id,
+            (
+                await context.execute(
+                    select(Sprint).where(
+                        Sprint.board_id == board_id,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return tuple(
-            DiscoverySprintFact(str(row.id), str(row.board_id), row.title or "", row.status)
+            DiscoverySprintFact(
+                str(row.id), str(row.board_id), row.title or "", row.status
+            )
             for row in rows
         )
 
@@ -163,14 +178,18 @@ class CommunitySqlAlchemyDiscoveryExecutionReader:
         if not sprint_ids:
             return ()
         rows = (
-            await context.execute(
-                select(Card).where(
-                    Card.board_id == board_id,
-                    Card.archived.is_(False),
-                    Card.sprint_id.in_(tuple(sprint_ids)),
+            (
+                await context.execute(
+                    select(Card).where(
+                        Card.board_id == board_id,
+                        Card.archived.is_(False),
+                        Card.sprint_id.in_(tuple(sprint_ids)),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return tuple(_card_fact(row) for row in rows)
 
     async def list_dependencies_for_cards(
@@ -179,10 +198,16 @@ class CommunitySqlAlchemyDiscoveryExecutionReader:
         if not card_ids:
             return ()
         rows = (
-            await context.execute(
-                select(CardDependency).where(CardDependency.card_id.in_(tuple(card_ids)))
+            (
+                await context.execute(
+                    select(CardDependency).where(
+                        CardDependency.card_id.in_(tuple(card_ids))
+                    )
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return tuple(
             DiscoveryDependencyFact(
                 str(row.card_id), str(row.depends_on_id), row.created_at
@@ -196,8 +221,10 @@ class CommunitySqlAlchemyDiscoveryExecutionReader:
         if not card_ids:
             return ()
         rows = (
-            await context.execute(select(Card).where(Card.id.in_(tuple(card_ids))))
-        ).scalars().all()
+            (await context.execute(select(Card).where(Card.id.in_(tuple(card_ids)))))
+            .scalars()
+            .all()
+        )
         return tuple(_card_fact(row) for row in rows)
 
     async def list_card_dependents(
@@ -271,13 +298,17 @@ class CommunitySqlAlchemyDiscoveryExecutionReader:
         self, context: Any, *, board_id: str
     ) -> tuple[DiscoveryCardFact, ...]:
         rows = (
-            await context.execute(
-                select(Card).where(
-                    Card.board_id == board_id,
-                    Card.archived.is_(False),
+            (
+                await context.execute(
+                    select(Card).where(
+                        Card.board_id == board_id,
+                        Card.archived.is_(False),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return tuple(_card_fact(row) for row in rows)
 
 

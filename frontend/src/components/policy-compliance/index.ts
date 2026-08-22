@@ -1,6 +1,14 @@
 export {
   PolicyCompliancePanel,
 } from './PolicyCompliancePanel';
+export {
+  ActionablePinpoint,
+  PolicyComplianceReadOnlyActions,
+} from './ActionablePinpoint';
+export type {
+  ActionablePinpointProps,
+  PolicyComplianceReadOnlyActionsProps,
+} from './ActionablePinpoint';
 export type {
   PolicyCompliancePanelProps,
 } from './PolicyCompliancePanel';
@@ -15,24 +23,23 @@ export type {
   PolicyWaiverAction,
   PolicyWaiverMutationResult,
 } from './PolicyWaiverDialogs';
-export {
-  PolicyComplianceTransitionPreview,
-} from './PolicyComplianceTransitionPreview';
-export type {
-  PolicyComplianceTransitionPreviewProps,
-} from './PolicyComplianceTransitionPreview';
 export type {
   PolicyTransitionRejection,
   PolicyTransitionRejectionExpectation,
+  PolicyTransitionPresentationMode,
   PolicyTransitionPreviewLoadState,
 } from './policyTransitionPreviewModel';
 export {
   isAllowedTransitionActionable,
   parsePolicyTransitionRejection,
   policyTransitionRejectionMessage,
+  projectPolicyTransitions,
   readPolicyTransitionRejection,
   requirePolicyTransitionEnvelope,
 } from './policyTransitionPreviewModel';
 export {
   usePolicyTransitionAuthority,
 } from './usePolicyTransitionAuthority';
+export {
+  parsePolicyComplianceLifecycleDetails,
+} from './policyLifecycleSnapshot';

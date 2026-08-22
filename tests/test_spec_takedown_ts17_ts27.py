@@ -291,6 +291,9 @@ async def test_ts20_old_claim_cannot_ack_g1_or_g2_and_redrive_keys_are_fresh(
             session,
             entry_id=intent_g1.intent_id,
             claim_token=token_a,
+            board_id=BOARD_ID,
+            source="governed_delete",
+            work_kind="stale_reconcile",
             generation=1,
             delete_event_id=event_g1,
         )
@@ -325,6 +328,9 @@ async def test_ts20_old_claim_cannot_ack_g1_or_g2_and_redrive_keys_are_fresh(
             session,
             entry_id=intent_g2.intent_id,
             claim_token=token_a,
+            board_id=BOARD_ID,
+            source="governed_delete",
+            work_kind="stale_reconcile",
             generation=2,
             delete_event_id=event_g2,
         )

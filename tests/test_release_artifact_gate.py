@@ -21,19 +21,38 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert module.EXPECTED_VERSION == "0.3.1"
-    assert module.EXPECTED_MCP_TOOL_COUNT == 312
-    assert module.EXPECTED_CANONICAL_TOOL_COUNT == 304
-    assert module.EXPECTED_TOOL_ALIAS_COUNT == 8
-    assert module.EXPECTED_RESOURCE_COUNT == 53
+    from okto_pulse.core.mcp import server as core_mcp_server
+    from okto_pulse.core.mcp.manifest import build_server_manifest
+
+    tool_inventory = build_server_manifest(
+        core_mcp_server.mcp,
+        include_tool_names=True,
+    )["tool_inventory"]
+    live_tool_count = tool_inventory["count"]
+    live_alias_count = len(tool_inventory["aliases"])
+    live_canonical_count = live_tool_count - live_alias_count
+    live_resource_count = len(core_mcp_server.resource_registry_projection())
+
+    assert Path(core_mcp_server.__file__).resolve().is_relative_to(module.CORE_REPO)
+    assert module.EXPECTED_VERSION == "0.3.2"
+    assert module.EXPECTED_MCP_TOOL_COUNT == live_tool_count == 337
+    assert module.EXPECTED_CANONICAL_TOOL_COUNT == live_canonical_count == 329
+    assert module.EXPECTED_TOOL_ALIAS_COUNT == live_alias_count == 8
+    assert module.EXPECTED_RESOURCE_COUNT == live_resource_count == 55
     assert module.MINIMUM_SUPPORTED_PYTHON == (3, 11)
-    assert module.CORE_REPO.name == "okto-pulse-core"
+    assert module.CORE_REPO.name in {
+        "okto-pulse-core",
+        "okto_labs_pulse_core",
+    }
     assert "site-packages" not in str(module.CORE_REPO).lower()
     forbidden_names = {path.name for path in module.FORBIDDEN_CHECKOUT_ROOTS}
     assert "okto_labs_pulse_core" in forbidden_names
     assert "okto_labs_pulse_community" in forbidden_names
     assert "ska_tool_manifest.json" in module._INSTALLED_ORIGIN_PROBE
     assert "ska_resource_manifest.json" in module._INSTALLED_ORIGIN_PROBE
+    assert "installed semantic-v2 reader contract mismatch" in (
+        module._INSTALLED_ORIGIN_PROBE
+    )
     assert "__EXPECTED_" not in module._MCP_CLIENT_PROBE
     assert "installed runtime" in module._INSTALLED_RUNTIME_VERSION_PROBE
     assert 'metadata.version("pydantic")' in (
@@ -70,6 +89,34 @@ def test_release_gate_resolves_core_from_explicit_workspace_root(
     gate = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gate)
 
+    assert gate.CORE_REPO == expected.resolve()
+
+
+def test_release_gate_prefers_the_anchor_checkout_family(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    stale = workspace / "okto-pulse-core"
+    expected = workspace / "okto_labs_pulse_core"
+    for checkout in (stale, expected):
+        (checkout / "src" / "okto_pulse" / "core").mkdir(parents=True)
+        (checkout / "pyproject.toml").write_text(
+            "[project]\nname = 'okto-pulse-core'\nversion = '0.0.0'\n",
+            encoding="utf-8",
+        )
+    monkeypatch.delenv("OKTO_PULSE_CORE_REPO", raising=False)
+    monkeypatch.setenv("OKTO_PULSE_WORKSPACE_ROOT", str(workspace))
+
+    spec = importlib.util.spec_from_file_location(
+        "release_artifact_gate_anchor_family_resolution",
+        GATE,
+    )
+    assert spec is not None and spec.loader is not None
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+
+    assert gate.COMMUNITY_REPO.name == "okto_labs_pulse_community"
     assert gate.CORE_REPO == expected.resolve()
 
 
@@ -125,20 +172,22 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     evidence = json.loads(results[0])
 
     assert evidence["status"] == "passed"
-    assert evidence["expected_version"] == "0.3.1"
+    assert evidence["expected_version"] == "0.3.2"
     assert evidence["installed"]["runtime_version"]["python_major_minor"] == [3, 11]
     assert evidence["installed"]["runtime_version"]["required_major_minor"] == [3, 11]
     assert evidence["installed"]["runtime_version"]["pydantic"]
     assert evidence["core_artifact_audit"]["forbidden_wheel_paths"] == []
     assert evidence["core_artifact_audit"]["missing_required_resources"] == []
     origin = evidence["installed"]["origin_probe"]
-    assert origin["about_version"] == "0.3.1"
-    assert origin["ska_contract_manifests"]["tool_count"] == 11
-    assert origin["ska_contract_manifests"]["resource_count"] == 21
+    assert origin["about_version"] == "0.3.2"
+    assert origin["ska_contract_manifests"]["tool_count"] == 13
+    assert origin["ska_contract_manifests"]["resource_count"] == 22
+    assert origin["semantic_v2_reader_contract"]["compatible"] is True
+    assert "subject_edition" in origin["semantic_v2_reader_contract"]["signature"]
     assert len(origin["required_core_resources"]) == 2
     for distribution in ("core", "community"):
         provenance = evidence["installed"]["payload_provenance"][distribution]
-        assert provenance["version"] == "0.3.1"
+        assert provenance["version"] == "0.3.2"
         assert provenance["commit"]
         assert provenance["repository_root"]
         assert provenance["wheel"]["sha256"]
@@ -190,13 +239,13 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     assert kg_parity["ska"]["quality"] == "covered"
     assert kg_parity["ska"]["research_decision_ledger"] == "covered"
     assert evidence["installed"]["cli_version"] == (
-        "okto-pulse 0.3.1 (okto-pulse-core 0.3.1)"
+        "okto-pulse 0.3.2 (okto-pulse-core 0.3.2)"
     )
     mcp_http = evidence["installed"]["mcp_http"]
     assert mcp_http["transport"] == "streamable-http-loopback"
-    assert mcp_http["tool_count"] == 312
-    assert mcp_http["canonical_tool_count"] == 304
+    assert mcp_http["tool_count"] == 337
+    assert mcp_http["canonical_tool_count"] == 329
     assert mcp_http["tool_alias_count"] == 8
-    assert mcp_http["resource_count"] == 53
-    assert mcp_http["ska_tool_count"] == 11
+    assert mcp_http["resource_count"] == 55
+    assert mcp_http["ska_tool_count"] == 13
     assert (work_dir / "release-artifact-evidence.json").is_file()

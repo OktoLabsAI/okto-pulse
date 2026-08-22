@@ -6,14 +6,36 @@ import { useMemo } from 'react';
 import { useApiClient } from '@/contexts/ApiContext';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import type {
+  CanonicalCoverageResponse,
+  FlowHealthResponse,
+  FlowHealthSettingsResponse,
+  FlowHealthSettingsUpdate,
+  BoardKgAnalyticsResponse,
+  BoardKgAnalyticsQueryOptions,
+} from '@/components/analytics/analyticsCanonicalTypes';
+import type {
+  DeliveryIntelligenceFilters,
+  DeliveryIntelligenceResponse,
+  DeliveryForecastResponse,
+  SprintAnalyticsResponse,
+} from '@/components/analytics/analyticsDeliveryTypes';
+import type {
+  AddSpecDependencyRequest,
+  ListSpecDependenciesOptions,
+  RemoveSpecDependencyRequest,
+  SpecDependencyMutationResponse,
+  SpecDependencyPage,
+} from '@/types/spec-dependencies';
+import type {
   Board,
   BoardSummary,
   BoardShare,
   ChecklistBinding,
   ChecklistBindingUpdateResult,
   ChecklistExecutionStartResult,
+  ChecklistExecutionStartRequest,
+  ChecklistExecutionSubmitRequest,
   ChecklistExecutionSubmitResult,
-  ChecklistItemResult,
   ChecklistReceipt,
   ChecklistReceiptPage,
   ChecklistSpecState,
@@ -68,11 +90,16 @@ import type {
   AllowedTransitionsResponse,
   Spec,
   Sprint,
+  SprintSummary,
   SpecStructuredEntityMutationRequest,
   SpecStructuredEntityMutationResult,
   SpecStructuredEntityOperation,
   SpecStructuredEntityType,
   SpecSummary,
+  SpecValidationCurrentSummary,
+  SpecValidationList,
+  SpecValidationSubmitPayload,
+  SpecValidationSubmitResponse,
   CreateSpecRequest,
   UpdateSpecRequest,
   UpdateSprintRequest,
@@ -159,6 +186,18 @@ import type {
   QualitySubjectType,
   RecordAmbiguityAssessmentRequest,
   RecordAmbiguityAssessmentResponse,
+  ValidationCycleSummary,
+  ValidationTechnicalAudit,
+  CodeEvidenceRevokeRequest,
+  LegacyEvidenceClassificationBatchRequest,
+  LegacyEvidenceClassificationBatchResult,
+  CodeInvestigationReceiptReadResult,
+  CodeTraceabilityProfile,
+  CodeTraceabilityProjection,
+  CodeTraceabilitySubjectType,
+  CodeTraceabilityWaiverCreateRequest,
+  ImplementationTargetCreateRequest,
+  TargetOverlapAcknowledgementRequest,
 } from '@/types';
 
 export interface BoardColumnsQuery {
@@ -189,6 +228,7 @@ export interface PageWindow {
 export interface QualityAssessmentPageWindow extends PageWindow {
   assessmentKind?: QualityAssessmentKind;
   state?: QualityAssessmentReceiptState;
+  subjectEdition?: number;
 }
 
 export interface QualityFindingPageWindow extends PageWindow {
@@ -196,6 +236,107 @@ export interface QualityFindingPageWindow extends PageWindow {
   assessmentKind?: QualityAssessmentKind;
   categoryCode?: string;
   severity?: QualityFindingSeverity;
+  subjectEdition?: number;
+}
+
+export type CodeTraceabilityProjectionOptions =
+  | {
+      profile?: CodeTraceabilityProfile;
+      signal?: AbortSignal;
+      contextScope?: 'default';
+    }
+  | {
+      profile: 'full';
+      signal?: AbortSignal;
+      contextScope: 'gate';
+    };
+
+const legacyEvidenceClassificationConflictKinds = {
+  code_evidence_legacy_classification_payload_conflict: 'payload',
+  code_evidence_legacy_classification_revision_conflict: 'revision',
+  code_evidence_legacy_classification_idempotency_conflict: 'idempotency',
+} as const;
+
+export type LegacyEvidenceClassificationConflictCode =
+  keyof typeof legacyEvidenceClassificationConflictKinds;
+
+export type LegacyEvidenceClassificationConflictKind =
+  (typeof legacyEvidenceClassificationConflictKinds)[LegacyEvidenceClassificationConflictCode];
+
+export class LegacyEvidenceClassificationConflictError extends Error {
+  readonly status = 409;
+  readonly code: LegacyEvidenceClassificationConflictCode;
+  readonly kind: LegacyEvidenceClassificationConflictKind;
+  readonly details: Readonly<Record<string, unknown>>;
+  readonly retryable: boolean;
+  readonly transportError: AuthenticatedFetchError;
+
+  constructor(
+    code: LegacyEvidenceClassificationConflictCode,
+    transportError: AuthenticatedFetchError,
+  ) {
+    super(transportError.message);
+    this.name = 'LegacyEvidenceClassificationConflictError';
+    this.code = code;
+    this.kind = legacyEvidenceClassificationConflictKinds[code];
+    this.details = (
+      typeof transportError.details === 'object'
+      && transportError.details !== null
+    )
+      ? { ...transportError.details as Record<string, unknown> }
+      : {};
+    this.retryable = transportError.retryable;
+    this.transportError = transportError;
+  }
+}
+
+function legacyEvidenceClassificationConflict(
+  error: unknown,
+): LegacyEvidenceClassificationConflictError | null {
+  if (
+    !(error instanceof AuthenticatedFetchError)
+    || error.status !== 409
+    || error.code === null
+    || !(error.code in legacyEvidenceClassificationConflictKinds)
+  ) {
+    return null;
+  }
+  return new LegacyEvidenceClassificationConflictError(
+    error.code as LegacyEvidenceClassificationConflictCode,
+    error,
+  );
+}
+
+function canonicalLegacyEvidenceClassificationBatch(
+  request: LegacyEvidenceClassificationBatchRequest,
+): LegacyEvidenceClassificationBatchRequest {
+  const items = request.items.map((item) => ({
+    evidence_id: item.evidence_id,
+    expected_evidence_payload_sha256: item.expected_evidence_payload_sha256,
+    expected_classification_revision: item.expected_classification_revision,
+    source_role: item.source_role,
+    relevance_summary: item.relevance_summary,
+    scope_relation: item.scope_relation,
+    source_origin: item.source_origin,
+    interpretation_limit: item.interpretation_limit,
+    baseline_provenance: {
+      presence: item.baseline_provenance.presence,
+      workspace_state_id: item.baseline_provenance.workspace_state_id,
+      provenance_note: item.baseline_provenance.provenance_note,
+    },
+  }));
+  items.sort((left, right) => (
+    left.evidence_id < right.evidence_id
+      ? -1
+      : left.evidence_id > right.evidence_id
+        ? 1
+        : 0
+  ));
+  return {
+    items,
+    justification: request.justification,
+    idempotency_key: request.idempotency_key,
+  };
 }
 
 export type StoryPageItem = Omit<
@@ -222,6 +363,7 @@ export interface SprintPageItem {
   created_at: string;
   updated_at: string;
   archived: boolean;
+  open_qa_count?: number | null;
 }
 
 function isCardCreateKnowledgeMutationResponse(
@@ -331,8 +473,12 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       subjectId: string,
       assessmentKind: QualityAssessmentKind,
       signal?: AbortSignal,
+      subjectEdition?: number,
     ): Promise<CurrentQualityAssessment | null> {
       const params = new URLSearchParams({ assessment_kind: assessmentKind });
+      if (subjectEdition !== undefined) {
+        params.set('subject_edition', String(subjectEdition));
+      }
       try {
         return await apiClient.fetchJson<CurrentQualityAssessment>(
           `${qualitySubjectPath(subjectType, subjectId)}/quality-assessments/current?${params.toString()}`,
@@ -372,6 +518,9 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
         params.set('assessment_kind', options.assessmentKind);
       }
       if (options.state) params.set('state', options.state);
+      if (options.subjectEdition !== undefined) {
+        params.set('subject_edition', String(options.subjectEdition));
+      }
       return apiClient.fetchJson<PageEnvelope<QualityAssessmentListItem>>(
         `${qualitySubjectPath(subjectType, subjectId)}/quality-assessments?${params.toString()}`,
         { signal: options.signal },
@@ -392,6 +541,9 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
         params.set('category_code', options.categoryCode.trim());
       }
       if (options.severity) params.set('severity', options.severity);
+      if (options.subjectEdition !== undefined) {
+        params.set('subject_edition', String(options.subjectEdition));
+      }
       return apiClient.fetchJson<PageEnvelope<QualityFinding>>(
         `${qualitySubjectPath(subjectType, subjectId)}/quality-findings?${params.toString()}`,
         { signal: options.signal },
@@ -437,6 +589,166 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
           method: 'POST',
           body: JSON.stringify(data),
         },
+      );
+    },
+
+    // ==================== CODE TRACEABILITY ====================
+
+    async getCodeTraceabilityProjection(
+      boardId: string,
+      subjectType: CodeTraceabilitySubjectType,
+      subjectId: string,
+      subjectVersion: number,
+      options: CodeTraceabilityProjectionOptions = {},
+    ): Promise<CodeTraceabilityProjection> {
+      const profile = options.profile ?? 'detail';
+      const contextScope = options.contextScope ?? 'default';
+      if (contextScope === 'gate' && profile !== 'full') {
+        throw new Error('code_traceability_gate_profile_full_required');
+      }
+      const params = new URLSearchParams({
+        subject_type: subjectType,
+        subject_id: subjectId,
+        subject_version: String(subjectVersion),
+        profile,
+        context_scope: contextScope,
+      });
+      return apiClient.fetchJson<CodeTraceabilityProjection>(
+        `/boards/${encodeURIComponent(boardId)}/code-traceability-projection?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
+    async getValidationCycle(
+      subjectType: QualitySubjectType,
+      subjectId: string,
+      options: {
+        includePrevious?: boolean;
+        offset?: number;
+        limit?: number;
+        signal?: AbortSignal;
+      } = {},
+    ): Promise<ValidationCycleSummary> {
+      const params = new URLSearchParams({
+        include_previous: String(options.includePrevious ?? false),
+        offset: String(options.offset ?? 0),
+        limit: String(options.limit ?? 25),
+      });
+      return apiClient.fetchJson<ValidationCycleSummary>(
+        `${qualitySubjectPath(subjectType, subjectId)}/validation-cycle?${params.toString()}`,
+        { signal: options.signal },
+      );
+    },
+
+    async getValidationTechnicalAudit(
+      subjectType: QualitySubjectType,
+      subjectId: string,
+      resultId: string,
+      resultType: 'ambiguity_assessment' | 'spec_validation' | 'requirement_lint',
+      signal?: AbortSignal,
+    ): Promise<ValidationTechnicalAudit> {
+      const params = new URLSearchParams({ result_type: resultType });
+      return apiClient.fetchJson<ValidationTechnicalAudit>(
+        `${qualitySubjectPath(subjectType, subjectId)}/validation-cycle/results/${encodeURIComponent(resultId)}/technical-audit?${params.toString()}`,
+        { signal },
+      );
+    },
+
+    async getCodeInvestigationReceipt(
+      boardId: string,
+      receiptId: string,
+      signal?: AbortSignal,
+    ): Promise<CodeInvestigationReceiptReadResult> {
+      return apiClient.fetchJson<CodeInvestigationReceiptReadResult>(
+        `/boards/${encodeURIComponent(boardId)}/code-investigation-receipts/${encodeURIComponent(receiptId)}`,
+        { signal },
+      );
+    },
+
+    async revokeCodeInvestigationReceipt(
+      boardId: string,
+      receiptId: string,
+      payload: { reason_code: string; justification: string },
+    ): Promise<Record<string, unknown>> {
+      return apiClient.fetchJson<Record<string, unknown>>(
+        `/boards/${encodeURIComponent(boardId)}/code-investigation-receipts/${encodeURIComponent(receiptId)}/revoke`,
+        { method: 'POST', body: JSON.stringify(payload) },
+      );
+    },
+
+    async classifyLegacyCodeEvidence(
+      boardId: string,
+      request: LegacyEvidenceClassificationBatchRequest,
+      signal?: AbortSignal,
+    ): Promise<LegacyEvidenceClassificationBatchResult> {
+      const body = JSON.stringify(
+        canonicalLegacyEvidenceClassificationBatch(request),
+      );
+      try {
+        // The receipt is returned unchanged. This client deliberately performs
+        // no optimistic projection update or hidden read, so the consuming
+        // layer can perform exactly one canonical refetch after success.
+        return await apiClient.fetchJson<LegacyEvidenceClassificationBatchResult>(
+          `/boards/${encodeURIComponent(boardId)}/code-evidence/legacy-classifications`,
+          { method: 'POST', body, signal },
+        );
+      } catch (error) {
+        const conflict = legacyEvidenceClassificationConflict(error);
+        if (conflict !== null) throw conflict;
+        throw error;
+      }
+    },
+
+    async revokeCodeEvidence(
+      boardId: string,
+      evidenceId: string,
+      payload: CodeEvidenceRevokeRequest,
+    ): Promise<Record<string, unknown>> {
+      return apiClient.fetchJson<Record<string, unknown>>(
+        `/boards/${encodeURIComponent(boardId)}/code-evidence/${encodeURIComponent(evidenceId)}/revoke`,
+        { method: 'POST', body: JSON.stringify(payload) },
+      );
+    },
+
+    async createImplementationTarget(
+      boardId: string,
+      cardId: string,
+      payload: ImplementationTargetCreateRequest,
+    ): Promise<Record<string, unknown>> {
+      return apiClient.fetchJson<Record<string, unknown>>(
+        `/boards/${encodeURIComponent(boardId)}/cards/${encodeURIComponent(cardId)}/implementation-targets`,
+        { method: 'POST', body: JSON.stringify(payload) },
+      );
+    },
+
+    async acknowledgeImplementationOverlap(
+      boardId: string,
+      cardId: string,
+      payload: TargetOverlapAcknowledgementRequest,
+    ): Promise<Record<string, unknown>> {
+      return apiClient.fetchJson<Record<string, unknown>>(
+        `/boards/${encodeURIComponent(boardId)}/cards/${encodeURIComponent(cardId)}/implementation-overlaps/acknowledgements`,
+        { method: 'POST', body: JSON.stringify(payload) },
+      );
+    },
+
+    async createCodeTraceabilityWaiver(
+      boardId: string,
+      payload: CodeTraceabilityWaiverCreateRequest,
+    ): Promise<Record<string, unknown>> {
+      return apiClient.fetchJson<Record<string, unknown>>(
+        `/boards/${encodeURIComponent(boardId)}/code-traceability-waivers`,
+        { method: 'POST', body: JSON.stringify(payload) },
+      );
+    },
+
+    async clearCodeTraceabilityWaiver(
+      boardId: string,
+      waiverId: string,
+    ): Promise<Record<string, unknown>> {
+      return apiClient.fetchJson<Record<string, unknown>>(
+        `/boards/${encodeURIComponent(boardId)}/code-traceability-waivers/${encodeURIComponent(waiverId)}`,
+        { method: 'DELETE' },
       );
     },
 
@@ -516,12 +828,18 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       entityType: string,
       entityId: string,
       includeArtifacts = false,
+      view: 'lineage' | 'dependency' = 'lineage',
+      dependencyScope: 'selected' | 'lineage' = 'selected',
     ): Promise<LineageGraphResponse> {
       const p = new URLSearchParams({
         entity_type: entityType,
         entity_id: entityId,
         include_artifacts: includeArtifacts ? 'true' : 'false',
       });
+      if (view !== 'lineage') p.set('view', view);
+      if (view === 'dependency' && dependencyScope !== 'selected') {
+        p.set('dependency_scope', dependencyScope);
+      }
       return apiClient.fetchJson<LineageGraphResponse>(
         `/boards/${boardId}/lineage-graph?${p.toString()}`
       );
@@ -1036,6 +1354,72 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson<Spec>(`/specs/${specId}`);
     },
 
+    async listSpecDependencies(
+      boardId: string,
+      specId: string,
+      options: ListSpecDependenciesOptions,
+    ): Promise<SpecDependencyPage> {
+      const params = new URLSearchParams({
+        direction: options.direction,
+        limit: String(options.limit ?? 25),
+      });
+      if (options.cursor !== undefined) params.set('cursor', options.cursor);
+      if (options.satisfaction && options.satisfaction !== 'all') {
+        params.set('satisfaction', options.satisfaction);
+      }
+      if (options.retrospective !== undefined) {
+        params.set('retrospective', String(options.retrospective));
+      }
+      if (options.active_state) params.set('active_state', options.active_state);
+      if (options.lineage && options.lineage !== 'all') {
+        params.set('lineage', options.lineage);
+      }
+      for (const relatedStatus of options.related_statuses ?? []) {
+        params.append('related_status', relatedStatus);
+      }
+      const page = await apiClient.fetchJson<SpecDependencyPage>(
+        `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/dependencies?${params.toString()}`,
+        { signal: options.signal },
+      );
+      return {
+        ...page,
+        has_more: page.has_more ?? Boolean(page.next_cursor),
+      };
+    },
+
+    async addSpecDependency(
+      boardId: string,
+      specId: string,
+      request: AddSpecDependencyRequest,
+      signal?: AbortSignal,
+    ): Promise<SpecDependencyMutationResponse> {
+      return apiClient.fetchJson<SpecDependencyMutationResponse>(
+        `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/dependencies`,
+        {
+          method: 'POST',
+          body: JSON.stringify(request),
+          signal,
+        },
+      );
+    },
+
+    async removeSpecDependency(
+      boardId: string,
+      specId: string,
+      dependencyId: string,
+      request: RemoveSpecDependencyRequest,
+      signal?: AbortSignal,
+    ): Promise<SpecDependencyMutationResponse> {
+      return apiClient.fetchJson<SpecDependencyMutationResponse>(
+        `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/dependencies/${encodeURIComponent(dependencyId)}`,
+        {
+          method: 'DELETE',
+          body: JSON.stringify(request),
+          signal,
+        },
+      );
+    },
+
     async updateSpec(specId: string, data: UpdateSpecRequest): Promise<Spec> {
       return apiClient.fetchJson<Spec>(`/specs/${specId}`, {
         method: 'PATCH',
@@ -1494,10 +1878,18 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     // Dedicated per-ideation Max ambiguity gate skip write path (spec 2485780b).
     // Works while the ideation is in evaluating status; does not touch other fields.
-    async setIdeationAmbiguityGateSkip(ideationId: string, skip: boolean): Promise<Ideation> {
+    async setIdeationAmbiguityGateSkip(
+      ideationId: string,
+      data: {
+        skip_ambiguity_gate: boolean;
+        reason: string;
+        expected_ideation_version: number;
+        expected_ideation_edition: number;
+      },
+    ): Promise<Ideation> {
       return apiClient.fetchJson<Ideation>(`/ideations/${ideationId}/ambiguity-gate-skip`, {
         method: 'PATCH',
-        body: JSON.stringify({ skip_ambiguity_gate: skip }),
+        body: JSON.stringify(data),
       });
     },
 
@@ -2063,6 +2455,108 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson(`/boards/${boardId}/analytics/coverage?${params.toString()}`);
     },
 
+    async getCanonicalBoardCoverage(boardId: string, from?: string, to?: string): Promise<CanonicalCoverageResponse> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/coverage/canonical?${params.toString()}`);
+    },
+
+    async exportCanonicalBoardCoverageCsv(boardId: string, from?: string, to?: string): Promise<void> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      const response = await apiClient.fetch(`/boards/${boardId}/analytics/coverage/canonical/export?${params.toString()}`);
+      if (!response.ok) {
+        throw new Error(`Export failed: ${response.status}`);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `board-${boardId}-coverage-analytics.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    },
+
+    async getBoardFlowHealth(boardId: string, from?: string, to?: string): Promise<FlowHealthResponse> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/flow-health?${params.toString()}`);
+    },
+
+    async exportBoardFlowHealthCsv(boardId: string, from?: string, to?: string): Promise<void> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      const response = await apiClient.fetch(`/boards/${boardId}/analytics/flow-health/export?${params.toString()}`);
+      if (!response.ok) throw new Error(`Export failed: ${response.status}`);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `board-${boardId}-flow-health.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    },
+
+    async getBoardFlowHealthSettings(boardId: string): Promise<FlowHealthSettingsResponse> {
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/flow-health/settings`);
+    },
+
+    async saveBoardFlowHealthSettings(
+      boardId: string,
+      data: FlowHealthSettingsUpdate,
+    ): Promise<FlowHealthSettingsResponse> {
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/flow-health/settings`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      });
+    },
+
+    async restoreBoardFlowHealthSettings(boardId: string, expectedVersion: number): Promise<FlowHealthSettingsResponse> {
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/flow-health/settings/restore`, {
+        method: 'POST',
+        body: JSON.stringify({ expected_version: expectedVersion }),
+      });
+    },
+
+    async getSpecReadiness(boardId: string, from?: string, to?: string): Promise<any> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/readiness/spec?${params.toString()}`);
+    },
+
+    async getPolicyResourceReadiness(boardId: string, from?: string, to?: string): Promise<any> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/readiness/policy-resource?${params.toString()}`);
+    },
+
+    async exportReadinessCsv(boardId: string, kind: 'spec' | 'policy-resource', from?: string, to?: string): Promise<void> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      const response = await apiClient.fetch(`/boards/${boardId}/analytics/readiness/${kind}/export?${params.toString()}`);
+      if (!response.ok) throw new Error(`Export failed: ${response.status}`);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `board-${boardId}-${kind}-readiness.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    },
+
     async getBoardAnalyticsAgents(boardId: string, from?: string, to?: string): Promise<any> {
       const params = new URLSearchParams();
       if (from) params.set('from', from);
@@ -2097,11 +2591,133 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     },
 
     // --- Sprint analytics panel (summary + per-sprint breakdown)
-    async getBoardAnalyticsSprints(boardId: string, from?: string, to?: string): Promise<any> {
+    async getBoardAnalyticsSprints(boardId: string, from?: string, to?: string): Promise<SprintAnalyticsResponse> {
       const params = new URLSearchParams();
       if (from) params.set('from', from);
       if (to) params.set('to', to);
       return apiClient.fetchJson(`/boards/${boardId}/analytics/sprints?${params.toString()}`);
+    },
+
+    async getBoardDeliveryIntelligence(
+      boardId: string,
+      from?: string,
+      to?: string,
+      options: DeliveryIntelligenceFilters = {},
+    ): Promise<DeliveryIntelligenceResponse> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      if (options.sprintId) params.append('sprint_id', options.sprintId);
+      if (options.lane && options.lane !== 'all') params.append('lane', options.lane);
+      if (options.role && options.role !== 'all') params.append('role', options.role);
+      if (options.contributionView) params.set('contribution_view', options.contributionView);
+      if (options.cursor) params.set('cursor', options.cursor);
+      if (options.limit !== undefined) params.set('limit', String(options.limit));
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/delivery-intelligence?${params.toString()}`);
+    },
+
+    async exportBoardDeliveryIntelligenceCsv(
+      boardId: string,
+      from?: string,
+      to?: string,
+      options: DeliveryIntelligenceFilters = {},
+    ): Promise<void> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      if (options.sprintId) params.append('sprint_id', options.sprintId);
+      if (options.lane && options.lane !== 'all') params.append('lane', options.lane);
+      if (options.role && options.role !== 'all') params.append('role', options.role);
+      if (options.contributionView) params.set('contribution_view', options.contributionView);
+      if (options.cursor) params.set('cursor', options.cursor);
+      if (options.limit !== undefined) params.set('limit', String(options.limit));
+      const response = await apiClient.fetch(`/boards/${boardId}/analytics/delivery-intelligence/export?${params.toString()}`);
+      if (!response.ok) throw new Error(`Export failed: ${response.status}`);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `board-${boardId}-delivery-intelligence.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    },
+
+    async getBoardDeliveryForecast(boardId: string, from?: string, to?: string): Promise<DeliveryForecastResponse> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/delivery-forecast?${params.toString()}`);
+    },
+
+    async exportBoardDeliveryForecastCsv(boardId: string, from?: string, to?: string): Promise<void> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      const response = await apiClient.fetch(`/boards/${boardId}/analytics/delivery-forecast/export?${params.toString()}`);
+      if (!response.ok) throw new Error(`Export failed: ${response.status}`);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `board-${boardId}-delivery-forecast.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    },
+
+    async getBoardKgAnalytics(
+      boardId: string,
+      from?: string,
+      to?: string,
+      options: BoardKgAnalyticsQueryOptions = {},
+    ): Promise<BoardKgAnalyticsResponse> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      [...new Set(options.cognitiveStatus ?? [])].sort().forEach((status) => {
+        params.append('cognitive_status', status);
+      });
+      [...new Set((options.artifactTypes ?? []).map((value) => value.trim()).filter(Boolean))].sort().forEach((artifactType) => {
+        params.append('artifact_type', artifactType);
+      });
+      if (options.cursor) params.set('cursor', options.cursor);
+      if (options.limit !== undefined) params.set('limit', String(options.limit));
+      return apiClient.fetchJson(`/boards/${boardId}/analytics/kg-effectiveness?${params.toString()}`);
+    },
+
+    async exportBoardKgAnalyticsCsv(
+      boardId: string,
+      from?: string,
+      to?: string,
+      options: BoardKgAnalyticsQueryOptions = {},
+    ): Promise<void> {
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      [...new Set(options.cognitiveStatus ?? [])].sort().forEach((status) => {
+        params.append('cognitive_status', status);
+      });
+      [...new Set((options.artifactTypes ?? []).map((value) => value.trim()).filter(Boolean))].sort().forEach((artifactType) => {
+        params.append('artifact_type', artifactType);
+      });
+      if (options.cursor) params.set('cursor', options.cursor);
+      if (options.limit !== undefined) params.set('limit', String(options.limit));
+      const response = await apiClient.fetch(`/boards/${boardId}/analytics/kg-effectiveness/export?${params.toString()}`);
+      if (!response.ok) {
+        throw new Error(`Export failed: ${response.status}`);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `board-${boardId}-kg-analytics.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     },
 
     // --- Per-spec analytics detail (validation timeline, task gate summary)
@@ -2200,17 +2816,17 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     },
 
     // ---- Sprints ----
-    async listSprints(boardId: string, specId: string): Promise<any[]> {
-      return apiClient.fetchJson(`/boards/${boardId}/specs/${specId}/sprints`);
+    async listSprints(boardId: string, specId: string): Promise<SprintSummary[]> {
+      return apiClient.fetchJson<SprintSummary[]>(`/boards/${boardId}/specs/${specId}/sprints`);
     },
 
-    async listBoardSprints(boardId: string, status?: string, specId?: string, includeArchived?: boolean): Promise<any[]> {
+    async listBoardSprints(boardId: string, status?: string, specId?: string, includeArchived?: boolean): Promise<SprintSummary[]> {
       const params = new URLSearchParams();
       if (status) params.set('status', status);
       if (specId) params.set('spec_id', specId);
       if (includeArchived) params.set('include_archived', 'true');
       const qs = params.toString();
-      return apiClient.fetchJson(`/boards/${boardId}/sprints${qs ? `?${qs}` : ''}`);
+      return apiClient.fetchJson<SprintSummary[]>(`/boards/${boardId}/sprints${qs ? `?${qs}` : ''}`);
     },
 
     async listBoardSprintsPage(boardId: string, options: PageWindow & {
@@ -2300,15 +2916,50 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     // ==================== SPEC VALIDATION GATE ====================
 
-    async submitSpecValidation(specId: string, data: any): Promise<any> {
-      return apiClient.fetchJson(`/specs/${specId}/validation`, {
+    async submitSpecValidation(
+      specId: string,
+      data: SpecValidationSubmitPayload,
+    ): Promise<SpecValidationSubmitResponse> {
+      return apiClient.fetchJson<SpecValidationSubmitResponse>(`/specs/${specId}/validation`, {
         method: 'POST',
         body: JSON.stringify(data),
       });
     },
 
-    async listSpecValidations(specId: string): Promise<any> {
-      return apiClient.fetchJson(`/specs/${specId}/validations`);
+    async listSpecValidations(
+      specId: string,
+      options?: {
+        lifecycleState?: 'previous';
+        offset?: number;
+        limit?: 25;
+        signal?: AbortSignal;
+      },
+    ): Promise<SpecValidationList> {
+      const params = new URLSearchParams();
+      if (options?.lifecycleState) {
+        params.set('lifecycle_state', options.lifecycleState);
+      }
+      if (options?.offset !== undefined) {
+        params.set('offset', String(options.offset));
+      }
+      if (options?.limit !== undefined) {
+        params.set('limit', String(options.limit));
+      }
+      const query = params.size > 0 ? `?${params.toString()}` : '';
+      return apiClient.fetchJson<SpecValidationList>(
+        `/specs/${specId}/validations${query}`,
+        { signal: options?.signal },
+      );
+    },
+
+    async getCurrentSpecValidation(
+      specId: string,
+      signal?: AbortSignal,
+    ): Promise<SpecValidationCurrentSummary> {
+      return apiClient.fetchJson<SpecValidationCurrentSummary>(
+        `/specs/${specId}/validations/current`,
+        { signal },
+      );
     },
 
     // ==================== CURATED SPEC CHECKLIST ====================
@@ -2360,11 +3011,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     async startChecklistExecution(
       boardId: string,
       specId: string,
-      data: {
-        binding_id: string;
-        expected_spec_version: number;
-        idempotency_key: string;
-      },
+      data: ChecklistExecutionStartRequest,
     ): Promise<ChecklistExecutionStartResult> {
       return apiClient.fetchJson(
         `/boards/${boardId}/specs/${specId}/checklist-executions`,
@@ -2375,15 +3022,10 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     async submitChecklistExecution(
       boardId: string,
       specId: string,
-      executionId: string,
-      data: {
-        expected_execution_revision: number;
-        results: ChecklistItemResult[];
-        idempotency_key: string;
-      },
+      data: ChecklistExecutionSubmitRequest,
     ): Promise<ChecklistExecutionSubmitResult> {
       return apiClient.fetchJson(
-        `/boards/${boardId}/specs/${specId}/checklist-executions/${executionId}/submit`,
+        `/boards/${boardId}/specs/${specId}/checklist-executions/${data.execution_id}/submit`,
         { method: 'POST', body: JSON.stringify(data) },
       );
     },

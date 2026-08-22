@@ -43,6 +43,7 @@ REQUIRED_ITEM_KEYS = {
     "title",
     "description",
     "status",
+    "edition",
     "version",
     "assignee_id",
     "created_by",
@@ -185,6 +186,12 @@ async def _build_engine(path: Path) -> AsyncEngine:
         )
         await connection.execute(
             text(
+                "UPDATE refinements SET edition = 7, version = 47 "
+                "WHERE id = 'r029'"
+            )
+        )
+        await connection.execute(
+            text(
                 "INSERT INTO refinements "
                 "(id, ideation_id, board_id, title, description, status, "
                 "version, created_by, labels, archived, created_at, updated_at) "
@@ -292,6 +299,8 @@ def test_all_filters_are_pre_window_and_adjacent_pages_are_deterministic(
     assert all(not (HEAVY_ITEM_KEYS & set(item)) for item in first_body["items"])
     by_id = {item["id"]: item for item in first_body["items"]}
     assert by_id["r029"]["ideation_title"] == "Needle Parent Ideation"
+    assert by_id["r029"]["edition"] == 7
+    assert by_id["r029"]["version"] == 47
     assert by_id["r023"]["ideation_title"] == "Plain parent"
 
     statements.clear()

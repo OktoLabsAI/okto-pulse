@@ -290,62 +290,11 @@ async def test_incomplete_demo_graph_retries_without_duplicate_demo_data(
         await engine.dispose()
 
 
-@pytest.mark.asyncio
-async def test_requirement_lint_failure_rolls_back_demo_uow_and_propagates(
-    tmp_path, monkeypatch
-):
-    """A failed lint cannot leak any of the staged Demo relational rows."""
+def test_demo_seed_does_not_own_requirement_lint_execution() -> None:
+    """Community seed must not perform the external agent's lint analysis."""
     from okto_pulse.community import seed as seed_mod
 
-    engine, factory = await _demo_seed_factory(tmp_path, "failed-demo-lint.db")
-    graph_calls: list[tuple[str, str]] = []
-
-    async def failing_requirement_lint(*_args, **_kwargs):
-        raise RuntimeError("requirement lint fault")
-
-    async def unexpected_graph(board_id: str, spec_id: str) -> None:
-        graph_calls.append((board_id, spec_id))
-
-    monkeypatch.delenv(seed_mod.DEMO_SKIP_ENV, raising=False)
-    monkeypatch.setattr(
-        seed_mod,
-        "stage_spec_requirement_lint",
-        failing_requirement_lint,
-    )
-    monkeypatch.setattr(seed_mod, "_commit_demo_graph", unexpected_graph)
-
-    try:
-        async with factory() as db:
-            with pytest.raises(RuntimeError, match="requirement lint fault"):
-                await seed_mod.seed_community_defaults(db)
-            assert not db.in_transaction()
-
-        async with factory() as db:
-            counts = dict(
-                (
-                    await db.execute(
-                        sa_text(
-                            "SELECT "
-                            "(SELECT COUNT(*) FROM boards "
-                            " WHERE name = 'My Board') AS primary_boards, "
-                            "(SELECT COUNT(*) FROM boards "
-                            " WHERE name = 'Demo') AS demo_boards, "
-                            "(SELECT COUNT(*) FROM specs) AS specs, "
-                            "(SELECT COUNT(*) FROM cards) AS cards"
-                        )
-                    )
-                ).mappings().one()
-            )
-
-        assert counts == {
-            "primary_boards": 1,
-            "demo_boards": 0,
-            "specs": 0,
-            "cards": 0,
-        }
-        assert graph_calls == []
-    finally:
-        await engine.dispose()
+    assert not hasattr(seed_mod, "stage_spec_requirement_lint")
 
 
 @pytest.mark.asyncio

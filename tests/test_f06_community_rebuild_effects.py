@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from okto_pulse.community.adapters.board_rebuild_ingestion import (
     CommunityBoardRebuildIngestionAdapter,
+    exact_rebuild_reservation_lineage_id,
 )
 from okto_pulse.community.adapters.rebuild_effects import CommunityRebuildEffects
 from okto_pulse.core.application.rebuild_processor import (
@@ -15,6 +20,7 @@ from okto_pulse.core.application.rebuild_processor import (
     RebuildCheckpoint,
     RebuildCommand,
     RebuildEffectReceipt,
+    RebuildOutcomeCode,
     RebuildState,
 )
 from okto_pulse.core.kg.interfaces.rebuild_audit_storage import RebuildAuditKey
@@ -22,6 +28,12 @@ from okto_pulse.core.kg.rebuild_service import RebuildStepInput
 from okto_pulse.core.ports.policy_constraint_projection import (
     PolicyConstraintProjectionResult,
 )
+from okto_pulse.core.ports.consolidation import (
+    build_exact_consolidation_compensation_binding,
+)
+
+
+AUTHORIZED_CONFIRMATION_REF = f"conf_fp_{'a' * 64}"
 
 
 class DictArtifactStore:
@@ -89,9 +101,7 @@ def test_f06_production_composition_injects_durable_artifact_store(
     assert registry.rebuild_ingestion_port.artifact_store is (
         registry.rebuild_audit_artifact_store
     )
-    assert callable(
-        registry.rebuild_ingestion_port.policy_constraint_rebuild
-    )
+    assert callable(registry.rebuild_ingestion_port.policy_constraint_rebuild)
     assert registry.rebuild_audit_artifact_store._base_dir == tmp_path  # noqa: SLF001
 
 
@@ -143,6 +153,12 @@ def _queue_db(tmp_path: Path) -> Path:
 
 
 def _command() -> RebuildCommand:
+    lineage_id = exact_rebuild_reservation_lineage_id(
+        board_id="board-1",
+        manifest_ref="manifest-1",
+        f06_run_id="f06:manifest-1",
+        confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
+    )
     return RebuildCommand(
         run_id="f06:manifest-1",
         board_id="board-1",
@@ -153,7 +169,155 @@ def _command() -> RebuildCommand:
         source_rows=({"artifact_type": "story", "id": "story-1"},),
         candidate_generation_id="gen-2",
         owner_token="owner-token",
+        exact_relational_compensation=True,
+        reservation_lineage_id=lineage_id,
     )
+
+
+def _recovery_request(**overrides) -> RebuildStepInput:  # noqa: ANN003
+    values = {
+        "board_id": "board-1",
+        "manifest_ref": "manifest-1",
+        "source_set_hash": "source-set-hash",
+        "actor_id": "operator",
+        "operation": "rebuild",
+        "owner_token": "writer-b",
+        "previous_kg_generation_id": None,
+        "candidate_kg_generation_id": "gen-2",
+        "recovery_failure_code": RebuildOutcomeCode.MANIFEST_DRIFT.value,
+        "recovery_failure_detail": "manifest missing during authorized resume",
+        "authorized_confirmation_ref": AUTHORIZED_CONFIRMATION_REF,
+    }
+    values.update(overrides)
+    return RebuildStepInput(**values)
+
+
+def test_f06_recovery_failure_without_checkpoint_never_resolves_sources(
+    tmp_path: Path,
+) -> None:
+    owner = CommunityBoardRebuildIngestionAdapter(
+        db_path=_queue_db(tmp_path),
+        artifact_store=DictArtifactStore(),
+    )
+
+    def _unexpected_source_resolution(_request):  # noqa: ANN001, ANN202
+        pytest.fail("compensation-only recovery must not resolve live sources")
+
+    result = owner.build_step_adapter(_unexpected_source_resolution)(
+        _recovery_request()
+    )
+
+    assert result.ok is False
+    assert result.detail == (
+        "manifest_drift:recovery_checkpoint_missing_before_mutation"
+    )
+    assert owner._rebuild_checkpoint_cache == {}  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
+    ("state", "expected_actions"),
+    (
+        (
+            RebuildState.QUARANTINED,
+            (
+                CompensationAction.RESTORE_QUARANTINE,
+                CompensationAction.DISCARD_CANDIDATE_GENERATION,
+            ),
+        ),
+        (
+            RebuildState.ENQUEUED,
+            (
+                CompensationAction.CANCEL_ENQUEUED_SOURCES,
+                CompensationAction.COMPENSATE_EXACT_RELATIONAL_COMMITS,
+                CompensationAction.RESTORE_QUARANTINE,
+                CompensationAction.DISCARD_CANDIDATE_GENERATION,
+            ),
+        ),
+        (
+            RebuildState.DRAINING,
+            (
+                CompensationAction.CANCEL_ENQUEUED_SOURCES,
+                CompensationAction.COMPENSATE_EXACT_RELATIONAL_COMMITS,
+                CompensationAction.RESTORE_QUARANTINE,
+                CompensationAction.DISCARD_CANDIDATE_GENERATION,
+            ),
+        ),
+        (
+            RebuildState.COMPLETED,
+            (
+                CompensationAction.CANCEL_ENQUEUED_SOURCES,
+                CompensationAction.COMPENSATE_EXACT_RELATIONAL_COMMITS,
+                CompensationAction.DEMOTE_CANDIDATE_GENERATION,
+                CompensationAction.RESTORE_QUARANTINE,
+                CompensationAction.DISCARD_CANDIDATE_GENERATION,
+            ),
+        ),
+    ),
+)
+def test_f06_recovery_failure_compensates_checkpoint_without_resolving_sources(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    state: RebuildState,
+    expected_actions: tuple[CompensationAction, ...],
+) -> None:
+    store = DictArtifactStore()
+    owner = CommunityBoardRebuildIngestionAdapter(
+        db_path=_queue_db(tmp_path),
+        artifact_store=store,
+    )
+    command = _command()
+    now = datetime.now(timezone.utc)
+    effects = CommunityRebuildEffects(owner, artifact_store=store)
+    effects.save_checkpoint(
+        RebuildCheckpoint(
+            command=command,
+            state=state,
+            started_at=now,
+            last_progress_at=now,
+        )
+    )
+    observed_actions: list[tuple[CompensationAction, ...]] = []
+
+    def _compensate(self, compensation, *, effect_key):  # noqa: ANN001, ANN202
+        del self
+        observed_actions.append(compensation.actions)
+        return RebuildEffectReceipt(
+            effect_key,
+            "compensate",
+            True,
+            details={
+                "exact_relational_compensation": (
+                    build_exact_consolidation_compensation_binding(
+                        board_id=command.board_id,
+                        source=f"rebuild:{command.manifest_ref}",
+                        reservation_lineage_id=str(command.reservation_lineage_id),
+                        result=None,
+                    )
+                )
+            },
+        )
+
+    def _audit(self, outcome, *, effect_key):  # noqa: ANN001, ANN202
+        del self, outcome
+        return RebuildEffectReceipt(effect_key, "audit", True)
+
+    monkeypatch.setattr(CommunityRebuildEffects, "compensate", _compensate)
+    monkeypatch.setattr(CommunityRebuildEffects, "record_audit", _audit)
+
+    def _unexpected_source_resolution(_request):  # noqa: ANN001, ANN202
+        pytest.fail("compensation-only recovery must not resolve live sources")
+
+    result = owner.build_step_adapter(_unexpected_source_resolution)(
+        _recovery_request()
+    )
+
+    assert result.ok is False
+    assert result.detail is not None
+    assert result.detail.startswith("manifest_drift:")
+    assert observed_actions == [expected_actions]
+    loaded = effects.load_checkpoint(command.run_id)
+    assert loaded is not None
+    assert loaded.state is RebuildState.FAILED
 
 
 def test_f06_effect_receipt_and_checkpoint_replay_survive_adapter_recreation(
@@ -178,9 +342,16 @@ def test_f06_effect_receipt_and_checkpoint_replay_survive_adapter_recreation(
     now = datetime.now(timezone.utc)
     checkpoint = RebuildCheckpoint(
         command=command,
-        state=RebuildState.SNAPSHOTTED,
+        state=RebuildState.COMPENSATING,
         started_at=now,
         last_progress_at=now,
+        compensation_failed_state=RebuildState.QUARANTINED,
+        compensation_failure_code=RebuildOutcomeCode.ENQUEUE_FAILED,
+        compensation_failure_detail="admission failed",
+        compensation_actions=(
+            CompensationAction.RESTORE_QUARANTINE,
+            CompensationAction.DISCARD_CANDIDATE_GENERATION,
+        ),
         receipts={receipt.effect_key: receipt},
     )
     first.save_checkpoint(checkpoint)
@@ -197,7 +368,660 @@ def test_f06_effect_receipt_and_checkpoint_replay_survive_adapter_recreation(
     assert calls["snapshot"] == 1
     assert loaded is not None
     assert loaded.command == command
-    assert loaded.state is RebuildState.SNAPSHOTTED
+    assert loaded.state is RebuildState.COMPENSATING
+    assert loaded.compensation_failed_state is RebuildState.QUARANTINED
+    assert loaded.compensation_failure_code is RebuildOutcomeCode.ENQUEUE_FAILED
+    assert loaded.compensation_failure_detail == "admission failed"
+    assert loaded.compensation_actions == (
+        CompensationAction.RESTORE_QUARANTINE,
+        CompensationAction.DISCARD_CANDIDATE_GENERATION,
+    )
+
+
+def test_f06_enqueue_crash_keeps_prepared_dlq_baseline_on_replay(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from okto_pulse.core.services import application_kg
+
+    class _CrashAfterAdmission(BaseException):
+        pass
+
+    db_path = _queue_db(tmp_path)
+    with sqlite3.connect(str(db_path)) as connection:
+        connection.execute(
+            "CREATE TABLE consolidation_dead_letter ("
+            "id TEXT PRIMARY KEY, board_id TEXT NOT NULL)"
+        )
+        connection.commit()
+
+    store = DictArtifactStore()
+    command = _command()
+    first_owner = CommunityBoardRebuildIngestionAdapter(
+        db_path=db_path,
+        artifact_store=store,
+    )
+    first = CommunityRebuildEffects(first_owner, artifact_store=store)
+    original_enqueue = CommunityBoardRebuildIngestionAdapter.enqueue_sources
+    dlq_inserted = False
+
+    def enqueue_then_dead_letter(self, **kwargs):  # noqa: ANN001, ANN003, ANN201
+        nonlocal dlq_inserted
+        counts = original_enqueue(self, **kwargs)
+        if not dlq_inserted:
+            dlq_inserted = True
+            with sqlite3.connect(str(db_path)) as connection:
+                connection.execute(
+                    "INSERT INTO consolidation_dead_letter(id, board_id) "
+                    "VALUES ('same-run-dlq', 'board-1')"
+                )
+                connection.commit()
+        return counts
+
+    def crash_signal() -> None:
+        raise _CrashAfterAdmission
+
+    monkeypatch.setattr(
+        CommunityBoardRebuildIngestionAdapter,
+        "enqueue_sources",
+        enqueue_then_dead_letter,
+    )
+    monkeypatch.setattr(application_kg, "signal_consolidation_worker", crash_signal)
+
+    effect_key = f"{command.run_id}:enqueue"
+    with pytest.raises(_CrashAfterAdmission):
+        first.enqueue(command, effect_key=effect_key)
+
+    prepared = first._load_receipt(command, effect_key)  # noqa: SLF001
+    assert prepared is not None
+    assert prepared.details["enqueue_admission_complete"] is False
+    assert prepared.details["baseline_dead_letter_ids"] == []
+
+    replay_owner = CommunityBoardRebuildIngestionAdapter(
+        db_path=db_path,
+        artifact_store=store,
+    )
+    replay = CommunityRebuildEffects(replay_owner, artifact_store=store)
+    monkeypatch.setattr(application_kg, "signal_consolidation_worker", lambda: None)
+    completed = replay.enqueue(command, effect_key=effect_key)
+
+    assert completed.ok is True
+    assert completed.details["enqueue_admission_complete"] is True
+    assert completed.details["baseline_dead_letter_ids"] == []
+    with sqlite3.connect(str(db_path)) as connection:
+        connection.execute(
+            "DELETE FROM consolidation_queue WHERE board_id='board-1' "
+            "AND source='rebuild:manifest-1'"
+        )
+        connection.commit()
+    observation = replay.wait_for_queue_observation(
+        command,
+        after_sequence=0,
+        max_wait_seconds=0,
+    )
+    assert observation.depth == 0
+    assert observation.blocking_reason == "rebuild_new_dead_letter"
+
+
+def test_f06_enqueue_replay_without_dlq_baseline_fails_closed(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    command = _command()
+    store = DictArtifactStore()
+    owner = CommunityBoardRebuildIngestionAdapter(
+        db_path=_queue_db(tmp_path),
+        artifact_store=store,
+    )
+    effects = CommunityRebuildEffects(owner, artifact_store=store)
+    effect_key = f"{command.run_id}:enqueue"
+    effects._store_receipt(  # noqa: SLF001
+        command,
+        RebuildEffectReceipt(
+            effect_key=effect_key,
+            effect="enqueue",
+            ok=True,
+            details={
+                "queue_order_version": 4,
+                "enqueue_admission_complete": True,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        CommunityBoardRebuildIngestionAdapter,
+        "enqueue_sources",
+        lambda *_args, **_kwargs: pytest.fail("unsafe enqueue replay"),
+    )
+
+    receipt = effects.enqueue(command, effect_key=effect_key)
+
+    assert receipt.ok is False
+    assert receipt.code == "rebuild_enqueue_baseline_missing_requires_new_manifest"
+    assert receipt.details["enqueue_admission_complete"] is False
+
+
+def test_f06_legacy_resume_without_enqueue_receipt_uses_empty_dlq_cut(
+    tmp_path: Path,
+) -> None:
+    db_path = _queue_db(tmp_path)
+    with sqlite3.connect(str(db_path)) as connection:
+        connection.execute(
+            "CREATE TABLE consolidation_dead_letter ("
+            "id TEXT PRIMARY KEY, board_id TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO consolidation_dead_letter(id, board_id) "
+            "VALUES ('possibly-same-run', 'board-1')"
+        )
+        connection.commit()
+    command = _command()
+    effects = CommunityRebuildEffects(
+        CommunityBoardRebuildIngestionAdapter(db_path=db_path),
+        artifact_store=DictArtifactStore(),
+    )
+
+    prepared = effects.prepare_enqueue_resume_baseline(
+        command,
+        effect_key=f"{command.run_id}:enqueue",
+        prior_receipt=None,
+        prior_admission_possible=True,
+    )
+
+    assert prepared is not None
+    assert prepared.details["baseline_dead_letter_ids"] == []
+    assert prepared.details["baseline_recovery"] == (
+        "legacy_admission_unknown_fail_closed"
+    )
+
+
+@pytest.mark.parametrize(
+    "checkpoint_state", (RebuildState.ENQUEUED, RebuildState.DRAINING)
+)
+def test_f06_v3_checkpoint_strictly_upgrades_and_replays_v4_enqueue_once(
+    monkeypatch,
+    tmp_path: Path,
+    checkpoint_state: RebuildState,
+) -> None:
+    from okto_pulse.community.adapters import board_rebuild_ingestion as ingestion
+    from okto_pulse.core.services import application_kg
+
+    store = DictArtifactStore()
+    owner = CommunityBoardRebuildIngestionAdapter(
+        db_path=_queue_db(tmp_path),
+        artifact_store=store,
+        drain_timeout_seconds=0.05,
+        drain_hard_timeout_seconds=0.1,
+        drain_poll_interval_seconds=0.001,
+    )
+    denominator = {
+        "artifact_type": "code_evidence",
+        "id": "evidence-current",
+        "source_ref": "code_evidence:evidence-current",
+        "source_version": "1",
+        "content_hash": "a" * 64,
+        "status": "active",
+        "source_artifact_status": "active",
+        "supersedes_evidence_id": "evidence-history",
+    }
+    command = replace(_command(), source_rows=(denominator,))
+    receipts = {
+        f"{command.run_id}:{effect}": RebuildEffectReceipt(
+            effect_key=f"{command.run_id}:{effect}",
+            effect=effect,
+            ok=True,
+            details=(
+                {
+                    "queue_order_version": 3,
+                    "baseline_dead_letter_ids": [],
+                }
+                if effect == "enqueue"
+                else {}
+            ),
+        )
+        for effect in ("snapshot", "quarantine", "enqueue")
+    }
+    now = datetime.now(timezone.utc)
+    CommunityRebuildEffects(owner, artifact_store=store).save_checkpoint(
+        RebuildCheckpoint(
+            command=command,
+            state=checkpoint_state,
+            started_at=now,
+            last_progress_at=now,
+            receipts=receipts,
+        )
+    )
+    closure = {
+        "artifact_type": "code_evidence",
+        "id": "evidence-history",
+        "source_ref": "code_evidence:evidence-history",
+        "source_version": "1",
+        "content_hash": "b" * 64,
+        "status": "superseded",
+        "source_artifact_status": "superseded",
+        "disposition": "skipped_expired_working",
+        "_rebuild_manifest_created_at": "2026-08-15T00:00:00+00:00",
+        "_rebuild_dependency_closure": "code_evidence_supersedence",
+    }
+    upgraded_sources = (
+        {**denominator, "_rebuild_manifest_created_at": "2026-08-15T00:00:00+00:00"},
+        closure,
+    )
+    monkeypatch.setattr(
+        ingestion,
+        "_resolve_evidence_dependency_closure",
+        lambda **_kwargs: (upgraded_sources, 1),
+    )
+    enqueue_calls: list[tuple[dict[str, object], ...]] = []
+
+    def enqueue_sources(_self, **kwargs):  # noqa: ANN003, ANN201
+        enqueue_calls.append(tuple(dict(row) for row in kwargs["sources"]))
+        return {
+            "inserted": 2,
+            "reset_to_pending": 0,
+            "reordered_pending": 0,
+            "fenced_claimed": 0,
+            "deferred_unrelated": 0,
+            "preserved_live_intent": 0,
+            "left_alone": 0,
+        }
+
+    monkeypatch.setattr(
+        CommunityBoardRebuildIngestionAdapter,
+        "enqueue_sources",
+        enqueue_sources,
+    )
+    monkeypatch.setattr(
+        CommunityBoardRebuildIngestionAdapter,
+        "queue_observation",
+        lambda _self, *_args, **_kwargs: (0, None),
+    )
+    monkeypatch.setattr(application_kg, "signal_consolidation_worker", lambda: True)
+    monkeypatch.setattr(
+        CommunityRebuildEffects,
+        "snapshot",
+        lambda *_args, **_kwargs: pytest.fail("snapshot must not replay"),
+    )
+    monkeypatch.setattr(
+        CommunityRebuildEffects,
+        "quarantine",
+        lambda *_args, **_kwargs: pytest.fail("quarantine must not replay"),
+    )
+    monkeypatch.setattr(
+        CommunityRebuildEffects,
+        "restore",
+        lambda _self, _command, *, effect_key: RebuildEffectReceipt(
+            effect_key=effect_key,
+            effect="restore",
+            ok=True,
+        ),
+    )
+    monkeypatch.setattr(
+        CommunityRebuildEffects,
+        "promote",
+        lambda _self, _command, *, effect_key: RebuildEffectReceipt(
+            effect_key=effect_key,
+            effect="promote",
+            ok=True,
+        ),
+    )
+
+    step = owner.build_step_adapter(lambda _request: upgraded_sources)
+    request = RebuildStepInput(
+        board_id="board-1",
+        manifest_ref="manifest-1",
+        source_set_hash="hash-1",
+        actor_id="operator",
+        operation="rebuild",
+        owner_token="owner-token-b",
+        previous_kg_generation_id="gen-1",
+        candidate_kg_generation_id="gen-3",
+        authorized_confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
+    )
+    result = step(request)
+
+    assert result.ok is True
+    assert enqueue_calls == [upgraded_sources]
+    loaded = CommunityRebuildEffects(owner, artifact_store=store).load_checkpoint(
+        command.run_id
+    )
+    assert loaded is not None
+    assert loaded.command.source_rows == upgraded_sources
+    enqueue_receipt = loaded.receipts[f"{command.run_id}:enqueue"]
+    assert enqueue_receipt.details["queue_order_version"] == 4
+    replay = step(request)
+    assert replay.ok is True
+    assert enqueue_calls == [upgraded_sources]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "status",
+        "source_version",
+        "source_ref",
+        "content_hash",
+        "extra_non_closure",
+        "unrelated_closure",
+        "missing_manifest_cut",
+        "different_manifest_cut",
+        "post_restore_state",
+        "restore_receipt",
+        "missing_dlq_baseline",
+    ),
+)
+def test_f06_v4_checkpoint_upgrade_rejects_unbounded_drift(
+    mutation: str,
+) -> None:
+    from okto_pulse.community.adapters.board_rebuild_ingestion import (
+        _checkpoint_source_upgrade_allowed,
+    )
+
+    denominator = {
+        "artifact_type": "code_evidence",
+        "id": "evidence-current",
+        "source_ref": "code_evidence:evidence-current",
+        "source_version": "1",
+        "content_hash": "a" * 64,
+        "status": "active",
+        "source_artifact_status": "active",
+        "supersedes_evidence_id": "evidence-history",
+    }
+    command = replace(_command(), source_rows=(denominator,))
+    now = datetime.now(timezone.utc)
+    checkpoint = RebuildCheckpoint(
+        command=command,
+        state=RebuildState.DRAINING,
+        started_at=now,
+        last_progress_at=now,
+        receipts={
+            f"{command.run_id}:enqueue": RebuildEffectReceipt(
+                effect_key=f"{command.run_id}:enqueue",
+                effect="enqueue",
+                ok=True,
+                details={
+                    "queue_order_version": 3,
+                    "baseline_dead_letter_ids": [],
+                },
+            )
+        },
+    )
+
+    manifest_cut = "2026-08-15T00:00:00+00:00"
+    current_denominator = {
+        **denominator,
+        "_rebuild_manifest_created_at": manifest_cut,
+    }
+    closure = {
+        "artifact_type": "code_evidence",
+        "id": "evidence-history",
+        "source_ref": "code_evidence:evidence-history",
+        "source_version": "1",
+        "content_hash": "b" * 64,
+        "status": "superseded",
+        "source_artifact_status": "superseded",
+        "disposition": "skipped_expired_working",
+        "_rebuild_manifest_created_at": manifest_cut,
+        "_rebuild_dependency_closure": "code_evidence_supersedence",
+    }
+    sources: tuple[dict[str, object], ...] = (current_denominator, closure)
+    candidate_checkpoint = checkpoint
+    assert _checkpoint_source_upgrade_allowed(checkpoint, sources)
+    if mutation == "status":
+        sources = ({**current_denominator, "status": "approved"}, closure)
+    elif mutation == "source_version":
+        sources = ({**current_denominator, "source_version": "2"}, closure)
+    elif mutation == "source_ref":
+        sources = (
+            {**current_denominator, "source_ref": "code_evidence:other"},
+            closure,
+        )
+    elif mutation == "content_hash":
+        sources = ({**current_denominator, "content_hash": "c" * 64}, closure)
+    elif mutation == "extra_non_closure":
+        sources = (
+            current_denominator,
+            closure,
+            {
+                "artifact_type": "spec",
+                "id": "spec-extra",
+                "source_ref": "spec:spec-extra",
+                "source_version": "1",
+                "content_hash": "d" * 64,
+                "status": "draft",
+                "_rebuild_manifest_created_at": manifest_cut,
+            },
+        )
+    elif mutation == "unrelated_closure":
+        sources = (
+            current_denominator,
+            {
+                **closure,
+                "id": "evidence-unrelated",
+                "source_ref": "code_evidence:evidence-unrelated",
+            },
+        )
+    elif mutation == "missing_manifest_cut":
+        closure = dict(closure)
+        closure.pop("_rebuild_manifest_created_at")
+        sources = (current_denominator, closure)
+    elif mutation == "different_manifest_cut":
+        sources = (
+            current_denominator,
+            {**closure, "_rebuild_manifest_created_at": "different-cut"},
+        )
+    elif mutation == "post_restore_state":
+        candidate_checkpoint = replace(checkpoint, state=RebuildState.RESTORED)
+    elif mutation == "restore_receipt":
+        restore_receipt = RebuildEffectReceipt(
+            effect_key=f"{command.run_id}:restore",
+            effect="restore",
+            ok=True,
+        )
+        candidate_checkpoint = replace(
+            checkpoint,
+            receipts={
+                **checkpoint.receipts,
+                restore_receipt.effect_key: restore_receipt,
+            },
+        )
+    elif mutation == "missing_dlq_baseline":
+        enqueue_key = f"{command.run_id}:enqueue"
+        candidate_checkpoint = replace(
+            checkpoint,
+            receipts={
+                enqueue_key: RebuildEffectReceipt(
+                    effect_key=enqueue_key,
+                    effect="enqueue",
+                    ok=True,
+                    details={"queue_order_version": 3},
+                )
+            },
+        )
+
+    before = repr(candidate_checkpoint)
+    assert not _checkpoint_source_upgrade_allowed(
+        candidate_checkpoint,
+        sources,
+    )
+    assert repr(candidate_checkpoint) == before
+
+
+def test_f06_v3_upgrade_crash_before_enqueue_replays_v4_without_resnapshot(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """The command upgrade is durable before its v4 enqueue side effect."""
+
+    from okto_pulse.community.adapters import board_rebuild_ingestion as ingestion
+    from okto_pulse.core.services import application_kg
+
+    class _CrashAfterUpgrade(BaseException):
+        pass
+
+    store = DictArtifactStore()
+    owner = CommunityBoardRebuildIngestionAdapter(
+        db_path=_queue_db(tmp_path),
+        artifact_store=store,
+        drain_timeout_seconds=0.05,
+        drain_hard_timeout_seconds=0.1,
+        drain_poll_interval_seconds=0.001,
+    )
+    cut = "2026-08-15T00:00:00+00:00"
+    denominator = {
+        "artifact_type": "code_evidence",
+        "id": "evidence-current",
+        "source_ref": "code_evidence:evidence-current",
+        "source_version": "1",
+        "content_hash": "a" * 64,
+        "status": "active",
+        "source_artifact_status": "active",
+        "supersedes_evidence_id": "evidence-history",
+    }
+    closure = {
+        "artifact_type": "code_evidence",
+        "id": "evidence-history",
+        "source_ref": "code_evidence:evidence-history",
+        "source_version": "1",
+        "content_hash": "b" * 64,
+        "status": "superseded",
+        "source_artifact_status": "superseded",
+        "disposition": "skipped_expired_working",
+        "_rebuild_manifest_created_at": cut,
+        "_rebuild_dependency_closure": "code_evidence_supersedence",
+    }
+    upgraded_sources = (
+        {**denominator, "_rebuild_manifest_created_at": cut},
+        closure,
+    )
+    command = replace(_command(), source_rows=(denominator,))
+    now = datetime.now(timezone.utc)
+    receipts = {
+        f"{command.run_id}:{effect}": RebuildEffectReceipt(
+            effect_key=f"{command.run_id}:{effect}",
+            effect=effect,
+            ok=True,
+            details=(
+                {
+                    "queue_order_version": 3,
+                    "baseline_dead_letter_ids": [],
+                }
+                if effect == "enqueue"
+                else {}
+            ),
+        )
+        for effect in ("snapshot", "quarantine", "enqueue")
+    }
+    effects = CommunityRebuildEffects(owner, artifact_store=store)
+    effects.save_checkpoint(
+        RebuildCheckpoint(
+            command=command,
+            state=RebuildState.ENQUEUED,
+            started_at=now,
+            last_progress_at=now,
+            receipts=receipts,
+        )
+    )
+    monkeypatch.setattr(
+        ingestion,
+        "_resolve_evidence_dependency_closure",
+        lambda **_kwargs: (upgraded_sources, 1),
+    )
+    enqueue_calls: list[tuple[dict[str, object], ...]] = []
+
+    def enqueue_sources(_self, **kwargs):  # noqa: ANN003, ANN201
+        enqueue_calls.append(tuple(dict(row) for row in kwargs["sources"]))
+        return {
+            "inserted": 2,
+            "reset_to_pending": 0,
+            "reordered_pending": 0,
+            "fenced_claimed": 0,
+            "deferred_unrelated": 0,
+            "preserved_live_intent": 0,
+            "left_alone": 0,
+        }
+
+    monkeypatch.setattr(
+        CommunityBoardRebuildIngestionAdapter,
+        "enqueue_sources",
+        enqueue_sources,
+    )
+    monkeypatch.setattr(
+        CommunityBoardRebuildIngestionAdapter,
+        "queue_observation",
+        lambda _self, *_args, **_kwargs: (0, None),
+    )
+    monkeypatch.setattr(application_kg, "signal_consolidation_worker", lambda: True)
+    monkeypatch.setattr(
+        CommunityRebuildEffects,
+        "snapshot",
+        lambda *_args, **_kwargs: pytest.fail("snapshot must not replay"),
+    )
+    monkeypatch.setattr(
+        CommunityRebuildEffects,
+        "quarantine",
+        lambda *_args, **_kwargs: pytest.fail("quarantine must not replay"),
+    )
+    monkeypatch.setattr(
+        CommunityRebuildEffects,
+        "restore",
+        lambda _self, _command, *, effect_key: RebuildEffectReceipt(
+            effect_key=effect_key,
+            effect="restore",
+            ok=True,
+        ),
+    )
+    monkeypatch.setattr(
+        CommunityRebuildEffects,
+        "promote",
+        lambda _self, _command, *, effect_key: RebuildEffectReceipt(
+            effect_key=effect_key,
+            effect="promote",
+            ok=True,
+        ),
+    )
+    original_enqueue = CommunityRebuildEffects.enqueue
+    crash = {"pending": True}
+
+    def crash_once(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN201
+        if crash["pending"]:
+            crash["pending"] = False
+            raise _CrashAfterUpgrade
+        return original_enqueue(self, *args, **kwargs)
+
+    monkeypatch.setattr(CommunityRebuildEffects, "enqueue", crash_once)
+    step = owner.build_step_adapter(lambda _request: upgraded_sources)
+    request = RebuildStepInput(
+        board_id="board-1",
+        manifest_ref="manifest-1",
+        source_set_hash="hash-1",
+        actor_id="operator",
+        operation="rebuild",
+        owner_token="owner-token-b",
+        previous_kg_generation_id="gen-1",
+        candidate_kg_generation_id="gen-3",
+        authorized_confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
+    )
+
+    with pytest.raises(_CrashAfterUpgrade):
+        step(request)
+    after_crash = effects.load_checkpoint(command.run_id)
+    assert after_crash is not None
+    assert after_crash.command.source_rows == upgraded_sources
+    assert (
+        after_crash.receipts[f"{command.run_id}:enqueue"].details["queue_order_version"]
+        == 3
+    )
+    assert enqueue_calls == []
+
+    result = step(request)
+    assert result.ok is True
+    assert enqueue_calls == [upgraded_sources]
+    recovered = effects.load_checkpoint(command.run_id)
+    assert recovered is not None
+    assert (
+        recovered.receipts[f"{command.run_id}:enqueue"].details["queue_order_version"]
+        == 4
+    )
 
 
 def test_f06_every_concrete_effect_replays_without_duplicate_side_effect(
@@ -349,6 +1173,7 @@ def test_f06_compensation_fences_claimed_and_pending_rows_before_discard(
         "pending_compensated": 1,
         "claimed_compensated": 1,
         "active_remaining": 0,
+        "live_intents_restored": 0,
         "total_compensated": 2,
     }
 
@@ -522,7 +1347,7 @@ def test_f06_build_step_uses_core_processor_and_typed_effects(
     monkeypatch.setattr(
         CommunityBoardRebuildIngestionAdapter,
         "queue_observation",
-        lambda self, board_id: (0, None),
+        lambda self, board_id, **_kwargs: (0, None),
     )
 
     store = DictArtifactStore()
@@ -555,7 +1380,15 @@ def test_f06_build_step_uses_core_processor_and_typed_effects(
         drain_poll_interval_seconds=0.001,
         policy_constraint_rebuild=rebuild_policy_constraints,
     )
-    source = {"artifact_type": "story", "id": "story-1"}
+    source = {
+        "artifact_type": "story",
+        "id": "story-1",
+        "source_ref": "story:story-1",
+        "source_version": "3",
+        "content_hash": "current-v3-hash",
+        "_rebuild_manifest_created_at": "2026-08-15T00:00:00+00:00",
+        "_rebuild_rebaseline_evidence_id": ("run_legacy:rebuild_manifest_legacy"),
+    }
     step = adapter.build_step_adapter(lambda _request: (source,))
     result = step(
         RebuildStepInput(
@@ -566,6 +1399,7 @@ def test_f06_build_step_uses_core_processor_and_typed_effects(
             operation="rebuild",
             owner_token="token-1",
             candidate_kg_generation_id="gen-2",
+            authorized_confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
         )
     )
 
@@ -603,11 +1437,31 @@ def test_f06_build_step_uses_core_processor_and_typed_effects(
             operation="rebuild",
             owner_token="token-1",
             candidate_kg_generation_id="gen-2",
+            authorized_confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
         )
     )
     assert replay.ok is True
     assert policy_calls == ["board-1"]
     assert any("f06-checkpoint" in key for key in store.rows)
+    checkpoint = next(row for key, row in store.rows.items() if "f06-checkpoint" in key)
+    persisted_source = checkpoint["command"]["source_rows"][0]
+    assert persisted_source["content_hash"] == "current-v3-hash"
+    assert persisted_source["_rebuild_rebaseline_evidence_id"] == (
+        "run_legacy:rebuild_manifest_legacy"
+    )
+    with sqlite3.connect(str(adapter._path())) as connection:  # noqa: SLF001
+        queue_payload = json.loads(
+            connection.execute(
+                "SELECT payload FROM consolidation_queue "
+                "WHERE board_id='board-1' AND artifact_id='story-1'"
+            ).fetchone()[0]
+        )
+    assert queue_payload["_rebuild_membership"] == {
+        "content_hash": "current-v3-hash",
+        "run_id": "manifest-1",
+        "source_ref": "story:story-1",
+        "source_version": "3",
+    }
     audit_payloads = [
         row for row in store.rows.values() if row.get("effect") == "audit"
     ]
@@ -649,7 +1503,7 @@ def test_f06_policy_constraint_rebuild_failure_is_fail_closed(
     monkeypatch.setattr(
         CommunityBoardRebuildIngestionAdapter,
         "queue_observation",
-        lambda self, board_id: (0, None),
+        lambda self, board_id, **_kwargs: (0, None),
     )
 
     projection_calls: list[str] = []
@@ -676,6 +1530,20 @@ def test_f06_policy_constraint_rebuild_failure_is_fail_closed(
     candidate_path = tmp_path / "kg" / "boards" / "board-1" / "graph.lbug"
     candidate_path.parent.mkdir(parents=True)
     candidate_path.write_bytes(b"failed-candidate")
+    monkeypatch.setattr(
+        CommunityRebuildEffects,
+        "_compensate_exact_relational_commits",
+        staticmethod(
+            lambda command, *, mutation_guard: (
+                build_exact_consolidation_compensation_binding(
+                    board_id=command.board_id,
+                    source=f"rebuild:{command.manifest_ref}",
+                    reservation_lineage_id=str(command.reservation_lineage_id),
+                    result=None,
+                )
+            )
+        ),
+    )
     monkeypatch.setattr(
         kg_runtime,
         "board_kuzu_path",
@@ -704,13 +1572,13 @@ def test_f06_policy_constraint_rebuild_failure_is_fail_closed(
             owner_token="token-1",
             previous_kg_generation_id="gen-1",
             candidate_kg_generation_id="gen-2",
+            authorized_confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
         )
     )
 
     assert result.ok is False
     assert (
-        result.detail
-        == "promotion_failed:"
+        result.detail == "promotion_failed:"
         "policy_constraint_projection_failed:RuntimeError"
     )
     assert result.current_kg_generation_id == "gen-1"
@@ -721,6 +1589,7 @@ def test_f06_policy_constraint_rebuild_failure_is_fail_closed(
         "promotion_allowed": False,
         "compensation_actions": [
             "cancel_enqueued_sources",
+            "compensate_exact_relational_commits",
             "demote_candidate_generation",
             "restore_quarantine",
             "discard_candidate_generation",
@@ -757,6 +1626,7 @@ def test_f06_policy_constraint_rebuild_failure_is_fail_closed(
             owner_token="token-1",
             previous_kg_generation_id="gen-1",
             candidate_kg_generation_id="gen-2",
+            authorized_confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
         )
     )
     assert same_run.ok is False
@@ -772,6 +1642,7 @@ def test_f06_policy_constraint_rebuild_failure_is_fail_closed(
             owner_token="token-1",
             previous_kg_generation_id="gen-1",
             candidate_kg_generation_id="gen-3",
+            authorized_confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
         )
     )
     assert fresh_run.ok is True
@@ -808,6 +1679,7 @@ def test_f06_salvage_pending_blocks_before_quarantine(
             actor_id="operator",
             operation="rebuild",
             owner_token="token",
+            authorized_confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
         )
     )
     assert result.ok is False
@@ -849,9 +1721,10 @@ def test_f06_build_step_honors_cooperative_cancellation_before_mutation(
             owner_token="token",
             cancel_requested=lambda: True,
             lease_renew=renew,
+            authorized_confirmation_ref=AUTHORIZED_CONFIRMATION_REF,
         )
     )
 
     assert result.ok is False
     assert result.detail == "cancelled:cancellation requested"
-    assert called == {"quarantine": 0, "renew": 1}
+    assert called == {"quarantine": 0, "renew": 2}

@@ -78,6 +78,18 @@ describe('ActivityHistoryList', () => {
     expect(screen.getByText('Card moved')).toHaveClass('bg-cyan-100', 'text-cyan-700');
   });
 
+  it.each([
+    ['dependency_added', 'Dependency added'],
+    ['dependency_removed', 'Dependency removed'],
+    ['spec_dependency_added', 'Spec dependency added'],
+    ['spec_dependency_removed', 'Spec dependency removed'],
+  ])('humanizes the %s action', (action, label) => {
+    render(<ActivityHistoryList entries={[{ ...historyEntry, action }]} />);
+
+    expect(screen.getByText(label)).toBeInTheDocument();
+    expect(screen.queryByText(action)).not.toBeInTheDocument();
+  });
+
   it('accepts a technical-revision formatter without changing the default', () => {
     render(
       <ActivityHistoryList

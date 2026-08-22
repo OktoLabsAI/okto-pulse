@@ -130,10 +130,23 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "Add and backfill the human-facing Spec edition counter.",
     ),
     (
+        "_migrate_add_human_lifecycle_editions",
+        "pre_create_all",
+        False,
+        "Add and backfill Ideation/Refinement lifecycle editions while "
+        "leaving legacy ambiguity skips unscoped.",
+    ),
+    (
         "_migrate_add_spec_validation_columns",
         "pre_create_all",
         False,
         "Add spec-validation columns.",
+    ),
+    (
+        "_migrate_add_code_evidence_coverage_skip",
+        "pre_create_all",
+        False,
+        "Add the per-Spec Code Evidence Matrix coverage skip.",
     ),
     (
         "_migrate_add_ir_or_columns",
@@ -191,6 +204,13 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "Base.metadata.create_all — the table-create boundary.",
     ),
     # --- post_create_all: schema ALTERs applied AFTER create_all ---
+    (
+        "_migrate_validation_cycle_editions",
+        "post_create_all",
+        False,
+        "Add nullable lifecycle editions to active validation evidence and "
+        "discard only legacy mutable current-head projections.",
+    ),
     (
         "_migrate_add_consolidation_work_kinds",
         "post_create_all",
@@ -419,6 +439,20 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "receipts, adopted revisions, and findings with keyset indexes.",
     ),
     (
+        "_migrate_card_rejected_lifecycle",
+        "post_create_all",
+        False,
+        "Add immutable card rejection cause/history storage and converge only "
+        "legacy Normal/Bug cards with a demonstrably failed latest validation.",
+    ),
+    (
+        "_migrate_restore_spec_validation_pointers",
+        "post_create_all",
+        False,
+        "Audit and restore only unequivocal latest successful current-edition "
+        "Spec validation pointers lost by historical Code Traceability effects.",
+    ),
+    (
         "_migrate_policy_waiver_v1_schema",
         "post_create_all",
         False,
@@ -432,6 +466,14 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "Install semantic metric/configuration authority, sealed cognitive "
         "assessment evidence, exact waivers/skips and explicit inert policy/v1 "
         "migration audit.",
+    ),
+    (
+        "_migrate_semantic_pinpoint_v2_schema",
+        "post_create_all",
+        False,
+        "Install the additive actionable-pinpoint v2 assessment ledger, "
+        "lossless versioned payloads, cross-contract idempotency and "
+        "SQLite/PostgreSQL immutability guards.",
     ),
     (
         "_migrate_seed_semantic_configurations_for_legacy_bindings",
@@ -457,6 +499,29 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         False,
         "Converge quality Q&A lifecycle columns and install permit-aware "
         "immutability guards for quality, RDL, checklist, and legacy-import rows.",
+    ),
+    (
+        "_migrate_code_traceability_schema",
+        "post_create_all",
+        False,
+        "Install structured Code Traceability attestations, frozen Refinement/Spec "
+        "lineage, CAS heads, and permit-aware SQLite/PostgreSQL guards without "
+        "introducing any repository or filesystem access in Community.",
+    ),
+    (
+        "_migrate_contextual_code_evidence_schema",
+        "post_create_all",
+        False,
+        "Add conservative delivery-context persistence, contextual Code "
+        "Evidence columns, and the append-only human legacy-classification "
+        "event/head authority.",
+    ),
+    (
+        "_migrate_spec_dependency_schema",
+        "post_create_all",
+        False,
+        "Install the authoritative Spec precedence ledger, operation replay proof, "
+        "edition-start marker, exact keyset indexes and immutability guards.",
     ),
     (
         "_migrate_agent_permissions",

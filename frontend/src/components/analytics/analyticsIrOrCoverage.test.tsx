@@ -1,15 +1,28 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { BoardDashboard } from './BoardDashboard';
+import { CanonicalCoveragePanel } from './CanonicalCoveragePanel';
+import { DeliveryForecastPanel } from './DeliveryForecastPanel';
 import { EntityDetail } from './EntityDetail';
+import { KgEffectivenessPanel } from './KgEffectivenessPanel';
 
 const mockApi = vi.hoisted(() => ({
   getBoardAnalyticsFunnel: vi.fn(),
   getBoardAnalyticsQuality: vi.fn(),
   getBoardAnalyticsCoverage: vi.fn(),
+  getCanonicalBoardCoverage: vi.fn(),
+  exportCanonicalBoardCoverageCsv: vi.fn(),
+  getBoardFlowHealth: vi.fn(),
+  exportBoardFlowHealthCsv: vi.fn(),
+  getSpecReadiness: vi.fn(),
+  getPolicyResourceReadiness: vi.fn(),
+  exportReadinessCsv: vi.fn(),
   getBoardAnalyticsAgents: vi.fn(),
   getBoardAnalyticsValidations: vi.fn(),
   getBoardAnalyticsSprints: vi.fn(),
+  getBoardDeliveryForecast: vi.fn(),
+  getBoardKgAnalytics: vi.fn(),
+  exportBoardKgAnalyticsCsv: vi.fn(),
   getBoardAnalyticsEntities: vi.fn(),
   getEntityAnalytics: vi.fn(),
   getRefinement: vi.fn(),
@@ -101,44 +114,602 @@ describe('analytics IR/OR coverage UI', () => {
       },
       sprints: [],
     });
+    mockApi.getBoardDeliveryForecast.mockResolvedValue({
+      contract_version: '1',
+      dependency_versions: { analytics_foundation: '1', delivery_phase_1: '1' },
+      query_fingerprint: '9'.repeat(64),
+      filters: [],
+      as_of: '2026-05-28T12:00:00.000000Z',
+      board_id: 'board-1',
+      result_state: 'unavailable',
+      provenance: {
+        observed_at: '2026-05-28T12:00:00.000000Z',
+        currentness: 'unavailable',
+        reason: 'insufficient_observations',
+        sources: [],
+      },
+      readiness: {
+        ready: false,
+        state: 'unavailable',
+        reason: 'insufficient_observations',
+        remediation: 'Complete more governed Sprints.',
+        actual_observations: 0,
+        required_observations: 5,
+        rule_version: '1',
+      },
+      backtest: {
+        state: 'unavailable',
+        error: null,
+        calibration: null,
+        method_version: 'empirical-v1',
+        sample_size: 0,
+        evaluation_window: null,
+        reason: 'insufficient_observations',
+      },
+      population_scope: { scope_ref: 'board:board-1', accessible_count: 0, excluded_count: 0 },
+      exclusions: { restricted_count: 0, excluded_count: 0, reasons: [] },
+    });
     mockApi.getBoardAnalyticsEntities.mockResolvedValue({ total: 0, offset: 0, limit: 50, items: [] });
+    mockApi.getBoardKgAnalytics.mockResolvedValue({
+      contract_version: '2',
+      foundation_version: '1',
+      query_fingerprint: 'a'.repeat(64),
+      query: {
+        window: { from: '2026-05-01T00:00:00.000000Z', to: '2026-05-29T00:00:00.000000Z' },
+        cognitive_status: [],
+        artifact_types: [],
+        cursor: null,
+        limit: 100,
+      },
+      filters: [],
+      as_of: '2026-05-28T12:00:00.000000Z',
+      board_id: 'board-1',
+      result_state: 'unavailable',
+      provenance: {
+        observed_at: '2026-05-28T12:00:00.000000Z',
+        currentness: 'unavailable',
+        reason: 'cognitive_metric_unavailable',
+        sources: [],
+      },
+      health: {
+        state: 'unavailable',
+        classification_reason: 'cognitive_metric_unavailable',
+        reason_codes: ['cognitive_metric_unavailable'],
+        availability: {
+          active_queue: 'available',
+          technical_dlq: 'available',
+          canonical_debt: 'unavailable',
+          policy_projection_debt: 'unavailable',
+          cognitive_backlog: 'unavailable',
+          cognitive_effectiveness: 'unavailable',
+        },
+        components: [{
+          component: 'cognitive_effectiveness',
+          health_state: 'healthy',
+          result_state: 'unavailable',
+          classification_reason: 'cognitive_metric_unavailable',
+        }],
+      },
+      domains: [{
+        domain: 'active_queue',
+        result_state: 'available',
+        count: 2,
+        severity: 'at_risk',
+        age: { result_state: 'available', sample_count: 2, p50_hours: 3, p95_hours: 8, oldest_hours: 10, reason: null },
+        drill_down: { allowed: false, target: null },
+        reason: null,
+      }, {
+        domain: 'technical_dlq',
+        result_state: 'available',
+        count: 1,
+        severity: 'blocking',
+        age: { result_state: 'available', sample_count: 1, p50_hours: 12, p95_hours: 12, oldest_hours: 12, reason: null },
+        drill_down: { allowed: false, target: null },
+        reason: null,
+      }],
+      cognitive_inventory: {
+        result_state: 'unavailable',
+        by_status: {},
+        total: null,
+        overdue_revisits: null,
+        age: { result_state: 'unavailable', sample_count: 0, p50_hours: null, p95_hours: null, oldest_hours: null, reason: 'cognitive_metric_unavailable' },
+        reason: 'cognitive_metric_unavailable',
+      },
+      effectiveness: {
+        state: 'unavailable',
+        numerator: null,
+        denominator: null,
+        rate: null,
+        candidate_count: null,
+        persisted_count: null,
+        conversion_rate: null,
+        method_version: 'candidate-persistence-v1',
+        sample_period: { from: '2026-05-01T00:00:00.000000Z', to: '2026-05-29T00:00:00.000000Z' },
+        timing: { state: 'unavailable', sample_count: 0, p50_hours: null, p95_hours: null, reason: 'cognitive_metric_unavailable' },
+        reason: 'cognitive_metric_unavailable',
+      },
+      provenance_mix: { result_state: 'unavailable', total: null, by_kind: {}, reason: 'cognitive_metric_unavailable' },
+      diagnostics: [{ domain: 'effectiveness', severity: 'at_risk', reason: 'cognitive_metric_unavailable', next_step: { allowed: false, target: null } }],
+      redactions: [],
+      population_scope: { scope_ref: 'board:board-1', accessible_count: 2, excluded_count: 0 },
+      exclusions: { restricted_count: 0, excluded_count: 0, reasons: [] },
+      next_cursor: null,
+    });
+    mockApi.getCanonicalBoardCoverage.mockResolvedValue({
+      query_fingerprint: 'b'.repeat(64),
+      as_of: '2026-05-28T12:00:00.000000Z',
+      totals: {
+        state: 'available',
+        applicable: 2,
+        covered: 0,
+        uncovered: 2,
+        skipped: 2,
+        value: 0,
+        n: 2,
+        reason: null,
+      },
+      coverage: [{
+        obligation_type: 'ac',
+        state: 'available',
+        applicable: 2,
+        covered: 0,
+        uncovered: 2,
+        skipped: 2,
+        value: 0,
+        n: 2,
+        reason: null,
+        rows: [],
+      }],
+    });
+    mockApi.getBoardFlowHealth.mockResolvedValue({
+      query_fingerprint: 'c'.repeat(64),
+      as_of: '2026-05-28T12:00:00.000000Z',
+      effective_policy: {
+        version: 2,
+        general_stale_hours: 72,
+        rejected_stale_hours: 96,
+      },
+      summary: {
+        healthy: 1,
+        at_risk: 0,
+        blocked: 1,
+        stale: 0,
+        restricted: 0,
+        unavailable: 0,
+        inconsistent: 0,
+      },
+      items: [{
+        subject: { type: 'card', id: 'card-1' },
+        state: 'blocked',
+        reason_codes: ['spec_pending_validation'],
+        current_episode: { state: 'in_progress', age_seconds: 3600, entered_at: '2026-05-28T11:00:00Z' },
+        rework: [],
+      }],
+    });
+    mockApi.getSpecReadiness.mockResolvedValue({
+      query_fingerprint: 'd'.repeat(64),
+      as_of: '2026-05-28T12:00:00.000000Z',
+      specs: [
+        {
+          spec_id: 'spec-1',
+          edition: 3,
+          validation: {
+            state: 'current',
+            measures: {
+              confidence: 80,
+              clarity: 81,
+              assertiveness: 82,
+              decidability: 83,
+              ambiguity: 12
+            },
+            attempts: 2,
+            lifecycle_ready: true
+          },
+          lifecycle: { spec_pending_validation: false }
+        }
+      ]
+    });
+    mockApi.getPolicyResourceReadiness.mockResolvedValue({
+      query_fingerprint: 'e'.repeat(64),
+      as_of: '2026-05-28T12:00:00.000000Z',
+      specs: [
+        {
+          spec_id: 'spec-1',
+          edition: 3,
+          policy: {
+            totals: {
+              native_pass: 1,
+              blocking_pending: 0,
+              blocking_failed: 0,
+              stale: 0,
+              inconsistent: 0
+            }
+          },
+          resources: {
+            l1: [
+              { resource_type: 'architecture', state: 'provided' },
+              { resource_type: 'mockup', state: 'missing' },
+              { resource_type: 'knowledge_base', state: 'provided' }
+            ],
+            l2: [],
+            covered_only_by_cancelled_task: 1
+          }
+        }
+      ]
+    });
   });
 
-  it('renders IR and OR coverage bars when the board payload exposes them', async () => {
-    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([
-      {
-        spec_id: 'spec-1',
-        title: 'Coverage Spec',
-        total_ac: 2,
-        covered_ac: 2,
-        total_scenarios: 1,
-        scenario_status_counts: { ready: 1 },
-        business_rules_count: 1,
-        api_contracts_count: 1,
-        fr_with_rules_pct: 100,
-        fr_with_contracts_pct: 100,
-        tr_task_linkage_pct: 100,
-        trs_total: 1,
-        ir_task_linkage_pct: 50,
-        irs_total: 2,
-        irs_linked: 1,
-        or_task_linkage_pct: 100,
-        ors_total: 1,
-        ors_linked: 1,
-        decisions_coverage_pct: 0,
-        decisions_total: 0,
-      },
-    ]);
+  it('renders canonical Spec, policy and resource readiness independently', async () => {
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
 
     render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
 
-    await waitFor(() => expect(screen.getByText('Coverage Spec')).toBeInTheDocument());
-    expect(screen.getByText('IRs')).toBeInTheDocument();
-    expect(screen.getByText('ORs')).toBeInTheDocument();
-    expect(screen.getByText('50%')).toBeInTheDocument();
+    const heading = await screen.findByRole('heading', {
+      name: 'Spec & Policy Readiness'
+    });
+    const panel = heading.closest('section');
+    expect(panel).not.toBeNull();
+    expect(within(panel as HTMLElement).getByText('1/1')).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText('1 pass / 0 pending / 0 failed')).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText('2/3')).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText('spec-1')).toBeInTheDocument();
+    expect(within(panel as HTMLElement).getByText(/cancelled-only resources 1/)).toBeInTheDocument();
   });
 
-  it('keeps legacy board coverage payloads free of IR/OR rows', async () => {
+  it('resolves Flow Health and readiness titles from paginated entity catalogs', async () => {
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+    mockApi.getBoardAnalyticsEntities.mockImplementation(async (
+      _boardId: string,
+      type: string,
+      _from?: string,
+      _to?: string,
+      offset = 0,
+      limit = 50,
+    ) => {
+      if (limit !== 200) {
+        return { total: 0, offset, limit, items: [] };
+      }
+      if (type === 'spec' && offset === 0) {
+        return {
+          total: 2,
+          offset,
+          limit,
+          items: [{ id: 'spec-other', title: 'Another spec', status: 'current' }],
+        };
+      }
+      if (type === 'spec' && offset === 1) {
+        return {
+          total: 2,
+          offset,
+          limit,
+          items: [{ id: 'spec-1', title: 'Checkout readiness spec', status: 'current' }],
+        };
+      }
+      if (type === 'card') {
+        return {
+          total: 1,
+          offset,
+          limit,
+          items: [{ id: 'card-1', title: 'Checkout implementation card', status: 'in_progress' }],
+        };
+      }
+      return { total: 0, offset, limit, items: [] };
+    });
+
+    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+
+    const flowHeading = await screen.findByRole('heading', { name: 'Flow Health' });
+    const flowPanel = flowHeading.closest('section');
+    const readinessHeading = screen.getByRole('heading', { name: 'Spec & Policy Readiness' });
+    const readinessPanel = readinessHeading.closest('section');
+    expect(flowPanel).not.toBeNull();
+    expect(readinessPanel).not.toBeNull();
+
+    await waitFor(() => {
+      expect(within(flowPanel!).getByText('Checkout implementation card')).toBeInTheDocument();
+      expect(within(readinessPanel!).getByText('Checkout readiness spec')).toBeInTheDocument();
+    });
+    expect(within(flowPanel!).getByText('Checkout implementation card').closest('button'))
+      .toHaveAttribute('title', 'card:card-1');
+    expect(within(readinessPanel!).getByText('Checkout readiness spec').closest('td'))
+      .toHaveAttribute('title', 'spec-1');
+    expect(mockApi.getBoardAnalyticsEntities).toHaveBeenCalledWith(
+      'board-1',
+      'spec',
+      undefined,
+      undefined,
+      1,
+      200,
+    );
+  });
+
+  it('places governed analytics panels after Validation Gates in DOM order', async () => {
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+
+    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+
+    let previousHeading = await screen.findByRole('heading', { name: 'Validation Gates' });
+    for (const headingName of [
+      'Board KG Analytics',
+      'Canonical Coverage & Traceability',
+      'Flow Health',
+      'Spec & Policy Readiness',
+    ]) {
+      const currentHeading = screen.getByRole('heading', { name: headingName });
+      expect(previousHeading.compareDocumentPosition(currentHeading) & Node.DOCUMENT_POSITION_FOLLOWING)
+        .not.toBe(0);
+      previousHeading = currentHeading;
+    }
+  });
+
+  it('maps every canonical obligation type to a descriptive label', async () => {
+    const obligationLabels = [
+      ['ac', 'Acceptance Criteria'],
+      ['fr', 'Functional Requirement'],
+      ['test_scenario', 'Test Scenario'],
+      ['business_rule', 'Business Rule'],
+      ['api_contract', 'API Contract'],
+      ['technical_requirement', 'Technical Requirement'],
+      ['decision', 'Decision'],
+      ['integration_requirement', 'Integration Requirement'],
+      ['observability_requirement', 'Observability Requirement'],
+    ] as const;
+    mockApi.getCanonicalBoardCoverage.mockResolvedValue({
+      query_fingerprint: 'g'.repeat(64),
+      as_of: '2026-05-28T12:00:00.000000Z',
+      totals: {
+        state: 'not_applicable',
+        applicable: 0,
+        covered: 0,
+        uncovered: 0,
+        skipped: 0,
+        value: null,
+        n: 0,
+        reason: 'zero_applicable_obligations',
+      },
+      coverage: obligationLabels.map(([obligationType]) => ({
+        obligation_type: obligationType,
+        state: 'not_applicable',
+        applicable: 0,
+        covered: 0,
+        uncovered: 0,
+        skipped: 0,
+        value: null,
+        n: 0,
+        reason: 'zero_applicable_obligations',
+        rows: [],
+      })),
+    });
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+
+    render(
+      <CanonicalCoveragePanel
+        data={await mockApi.getCanonicalBoardCoverage('board-1', '2026-05-01', '2026-05-28')}
+        loading={false}
+        error={null}
+        exporting={false}
+        from="2026-05-01"
+        to="2026-05-28"
+        specTitles={{}}
+        onRetry={vi.fn()}
+        onExport={vi.fn().mockResolvedValue(undefined)}
+        onOpenSpec={vi.fn()}
+        viewMode="full"
+      />,
+    );
+
+    const heading = await screen.findByRole('heading', { name: 'Canonical Coverage & Traceability' });
+    const panel = heading.closest('section');
+    expect(panel).not.toBeNull();
+    for (const [, label] of obligationLabels) {
+      expect(within(panel!).getByText(label)).toBeInTheDocument();
+    }
+  });
+
+  it('renders IR and OR from canonical obligation groups', async () => {
+    mockApi.getCanonicalBoardCoverage.mockResolvedValue({
+      query_fingerprint: 'i'.repeat(64),
+      as_of: '2026-05-28T12:00:00.000000Z',
+      totals: { state: 'available', applicable: 3, covered: 2, uncovered: 1, skipped: 0, value: 66.7, n: 3, reason: null },
+      coverage: [
+        { obligation_type: 'integration_requirement', state: 'available', applicable: 2, covered: 1, uncovered: 1, skipped: 0, value: 50, n: 2, reason: null, rows: [] },
+        { obligation_type: 'observability_requirement', state: 'available', applicable: 1, covered: 1, uncovered: 0, skipped: 0, value: 100, n: 1, reason: null, rows: [] },
+      ],
+      code_evidence: { state: 'available', reason: null, targets: [], resolutions: [], executions: [], overlaps: [], waivers: [] },
+    });
+
+    render(
+      <CanonicalCoveragePanel
+        data={await mockApi.getCanonicalBoardCoverage('board-1', '2026-05-01', '2026-05-28')}
+        loading={false}
+        error={null}
+        exporting={false}
+        from="2026-05-01"
+        to="2026-05-28"
+        specTitles={{}}
+        onRetry={vi.fn()}
+        onExport={vi.fn().mockResolvedValue(undefined)}
+        onOpenSpec={vi.fn()}
+        viewMode="full"
+      />,
+    );
+
+    const heading = await screen.findByRole('heading', { name: 'Canonical Coverage & Traceability' });
+    const panel = heading.closest('section');
+    expect(within(panel!).getByRole('row', { name: /Integration Requirement.*50%/ })).toBeInTheDocument();
+    expect(within(panel!).getByRole('row', { name: /Observability Requirement.*100%/ })).toBeInTheDocument();
+  });
+
+  it('keeps product classification fail-safe while preserving component health', async () => {
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+
+    render(
+      <KgEffectivenessPanel
+        data={await mockApi.getBoardKgAnalytics('board-1', '2026-05-01', '2026-05-28')}
+        loading={false}
+        error={null}
+        exporting={false}
+        from="2026-05-01"
+        to="2026-05-28"
+        onRetry={vi.fn()}
+        onExport={vi.fn().mockResolvedValue(undefined)}
+        mode="full"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('Board KG Analytics')).toBeInTheDocument());
+    const panel = screen.getByRole('heading', { name: 'Board KG Analytics' }).closest('section');
+    expect(panel).not.toBeNull();
+    const headline = within(panel!).getByLabelText('KG health and availability');
+    expect(headline).toHaveTextContent('Unavailable');
+    expect(headline).not.toHaveTextContent('Healthy');
+    expect(within(panel!).getByText('Healthy')).toBeInTheDocument();
+    expect(within(panel!).getAllByText('Unavailable').length).toBeGreaterThan(1);
+    expect(within(panel!).getAllByText('Cognitive Metric Unavailable').length).toBeGreaterThan(0);
+  });
+
+  it('keeps skipped obligations in factual coverage and out of covered', async () => {
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+
+    render(
+      <CanonicalCoveragePanel
+        data={await mockApi.getCanonicalBoardCoverage('board-1', '2026-05-01', '2026-05-28')}
+        loading={false}
+        error={null}
+        exporting={false}
+        from="2026-05-01"
+        to="2026-05-28"
+        specTitles={{}}
+        onRetry={vi.fn()}
+        onExport={vi.fn().mockResolvedValue(undefined)}
+        onOpenSpec={vi.fn()}
+        viewMode="full"
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('Canonical Coverage & Traceability')).toBeInTheDocument());
+    const panel = screen.getByRole('heading', { name: 'Canonical Coverage & Traceability' }).closest('section');
+    expect(panel).not.toBeNull();
+    expect(panel).toHaveTextContent('Covered0');
+    expect(panel).toHaveTextContent('Skipped2');
+    const obligationRow = within(panel!).getByRole('row', { name: /Acceptance Criteria/ });
+    expect(within(obligationRow).getAllByRole('cell').map((cell) => cell.textContent)).toEqual([
+      'Available',
+      '2',
+      '0',
+      '2',
+      '2',
+      '0%',
+    ]);
+  });
+
+  it('renders unavailable obligation groups without dereferencing absent counts', async () => {
+    mockApi.getCanonicalBoardCoverage.mockResolvedValue({
+      query_fingerprint: 'f'.repeat(64),
+      as_of: '2026-05-28T12:00:00.000000Z',
+      totals: {
+        state: 'unavailable',
+        applicable: null,
+        covered: null,
+        uncovered: null,
+        skipped: null,
+        value: null,
+        n: null,
+        reason: 'coverage_unavailable',
+      },
+      coverage: [{
+        obligation_type: 'decision',
+        state: 'unavailable',
+        applicable: null,
+        covered: null,
+        uncovered: null,
+        skipped: null,
+        value: null,
+        n: null,
+        reason: 'coverage_unavailable',
+        rows: [],
+      }],
+    });
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+
+    render(
+      <CanonicalCoveragePanel
+        data={await mockApi.getCanonicalBoardCoverage('board-1', '2026-05-01', '2026-05-28')}
+        loading={false}
+        error={null}
+        exporting={false}
+        from="2026-05-01"
+        to="2026-05-28"
+        specTitles={{}}
+        onRetry={vi.fn()}
+        onExport={vi.fn().mockResolvedValue(undefined)}
+        onOpenSpec={vi.fn()}
+        viewMode="full"
+      />,
+    );
+
+    const obligation = await screen.findByText('Decision');
+    const row = obligation.closest('tr');
+    expect(row).not.toBeNull();
+    expect(within(row!).getAllByText('Unavailable')).toHaveLength(2);
+    expect(within(row!).getAllByText('—')).toHaveLength(4);
+  });
+
+  it('labels a historical Sprint commitment unavailable without inferred counts', async () => {
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+    mockApi.getBoardAnalyticsSprints.mockResolvedValue({
+      summary: {
+        total_sprints: 1,
+        status_breakdown: { active: 1 },
+        avg_completion_rate: 50,
+        sprint_evaluation: { total_submitted: 0, approve_rate: null, avg_overall_score: null },
+      },
+      sprints: [{
+        sprint_id: 'sprint-legacy',
+        title: 'Legacy Sprint',
+        status: 'active',
+        spec_id: 'spec-1',
+        total_cards: 2,
+        done_cards: 1,
+        completion_rate: 50,
+        card_status_breakdown: { done: 1, in_progress: 1 },
+        evaluations_count: 0,
+        last_evaluation: null,
+        task_validation_gate: {
+          total_submitted: 0,
+          total_success: 0,
+          total_failed: 0,
+          rejection_reasons: {},
+          first_pass_rate: null,
+        },
+        commitment: {
+          state: 'unavailable_legacy',
+          baseline_ref: null,
+          unavailable_reason: 'activation_baseline_not_persisted',
+        },
+      }],
+    });
+
+    render(
+      <DeliveryForecastPanel
+        sprints={await mockApi.getBoardAnalyticsSprints('board-1', '2026-05-01', '2026-05-28')}
+        forecast={await mockApi.getBoardDeliveryForecast('board-1', '2026-05-01', '2026-05-28')}
+        forecastLoading={false}
+        forecastError={null}
+        forecastExporting={false}
+        from="2026-05-01"
+        to="2026-05-28"
+        onRetryForecast={vi.fn()}
+        onExportForecast={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('Legacy Sprint')).toBeInTheDocument());
+    expect(screen.getByText('Unavailable Legacy')).toBeInTheDocument();
+    expect(screen.queryByText(/original ·/)).not.toBeInTheDocument();
+  });
+
+  it('does not render the conflicting legacy board coverage projection', async () => {
     mockApi.getBoardAnalyticsCoverage.mockResolvedValue([
       {
         spec_id: 'spec-legacy',
@@ -156,7 +727,9 @@ describe('analytics IR/OR coverage UI', () => {
 
     render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
 
-    await waitFor(() => expect(screen.getByText('Legacy Spec')).toBeInTheDocument());
+    await screen.findByRole('heading', { name: 'Canonical Coverage & Traceability' });
+    expect(mockApi.getBoardAnalyticsCoverage).not.toHaveBeenCalled();
+    expect(screen.queryByText('Legacy Spec')).not.toBeInTheDocument();
     expect(screen.queryByText('IRs')).not.toBeInTheDocument();
     expect(screen.queryByText('ORs')).not.toBeInTheDocument();
   });
@@ -170,12 +743,26 @@ describe('analytics IR/OR coverage UI', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Stories help' })).toBeInTheDocument());
 
-    for (const label of ['Stories', 'Ideations', 'Specs', 'Tasks', 'Completeness', 'Drift', 'Coverage', 'Bugs', 'Cycle Time']) {
+    for (const label of ['Stories', 'Ideations', 'Specs', 'Tasks', 'Completeness', 'Drift', 'Bugs', 'Cycle Time']) {
       expect(screen.getByRole('button', { name: `${label} help` })).toBeInTheDocument();
     }
+    expect(screen.queryByRole('button', { name: 'Coverage help' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Completeness help' }));
     expect(scrollIntoView).toHaveBeenCalled();
+  });
+
+  it('renders governed Flow Health independently and falls back to the subject identity when title lookup fails', async () => {
+    mockApi.getBoardAnalyticsCoverage.mockResolvedValue([]);
+    mockApi.getBoardAnalyticsEntities.mockRejectedValue(new Error('catalog unavailable'));
+
+    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Flow Health' })).toBeInTheDocument());
+    const panel = screen.getByRole('heading', { name: 'Flow Health' }).closest('section');
+    expect(within(panel!).getByText('Card card-1')).toBeInTheDocument();
+    expect(within(panel!).getByText('In Progress')).toBeInTheDocument();
+    expect(within(panel!).getByText('v2')).toBeInTheDocument();
   });
 
   it('renders spec-detail IR/OR drilldowns and header help targets', async () => {

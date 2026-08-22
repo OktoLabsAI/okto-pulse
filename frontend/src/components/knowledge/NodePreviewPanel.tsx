@@ -12,7 +12,7 @@
 
 import { useMemo } from 'react';
 import type { KGNode } from '@/types/knowledge-graph';
-import { NODE_TYPE_CONFIG } from '@/types/knowledge-graph';
+import { kgNodeDisplayType, kgNodeVisualConfig } from '@/types/knowledge-graph';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { RelevanceBadge } from './RelevanceBadge';
 
@@ -38,7 +38,7 @@ export function NodePreviewPanel({ node, onClose, onOpenSpec, onShowDetails }: P
   }, [node?.source_artifact_ref]);
 
   if (!node) return null;
-  const cfg = NODE_TYPE_CONFIG[node.node_type];
+  const cfg = kgNodeVisualConfig(node);
 
   return (
     <aside
@@ -52,7 +52,7 @@ export function NodePreviewPanel({ node, onClose, onOpenSpec, onShowDetails }: P
           className="px-2 py-0.5 rounded text-[10px] font-medium text-white"
           style={{ backgroundColor: cfg?.color ?? '#6B7280' }}
         >
-          {cfg?.icon ?? ''} {node.node_type}
+          {cfg?.icon ?? ''} {kgNodeDisplayType(node)}
         </span>
         <button
           type="button"

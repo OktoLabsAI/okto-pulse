@@ -315,6 +315,7 @@ export function CardResourcesPanel({
           <CardKnowledgeTab
             card={card}
             specKnowledgeBases={specKnowledgeBases}
+            readOnly={card.status === 'rejected'}
             onUpdate={async () => {
               const updated = await api.getCard(card.id).catch(() => null);
               if (updated) {
@@ -341,6 +342,7 @@ export function CardResourcesPanel({
             entityType="card"
             entityId={card.id}
             specIdForCopy={card.spec_id}
+            locked={card.status === 'rejected'}
             expanded={expanded}
             screenMockups={card.screen_mockups || []}
             onChanged={(items) => {

@@ -41,6 +41,8 @@ const apiMock = vi.hoisted(() => ({
   deleteAttachment: vi.fn(),
   unlinkTestTaskFromBug: vi.fn(),
   submitTaskValidation: vi.fn(),
+  createQuestion: vi.fn(),
+  answerQuestion: vi.fn(),
 }));
 
 const storeMock = vi.hoisted(() => ({
@@ -76,7 +78,6 @@ const permissionsMock = vi.hoisted(() => ({
 
 const policyComplianceMock = vi.hoisted(() => ({
   panelProps: vi.fn(),
-  previewProps: vi.fn(),
 }));
 
 vi.mock('@/services/api', () => ({
@@ -171,17 +172,6 @@ vi.mock('@/components/policy-compliance', async (importOriginal) => {
         </div>
       );
     },
-    PolicyComplianceTransitionPreview: (props: {
-      preview: { status: string };
-      rejection?: { code: string } | null;
-    }) => {
-      policyComplianceMock.previewProps(props);
-      return (
-        <div data-testid="policy-transition-preview">
-          {props.preview.status}:{props.rejection?.code ?? 'none'}
-        </div>
-      );
-    },
   };
 });
 
@@ -232,6 +222,7 @@ const emptyColumns = (): Record<CardStatus, CardSummary[]> => ({
   started: [],
   in_progress: [],
   validation: [],
+  rejected: [],
   on_hold: [],
   done: [],
   cancelled: [],
@@ -256,6 +247,7 @@ async function flushMicrotasks() {
 }
 
 const bugCard: Card = {
+  subject_version: 7,
   id: 'bug-1',
   board_id: 'board-1',
   spec_id: 'spec-1',
@@ -316,6 +308,7 @@ function allowedTransition(
     label: STATUS_LABELS_FOR_TEST[toStatus],
     gate: 'none',
     blocked_reason: null,
+    blocked_facts: null,
     preconditions: [],
     capabilities: [],
     effects: [],
@@ -331,6 +324,7 @@ const STATUS_LABELS_FOR_TEST: Record<CardStatus, string> = {
   started: 'Started',
   in_progress: 'In Progress',
   validation: 'Validation',
+  rejected: 'Rejected',
   on_hold: 'On Hold',
   done: 'Done',
   cancelled: 'Cancelled',
@@ -358,6 +352,7 @@ function policyDecision(
 ): PolicyComplianceTransitionDecision {
   const blocked = state === 'policy_compliance_blocked';
   return {
+    projection: 'full',
     state,
     allowed: !blocked,
     policy_compliance_required: true,
@@ -663,9 +658,16 @@ describe('CardModal', () => {
     expect(
       screen.getByText('The implementation was superseded by a safer approach.'),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/Cancelling a card can return a validated parent spec/i),
-    ).toBeInTheDocument();
+    const lifecycleNotice = screen.getByText(
+      /Cancelling a card can return a validated parent spec/i,
+    );
+    expect(lifecycleNotice).toHaveTextContent(
+      'earlier evaluation results remain under Previous',
+    );
+    expect(lifecycleNotice).toHaveTextContent(
+      'new Current result is required',
+    );
+    expect(lifecycleNotice).not.toHaveTextContent(/stale/i);
   });
 
   it('shows only the current and canonically allowed lifecycle statuses', async () => {
@@ -681,6 +683,201 @@ describe('CardModal', () => {
       entity_type: 'card',
       entity_id: 'bug-1',
       current_status: 'not_started',
+    });
+  });
+
+  it('shows the current failed validation and the only authorized Rejected rework exit', async () => {
+    const rejectedCard: Card = {
+      ...cardForType('normal'),
+      id: 'rejected-1',
+      status: 'rejected',
+      validations: [{
+        id: 'failed-validation-1',
+        confidence: 62,
+        estimated_completeness: 91,
+        estimated_drift: 4,
+        confidence_justification: 'The evidence cannot establish correctness.',
+        completeness_justification: 'The implementation scope is present.',
+        drift_justification: 'The implementation follows the approved scope.',
+        general_justification: 'Validation rejected because confidence is below the required threshold.',
+        recommendation: 'reject',
+        verdict: 'fail',
+        threshold_violations: ['confidence 62 is below minimum 70'],
+        resolved_thresholds: {
+          min_confidence: 70,
+          min_completeness: 80,
+          max_drift: 50,
+        },
+        evaluator_id: 'agent-1',
+        created_at: '2026-08-14T01:00:00Z',
+        card_status: 'rejected',
+      }],
+    };
+    const reworkedCard = { ...rejectedCard, status: 'in_progress' as const };
+    storeMock.selectedCardId = rejectedCard.id;
+    storeMock.columns.rejected = [rejectedCard];
+    apiMock.getCard.mockResolvedValue(rejectedCard);
+    apiMock.getAllowedTransitions.mockResolvedValue(
+      transitionEnvelope(rejectedCard.id, 'rejected', [
+        allowedTransition('in_progress'),
+        allowedTransition('done'),
+        allowedTransition('rejected'),
+      ]),
+    );
+    apiMock.moveCard.mockResolvedValue(reworkedCard);
+    const onAuthoritativeStatusChange = vi.fn();
+
+    render(
+      <CardModal
+        boardId="board-1"
+        onAuthoritativeStatusChange={onAuthoritativeStatusChange}
+      />,
+    );
+
+    expect(
+      await screen.findByRole('heading', { name: rejectedCard.title }),
+    ).toHaveAttribute('contenteditable', 'false');
+    expect(screen.queryByRole('button', { name: 'Delete' }))
+      .not.toBeInTheDocument();
+    const status = await screen.findByRole('combobox', { name: 'Card status' });
+    await waitFor(() => {
+      expect(within(status).getAllByRole('option').map((option) => option.textContent))
+        .toEqual(['Rejected', 'In Progress']);
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Task validation/ }));
+    const reworkPanel = await screen.findByTestId('task-rejected-rework-panel');
+    expect(reworkPanel).toHaveTextContent('Rejected — rework required');
+    expect(reworkPanel).toHaveTextContent(
+      'Validation rejected because confidence is below the required threshold.',
+    );
+    expect(reworkPanel).toHaveTextContent('confidence 62 is below minimum 70');
+    expect(screen.queryByRole('button', { name: /Submit Validation/i }))
+      .not.toBeInTheDocument();
+    expect(
+      screen.getByTestId('task-validation-failed-validation-1-confidence-score-metric'),
+    ).toBeVisible();
+
+    fireEvent.click(
+      within(reworkPanel).getByRole('button', {
+        name: 'Move to In Progress for rework',
+      }),
+    );
+
+    await waitFor(() => {
+      expect(apiMock.moveCard).toHaveBeenCalledWith(rejectedCard.id, {
+        status: 'in_progress',
+        conclusion: undefined,
+        completeness: undefined,
+        completeness_justification: undefined,
+        drift: undefined,
+        drift_justification: undefined,
+      });
+      expect(storeMock.updateCardInColumn).toHaveBeenLastCalledWith(reworkedCard);
+      expect(onAuthoritativeStatusChange).toHaveBeenCalledWith(
+        reworkedCard,
+        'rejected',
+      );
+    });
+  });
+
+  it('shows every governed completion gate that caused the current rejection', async () => {
+    const gateValidation = {
+      id: 'successful-assessment-1',
+      confidence: 96,
+      estimated_completeness: 94,
+      estimated_drift: 2,
+      confidence_justification: 'The implementation evidence is complete and current.',
+      completeness_justification: 'All acceptance criteria have implementation evidence.',
+      drift_justification: 'No material drift from the approved specification was found.',
+      general_justification: 'The Task Validation assessment passed before completion gates ran.',
+      recommendation: 'approve' as const,
+      verdict: 'pass' as const,
+      validation_outcome: 'success' as const,
+      completion_outcome: 'rejected' as const,
+      completion_gate_failures: [
+        {
+          code: 'policy_compliance_blocked',
+          summary: 'Refresh the required policy assessment.',
+          reason_codes: ['policy_assessment_stale'],
+        },
+        {
+          code: 'code_traceability_blocked',
+          summary: 'Resolve the missing Current implementation target.',
+          reason_codes: ['target_resolution_missing'],
+        },
+      ],
+      rejection_cause: {
+        kind: 'completion_gate' as const,
+        id: 'completion-rejection-1',
+        code: 'policy_compliance_blocked',
+        summary: 'Two governed completion gates require action.',
+      },
+      threshold_violations: [],
+      evaluator_id: 'agent-1',
+      created_at: '2026-08-14T01:00:00Z',
+      card_status: 'rejected' as const,
+    };
+    const rejectedCard: Card = {
+      ...cardForType('bug'),
+      id: 'gate-rejected-1',
+      status: 'rejected',
+      validations: [gateValidation],
+      rejection_records: [{
+        kind: 'completion_gate',
+        id: 'completion-rejection-1',
+        code: 'policy_compliance_blocked',
+        summary: 'Two governed completion gates require action.',
+        source_id: gateValidation.id,
+      }],
+      current_rejection_kind: 'completion_gate',
+      current_rejection_id: 'completion-rejection-1',
+      current_rejection_code: 'policy_compliance_blocked',
+      current_rejection_summary: 'Two governed completion gates require action.',
+    };
+    storeMock.selectedCardId = rejectedCard.id;
+    storeMock.columns.rejected = [rejectedCard];
+    apiMock.getCard.mockResolvedValue(rejectedCard);
+    apiMock.getAllowedTransitions.mockResolvedValue(
+      transitionEnvelope(rejectedCard.id, 'rejected', [
+        allowedTransition('in_progress'),
+      ]),
+    );
+
+    render(<CardModal boardId="board-1" />);
+
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Task validation/ }));
+
+    const reworkPanel = await screen.findByTestId('task-rejected-rework-panel');
+    expect(reworkPanel).toHaveTextContent('Two governed completion gates require action.');
+    expect(reworkPanel).toHaveTextContent('Refresh the required policy assessment.');
+    expect(reworkPanel).toHaveTextContent('policy_assessment_stale');
+    expect(reworkPanel).toHaveTextContent(
+      'Resolve the missing Current implementation target.',
+    );
+    expect(reworkPanel).toHaveTextContent('target_resolution_missing');
+    expect(screen.getByText('Completion gate failures')).toBeVisible();
+  });
+
+  it('fails closed when a rolling-upgrade authority projects manual inbound Rejected', async () => {
+    const taskCard = cardForType('normal');
+    storeMock.selectedCardId = taskCard.id;
+    apiMock.getCard.mockResolvedValue(taskCard);
+    apiMock.getAllowedTransitions.mockResolvedValue(
+      transitionEnvelope(taskCard.id, taskCard.status, [
+        allowedTransition('started'),
+        allowedTransition('rejected'),
+      ]),
+    );
+
+    render(<CardModal boardId="board-1" />);
+
+    const status = await screen.findByRole('combobox', { name: 'Card status' });
+    await waitFor(() => {
+      expect(within(status).queryByRole('option', { name: 'Rejected' }))
+        .not.toBeInTheDocument();
     });
   });
 
@@ -714,9 +911,13 @@ describe('CardModal', () => {
     fireEvent.click(
       screen.getByRole('tab', { name: /^Policy Compliance$/ }),
     );
-    expect(await screen.findByTestId('policy-transition-preview')).toHaveTextContent(
-      'ready:none',
+    expect(await screen.findByTestId('policy-compliance-panel')).toBeInTheDocument();
+    expect(policyComplianceMock.panelProps).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        transitionPreview: expect.objectContaining({ status: 'ready' }),
+      }),
     );
+    expect(screen.queryByTestId('policy-transition-preview')).not.toBeInTheDocument();
   });
 
   it('keeps lifecycle fail-closed when the canonical transition envelope is malformed', async () => {
@@ -741,12 +942,16 @@ describe('CardModal', () => {
     fireEvent.click(
       screen.getByRole('tab', { name: /^Policy Compliance$/ }),
     );
-    expect(await screen.findByTestId('policy-transition-preview')).toHaveTextContent(
-      'error:none',
+    expect(await screen.findByTestId('policy-compliance-panel')).toBeInTheDocument();
+    expect(policyComplianceMock.panelProps).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        transitionPreview: expect.objectContaining({ status: 'error' }),
+      }),
     );
+    expect(screen.queryByTestId('policy-transition-preview')).not.toBeInTheDocument();
   });
 
-  it('keeps a structured policy 409 visible after reloading transition authority', async () => {
+  it('reports a structured policy 409 and reloads transition authority without a readiness card', async () => {
     apiMock.moveCard.mockRejectedValueOnce(
       policyRejection('bug-1', 'not_started', 'started'),
     );
@@ -767,9 +972,8 @@ describe('CardModal', () => {
     fireEvent.click(
       screen.getByRole('tab', { name: /^Policy Compliance$/ }),
     );
-    await waitFor(() => expect(
-      screen.getByTestId('policy-transition-preview'),
-    ).toHaveTextContent('ready:policy_compliance_blocked'));
+    expect(await screen.findByTestId('policy-compliance-panel')).toBeInTheDocument();
+    expect(screen.queryByTestId('policy-transition-preview')).not.toBeInTheDocument();
     expect(apiMock.getAllowedTransitions.mock.calls.length).toBeGreaterThan(1);
   });
 
@@ -986,6 +1190,114 @@ describe('CardModal', () => {
     expect(apiMock.updateCard).not.toHaveBeenCalled();
   });
 
+  it('reconciles the Kanban open Q&A count after asking and answering the last question', async () => {
+    const qaOpen = {
+      id: 'qa-open',
+      card_id: bugCard.id,
+      question: 'Which rollout window?',
+      answer: null,
+      asked_by: 'agent-1',
+      answered_by: null,
+      created_at: '2026-08-14T10:00:00Z',
+      answered_at: null,
+    };
+    const qaAnswered = {
+      ...qaOpen,
+      answer: 'Tonight',
+      answered_by: 'user-1',
+      answered_at: '2026-08-14T11:00:00Z',
+    };
+    apiMock.getCard.mockResolvedValue({
+      ...bugCard,
+      qa_items: [],
+      open_qa_count: 0,
+    });
+    apiMock.createQuestion.mockResolvedValue(qaOpen);
+    apiMock.answerQuestion.mockResolvedValue(qaAnswered);
+
+    render(<CardModal boardId="board-1" />);
+
+    const qaTab = await screen.findByRole('tab', { name: /^Q&A/ });
+    storeMock.updateCardInColumn.mockClear();
+    fireEvent.click(qaTab);
+    fireEvent.change(
+      screen.getByPlaceholderText('Add a question... (use @ to mention)'),
+      { target: { value: qaOpen.question } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }));
+
+    await waitFor(() => {
+      expect(storeMock.updateCardInColumn).toHaveBeenCalledTimes(1);
+      expect(storeMock.updateCardInColumn).toHaveBeenLastCalledWith(
+        expect.objectContaining({ open_qa_count: 1 }),
+      );
+    });
+
+    fireEvent.change(
+      await screen.findByPlaceholderText('Answer...'),
+      { target: { value: 'Tonight' } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Answer' }));
+
+    await waitFor(() => {
+      expect(storeMock.updateCardInColumn).toHaveBeenCalledTimes(2);
+      expect(storeMock.updateCardInColumn).toHaveBeenLastCalledWith(
+        expect.objectContaining({ open_qa_count: 0 }),
+      );
+    });
+    expect(apiMock.createQuestion).toHaveBeenCalledTimes(1);
+    expect(apiMock.answerQuestion).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the projected open Q&A count when full-card loads omit it', async () => {
+    vi.useFakeTimers();
+    const refreshedCard: Card = {
+      ...bugCard,
+      updated_at: '2026-08-14T12:00:00Z',
+    };
+    storeMock.columns.not_started = [{ ...bugCard, open_qa_count: 2 }];
+    apiMock.getCard
+      .mockResolvedValueOnce({ ...bugCard })
+      .mockResolvedValueOnce(refreshedCard);
+
+    const view = render(<CardModal boardId="board-1" />);
+    try {
+      await flushMicrotasks();
+      expect(storeMock.updateCardInColumn).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: bugCard.id, open_qa_count: 2 }),
+      );
+
+      storeMock.updateCardInColumn.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      await flushMicrotasks();
+
+      expect(apiMock.getCard).toHaveBeenCalledTimes(2);
+      expect(storeMock.updateCardInColumn).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: bugCard.id, open_qa_count: 2 }),
+      );
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not restore a projected Q&A count when card.qa.read is denied', async () => {
+    permissionsMock.has.mockImplementation(
+      (permission: string) => permission !== 'card.qa.read',
+    );
+    storeMock.columns.not_started = [{ ...bugCard, open_qa_count: 2 }];
+    apiMock.getCard.mockResolvedValue({ ...bugCard });
+
+    render(<CardModal boardId="board-1" />);
+
+    await waitFor(() => expect(storeMock.updateCardInColumn).toHaveBeenCalled());
+    expect(storeMock.updateCardInColumn).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({ open_qa_count: expect.anything() }),
+    );
+  });
+
   it('disables only assignment when card.entity.assign is false', async () => {
     permissionsMock.has.mockImplementation(
       (permission: string) => permission !== 'card.entity.assign',
@@ -1092,7 +1404,9 @@ describe('CardModal', () => {
       status: 'validation',
     };
     storeMock.selectedCardId = validationCard.id;
-    apiMock.getCard.mockResolvedValue(validationCard);
+    apiMock.getCard
+      .mockResolvedValueOnce(validationCard)
+      .mockRejectedValue(new Error('refresh unavailable'));
     apiMock.submitTaskValidation.mockResolvedValue({
       id: 'validation-entry-1',
       confidence: 91,
@@ -1112,7 +1426,23 @@ describe('CardModal', () => {
         max_drift: 20,
       },
       threshold_violations: [],
-      card_status: 'done',
+      validation_outcome: 'success',
+      completion_outcome: 'rejected',
+      completion_gate_failures: [
+        {
+          code: 'policy_compliance_blocked',
+          summary: 'A required policy assessment is not current.',
+          reason_codes: ['policy_assessment_stale'],
+        },
+      ],
+      rejection_cause: {
+        kind: 'completion_gate',
+        id: 'rejection-record-1',
+        code: 'policy_compliance_blocked',
+        summary: 'Refresh policy compliance before completing this card.',
+      },
+      subject_version: 8,
+      card_status: 'rejected',
     });
 
     render(<CardModal boardId="board-1" />);
@@ -1170,6 +1500,8 @@ describe('CardModal', () => {
       expect(apiMock.submitTaskValidation).toHaveBeenCalledWith(
         validationCard.id,
         {
+          expected_subject_version: 7,
+          idempotency_key: expect.any(String),
           confidence: 91,
           confidence_justification: 'Confidence is supported by the full suite.',
           estimated_completeness: 89,
@@ -1179,6 +1511,28 @@ describe('CardModal', () => {
           general_justification: 'The implementation is ready for independent approval.',
           recommendation: 'approve',
         },
+      );
+    });
+
+    await waitFor(() => {
+      expect(storeMock.updateCardInColumn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: validationCard.id,
+          status: 'rejected',
+          subject_version: 8,
+          current_rejection_kind: 'completion_gate',
+          current_rejection_id: 'rejection-record-1',
+          current_rejection_code: 'policy_compliance_blocked',
+          current_rejection_summary:
+            'Refresh policy compliance before completing this card.',
+          validations: [
+            expect.objectContaining({
+              id: 'validation-entry-1',
+              validation_outcome: 'success',
+              completion_outcome: 'rejected',
+            }),
+          ],
+        }),
       );
     });
   });
@@ -1494,6 +1848,17 @@ describe('CardModal', () => {
     expect(
       screen.getByTestId('task-validation-validation-entry-1-confidence-score'),
     ).toHaveAttribute('data-status', 'met');
+    const confidenceMetric = screen.getByTestId(
+      'task-validation-validation-entry-1-confidence-score-metric',
+    );
+    expect(confidenceMetric).toHaveClass('flex-col');
+    expect(
+      within(
+        screen.getByTestId(
+          'task-validation-validation-entry-1-confidence-score-justification',
+        ),
+      ).getByText('The execution evidence is independently reproducible.'),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole('img', {
         name: /Confidence score 92 out of 100.*Minimum 85.*threshold met/i,
@@ -1634,25 +1999,14 @@ describe('CardModal', () => {
     expect(within(tab).getByText('No evidence recorded')).toBeInTheDocument();
   });
 
-  it('downloads card Markdown with sanitized type-aware filename and no mutation calls', async () => {
+  it('exposes canonical report export without invoking legacy rendering or mutations', async () => {
     render(<CardModal boardId="board-1" />);
 
     await screen.findByText('Bug: traceability is hidden');
-    fireEvent.click(screen.getByTitle('Download Markdown'));
-
-    await waitFor(() =>
-      expect(markdownMock.exportCard).toHaveBeenCalledWith(
-        expect.objectContaining({ id: 'bug-1', card_type: 'bug' }),
-        expect.objectContaining({ id: 'spec-1', title: 'Stories spec' }),
-      ),
-    );
-    expect(markdownMock.markdownFilenameForCard).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 'bug-1', card_type: 'bug' }),
-    );
-    expect(markdownMock.downloadMarkdown).toHaveBeenCalledWith(
-      '# card export',
-      'bug_bug-traceability-is-hidden.md',
-    );
+    expect(screen.getByTitle('Export report')).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(markdownMock.exportCard).not.toHaveBeenCalled();
+    expect(markdownMock.markdownFilenameForCard).not.toHaveBeenCalled();
+    expect(markdownMock.downloadMarkdown).not.toHaveBeenCalled();
     expect(apiMock.updateCard).not.toHaveBeenCalled();
     expect(apiMock.moveCard).not.toHaveBeenCalled();
     expect(apiMock.deleteCard).not.toHaveBeenCalled();
@@ -1660,7 +2014,7 @@ describe('CardModal', () => {
     expect(apiMock.unlinkTestTaskFromBug).not.toHaveBeenCalled();
   });
 
-  it('hydrates full architecture designs (card-owned and inherited spec) before export', async () => {
+  it('does not hydrate card or inherited Spec architecture in the modal export path', async () => {
     apiMock.getCard.mockResolvedValue({
       ...bugCard,
       architecture_designs: [{ id: 'arch-card', title: 'Card arch', diagrams_count: 1 }] as any,
@@ -1681,18 +2035,9 @@ describe('CardModal', () => {
 
     render(<CardModal boardId="board-1" />);
     await screen.findByText('Bug: traceability is hidden');
-    fireEvent.click(screen.getByTitle('Download Markdown'));
-
-    // Both card-owned and inherited spec architecture summaries are hydrated with payloads.
-    await waitFor(() => expect(apiMock.getArchitectureDesign).toHaveBeenCalledWith('arch-card', true));
-    await waitFor(() => expect(apiMock.getArchitectureDesign).toHaveBeenCalledWith('arch-spec', true));
-
-    // exportCard receives the hydrated full designs (with entities), not the summaries.
-    const lastCall = (markdownMock.exportCard.mock.calls.at(-1) ?? []) as any[];
-    const cardArg = lastCall[0];
-    const specArg = lastCall[1];
-    expect(cardArg.architecture_designs[0]).toMatchObject({ id: 'arch-card', entities: [{ id: 'arch-card-e', name: 'E' }] });
-    expect(specArg.architecture_designs[0]).toMatchObject({ id: 'arch-spec', entities: [{ id: 'arch-spec-e', name: 'E' }] });
+    expect(screen.getByTitle('Export report')).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(apiMock.getArchitectureDesign).not.toHaveBeenCalled();
+    expect(markdownMock.exportCard).not.toHaveBeenCalled();
     expect(apiMock.updateCard).not.toHaveBeenCalled();
     expect(apiMock.moveCard).not.toHaveBeenCalled();
   });
@@ -2026,12 +2371,25 @@ describe('ExecutionReportsPanel impact evidence (TS-11)', () => {
     } as unknown as import('@/types').Card;
     render(<ExecutionReportsPanel card={card} />);
     const block = screen.getByTestId('impact-evidence-readonly');
-    expect(block).toHaveTextContent('[core] modified: src/okto_pulse/core/models/schemas.py');
-    expect(block).toHaveTextContent('class/created: ImpactEvidence');
-    expect(block).toHaveTextContent('mcp_tool: okto_pulse_move_card');
+    expect(block).toHaveTextContent('Files (1)');
+    expect(block).toHaveTextContent('Modified');
+    expect(block).toHaveTextContent('src/okto_pulse/core/models/schemas.py');
+    expect(block).toHaveTextContent('Class');
+    expect(block).toHaveTextContent('Created');
+    expect(block).toHaveTextContent('ImpactEvidence');
+    expect(block).toHaveTextContent('Mcp tool');
+    expect(block).toHaveTextContent('okto_pulse_move_card');
     expect(block).toHaveTextContent('ts_8138a59f');
+    expect(block).toHaveTextContent('Agent-declared');
     expect(within(block).queryByRole('button')).toBeNull();
     expect(within(block).queryByRole('textbox')).toBeNull();
+
+    const panel = screen.getByTestId('execution-reports-panel');
+    const scores = screen.getByTestId('execution-report-0-scores');
+    const summary = screen.getByTestId('execution-report-0-summary');
+    expect(panel.compareDocumentPosition(scores) & Node.DOCUMENT_POSITION_CONTAINED_BY).toBeTruthy();
+    expect(scores.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(summary.compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('omits the section entirely when the conclusion has no block', async () => {

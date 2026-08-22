@@ -218,3 +218,22 @@ def test_snapshot_emits_zero_tombstone_for_removed_current_gauge(
     second = aggregator.aggregate().to_dict()
 
     assert second["product_work_item_type_counts"]["current.bug"] == 0
+
+
+def test_rejected_transition_is_a_distinct_quality_signal(tmp_path: Path) -> None:
+    settings = _settings_with_product_db(tmp_path)
+    with sqlite3.connect(tmp_path / "pulse.db") as connection:
+        connection.execute(
+            "INSERT INTO domain_events VALUES (?, ?)",
+            ("card.moved", json.dumps({"to_status": "rejected"})),
+        )
+        connection.commit()
+
+    metrics = (
+        CommunityProductTelemetryAggregator(settings, tmp_path / "metrics")
+        .aggregate()
+        .to_dict()
+    )
+
+    assert metrics["product_workflow_stage_counts"]["card.rejected"] == 1
+    assert metrics["product_quality_signal_counts"]["cards_rejected"] == 1

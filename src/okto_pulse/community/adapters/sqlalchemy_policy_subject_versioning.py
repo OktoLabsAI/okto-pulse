@@ -66,6 +66,23 @@ _SEMANTIC_ENTITY_BY_MODEL: dict[type, str] = {
 
 _CARD_NON_SEMANTIC_OPERATIONAL_FIELDS = frozenset(
     {
+        # Lifecycle, execution-report and audit changes do not alter the card
+        # intent that guideline assessments evaluate. Treating them as
+        # semantic made a freshly accepted receipt stale in the same
+        # transaction that moved a Task, Test or Bug to Done.
+        "status",
+        "conclusions",
+        "validations",
+        "rejection_records",
+        "current_rejection_kind",
+        "current_rejection_id",
+        "current_rejection_code",
+        "current_rejection_summary",
+        "archived",
+        "pre_archive_status",
+        "cancellation_reason",
+        "cancelled_at",
+        "cancelled_by",
         "policy_version",
         "position",
         "updated_at",

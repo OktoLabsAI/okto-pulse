@@ -41,6 +41,43 @@ describe('ValidationErrorDisplay', () => {
     expect(parsed.structured).toBe(false);
   });
 
+  it('renders the structured Code Evidence Matrix blocker with actionable coverage guidance', () => {
+    const error = JSON.stringify({
+      error: 'code_traceability_gate_blocked',
+      message: 'The Code Evidence Matrix has pending inherited Evidence.',
+      details: {
+        gate_type: 'spec_evidence_disposition',
+        blockers: [{
+          code: 'code_evidence_disposition_required',
+          message: 'Every active inherited Evidence needs a link or final disposition.',
+          blocking: true,
+        }],
+      },
+    });
+
+    const parsed = parseValidationErrorMessage(error);
+    expect(parsed.gateType).toBe('Code Evidence Coverage');
+    expect(parsed.gateTypeCode).toBe('code_evidence_disposition_required');
+    expect(parsed.structured).toBe(true);
+    expect(parsed.action).toContain('Open the Code Evidence Matrix tab');
+    expect(parsed.action).toContain('Skip Code Evidence coverage');
+
+    render(<ValidationErrorDisplay error={error} />);
+    expect(screen.getByText('Code Evidence Coverage')).toBeInTheDocument();
+    expect(screen.getByText(/link each pending inherited Evidence item/i)).toBeInTheDocument();
+  });
+
+  it('recognizes the legacy Code Evidence disposition message instead of unknown', () => {
+    const parsed = parseValidationErrorMessage(
+      'Every active inherited Evidence needs a link or final disposition.',
+    );
+
+    expect(parsed.gateType).toBe('Code Evidence Coverage');
+    expect(parsed.gateTypeCode).toBe('code_evidence_disposition_required');
+    expect(parsed.structured).toBe(false);
+    expect(parsed.action).toContain('Code Evidence Matrix');
+  });
+
   it('consumes the structured spec_validation gate contract (R4)', () => {
     const error = JSON.stringify({
       error: 'spec_validation_gate_required',

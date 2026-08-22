@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
+import threading
 
 import pytest
 
 from okto_pulse.community.adapters import kg_runtime
+from okto_pulse.community.adapters.ladybug_writer import ladybug_writer_scope
 from okto_pulse.community.adapters.kuzu_cypher_executor import (
     CommunityKuzuCypherExecutor,
     _statement_requires_vector_extension,
@@ -120,6 +123,83 @@ def test_vector_board_read_hot_loads_without_install(
         assert install_flags == [False]
     finally:
         kg_runtime.close_all_connections(board_id)
+
+
+def test_cached_non_vector_reader_bypasses_writer_but_vector_open_waits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board_id = "board-cached-read-writer-independence"
+    graph_base = tmp_path / "kg"
+    monkeypatch.setattr(kg_runtime, "_kg_base_dir", lambda: graph_base)
+    kg_runtime.reset_bootstrap_cache_for_tests()
+
+    writer_held = threading.Event()
+    release_writer = threading.Event()
+    vector_started = threading.Event()
+    holder: threading.Thread | None = None
+    try:
+        # The first open establishes both fast-path proofs: schema bootstrap is
+        # complete and this board's Database remains resident in the cache.
+        with kg_runtime.open_board_connection(
+            board_id,
+            load_vector_extension=False,
+        ) as (_db, conn):
+            result = conn.execute(
+                "MATCH (m:BoardMeta {board_id: $bid}) RETURN m.board_id",
+                {"bid": board_id},
+            )
+            assert result.get_next()[0] == board_id
+            result.close()
+
+        def hold_unrelated_writer() -> None:
+            with ladybug_writer_scope(
+                scope="another-board",
+                phase="test_writer_held",
+            ):
+                writer_held.set()
+                assert release_writer.wait(timeout=10)
+
+        def read_board_meta(*, load_vector: bool) -> str:
+            if load_vector:
+                vector_started.set()
+            with kg_runtime.open_board_connection(
+                board_id,
+                load_vector_extension=load_vector,
+            ) as (_db, conn):
+                result = conn.execute(
+                    "MATCH (m:BoardMeta {board_id: $bid}) RETURN m.board_id",
+                    {"bid": board_id},
+                )
+                try:
+                    return str(result.get_next()[0])
+                finally:
+                    result.close()
+
+        holder = threading.Thread(target=hold_unrelated_writer, daemon=True)
+        holder.start()
+        assert writer_held.wait(timeout=2)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            non_vector = pool.submit(read_board_meta, load_vector=False)
+            assert non_vector.result(timeout=2) == board_id
+
+            vector = pool.submit(read_board_meta, load_vector=True)
+            # VECTOR loading remains behind the process writer lease.  It must
+            # not finish until the holder releases that lease.
+            assert vector_started.wait(timeout=1)
+            assert not release_writer.is_set()
+            with pytest.raises(FutureTimeoutError):
+                vector.result(timeout=0.1)
+
+            release_writer.set()
+            assert vector.result(timeout=5) == board_id
+    finally:
+        release_writer.set()
+        if holder is not None:
+            holder.join(timeout=5)
+        kg_runtime.close_all_connections(board_id)
+        kg_runtime.reset_bootstrap_cache_for_tests()
 
 
 def test_paired_read_reports_columns_and_both_bounded_windows(

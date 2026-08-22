@@ -606,10 +606,34 @@ def create_app(
     from fastapi.responses import JSONResponse
 
     from okto_pulse.core.services.design_system import DesignSystemError
+    from okto_pulse.core.domain.human_validation_cycle import (
+        LifecycleTransitionConflictError,
+        SubjectEditRequiresDraftError,
+    )
+    from okto_pulse.core.inbound.human_validation_cycle_error import (
+        project_subject_edit_requires_draft_error,
+    )
 
     @app.exception_handler(DesignSystemError)
     async def _design_system_error_handler(_request, exc: DesignSystemError):
         return JSONResponse(status_code=exc.status_code, content=exc.to_dict())
+
+    @app.exception_handler(SubjectEditRequiresDraftError)
+    async def _subject_edit_requires_draft_handler(
+        _request,
+        exc: SubjectEditRequiresDraftError,
+    ):
+        return JSONResponse(
+            status_code=409,
+            content=project_subject_edit_requires_draft_error(exc),
+        )
+
+    @app.exception_handler(LifecycleTransitionConflictError)
+    async def _lifecycle_transition_conflict_handler(
+        _request,
+        exc: LifecycleTransitionConflictError,
+    ):
+        return JSONResponse(status_code=409, content=exc.to_error_dict())
 
     # S-LANE-01: canonicalize an invalid sprint ``lane_type`` (which fails Pydantic
     # body validation BEFORE the route handler runs) into the shared envelope.

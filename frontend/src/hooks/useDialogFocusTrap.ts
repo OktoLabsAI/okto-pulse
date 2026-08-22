@@ -37,6 +37,7 @@ export interface DialogFocusTrap {
 export function useDialogFocusTrap(
   active = true,
   initialFocusSelector?: string,
+  restoreFocusFallback?: () => HTMLElement | null,
 ): DialogFocusTrap {
   const dialogRef = useRef<HTMLDivElement>(null);
 
@@ -65,9 +66,15 @@ export function useDialogFocusTrap(
       } else {
         window.clearTimeout(frame);
       }
-      previouslyFocused?.focus();
+      const explicitRestoreTarget = restoreFocusFallback?.() ?? null;
+      const restoreTarget = explicitRestoreTarget?.isConnected
+        ? explicitRestoreTarget
+        : previouslyFocused?.isConnected
+          ? previouslyFocused
+          : null;
+      if (restoreTarget?.isConnected) restoreTarget.focus();
     };
-  }, [active, initialFocusSelector]);
+  }, [active, initialFocusSelector, restoreFocusFallback]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'Tab' || !dialogRef.current) return;

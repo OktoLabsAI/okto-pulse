@@ -14,6 +14,7 @@ import {
   BoardSettingsForm,
   normalizeDesignSystemGateMode,
 } from '@/components/board/BoardSettingsForm';
+import { normalizeCodeTraceabilitySettings } from '@/components/board/codeTraceabilitySettings';
 import { normalizeReviewerSeparationMode } from '@/components/board/reviewerSeparationSettings';
 import { ChecklistModeSelector } from '@/components/board/ChecklistModeSelector';
 import {
@@ -50,6 +51,7 @@ const DEFAULT_TEMPLATE_SETTINGS: Record<string, unknown> = {
   skip_test_coverage_global: false,
   skip_rules_coverage_global: false,
   skip_trs_coverage_global: false,
+  skip_code_evidence_coverage_global: false,
   skip_contract_coverage_global: false,
   skip_ir_coverage_global: false,
   skip_or_coverage_global: false,
@@ -65,8 +67,10 @@ const DEFAULT_TEMPLATE_SETTINGS: Record<string, unknown> = {
   min_completeness: 80,
   max_drift: 50,
   require_spec_validation: true,
-  min_spec_completeness: 80,
+  min_spec_confidence: 70,
+  min_spec_clarity: 80,
   min_spec_assertiveness: 80,
+  min_spec_decidability: 80,
   max_spec_ambiguity: 30,
   require_ideation_ambiguity_gate: false,
   max_ideation_ambiguity: 3,
@@ -78,6 +82,7 @@ const DEFAULT_TEMPLATE_SETTINGS: Record<string, unknown> = {
   require_test_task_for_bug: true,
   bug_test_gate_min_severity: 'minor',
   skip_test_evidence_global: false,
+  code_traceability: { mode: 'advisory' },
 };
 
 function loadErrorMessage(error: unknown): string {
@@ -127,6 +132,10 @@ function toBoardSettings(raw: Record<string, unknown>): BoardSettings {
     skip_test_coverage_global: bool('skip_test_coverage_global', false),
     skip_rules_coverage_global: bool('skip_rules_coverage_global', false),
     skip_trs_coverage_global: bool('skip_trs_coverage_global', false),
+    skip_code_evidence_coverage_global: bool(
+      'skip_code_evidence_coverage_global',
+      false,
+    ),
     skip_contract_coverage_global: bool('skip_contract_coverage_global', false),
     skip_ir_coverage_global: bool('skip_ir_coverage_global', false),
     skip_or_coverage_global: bool('skip_or_coverage_global', false),
@@ -145,8 +154,10 @@ function toBoardSettings(raw: Record<string, unknown>): BoardSettings {
     min_completeness: num('min_completeness', 80),
     max_drift: num('max_drift', 50),
     require_spec_validation: bool('require_spec_validation', true),
-    min_spec_completeness: num('min_spec_completeness', 80),
+    min_spec_confidence: num('min_spec_confidence', 70),
+    min_spec_clarity: num('min_spec_clarity', 80),
     min_spec_assertiveness: num('min_spec_assertiveness', 80),
+    min_spec_decidability: num('min_spec_decidability', 80),
     max_spec_ambiguity: num('max_spec_ambiguity', 30),
     require_ideation_ambiguity_gate: bool('require_ideation_ambiguity_gate', false),
     max_ideation_ambiguity: num('max_ideation_ambiguity', 3),
@@ -158,6 +169,7 @@ function toBoardSettings(raw: Record<string, unknown>): BoardSettings {
       ? (raw.auto_derive_spec_resource_types as SpecResourceAutoDeriveType[])
       : [],
     design_system_gate_mode: normalizeDesignSystemGateMode(raw.design_system_gate_mode),
+    code_traceability: normalizeCodeTraceabilitySettings(raw.code_traceability),
   };
 }
 

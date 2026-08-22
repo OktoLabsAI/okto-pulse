@@ -28,6 +28,7 @@ from okto_pulse.core.application.use_cases.card_collaboration import (
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core import StorageObjectStat, get_settings, get_storage_provider
+from okto_pulse.core.application.errors import CardOperationError
 from okto_pulse.core.models import AttachmentResponse
 from okto_pulse.core.repositories import PulseUnitOfWork
 
@@ -122,7 +123,9 @@ def _stat_headers(meta: StorageObjectStat) -> dict[str, str]:
     if meta.modified_time is not None:
         headers["last-modified"] = formatdate(meta.modified_time, usegmt=True)
         etag_base = f"{meta.modified_time}-{meta.size}"
-        headers["etag"] = f'"{hashlib.md5(etag_base.encode(), usedforsecurity=False).hexdigest()}"'
+        headers["etag"] = (
+            f'"{hashlib.md5(etag_base.encode(), usedforsecurity=False).hexdigest()}"'
+        )
     return headers
 
 
@@ -218,7 +221,9 @@ def _multipart_content_length(
     ) + (4 + len(boundary))
 
 
-def _multipart_part_header(boundary: str, start: int, end: int, size: int, content_type: str) -> bytes:
+def _multipart_part_header(
+    boundary: str, start: int, end: int, size: int, content_type: str
+) -> bytes:
     return (
         f"--{boundary}\r\n"
         f"Content-Type: {content_type}\r\n"
@@ -234,13 +239,19 @@ async def _multipart_stream(storage, path, ranges, boundary, size, content_type)
     chunked stream — the whole file is never materialised (AC6)."""
     for start, end in ranges:
         yield _multipart_part_header(boundary, start, end, size, content_type)
-        async for chunk in storage.open_stream(path, start=start, end=end, chunk_size=_DOWNLOAD_CHUNK_SIZE):
+        async for chunk in storage.open_stream(
+            path, start=start, end=end, chunk_size=_DOWNLOAD_CHUNK_SIZE
+        ):
             yield chunk
         yield b"\r\n"
     yield f"--{boundary}--".encode("latin-1")
 
 
-@router.post("/{board_id}/{card_id}", response_model=AttachmentResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{board_id}/{card_id}",
+    response_model=AttachmentResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def upload_attachment(
     board_id: str,
     card_id: str,
@@ -271,6 +282,11 @@ async def upload_attachment(
         )
     except CardNotFoundError as exc:
         raise RESTAdapterContract.http_error(exc, not_found_detail="Card not found")
+    except CardOperationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_dict(),
+        ) from exc
     except InvalidAttachmentFilenameError as exc:
         raise _attachment_http_error(
             exc,
@@ -315,7 +331,9 @@ async def download_attachment(
             exc, not_found_detail="Card not found in this board"
         )
     except AttachmentNotFoundError as exc:
-        raise RESTAdapterContract.http_error(exc, not_found_detail="Attachment not found")
+        raise RESTAdapterContract.http_error(
+            exc, not_found_detail="Attachment not found"
+        )
     attachment = result.attachment
 
     # FR1/AC3/TR1: serve through the registered provider — fail closed if absent.
@@ -376,7 +394,9 @@ async def download_attachment(
         headers["content-length"] = str(end - start)
         headers["content-range"] = f"bytes {start}-{end - 1}/{meta.size}"
         return StreamingResponse(
-            storage.open_stream(attachment.path, start=start, end=end, chunk_size=_DOWNLOAD_CHUNK_SIZE),
+            storage.open_stream(
+                attachment.path, start=start, end=end, chunk_size=_DOWNLOAD_CHUNK_SIZE
+            ),
             status_code=status.HTTP_206_PARTIAL_CONTENT,
             headers=headers,
         )
@@ -391,7 +411,9 @@ async def download_attachment(
             _multipart_content_length(ranges, boundary, meta.size, content_type)
         )
         return StreamingResponse(
-            _multipart_stream(storage, attachment.path, ranges, boundary, meta.size, content_type),
+            _multipart_stream(
+                storage, attachment.path, ranges, boundary, meta.size, content_type
+            ),
             status_code=status.HTTP_206_PARTIAL_CONTENT,
             headers=headers,
         )
@@ -404,7 +426,9 @@ async def download_attachment(
     )
 
 
-@router.delete("/{board_id}/{card_id}/{attachment_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{board_id}/{card_id}/{attachment_id}", status_code=status.HTTP_204_NO_CONTENT
+)
 async def delete_attachment(
     board_id: str,
     card_id: str,
@@ -424,7 +448,14 @@ async def delete_attachment(
             exc, not_found_detail="Card not found in this board"
         )
     except AttachmentNotFoundError as exc:
-        raise RESTAdapterContract.http_error(exc, not_found_detail="Attachment not found")
+        raise RESTAdapterContract.http_error(
+            exc, not_found_detail="Attachment not found"
+        )
+    except CardOperationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_dict(),
+        ) from exc
     except AttachmentStorageError as exc:
         raise _attachment_http_error(
             exc,

@@ -364,6 +364,29 @@ describe('DefaultBoardConfigPanel', () => {
     );
   });
 
+  it('persists the Board-wide Code Evidence Matrix skip in a new default version', async () => {
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+
+    const toggle = await screen.findByRole('switch', {
+      name: 'Skip Code Evidence Matrix coverage',
+    });
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId('dbc-save-template'));
+
+    await waitFor(() => {
+      expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledTimes(1);
+    });
+    expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        settings_payload: expect.objectContaining({
+          skip_code_evidence_coverage_global: true,
+        }),
+      }),
+    );
+  });
+
   it('composes guideline edit authority with lifecycle actions that change exact pins', async () => {
     grant(
       'default_board_config.read',
@@ -663,6 +686,43 @@ describe('DefaultBoardConfigPanel', () => {
         design_system_gate_mode: 'advisory',
       }),
     }));
+  });
+
+  it('converges a retired Off template policy to Advisory when saving any draft', async () => {
+    apiMock.getActiveDefaultBoardConfig.mockResolvedValueOnce({
+      scope: 'global',
+      active: tmpl({
+        id: 'legacy-template',
+        version: 1,
+        settings_payload: {
+          require_task_validation: true,
+          code_traceability: {
+            mode: 'off',
+            minimum_trust: 'corroborated',
+          },
+        },
+      }),
+    });
+
+    render(<DefaultBoardConfigPanel boardId="b1" />);
+
+    expect(
+      await screen.findByLabelText('Code Traceability enforcement mode'),
+    ).toHaveValue('advisory');
+    fireEvent.click(screen.getByRole('switch', { name: 'Require task validation' }));
+    fireEvent.click(screen.getByTestId('dbc-save-template'));
+
+    await waitFor(() => expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledTimes(1));
+    expect(apiMock.createDefaultBoardConfigVersion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        settings_payload: expect.objectContaining({
+          code_traceability: expect.objectContaining({
+            mode: 'advisory',
+            minimum_trust: 'corroborated',
+          }),
+        }),
+      }),
+    );
   });
 
   it('versions the independent reviewer policy in Global Default', async () => {

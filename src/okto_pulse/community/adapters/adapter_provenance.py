@@ -55,9 +55,11 @@ _CROSS_EDITION_CONTRACT_EXPECTATION: tuple[str, ...] = (
     "okto_pulse.core.inbound.guideline_policy_cursor.policy_cursor_codec_from_settings",
     "okto_pulse.core.inbound.guideline_policy_error.guideline_policy_http_status",
     "okto_pulse.core.inbound.guideline_policy_error.project_guideline_policy_error",
+    "okto_pulse.core.inbound.human_validation_cycle_error.project_subject_edit_requires_draft_error",
     "okto_pulse.core.inbound.policy_transition_error.project_policy_transition_rejection",
     "okto_pulse.core.inbound.quality_assessment_error",
     "okto_pulse.core.inbound.ska_contract_error",
+    "okto_pulse.core.inbound.spec_dependency_error",
     "okto_pulse.core.kg.async_bridge",
     "okto_pulse.core.kg.board_rebuild_adapter",
     "okto_pulse.core.kg.board_source_store",
@@ -82,6 +84,7 @@ _CROSS_EDITION_CONTRACT_EXPECTATION: tuple[str, ...] = (
     "okto_pulse.core.kg.orphan_integrity",
     "okto_pulse.core.kg.primitives",
     "okto_pulse.core.kg.quarantine",
+    "okto_pulse.core.kg.recovery_execution",
     "okto_pulse.core.kg.rebuild_audit",
     "okto_pulse.core.kg.rebuild_confirmation",
     "okto_pulse.core.kg.rebuild_deterministic",
@@ -112,7 +115,14 @@ _CROSS_EDITION_CONTRACT_EXPECTATION: tuple[str, ...] = (
     "okto_pulse.core.services.amendment_revision",
     "okto_pulse.core.services.amendment_revision_api",
     "okto_pulse.core.services.analytics_contract",
+    "okto_pulse.core.services.analytics_foundation",
     "okto_pulse.core.services.analytics_service",
+    "okto_pulse.core.services.analytics_workspace",
+    "okto_pulse.core.services.board_kg_analytics",
+    "okto_pulse.core.services.coverage_traceability",
+    "okto_pulse.core.services.delivery_commitment",
+    "okto_pulse.core.services.flow_health",
+    "okto_pulse.core.services.policy_resource_readiness",
     "okto_pulse.core.services.application_agents",
     "okto_pulse.core.services.application_kg",
     "okto_pulse.core.services.application_startup",
@@ -122,6 +132,10 @@ _CROSS_EDITION_CONTRACT_EXPECTATION: tuple[str, ...] = (
     "okto_pulse.core.services.bug_regression_preview",
     "okto_pulse.core.services.cancellation",
     "okto_pulse.core.services.checklist",
+    "okto_pulse.core.services.code_evidence",
+    "okto_pulse.core.services.code_evidence_rebase",
+    "okto_pulse.core.services.code_investigation",
+    "okto_pulse.core.services.code_traceability_gate",
     "okto_pulse.core.services.cognitive_effectiveness_service",
     "okto_pulse.core.services.default_board_config_api",
     "okto_pulse.core.services.default_board_configuration",
@@ -130,23 +144,25 @@ _CROSS_EDITION_CONTRACT_EXPECTATION: tuple[str, ...] = (
     "okto_pulse.core.services.discovery_selector_catalog",
     "okto_pulse.core.services.effective_resource_propagation",
     "okto_pulse.core.services.gate_contracts",
+    "okto_pulse.core.services.governance_observability",
     "okto_pulse.core.services.kg_health_readiness_service",
     "okto_pulse.core.services.knowledge_propagation",
+    "okto_pulse.core.services.implementation_targets",
     "okto_pulse.core.services.quality_assessment",
     "okto_pulse.core.services.quality_assessment_legacy_import",
     "okto_pulse.core.services.quality_assessment_lifecycle",
     "okto_pulse.core.services.quality_projection_currentness",
     "okto_pulse.core.services.reference_resolution",
-    "okto_pulse.core.services.requirement_lint_assessment",
-    "okto_pulse.core.services.requirement_lint_writer",
     "okto_pulse.core.services.research_decision_ledger",
     "okto_pulse.core.services.resource_gate_contracts",
     "okto_pulse.core.services.resource_gate",
     "okto_pulse.core.services.resource_lineage",
     "okto_pulse.core.services.ska_observability",
     "okto_pulse.core.services.spec_entity_canonicalization",
+    "okto_pulse.core.services.spec_readiness",
     "okto_pulse.core.services.spec_structured_entities",
     "okto_pulse.core.services.test_scenario_lifecycle",
+    "okto_pulse.core.services.traceability",
     "okto_pulse.core.telemetry",
 )
 
@@ -164,12 +180,9 @@ _EXPECTED_CORE_CONTRACT_SURFACES = tuple(
     for item in _CROSS_EDITION_CONTRACT_EXPECTATION
     if item.startswith("okto_pulse.core.")
 )
-if (
-    len(_EXPECTED_CORE_CONTRACT_SURFACES)
-    != len(CORE_PUBLIC_CORE_CONTRACT_SURFACES)
-    or set(_EXPECTED_CORE_CONTRACT_SURFACES)
-    != set(CORE_PUBLIC_CORE_CONTRACT_SURFACES)
-):
+if len(_EXPECTED_CORE_CONTRACT_SURFACES) != len(
+    CORE_PUBLIC_CORE_CONTRACT_SURFACES
+) or set(_EXPECTED_CORE_CONTRACT_SURFACES) != set(CORE_PUBLIC_CORE_CONTRACT_SURFACES):
     raise RuntimeError(
         "public_core_contract_manifest_mismatch: Community was built against a "
         "different Core public-contract manifest "
@@ -193,19 +206,14 @@ PRIVATE_CORE_IMPLEMENTATION_SURFACES: tuple[str, ...] = (
     "okto_pulse.core.repositories.sqlalchemy",
     "okto_pulse.core.services.main",
     "okto_pulse.core.services.settings_service",
-    "okto_pulse.core.services.traceability",
 )
 
 
-COMMUNITY_ADAPTER_PROVENANCE_REGISTRY: tuple[
-    AdapterProvenanceRegistration, ...
-] = (
+COMMUNITY_ADAPTER_PROVENANCE_REGISTRY: tuple[AdapterProvenanceRegistration, ...] = (
     AdapterProvenanceRegistration(
         adapter_key="community_sqlalchemy_uow",
         owner="okto-pulse-community/relational",
-        implementation_module=(
-            "okto_pulse.community.adapters.sqlalchemy_unit_of_work"
-        ),
+        implementation_module=("okto_pulse.community.adapters.sqlalchemy_unit_of_work"),
         implementation_symbol="CommunityUnitOfWork",
         port_module="okto_pulse.core.repositories.interfaces.unit_of_work",
         port_symbol="PulseUnitOfWork",
@@ -250,7 +258,11 @@ COMMUNITY_ADAPTER_PROVENANCE_REGISTRY: tuple[
 def audit_community_adapter_provenance(
     source_root: str | Path | None = None,
 ) -> dict[str, object]:
-    root = Path(source_root) if source_root is not None else Path(__file__).resolve().parents[4]
+    root = (
+        Path(source_root)
+        if source_root is not None
+        else Path(__file__).resolve().parents[4]
+    )
     return audit_adapter_provenance(
         root,
         public_core_surfaces=PUBLIC_CORE_CONTRACT_SURFACES,

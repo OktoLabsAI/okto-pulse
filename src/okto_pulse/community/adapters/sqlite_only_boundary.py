@@ -9,6 +9,21 @@ FORBIDDEN_SERVER_DATABASE_TOKENS: tuple[str, ...] = (
     "post" + "gres",
     "post" + "gresql",
     "async" + "pg",
+    "psyco" + "pg",
+    "pg" + "8000",
+)
+
+# Dialect-aware persistence seams may name a server dialect while satisfying
+# the shared Core/SaaS contract.  They must never acquire the capability to
+# select a server URL, construct an engine, or import a server driver.
+FORBIDDEN_SERVER_RUNTIME_ACTIVATION_TOKENS: tuple[str, ...] = (
+    ("post" + "gresql") + "://",
+    ("post" + "gresql") + "+",
+    "async" + "pg",
+    "psyco" + "pg",
+    "pg" + "8000",
+    "create_" + "async_engine",
+    "create_" + "engine",
 )
 
 # Community's executable database factory remains SQLite-only.  These adapter
@@ -18,9 +33,22 @@ FORBIDDEN_SERVER_DATABASE_TOKENS: tuple[str, ...] = (
 GOVERNED_PORTABLE_RELATIONAL_FILES: frozenset[str] = frozenset(
     {
         "src/okto_pulse/community/adapters/relational_schema_steps.py",
+        "src/okto_pulse/community/adapters/relational_schema_migrator.py",
+        "src/okto_pulse/community/adapters/semantic_assessment_v2_capabilities.py",
+        "src/okto_pulse/community/adapters/sqlalchemy_code_traceability.py",
         "src/okto_pulse/community/adapters/sqlalchemy_guideline_policy.py",
         "src/okto_pulse/community/adapters/sqlalchemy_models.py",
         "src/okto_pulse/community/adapters/sqlalchemy_policy_subject_versioning.py",
+    }
+)
+
+# Unlike the DDL/model modules above, these are executable persistence seams.
+# Their dialect vocabulary is therefore audited with a narrower but stronger
+# capability boundary instead of being excluded wholesale from inspection.
+GOVERNED_DIALECT_AWARE_RUNTIME_FILES: frozenset[str] = frozenset(
+    {
+        "src/okto_pulse/community/adapters/sqlalchemy_spec_dependency.py",
+        "src/okto_pulse/community/adapters/sqlalchemy_unit_of_work.py",
     }
 )
 
@@ -44,18 +72,26 @@ def audit_sqlite_only_community(source_root: Path) -> dict[str, object]:
         scanned.append(rel)
         if rel in GOVERNED_PORTABLE_RELATIONAL_FILES:
             continue
+        tokens = (
+            FORBIDDEN_SERVER_RUNTIME_ACTIVATION_TOKENS
+            if rel in GOVERNED_DIALECT_AWARE_RUNTIME_FILES
+            else FORBIDDEN_SERVER_DATABASE_TOKENS
+        )
         for line_number, line in enumerate(
             path.read_text(encoding="utf-8").splitlines(),
             start=1,
         ):
             lowered = line.casefold()
-            for token in FORBIDDEN_SERVER_DATABASE_TOKENS:
+            for token in tokens:
                 if token in lowered:
                     findings.append(SqliteOnlyFinding(rel, line_number, token))
     return {
         "ok": not findings,
         "scanned_files": scanned,
         "portable_relational_files": sorted(GOVERNED_PORTABLE_RELATIONAL_FILES),
+        "dialect_aware_runtime_files": sorted(
+            GOVERNED_DIALECT_AWARE_RUNTIME_FILES
+        ),
         "findings": [asdict(finding) for finding in findings],
         "finding_count": len(findings),
     }
@@ -63,6 +99,8 @@ def audit_sqlite_only_community(source_root: Path) -> dict[str, object]:
 
 __all__ = [
     "FORBIDDEN_SERVER_DATABASE_TOKENS",
+    "FORBIDDEN_SERVER_RUNTIME_ACTIVATION_TOKENS",
+    "GOVERNED_DIALECT_AWARE_RUNTIME_FILES",
     "GOVERNED_PORTABLE_RELATIONAL_FILES",
     "SqliteOnlyFinding",
     "audit_sqlite_only_community",

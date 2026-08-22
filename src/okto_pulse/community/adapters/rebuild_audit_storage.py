@@ -6,7 +6,9 @@ import json
 import os
 import secrets
 import shutil
+import stat
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -120,10 +122,11 @@ def _fsync_directory(path: Path) -> None:
         return
 
 
-def _replace_write_through(source: Path, destination: Path) -> None:
-    if os.name != "nt":
-        os.replace(source, destination)
-        return
+_WINDOWS_REPLACE_RETRYABLE_ERROR_CODES = frozenset({5, 32})
+_WINDOWS_REPLACE_RETRY_DELAYS_SECONDS = (0.05, 0.10)
+
+
+def _windows_replace_write_through_once(source: Path, destination: Path) -> None:
     import ctypes
     from ctypes import wintypes
 
@@ -142,6 +145,23 @@ def _replace_write_through(source: Path, destination: Path) -> None:
         movefile_replace_existing | movefile_write_through,
     ):
         raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _replace_write_through(source: Path, destination: Path) -> None:
+    if os.name != "nt":
+        os.replace(source, destination)
+        return
+    for attempt in range(len(_WINDOWS_REPLACE_RETRY_DELAYS_SECONDS) + 1):
+        try:
+            _windows_replace_write_through_once(source, destination)
+            return
+        except OSError as exc:
+            winerror = getattr(exc, "winerror", None)
+            if winerror not in _WINDOWS_REPLACE_RETRYABLE_ERROR_CODES or attempt >= len(
+                _WINDOWS_REPLACE_RETRY_DELAYS_SECONDS
+            ):
+                raise
+            time.sleep(_WINDOWS_REPLACE_RETRY_DELAYS_SECONDS[attempt])
 
 
 def _payload_mentions_board(payload: object, board_id: str) -> bool:
@@ -197,6 +217,8 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             candidate = audit_dir / "cognitive_pending" / key.board_id
         elif key.namespace == "confirmation_audit":
             candidate = audit_dir / "confirmation" / key.board_id
+        elif key.namespace == "rebuild_confirmation_receipt":
+            candidate = audit_dir / "confirmation_receipts" / key.board_id
         elif key.namespace == "run_audit":
             candidate = audit_dir
         elif key.namespace == "generation_current":
@@ -381,6 +403,20 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
 
         with self._exclusive():
             direct_targets = self._board_partition_targets(safe_board_id)
+            receipt_partition = contained_lexical_path(
+                self._base_dir,
+                self._base_dir
+                / "rebuild"
+                / "audit"
+                / "confirmation_receipts"
+                / safe_board_id,
+            )
+            receipt_children = self._preflight_confirmation_receipt_partition(
+                receipt_partition
+            )
+            regular_direct_targets = [
+                target for target in direct_targets if target != receipt_partition
+            ]
             file_targets, tree_targets = self._shared_board_artifact_targets(
                 safe_board_id
             )
@@ -389,7 +425,7 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             directories_removed = 0
             removed_targets: set[Path] = set()
             all_targets = [
-                *direct_targets,
+                *regular_direct_targets,
                 *tree_targets,
                 *file_targets,
             ]
@@ -414,8 +450,26 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
                     if target.parent.exists():
                         _fsync_directory(target.parent)
 
+            # ``active.json`` is the process-crash sentinel for the new receipt
+            # namespace. Every other board-scoped target is absent before this
+            # phase; histories are then removed and synced before active is
+            # unlinked last. A process death at any earlier cut therefore
+            # leaves active behind. Directory flush is best-effort on Windows,
+            # so this ordering deliberately makes no power-loss durability
+            # claim there.
+            receipt_files, receipt_directories = (
+                self._purge_confirmation_receipt_partition_last(
+                    receipt_partition,
+                    receipt_children,
+                )
+            )
+            files_removed += receipt_files
+            directories_removed += receipt_directories
+
             remaining_selected = [
-                target for target in set(all_targets) if self._entry_exists(target)
+                target
+                for target in {*all_targets, receipt_partition}
+                if self._entry_exists(target)
             ]
             remaining_direct = [
                 target for target in direct_targets if self._entry_exists(target)
@@ -444,6 +498,110 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             ),
         }
 
+    def _preflight_confirmation_receipt_partition(
+        self,
+        receipt_partition: Path,
+    ) -> tuple[Path, ...] | None:
+        """Validate and snapshot the process-crash receipt sentinel tree."""
+
+        try:
+            root_stat = receipt_partition.lstat()
+        except FileNotFoundError:
+            return None
+        try:
+            resolved_root = contained_resolved_path(
+                self._base_dir,
+                receipt_partition,
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                "rebuild confirmation receipt partition escapes storage root: "
+                f"{receipt_partition}"
+            ) from exc
+        if resolved_root != receipt_partition or not stat.S_ISDIR(root_stat.st_mode):
+            raise RuntimeError(
+                "rebuild confirmation receipt partition is not a plain directory: "
+                f"{receipt_partition}"
+            )
+
+        children: list[Path] = []
+        for raw_child in sorted(
+            receipt_partition.iterdir(), key=lambda path: path.name
+        ):
+            child = contained_lexical_path(receipt_partition, raw_child)
+            try:
+                child_stat = child.lstat()
+                resolved_child = contained_resolved_path(self._base_dir, child)
+            except (FileNotFoundError, ValueError) as exc:
+                raise RuntimeError(
+                    f"rebuild confirmation receipt child is unverifiable: {child}"
+                ) from exc
+            if (
+                resolved_child != child
+                or not stat.S_ISREG(child_stat.st_mode)
+                or child.suffix != ".json"
+                or child_stat.st_nlink != 1
+            ):
+                raise RuntimeError(
+                    "rebuild confirmation receipt child is not a private regular JSON "
+                    f"file: {child}"
+                )
+            children.append(child)
+        return tuple(children)
+
+    def _purge_confirmation_receipt_partition_last(
+        self,
+        receipt_partition: Path,
+        expected_children: tuple[Path, ...] | None,
+    ) -> tuple[int, int]:
+        """Delete receipt histories before the active crash sentinel."""
+
+        current_children = self._preflight_confirmation_receipt_partition(
+            receipt_partition
+        )
+        if current_children != expected_children:
+            raise RuntimeError(
+                "rebuild confirmation receipt partition changed after preflight"
+            )
+        if current_children is None:
+            return 0, 0
+
+        active_path = contained_lexical_path(
+            receipt_partition,
+            receipt_partition / "active.json",
+        )
+        histories = sorted(
+            (child for child in current_children if child != active_path),
+            key=lambda value: value.name,
+        )
+        files_removed = 0
+        directories_removed = 0
+        for history in histories:
+            removed_files, removed_directories = remove_contained_tree(
+                history,
+                base_dir=self._base_dir,
+            )
+            files_removed += removed_files
+            directories_removed += removed_directories
+            _fsync_directory(receipt_partition)
+
+        removed_files, removed_directories = remove_contained_tree(
+            active_path,
+            base_dir=self._base_dir,
+        )
+        files_removed += removed_files
+        directories_removed += removed_directories
+        _fsync_directory(receipt_partition)
+
+        try:
+            receipt_partition.rmdir()
+        except FileNotFoundError:
+            pass
+        else:
+            directories_removed += 1
+            _fsync_directory(receipt_partition.parent)
+        return files_removed, directories_removed
+
     @staticmethod
     def _entry_exists(path: Path) -> bool:
         try:
@@ -458,6 +616,7 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             base / "rebuild" / "audit" / "events" / board_id,
             base / "rebuild" / "audit" / "cognitive_pending" / board_id,
             base / "rebuild" / "audit" / "confirmation" / board_id,
+            base / "rebuild" / "audit" / "confirmation_receipts" / board_id,
             base / "rebuild" / "generations" / board_id,
             base / "candidate_decisions" / board_id,
             base / "rebuild" / "discovery_reindex" / board_id,
@@ -746,6 +905,48 @@ class CommunityFileSystemRebuildAuditArtifactStore(RebuildAuditArtifactStore):
             # Receipt first: after a crash, proof of authorization survives even
             # if cleanup of the now-burned token has not yet completed.
             self._write_json_atomic_unlocked(receipt_key, expected_receipt)
+            source_path.unlink()
+            _fsync_directory(source_path.parent)
+            return "consumed"
+
+    def consume_json_replacing_terminal_receipt(
+        self,
+        *,
+        source_key: RebuildAuditKey,
+        expected_source: Mapping[str, Any],
+        receipt_key: RebuildAuditKey,
+        expected_terminal_receipt: Mapping[str, Any],
+        receipt_payload: Mapping[str, Any],
+    ) -> AtomicConsumeOutcome:
+        with self._exclusive():
+            source_path = self._path(source_key)
+            receipt_path = self._path(receipt_key)
+            self._cleanup_orphan_temps(source_path)
+            self._cleanup_orphan_temps(receipt_path)
+            source = self._read_path_unlocked(source_path)
+            terminal_receipt = self._read_path_unlocked(receipt_path)
+            expected = dict(expected_source)
+            expected_terminal = dict(expected_terminal_receipt)
+            replacement = dict(receipt_payload)
+            # A process may die after the atomic replacement rename but before
+            # unlinking the token. Re-entering with the exact same CAS inputs
+            # completes that cut instead of orphaning a live token behind a
+            # receipt-conflict result.
+            if terminal_receipt == replacement:
+                if source is None:
+                    return "receipt_exists"
+                if source != expected:
+                    return "source_mismatch"
+                source_path.unlink()
+                _fsync_directory(source_path.parent)
+                return "consumed"
+            if terminal_receipt != expected_terminal:
+                return "receipt_conflict"
+            if source is None:
+                return "source_missing"
+            if source != expected:
+                return "source_mismatch"
+            self._write_json_atomic_unlocked(receipt_key, replacement)
             source_path.unlink()
             _fsync_directory(source_path.parent)
             return "consumed"

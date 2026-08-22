@@ -17,6 +17,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ChecklistExecutionRow,
     ChecklistItemResultRow,
     ChecklistReceiptRow,
+    ChecklistValidationBindingSnapshotRow,
     DomainEventRow,
     IdeationHistory,
     IdeationQAItem,
@@ -36,6 +37,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     QualityProposedQuestionRow,
     RefinementHistory,
     RefinementQAItem,
+    RequirementLintValidationSnapshotRow,
     ResearchDecisionDerivationRow,
     ResearchDecisionEntryRow,
     ResearchDecisionHeadRow,
@@ -43,6 +45,8 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ResearchDecisionIdempotencyRow,
     ResearchDecisionOutboxRow,
     ResearchDecisionSnapshotRow,
+    SemanticGuidelineValidationScopeRow,
+    Spec,
     SpecHistory,
     SpecQAItem,
 )
@@ -51,6 +55,11 @@ from okto_pulse.core.domain.quality_assessment import (
     AssessmentSubjectRef,
     AssessmentSubjectType,
 )
+from okto_pulse.core.domain.checklist import (
+    ChecklistPhase,
+    ChecklistTargetType,
+)
+from okto_pulse.core.domain.guideline_policy import PolicyEntityType
 from okto_pulse.core.domain.quality_assessment_lifecycle import (
     AssessmentHeadStrategy,
     AssessmentLifecycleHead,
@@ -168,6 +177,7 @@ class CommunitySqlAlchemyQualityAssessmentLifecycle:
                         subject_type=AssessmentSubjectType(row.subject_type),
                         subject_id=row.subject_id,
                         subject_version=row.subject_version,
+                        subject_edition=row.subject_edition,
                     ),
                     assessment_kind=AssessmentKind(row.assessment_kind),
                     input_digest=row.input_digest,
@@ -269,6 +279,72 @@ class CommunitySqlAlchemyQualityAssessmentLifecycle:
                         )
                     )
 
+        # A successful Spec reopen starts a new human validation edition.
+        # Remove only the mutable current association in the same UoW; the
+        # execution, receipt and item-result rows remain immutable history.
+        if plan.clear_checklist_execution_head:
+            await self._session.execute(
+                delete(ChecklistExecutionHeadRow).where(
+                    ChecklistExecutionHeadRow.board_id == subject.board_id,
+                    ChecklistExecutionHeadRow.spec_id == subject.subject_id,
+                    ChecklistExecutionHeadRow.phase == "spec_validation",
+                )
+            )
+
+        # Freeze checklist governance, including an explicit synthetic OFF,
+        # when a Spec edition first enters its validation stage. The same row
+        # is reused by every read/write for that edition.
+        if (
+            subject.subject_type is AssessmentSubjectType.SPEC
+            and transition.after.status == "approved"
+        ):
+            from okto_pulse.community.adapters.sqlalchemy_checklist import (
+                CommunitySqlAlchemyChecklist,
+            )
+
+            await CommunitySqlAlchemyChecklist(
+                self._session
+            ).get_validation_binding(
+                board_id=subject.board_id,
+                spec_id=subject.subject_id,
+                spec_edition=int(subject.subject_edition),
+                target_type=ChecklistTargetType.SPEC,
+                phase=ChecklistPhase.SPEC_VALIDATION,
+            )
+            from okto_pulse.community.adapters.sqlalchemy_quality_assessment import (
+                freeze_requirement_lint_validation_snapshot,
+            )
+
+            spec_row = await self._session.get(Spec, subject.subject_id)
+            if spec_row is None:
+                raise AssessmentLifecycleCasConflict(
+                    "assessment_lifecycle_spec_missing"
+                )
+            await freeze_requirement_lint_validation_snapshot(
+                self._session,
+                spec=spec_row,
+            )
+
+        validation_status = {
+            AssessmentSubjectType.IDEATION: "evaluating",
+            AssessmentSubjectType.REFINEMENT: "approved",
+            AssessmentSubjectType.SPEC: "approved",
+        }[subject.subject_type]
+        if transition.after.status == validation_status:
+            from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment import (
+                CommunitySqlAlchemySemanticGuidelineAssessment,
+            )
+
+            await CommunitySqlAlchemySemanticGuidelineAssessment(
+                self._session
+            ).freeze_validation_policy_scope(
+                board_id=subject.board_id,
+                entity_type=PolicyEntityType(subject.subject_type.value),
+                subject_id=subject.subject_id,
+                subject_edition=int(subject.subject_edition),
+                lock=True,
+            )
+
         event_id = f"qal_evt_{transition.transition_digest[:24]}"
         history_id = f"qal_hst_{transition.transition_digest[:24]}"
         payload = {
@@ -279,10 +355,15 @@ class CommunitySqlAlchemyQualityAssessmentLifecycle:
             "subject_type": subject.subject_type.value,
             "subject_id": subject.subject_id,
             "before_version": transition.before.subject.subject_version,
+            "before_edition": transition.before.subject.subject_edition,
             "after_version": transition.after.subject.subject_version,
+            "after_edition": transition.after.subject.subject_edition,
             "head_strategy": plan.head_strategy.value,
             "projection_action": plan.projection_action.value,
             "kg_action": plan.kg_action.value,
+            "clear_checklist_execution_head": (
+                plan.clear_checklist_execution_head
+            ),
             "head_rebuilds": [
                 {
                     "assessment_kind": item.assessment_kind.value,
@@ -359,9 +440,11 @@ class CommunitySqlAlchemyQualityAssessmentLifecycle:
                 subject_type=subject.subject_type.value,
                 subject_id=subject.subject_id,
                 before_version=transition.before.subject.subject_version,
+                before_edition=transition.before.subject.subject_edition,
                 before_status=transition.before.status,
                 before_archived=transition.before.archived,
                 after_version=transition.after.subject.subject_version,
+                after_edition=transition.after.subject.subject_edition,
                 after_status=transition.after.status,
                 after_archived=transition.after.archived,
                 head_rebuilds_json=payload["head_rebuilds"],
@@ -639,6 +722,54 @@ class CommunitySqlAlchemyQualityAssessmentLifecycle:
             await self._session.execute(
                 delete(QualityAssessmentHeadRow).where(
                     *self._scope_filter(QualityAssessmentHeadRow, plan)
+                )
+            )
+            policy_scope_filters = [
+                SemanticGuidelineValidationScopeRow.board_id
+                == target.board_id
+            ]
+            checklist_scope_filters = [
+                ChecklistValidationBindingSnapshotRow.board_id
+                == target.board_id
+            ]
+            lint_scope_filters = [
+                RequirementLintValidationSnapshotRow.board_id
+                == target.board_id
+            ]
+            if target.scope is AssessmentPurgeScope.SUBJECT:
+                policy_scope_filters.extend(
+                    (
+                        SemanticGuidelineValidationScopeRow.subject_type
+                        == target.subject_type.value,
+                        SemanticGuidelineValidationScopeRow.subject_id
+                        == target.subject_id,
+                    )
+                )
+                if target.subject_type is AssessmentSubjectType.SPEC:
+                    checklist_scope_filters.append(
+                        ChecklistValidationBindingSnapshotRow.spec_id
+                        == target.subject_id
+                    )
+                    lint_scope_filters.append(
+                        RequirementLintValidationSnapshotRow.spec_id
+                        == target.subject_id
+                    )
+                else:
+                    checklist_scope_filters.append(False)
+                    lint_scope_filters.append(False)
+            await self._session.execute(
+                delete(SemanticGuidelineValidationScopeRow).where(
+                    *policy_scope_filters
+                )
+            )
+            await self._session.execute(
+                delete(ChecklistValidationBindingSnapshotRow).where(
+                    *checklist_scope_filters
+                )
+            )
+            await self._session.execute(
+                delete(RequirementLintValidationSnapshotRow).where(
+                    *lint_scope_filters
                 )
             )
         elif resource is AssessmentPurgeResource.QUALITY_FINDING_QA_LINKS:

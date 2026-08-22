@@ -73,6 +73,8 @@ _ENTITY_CLASSES = {
     "refinement_qa_item": models.RefinementQAItem,
     "refinement_snapshot": models.RefinementSnapshot,
     "spec": models.Spec,
+    "spec_dependency": models.SpecDependency,
+    "spec_dependency_operation": models.SpecDependencyOperation,
     "spec_history": models.SpecHistory,
     "spec_knowledge_base": models.SpecKnowledgeBase,
     "spec_qa_item": models.SpecQAItem,
@@ -196,6 +198,26 @@ def _realm_predicate(entity: str, scope: RealmScope):
 def _predicate(model: Any, item: ApplicationFilter):
     # Relational predicates (FR2): virtual fields resolved SERVER-SIDE as
     # correlated EXISTS — never loaded collections filtered post-fetch.
+    if model is models.Card and item.field == "conclusion_actor_id":
+        if item.operator != "eq" or not str(item.value or "").strip():
+            raise ValueError(f"unsupported_application_operator:{item.operator}")
+        entries = func.json_each(
+            func.coalesce(models.Card.conclusions, "[]")
+        ).table_valued("key", "value", joins_implicitly=True)
+        actor_id = func.coalesce(
+            func.json_extract(entries.c.value, "$.author_id"),
+            func.json_extract(entries.c.value, "$.actor_id"),
+            func.json_extract(entries.c.value, "$.author_agent_id"),
+            func.json_extract(entries.c.value, "$.author"),
+            func.json_extract(entries.c.value, "$.created_by"),
+        )
+        return (
+            select(1)
+            .select_from(entries)
+            .where(actor_id == str(item.value))
+            .correlate(models.Card)
+            .exists()
+        )
     if model is models.Spec and item.field in {
         "linked_to_cards",
         "linked_to_active_cards",
@@ -412,15 +434,29 @@ def _projection_expression(model: Any, field_name: str) -> Any:
             .scalar_subquery()
             .label(field_name)
         )
-    if model is models.Card and field_name == "open_qa_count":
+    open_qa_binding = {
+        models.Card: (models.QAItem, models.QAItem.card_id),
+        models.Ideation: (
+            models.IdeationQAItem,
+            models.IdeationQAItem.ideation_id,
+        ),
+        models.Refinement: (
+            models.RefinementQAItem,
+            models.RefinementQAItem.refinement_id,
+        ),
+        models.Spec: (models.SpecQAItem, models.SpecQAItem.spec_id),
+        models.Sprint: (models.SprintQAItem, models.SprintQAItem.sprint_id),
+    }.get(model)
+    if field_name == "open_qa_count" and open_qa_binding is not None:
+        qa_model, parent_id = open_qa_binding
         return (
             select(func.count())
-            .select_from(models.QAItem)
+            .select_from(qa_model)
             .where(
-                models.QAItem.card_id == models.Card.id,
-                models.QAItem.answered_at.is_(None),
+                parent_id == model.id,
+                qa_model.answered_at.is_(None),
             )
-            .correlate(models.Card)
+            .correlate(model)
             .scalar_subquery()
             .label(field_name)
         )
@@ -434,6 +470,14 @@ def _projection_expression(model: Any, field_name: str) -> Any:
             else models.Card.conclusions
         )
         return func.json_array_length(func.coalesce(source, "[]")).label(field_name)
+    if model is models.Card and field_name.startswith("recent_validation_"):
+        raw_index = field_name.removeprefix("recent_validation_")
+        if raw_index not in {"1", "2", "3", "4", "5"}:
+            raise ValueError(f"unsupported_application_projection:{field_name}")
+        return func.json_extract(
+            func.coalesce(models.Card.validations, "[]"),
+            f"$[#-{raw_index}]",
+        ).label(field_name)
     if model is models.Card and field_name in {
         "validations_fail_count",
         "validations_has_pass",
@@ -762,9 +806,7 @@ class CommunitySqlAlchemyApplicationPersistence:
             return resolve_effective_permissions(None, None, None)
         permission_flags, legacy_permissions, preset_id, board_overrides = row
         agent_flags = (
-            copy.deepcopy(permission_flags)
-            if permission_flags is not None
-            else None
+            copy.deepcopy(permission_flags) if permission_flags is not None else None
         )
         owner_review_required, review_reason = direct_permission_review(
             agent_flags,

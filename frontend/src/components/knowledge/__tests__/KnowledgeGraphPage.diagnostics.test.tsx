@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as kgApi from '@/services/kg-api';
@@ -6,6 +6,7 @@ import * as kgHealthApi from '@/services/kg-health-api';
 import { GraphVisibilityMismatchState, KnowledgeGraphPage } from '../KnowledgeGraphPage';
 import type { GraphMetadata } from '@/services/kg-api';
 import type { KGHealth } from '@/services/kg-health-api';
+import type { KGEdge, KGNode } from '@/types/knowledge-graph';
 
 const permissionHas = vi.hoisted(() => vi.fn((_flag: string) => true));
 vi.mock('@/hooks/usePermissions', () => ({
@@ -13,14 +14,26 @@ vi.mock('@/hooks/usePermissions', () => ({
 }));
 
 vi.mock('../GraphCanvas', () => ({
-  GraphCanvas: ({ nodes }: { nodes: unknown[] }) => (
-    <div data-testid="mock-graph-canvas">canvas nodes: {nodes.length}</div>
+  GraphCanvas: ({ nodes, edges }: { nodes: KGNode[]; edges: KGEdge[] }) => (
+    <div data-testid="mock-graph-canvas">
+      canvas nodes: {nodes.length}; edges: {edges.length}; titles: {nodes.map((node) => node.title).join('|')}
+    </div>
   ),
 }));
 
 vi.mock('../GraphControlsPanel', () => ({
-  GraphControlsPanel: ({ subView }: { subView: string }) => (
-    <div data-testid="mock-graph-controls">controls: {subView}</div>
+  GraphControlsPanel: ({
+    subView,
+    nodeCount,
+    visibleNodeCount,
+  }: {
+    subView: string;
+    nodeCount: number;
+    visibleNodeCount: number;
+  }) => (
+    <div data-testid="mock-graph-controls">
+      controls: {subView}; loaded: {nodeCount}; visible: {visibleNodeCount}
+    </div>
   ),
 }));
 
@@ -110,6 +123,7 @@ const metadata: GraphMetadata = {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  permissionHas.mockImplementation(() => true);
 });
 
 describe('GraphVisibilityMismatchState', () => {
@@ -165,5 +179,70 @@ describe('KnowledgeGraphPage — historical completion release', () => {
     expect(await screen.findByTestId('mock-graph-canvas')).toHaveTextContent('canvas nodes: 0');
     expect(screen.getByTestId('mock-graph-controls')).toHaveTextContent('controls: graph');
     expect(screen.queryByTestId('kg-empty-yet')).not.toBeInTheDocument();
+  });
+
+  it('removes Code Traceability nodes, incident edges and counts after permission loss', async () => {
+    const physicalNode: KGNode = {
+      id: 'physical-1',
+      title: 'Visible decision',
+      content: 'Visible content',
+      source_confidence: 0.9,
+      relevance_score: 0.8,
+      node_type: 'Decision',
+    };
+    const traceabilityNode: KGNode = {
+      id: 'traceability-1',
+      title: 'Secret implementation target',
+      content: 'Agent-submitted target content',
+      source_confidence: 0.9,
+      relevance_score: 0.8,
+      node_type: 'Entity',
+      kind_of: 'implementation_target',
+    };
+    vi.spyOn(kgApi, 'getSubgraph').mockResolvedValue({
+      nodes: [physicalNode, traceabilityNode],
+      edges: [{
+        id: 'supports-secret',
+        source: 'physical-1',
+        target: 'traceability-1',
+        edge_type: 'supports',
+        confidence: 0.9,
+      }],
+      metadata: { edge_read_status: 'ok' },
+      next_cursor: null,
+    });
+    vi.spyOn(kgApi, 'getHistoricalProgress').mockResolvedValue({
+      enabled: true,
+      status: 'completed',
+      total: 2,
+      progress: 2,
+      pending: 0,
+      claimed: 0,
+      paused: 0,
+      failed: 0,
+    });
+    vi.spyOn(kgHealthApi, 'getKGHealth').mockResolvedValue({ ...health, total_nodes: 2 });
+    vi.spyOn(kgApi, 'getStats').mockResolvedValue({
+      schema_version: '1.0',
+      node_counts_by_type: { Decision: 1, Entity: 1 },
+      edge_counts_by_type: { supports: 1 },
+      avg_confidence: 0.9,
+      pending_queue_count: 0,
+    });
+
+    const { rerender } = render(<KnowledgeGraphPage boardId="board-123" />);
+    expect(await screen.findByTestId('mock-graph-canvas')).toHaveTextContent('canvas nodes: 2; edges: 1');
+    expect(screen.getByTestId('mock-graph-canvas')).toHaveTextContent('Secret implementation target');
+
+    permissionHas.mockImplementation(
+      (flag: string) => !flag.startsWith('code_traceability.'),
+    );
+    rerender(<KnowledgeGraphPage boardId="board-123" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-graph-canvas')).toHaveTextContent('canvas nodes: 1; edges: 0');
+    });
+    expect(screen.getByTestId('mock-graph-canvas')).not.toHaveTextContent('Secret implementation target');
+    expect(screen.getByTestId('mock-graph-controls')).toHaveTextContent('loaded: 1; visible: 1');
   });
 });

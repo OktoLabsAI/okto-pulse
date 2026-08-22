@@ -44,6 +44,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Ideation,
     IdeationKnowledgeBase,
     IdeationQAItem,
+    Refinement,
     SemanticGuidelineBindingConfigurationRow,
     SemanticGuidelineAssessmentReceiptRow,
     SemanticGuidelineFindingRow,
@@ -55,6 +56,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     SemanticGuidelineWaiverRow,
     SemanticSubjectVersionEventRow,
     SemanticSubjectVersionRow,
+    Spec,
 )
 from okto_pulse.community.adapters.semantic_guideline_kg_events import (
     SEMANTIC_GUIDELINE_PROJECTION_HANDLER,
@@ -142,6 +144,7 @@ from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
 from okto_pulse.core.ports.guideline_policy import (
     GuidelinePolicyCasConflict,
     GuidelinePolicyDigestConflict,
+    GuidelinePolicyEditionConflict,
     GuidelinePolicyHeadConflict,
     GuidelinePolicyInvalidCursor,
     GuidelinePolicyPersistencePort,
@@ -1094,6 +1097,7 @@ async def _seed_semantic_authority(
     session: AsyncSession,
     *,
     metric_count: int = 2,
+    entity_type: PolicyEntityType = PolicyEntityType.IDEATION,
 ) -> tuple[
     str,
     str,
@@ -1101,7 +1105,7 @@ async def _seed_semantic_authority(
     BoardGuidelineBinding,
 ]:
     board_id = _id()
-    ideation_id = _id()
+    subject_id = _id()
     guideline_id = _id()
     revision_id = _id()
     binding_id = _id()
@@ -1113,7 +1117,7 @@ async def _seed_semantic_authority(
             title=f"Metric {index}",
             description=f"Semantic dimension {index}.",
             evaluation_rubric="Score the authored artifact from 0 to 100.",
-            target_entity_types=(PolicyEntityType.IDEATION,),
+            target_entity_types=(entity_type,),
             direction=GuidelineMetricDirection.MINIMUM,
             default_threshold=70,
         )
@@ -1176,19 +1180,65 @@ async def _seed_semantic_authority(
         ]
     )
     await session.flush()
-    session.add(
-        Ideation(
-            id=ideation_id,
+    if entity_type is PolicyEntityType.IDEATION:
+        subject = Ideation(
+            id=subject_id,
             board_id=board_id,
             title="Ports and adapters",
             description="Separate business capabilities from infrastructure.",
             problem_statement="Coupling makes change expensive.",
             proposed_approach="Use explicit ports.",
-            status="draft",
+            # Human policy assessment is admitted only in the lifecycle's
+            # validation stage.
+            status="evaluating",
+            edition=1,
             version=1,
             created_by="artifact-author",
         )
-    )
+        session.add(subject)
+    elif entity_type is PolicyEntityType.REFINEMENT:
+        parent_ideation_id = _id()
+        session.add(
+            Ideation(
+                id=parent_ideation_id,
+                board_id=board_id,
+                title="Parent ideation",
+                status="evaluating",
+                edition=1,
+                version=1,
+                created_by="artifact-author",
+            )
+        )
+        session.add(
+            Refinement(
+                id=subject_id,
+                ideation_id=parent_ideation_id,
+                board_id=board_id,
+                title="Boundary refinement",
+                description="Resolve the application boundary.",
+                analysis="The use case owns orchestration.",
+                status="approved",
+                edition=1,
+                version=1,
+                created_by="artifact-author",
+            )
+        )
+    elif entity_type is PolicyEntityType.SPEC:
+        session.add(
+            Spec(
+                id=subject_id,
+                board_id=board_id,
+                title="Boundary specification",
+                description="Specify the application boundary.",
+                context="The use case owns orchestration.",
+                status="approved",
+                edition=1,
+                version=1,
+                created_by="artifact-author",
+            )
+        )
+    else:  # pragma: no cover - this helper only seeds edition-capable subjects
+        raise AssertionError(f"unsupported edition subject: {entity_type.value}")
     session.add(
         GuidelineRevisionRow(
             revision_id=revision_id,
@@ -1265,7 +1315,7 @@ async def _seed_semantic_authority(
         )
     )
     await session.flush()
-    return board_id, ideation_id, revision, binding
+    return board_id, subject_id, revision, binding
 
 
 async def _seed_unlinked_semantic_binding_head(
@@ -1527,6 +1577,172 @@ async def _record_failed_semantic_assessment(
     )
 
 
+@pytest.mark.parametrize(
+    ("entity_type", "model"),
+    (
+        (PolicyEntityType.IDEATION, Ideation),
+        (PolicyEntityType.REFINEMENT, Refinement),
+        (PolicyEntityType.SPEC, Spec),
+    ),
+)
+@pytest.mark.asyncio
+async def test_v1_persistence_records_and_fences_validation_edition(
+    tmp_path,
+    entity_type: PolicyEntityType,
+    model,
+) -> None:
+    engine = _sqlite_engine(
+        tmp_path / f"semantic-v1-{entity_type.value}-edition-fence.db"
+    )
+    factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
+        expire_on_commit=False,
+    )
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    await _install_semantic_triggers(engine)
+
+    try:
+        async with factory() as session, session.begin():
+            board_id, subject_id, _revision, _binding = (
+                await _seed_semantic_authority(
+                    session,
+                    metric_count=1,
+                    entity_type=entity_type,
+                )
+            )
+            adapter = CommunitySqlAlchemySemanticGuidelineAssessment(session)
+            snapshot = await adapter.record_semantic_subject_mutation(
+                board_id=board_id,
+                entity_type=entity_type,
+                subject_id=subject_id,
+                actor_id="artifact-author",
+                idempotency_key=f"{entity_type.value}-subject-edition-1",
+                request_digest=canonical_sha256(
+                    {
+                        "subject_type": entity_type.value,
+                        "subject_id": subject_id,
+                        "edition": 1,
+                    }
+                ),
+                changed_at=_now(),
+            )
+            assert snapshot.subject.subject_edition == 1
+            bindings, revisions = await adapter._authority_bundle_for_subject(
+                board_id=board_id,
+                entity_type=entity_type,
+                subject_id=subject_id,
+                subject_edition=1,
+                lock=True,
+            )
+            binding = bindings[0]
+            revision = revisions[0]
+            policy_set_digest, binding_head_digest = (
+                await adapter.semantic_current_fences(
+                    board_id=board_id,
+                    entity_type=entity_type,
+                    subject_id=subject_id,
+                    subject_edition=1,
+                    lock=True,
+                )
+            )
+            context = SemanticGuidelineAssessmentContext(
+                subject_snapshot=snapshot,
+                binding=binding,
+                revision=revision,
+                policy_set_digest=policy_set_digest,
+                binding_head_digest=binding_head_digest,
+            )
+
+            def assessment_result(*, key: str):
+                submission = SemanticGuidelineAssessmentSubmission(
+                    subject=snapshot.subject,
+                    binding_id=binding.binding_id,
+                    expected_binding_revision=binding.binding_revision,
+                    guideline_revision_id=revision.revision_id,
+                    idempotency_key=key,
+                    confidence=95,
+                    assessor=SemanticAssessmentAssessor(
+                        agent_id="independent-reviewer",
+                        model_id="edition-fence-test",
+                    ),
+                    metric_results=(
+                        SemanticMetricAssessment(
+                            metric_id=revision.metrics[0].metric_id,
+                            score=90,
+                            rationale=(
+                                "The validation edition has explicit evidence."
+                            ),
+                            evidence_refs=(
+                                EvidenceRef(
+                                    source_type=entity_type.value,
+                                    source_id=subject_id,
+                                    source_version=1,
+                                    content_hash=snapshot.content_digest,
+                                ),
+                            ),
+                            pinpoints=(
+                                UnboundFindingAnchor(
+                                    anchor_type=FindingAnchorType.WHOLE_ARTIFACT,
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+                return record_semantic_guideline_assessment(
+                    submission,
+                    context,
+                    receipt_id=_id(),
+                    recorded_at=_now(),
+                )
+
+            current = assessment_result(
+                key=f"v1-{entity_type.value}-edition-1"
+            )
+            stale = assessment_result(
+                key=f"v1-{entity_type.value}-stale-edition"
+            )
+            saved = await adapter.save_semantic_assessment_result(
+                result=current,
+                request_digest=current.request_digest,
+            )
+            stored = await session.get(
+                SemanticGuidelineAssessmentReceiptRow,
+                saved.receipt.receipt_id,
+            )
+            assert stored is not None
+            assert stored.validation_edition == 1
+
+            subject = await session.get(model, subject_id)
+            assert subject is not None
+            subject.edition = 2
+            await session.flush((subject,))
+
+            with pytest.raises(
+                GuidelinePolicyEditionConflict,
+                match="guideline_policy_edition_conflict",
+            ):
+                await adapter.save_semantic_assessment_result(
+                    result=stale,
+                    request_digest=stale.request_digest,
+                )
+
+            receipt_ids = tuple(
+                (
+                    await session.execute(
+                        select(SemanticGuidelineAssessmentReceiptRow.receipt_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert receipt_ids == (saved.receipt.receipt_id,)
+    finally:
+        await engine.dispose()
+
+
 @pytest.mark.asyncio
 async def test_record_assessment_uses_authoritative_unlinked_binding_heads(
     tmp_path,
@@ -1753,17 +1969,17 @@ async def test_semantic_transition_runtime_is_authoritative_end_to_end(
             changed_at=_now(),
         )
         assert changed_subject != current_subject
-        stale = await service.preview_policy_transition(
+        same_edition = await service.preview_policy_transition(
             board_id=board_id,
             entity_type=PolicyEntityType.IDEATION.value,
             subject_id=ideation_id,
             from_status="evaluating",
             to_status="done",
         )
-        assert stale is not None
-        assert stale.allowed is False
-        assert stale.reason_codes == (
-            PolicyTransitionReasonCode.POLICY_COMPLIANCE_RECEIPT_STALE,
+        assert same_edition is not None
+        assert same_edition.allowed is True
+        assert same_edition.reason_codes == (
+            PolicyTransitionReasonCode.POLICY_COMPLIANCE_READY,
         )
 
         _subject, failed, findings = (
@@ -1973,7 +2189,7 @@ async def test_semantic_transition_runtime_is_authoritative_end_to_end(
 
 
 @pytest.mark.asyncio
-async def test_canonical_resource_agent_journey_reassesses_stale_subject(
+async def test_canonical_resource_agent_journey_reassesses_same_edition_subject(
     tmp_path,
 ):
     core_repo = resolve_core_repo(Path(__file__).resolve().parents[1])
@@ -2053,7 +2269,7 @@ async def test_canonical_resource_agent_journey_reassesses_stale_subject(
                 subject_id=ideation_id,
                 binding_id=binding.binding_id,
             )
-            is None
+            == first.receipt
         )
 
         _snapshot, second, _ = await _record_failed_semantic_assessment(
@@ -2965,7 +3181,7 @@ async def test_semantic_receipt_round_trip_replay_and_currentness(tmp_path):
                 subject_id=ideation_id,
                 binding_id=binding.binding_id,
             )
-            is None
+            == result.receipt
         )
 
         ideation = await session.get(Ideation, ideation_id)
@@ -2989,7 +3205,7 @@ async def test_semantic_receipt_round_trip_replay_and_currentness(tmp_path):
                 subject_id=ideation_id,
                 binding_id=binding.binding_id,
             )
-            is None
+            == result.receipt
         )
 
     await engine.dispose()
@@ -4362,6 +4578,7 @@ async def test_semantic_skip_is_append_only_revocable_lifecycle(tmp_path):
             guideline_id=revision.guideline_id,
             revision_id=revision.revision_id,
             revision_digest=revision.revision_digest,
+            subject_edition=snapshot.subject.subject_edition,
         )
         assert current == created.skip
         listed, listed_cursor = await adapter.list_semantic_policy_skips(
@@ -4421,6 +4638,7 @@ async def test_semantic_skip_is_append_only_revocable_lifecycle(tmp_path):
                 guideline_id=revision.guideline_id,
                 revision_id=revision.revision_id,
                 revision_digest=revision.revision_digest,
+                subject_edition=snapshot.subject.subject_edition,
             )
             is None
         )
@@ -4904,6 +5122,11 @@ async def _replace_semantic_waiver_tables_with_predecessor(
             "semantic_guideline_waivers "
             "(board_id, binding_id, metric_id, subject_type, "
             "subject_id, subject_version, status)"
+        )
+        await connection.exec_driver_sql(
+            "CREATE INDEX ix_sg_waiver_edition_scope ON "
+            "semantic_guideline_waivers "
+            "(board_id, subject_type, subject_id, validation_edition, status)"
         )
         await connection.exec_driver_sql(
             "CREATE INDEX ix_sg_waiver_event_time ON "

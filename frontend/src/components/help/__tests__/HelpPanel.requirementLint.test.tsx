@@ -19,7 +19,7 @@ describe('HelpPanel Requirement lint guide', () => {
     );
 
     const heading = screen.getByRole('heading', {
-      name: 'Requirement lint — deterministic advisory analysis',
+      name: 'Requirement lint — Edition-based advisory findings',
     });
     expect(heading).toBeInTheDocument();
     expect(heading.parentElement).toHaveTextContent(
@@ -29,10 +29,19 @@ describe('HelpPanel Requirement lint guide', () => {
       /lower is better/i,
     );
     expect(heading.parentElement).toHaveTextContent(
-      /Zero findings does not authorize a transition/i,
+      /accepted requirement-lint result for the current edition is required/i,
     );
     expect(heading.parentElement).toHaveTextContent(
-      /Checklist and Spec Validation are the authoritative controls/i,
+      /findings do not block by count or severity/i,
+    );
+    expect(heading.parentElement).toHaveTextContent(
+      /external agent evaluates the current edition/i,
+    );
+    expect(heading.parentElement).toHaveTextContent(
+      /result moves to Previous/i,
+    );
+    expect(heading.parentElement).not.toHaveTextContent(
+      /stale receipt|receipt history/i,
     );
   });
 });

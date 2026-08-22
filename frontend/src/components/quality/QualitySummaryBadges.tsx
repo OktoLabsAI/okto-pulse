@@ -30,19 +30,39 @@ function SummaryBadge({
   kind: VisibleQualityAssessmentKind;
   summary: QualityAssessmentSummary;
 }) {
-  const stale = summary.currentness === 'stale';
-  const tone = stale
-    ? 'border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200'
-    : 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200';
+  const score = summary.current_result?.score;
+  const scale = summary.current_result?.scale;
+  if (
+    summary.state !== 'current'
+    || score === undefined
+    || scale === undefined
+  ) {
+    const previousCount = summary.previous_count ?? 0;
+    const editionLabel = summary.edition ? ` · Edition ${summary.edition}` : '';
+    const previousLabel = previousCount === 1
+      ? '1 previous result'
+      : `${previousCount} previous results`;
+    return (
+      <span
+        className="inline-flex items-center gap-1 rounded-full border border-surface-300 bg-surface-50 px-2 py-0.5 text-[10px] font-medium text-surface-700 dark:border-surface-700 dark:bg-surface-800/70 dark:text-surface-200"
+        data-testid={`quality-summary-${kind}`}
+        title={`${KIND_LABELS[kind]}: no current result${editionLabel}; ${previousLabel}`}
+      >
+        <span>{KIND_LABELS[kind]}</span>
+        <strong>Not assessed</strong>
+        {previousCount > 0 && <span>{previousLabel}</span>}
+      </span>
+    );
+  }
+  const editionLabel = summary.edition ? ` · Edition ${summary.edition}` : '';
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${tone}`}
+      className="inline-flex items-center gap-1 rounded-full border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200"
       data-testid={`quality-summary-${kind}`}
-      title={`${KIND_LABELS[kind]}: ${formatScore(summary.score)} (${summary.scale.min}–${summary.scale.max}); ${summary.currentness}; subject v${summary.subject_version}; head r${summary.head_revision}`}
+      title={`${KIND_LABELS[kind]}: ${formatScore(score)} (${scale.min}–${scale.max})${editionLabel}`}
     >
       <span>{KIND_LABELS[kind]}</span>
-      <strong>{formatScore(summary.score)}</strong>
-      {stale && <span aria-label="stale quality assessment">stale</span>}
+      <strong>{formatScore(score)}</strong>
     </span>
   );
 }

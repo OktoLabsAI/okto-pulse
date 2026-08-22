@@ -122,6 +122,14 @@ def test_af35_s1_community_adapters_round_trip_real_sqlalchemy(
     }
     assert traceability["summary"]["specs"] == 1
     assert traceability["orphan_specs"][0]["id"] == spec_id
+    assert traceability["code_traceability"] == {
+        "evidence_total": 0,
+        "evidence_linked": 0,
+        "targets_total": 0,
+        "targets_resolved": 0,
+        "targets_outdated": 0,
+        "high_overlaps": 0,
+    }
     assert before["kg_queue_alert_threshold"] != 1234
     assert row is not None and row.value == "1234"
     assert after["restart_required"] is False

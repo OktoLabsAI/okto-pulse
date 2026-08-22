@@ -16,8 +16,8 @@ from repo_layout import resolve_core_repo
 
 COMMUNITY_REPO = Path(__file__).resolve().parents[1]
 CORE_REPO = resolve_core_repo(COMMUNITY_REPO)
-CORE_WHEEL = CORE_REPO / "dist" / "okto_pulse_core-0.3.1-py3-none-any.whl"
-COMMUNITY_WHEEL = COMMUNITY_REPO / "dist" / "okto_pulse-0.3.1-py3-none-any.whl"
+CORE_WHEEL = CORE_REPO / "dist" / "okto_pulse_core-0.3.2-py3-none-any.whl"
+COMMUNITY_WHEEL = COMMUNITY_REPO / "dist" / "okto_pulse-0.3.2-py3-none-any.whl"
 
 
 def test_community_declares_every_runtime_dependency_directly() -> None:

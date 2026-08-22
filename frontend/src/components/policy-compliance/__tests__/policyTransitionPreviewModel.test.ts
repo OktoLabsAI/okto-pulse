@@ -63,6 +63,7 @@ function decision(
     diagnostic_codes: [],
     binding_decisions: [binding()],
     ...overrides,
+    projection: overrides.projection ?? 'full',
   };
 }
 
@@ -91,6 +92,7 @@ function governed(
     label: 'Validated',
     gate: 'approved_to_validated',
     blocked_reason: null,
+    blocked_facts: null,
     preconditions: [],
     capabilities: [],
     effects: [],
@@ -110,6 +112,7 @@ describe('policyTransitionPreviewModel', () => {
         label: 'Cancelled',
         gate: 'cancel',
         blocked_reason: null,
+        blocked_facts: null,
         preconditions: [],
         capabilities: [],
         effects: [],
@@ -642,6 +645,7 @@ describe('policyTransitionPreviewModel', () => {
         label: 'Cancelled',
         gate: 'cancel',
         blocked_reason: null,
+        blocked_facts: null,
         preconditions: [],
         capabilities: [],
         effects: [],
@@ -662,6 +666,7 @@ describe('policyTransitionPreviewModel', () => {
       label: 'Cancelled',
       gate: 'cancel',
       blocked_reason: null,
+      blocked_facts: null,
       preconditions: [],
       capabilities: [],
       effects: [],
@@ -674,6 +679,7 @@ describe('policyTransitionPreviewModel', () => {
       label: 'Cancelled',
       gate: 'cancel',
       blocked_reason: 'Cancellation justification is required.',
+      blocked_facts: null,
       preconditions: [],
       capabilities: [],
       effects: [],
@@ -686,6 +692,99 @@ describe('policyTransitionPreviewModel', () => {
       label: 'Done',
       gate: 'forward',
     } as unknown as AllowedTransition)).toBe(false);
+  });
+
+  it('accepts the server-owned structured blocker facts without inferring admission', () => {
+    const structured = governed({
+      blocked_reason: 'spec_dependencies_incomplete: complete prerequisites',
+      blocked_facts: {
+        spec_id: 'spec-1',
+        blocking_count: 1,
+        archived_blocking_count: 0,
+        unfinished_blocking_count: 1,
+        blockers_truncated: false,
+        blocking_dependencies: [{
+          dependency_id: 'dependency-1',
+          target_spec_id: 'spec-0',
+          target_title: 'Foundation',
+          target_status: 'in_progress',
+          target_archived: false,
+        }],
+      },
+      policy_compliance: false,
+      policy_compliance_decision: null,
+    });
+
+    expect(projectPolicyTransitions([structured]).ungoverned).toEqual([{
+      toStatus: 'validated',
+      label: 'Validated',
+      gate: 'approved_to_validated',
+    }]);
+  });
+
+  it.each([
+    ['an array', []],
+    ['a string', 'spec_dependencies_incomplete'],
+  ])('rejects blocked facts represented as %s', (_label, blockedFacts) => {
+    expect(() => projectPolicyTransitions([governed({
+      blocked_facts: blockedFacts as unknown as Record<string, unknown>,
+    })])).toThrow(/invalid blocked facts/i);
+  });
+
+  it('accepts only the closed redacted projection for coarse lifecycle admission', () => {
+    const redactedReady = governed({
+      policy_compliance_decision: {
+        projection: 'redacted',
+        state: 'policy_compliance_redacted',
+        allowed: true,
+        policy_compliance_required: true,
+      },
+    });
+    const redactedBlocked = governed({
+      blocked_reason: 'Policy Compliance blocks this transition.',
+      blocked_facts: null,
+      policy_compliance_decision: {
+        projection: 'redacted',
+        state: 'policy_compliance_redacted',
+        allowed: false,
+        policy_compliance_required: true,
+      },
+    });
+
+    expect(isAllowedTransitionActionable(redactedReady)).toBe(true);
+    expect(isAllowedTransitionActionable(redactedBlocked)).toBe(false);
+    expect(() => projectPolicyTransitions([redactedReady])).toThrow(
+      /details are not available/i,
+    );
+    expect(isAllowedTransitionActionable({
+      ...redactedReady,
+      policy_compliance_decision: {
+        ...redactedReady.policy_compliance_decision,
+        decision_digest: 'a'.repeat(64),
+      },
+    } as unknown as AllowedTransition)).toBe(false);
+    expect(isAllowedTransitionActionable({
+      ...redactedReady,
+      policy_compliance_decision: {
+        ...decision(),
+        projection: 'redacted',
+      },
+    } as unknown as AllowedTransition)).toBe(false);
+
+    const response = {
+      board_id: 'board-1',
+      entity_type: 'spec' as const,
+      entity_id: 'spec-1',
+      current_status: 'approved',
+      source: 'core_sdlc_registry_v1' as const,
+      allowed_transitions: [redactedReady],
+    };
+    expect(requirePolicyTransitionEnvelope(response, {
+      boardId: 'board-1',
+      entityType: 'spec',
+      subjectId: 'spec-1',
+      currentStatus: 'approved',
+    })).toEqual(response.allowed_transitions);
   });
 
   it('binds the exact transition envelope to the active subject and authority', () => {
@@ -790,6 +889,13 @@ describe('policyTransitionPreviewModel', () => {
     expect(policyTransitionRejectionMessage(rejection)).toContain(
       'receipts receipt-1 (current)',
     );
+    const lifecycleMessage = policyTransitionRejectionMessage(
+      rejection,
+      'lifecycle-edition',
+    );
+    expect(lifecycleMessage).toContain('current edition result');
+    expect(lifecycleMessage).not.toMatch(/receipt|currentness|stale|digest/i);
+    expect(lifecycleMessage).not.toContain(rejection.code);
     expect(() => parsePolicyTransitionRejection(error, {
       ...expected,
       subjectId: 'spec-other',

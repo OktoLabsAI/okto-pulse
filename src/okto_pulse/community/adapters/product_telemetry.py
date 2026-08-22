@@ -75,7 +75,9 @@ class CommunityProductTelemetryAggregator:
             conn.close()
 
     def _aggregate_conn(self, conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
-        metrics: dict[str, Counter[str]] = {key: Counter() for key in PRODUCT_METRIC_KEYS}
+        metrics: dict[str, Counter[str]] = {
+            key: Counter() for key in PRODUCT_METRIC_KEYS
+        }
         if _table_exists(conn, "domain_events"):
             self._aggregate_domain_events(conn, metrics)
         self._aggregate_current_shapes(conn, metrics)
@@ -85,15 +87,21 @@ class CommunityProductTelemetryAggregator:
             if counter
         }
 
-    def _aggregate_domain_events(self, conn: sqlite3.Connection, metrics: dict[str, Counter[str]]) -> None:
-        rows = conn.execute("SELECT event_type, payload_json FROM domain_events").fetchall()
+    def _aggregate_domain_events(
+        self, conn: sqlite3.Connection, metrics: dict[str, Counter[str]]
+    ) -> None:
+        rows = conn.execute(
+            "SELECT event_type, payload_json FROM domain_events"
+        ).fetchall()
         for row in rows:
             event_type = _safe_count_key(row["event_type"])
             payload = _load_json(row["payload_json"])
             metrics["product_feature_usage_counts"][event_type] += 1
 
             if event_type == "spec.created":
-                metrics["product_flow_origin_counts"][_origin_from_spec_source(payload.get("source"))] += 1
+                metrics["product_flow_origin_counts"][
+                    _origin_from_spec_source(payload.get("source"))
+                ] += 1
             elif event_type == "spec.moved":
                 to_status = _safe_count_key(payload.get("to_status"))
                 metrics["product_workflow_stage_counts"][f"spec.{to_status}"] += 1
@@ -111,14 +119,19 @@ class CommunityProductTelemetryAggregator:
             elif event_type == "card.moved":
                 to_status = _safe_count_key(payload.get("to_status"))
                 metrics["product_workflow_stage_counts"][f"card.{to_status}"] += 1
-                if to_status in {"validation", "done"}:
+                if to_status in {"validation", "rejected", "done"}:
                     metrics["product_quality_signal_counts"][f"cards_{to_status}"] += 1
             elif event_type.startswith("kg."):
                 metrics["product_advanced_capability_counts"][event_type] += 1
-            elif event_type in {"ideation.derived_to_spec", "refinement.derived_to_spec"}:
+            elif event_type in {
+                "ideation.derived_to_spec",
+                "refinement.derived_to_spec",
+            }:
                 metrics["product_flow_origin_counts"][event_type.split(".", 1)[0]] += 1
 
-    def _aggregate_current_shapes(self, conn: sqlite3.Connection, metrics: dict[str, Counter[str]]) -> None:
+    def _aggregate_current_shapes(
+        self, conn: sqlite3.Connection, metrics: dict[str, Counter[str]]
+    ) -> None:
         if _table_exists(conn, "specs"):
             spec_rows = conn.execute(
                 "SELECT id, status, ideation_id, refinement_id, test_scenarios, decisions "
@@ -131,8 +144,12 @@ class CommunityProductTelemetryAggregator:
                 metrics["product_flow_origin_counts"][f"current.{origin}"] += 1
                 if status == "done":
                     metrics["product_flow_completion_counts"][origin] += 1
-                metrics["product_quality_signal_counts"]["test_scenarios_total"] += _json_array_len(row["test_scenarios"])
-                metrics["product_advanced_capability_counts"]["decisions_total"] += _json_array_len(row["decisions"])
+                metrics["product_quality_signal_counts"]["test_scenarios_total"] += (
+                    _json_array_len(row["test_scenarios"])
+                )
+                metrics["product_advanced_capability_counts"]["decisions_total"] += (
+                    _json_array_len(row["decisions"])
+                )
 
         if _table_exists(conn, "cards"):
             for row in conn.execute("SELECT status, card_type FROM cards").fetchall():
@@ -143,12 +160,18 @@ class CommunityProductTelemetryAggregator:
 
         if _table_exists(conn, "sprints"):
             for row in conn.execute("SELECT status FROM sprints").fetchall():
-                metrics["product_workflow_stage_counts"][f"sprint.current.{_safe_count_key(row['status'])}"] += 1
+                metrics["product_workflow_stage_counts"][
+                    f"sprint.current.{_safe_count_key(row['status'])}"
+                ] += 1
 
         if _table_exists(conn, "architecture_designs"):
-            count = conn.execute("SELECT COUNT(*) FROM architecture_designs").fetchone()[0]
+            count = conn.execute(
+                "SELECT COUNT(*) FROM architecture_designs"
+            ).fetchone()[0]
             if count:
-                metrics["product_advanced_capability_counts"]["architecture_designs_total"] += int(count)
+                metrics["product_advanced_capability_counts"][
+                    "architecture_designs_total"
+                ] += int(count)
 
     def _origin_from_spec_row(self, conn: sqlite3.Connection, row: sqlite3.Row) -> str:
         if row["refinement_id"]:
@@ -168,10 +191,14 @@ class CommunityProductTelemetryAggregator:
         self.metrics_dir.mkdir(parents=True, exist_ok=True)
         payload = {
             "families": sorted(metrics),
-            "last_aggregate_total": sum(sum(group.values()) for group in metrics.values()),
+            "last_aggregate_total": sum(
+                sum(group.values()) for group in metrics.values()
+            ),
             "latest_values": metrics,
         }
-        self.state_path.write_text(json.dumps(payload, sort_keys=True, indent=2), encoding="utf-8")
+        self.state_path.write_text(
+            json.dumps(payload, sort_keys=True, indent=2), encoding="utf-8"
+        )
 
     def _load_previous_metrics(self) -> dict[str, dict[str, int]]:
         try:
@@ -192,7 +219,9 @@ class CommunityProductTelemetryAggregator:
         }
 
 
-def build_community_product_aggregator(settings: Any, metrics_dir: Any) -> ProductAggregationPort:
+def build_community_product_aggregator(
+    settings: Any, metrics_dir: Any
+) -> ProductAggregationPort:
     """Factory: build the Community product aggregator for a ``settings`` /
     ``metrics_dir`` (signature matches ``ProductAggregatorFactory``)."""
     return CommunityProductTelemetryAggregator(settings, Path(metrics_dir))

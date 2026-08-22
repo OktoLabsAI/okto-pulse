@@ -50,7 +50,7 @@ const tours: GuidedHelpTour[] = [
     id: 'tasks.workflow',
     title: 'Task workflow',
     surface: 'tasks',
-    version: '1',
+    version: '2',
     order: 30,
     steps: [
       {
@@ -61,6 +61,15 @@ const tours: GuidedHelpTour[] = [
         kind: 'validation',
         placement: 'top',
         order: 10,
+      },
+      {
+        id: 'tasks.rejected.rework',
+        title: 'Rework rejected tasks and bugs',
+        body: 'Rejected is a consequence-only rework queue. Read the current failure, move the card to In Progress, complete a new execution attempt, and submit a fresh handoff to Validation. Test Cards never enter this column.',
+        anchor: 'tasks.rejected.column',
+        kind: 'validation',
+        placement: 'top',
+        order: 20,
       },
     ],
   },

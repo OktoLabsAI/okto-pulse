@@ -9,14 +9,18 @@ from sqlalchemy import func, or_, select
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ActivityLog,
+    ArchitectureDesign,
     Board,
     Card,
     CardDependency,
+    DomainEventRow,
     Ideation,
     IdeationQAItem,
     Refinement,
     RefinementKnowledgeBase,
+    ResourceNotApplicable,
     Spec,
+    SpecKnowledgeBase,
     Sprint,
     Story,
     StoryIdeationLink,
@@ -32,14 +36,18 @@ from okto_pulse.core.ports.analytics_read import (
 
 _MODELS = {
     "activity_log": ActivityLog,
+    "architecture_design": ArchitectureDesign,
     "board": Board,
     "card": Card,
     "card_dependency": CardDependency,
+    "domain_event": DomainEventRow,
     "ideation": Ideation,
     "ideation_qa_item": IdeationQAItem,
     "refinement": Refinement,
     "refinement_knowledge_base": RefinementKnowledgeBase,
+    "resource_not_applicable": ResourceNotApplicable,
     "spec": Spec,
+    "spec_knowledge_base": SpecKnowledgeBase,
     "sprint": Sprint,
     "story": Story,
     "story_ideation_link": StoryIdeationLink,
@@ -60,7 +68,7 @@ def _predicate(model: Any, item: AnalyticsFilter):
     # Community/SQLite normalizes temporal comparisons at the adapter edge.
     # This makes server-default ``YYYY-MM-DD HH:MM:SS`` values comparable with
     # Python datetime binds and preserves Core's half-open interval semantics.
-    if item.field == "created_at" and item.operator in {
+    if item.field in {"created_at", "occurred_at"} and item.operator in {
         "eq",
         "ne",
         "gte",

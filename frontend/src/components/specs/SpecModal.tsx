@@ -38,15 +38,17 @@ import {
   Scale,
   FileCode,
   GitBranch,
-  Download,
   Network,
   ShieldCheck,
   Gauge,
   Pencil,
+  Grid3X3,
+  AlertTriangle,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { exportSpec, downloadMarkdown, markdownFilenameForSpec } from '@/lib/exportMarkdown';
+import { EntityExportButton } from '@/components/export';
 import { getErrorMessage } from '@/lib/getErrorMessage';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
 import { openLineageGraph } from '@/components/traceability';
@@ -57,6 +59,7 @@ import type {
   ObservabilityRequirement,
   Spec,
   SpecStatus,
+  SprintSummary,
   SpecQAItem,
   SpecHistoryEntry,
   SpecStructuredEntityOperation,
@@ -64,6 +67,8 @@ import type {
   TechnicalRequirement,
   TestScenario,
   TestScenarioType,
+  CardStatus,
+  AllowedTransition,
   BoardSettings,
   Decision,
 } from '@/types';
@@ -79,7 +84,10 @@ import {
   TestScenarioStatusBadge,
 } from './TestScenarioPolicyCompliance';
 import { persistTestScenariosWithWriteGuard } from './scenarioWriteGuard';
-import { usePermissions } from '@/hooks/usePermissions';
+import {
+  hasPermissionWithState,
+  usePermissions,
+} from '@/hooks/usePermissions';
 import { MockupsTab } from './MockupsTab';
 import { RulesTab } from './RulesTab';
 import { ContractsTab } from './ContractsTab';
@@ -97,7 +105,6 @@ import {
   type PolicyTransitionRejection,
   type PolicyTransitionPreviewLoadState,
 } from '@/components/policy-compliance';
-import { isSpecValidationAvailable } from './specValidationAvailability';
 import { ValidationErrorDisplay } from './ValidationErrorDisplay';
 import { SprintSuggestionModal } from '@/components/sprints/SprintSuggestionModal';
 import { SPEC_STATUSES, SPEC_STATUS_LABELS } from '@/types';
@@ -125,10 +132,18 @@ import {
   AccessibleTabList,
   AccessibleTabPanel,
 } from '@/components/shared/AccessibleTabs';
+import {
+  EvidenceMatrixPanel,
+  useCodeTraceabilityAuthority,
+} from '@/components/code-traceability';
+import { SpecDependenciesTab } from './SpecDependenciesTab';
+import type { SpecDependencyDirection } from '@/types/spec-dependencies';
+import { QABadge } from '@/components/shared/QABadge';
 
 interface SpecModalProps {
   specId: string;
   boardId: string;
+  initialTab?: 'evidence-matrix';
   onClose: () => void;
   onEscape?: () => void;
   onChanged: () => void;
@@ -136,8 +151,10 @@ interface SpecModalProps {
 
 type ModalTab =
   | 'details'
+  | 'evidence-matrix'
   | 'tests'
   | 'rules'
+  | 'dependencies'
   | 'contracts'
   | 'irs'
   | 'ors'
@@ -153,6 +170,12 @@ type ModalTab =
 
 type ResourceSubTab = 'mockups' | 'knowledge' | 'architecture';
 type ReferenceSubTab = 'origin' | 'cards';
+
+interface SpecSnapshotReloadOptions {
+  includeRelated: boolean;
+  notifyChanged: boolean;
+  showLoading: boolean;
+}
 
 const STATUS_ICON: Record<SpecStatus, React.ReactNode> = {
   draft: <FileText size={14} />,
@@ -174,14 +197,37 @@ const STATUS_COLORS: Record<SpecStatus, string> = {
   cancelled: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
 };
 
-const CARD_STATUS_COLORS: Record<string, string> = {
+const CARD_STATUS_COLORS: Record<CardStatus, string> = {
   not_started: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
   started: 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-300',
   in_progress: 'bg-indigo-100 text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-300',
+  validation: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
+  rejected: 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300',
   on_hold: 'bg-yellow-100 text-yellow-600 dark:bg-yellow-900/40 dark:text-yellow-300',
   done: 'bg-green-100 text-green-600 dark:bg-green-900/40 dark:text-green-300',
   cancelled: 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-300',
 };
+
+const SPEC_VALIDATION_REQUIRED_CODE = 'spec_validation_required';
+
+function requiresSpecValidationSubmission(
+  transition: AllowedTransition,
+): boolean {
+  return (
+    transition.to_status === 'validated'
+    && transition.gate === 'spec_validation'
+    && Array.isArray(transition.preconditions)
+    && transition.preconditions.includes('spec_validation_ready')
+    && Array.isArray(transition.capabilities)
+    && transition.capabilities.includes('validate')
+    && Array.isArray(transition.reason_codes)
+    && transition.reason_codes.includes(SPEC_VALIDATION_REQUIRED_CODE)
+    && typeof transition.blocked_reason === 'string'
+    && transition.blocked_reason.trimStart().startsWith(
+      `${SPEC_VALIDATION_REQUIRED_CODE}:`,
+    )
+  );
+}
 
 function EditableRequirementsList({
   title,
@@ -713,9 +759,7 @@ function TestScenariosTab({
                             <div className="flex items-center gap-1">
                               {card && (
                                 <span className={`text-[10px] px-1 py-0.5 rounded ${
-                                  card.status === 'done' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' :
-                                  card.status === 'in_progress' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300' :
-                                  'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400'
+                                  CARD_STATUS_COLORS[card.status]
                                 }`}>
                                   {card.status.replace('_', ' ')}
                                 </span>
@@ -981,7 +1025,15 @@ function ChoiceAnswerForm({
   );
 }
 
-function QATab({ specId, mentionables }: { specId: string; mentionables: Mentionable[] }) {
+function QATab({
+  specId,
+  mentionables,
+  onChanged,
+}: {
+  specId: string;
+  mentionables: Mentionable[];
+  onChanged: () => void;
+}) {
   const api = useDashboardApi();
   const [items, setItems] = useState<SpecQAItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1012,6 +1064,7 @@ function QATab({ specId, mentionables }: { specId: string; mentionables: Mention
       setNewQuestion('');
       toast.success('Question posted');
       await load();
+      onChanged();
     } catch { toast.error('Failed to post question'); }
   };
 
@@ -1029,6 +1082,7 @@ function QATab({ specId, mentionables }: { specId: string; mentionables: Mention
       setNewQuestion(''); setNewOptions(''); setNewMulti(false); setNewAllowFreeText(false);
       toast.success('Choice question posted');
       await load();
+      onChanged();
     } catch { toast.error('Failed to post choice question'); }
   };
 
@@ -1039,6 +1093,7 @@ function QATab({ specId, mentionables }: { specId: string; mentionables: Mention
       setAnswerDraft('');
       toast.success('Answer posted');
       await load();
+      onChanged();
     } catch { toast.error('Failed to post answer'); }
   };
 
@@ -1052,6 +1107,7 @@ function QATab({ specId, mentionables }: { specId: string; mentionables: Mention
     try {
       await api.deleteSpecQuestion(specId, qaId);
       await load();
+      onChanged();
     } catch { toast.error('Failed to delete'); }
   };
 
@@ -1240,7 +1296,7 @@ function QATab({ specId, mentionables }: { specId: string; mentionables: Mention
   );
 }
 
-function SpecSprintsTab({ sprints, api }: { sprints: any[]; api: ReturnType<typeof useDashboardApi> }) {
+function SpecSprintsTab({ sprints, api }: { sprints: SprintSummary[]; api: ReturnType<typeof useDashboardApi> }) {
   const [details, setDetails] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
 
@@ -1260,7 +1316,7 @@ function SpecSprintsTab({ sprints, api }: { sprints: any[]; api: ReturnType<type
 
   return (
     <div className="space-y-3">
-      {sprints.map((sprint: any) => {
+      {sprints.map((sprint) => {
         const detail = details[sprint.id];
         const cards = detail?.cards || [];
         const total = cards.length;
@@ -1277,6 +1333,7 @@ function SpecSprintsTab({ sprints, api }: { sprints: any[]; api: ReturnType<type
                   sprint.status === 'cancelled' ? 'bg-red-500' : 'bg-gray-500'
                 }`}>{sprint.status}</span>
                 <span className="text-sm font-medium text-gray-900 dark:text-white">{sprint.title}</span>
+                <QABadge count={sprint.open_qa_count} />
               </div>
               <span className="text-xs font-bold text-gray-600 dark:text-gray-300">{pct}%</span>
             </div>
@@ -1390,7 +1447,14 @@ function KnowledgeTab({
    Main SpecModal
    ============================================================ */
 
-export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChanged }: SpecModalProps) {
+export function SpecModal({
+  specId,
+  boardId: _boardId,
+  initialTab,
+  onClose,
+  onEscape,
+  onChanged,
+}: SpecModalProps) {
   const api = useDashboardApi();
   const modalStack = useOptionalModalStack();
   const currentBoard = useCurrentBoard();
@@ -1414,29 +1478,106 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const canReadChecklist = perms.has('spec.checklist.read');
   const canExecuteChecklist = perms.has('spec.checklist.execute');
   const canReadSpecValidation = perms.has('spec.validation.read');
+  const canReadDependencies = perms.has('spec.entity.read');
   const canReadPolicyCompliance = perms.has(
     'guidelines.assessments.read',
   );
+  const { canReadProjection: canReadCodeTraceability } =
+    useCodeTraceabilityAuthority(_boardId || currentBoard?.id);
   const [spec, setSpec] = useState<Spec | null>(null);
+  const canEditCodeEvidenceCoverage = !spec?.archived && spec?.status === 'draft' && hasPermissionWithState(
+    perms.has,
+    'spec.entity.edit_coverage_flags',
+    'spec',
+    spec.status,
+  );
+  const canManageDependencies = hasPermissionWithState(
+    perms.has,
+    'spec.entity.manage_dependencies',
+    'spec',
+    spec?.status,
+  );
   const specAnchorTexts = useMemo(() => {
     if (!spec) return undefined;
-    const map: Record<string, string> = {};
-    const collect = (items: unknown) => {
+    const withOrdinal = (prefix: string, ordinal: number, text: string) => {
+      const normalized = text.trim();
+      if (new RegExp(`^${prefix}[-\\s]?\\d+\\s*:`, 'iu').test(normalized)) {
+        return normalized;
+      }
+      return `${prefix}-${ordinal}: ${normalized}`;
+    };
+    const map: Record<string, string> = {
+      [spec.id]: `Spec: ${spec.title}`,
+      title: `Title: ${spec.title}`,
+      description: spec.description?.trim()
+        ? `Description: ${spec.description.trim()}`
+        : 'Description',
+      context: spec.context?.trim()
+        ? `Context: ${spec.context.trim()}`
+        : 'Context',
+    };
+    const collect = (items: unknown, prefix: 'FR' | 'AC' | 'TR') => {
       if (!Array.isArray(items)) return;
+      let ordinal = 0;
       for (const item of items) {
         if (
           item
           && typeof item === 'object'
           && typeof (item as { id?: unknown }).id === 'string'
           && typeof (item as { text?: unknown }).text === 'string'
+          && (
+            typeof (item as { status?: unknown }).status !== 'string'
+            || (item as { status: string }).status === 'active'
+          )
         ) {
-          map[(item as { id: string }).id] = (item as { text: string }).text;
+          ordinal += 1;
+          map[(item as { id: string }).id] = withOrdinal(
+            prefix,
+            ordinal,
+            (item as { text: string }).text,
+          );
         }
       }
     };
-    collect(spec.functional_requirements);
-    collect(spec.acceptance_criteria);
-    collect(spec.technical_requirements);
+    collect(spec.functional_requirements, 'FR');
+    collect(spec.acceptance_criteria, 'AC');
+    collect(spec.technical_requirements, 'TR');
+    for (const [index, item] of (spec.business_rules ?? [])
+      .filter((entry) => (entry.status ?? 'active') === 'active').entries()) {
+      map[item.id] = withOrdinal('BR', index + 1, `${item.title}: ${item.rule}`);
+    }
+    for (const [index, item] of (spec.api_contracts ?? [])
+      .filter((entry) => (entry.status ?? 'active') === 'active').entries()) {
+      map[item.id] = withOrdinal(
+        'API',
+        index + 1,
+        `${item.method} ${item.path}: ${item.description}`,
+      );
+    }
+    for (const [index, item] of (spec.integration_requirements ?? [])
+      .filter((entry) => entry.status === 'active').entries()) {
+      map[item.id] = withOrdinal('IR', index + 1, `${item.title}: ${item.description}`);
+    }
+    for (const [index, item] of (spec.observability_requirements ?? [])
+      .filter((entry) => entry.status === 'active').entries()) {
+      map[item.id] = withOrdinal('OR', index + 1, `${item.title}: ${item.description}`);
+    }
+    for (const [index, item] of (spec.decisions ?? [])
+      .filter((entry) => entry.status === 'active').entries()) {
+      map[item.id] = withOrdinal('DEC', index + 1, `${item.title}: ${item.rationale}`);
+    }
+    for (const [index, item] of (spec.test_scenarios ?? []).entries()) {
+      map[item.id] = withOrdinal(
+        'TS',
+        index + 1,
+        `${item.title}: Given ${item.given} When ${item.when} Then ${item.then}`,
+      );
+    }
+    for (const item of spec.qa_items ?? []) {
+      map[item.id] = item.answer?.trim()
+        ? `${item.question} — ${item.answer}`
+        : item.question;
+    }
     return map;
   }, [spec]);
   const [loading, setLoading] = useState(true);
@@ -1456,7 +1597,10 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   ] = useState<PolicyTransitionRejection | null>(null);
   const lastTransitionSubjectKey = useRef<string | null>(null);
   const transitionRequestId = useRef(0);
-  const [activeTab, setActiveTab] = useState<ModalTab>('details');
+  const specReloadGeneration = useRef(0);
+  const currentSpecId = useRef(specId);
+  currentSpecId.current = specId;
+  const [activeTab, setActiveTab] = useState<ModalTab>(initialTab ?? 'details');
   const [resourceTab, setResourceTab] =
     useState<ResourceSubTab>('mockups');
   const [referenceTab, setReferenceTab] =
@@ -1478,11 +1622,10 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const [validateResult, setValidateResult] = useState<{ success: boolean; error: string | null }>({ success: false, error: null });
   const [validating, setValidating] = useState(false);
   const [sprintSuggestions, setSprintSuggestions] = useState<any[] | null>(null);
-  const [linkedSprints, setLinkedSprints] = useState<any[]>([]);
+  const [linkedSprints, setLinkedSprints] = useState<SprintSummary[]>([]);
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [validationHistoryRefreshKey, setValidationHistoryRefreshKey] =
     useState(0);
-  const currentSpecStatus = spec?.status;
 
   useEscapeToClose(onEscape ?? onClose);
   useEscapeToClose(() => setShowValidateModal(false), {
@@ -1493,13 +1636,10 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
 
   useEffect(() => {
     const validationAvailable =
-      canReadQuality ||
-      canReadPolicyCompliance ||
-      Boolean(
-        currentSpecStatus &&
-        isSpecValidationAvailable(currentSpecStatus) &&
-        (canReadChecklist || canReadSpecValidation),
-      );
+      canReadQuality
+      || canReadPolicyCompliance
+      || canReadChecklist
+      || canReadSpecValidation;
     if (
       activeTab === 'validation' &&
       !validationAvailable
@@ -1512,8 +1652,19 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
     canReadPolicyCompliance,
     canReadQuality,
     canReadSpecValidation,
-    currentSpecStatus,
   ]);
+
+  useEffect(() => {
+    if (activeTab === 'evidence-matrix' && !canReadCodeTraceability) {
+      setActiveTab('details');
+    }
+  }, [activeTab, canReadCodeTraceability]);
+
+  useEffect(() => {
+    if (activeTab === 'dependencies' && !canReadDependencies) {
+      setActiveTab('details');
+    }
+  }, [activeTab, canReadDependencies]);
 
   // Build mentionables from board agents + owner
   const mentionables: Mentionable[] = [];
@@ -1530,6 +1681,11 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const [parentRefinement, setParentRefinement] = useState<{ id: string; title: string; version: number } | null>(null);
   const [viewingIdeationId, setViewingIdeationId] = useState<string | null>(null);
   const [viewingRefinementId, setViewingRefinementId] = useState<string | null>(null);
+  const [viewingSpecId, setViewingSpecId] = useState<string | null>(null);
+  const [dependencyDirectionRequest, setDependencyDirectionRequest] = useState<{
+    direction: SpecDependencyDirection;
+    token: number;
+  }>({ direction: 'depends_on', token: 0 });
 
   const openIdeationReference = (id: string) => {
     if (modalStack) {
@@ -1547,9 +1703,36 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
     }
   };
 
-  useEffect(() => { loadSpec(); }, [specId]);
+  const openSpecReference = (id: string) => {
+    if (modalStack) {
+      modalStack.push({ type: 'spec', id });
+    } else {
+      setViewingSpecId(id);
+    }
+  };
 
-  const loadAllowedTransitions = useCallback(async (data: Spec) => {
+  const openDependencies = (direction: SpecDependencyDirection) => {
+    setDependencyDirectionRequest((current) => ({
+      direction,
+      token: current.token + 1,
+    }));
+    setActiveTab('dependencies');
+  };
+
+  useEffect(() => {
+    void loadSpec();
+    return () => {
+      specReloadGeneration.current += 1;
+    };
+  }, [specId]);
+
+  const loadAllowedTransitions = useCallback(async (
+    data: Spec,
+    isCurrent: () => boolean = () => currentSpecId.current === data.id,
+  ) => {
+    if (!isCurrent()) {
+      return;
+    }
     const requestId = transitionRequestId.current + 1;
     transitionRequestId.current = requestId;
     lastTransitionSubjectKey.current = [
@@ -1569,7 +1752,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
         entity_type: 'spec',
         entity_id: data.id,
       });
-      if (transitionRequestId.current !== requestId) {
+      if (transitionRequestId.current !== requestId || !isCurrent()) {
         return;
       }
       const transitions = requirePolicyTransitionEnvelope(response, {
@@ -1590,7 +1773,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
           .filter((status): status is SpecStatus => SPEC_STATUSES.includes(status as SpecStatus))
       );
     } catch (caught) {
-      if (transitionRequestId.current !== requestId) {
+      if (transitionRequestId.current !== requestId || !isCurrent()) {
         return;
       }
       setNextStatuses([]);
@@ -1619,38 +1802,106 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
     void loadAllowedTransitions(spec);
   }, [loadAllowedTransitions, spec]);
 
-  const loadSpec = async () => {
-    setLoading(true);
+  const reloadSpecSnapshot = async ({
+    includeRelated,
+    notifyChanged,
+    showLoading,
+  }: SpecSnapshotReloadOptions): Promise<Spec | null> => {
+    const requestedSpecId = specId;
+    const generation = specReloadGeneration.current + 1;
+    specReloadGeneration.current = generation;
+    const isCurrent = () => (
+      specReloadGeneration.current === generation
+      && currentSpecId.current === requestedSpecId
+    );
+
+    setLoading(showLoading);
     try {
-      const data = await api.getSpec(specId);
+      const data = await api.getSpec(requestedSpecId);
+      if (!isCurrent()) {
+        return null;
+      }
       setSpec(data);
-      await loadAllowedTransitions(data);
-      if (data.ideation_id) {
+      await loadAllowedTransitions(data, isCurrent);
+      if (!isCurrent()) {
+        return null;
+      }
+
+      if (includeRelated) {
+        if (data.ideation_id) {
+          try {
+            const ideation = await api.getIdeation(data.ideation_id);
+            if (!isCurrent()) return null;
+            setParentIdeation({ id: ideation.id, title: ideation.title, version: ideation.version });
+          } catch {
+            if (!isCurrent()) return null;
+            setParentIdeation(null);
+          }
+        } else {
+          setParentIdeation(null);
+        }
+        if (data.refinement_id) {
+          try {
+            const refinement = await api.getRefinement(data.refinement_id);
+            if (!isCurrent()) return null;
+            setParentRefinement({ id: refinement.id, title: refinement.title, version: refinement.version });
+          } catch {
+            if (!isCurrent()) return null;
+            setParentRefinement(null);
+          }
+        } else {
+          setParentRefinement(null);
+        }
         try {
-          const ideation = await api.getIdeation(data.ideation_id);
-          setParentIdeation({ id: ideation.id, title: ideation.title, version: ideation.version });
-        } catch { setParentIdeation(null); }
-      } else { setParentIdeation(null); }
-      if (data.refinement_id) {
-        try {
-          const refinement = await api.getRefinement(data.refinement_id);
-          setParentRefinement({ id: refinement.id, title: refinement.title, version: refinement.version });
-        } catch { setParentRefinement(null); }
-      } else { setParentRefinement(null); }
-      // Load linked sprints
-      try {
-        const sprints = await api.listSprints(data.board_id, data.id);
-        setLinkedSprints(sprints);
-      } catch { setLinkedSprints([]); }
-    } catch { toast.error('Failed to load spec'); } finally { setLoading(false); }
+          const sprints = await api.listSprints(data.board_id, data.id);
+          if (!isCurrent()) return null;
+          setLinkedSprints(sprints);
+        } catch {
+          if (!isCurrent()) return null;
+          setLinkedSprints([]);
+        }
+      }
+
+      if (notifyChanged && isCurrent()) {
+        onChanged();
+      }
+      return isCurrent() ? data : null;
+    } catch (error) {
+      if (!isCurrent()) {
+        return null;
+      }
+      if (showLoading) {
+        toast.error('Failed to load spec');
+        return null;
+      }
+      throw error;
+    } finally {
+      if (isCurrent()) {
+        setLoading(false);
+      }
+    }
   };
 
-  const reloadSpecAfterStructuredEdit = async () => {
-    const updated = await api.getSpec(specId);
-    setSpec(updated);
-    await loadAllowedTransitions(updated);
-    onChanged();
-    return updated;
+  const loadSpec = async () => {
+    await reloadSpecSnapshot({
+      includeRelated: true,
+      notifyChanged: false,
+      showLoading: true,
+    });
+  };
+
+  const reloadSpecAfterStructuredEdit = async () => reloadSpecSnapshot({
+    includeRelated: false,
+    notifyChanged: true,
+    showLoading: false,
+  });
+
+  const reloadSpecAfterDependencyMutation = async () => {
+    await reloadSpecSnapshot({
+      includeRelated: false,
+      notifyChanged: true,
+      showLoading: false,
+    });
   };
 
   const applyImpactAwareOperation = async (
@@ -1884,6 +2135,12 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   const boardSettings = (currentBoard?.settings || {}) as BoardSettings;
   const requireSpecValidation = boardSettings.require_spec_validation ?? true;
   const [showSubmitValidationModal, setShowSubmitValidationModal] = useState(false);
+  const specValidationSubmissionRequired = (
+    policyTransitionPreview.status === 'ready'
+    && policyTransitionPreview.transitions.some(
+      requiresSpecValidationSubmission,
+    )
+  );
 
   const handleMoveSpec = async (status: SpecStatus, cancellationReason?: string) => {
     if (!spec) return;
@@ -1896,7 +2153,14 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
     // to show the new SubmitSpecValidationModal. The modal calls the backend gate
     // which runs coverage checks and then computes outcome — on success the spec
     // is promoted to validated automatically, so we just refetch after.
-    if (status === 'validated' && spec.status === 'approved' && requireSpecValidation) {
+    if (
+      status === 'validated'
+      && spec.status === 'approved'
+      && (
+        requireSpecValidation
+        || specValidationSubmissionRequired
+      )
+    ) {
       setShowSubmitValidationModal(true);
       return;
     }
@@ -1951,7 +2215,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
       });
       toast.error(
         rejection
-          ? policyTransitionRejectionMessage(rejection)
+          ? policyTransitionRejectionMessage(rejection, 'lifecycle-edition')
           : getErrorMessage(err),
       );
       await loadAllowedTransitions(spec);
@@ -1967,7 +2231,17 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
       toast.success('Spec deleted');
       onChanged();
       onClose();
-    } catch { toast.error('Failed to delete spec'); }
+    } catch (error) {
+      if (
+        error instanceof AuthenticatedFetchError
+        && error.code?.startsWith('spec_dependency_')
+      ) {
+        openDependencies('required_by');
+        toast.error(`${error.message} Review the Specs that require this one.`);
+      } else {
+        toast.error(getErrorMessage(error));
+      }
+    }
   };
 
   if (loading) {
@@ -1983,7 +2257,27 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
   if (!spec) return null;
 
   const statusFlowStatuses = nextStatuses.filter((s) => !(s === 'validated' && spec.status === 'approved'));
-  const canSubmitValidation = nextStatuses.includes('validated');
+  const dependencyReadiness = canReadDependencies
+    ? spec.dependency_readiness ?? null
+    : null;
+  const archivedDependencyBlockerCount = (
+    dependencyReadiness?.archived_blocking_count ?? 0
+  );
+  const blockedStartTransition = policyTransitionPreview.status === 'ready'
+    ? policyTransitionPreview.transitions.find((transition) => (
+      transition.to_status === 'in_progress'
+      && (
+        transition.reason_codes.includes('spec_dependencies_incomplete')
+        || transition.reason_codes.includes('spec_dependency_incomplete')
+        || (dependencyReadiness?.blocking_count ?? 0) > 0
+      )
+      && !isAllowedTransitionActionable(transition)
+    )) ?? null
+    : null;
+  const canSubmitValidation = (
+    nextStatuses.includes('validated')
+    || specValidationSubmissionRequired
+  );
   const openDetailsStructuredEditor = (tab: ModalTab, mode: 'add' | 'edit', entityId?: string) => {
     setDetailsStructuredEditor({ tab, mode, entityId, token: Date.now() });
     setActiveTab(tab);
@@ -1992,16 +2286,26 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
 
   const unansweredQA = spec.qa_items?.filter((q) => !q.answered_at).length || 0;
   const showValidationTab =
-    canReadQuality ||
-    canReadPolicyCompliance ||
-    (
-      isSpecValidationAvailable(spec.status) &&
-      (canReadChecklist || canReadSpecValidation)
-    );
+    canReadQuality
+    || canReadPolicyCompliance
+    || canReadChecklist
+    || canReadSpecValidation;
   const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
+    ...(canReadCodeTraceability
+      ? [{ id: 'evidence-matrix' as ModalTab, label: 'Code Evidence Matrix', icon: <Grid3X3 size={14} /> }]
+      : []),
     { id: 'tests', label: 'Tests', icon: <FlaskConical size={14} />, count: spec.test_scenarios?.length || 0 },
     { id: 'rules', label: 'Rules', icon: <Scale size={14} />, count: spec.business_rules?.length || 0 },
+    ...(canReadDependencies
+      ? [{
+        id: 'dependencies' as ModalTab,
+        label: 'Dependencies',
+        icon: <GitBranch size={14} />,
+        count: dependencyReadiness?.blocking_count || 0,
+        highlight: (dependencyReadiness?.blocking_count || 0) > 0,
+      }]
+      : []),
     { id: 'contracts', label: 'Contracts', icon: <FileCode size={14} />, count: spec.api_contracts?.length || 0 },
     { id: 'irs', label: 'IRs', icon: <Network size={14} />, count: spec.integration_requirements?.length || 0, permission: 'spec.integration_requirements.read' },
     { id: 'ors', label: 'ORs', icon: <Gauge size={14} />, count: spec.observability_requirements?.length || 0, permission: 'spec.observability_requirements.read' },
@@ -2021,7 +2325,12 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className={`bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full ${expanded ? 'max-w-[95vw] h-[95vh]' : 'max-w-3xl h-[90vh]'} flex flex-col`}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={`spec-${spec.id}-title`}
+        className={`bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full ${expanded ? 'max-w-[95vw] h-[95vh]' : 'max-w-3xl h-[90vh]'} flex flex-col`}
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-700">
           <div className="flex items-center gap-3 min-w-0">
@@ -2029,7 +2338,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
               {STATUS_ICON[spec.status]}
               {SPEC_STATUS_LABELS[spec.status]}
             </span>
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white truncate">{spec.title}</h2>
+            <h2 id={`spec-${spec.id}-title`} className="text-lg font-semibold text-gray-900 dark:text-white truncate">{spec.title}</h2>
             <SpecEditionLabel
               edition={spec.edition}
               technicalRevision={spec.version}
@@ -2044,52 +2353,27 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
             >
               <GitBranch size={16} />
             </button>
-            <button
-              onClick={async () => {
-                try {
-                  const fullKnowledge = await Promise.all(
-                    (spec.knowledge_bases || []).map((kb) =>
-                      api.getSpecKnowledge(spec.id, kb.id).catch(() => kb)
-                    )
-                  );
-                  // Hydrate architecture design summaries into full designs (entities,
-                  // interfaces, diagram payloads) so the Markdown export can render the
-                  // Mermaid diagram. spec.architecture_designs are summaries by default.
-                  const fullArchitecture = await Promise.all(
-                    (spec.architecture_designs || []).map((d) =>
-                      api.getArchitectureDesign(d.id, true).catch(() => d)
-                    )
-                  );
-                  const md = exportSpec({
-                    ...spec,
-                    knowledge_bases: fullKnowledge as any,
-                    architecture_designs: fullArchitecture as any,
-                  });
-                  downloadMarkdown(md, markdownFilenameForSpec(spec));
-                } catch {
-                  toast.error('Failed to prepare markdown export');
-                }
-              }}
+            <EntityExportButton
+              boardId={spec.board_id || _boardId}
+              entityType="spec"
+              entityId={spec.id}
+              entityTitle={spec.title}
               disabled={loading}
-              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"
-              title="Download Markdown"
-            >
-              <Download size={16} />
-            </button>
+            />
             <button onClick={loadSpec} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="Refresh">
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
             </button>
             <button onClick={() => setExpanded(!expanded)} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title={expanded ? 'Collapse' : 'Expand'}>
               {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
             </button>
-            <button onClick={onClose} className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
+            <button aria-label="Close spec" onClick={onClose} className="p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300">
               <X size={20} />
             </button>
           </div>
         </div>
 
         {/* Status flow */}
-        {statusFlowStatuses.length > 0 && (
+        {(statusFlowStatuses.length > 0 || blockedStartTransition) && (
           <div className="px-6 py-2.5 border-b border-gray-100 dark:border-gray-700/50 flex items-center gap-2 flex-wrap">
             <span className="text-xs text-gray-500 dark:text-gray-400">Move to:</span>
             {statusFlowStatuses.map((status) => (
@@ -2106,6 +2390,36 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
                 {movingTo === status && '...'}
               </button>
             ))}
+            {blockedStartTransition && (
+              <button
+                type="button"
+                disabled
+                aria-describedby={`spec-${spec.id}-dependency-blocked-reason`}
+                className={`inline-flex cursor-not-allowed items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium opacity-55 ${STATUS_COLORS.in_progress}`}
+              >
+                <ChevronRight size={12} />
+                {SPEC_STATUS_LABELS.in_progress}
+              </button>
+            )}
+            {blockedStartTransition && dependencyReadiness && (
+              <button
+                type="button"
+                id={`spec-${spec.id}-dependency-blocked-reason`}
+                onClick={() => openDependencies('depends_on')}
+                className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-300 dark:hover:bg-amber-900/40"
+                title={
+                  archivedDependencyBlockerCount > 0
+                    ? 'Restore archived prerequisites or remove their dependencies before starting.'
+                    : blockedStartTransition.blocked_reason ?? 'Review unfinished dependencies'
+                }
+              >
+                <AlertTriangle size={12} />
+                {dependencyReadiness.blocking_count} dependenc{dependencyReadiness.blocking_count === 1 ? 'y' : 'ies'}{' '}
+                {archivedDependencyBlockerCount > 0
+                  ? `blocked · ${archivedDependencyBlockerCount} archived`
+                  : 'unfinished'}
+              </button>
+            )}
           </div>
         )}
 
@@ -2412,7 +2726,8 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
 
               {/* Validation Gate Override */}
               <ValidationGateOverride
-                title="Validation Gate"
+                title="Task Validation Gate"
+                description="Controls whether cards derived from this spec must pass Task Validation. These settings do not change the Spec Validation Gate."
                 requireValue={spec.require_task_validation ?? null}
                 minConfidence={spec.validation_min_confidence ?? null}
                 minCompleteness={spec.validation_min_completeness ?? null}
@@ -2437,6 +2752,30 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
                 </button>
               )}
             </div>
+          )}
+
+          {activeTab === 'evidence-matrix' && spec && canReadCodeTraceability && (
+            <EvidenceMatrixPanel
+              boardId={spec.board_id}
+              subjectId={spec.id}
+              subjectVersion={spec.version}
+              boardSkipCoverage={boardSettings.skip_code_evidence_coverage_global ?? false}
+              skipCoverage={spec.skip_code_evidence_coverage}
+              canEditCoverageFlags={canEditCodeEvidenceCoverage}
+              obligationTitles={specAnchorTexts}
+              onSkipCoverageChange={async (skip) => {
+                try {
+                  const updated = await api.updateSpec(specId, {
+                    skip_code_evidence_coverage: skip,
+                  });
+                  setSpec(updated);
+                } catch (err) {
+                  toast.error(err instanceof Error && err.message
+                    ? err.message
+                    : 'Failed to update Code Evidence coverage');
+                }
+              }}
+            />
           )}
 
           {activeTab === 'tests' && spec && (
@@ -2492,6 +2831,38 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
                   setSpec(updated);
                 } catch { toast.error('Failed to update spec'); }
               }}
+            />
+          )}
+          {activeTab === 'dependencies' && spec && canReadDependencies && (
+            <SpecDependenciesTab
+              boardId={spec.board_id}
+              spec={{
+                id: spec.id,
+                title: spec.title,
+                version: spec.version,
+                edition: spec.edition,
+                status: spec.status,
+                ideation_id: spec.ideation_id,
+              }}
+              readiness={dependencyReadiness}
+              readinessLoading={false}
+              readinessError={dependencyReadiness
+                ? null
+                : 'The authoritative readiness projection was not included in this Spec context.'}
+              canAdd={canManageDependencies && !spec.archived}
+              addDisabledReason={
+                spec.archived
+                  ? 'Restore this Spec before adding dependencies.'
+                  : canManageDependencies
+                    ? null
+                    : 'Adding dependencies is not authorized.'
+              }
+              canRemove={canManageDependencies}
+              requestedDirection={dependencyDirectionRequest.direction}
+              directionRequestToken={dependencyDirectionRequest.token}
+              onRetryReadiness={() => void loadSpec()}
+              onOpenSpec={openSpecReference}
+              onMutated={reloadSpecAfterDependencyMutation}
             />
           )}
           {activeTab === 'contracts' && spec && (
@@ -2756,6 +3127,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
               boardId={spec.board_id}
               specId={specId}
               specVersion={spec.version}
+              specEdition={spec.edition}
               specStatus={spec.status}
               canReadChecklist={canReadChecklist}
               canExecuteChecklist={canExecuteChecklist}
@@ -2774,13 +3146,26 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
               }}
               onOpenRequirementLintHelp={() =>
                 openContextualHelp('requirement-lint')}
+              canSubmitValidation={
+                spec.status === 'approved'
+                && canSubmitValidation
+                && perms.has('spec.validation.submit')
+              }
+              onSubmitValidation={() =>
+                void handleMoveSpec('validated' as SpecStatus)}
             />
           )}
           {activeTab === 'kg' && spec && (
             <KGValidationTab boardId={spec.board_id} specId={specId} />
           )}
           {activeTab === 'activity' && <HistoryTab specId={specId} />}
-          {activeTab === 'qa' && <QATab specId={specId} mentionables={mentionables} />}
+          {activeTab === 'qa' && (
+            <QATab
+              specId={specId}
+              mentionables={mentionables}
+              onChanged={onChanged}
+            />
+          )}
 
           {activeTab === 'sprints' && (
             <SpecSprintsTab sprints={linkedSprints} api={api} />
@@ -2965,6 +3350,15 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
           onChanged={loadSpec}
         />
       )}
+      {viewingSpecId && (
+        <SpecModal
+          specId={viewingSpecId}
+          boardId={_boardId}
+          onClose={() => setViewingSpecId(null)}
+          onEscape={() => setViewingSpecId(null)}
+          onChanged={loadSpec}
+        />
+      )}
 
       {/* Sprint Suggestion Modal */}
       {sprintSuggestions && spec && (
@@ -3039,6 +3433,7 @@ export function SpecModal({ specId, boardId: _boardId, onClose, onEscape, onChan
           specTitle={spec.title}
           boardId={spec.board_id}
           specVersion={spec.version}
+          specEdition={spec.edition}
           settings={boardSettings}
           canReadChecklist={canReadChecklist}
           canExecuteChecklist={canExecuteChecklist}

@@ -118,13 +118,14 @@ describe('policy-governance-api', () => {
       idempotency_key: 'retire-1',
     });
     await api.previewGuidelineImpact('board-1', 'guide-1', {
-      target_revision_id: 'revision-2',
-      expected_binding_head_revision: 4,
-      enforcement: 'blocking',
-      minimum_confidence: 80,
-      metric_threshold_overrides: {
+      proposed_priority: 3,
+      proposed_enforcement: 'blocking',
+      proposed_minimum_confidence: 80,
+      proposed_metric_threshold_overrides: {
         title_clarity: 75,
       },
+      idempotency_key: 'impact-1',
+      to_revision_id: 'revision-2',
     });
     await api.getGuidelineImpact(
       'board-1',
@@ -143,9 +144,8 @@ describe('policy-governance-api', () => {
       },
     );
     await api.adoptGuidelineRevision('board-1', 'guide-1', {
-      preview_id: 'preview-1',
-      preview_digest: 'a'.repeat(64),
-      expected_binding_head_revision: 4,
+      impact_receipt_id: 'preview-1',
+      impact_digest: 'a'.repeat(64),
       idempotency_key: 'adopt-1',
     });
 
@@ -189,18 +189,18 @@ describe('policy-governance-api', () => {
     );
     expect(requestBody(fetch, 0)).not.toHaveProperty('idempotency_key');
     expect(requestBody(fetch, 3)).toEqual({
-      target_revision_id: 'revision-2',
-      expected_binding_head_revision: 4,
-      enforcement: 'blocking',
-      minimum_confidence: 80,
-      metric_threshold_overrides: {
+      proposed_priority: 3,
+      proposed_enforcement: 'blocking',
+      proposed_minimum_confidence: 80,
+      proposed_metric_threshold_overrides: {
         title_clarity: 75,
       },
+      idempotency_key: 'impact-1',
+      to_revision_id: 'revision-2',
     });
     expect(requestBody(fetch, 6)).toEqual({
-      preview_id: 'preview-1',
-      preview_digest: 'a'.repeat(64),
-      expected_binding_head_revision: 4,
+      impact_receipt_id: 'preview-1',
+      impact_digest: 'a'.repeat(64),
       idempotency_key: 'adopt-1',
     });
   });

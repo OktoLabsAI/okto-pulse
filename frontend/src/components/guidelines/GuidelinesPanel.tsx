@@ -75,6 +75,7 @@ interface ImpactDialogSelection {
   guidelineTitle: string;
   targetRevisionId: string;
   targetSemanticVersion: string;
+  proposedPriority: number;
   adoptedBinding?: AdoptedGuidelineBindingAuthority;
   initialEnforcement: GuidelineEnforcement;
   initialMinimumConfidence: number;
@@ -544,6 +545,12 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
         guidelineTitle: guideline.title,
         targetRevisionId,
         targetSemanticVersion,
+        proposedPriority: entry?.priority ?? (
+          entries.reduce(
+            (maximum, current) => Math.max(maximum, current.priority),
+            0,
+          ) + 1
+        ),
         ...(entry && isCompleteBoardGuidelineBindingAuthority(entry)
           ? {
               adoptedBinding: {
@@ -1311,6 +1318,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
           guidelineTitle={impactDialog.guidelineTitle}
           targetRevisionId={impactDialog.targetRevisionId}
           targetSemanticVersion={impactDialog.targetSemanticVersion}
+          proposedPriority={impactDialog.proposedPriority}
           adoptedBinding={impactDialog.adoptedBinding}
           initialEnforcement={impactDialog.initialEnforcement}
           initialMinimumConfidence={
