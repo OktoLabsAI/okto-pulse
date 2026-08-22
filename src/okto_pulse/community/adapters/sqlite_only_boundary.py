@@ -47,6 +47,7 @@ GOVERNED_PORTABLE_RELATIONAL_FILES: frozenset[str] = frozenset(
 # capability boundary instead of being excluded wholesale from inspection.
 GOVERNED_DIALECT_AWARE_RUNTIME_FILES: frozenset[str] = frozenset(
     {
+        "src/okto_pulse/community/adapters/relational_effects.py",
         "src/okto_pulse/community/adapters/sqlalchemy_spec_dependency.py",
         "src/okto_pulse/community/adapters/sqlalchemy_unit_of_work.py",
     }

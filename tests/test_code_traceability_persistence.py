@@ -2000,8 +2000,13 @@ def test_transaction_bound_stores_persist_only_submitted_attestations(
 
 
 def test_adapter_source_has_no_local_code_acquisition_capability() -> None:
-    source = Path(
-        "src/okto_pulse/community/adapters/sqlalchemy_code_traceability.py"
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "okto_pulse"
+        / "community"
+        / "adapters"
+        / "sqlalchemy_code_traceability.py"
     ).read_text(encoding="utf-8")
     forbidden = (
         "subprocess",

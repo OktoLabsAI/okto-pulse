@@ -329,10 +329,10 @@ async def test_community_host_narrows_live_policy_board_schema_only_locally() ->
         if getattr(tool.fn, "__mcp_closed_schema__", False)
     )
 
-    # Code Traceability adds twenty governed closed-schema commands to the
+    # Code Traceability adds twenty-one governed closed-schema commands to the
     # original policy surface. Keep the inventory assertion explicit so a
     # schema silently falling back to FastMCP inference is still detected.
-    assert len(opted_in) == 40
+    assert len(opted_in) == 41
 
     def assert_closed(value: object) -> None:
         if isinstance(value, dict):

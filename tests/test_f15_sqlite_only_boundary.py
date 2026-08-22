@@ -35,6 +35,7 @@ def test_f15_community_production_and_metadata_are_sqlite_only() -> None:
 
 def test_f15_skm_portable_seams_do_not_make_server_runtime_selectable() -> None:
     portable_seams = {
+        "src/okto_pulse/community/adapters/relational_effects.py",
         "src/okto_pulse/community/adapters/sqlalchemy_spec_dependency.py",
         "src/okto_pulse/community/adapters/sqlalchemy_unit_of_work.py",
     }

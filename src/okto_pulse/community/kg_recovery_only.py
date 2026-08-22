@@ -12028,9 +12028,10 @@ def _assert_legacy_queue_only_artifact_transition(
         compensation_relative,
         audit_relative,
     }
+    operational = {".rebuild-audit-artifact-store.lock"}
     terminal = _snapshot_tree_hashes(rebuild_root)
     for relative in set(rebuild_baseline) | set(terminal):
-        if relative not in mutable:
+        if relative not in mutable and relative not in operational:
             _require(
                 rebuild_baseline.get(relative) == terminal.get(relative),
                 "legacy_queue_only_unrelated_rebuild_artifact_changed",

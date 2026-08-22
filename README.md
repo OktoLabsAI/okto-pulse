@@ -68,9 +68,9 @@ Current 0.3.2 surface:
 | Surface | Count |
 | --- | ---: |
 | Governance gates | 17 |
-| Core MCP tools | 337 |
+| Core MCP tools | 338 |
 | Community-only MCP tools | 0 |
-| MCP tools exposed by `okto-pulse serve` | 337 |
+| MCP tools exposed by `okto-pulse serve` | 338 |
 
 The community package materializes the full `okto-pulse-core` command catalog in
 its FastMCP host. That means installed community runtimes expose the complete

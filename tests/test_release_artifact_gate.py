@@ -35,15 +35,12 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
 
     assert Path(core_mcp_server.__file__).resolve().is_relative_to(module.CORE_REPO)
     assert module.EXPECTED_VERSION == "0.3.2"
-    assert module.EXPECTED_MCP_TOOL_COUNT == live_tool_count == 337
-    assert module.EXPECTED_CANONICAL_TOOL_COUNT == live_canonical_count == 329
+    assert module.EXPECTED_MCP_TOOL_COUNT == live_tool_count == 338
+    assert module.EXPECTED_CANONICAL_TOOL_COUNT == live_canonical_count == 330
     assert module.EXPECTED_TOOL_ALIAS_COUNT == live_alias_count == 8
     assert module.EXPECTED_RESOURCE_COUNT == live_resource_count == 55
     assert module.MINIMUM_SUPPORTED_PYTHON == (3, 11)
-    assert module.CORE_REPO.name in {
-        "okto-pulse-core",
-        "okto_labs_pulse_core",
-    }
+    assert module._is_core_checkout(module.CORE_REPO)
     assert "site-packages" not in str(module.CORE_REPO).lower()
     forbidden_names = {path.name for path in module.FORBIDDEN_CHECKOUT_ROOTS}
     assert "okto_labs_pulse_core" in forbidden_names
@@ -97,8 +94,12 @@ def test_release_gate_prefers_the_anchor_checkout_family(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
-    stale = workspace / "okto-pulse-core"
-    expected = workspace / "okto_labs_pulse_core"
+    if REPO.name.casefold() == "okto_labs_pulse_community":
+        expected = workspace / "okto_labs_pulse_core"
+        stale = workspace / "okto-pulse-core"
+    else:
+        expected = workspace / "okto-pulse-core"
+        stale = workspace / "okto_labs_pulse_core"
     for checkout in (stale, expected):
         (checkout / "src" / "okto_pulse" / "core").mkdir(parents=True)
         (checkout / "pyproject.toml").write_text(
@@ -116,7 +117,7 @@ def test_release_gate_prefers_the_anchor_checkout_family(
     gate = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gate)
 
-    assert gate.COMMUNITY_REPO.name == "okto_labs_pulse_community"
+    assert gate.COMMUNITY_REPO == REPO.resolve()
     assert gate.CORE_REPO == expected.resolve()
 
 
@@ -243,8 +244,8 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     )
     mcp_http = evidence["installed"]["mcp_http"]
     assert mcp_http["transport"] == "streamable-http-loopback"
-    assert mcp_http["tool_count"] == 337
-    assert mcp_http["canonical_tool_count"] == 329
+    assert mcp_http["tool_count"] == 338
+    assert mcp_http["canonical_tool_count"] == 330
     assert mcp_http["tool_alias_count"] == 8
     assert mcp_http["resource_count"] == 55
     assert mcp_http["ska_tool_count"] == 13

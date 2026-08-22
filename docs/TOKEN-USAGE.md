@@ -11,7 +11,7 @@ Estimated context cost for an agent connected to the Pulse MCP server
 | Component | Tokens |
 | --- | --- |
 | Server `instructions` (agent operating instructions) | ~2.3K |
-| `tools/list` — 337 tools (name + description + JSON schema) | ~48.5K |
+| `tools/list` — 338 tools (name + description + JSON schema) | ~48.5K |
 | **Total at connect** | **~50.8K** |
 
 With prompt caching this block is paid in full only on the first turn of a
