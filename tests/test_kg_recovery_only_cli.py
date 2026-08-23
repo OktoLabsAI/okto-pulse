@@ -21,6 +21,7 @@ import pytest
 from okto_pulse.community import kg_recovery_only as recovery
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 BOARD_ID = "15877207-c147-4805-96d7-d53a625571df"
 INSTALL_HASH = "9" * 64
 EXECUTOR_HASH = "3" * 64
@@ -194,6 +195,22 @@ def test_inspect_install_does_not_touch_data_home_or_execute(
     assert payload["install_fingerprint"] == INSTALL_HASH
     assert payload["executor_sha256"] == EXECUTOR_HASH
     assert payload["entrypoints_sha256"] == ENTRYPOINT_HASH
+
+
+def test_recovery_defaults_match_the_pinned_release_dependencies() -> None:
+    project = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = set(project["project"]["dependencies"])
+    lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
+
+    assert recovery.EXPECTED_LADYBUG_VERSION == "0.16.0"
+    assert recovery.EXPECTED_SQLALCHEMY_VERSION == "2.0.49"
+    assert "ladybug==0.16.0" in dependencies
+    assert "sqlalchemy[asyncio]==2.0.49" in dependencies
+    assert '{ name = "ladybug", specifier = "==0.16.0" }' in lock
+    assert (
+        '{ name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.49" }'
+        in lock
+    )
 
 
 def test_process_oracle_detects_real_launchers_but_not_ancestor_shells() -> None:
