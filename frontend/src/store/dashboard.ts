@@ -366,11 +366,45 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
           ));
       }
 
-      if (loadedStatuses.length !== 1 || sourceStatus === card.status) {
+      if (loadedStatuses.length !== 1) {
         return { columns: nextColumns };
       }
 
       const nextMeta = { ...state.columnsMeta };
+      if (sourceStatus === card.status) {
+        const previousMatchesProjection = belongsToLoadedProjection(
+          previousCard,
+          state.columnsProjection,
+        );
+        const previousType = normalizedCardType(previousCard);
+        const nextType = normalizedCardType(card);
+        if (
+          previousMatchesProjection !== matchesProjection
+          || previousType !== nextType
+        ) {
+          let reconciledMeta = state.columnsMeta[sourceStatus];
+          if (previousMatchesProjection) {
+            reconciledMeta = adjustColumnMeta(
+              reconciledMeta,
+              previousType,
+              0,
+              -1,
+            );
+          }
+          if (matchesProjection) {
+            reconciledMeta = adjustColumnMeta(
+              reconciledMeta,
+              nextType,
+              0,
+              1,
+            );
+          }
+          nextMeta[sourceStatus] = reconciledMeta;
+          return { columns: nextColumns, columnsMeta: nextMeta };
+        }
+        return { columns: nextColumns };
+      }
+
       nextMeta[sourceStatus] = adjustColumnMeta(
         state.columnsMeta[sourceStatus],
         normalizedCardType(previousCard),

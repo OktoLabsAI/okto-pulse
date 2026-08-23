@@ -234,6 +234,38 @@ describe('dashboard paginated column store', () => {
     expect(useDashboardStore.getState().columns.rejected).toEqual([]);
   });
 
+  it('reconciles metadata when a same-column edit leaves the loaded search', () => {
+    const matching = {
+      ...card('search-result', 'done'),
+      title: 'Needle in the title',
+    };
+    useDashboardStore.setState({
+      columns: { ...emptyColumns(), done: [matching] },
+      columnsProjection: { search: 'needle' },
+      columnsMeta: {
+        done: {
+          total_filtered: 1,
+          total_overall: 5,
+          has_more: false,
+          facets: { card_type: { normal: 1 } },
+        },
+      },
+    });
+
+    useDashboardStore.getState().updateCardInColumn({
+      ...matching,
+      title: 'No longer in the result',
+    });
+
+    const state = useDashboardStore.getState();
+    expect(state.columns.done).toEqual([]);
+    expect(state.columnsMeta.done).toMatchObject({
+      total_filtered: 0,
+      total_overall: 5,
+      facets: { card_type: { normal: 0 } },
+    });
+  });
+
   it('removes a moved card without injecting it into a partial target page', () => {
     const moving = card('beyond-window', 'validation');
     useDashboardStore.setState({
