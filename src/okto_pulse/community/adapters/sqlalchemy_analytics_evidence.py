@@ -8,6 +8,8 @@ application use case.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from typing import Iterable
 
@@ -26,6 +28,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 )
 from okto_pulse.core.domain.enums import CardStatus, SprintStatus
 from okto_pulse.core.kg.rebuild_audit import (
+    CognitiveConsolidationItem,
     CognitiveConsolidationItemStore,
     CognitiveItemStatus,
     require_rebuild_audit_artifact_store,
@@ -82,6 +85,46 @@ _OPEN_CANONICAL_DEBT_STATES = (
 _ACTIVE_QUEUE_STATES = ("pending", "claimed")
 _ACTIVE_POLICY_STATES = ("pending", "processing", "dlq")
 _POLICY_HANDLER = "PolicyConstraintProjectionHandler"
+_BOARD_KG_CURSOR_PREFIX = "snapshot"
+
+
+def _cognitive_snapshot_id(
+    generation: str | None,
+    items: Iterable[CognitiveConsolidationItem],
+) -> str:
+    """Identify the exact mutable ledger snapshot behind a cursor page."""
+
+    canonical_items = sorted(
+        (item.to_dict() for item in items),
+        key=lambda item: (str(item.get("artifact_id", "")), str(item["item_id"])),
+    )
+    payload = {"generation": generation, "items": canonical_items}
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _encode_board_kg_cursor(*, snapshot_id: str, offset: int) -> str:
+    return f"{_BOARD_KG_CURSOR_PREFIX}:{snapshot_id}:offset:{offset}"
+
+
+def _decode_board_kg_cursor(cursor: str, *, snapshot_id: str) -> int:
+    parts = cursor.split(":")
+    if (
+        len(parts) != 4
+        or parts[0] != _BOARD_KG_CURSOR_PREFIX
+        or parts[2] != "offset"
+    ):
+        raise ValueError("board_kg_analytics_cursor_invalid")
+    if parts[1] != snapshot_id:
+        raise ValueError("board_kg_analytics_cursor_stale")
+    try:
+        offset = int(parts[3])
+    except ValueError as exc:
+        raise ValueError("board_kg_analytics_cursor_invalid") from exc
+    if offset < 0:
+        raise ValueError("board_kg_analytics_cursor_invalid")
+    return offset
 
 
 def _utc(value: datetime | None, *, fallback: datetime) -> datetime:
@@ -396,19 +439,18 @@ class CommunitySqlAlchemyBoardKgAnalyticsEvidence:
                 )
             )
         facts.sort(key=lambda item: (item.artifact_id, item.cognitive_item_id))
+        snapshot_id = _cognitive_snapshot_id(generation, raw_items)
         start = 0
         if query.cursor is not None:
-            prefix, separator, raw_offset = query.cursor.partition(":")
-            if prefix != "offset" or not separator:
-                raise ValueError("board_kg_analytics_cursor_invalid")
-            try:
-                start = int(raw_offset)
-            except ValueError as exc:
-                raise ValueError("board_kg_analytics_cursor_invalid") from exc
-            if start < 0:
+            start = _decode_board_kg_cursor(query.cursor, snapshot_id=snapshot_id)
+            if start > len(facts):
                 raise ValueError("board_kg_analytics_cursor_invalid")
         end = min(start + query.limit, len(facts))
-        next_cursor = f"offset:{end}" if end < len(facts) else None
+        next_cursor = (
+            _encode_board_kg_cursor(snapshot_id=snapshot_id, offset=end)
+            if end < len(facts)
+            else None
+        )
         return tuple(facts[start:end]), next_cursor, None
 
     async def load(
