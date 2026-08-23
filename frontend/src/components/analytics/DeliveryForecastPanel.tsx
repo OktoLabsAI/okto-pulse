@@ -23,6 +23,7 @@ interface DeliveryForecastPanelProps {
   forecast: DeliveryForecastResponse | null;
   forecastLoading: boolean;
   forecastError: string | null;
+  forecastExportError?: string | null;
   forecastExporting: boolean;
   from: string;
   to: string;
@@ -76,6 +77,7 @@ export function DeliveryForecastPanel({
   forecast,
   forecastLoading,
   forecastError,
+  forecastExportError = null,
   forecastExporting,
   from,
   to,
@@ -167,6 +169,7 @@ export function DeliveryForecastPanel({
             <button type="button" onClick={onRetryForecast} className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 dark:text-red-300"><RefreshCw className="h-3.5 w-3.5" /> Retry</button>
           </div>
         )}
+        {forecastExportError && <div className="mt-4 flex items-center justify-between gap-3 rounded-lg bg-red-50 px-3 py-2 dark:bg-red-950/25" role="alert"><p className="text-xs text-red-700 dark:text-red-300">CSV export failed: {forecastExportError}</p><button type="button" disabled={forecastExporting} onClick={() => void onExportForecast()} className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 disabled:opacity-50 dark:text-red-300"><Download className="h-3.5 w-3.5" aria-hidden="true" /> Retry export</button></div>}
         {!forecastLoading && !forecastError && !forecast && (
           <div className="mt-3 rounded-md border border-dashed border-amber-300 bg-amber-50 px-3 py-3 dark:border-amber-800 dark:bg-amber-950/20">
             <div className="flex items-center gap-2"><StateBadge value="unavailable" /><p className="text-xs font-semibold text-amber-800 dark:text-amber-200">Forecast contract not supplied</p></div>

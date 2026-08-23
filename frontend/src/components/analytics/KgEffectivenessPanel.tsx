@@ -24,6 +24,7 @@ export interface KgEffectivenessPanelProps {
   data: BoardKgAnalyticsResponse | null;
   loading: boolean;
   error: string | null;
+  exportError?: string | null;
   errorState?: Extract<BoardKgAnalyticsState, 'restricted' | 'unavailable' | 'error'>;
   exporting: boolean;
   from: string;
@@ -134,6 +135,7 @@ export function KgEffectivenessPanel({
   data,
   loading,
   error,
+  exportError = null,
   errorState = 'error',
   exporting,
   from,
@@ -219,6 +221,7 @@ export function KgEffectivenessPanel({
 
         {loading && <p className="mt-4 text-xs text-gray-500" role="status">Loading Board KG Analytics…</p>}
         {!loading && error && <div className="mt-4 space-y-2"><AnalyticsStateNotice state={errorState} /><button type="button" onClick={onRetry} className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 dark:text-red-300"><RefreshCw className="h-3.5 w-3.5" aria-hidden="true" /> Retry: {error}</button></div>}
+        {exportError && <div className="mt-4 flex items-center justify-between gap-3 rounded-lg bg-red-50 px-3 py-2 dark:bg-red-950/25" role="alert"><p className="text-xs text-red-700 dark:text-red-300">CSV export failed: {exportError}</p><button type="button" disabled={exporting} onClick={() => void onExport()} className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 disabled:opacity-50 dark:text-red-300"><Download className="h-3.5 w-3.5" aria-hidden="true" /> Retry export</button></div>}
         {!loading && !error && !data && <div className="mt-4"><AnalyticsStateNotice state="unavailable" /></div>}
         {!loading && !error && data && <div className="mt-4 space-y-4">
           <AnalyticsStateNotice state={data.result_state} />
@@ -238,6 +241,7 @@ export function KgEffectivenessPanel({
 
       {loading && <p className="mt-4 text-xs text-gray-500" role="status">Loading Board KG Analytics…</p>}
       {!loading && error && <div className="mt-4 space-y-2"><AnalyticsStateNotice state={errorState} /><div className="flex items-center justify-between gap-3 rounded-lg bg-red-50 px-3 py-2 dark:bg-red-950/25"><p className="text-xs text-red-700 dark:text-red-300">{error}</p><button type="button" onClick={onRetry} className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 dark:text-red-300"><RefreshCw className="h-3.5 w-3.5" aria-hidden="true" /> Retry</button></div></div>}
+      {exportError && <div className="mt-4 flex items-center justify-between gap-3 rounded-lg bg-red-50 px-3 py-2 dark:bg-red-950/25" role="alert"><p className="text-xs text-red-700 dark:text-red-300">CSV export failed: {exportError}</p><button type="button" disabled={exporting} onClick={() => void onExport()} className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 disabled:opacity-50 dark:text-red-300"><Download className="h-3.5 w-3.5" aria-hidden="true" /> Retry export</button></div>}
       {!loading && !error && !data && <div className="mt-4"><AnalyticsStateNotice state="unavailable" /></div>}
 
       {!loading && !error && data && (!effectiveness || !inventory) && <div className="mt-4 rounded-lg border border-dashed border-red-300 bg-red-50 px-4 py-5 text-xs text-red-800 dark:border-red-800 dark:bg-red-950/20 dark:text-red-200">The canonical KG payload is incomplete. Effectiveness and inventory were not inferred from other facts.</div>}

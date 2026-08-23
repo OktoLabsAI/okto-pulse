@@ -397,15 +397,18 @@ export function BoardDashboard({
   const [deliveryForecast, setDeliveryForecast] = useState<DeliveryForecastResponse | null>(null);
   const [deliveryForecastLoading, setDeliveryForecastLoading] = useState(true);
   const [deliveryForecastError, setDeliveryForecastError] = useState<string | null>(null);
+  const [deliveryForecastExportError, setDeliveryForecastExportError] = useState<string | null>(null);
   const [deliveryForecastRetry, setDeliveryForecastRetry] = useState(0);
   const [deliveryForecastExporting, setDeliveryForecastExporting] = useState(false);
   const [kgAnalytics, setKgAnalytics] = useState<BoardKgAnalyticsResponse | null>(null);
   const [kgLoading, setKgLoading] = useState(true);
   const [kgError, setKgError] = useState<string | null>(null);
+  const [kgExportError, setKgExportError] = useState<string | null>(null);
   const [kgRetry, setKgRetry] = useState(0);
   const [kgExporting, setKgExporting] = useState(false);
   const [canonicalCoverage, setCanonicalCoverage] = useState<CanonicalCoverageResponse | null>(null);
   const [canonicalCoverageError, setCanonicalCoverageError] = useState<string | null>(null);
+  const [canonicalCoverageExportError, setCanonicalCoverageExportError] = useState<string | null>(null);
   const [canonicalCoverageLoading, setCanonicalCoverageLoading] = useState(true);
   const [canonicalCoverageRetry, setCanonicalCoverageRetry] = useState(0);
   const [canonicalCoverageExporting, setCanonicalCoverageExporting] = useState(false);
@@ -418,6 +421,7 @@ export function BoardDashboard({
     policyResource: PolicyResourceReadinessResponse;
   } | null>(null);
   const [readinessError, setReadinessError] = useState<string | null>(null);
+  const [readinessExportError, setReadinessExportError] = useState<{ kind: 'spec' | 'policy-resource'; message: string } | null>(null);
   const [readinessLoading, setReadinessLoading] = useState(true);
   const [readinessRetry, setReadinessRetry] = useState(0);
   const [readinessExporting, setReadinessExporting] = useState<'spec' | 'policy-resource' | null>(null);
@@ -714,6 +718,22 @@ export function BoardDashboard({
     return [...current.items].sort((a, b) => (a.title || '').localeCompare(b.title || ''));
   }, [entities, activeTab]);
 
+  const exportReadiness = async (kind: 'spec' | 'policy-resource') => {
+    if (readinessExporting !== null) return;
+    setReadinessExporting(kind);
+    setReadinessExportError(null);
+    try {
+      await api.exportReadinessCsv(boardId, kind, from, to);
+    } catch (err) {
+      setReadinessExportError({
+        kind,
+        message: err instanceof Error ? err.message : 'Readiness export failed',
+      });
+    } finally {
+      setReadinessExporting(null);
+    }
+  };
+
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
@@ -753,6 +773,7 @@ export function BoardDashboard({
         data={kgAnalytics}
         loading={kgLoading}
         error={kgError}
+        exportError={kgExportError}
         exporting={kgExporting}
         from={from}
         to={to}
@@ -762,10 +783,11 @@ export function BoardDashboard({
         onExport={async () => {
           if (kgExporting) return;
           setKgExporting(true);
+          setKgExportError(null);
           try {
             await api.exportBoardKgAnalyticsCsv(boardId, from, to);
           } catch (err) {
-            setKgError(err instanceof Error ? err.message : 'KG effectiveness export failed');
+            setKgExportError(err instanceof Error ? err.message : 'KG effectiveness export failed');
           } finally {
             setKgExporting(false);
           }
@@ -776,6 +798,7 @@ export function BoardDashboard({
         data={canonicalCoverage}
         loading={canonicalCoverageLoading}
         error={canonicalCoverageError}
+        exportError={canonicalCoverageExportError}
         exporting={canonicalCoverageExporting}
         from={from}
         to={to}
@@ -788,10 +811,11 @@ export function BoardDashboard({
         onExport={async () => {
           if (canonicalCoverageExporting) return;
           setCanonicalCoverageExporting(true);
+          setCanonicalCoverageExportError(null);
           try {
             await api.exportCanonicalBoardCoverageCsv(boardId, from, to);
           } catch (err) {
-            setCanonicalCoverageError(err instanceof Error ? err.message : 'Coverage export failed');
+            setCanonicalCoverageExportError(err instanceof Error ? err.message : 'Coverage export failed');
           } finally {
             setCanonicalCoverageExporting(false);
           }
@@ -832,17 +856,7 @@ export function BoardDashboard({
                 key={kind}
                 type="button"
                 disabled={readinessExporting !== null || readinessLoading || readiness === null}
-                onClick={async () => {
-                  if (readinessExporting !== null) return;
-                  setReadinessExporting(kind);
-                  try {
-                    await api.exportReadinessCsv(boardId, kind, from, to);
-                  } catch (err) {
-                    setReadinessError(err instanceof Error ? err.message : 'Readiness export failed');
-                  } finally {
-                    setReadinessExporting(null);
-                  }
-                }}
+                onClick={() => void exportReadiness(kind)}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-gray-200 dark:border-gray-600 disabled:opacity-50"
               >
                 <Download className="w-3.5 h-3.5" />
@@ -861,6 +875,14 @@ export function BoardDashboard({
             <span className="text-xs text-red-700 dark:text-red-300">{readinessError}</span>
             <button type="button" onClick={() => setReadinessRetry((value) => value + 1)} className="inline-flex items-center gap-1 text-xs text-red-700 dark:text-red-300">
               <RefreshCw className="w-3.5 h-3.5" /> Retry
+            </button>
+          </div>
+        )}
+        {readinessExportError && (
+          <div className="mt-4 flex items-center justify-between rounded-md bg-red-50 px-3 py-2 dark:bg-red-900/20" role="alert">
+            <span className="text-xs text-red-700 dark:text-red-300">CSV export failed: {readinessExportError.message}</span>
+            <button type="button" disabled={readinessExporting !== null} onClick={() => void exportReadiness(readinessExportError.kind)} className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 disabled:opacity-50 dark:text-red-300">
+              <Download className="h-3.5 w-3.5" /> Retry export
             </button>
           </div>
         )}
@@ -1439,6 +1461,7 @@ export function BoardDashboard({
         forecast={deliveryForecast}
         forecastLoading={deliveryForecastLoading}
         forecastError={deliveryForecastError}
+        forecastExportError={deliveryForecastExportError}
         forecastExporting={deliveryForecastExporting}
         from={from}
         to={to}
@@ -1448,10 +1471,11 @@ export function BoardDashboard({
         onExportForecast={async () => {
           if (deliveryForecastExporting) return;
           setDeliveryForecastExporting(true);
+          setDeliveryForecastExportError(null);
           try {
             await api.exportBoardDeliveryForecastCsv(boardId, from, to);
           } catch (err) {
-            setDeliveryForecastError(err instanceof Error ? err.message : 'Delivery forecast export failed');
+            setDeliveryForecastExportError(err instanceof Error ? err.message : 'Delivery forecast export failed');
           } finally {
             setDeliveryForecastExporting(false);
           }
