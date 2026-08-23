@@ -28,6 +28,7 @@ export interface CanonicalCoveragePanelProps {
   data: CanonicalCoverageResponse | null;
   loading: boolean;
   error: string | null;
+  exportError?: string | null;
   exporting: boolean;
   from: string;
   to: string;
@@ -174,6 +175,7 @@ export function CanonicalCoveragePanel({
   data,
   loading,
   error,
+  exportError = null,
   exporting,
   from,
   to,
@@ -360,6 +362,15 @@ export function CanonicalCoveragePanel({
           <span className="text-xs text-red-700 dark:text-red-300">{error}</span>
           <button type="button" onClick={onRetry} className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 dark:text-red-300">
             <RefreshCw className="h-3.5 w-3.5" aria-hidden="true" /> Retry
+          </button>
+        </div>
+      )}
+
+      {exportError && (
+        <div className="mt-4 flex items-center justify-between gap-3 rounded-lg bg-red-50 px-3 py-2 dark:bg-red-900/20" role="alert">
+          <span className="text-xs text-red-700 dark:text-red-300">CSV export failed: {exportError}</span>
+          <button type="button" disabled={exporting} onClick={() => void onExport()} className="inline-flex items-center gap-1 text-xs font-semibold text-red-700 disabled:opacity-50 dark:text-red-300">
+            <Download className="h-3.5 w-3.5" aria-hidden="true" /> Retry export
           </button>
         </div>
       )}

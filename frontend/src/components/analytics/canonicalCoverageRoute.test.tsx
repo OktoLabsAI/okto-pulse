@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const dashboardApi = vi.hoisted(() => ({
@@ -15,14 +15,20 @@ vi.mock('./CanonicalCoverageFullView', () => ({
   CanonicalCoverageFullView: ({
     data,
     error,
+    exportError,
     specTitles,
+    onExport,
   }: {
     data: unknown;
     error: string | null;
+    exportError: string | null;
     specTitles: Record<string, string>;
+    onExport: () => Promise<void>;
   }) => (
     <div data-testid="canonical-route-result" data-has-data={String(data !== null)}>
       <span>{error ?? 'no-error'}</span>
+      <span>{exportError ?? 'no-export-error'}</span>
+      <button type="button" onClick={() => void onExport()}>Export</button>
       {Object.values(specTitles).map((title) => <span key={title}>{title}</span>)}
     </div>
   ),
@@ -115,6 +121,21 @@ describe('CanonicalCoverageRoute catalog boundary', () => {
 
     const result = await screen.findByTestId('canonical-route-result');
     await waitFor(() => expect(result).toHaveAttribute('data-has-data', 'true'));
+    expect(result).toHaveTextContent('no-error');
+  });
+
+  it('keeps loaded coverage visible when CSV export fails', async () => {
+    dashboardApi.getBoardAnalyticsEntities.mockResolvedValue({ total: 0, items: [] });
+    dashboardApi.exportCanonicalBoardCoverageCsv.mockRejectedValue(new Error('download unavailable'));
+
+    renderRoute();
+
+    const result = await screen.findByTestId('canonical-route-result');
+    await waitFor(() => expect(result).toHaveAttribute('data-has-data', 'true'));
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+
+    await waitFor(() => expect(result).toHaveTextContent('download unavailable'));
+    expect(result).toHaveAttribute('data-has-data', 'true');
     expect(result).toHaveTextContent('no-error');
   });
 });

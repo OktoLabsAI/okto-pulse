@@ -24,6 +24,7 @@ export function CanonicalCoverageRoute({
   const [specTitles, setSpecTitles] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   const [exporting, setExporting] = useState(false);
 
@@ -96,13 +97,14 @@ export function CanonicalCoverageRoute({
       data={data}
       loading={loading}
       error={error}
+      exportError={exportError}
       exporting={exporting}
       specTitles={titleCatalog}
       onRetry={() => setRetry((value) => value + 1)}
       onExport={async () => {
         if (exporting) return;
         setExporting(true);
-        setError(null);
+        setExportError(null);
         try {
           await api.exportCanonicalBoardCoverageCsv(
             boardId,
@@ -110,7 +112,7 @@ export function CanonicalCoverageRoute({
             queryState.to,
           );
         } catch (caught) {
-          setError(caught instanceof Error ? caught.message : 'Canonical coverage export failed.');
+          setExportError(caught instanceof Error ? caught.message : 'Canonical coverage export failed.');
         } finally {
           setExporting(false);
         }

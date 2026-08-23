@@ -48,6 +48,7 @@ export function FlowHealthFullView({
   const [data, setData] = useState<FlowHealthResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [retry, setRetry] = useState(0);
   const [subjectTitles, setSubjectTitles] = useState<Record<string, string>>({});
@@ -120,11 +121,11 @@ export function FlowHealthFullView({
   const exportCsv = async () => {
     if (exporting) return;
     setExporting(true);
-    setError(null);
+    setExportError(null);
     try {
       await api.exportBoardFlowHealthCsv(boardId, from, to);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Flow Health export failed.');
+      setExportError(reason instanceof Error ? reason.message : 'Flow Health export failed.');
     } finally {
       setExporting(false);
     }
@@ -149,6 +150,7 @@ export function FlowHealthFullView({
         data={data}
         loading={loading}
         error={error}
+        exportError={exportError}
         exporting={exporting}
         from={from}
         to={to}

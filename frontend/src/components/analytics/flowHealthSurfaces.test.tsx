@@ -141,6 +141,31 @@ describe('Flow Health governed surfaces', () => {
     expect(onOpenSettings).toHaveBeenCalledOnce();
   });
 
+  it('keeps loaded Flow Health data visible when CSV export fails', async () => {
+    apiMock.exportBoardFlowHealthCsv.mockRejectedValue(new Error('download unavailable'));
+    render(
+      <FlowHealthFullView
+        boardId="board-1"
+        from="2026-08-01"
+        to="2026-08-21"
+        filters={{ search: '', workType: 'all', owner: 'all', health: 'all', blockersOnly: false }}
+        onFiltersChange={vi.fn()}
+        onBack={vi.fn()}
+        onOpenSettings={vi.fn()}
+        onSelectEntity={vi.fn()}
+      />,
+    );
+
+    const panel = await screen.findByTestId('flow-health-panel');
+    expect(within(panel).getAllByText('Billing retry contract').length).toBeGreaterThan(0);
+    fireEvent.click(within(panel).getByRole('button', { name: 'Complete CSV' }));
+
+    expect(await within(panel).findByText(/CSV export failed: download unavailable/)).toBeInTheDocument();
+    expect(within(panel).getAllByText('Billing retry contract').length).toBeGreaterThan(0);
+    fireEvent.click(within(panel).getByRole('button', { name: 'Retry export' }));
+    await waitFor(() => expect(apiMock.exportBoardFlowHealthCsv).toHaveBeenCalledTimes(2));
+  });
+
   it('persists and restores the versioned Board policy on its separate surface', async () => {
     render(<FlowHealthSettingsPage boardId="board-1" onBack={vi.fn()} />);
 
