@@ -336,6 +336,24 @@ describe('Delivery Intelligence A5 full view', () => {
     expect(screen.queryByLabelText('Delivery summary')).not.toBeInTheDocument();
   });
 
+  it('keeps an empty projection visible and retries only a failed export', async () => {
+    dashboardApi.getBoardDeliveryIntelligence.mockResolvedValue(deliveryPage({ resultState: 'empty', sprints: [] }));
+    dashboardApi.exportBoardDeliveryIntelligenceCsv
+      .mockRejectedValueOnce(new Error('download unavailable'))
+      .mockResolvedValueOnce(undefined);
+    renderFullView();
+
+    expect(await screen.findByText('No delivery evidence in this period')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Export CSV' }));
+
+    const exportAlert = await screen.findByRole('alert');
+    expect(exportAlert).toHaveTextContent('CSV export failed: download unavailable');
+    expect(screen.getByText('No delivery evidence in this period')).toBeInTheDocument();
+    fireEvent.click(within(exportAlert).getByRole('button', { name: 'Retry export' }));
+    await waitFor(() => expect(dashboardApi.exportBoardDeliveryIntelligenceCsv).toHaveBeenCalledTimes(2));
+    expect(dashboardApi.getBoardDeliveryIntelligence).toHaveBeenCalledTimes(1);
+  });
+
   it('exposes a transport error and retries without replacing it with an empty result', async () => {
     dashboardApi.getBoardDeliveryIntelligence
       .mockRejectedValueOnce(new Error('Delivery authority timed out.'))

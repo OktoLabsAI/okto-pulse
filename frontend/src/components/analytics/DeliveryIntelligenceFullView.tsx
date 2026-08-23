@@ -111,6 +111,7 @@ export function DeliveryIntelligenceFullView({
   const [loading, setLoading] = useState(true);
   const [forecastLoading, setForecastLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [forecastError, setForecastError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   const [exporting, setExporting] = useState(false);
@@ -215,11 +216,11 @@ export function DeliveryIntelligenceFullView({
   const exportCsv = async () => {
     if (exporting) return;
     setExporting(true);
-    setError(null);
+    setExportError(null);
     try {
       await api.exportBoardDeliveryIntelligenceCsv(boardId, from, to, filters);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Delivery Intelligence export failed.');
+      setExportError(caught instanceof Error ? caught.message : 'Delivery Intelligence export failed.');
     } finally {
       setExporting(false);
     }
@@ -282,6 +283,7 @@ export function DeliveryIntelligenceFullView({
 
       {loading && <div className="rounded-xl border border-gray-200 bg-white p-8 text-center text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800" role="status">Loading Delivery Intelligence…</div>}
       {!loading && error && <div className="flex items-center justify-between rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300" role="alert"><span className="flex items-center gap-2"><AlertTriangle className="h-4 w-4" />{error}</span><button type="button" className="font-semibold underline" onClick={() => setRetry((value) => value + 1)}>Retry</button></div>}
+      {exportError && <div className="flex items-center justify-between rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300" role="alert"><span className="flex items-center gap-2"><AlertTriangle className="h-4 w-4" />CSV export failed: {exportError}</span><button type="button" disabled={exporting} className="font-semibold underline disabled:opacity-50" onClick={() => void exportCsv()}>Retry export</button></div>}
       {!loading && !error && data?.result_state === 'empty' && <div className="rounded-xl border border-dashed border-gray-300 bg-white p-8 text-center dark:border-gray-700 dark:bg-gray-800"><CalendarRange className="mx-auto h-6 w-6 text-gray-400" /><p className="mt-2 text-sm font-semibold">No delivery evidence in this period</p><p className="mt-1 text-xs text-gray-500">Change the period, Sprint, or lane filters. No zero-valued commitment is inferred.</p></div>}
 
       {!loading && data && data.result_state !== 'empty' && (
