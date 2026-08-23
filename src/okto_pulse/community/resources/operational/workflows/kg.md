@@ -6,7 +6,7 @@ version: "1.0"
 
 ## Architecture Overview
 
-- **Per-board LadybugDB graph** at `~/.okto-pulse/boards/{board_id}/graph.lbug` — 11 node types, 10 relationship types, 5 HNSW vector indexes
+- **Per-board LadybugDB graph** at `~/.okto-pulse/boards/{board_id}/graph.lbug` — 11 node types, 16 relationship types, 9 HNSW vector indexes
 - **Global discovery meta-graph** at `~/.okto-pulse/global/discovery.lbug` — board summaries, topic clusters, canonical entities (digest-only, no sensitive content)
 - **SQLite operational tables**: `consolidation_queue`, `consolidation_audit`, node back-references for undo, `global_update_outbox`
 - **Agent-as-LLM premise**: the platform NEVER invokes LLM. All cognitive work (extraction, reasoning, reconciliation decisions) is done by YOU, the code agent.
@@ -27,7 +27,7 @@ version: "1.0"
 
 **Cognitive edge types (agent-emittable only):** `supersedes`, `contradicts`, `depends_on`, `relates_to`, `validates`
 
-**Reserved deterministic edges** (auto-created by worker, never emit manually): `belongs_to`, `derives_from`, `implements`, `mentions`, `tests`, `violates`, `originates_from`, `covered_by`
+**Reserved deterministic edges** (auto-created by worker, never emit manually): `derives_from`, `mentions`, `violates`, `implements`, `tests`, `precedes`, `supports`, `overlaps`, `belongs_to`, `originates_from`, `covered_by`
 
 **Consolidation workflow:**
 ```
@@ -292,7 +292,7 @@ Before creating any Decision or Constraint, run:
 
 | Edge type | Who emits | When |
 |---|---|---|
-| `mentions`, `derives_from`, `tests`, `implements`, `violates`, `belongs_to` | Layer 1 deterministic worker | Auto on consolidation |
+| `derives_from`, `mentions`, `violates`, `implements`, `tests`, `precedes`, `supports`, `overlaps`, `belongs_to`, `originates_from`, `covered_by` | Layer 1 deterministic worker | Auto on consolidation or relational projection |
 | `supersedes`, `contradicts`, `depends_on`, `relates_to`, `validates` | Cognitive agent (you) | Manual cognitive edges only |
 
 ### KG Health

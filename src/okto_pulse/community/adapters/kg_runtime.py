@@ -1038,6 +1038,16 @@ class BoardConnection:
         self._board_id = board_id
         self._closed = False
         self._load_vector_extension = load_vector_extension
+        # A proven-hot, non-vector read only needs a fresh Connection over the
+        # already-open Database.  It must not queue behind an unrelated native
+        # writer: no bootstrap/schema work remains and, unlike LOAD VECTOR, a
+        # plain Connection + MATCH does not append to Ladybug's WAL.  Admission
+        # is deliberately fail-closed.  The optimistic cache check is repeated
+        # after entering the board close guard, so an eviction or governed
+        # storage mutation that wins the race sends us through the serialized
+        # cold/vector path below.
+        if self._try_initialize_cached_read_only(board_id):
+            return
         # Ladybug permits one process-wide writer, including extension
         # initialization and writes to different Database instances.  Opening
         # a connection can bootstrap schema and LOAD VECTOR, so it participates
@@ -1053,6 +1063,54 @@ class BoardConnection:
             phase="connection_open",
         ):
             self._initialize(board_id)
+
+    def _try_initialize_cached_read_only(self, board_id: str) -> bool:
+        """Open one proven-hot non-vector reader without the writer lease.
+
+        The fast path is admitted only when both process-local proofs agree:
+        schema bootstrap completed and the board Database is resident.  The
+        close guard is then entered and both proofs are checked again before
+        the native Connection is created.  A miss returns ``False`` so the
+        caller retains the existing writer-serialized initialization path.
+        """
+
+        if self._load_vector_extension or board_id not in _BOOTSTRAPPED_BOARDS:
+            return False
+
+        key = str(board_kuzu_path(board_id))
+        with _board_db_cache_lock:
+            if key not in _board_db_cache:
+                return False
+
+        close_guard = _get_close_guard(board_id)
+        close_guard.reader_enter()
+        initialized = False
+        try:
+            # Revalidate under the reader registration.  Any close/eviction
+            # that won before reader_enter may have invalidated either proof;
+            # once this check succeeds the close guard pins the Database until
+            # BoardConnection.close() releases the reader.
+            if board_id not in _BOOTSTRAPPED_BOARDS:
+                return False
+            with _board_db_cache_lock:
+                db = _board_db_cache.get(key)
+                if db is None:
+                    return False
+                _board_db_cache.move_to_end(key)
+
+            self._close_guard = close_guard
+            self.db = db
+            self.conn = kuzu.Connection(db)
+            initialized = True
+            logger.debug(
+                "[KG] cached non-vector reader opened without writer lease "
+                "board_id=%s",
+                board_id,
+            )
+            return True
+        finally:
+            if not initialized:
+                close_guard.reader_exit()
 
     def _initialize(self, board_id: str) -> None:
         # Defensive: self-heal missing or partial graphs before we open our
@@ -2915,8 +2973,9 @@ def _enforce_embedding_guard(board_id: str) -> None:
         )
     if verdict == VERDICT_INDETERMINATE:
         logger.warning(
-            "kg.embedding_guard.indeterminate board=%s (provider sem "
-            "metadata válida/stub — guarda não aplicada)",
+            "kg.embedding_guard.indeterminate board=%s (provider metadata is "
+            "missing or invalid, or the provider is a stub; compatibility "
+            "guard was not applied)",
             board_id,
             extra={
                 "event": "kg.embedding_guard.indeterminate",
@@ -3116,6 +3175,31 @@ def _ensure_subtype_columns(conn, node_type: str) -> list[str]:
     for col_name, col_type in SUBTYPE_COLUMNS:
         if _alter_add_column_with_retry(conn, node_type, col_name, col_type) == "added":
             added.append(col_name)
+    return added
+
+
+def _ensure_code_traceability_columns(conn, node_type: str) -> list[str]:
+    """Add the optional v0.4.0 Code Traceability projection columns.
+
+    These are passive projection fields for agent-attested relational data;
+    this migration never probes or reads a source-code workspace.
+    """
+
+    added: list[str] = []
+    for col_name, col_type in CODE_TRACEABILITY_COLUMNS:
+        outcome = _alter_add_column_with_retry(
+            conn,
+            node_type,
+            col_name,
+            col_type,
+        )
+        if outcome == "added":
+            added.append(col_name)
+        elif outcome == "failed":
+            raise RuntimeError(
+                "kg_schema_code_traceability_column_migration_failed:"
+                f"{node_type}.{col_name}"
+            )
     return added
 
 
@@ -3428,6 +3512,7 @@ def migrate_board_to_v030(board_id: str) -> dict[str, Any]:
         for node_type in NODE_TYPES:
             added = _ensure_relevance_columns(conn, node_type)
             added.extend(_ensure_kg_layer_columns(conn, node_type))
+            added.extend(_ensure_code_traceability_columns(conn, node_type))
             _backfill_relevance_defaults(conn, node_type)
             _backfill_kg_layer_defaults(conn, node_type)
             had_legacy = _node_has_legacy_columns(conn, node_type)
@@ -3507,6 +3592,7 @@ GENERATION_COLUMNS = _schema_contract.GENERATION_COLUMNS
 PROVENANCE_COLUMNS = _schema_contract.PROVENANCE_COLUMNS
 ATTESTATION_COLUMNS = _schema_contract.ATTESTATION_COLUMNS
 SUBTYPE_COLUMNS = _schema_contract.SUBTYPE_COLUMNS
+CODE_TRACEABILITY_COLUMNS = _schema_contract.CODE_TRACEABILITY_COLUMNS
 LEGACY_NODE_COLUMNS = _schema_contract.LEGACY_NODE_COLUMNS
 stable_rel_type_entries = _schema_contract.stable_rel_type_entries
 relationship_endpoint_pairs = _schema_contract.relationship_endpoint_pairs
@@ -3674,6 +3760,22 @@ def _assert_cancellation_columns_complete(conn: Any) -> None:
         )
 
 
+def _assert_code_traceability_columns_complete(conn: Any) -> None:
+    """Fail closed unless every physical node type supports v0.4.0 fields."""
+
+    expected = {name for name, _col_type in CODE_TRACEABILITY_COLUMNS}
+    missing: dict[str, list[str]] = {}
+    for node_type in NODE_TYPES:
+        absent = sorted(expected - _probe_node_type_columns(conn, node_type))
+        if absent:
+            missing[node_type] = absent
+    if missing:
+        raise RuntimeError(
+            "kg_schema_code_traceability_columns_incomplete:"
+            f"{json.dumps(missing, sort_keys=True)}"
+        )
+
+
 def _board_needs_priority_boost_migration(board_id: str) -> bool:
     """Returns True iff the board is missing the v0.3.1 ``priority_boost``
     column on any node type.
@@ -3777,6 +3879,20 @@ def _board_needs_cancellation_migration(board_id: str) -> bool:
         return True
 
 
+def _board_needs_code_traceability_migration(board_id: str) -> bool:
+    """Return True when any node type lacks a v0.4.0 projection field."""
+
+    try:
+        expected = {name for name, _col_type in CODE_TRACEABILITY_COLUMNS}
+        with registered_raw_connection(board_id) as (_db, conn):
+            return any(
+                not expected.issubset(_probe_node_type_columns(conn, node_type))
+                for node_type in NODE_TYPES
+            )
+    except Exception:
+        return True
+
+
 def _board_needs_post_v030_migration(board_id: str) -> bool:
     """Compose probe — True iff any v0.3.1+ column is missing on the board.
 
@@ -3795,6 +3911,7 @@ def _board_needs_post_v030_migration(board_id: str) -> bool:
         or _board_needs_human_curated_migration(board_id)
         or _board_needs_last_recomputed_migration(board_id)
         or _board_needs_cancellation_migration(board_id)
+        or _board_needs_code_traceability_migration(board_id)
     )
 
 
@@ -3892,6 +4009,9 @@ def migrate_schema_for_board(board_id: str) -> dict[str, Any]:
                     added_for_type.extend(_ensure_provenance_columns(conn, node_type))
                     added_for_type.extend(_ensure_attestation_columns(conn, node_type))
                     added_for_type.extend(_ensure_subtype_columns(conn, node_type))
+                    added_for_type.extend(
+                        _ensure_code_traceability_columns(conn, node_type)
+                    )
                     _backfill_kg_layer_defaults(conn, node_type)
                 except Exception as nt_exc:
                     errors.append(f"node_type_failed: {node_type}: {nt_exc}")
@@ -3901,6 +4021,13 @@ def migrate_schema_for_board(board_id: str) -> dict[str, Any]:
                 _assert_cancellation_columns_complete(conn)
             except Exception as cancellation_exc:
                 errors.append(f"cancellation_columns_incomplete: {cancellation_exc}")
+            try:
+                _assert_code_traceability_columns_complete(conn)
+            except Exception as traceability_exc:
+                errors.append(
+                    "code_traceability_columns_incomplete: "
+                    f"{traceability_exc}"
+                )
             for rel_name, from_type, to_type in REL_TYPES:
                 try:
                     conn.execute(_build_rel_ddl(rel_name, from_type, to_type))
@@ -4053,11 +4180,15 @@ def apply_schema_to_connection(conn) -> None:
         _ensure_attestation_columns(conn, node_type)
         # v0.3.10 (spec MKG-E-S1): declarative subtyping column.
         _ensure_subtype_columns(conn, node_type)
+        # v0.4.0: passive Code Traceability metadata projected from accepted
+        # external-agent receipts; no repository access occurs here.
+        _ensure_code_traceability_columns(conn, node_type)
         _backfill_kg_layer_defaults(conn, node_type)
     # Validate every node type before any caller can cache this schema pass.
     # A first-table-only probe cannot detect a partial ALTER failure later in
     # the NODE_TYPES loop.
     _assert_cancellation_columns_complete(conn)
+    _assert_code_traceability_columns_complete(conn)
     for rel_name, from_type, to_type in REL_TYPES:
         conn.execute(_build_rel_ddl(rel_name, from_type, to_type))
         # v0.1.0 → v0.2.0 backfill: ALTER ADD the metadata cols on legacy
@@ -4116,8 +4247,9 @@ def bootstrap_board_graph(board_id: str) -> BoardGraphHandle:
     if not path.exists():
         logger.warning(
             "kg.bootstrap.fresh_graph_created board=%s path=%s "
-            "(se um grafo anterior existia e foi removido manualmente, "
-            "re-materialize via historical consolidation/rebuild)",
+            "(if a previous graph existed and was manually removed, "
+            "rematerialize it through historical consolidation or an explicit "
+            "rebuild)",
             board_id,
             path,
             extra={

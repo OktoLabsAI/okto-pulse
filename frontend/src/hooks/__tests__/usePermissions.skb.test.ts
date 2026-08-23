@@ -77,7 +77,11 @@ function nestedFlags(paths: readonly string[]): Record<string, unknown> {
 describe('usePermissions SK-B3/v1 fail-closed introduction', () => {
   it('shares the exact ordered manifest and historical-authority lineage', () => {
     expect(PERMISSION_INTRODUCTION_MANIFESTS.map(({ version }) => version))
-      .toEqual(['SK-A/v1', 'SK-B3/v1']);
+      .toEqual([
+        'SK-A/v1',
+        'SK-B3/v1',
+        'CODE-EVIDENCE-LEGACY-CLASSIFICATION/v1',
+      ]);
     expect(SKB_PERMISSION_INTRODUCTION_V1.version).toBe('SK-B3/v1');
     expect(SKB_PERMISSION_INTRODUCTION_V1_LEAVES).toEqual(LEAVES);
     expect(SKB_PERMISSION_INTRODUCTION_V1_LEAVES).toHaveLength(13);

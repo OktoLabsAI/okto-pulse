@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -31,6 +32,13 @@ from okto_pulse.core.domain.checklist import (
     ChecklistMode,
 )
 from okto_pulse.core.services.gate_contracts import GateContractError
+from okto_pulse.core.services.checklist import ChecklistConflictError
+from okto_pulse.core.domain.spec_validation import (
+    RequirementLintRequired,
+    SpecValidationEditionConflict,
+    SpecValidationGateNotReady,
+    SpecValidationVersionConflict,
+)
 
 
 @pytest.mark.asyncio
@@ -117,6 +125,7 @@ async def test_api08_success_is_exact_and_subject_digest_includes_inputs(
         idempotency_key="start-1",
         created_by="human-1",
         created_at=datetime(2026, 7, 27, tzinfo=timezone.utc),
+        spec_edition=3,
     )
 
     async def fake_execute(self, command, *, actor, uow):
@@ -129,24 +138,19 @@ async def test_api08_success_is_exact_and_subject_digest_includes_inputs(
         board_id="board-1",
         spec_id="spec-1",
         data=checklists.ChecklistExecutionStartRequest(
-            binding_id="b" * 64,
+            spec_edition=3,
             expected_spec_version=4,
-            idempotency_key="start-1",
+            binding_version=2,
         ),
         user_id="human-1",
         realm_id=None,
         uow=object(),
     )
-    assert set(response) == {
-        "execution_id",
-        "items",
-        "subject_digest",
-        "template_digest",
+    assert response == {
+        "execution_id": "execution-1",
+        "spec_edition": 3,
+        "status": "started",
     }
-    assert response["subject_digest"] == execution.input_digest
-    assert [item["item_id"] for item in response["items"]] == list(
-        SPECIFY_CHECKLIST_ITEM_IDS
-    )
 
 
 @pytest.mark.asyncio
@@ -162,6 +166,7 @@ async def test_api09_success_is_exact_and_any_failed_item_fails_outcome(
             receipt_id="receipt-1",
             request_digest="f" * 64,
             head_revision=3,
+            spec_edition=3,
         )
 
     monkeypatch.setattr(SubmitChecklistExecutionUseCase, "execute", fake_execute)
@@ -179,18 +184,19 @@ async def test_api09_success_is_exact_and_any_failed_item_fails_outcome(
         spec_id="spec-1",
         execution_id="execution-1",
         data=checklists.ChecklistExecutionSubmitRequest(
-            expected_execution_revision=1,
-            results=results,
-            idempotency_key="submit-1",
+            spec_edition=3,
+            expected_spec_version=4,
+            execution_id="execution-1",
+            item_results=results,
         ),
         user_id="human-1",
         realm_id=None,
         uow=object(),
     )
     assert response == {
-        "receipt_id": "receipt-1",
-        "outcome": "fail",
-        "head_revision": 3,
+        "result_id": "receipt-1",
+        "spec_edition": 3,
+        "status": "failed",
     }
 
 
@@ -204,12 +210,88 @@ def test_checklist_write_requests_are_closed() -> None:
                 "agent_override": True,
             }
         )
+
+
+def test_spec_validation_acknowledgement_is_exact_and_audit_free() -> None:
+    assert set(specs.SpecValidationAcceptedResponse.model_fields) == {
+        "validation_id",
+        "validation_edition",
+        "is_current",
+    }
+    route = next(
+        route
+        for route in specs.router.routes
+        if getattr(route, "path", None) == "/specs/{spec_id}/validation"
+    )
+    assert route.response_model is specs.SpecValidationAcceptedResponse
+
+
+@pytest.mark.parametrize(
+    "projector",
+    (checklists._api07_error_response, checklists._api08_error_response),
+)
+@pytest.mark.parametrize(
+    "code",
+    ("checklist_spec_edition_conflict", "checklist_binding_conflict"),
+)
+def test_checklist_edition_and_binding_conflicts_are_http_409(
+    projector,
+    code: str,
+) -> None:
+    response = projector(ChecklistConflictError(code))
+
+    assert response.status_code == 409
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        "checklist_spec_edition_conflict",
+        "checklist_spec_status_conflict",
+        "checklist_execution_conflict",
+        "checklist_binding_conflict",
+    ),
+)
+def test_checklist_submit_conflicts_are_http_409(code: str) -> None:
+    response = checklists._api09_error_response(ChecklistConflictError(code))
+
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_checklist_submit_path_body_execution_mismatch_is_typed_409() -> None:
+    response = await checklists.submit_checklist_execution(
+        board_id="board-1",
+        spec_id="spec-1",
+        execution_id="execution-path",
+        data=checklists.ChecklistExecutionSubmitRequest(
+            spec_edition=3,
+            expected_spec_version=4,
+            execution_id="execution-body",
+            item_results=[
+                checklists.ChecklistItemResultRequest(
+                    item_id=item_id,
+                    outcome="pass",
+                    anchor=f"spec://spec-1/{item_id}",
+                )
+                for item_id in SPECIFY_CHECKLIST_ITEM_IDS
+            ],
+        ),
+        user_id="human-1",
+        realm_id=None,
+        uow=object(),
+    )
+
+    assert response.status_code == 409
+    payload = json.loads(response.body)
+    assert payload["code"] == "checklist_execution_conflict"
     with pytest.raises(ValidationError):
         checklists.ChecklistExecutionSubmitRequest.model_validate(
             {
-                "expected_execution_revision": 1,
-                "idempotency_key": "submit-1",
-                "results": [
+                "spec_edition": 3,
+                "expected_spec_version": 4,
+                "execution_id": "execution-1",
+                "item_results": [
                     {
                         "item_id": item_id,
                         "outcome": "pass",
@@ -339,6 +421,7 @@ async def test_checklist_history_uses_canonical_page_totals(monkeypatch) -> None
         "total_overall": 12,
         "offset": 0,
         "limit": 25,
+        "has_more": True,
     }
 
 
@@ -360,9 +443,120 @@ async def test_submit_spec_validation_maps_gate_contract_like_move_spec(
     with pytest.raises(HTTPException) as exc_info:
         await specs.submit_spec_validation(
             spec_id="spec-1",
-            data={},
+            data=specs.SpecValidationSubmit(
+                expected_validation_edition=1,
+                expected_spec_version=1,
+                expected_head_revision=0,
+                confidence=95,
+                confidence_justification="The evaluator has strong supporting evidence.",
+                clarity=94,
+                clarity_justification="The problem and solution are clearly specified.",
+                assertiveness=93,
+                assertiveness_justification="Requirements use direct and testable language.",
+                decidability=92,
+                decidability_justification="Requirements provide concrete implementation choices.",
+                ambiguity=5,
+                ambiguity_justification="No material ambiguity remains in this edition.",
+                recommendation="approve",
+            ),
             user_id="human-1",
             uow=object(),
         )
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail["code"] == "spec_checklist_gate_required"
+
+
+@pytest.mark.asyncio
+async def test_submit_spec_validation_rest_forwards_only_canonical_fields(
+    monkeypatch,
+) -> None:
+    observed: dict[str, object] = {}
+
+    async def capture(self, command, *, actor, uow):
+        del self, actor, uow
+        observed.update(command.data)
+        command.validate()
+        return SimpleNamespace(
+            payload={
+                "validation_id": "validation-1",
+                "validation_edition": 1,
+                "is_current": True,
+            }
+        )
+
+    monkeypatch.setattr(SubmitSpecValidationUseCase, "execute", capture)
+    response = await specs.submit_spec_validation(
+        spec_id="spec-1",
+        data=specs.SpecValidationSubmit(
+            expected_validation_edition=1,
+            expected_spec_version=3,
+            expected_head_revision=0,
+            confidence=95,
+            confidence_justification="The evaluator has strong supporting evidence.",
+            clarity=95,
+            clarity_justification="The problem and solution are clearly specified.",
+            assertiveness=94,
+            assertiveness_justification="Assertive enough for validation.",
+            decidability=93,
+            decidability_justification="Requirements provide concrete implementation choices.",
+            ambiguity=4,
+            ambiguity_justification="Ambiguity is sufficiently low.",
+            recommendation="approve",
+        ),
+        user_id="human-1",
+        uow=object(),
+    )
+
+    assert response["validation_id"] == "validation-1"
+    assert "score" not in observed
+    assert "summary" not in observed
+    assert "completeness" not in observed
+    assert "general_justification" not in observed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_type", "code"),
+    (
+        (SpecValidationEditionConflict, "spec_validation_edition_conflict"),
+        (SpecValidationVersionConflict, "spec_validation_version_conflict"),
+        (SpecValidationGateNotReady, "spec_validation_gate_not_ready"),
+        (RequirementLintRequired, "requirement_lint_required"),
+    ),
+)
+async def test_submit_spec_validation_preserves_typed_conflict_codes(
+    monkeypatch,
+    error_type,
+    code: str,
+) -> None:
+    async def blocked(self, command, *, actor, uow):
+        del self, command, actor, uow
+        raise error_type()
+
+    monkeypatch.setattr(SubmitSpecValidationUseCase, "execute", blocked)
+    with pytest.raises(HTTPException) as exc_info:
+        await specs.submit_spec_validation(
+            spec_id="spec-1",
+            data=specs.SpecValidationSubmit(
+                expected_validation_edition=2,
+                expected_spec_version=4,
+                expected_head_revision=0,
+                confidence=90,
+                confidence_justification="The evaluator has strong supporting evidence.",
+                clarity=90,
+                clarity_justification="The problem and solution are clearly specified.",
+                assertiveness=90,
+                assertiveness_justification="Requirements use direct and testable language.",
+                decidability=90,
+                decidability_justification="Requirements provide concrete implementation choices.",
+                ambiguity=10,
+                ambiguity_justification="No material ambiguity remains in this edition.",
+                recommendation="approve",
+            ),
+            user_id="human-1",
+            uow=object(),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["error_code"] == code
+    assert exc_info.value.detail["code"] == code

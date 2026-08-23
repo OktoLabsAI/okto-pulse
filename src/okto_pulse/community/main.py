@@ -1102,9 +1102,13 @@ def create_community_app():
     from okto_pulse.community.adapters.coordination import (
         register_community_coordination_providers,
     )
-    from okto_pulse.community.adapters.mcp_host import register_community_mcp_host
+    from okto_pulse.community.adapters.mcp_host import (
+        configure_community_mcp_admission,
+        register_community_mcp_host,
+    )
 
     register_community_coordination_providers()
+    configure_community_mcp_admission(settings)
     register_community_mcp_host()
     database_runtime = configure_community_database(
         settings.database_url,
@@ -1118,14 +1122,6 @@ def create_community_app():
     )
 
     register_relational_application_adapter(CommunityRelationalApplicationAdapter())
-    from okto_pulse.community.adapters.requirement_lint_writer import (
-        CommunityRequirementLintWriterHook,
-    )
-    from okto_pulse.core.ports.requirement_lint import (
-        register_requirement_lint_writer_hook,
-    )
-
-    register_requirement_lint_writer_hook(CommunityRequirementLintWriterHook())
     from okto_pulse.community.adapters.relational_effects import (
         register_community_relational_effects,
     )
@@ -1167,6 +1163,16 @@ def create_community_app():
 
     register_quality_assessment_preflight_reader(
         CommunitySqlAlchemyQualityAssessmentPreflightReader(_rc_session_factory)
+    )
+    from okto_pulse.community.adapters.sqlalchemy_validation_cycle import (
+        CommunitySqlAlchemyValidationCycleReader,
+    )
+    from okto_pulse.core.ports.validation_cycle import (
+        register_validation_cycle_reader,
+    )
+
+    register_validation_cycle_reader(
+        CommunitySqlAlchemyValidationCycleReader(_rc_session_factory)
     )
 
     def _cancel_safe_rc_scope():

@@ -12,11 +12,12 @@ any that are still active.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, TypeVar
 
 from sqlalchemy import and_, select
 
@@ -40,6 +41,40 @@ from .sqlalchemy_models import (
     SemanticGuidelineWaiverEventRow,
     SemanticGuidelineWaiverRow,
 )
+
+
+_T = TypeVar("_T")
+
+
+async def _run_blocking_graph_io(
+    operation: Callable[[], _T],
+    *,
+    task_name: str,
+) -> _T:
+    """Offload one native graph scope and drain it before cancellation.
+
+    ``asyncio.to_thread`` propagates the current contextvars.  Shielding the
+    worker and draining repeated cancellation keeps a native writer from being
+    abandoned while it still owns the edition-level graph lease.
+    """
+
+    task = asyncio.create_task(
+        asyncio.to_thread(operation),
+        name=task_name,
+    )
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except BaseException:
+                break
+        if task.done() and not task.cancelled():
+            task.exception()
+        raise
 
 
 POLICY_CONSTRAINT_ACTOR = "policy-constraint-projector"
@@ -77,8 +112,7 @@ def _event_revision_id(event: object) -> str:
 def _root_node_id(scope: Any, *, board_id: str, source_session_id: str) -> str:
     source_ref = f"board:{board_id}"
     result = scope.execute(
-        "MATCH (n:Entity) WHERE n.source_artifact_ref = $source_ref "
-        "RETURN n.id",
+        "MATCH (n:Entity) WHERE n.source_artifact_ref = $source_ref RETURN n.id",
         {"source_ref": source_ref},
     )
     root_ids = tuple(sorted({str(row[0]) for row in result.rows if row[0]}))
@@ -324,9 +358,7 @@ def _desired_semantic_node(
     projected_at: datetime,
 ) -> _SemanticDesiredNode:
     if kind not in _SEMANTIC_KINDS:
-        raise PolicyConstraintProjectionConflict(
-            "semantic_guideline_kind_invalid"
-        )
+        raise PolicyConstraintProjectionConflict("semantic_guideline_kind_invalid")
     if not isinstance(digest, str) or _SEMANTIC_DIGEST.fullmatch(digest) is None:
         raise PolicyConstraintProjectionConflict(
             "semantic_guideline_authority_digest_invalid"
@@ -354,9 +386,7 @@ def _desired_semantic_node(
         "relevance_score": 0.5,
         "priority_boost": 0.0,
         "superseded_by": successor_id,
-        "superseded_at": (
-            None if active else projected_at.isoformat()
-        ),
+        "superseded_at": (None if active else projected_at.isoformat()),
         "revocation_reason": terminal_reason,
         "human_curated": False,
         "generation": generation,
@@ -410,11 +440,7 @@ def _semantic_graph_nodes(scope: Any) -> tuple[_SemanticGraphNode, ...]:
         node_kind, separator, node_identity = node_id[
             len(_SEMANTIC_SOURCE_PREFIX) :
         ].partition(":")
-        if (
-            not separator
-            or not node_identity
-            or node_kind not in _SEMANTIC_KINDS
-        ):
+        if not separator or not node_identity or node_kind not in _SEMANTIC_KINDS:
             raise PolicyConstraintProjectionConflict(
                 "semantic_guideline_graph_identity_invalid"
             )
@@ -487,6 +513,41 @@ def _legacy_rule_nodes(scope: Any) -> tuple[_LegacyRuleNode, ...]:
     return tuple(nodes)
 
 
+def _prefetch_semantic_edges(
+    scope: Any,
+    *,
+    edge_type: str,
+    planned_pairs: set[tuple[str, str]],
+) -> set[tuple[str, str]]:
+    """Load the relevant semantic edges with one bounded graph read.
+
+    Reconciliation previously called ``edge_exists`` once per desired edge.
+    Large policy histories therefore held the embedded single-writer lease
+    while issuing hundreds of tiny reads.  The planned endpoints are already
+    detached and bounded by the desired board projection, so one read per
+    relationship type is sufficient and retains the same endpoint-level
+    idempotency semantics.
+    """
+
+    if not planned_pairs:
+        return set()
+    if edge_type not in {"belongs_to", "supersedes"}:
+        raise PolicyConstraintProjectionConflict("semantic_guideline_edge_type_invalid")
+    source_ids = sorted({source_id for source_id, _ in planned_pairs})
+    target_ids = sorted({target_id for _, target_id in planned_pairs})
+    result = scope.execute(
+        f"MATCH (source:Entity)-[r:{edge_type}]->(target:Entity) "
+        "WHERE source.id IN $source_ids AND target.id IN $target_ids "
+        "RETURN source.id, target.id",
+        {"source_ids": source_ids, "target_ids": target_ids},
+    )
+    return {
+        (str(row[0]), str(row[1]))
+        for row in result.rows
+        if len(row) >= 2 and (str(row[0]), str(row[1])) in planned_pairs
+    }
+
+
 def _semantic_node_matches(
     current: _SemanticGraphNode,
     desired: _SemanticDesiredNode,
@@ -519,9 +580,7 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
     def __init__(
         self,
         *,
-        graph_transaction_resolver: Callable[[], Any] = (
-            resolve_graph_transaction
-        ),
+        graph_transaction_resolver: Callable[[], Any] = (resolve_graph_transaction),
     ) -> None:
         self._graph_transaction_resolver = graph_transaction_resolver
 
@@ -546,22 +605,17 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                 (
                     item
                     for item in (row.metrics if row is not None else ())
-                    if isinstance(item, dict)
-                    and item.get("metric_id") == metric_id
+                    if isinstance(item, dict) and item.get("metric_id") == metric_id
                 ),
                 None,
             )
             digest = (
-                canonical_sha256(metric)
-                if separator and metric is not None
-                else None
+                canonical_sha256(metric) if separator and metric is not None else None
             )
         elif kind == "binding_configuration":
             binding_id, separator, revision_text = event.entity_id.rpartition(":")
             parsed_revision = (
-                int(revision_text)
-                if separator and revision_text.isdigit()
-                else -1
+                int(revision_text) if separator and revision_text.isdigit() else -1
             )
             row = (
                 await context.execute(
@@ -593,10 +647,8 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
             row = (
                 await context.execute(
                     select(SemanticGuidelineMetricResultRow).where(
-                        SemanticGuidelineMetricResultRow.board_id
-                        == event.board_id,
-                        SemanticGuidelineMetricResultRow.result_id
-                        == event.entity_id,
+                        SemanticGuidelineMetricResultRow.board_id == event.board_id,
+                        SemanticGuidelineMetricResultRow.result_id == event.entity_id,
                     )
                 )
             ).scalar_one_or_none()
@@ -605,10 +657,8 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
             row = (
                 await context.execute(
                     select(SemanticGuidelineWaiverEventRow).where(
-                        SemanticGuidelineWaiverEventRow.board_id
-                        == event.board_id,
-                        SemanticGuidelineWaiverEventRow.waiver_id
-                        == event.entity_id,
+                        SemanticGuidelineWaiverEventRow.board_id == event.board_id,
+                        SemanticGuidelineWaiverEventRow.waiver_id == event.entity_id,
                         SemanticGuidelineWaiverEventRow.waiver_digest
                         == event.entity_digest,
                     )
@@ -621,8 +671,7 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                     select(SemanticGuidelineSkipRow).where(
                         SemanticGuidelineSkipRow.board_id == event.board_id,
                         SemanticGuidelineSkipRow.skip_id == event.entity_id,
-                        SemanticGuidelineSkipRow.skip_digest
-                        == event.entity_digest,
+                        SemanticGuidelineSkipRow.skip_digest == event.entity_digest,
                     )
                 )
             ).scalar_one_or_none()
@@ -665,8 +714,7 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                 select(SemanticGuidelineBindingConfigurationRow).where(
                     SemanticGuidelineBindingConfigurationRow.board_id
                     == getattr(event, "board_id", None),
-                    SemanticGuidelineBindingConfigurationRow.binding_id
-                    == binding_id,
+                    SemanticGuidelineBindingConfigurationRow.binding_id == binding_id,
                     SemanticGuidelineBindingConfigurationRow.binding_revision
                     == binding_revision,
                 )
@@ -706,10 +754,7 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                         == SemanticGuidelineBindingConfigurationRow.board_id,
                     ),
                 )
-                .where(
-                    SemanticGuidelineBindingConfigurationRow.board_id
-                    == board_id
-                )
+                .where(SemanticGuidelineBindingConfigurationRow.board_id == board_id)
                 .order_by(
                     GuidelineBoardBindingRow.guideline_id.asc(),
                     GuidelineBoardBindingRow.binding_revision.asc(),
@@ -718,9 +763,7 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
         ).all()
         retired_guidelines = set(
             (
-                await context.execute(
-                    select(GuidelineRetirementRow.guideline_id)
-                )
+                await context.execute(select(GuidelineRetirementRow.guideline_id))
             ).scalars()
         )
         latest_binding: dict[str, GuidelineBoardBindingRow] = {}
@@ -809,9 +852,7 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                     reason=reason,
                     successor_id=successor,
                     lineage_ids=(
-                        _semantic_node_id(
-                            "revision", configuration.revision_id
-                        ),
+                        _semantic_node_id("revision", configuration.revision_id),
                     ),
                     title=f"Guideline binding {configuration.guideline_id}",
                     content=(
@@ -941,9 +982,7 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                         ),
                         successor_id=metric_successor,
                         lineage_ids=(
-                            _semantic_node_id(
-                                "revision", semantic.revision_id
-                            ),
+                            _semantic_node_id("revision", semantic.revision_id),
                         ),
                         title=str(metric.get("title") or metric.get("code")),
                         content=str(metric.get("description") or ""),
@@ -963,8 +1002,7 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                 await context.execute(
                     select(SemanticGuidelineAssessmentReceiptRow)
                     .where(
-                        SemanticGuidelineAssessmentReceiptRow.board_id
-                        == board_id,
+                        SemanticGuidelineAssessmentReceiptRow.board_id == board_id,
                         SemanticGuidelineAssessmentReceiptRow.sealed.is_(True),
                     )
                     .order_by(
@@ -982,8 +1020,7 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
         active_receipt_ids = {
             receipt.receipt_id
             for receipt in latest_receipt.values()
-            if (receipt.binding_id, receipt.binding_revision)
-            in active_binding_keys
+            if (receipt.binding_id, receipt.binding_revision) in active_binding_keys
         }
         receipt_successors: dict[str, str] = {}
         receipt_groups: dict[tuple[str, str, str], list[Any]] = {}
@@ -1049,9 +1086,7 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
             (
                 await context.execute(
                     select(SemanticGuidelineMetricResultRow)
-                    .where(
-                        SemanticGuidelineMetricResultRow.board_id == board_id
-                    )
+                    .where(SemanticGuidelineMetricResultRow.board_id == board_id)
                     .order_by(
                         SemanticGuidelineMetricResultRow.created_at.asc(),
                         SemanticGuidelineMetricResultRow.result_id.asc(),
@@ -1081,9 +1116,7 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                     ),
                     successor_id=None,
                     lineage_ids=(
-                        _semantic_node_id(
-                            "assessment_receipt", result.receipt_id
-                        ),
+                        _semantic_node_id("assessment_receipt", result.receipt_id),
                         _semantic_node_id(
                             "metric_definition",
                             f"{result.revision_id}:{result.metric_id}",
@@ -1135,12 +1168,8 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                     reason=reason,
                     successor_id=None,
                     lineage_ids=(
-                        _semantic_node_id(
-                            "metric_result", waiver.metric_result_id
-                        ),
-                        _semantic_node_id(
-                            "assessment_receipt", waiver.receipt_id
-                        ),
+                        _semantic_node_id("metric_result", waiver.metric_result_id),
+                        _semantic_node_id("assessment_receipt", waiver.receipt_id),
                     ),
                     title=f"Waiver for {waiver.metric_code}",
                     content=waiver.justification,
@@ -1177,8 +1206,7 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
         for skip in skip_heads.values():
             active = (
                 skip.status == "active"
-                and (skip.binding_id, skip.binding_revision)
-                in active_binding_keys
+                and (skip.binding_id, skip.binding_revision) in active_binding_keys
             )
             desired.append(
                 _desired_semantic_node(
@@ -1226,6 +1254,42 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
         return tuple(sorted(desired, key=lambda item: item.node_id))
 
     async def _reconcile(
+        self,
+        *,
+        board_id: str,
+        operation: str,
+        event_id: str | None,
+        desired: tuple[_SemanticDesiredNode, ...],
+        projected_at: datetime,
+    ) -> PolicyConstraintProjectionResult:
+        """Run the embedded graph transaction outside the shared API/MCP loop.
+
+        ``desired`` is a detached immutable projection assembled through the
+        async relational session.  From this boundary onward every operation
+        is Community-owned synchronous Ladybug/Kuzu work.  Running the whole
+        graph scope -- resolver, open, statements, verification and close --
+        on one worker thread prevents a projection drain from starving the
+        API/UI event loop while preserving the single-writer lease.
+
+        Cancellation is postponed until the worker has closed the graph
+        transaction.  Abandoning a live embedded writer would be a stronger
+        integrity failure than delaying cancellation for cleanup.
+        """
+
+        return await _run_blocking_graph_io(
+            lambda: asyncio.run(
+                self._reconcile_on_worker(
+                    board_id=board_id,
+                    operation=operation,
+                    event_id=event_id,
+                    desired=desired,
+                    projected_at=projected_at,
+                )
+            ),
+            task_name=f"community.policy_constraint_projection:{board_id}",
+        )
+
+    async def _reconcile_on_worker(
         self,
         *,
         board_id: str,
@@ -1339,15 +1403,33 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                     if desired
                     else None
                 )
+                belongs_to_pairs = {
+                    (node.node_id, root_id) for node in desired if root_id is not None
+                }
+                belongs_to_pairs.update(
+                    (node.node_id, target_id)
+                    for node in desired
+                    for target_id in node.lineage_ids
+                )
+                supersedes_pairs = {
+                    (node.successor_id, node.node_id)
+                    for node in desired
+                    if node.successor_id is not None
+                }
+                existing_belongs_to = _prefetch_semantic_edges(
+                    scope,
+                    edge_type="belongs_to",
+                    planned_pairs=belongs_to_pairs,
+                )
+                existing_supersedes = _prefetch_semantic_edges(
+                    scope,
+                    edge_type="supersedes",
+                    planned_pairs=supersedes_pairs,
+                )
                 if root_id is not None:
                     for node in desired:
-                        if not scope.edge_exists(
-                            "belongs_to",
-                            "Entity",
-                            "Entity",
-                            node.node_id,
-                            root_id,
-                        ):
+                        edge_pair = (node.node_id, root_id)
+                        if edge_pair not in existing_belongs_to:
                             scope.create_edge(
                                 "belongs_to",
                                 "Entity",
@@ -1361,16 +1443,15 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                                     "rule_id": SEMANTIC_GUIDELINE_KG_ROOT_RULE,
                                 },
                             )
+                            existing_belongs_to.add(edge_pair)
                 for node in desired:
                     if node.successor_id is None:
                         pass
-                    elif not scope.edge_exists(
-                        "supersedes",
-                        "Entity",
-                        "Entity",
+                    elif (
                         node.successor_id,
                         node.node_id,
-                    ):
+                    ) not in existing_supersedes:
+                        edge_pair = (node.successor_id, node.node_id)
                         scope.create_edge(
                             "supersedes",
                             "Entity",
@@ -1384,18 +1465,14 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                                 "rule_id": SEMANTIC_GUIDELINE_KG_LINEAGE_RULE,
                             },
                         )
+                        existing_supersedes.add(edge_pair)
                     for target_id in node.lineage_ids:
                         if target_id not in desired_by_id:
                             raise PolicyConstraintProjectionConflict(
                                 "semantic_guideline_lineage_target_missing"
                             )
-                        if scope.edge_exists(
-                            "belongs_to",
-                            "Entity",
-                            "Entity",
-                            node.node_id,
-                            target_id,
-                        ):
+                        edge_pair = (node.node_id, target_id)
+                        if edge_pair in existing_belongs_to:
                             continue
                         scope.create_edge(
                             "belongs_to",
@@ -1413,6 +1490,7 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                                 ),
                             },
                         )
+                        existing_belongs_to.add(edge_pair)
 
                 verified = _semantic_graph_nodes(scope)
                 active_ids = tuple(
@@ -1440,9 +1518,7 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                             "semantic_guideline_transaction_cleanup_unconfirmed"
                         ) from rollback_error
                 raise
-        active_node_ids = tuple(
-            sorted(node.node_id for node in desired if node.active)
-        )
+        active_node_ids = tuple(sorted(node.node_id for node in desired if node.active))
         return PolicyConstraintProjectionResult(
             board_id=board_id,
             operation=operation,

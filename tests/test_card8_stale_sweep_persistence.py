@@ -625,6 +625,7 @@ async def test_ready_listing_and_exact_fence_include_stale_sweep(sweep_db) -> No
         await session.commit()
         assert await adapter.queue_claim_is_current_and_unfenced(
             session,
+            source="kg_tick",
             entry_id="sweep-card8",
             claim_token="fresh-claim",
             board_id=BOARD_ID,
@@ -636,6 +637,7 @@ async def test_ready_listing_and_exact_fence_include_stale_sweep(sweep_db) -> No
         )
         assert not await adapter.queue_claim_is_current_and_unfenced(
             session,
+            source="kg_tick",
             entry_id="sweep-card8",
             claim_token="old-claim",
             board_id=BOARD_ID,
@@ -681,6 +683,14 @@ async def test_real_processor_resumes_bounded_checkpoint_before_final_coordinato
         # without depending on process-global composition from another test.
         yield
 
+    async def _no_administrative_reservation(
+        _session: AsyncSession,
+        *,
+        board_id: str,
+    ) -> None:
+        assert board_id == BOARD_ID
+        return None
+
     async def _page(board_id: str, *, cursor: str, budget: int):
         if cursor == "":
             return StaleSweepPage(
@@ -712,6 +722,11 @@ async def test_real_processor_resumes_bounded_checkpoint_before_final_coordinato
     )
     monkeypatch.setattr(consolidation, "advisory_lock", _advisory_lock)
     monkeypatch.setattr(reconciler, "enumerate_stale_sweep_page", _page)
+    monkeypatch.setattr(
+        adapter,
+        "board_administrative_rebuild_source",
+        _no_administrative_reservation,
+    )
     register_consolidation_persistence_port(adapter)
     register_stale_sweep_port(adapter)
     try:

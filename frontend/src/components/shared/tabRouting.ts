@@ -45,6 +45,7 @@ export type IdeationModalSubtab =
 export type RefinementModalTab =
   | 'details'
   | 'research-decisions'
+  | 'code-evidence'
   | 'resources'
   | 'qa'
   | 'references'
@@ -63,8 +64,10 @@ export type RefinementModalSubtab =
 
 export type SpecModalTab =
   | 'details'
+  | 'evidence-matrix'
   | 'tests'
   | 'rules'
+  | 'dependencies'
   | 'contracts'
   | 'irs'
   | 'ors'
@@ -91,6 +94,7 @@ export type SpecModalSubtab =
 
 export type CardModalTab =
   | 'details'
+  | 'implementation-targets'
   | 'tests'
   | 'resources'
   | 'qa'

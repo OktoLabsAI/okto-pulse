@@ -4,6 +4,9 @@ import {
   applyBoardCeiling,
   applyPermissionDelta,
   boardCeilingDelta,
+  CODE_EVIDENCE_LEGACY_CLASSIFICATION_PERMISSION_INTRODUCTION_V1,
+  CODE_EVIDENCE_LEGACY_CLASSIFICATION_PERMISSION_INTRODUCTION_V1_LEAVES,
+  CODE_TRACEABILITY_PERMISSION_INTRODUCTION_V1_LEAVES,
   composePermissionIntroductionManifests,
   INTRODUCED_PERMISSION_HISTORICAL_AUTHORITIES,
   INTRODUCED_PERMISSION_LEAVES,
@@ -229,12 +232,17 @@ describe('permission layers', () => {
     ])).toThrow('permission_introduction_authority_invalid');
   });
 
-  it('composes SK-A and SK-B manifests in deterministic fail-closed order', () => {
+  it('composes the versioned manifests in deterministic fail-closed order', () => {
     expect(PERMISSION_INTRODUCTION_MANIFESTS.map(({ version }) => version))
-      .toEqual(['SK-A/v1', 'SK-B3/v1']);
+      .toEqual([
+        'SK-A/v1',
+        'SK-B3/v1',
+        'CODE-EVIDENCE-LEGACY-CLASSIFICATION/v1',
+      ]);
     expect(INTRODUCED_PERMISSION_LEAVES).toEqual([
       ...SKA_PERMISSION_INTRODUCTION_V1_LEAVES,
       ...SKB_PERMISSION_INTRODUCTION_V1_LEAVES,
+      ...CODE_EVIDENCE_LEGACY_CLASSIFICATION_PERMISSION_INTRODUCTION_V1_LEAVES,
     ]);
     const recomposed = composePermissionIntroductionManifests(
       PERMISSION_INTRODUCTION_MANIFESTS,
@@ -324,8 +332,43 @@ describe('permission layers', () => {
     'test_scenario.move.ready_to_automated',
     'test_scenario.interact_in.passed',
     'sprint.tasks.assign',
+    'card.interact_in.rejected',
+    'card.move.rejected_to_in_progress',
+    'code_traceability.investigation.read',
+    'code_traceability.investigation.revoke',
+    'code_traceability.evidence.read',
+    'code_traceability.target.read',
+    'code_traceability.overlap.read',
   ])('recognizes post-SK-B introduced leaf %s', (leaf) => {
     expect(isIntroducedPermissionLeaf(leaf)).toBe(true);
+  });
+
+  it('pins Core CODE-TRACEABILITY/v1 and keeps the namespace future fail-closed', () => {
+    expect(CODE_TRACEABILITY_PERMISSION_INTRODUCTION_V1_LEAVES).toHaveLength(22);
+    for (const leaf of CODE_TRACEABILITY_PERMISSION_INTRODUCTION_V1_LEAVES) {
+      expect(isIntroducedPermissionLeaf(leaf)).toBe(true);
+    }
+    expect(isIntroducedPermissionLeaf('code_traceability.future_capability.read'))
+      .toBe(true);
+  });
+
+  it('keeps legacy Evidence classification in its own historical-authority manifest', () => {
+    expect(CODE_TRACEABILITY_PERMISSION_INTRODUCTION_V1_LEAVES).toHaveLength(22);
+    expect(CODE_TRACEABILITY_PERMISSION_INTRODUCTION_V1_LEAVES)
+      .not.toContain('code_traceability.evidence.classify_legacy');
+    expect(CODE_EVIDENCE_LEGACY_CLASSIFICATION_PERMISSION_INTRODUCTION_V1)
+      .toEqual({
+        version: 'CODE-EVIDENCE-LEGACY-CLASSIFICATION/v1',
+        leaves: ['code_traceability.evidence.classify_legacy'],
+        historicalAuthorities: {
+          'code_traceability.evidence.classify_legacy': 'spec.entity.edit_fields',
+        },
+      });
+    expect(
+      INTRODUCED_PERMISSION_HISTORICAL_AUTHORITIES[
+        'code_traceability.evidence.classify_legacy'
+      ],
+    ).toBe('spec.entity.edit_fields');
   });
 
   it.each([

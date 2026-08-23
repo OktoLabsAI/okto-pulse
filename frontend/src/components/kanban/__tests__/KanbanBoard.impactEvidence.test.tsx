@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => {
     started: [],
     in_progress: [],
     validation: [],
+    rejected: [],
     on_hold: [],
     done: [],
     cancelled: [],
@@ -194,6 +195,22 @@ describe('KanbanBoard DnD execution report — impact evidence (TS-16)', () => {
 
     expect(screen.queryByText('Execution Report Required')).not.toBeInTheDocument();
     expect(mocks.moveCard).not.toHaveBeenCalled();
+  });
+
+  it('does not send an inbound drag into consequence-only Rejected', async () => {
+    render(<KanbanBoard boardId="board-1" refreshKey={0} />);
+    await waitFor(() => expect(mocks.dragHandlers.onDragEnd).toBeDefined());
+
+    act(() => {
+      mocks.dragHandlers.onDragStart?.({ active: { id: mocks.card.id } });
+      mocks.dragHandlers.onDragEnd?.({
+        active: { id: mocks.card.id },
+        over: { id: 'rejected' },
+      });
+    });
+
+    expect(mocks.moveCard).not.toHaveBeenCalled();
+    expect(mocks.dashboardState.optimisticMoveCard).not.toHaveBeenCalled();
   });
 
   it('mounts the shared editor inside the max-w-lg modal', async () => {

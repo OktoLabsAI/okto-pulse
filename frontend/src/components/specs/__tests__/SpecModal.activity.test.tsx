@@ -2,16 +2,31 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SpecModal } from '../SpecModal';
 import { persistTestScenariosWithWriteGuard } from '../scenarioWriteGuard';
-import type { Spec, SpecHistoryEntry, TestScenario } from '@/types';
+import type { Spec, SpecHistoryEntry, SprintSummary, TestScenario } from '@/types';
+
+type ValidationGateOverrideProps = {
+  title?: string;
+  description?: string;
+};
 
 const apiMock = vi.hoisted(() => ({
   getSpec: vi.fn(),
   getAllowedTransitions: vi.fn(),
   getEffectiveResources: vi.fn(),
   listSprints: vi.fn(),
+  getSprint: vi.fn(),
+  listSpecQA: vi.fn(),
+  createSpecQuestion: vi.fn(),
+  answerSpecQuestion: vi.fn(),
+  deleteSpecQuestion: vi.fn(),
   listSpecHistory: vi.fn(),
   listSpecKnowledge: vi.fn(),
   updateSpec: vi.fn(),
+}));
+const validationGateOverrideSpy = vi.hoisted(() => vi.fn());
+const evidenceMatrixPropsSpy = vi.hoisted(() => vi.fn());
+const currentBoardState = vi.hoisted(() => ({
+  skipCodeEvidenceCoverageGlobal: false,
 }));
 
 vi.mock('@/services/api', () => ({
@@ -19,20 +34,56 @@ vi.mock('@/services/api', () => ({
 }));
 
 vi.mock('@/store/dashboard', () => ({
-  useCurrentBoard: () => ({ id: 'board-1', owner_id: null, agents: [] }),
-}));
-
-vi.mock('@/hooks/usePermissions', () => ({
-  usePermissions: () => ({
-    preset: null,
-    isLoading: false,
-    error: null,
-    has: () => true,
+  useCurrentBoard: () => ({
+    id: 'board-1',
+    owner_id: null,
+    agents: [],
+    settings: {
+      skip_code_evidence_coverage_global:
+        currentBoardState.skipCodeEvidenceCoverageGlobal,
+    },
   }),
 }));
 
+vi.mock('@/hooks/usePermissions', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/hooks/usePermissions')>();
+  return {
+    ...actual,
+    usePermissions: () => ({
+      preset: null,
+      isLoading: false,
+      error: null,
+      has: () => true,
+    }),
+  };
+});
+
 vi.mock('@/components/traceability', () => ({
   openLineageGraph: vi.fn(),
+}));
+
+vi.mock('@/components/code-traceability', () => ({
+  useCodeTraceabilityAuthority: () => ({ canReadProjection: true }),
+  EvidenceMatrixPanel: (props: {
+    boardSkipCoverage?: boolean;
+    skipCoverage?: boolean;
+    canEditCoverageFlags?: boolean;
+    obligationTitles?: Readonly<Record<string, string>>;
+    onSkipCoverageChange?: (skip: boolean) => Promise<void> | void;
+  }) => {
+    evidenceMatrixPropsSpy(props);
+    return props.canEditCoverageFlags ? (
+      <button
+        type="button"
+        role="switch"
+        aria-label="Skip Code Evidence coverage"
+        aria-checked={props.skipCoverage ?? false}
+        onClick={() => void props.onSkipCoverageChange?.(!props.skipCoverage)}
+      >
+        Toggle Code Evidence coverage
+      </button>
+    ) : <div data-testid="read-only-code-evidence-matrix" />;
+  },
 }));
 
 vi.mock('@/components/architecture', () => ({
@@ -44,11 +95,37 @@ vi.mock('@/components/resources/ResourceGateSummary', () => ({
 }));
 
 vi.mock('@/components/shared/ValidationGateOverride', () => ({
-  ValidationGateOverride: () => <div />,
+  ValidationGateOverride: (props: ValidationGateOverrideProps) => {
+    validationGateOverrideSpy(props);
+    return (
+      <div data-testid="validation-gate-override">
+        <span>{props.title}</span>
+        <span>{props.description}</span>
+      </div>
+    );
+  },
 }));
 
 vi.mock('@/components/shared/EditableField', () => ({
   EditableField: () => <div />,
+}));
+
+vi.mock('@/components/shared/MentionInput', () => ({
+  MentionInput: ({
+    value,
+    onChange,
+    placeholder,
+  }: {
+    value: string;
+    onChange: (value: string) => void;
+    placeholder?: string;
+  }) => (
+    <input
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={placeholder}
+    />
+  ),
 }));
 
 vi.mock('react-hot-toast', () => ({
@@ -75,6 +152,7 @@ const spec: Spec = {
   screen_mockups: [],
   architecture_designs: [],
   skip_test_coverage: false,
+  skip_code_evidence_coverage: false,
   status: 'draft',
   edition: 2,
   version: 3,
@@ -107,12 +185,44 @@ const historyEntry: SpecHistoryEntry = {
   ],
 };
 
+function sprintSummary(overrides: Partial<SprintSummary> = {}): SprintSummary {
+  return {
+    id: 'sprint-1',
+    spec_id: spec.id,
+    board_id: spec.board_id,
+    title: 'Spec sprint',
+    description: null,
+    objective: null,
+    expected_outcome: null,
+    status: 'active',
+    lane_type: 'normal',
+    origin_sprint_id: null,
+    origin_bug_id: null,
+    normal_sprint_created: false,
+    spec_version: spec.version,
+    start_date: null,
+    end_date: null,
+    test_scenario_ids: [],
+    business_rule_ids: [],
+    version: 1,
+    labels: [],
+    created_by: 'user-1',
+    created_at: '2026-05-29T10:00:00Z',
+    updated_at: '2026-05-29T10:00:00Z',
+    archived: false,
+    ...overrides,
+  };
+}
+
 describe('SpecModal Activity tab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    currentBoardState.skipCodeEvidenceCoverageGlobal = false;
     apiMock.getSpec.mockResolvedValue(spec);
     apiMock.getAllowedTransitions.mockResolvedValue({ allowed_transitions: [] });
     apiMock.listSprints.mockResolvedValue([]);
+    apiMock.getSprint.mockResolvedValue({ cards: [] });
+    apiMock.listSpecQA.mockResolvedValue([]);
     apiMock.listSpecHistory.mockResolvedValue([historyEntry]);
     apiMock.updateSpec.mockResolvedValue(spec);
     apiMock.getEffectiveResources.mockResolvedValue({
@@ -124,6 +234,29 @@ describe('SpecModal Activity tab', () => {
       next_cursor: null,
       resources: { architecture: [], mockup: [], knowledge_base: [] },
     });
+  });
+
+  it('identifies the Details override as the Task Validation Gate for descendant cards', async () => {
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    const gate = screen.getByTestId('validation-gate-override');
+    expect(gate).toHaveTextContent('Task Validation Gate');
+    expect(gate).toHaveTextContent('cards derived from this spec');
+    expect(gate).toHaveTextContent('do not change the Spec Validation Gate');
+    expect(validationGateOverrideSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Task Validation Gate',
+        description: expect.stringContaining('cards derived from this spec'),
+      }),
+    );
   });
 
   it('loads and expands the shared Before/After history renderer', async () => {
@@ -138,7 +271,7 @@ describe('SpecModal Activity tab', () => {
 
     await screen.findByText(spec.title);
     expect(
-      screen.getByLabelText('Edition v2; technical revision r3'),
+      screen.getByLabelText('Edition 2'),
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: 'Activity' }));
 
@@ -206,8 +339,10 @@ describe('SpecModal Activity tab', () => {
       within(tabList).getAllByRole('tab').map((tab) => tab.textContent),
     ).toEqual([
       'Details',
+      'Code Evidence Matrix',
       'Tests',
       'Rules',
+      'Dependencies',
       'Contracts',
       'IRs',
       'ORs',
@@ -230,6 +365,244 @@ describe('SpecModal Activity tab', () => {
     expect(
       within(tabList).queryByRole('tab', { name: 'Cards' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('shows only positive open Q&A counts in the linked-sprints list', async () => {
+    apiMock.listSprints.mockResolvedValue([
+      sprintSummary({ id: 'sprint-open', title: 'Sprint with questions', open_qa_count: 2 }),
+      sprintSummary({ id: 'sprint-clear', title: 'Sprint without questions', open_qa_count: 0 }),
+    ]);
+    apiMock.getSprint.mockImplementation((sprintId: string) => Promise.resolve({
+      id: sprintId,
+      cards: [],
+    }));
+
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: /^Sprints/ }));
+
+    await screen.findByText('Sprint without questions');
+    expect(screen.getAllByTestId('qa-open-badge')).toHaveLength(1);
+    expect(screen.getByLabelText('2 unanswered questions')).toHaveTextContent('2 open Q&A');
+  });
+
+  it('notifies the board list exactly once after asking and answering Q&A', async () => {
+    const openQuestion = {
+      id: 'qa-open',
+      spec_id: spec.id,
+      question: 'Which rollout window?',
+      question_type: 'text',
+      choices: null,
+      allow_free_text: false,
+      answer: null,
+      selected: null,
+      asked_by: 'agent-1',
+      answered_by: null,
+      created_at: '2026-08-14T10:00:00Z',
+      answered_at: null,
+    };
+    const answeredQuestion = {
+      ...openQuestion,
+      answer: 'Tonight',
+      answered_by: 'user-1',
+      answered_at: '2026-08-14T11:00:00Z',
+    };
+    apiMock.listSpecQA
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([openQuestion])
+      .mockResolvedValueOnce([answeredQuestion]);
+    apiMock.createSpecQuestion.mockResolvedValue(openQuestion);
+    apiMock.answerSpecQuestion.mockResolvedValue(answeredQuestion);
+    const onChanged = vi.fn();
+
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={onChanged}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Q&A' }));
+    onChanged.mockClear();
+
+    fireEvent.change(
+      await screen.findByPlaceholderText('Ask a question... (type @ to mention)'),
+      { target: { value: openQuestion.question } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+    fireEvent.click(await screen.findByRole('button', { name: 'Answer this question' }));
+    fireEvent.change(
+      screen.getByPlaceholderText('Type your answer... (@ to mention)'),
+      { target: { value: 'Tonight' } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Answer' }));
+
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(2));
+    expect(apiMock.createSpecQuestion).toHaveBeenCalledTimes(1);
+    expect(apiMock.answerSpecQuestion).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists the same-version Draft-only Code Evidence coverage skip from its own tab', async () => {
+    const updatedSpec = {
+      ...spec,
+      skip_code_evidence_coverage: true,
+      version: spec.version,
+    };
+    apiMock.updateSpec.mockResolvedValueOnce(updatedSpec);
+
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Code Evidence Matrix' }));
+    const toggle = screen.getByRole('switch', { name: 'Skip Code Evidence coverage' });
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(apiMock.updateSpec).toHaveBeenCalledWith(spec.id, {
+        skip_code_evidence_coverage: true,
+      });
+    });
+    await waitFor(() => {
+      expect(evidenceMatrixPropsSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+        boardSkipCoverage: false,
+        skipCoverage: true,
+        canEditCoverageFlags: true,
+      }));
+    });
+  });
+
+  it('opens directly on the Code Evidence Matrix and supplies human obligation titles', async () => {
+    apiMock.getSpec.mockResolvedValueOnce({
+      ...spec,
+      integration_requirements: [{
+        id: 'ir-checkout',
+        title: 'Payment provider contract',
+        integration_type: 'api',
+        description: 'Keep the provider exchange compatible.',
+        provider: null,
+        consumer: null,
+        contract_ref: null,
+        endpoint: null,
+        method: null,
+        data_contract: null,
+        linked_requirements: null,
+        linked_api_contracts: null,
+        linked_task_ids: null,
+        status: 'active',
+        notes: null,
+      }],
+    });
+
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        initialTab="evidence-matrix"
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    expect(screen.getByRole('tab', { name: 'Code Evidence Matrix' }))
+      .toHaveAttribute('aria-selected', 'true');
+    await waitFor(() => {
+      expect(evidenceMatrixPropsSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+        obligationTitles: expect.objectContaining({
+          [spec.id]: `Spec: ${spec.title}`,
+          'ir-checkout': 'IR-1: Payment provider contract: Keep the provider exchange compatible.',
+        }),
+      }));
+    });
+  });
+
+  it('passes the effective Board-wide Code Evidence coverage skip to the matrix', async () => {
+    currentBoardState.skipCodeEvidenceCoverageGlobal = true;
+
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Code Evidence Matrix' }));
+
+    await waitFor(() => {
+      expect(evidenceMatrixPropsSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+        boardSkipCoverage: true,
+        skipCoverage: false,
+        canEditCoverageFlags: true,
+      }));
+    });
+  });
+
+  it('does not expose Code Evidence coverage editing outside Draft', async () => {
+    apiMock.getSpec.mockResolvedValueOnce({ ...spec, status: 'validated' });
+
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Code Evidence Matrix' }));
+    expect(screen.getByTestId('read-only-code-evidence-matrix')).toBeInTheDocument();
+    expect(screen.queryByRole('switch', { name: 'Skip Code Evidence coverage' }))
+      .not.toBeInTheDocument();
+    expect(evidenceMatrixPropsSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+      canEditCoverageFlags: false,
+    }));
+  });
+
+  it('does not expose Code Evidence coverage editing on an archived Draft Spec', async () => {
+    apiMock.getSpec.mockResolvedValueOnce({ ...spec, archived: true });
+
+    render(
+      <SpecModal
+        specId={spec.id}
+        boardId={spec.board_id}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await screen.findByText(spec.title);
+    fireEvent.click(screen.getByRole('tab', { name: 'Code Evidence Matrix' }));
+    expect(screen.getByTestId('read-only-code-evidence-matrix')).toBeInTheDocument();
+    expect(screen.queryByRole('switch', { name: 'Skip Code Evidence coverage' }))
+      .not.toBeInTheDocument();
+    expect(evidenceMatrixPropsSpy).toHaveBeenLastCalledWith(expect.objectContaining({
+      canEditCoverageFlags: false,
+    }));
   });
 
   it('shows cancellation audit in Details without a Cancellation tab', async () => {
@@ -262,11 +635,18 @@ describe('SpecModal Activity tab', () => {
   it('groups origin and derived cards under References', async () => {
     apiMock.getSpec.mockResolvedValueOnce({
       ...spec,
-      cards: [{
-        id: 'card-1',
-        title: 'Implement deterministic lint view',
-        status: 'not_started',
-      }],
+      cards: [
+        {
+          id: 'card-1',
+          title: 'Implement deterministic lint view',
+          status: 'validation',
+        },
+        {
+          id: 'card-2',
+          title: 'Repair rejected traceability',
+          status: 'rejected',
+        },
+      ],
     });
 
     render(
@@ -287,6 +667,8 @@ describe('SpecModal Activity tab', () => {
     expect(
       screen.getByText('Implement deterministic lint view'),
     ).toBeInTheDocument();
+    expect(screen.getByText('validation')).toHaveClass('bg-violet-100');
+    expect(screen.getByText('rejected')).toHaveClass('bg-rose-100');
   });
 
   it('omits an unsupported legacy scenario type from the whole-list request', async () => {

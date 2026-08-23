@@ -2,7 +2,10 @@
  * Type definitions for the Dashboard application
  */
 
-import type { PolicyComplianceTransitionDecision } from './policy-governance';
+import type {
+  PolicyComplianceTransitionDecision,
+  RedactedPolicyComplianceTransitionDecision,
+} from './policy-governance';
 
 // Card status enum matching backend
 export type CardStatus =
@@ -10,6 +13,7 @@ export type CardStatus =
   | 'started'
   | 'in_progress'
   | 'validation'
+  | 'rejected'
   | 'on_hold'
   | 'done'
   | 'cancelled';
@@ -19,9 +23,19 @@ export const CARD_STATUSES: CardStatus[] = [
   'started',
   'in_progress',
   'validation',
+  'rejected',
   'on_hold',
   'done',
   'cancelled',
+];
+
+/**
+ * Card creation may only enter at the beginning of the lifecycle. Rejected
+ * and every advanced state are consequences of governed transitions.
+ */
+export const CREATABLE_CARD_STATUSES: CardStatus[] = [
+  'not_started',
+  'started',
 ];
 
 export const STATUS_LABELS: Record<CardStatus, string> = {
@@ -29,6 +43,7 @@ export const STATUS_LABELS: Record<CardStatus, string> = {
   started: 'Started',
   in_progress: 'In Progress',
   validation: 'Validation',
+  rejected: 'Rejected',
   on_hold: 'On Hold',
   done: 'Done',
   cancelled: 'Cancelled',
@@ -82,6 +97,8 @@ export interface LineageGraphNode {
   label: string;
   status?: string | null;
   stage: number;
+  /** Relative position in dependency view; omitted for origin/derivation. */
+  dependency_role?: 'prerequisite' | 'selected' | 'dependent';
   card_type?: CardType | string;
   artifact_type?: string;
   source_entity_type?: string;
@@ -107,6 +124,17 @@ export interface LineageGraphEdge {
 
 export interface LineageGraphResponse {
   board_id: string;
+  /** Absent on rolling-upgrade servers, where lineage is the only view. */
+  view?: 'lineage' | 'dependency';
+  /** Dependency projection scope; absent for origin/derivation responses. */
+  dependency_scope?: 'selected' | 'lineage';
+  /** Canonical IDs of the Spec/Card seeds represented by a lineage overlay. */
+  lineage_node_ids?: string[];
+  /** Stable semantic seed membership used to reject cross-snapshot overlays. */
+  lineage_entities?: Array<{
+    entity_type: 'spec' | 'card';
+    entity_id: string;
+  }>;
   selected: {
     entity_type: string;
     entity_id: string;
@@ -138,12 +166,16 @@ export interface AllowedTransition {
   label: string;
   gate: string;
   blocked_reason: string | null;
+  blocked_facts: Record<string, unknown> | null;
   preconditions: string[];
   capabilities: string[];
   effects: string[];
   reason_codes: string[];
   policy_compliance: boolean;
-  policy_compliance_decision: PolicyComplianceTransitionDecision | null;
+  policy_compliance_decision:
+    | PolicyComplianceTransitionDecision
+    | RedactedPolicyComplianceTransitionDecision
+    | null;
 }
 
 export interface AllowedTransitionsResponse {
@@ -620,6 +652,8 @@ export type QualityAssessmentKind =
   | 'spec_validation'
   | 'requirement_lint';
 export type QualityCurrentness = 'current' | 'stale';
+/** Human lifecycle projection; does not expose technical staleness semantics. */
+export type QualityLifecycleState = 'current' | 'previous';
 export type QualityAssessmentStaleReason =
   | 'content_changed'
   | 'clarification_changed'
@@ -629,6 +663,9 @@ export type QualityAssessmentStaleReason =
   | 'subject_version_changed';
 export type QualityAssessmentReceiptState =
   | 'current'
+  | 'previous'
+  | 'history_only'
+  // Legacy technical values remain parseable outside lifecycle-edition mode.
   | 'stale'
   | 'superseded';
 export type QualityFindingSeverity =
@@ -657,18 +694,24 @@ export interface QualityScaleSummary {
 }
 
 export interface QualityAssessmentSummary {
-  receipt_id: string;
-  subject_version: number;
-  currentness: QualityCurrentness;
-  score: number;
-  scale: QualityScaleSummary;
-  head_revision: number;
+  /** Human validation edition. Null means legacy, history-only evidence. */
+  edition?: number | null;
+  /** Human projection for the live edition. */
+  state?: 'current' | 'previous' | 'not_started';
+  previous_count?: number;
+  /** Null when this edition has not been assessed. */
+  current_result?: {
+    score: number;
+    scale: QualityScaleSummary;
+  } | null;
 }
 
 /**
  * Optional on list entities by design:
  * - omitted: the actor cannot read Quality (or the projection was not asked);
- * - {}: the actor may read Quality, but no current heads exist.
+ * - {}: the actor may read Quality, but the projection returned no assessment
+ *   kinds. Returned lifecycle kinds represent an empty current slot explicitly
+ *   with `state: 'not_started'` and `current_result: null`.
  */
 export type QualitySummaryMap = Partial<
   Record<QualityAssessmentKind, QualityAssessmentSummary>
@@ -704,6 +747,8 @@ export interface QualityAssessmentReceipt {
   subject_type: QualitySubjectType;
   subject_id: string;
   subject_version: number;
+  /** Null is reserved for evidence created before lifecycle editions. */
+  subject_edition?: number | null;
   assessment_kind: QualityAssessmentKind;
   origin:
     | 'human_or_agent'
@@ -730,7 +775,7 @@ export interface QualityAssessmentReceipt {
 
 export interface QualityReceiptCurrentness {
   current: boolean;
-  state: QualityCurrentness;
+  state: QualityLifecycleState;
   stale_reasons: QualityAssessmentStaleReason[];
 }
 
@@ -761,15 +806,17 @@ export interface QualityGatePreview {
 
 export interface CurrentQualityAssessment {
   receipt: QualityAssessmentReceipt;
+  edition?: number | null;
+  lifecycle_state?: QualityLifecycleState;
   head_revision: number;
-  currentness: QualityCurrentness;
+  currentness: QualityLifecycleState;
   stale_reasons: QualityAssessmentStaleReason[];
   gate_preview: QualityGatePreview;
 }
 
 export interface QualityAssessmentReceiptDetail {
   receipt: QualityAssessmentReceipt;
-  currentness: QualityCurrentness;
+  currentness: QualityLifecycleState;
   stale_reasons: QualityAssessmentStaleReason[];
 }
 
@@ -843,6 +890,7 @@ export interface QualityProposedQuestionInput {
 export interface RecordAmbiguityAssessmentRequest {
   idempotency_key: string;
   expected_subject_version: number;
+  expected_subject_edition: number;
   expected_head_revision: number;
   score: number;
   findings: QualityFindingInput[];
@@ -854,7 +902,219 @@ export interface RecordAmbiguityAssessmentResponse {
   replayed: boolean;
   receipt_id: string;
   head_revision: number;
+  subject_edition?: number | null;
   qa_id_map: Record<string, string>;
+}
+
+export type ValidationCycleState =
+  | 'not_started'
+  | 'pending'
+  | 'in_progress'
+  | 'completed';
+
+export type ValidationCycleResultType =
+  | 'ambiguity_assessment'
+  | 'spec_validation'
+  | 'requirement_lint'
+  | 'curated_checklist'
+  | 'policy_compliance';
+
+export interface ValidationSubmissionFence {
+  expected_validation_edition: number;
+  expected_subject_version: number;
+  expected_head_revision: number;
+}
+
+export interface ValidationCycleResultSummary {
+  result_id: string;
+  result_type: ValidationCycleResultType;
+  /** Null identifies evidence created before lifecycle editions. */
+  subject_edition: number | null;
+  status: string;
+  summary: Record<string, unknown>;
+}
+
+export type PolicyComplianceLifecycleBindingStatus =
+  | 'passed'
+  | 'failed'
+  | 'waived'
+  | 'skipped'
+  | 'pending'
+  | 'inconsistent';
+
+export type PolicyComplianceLifecycleMetricOutcome =
+  | 'passed'
+  | 'failed'
+  | 'waived'
+  | 'pending';
+
+export interface PolicyComplianceLifecycleCounts {
+  applicable: number;
+  completed: number;
+  passed: number;
+  failed: number;
+  waived: number;
+  skipped: number;
+  pending: number;
+  context_only: number;
+  inconsistent: number;
+  /** Frozen scope items whose applicability/authority could not be proven. */
+  scope_inconsistent: number;
+  blocking: number;
+  advisory: number;
+  blocking_failed: number;
+  blocking_pending: number;
+  advisory_failed: number;
+  advisory_pending: number;
+  failed_metrics: number;
+  waived_metrics: number;
+  unwaived_failed_metrics: number;
+}
+
+export interface PolicyComplianceLifecycleMetric {
+  metric_id: string;
+  code: string;
+  title: string;
+  description: string;
+  description_truncated: boolean;
+  evaluation_rubric: string;
+  evaluation_rubric_truncated: boolean;
+  assessment_outcome: PolicyComplianceLifecycleMetricOutcome;
+  direction: 'minimum' | 'maximum';
+  default_threshold: number;
+  effective_threshold: number;
+  threshold_source: 'default' | 'override';
+}
+
+export interface PolicyComplianceLifecycleBinding {
+  binding_id: string;
+  guideline_id: string;
+  /** Exact immutable guideline revision frozen for this validation edition. */
+  revision_id: string;
+  title: string;
+  enforcement: 'advisory' | 'blocking';
+  minimum_confidence: number;
+  status: PolicyComplianceLifecycleBindingStatus;
+  failed_metric_count: number;
+  waived_metric_count: number;
+  unwaived_failed_metric_count: number;
+  metrics: PolicyComplianceLifecycleMetric[];
+}
+
+export interface PolicyComplianceLifecycleDetails {
+  counts: PolicyComplianceLifecycleCounts;
+  applicable_bindings: PolicyComplianceLifecycleBinding[];
+}
+
+export interface ValidationCycleCheckSummary {
+  result_type:
+    | 'requirement_lint'
+    | 'curated_checklist'
+    | 'policy_compliance';
+  status: string;
+  summary: string;
+  /** Policy checks expose a frozen, edition-bound human projection here. */
+  details: PolicyComplianceLifecycleDetails | Record<string, unknown>;
+}
+
+export type ValidationCycleVisibleSection =
+  | 'ambiguity_assessment'
+  | 'spec_validation'
+  | 'requirement_lint'
+  | 'curated_checklist'
+  | 'policy_compliance';
+
+interface ValidationCycleSummaryIdentity {
+  subject_id: string;
+  edition: number;
+  subject_status: string;
+  visible_sections: ValidationCycleVisibleSection[];
+}
+
+interface ValidationCycleSummaryBase extends ValidationCycleSummaryIdentity {
+  cycle_state: ValidationCycleState;
+  current_result: ValidationCycleResultSummary | null;
+  previous_result_count: number;
+  previous_results: ValidationCycleResultSummary[];
+  submission_fence: ValidationSubmissionFence;
+}
+
+export interface QualityValidationCycleSummary
+  extends ValidationCycleSummaryBase {
+  subject_type: 'ideation' | 'refinement';
+}
+
+export interface SpecValidationCycleSummary
+  extends ValidationCycleSummaryIdentity {
+  subject_type: 'spec';
+  /** Present only when the actor can read Spec Validation results. */
+  cycle_state?: ValidationCycleState;
+  /** Present only when the actor can read Spec Validation results. */
+  current_result?: ValidationCycleResultSummary | null;
+  /** Present only when the actor can read Spec Validation results. */
+  previous_result_count?: number;
+  /** Present only when the actor can read Spec Validation results. */
+  previous_results?: ValidationCycleResultSummary[];
+  /** Present only when the actor can read Spec Validation results. */
+  submission_fence?: ValidationSubmissionFence;
+  checks: ValidationCycleCheckSummary[];
+  remaining_actions: string[];
+}
+
+export type ValidationCycleSummary =
+  | QualityValidationCycleSummary
+  | SpecValidationCycleSummary;
+
+export interface ValidationTechnicalAudit {
+  subject_type: QualitySubjectType;
+  subject_id: string;
+  result_id: string;
+  result_type:
+    | 'ambiguity_assessment'
+    | 'spec_validation'
+    | 'requirement_lint';
+  /** Null identifies technical evidence attached to a legacy result. */
+  subject_edition: number | null;
+  technical_audit: {
+    receipt_id: string;
+    subject_version: number;
+    head_revision: number;
+    digests: Record<string, string>;
+    visible_exception_types: Array<
+      'ambiguity_gate_skip' | 'policy_skip' | 'policy_waiver'
+    >;
+    exceptions: Array<{
+      exception_id: string;
+      exception_type:
+        | 'ambiguity_gate_skip'
+        | 'policy_skip'
+        | 'policy_waiver';
+      subject_edition: number;
+      status: string;
+      reason: string;
+      actor_id: string;
+      recorded_at: string;
+    }>;
+  };
+}
+
+export interface RequirementLintSubmissionFence {
+  expected_subject_edition: number;
+  expected_subject_version: number;
+  expected_head_revision: number;
+}
+
+export interface RequirementLintPreflight {
+  assessment_kind: 'requirement_lint';
+  subject_edition: number;
+  subject_status: 'approved';
+  ruleset_digest: string;
+  requirement_anchors: Array<{
+    anchor_type: string;
+    anchor_ref: string | null;
+    excerpt_hash: string | null;
+  }>;
+  submission_fence: RequirementLintSubmissionFence;
 }
 
 // Ideation Q&A (same structure as Spec Q&A)
@@ -1062,6 +1322,8 @@ export interface RefinementSummary {
   title: string;
   description: string | null;
   status: RefinementStatus;
+  /** Human-facing review cycle; advances only when returning to Draft. */
+  edition?: number;
   version: number;
   assignee_id: string | null;
   created_by: string;
@@ -1070,6 +1332,7 @@ export interface RefinementSummary {
   labels: string[] | null;
   archived?: boolean;
   skip_ambiguity_gate?: boolean;
+  skip_ambiguity_gate_edition?: number | null;
   quality_summaries?: QualitySummaryMap;
 }
 
@@ -1870,6 +2133,7 @@ export interface Spec extends TaskValidationGateOverride {
   screen_mockups: ScreenMockup[] | null;
   architecture_designs?: ArchitectureDesignSummary[];
   skip_test_coverage: boolean;
+  skip_code_evidence_coverage: boolean;
   skip_rules_coverage?: boolean;
   skip_decisions_coverage?: boolean;
   skip_contract_coverage?: boolean;
@@ -1897,6 +2161,8 @@ export interface Spec extends TaskValidationGateOverride {
   knowledge_bases: SpecKnowledgeSummary[];
   qa_items: SpecQAItem[];
   quality_summaries?: QualitySummaryMap;
+  /** Authoritative precedence gate projection used by the modal header. */
+  dependency_readiness?: import('./spec-dependencies').SpecDependencyReadiness;
 }
 
 // Spec summary (without nested cards)
@@ -1921,6 +2187,7 @@ export interface SpecSummary {
   architecture_designs?: ArchitectureDesignSummary[];
   archived?: boolean;
   quality_summaries?: QualitySummaryMap;
+  dependency_readiness?: import('./spec-dependencies').SpecDependencyReadiness;
 }
 
 // Ideation
@@ -1936,6 +2203,8 @@ export interface Ideation {
   screen_mockups: ScreenMockup[] | null;
   architecture_designs?: ArchitectureDesignSummary[];
   status: IdeationStatus;
+  /** Human-facing review cycle; advances only when returning to Draft. */
+  edition?: number;
   version: number;
   assignee_id: string | null;
   created_by: string;
@@ -1946,6 +2215,7 @@ export interface Ideation {
   pre_archive_status?: string | null;
   // Per-ideation opt-out of the board Max ambiguity gate (spec 2485780b).
   skip_ambiguity_gate?: boolean;
+  skip_ambiguity_gate_edition?: number | null;
   // Cancellation justification (set only while status === 'cancelled')
   cancellation_reason?: string | null;
   cancelled_at?: string | null;
@@ -1974,6 +2244,8 @@ export interface IdeationSummary {
   problem_statement: string | null;
   complexity: IdeationComplexity | null;
   status: IdeationStatus;
+  /** Human-facing review cycle; advances only when returning to Draft. */
+  edition?: number;
   version: number;
   assignee_id: string | null;
   created_by: string;
@@ -1999,6 +2271,8 @@ export interface Refinement {
   screen_mockups: ScreenMockup[] | null;
   architecture_designs?: ArchitectureDesignSummary[];
   status: RefinementStatus;
+  /** Human-facing review cycle; advances only when returning to Draft. */
+  edition?: number;
   version: number;
   assignee_id: string | null;
   created_by: string;
@@ -2009,6 +2283,7 @@ export interface Refinement {
   pre_archive_status?: string | null;
   // Human-authorized opt-out of the board refinement ambiguity gate.
   skip_ambiguity_gate?: boolean;
+  skip_ambiguity_gate_edition?: number | null;
   // Cancellation justification (set only while status === 'cancelled')
   cancellation_reason?: string | null;
   cancelled_at?: string | null;
@@ -2023,18 +2298,21 @@ export interface RefinementAmbiguityGateSkipRequest {
   skip_ambiguity_gate: boolean;
   reason: string;
   expected_refinement_version: number;
+  expected_refinement_edition: number;
 }
 
 export interface RefinementAmbiguityGateSkipReceipt {
   skipped: boolean;
   activity_id: string;
   version: number;
+  edition?: number;
 }
 
 // Card
 export interface Card {
   id: string;
   board_id: string;
+  subject_version?: number;
   spec_id: string | null;
   sprint_id: string | null;
   title: string;
@@ -2055,6 +2333,7 @@ export interface Card {
   conclusions: ConclusionEntry[] | null;
   attachments: Attachment[];
   qa_items: QAItem[];
+  open_qa_count?: number | null;
   comments: Comment[];
   architecture_designs?: ArchitectureDesignSummary[];
   // Bug card fields (optional for backwards compat with existing cards)
@@ -2068,6 +2347,11 @@ export interface Card {
   linked_test_task_ids?: string[] | null;
   skip_task_requirement_link_gate?: boolean;
   validations?: ValidationEntry[] | null;
+  rejection_records?: CardRejectionRecord[] | null;
+  current_rejection_kind?: CardRejectionKind | null;
+  current_rejection_id?: string | null;
+  current_rejection_code?: string | null;
+  current_rejection_summary?: string | null;
   // Cancellation justification (set only while status === 'cancelled')
   cancellation_reason?: string | null;
   cancelled_at?: string | null;
@@ -2086,6 +2370,8 @@ export type TaskValidationVerdict = 'pass' | 'fail';
  * `summary`) here: those are response/history compatibility fields.
  */
 export interface TaskValidationSubmitPayload {
+  expected_subject_version: number;
+  idempotency_key: string;
   confidence: number;
   confidence_justification: string;
   estimated_completeness: number;
@@ -2094,6 +2380,25 @@ export interface TaskValidationSubmitPayload {
   drift_justification: string;
   general_justification: string;
   recommendation: TaskValidationRecommendation;
+}
+
+export type CardRejectionKind = 'task_validation' | 'completion_gate';
+
+export interface CardRejectionCause {
+  kind: CardRejectionKind;
+  id: string;
+  code: string;
+  summary: string;
+}
+
+export interface CardRejectionRecord extends CardRejectionCause {
+  card_id?: string;
+  board_id?: string;
+  source_id?: string | null;
+  reason_codes?: string[];
+  created_by?: string;
+  created_at?: string;
+  subject_version?: number;
 }
 
 export interface TaskValidationResolvedThresholds {
@@ -2164,6 +2469,18 @@ export interface ValidationEntry {
   threshold_violations?: string[];
   resolved_thresholds?: TaskValidationResolvedThresholds | null;
   reviewer_separation?: TaskValidationReviewerSeparation | null;
+  expected_subject_version?: number;
+  idempotency_key?: string;
+  validation_outcome?: TaskValidationOutcome;
+  completion_outcome?: 'completed' | 'rejected';
+  completion_gate_failures?: Array<{
+    code: string;
+    summary: string;
+    reason_codes?: string[];
+  }>;
+  rejection_cause?: CardRejectionCause | null;
+  subject_version?: number;
+  replayed?: boolean;
 
   created_at: string;
   card_status?: CardStatus | null;
@@ -2175,7 +2492,7 @@ export type TaskValidationResponse = ValidationEntry;
 // Card for column view (simplified)
 export interface CardSummary {
   id: string;
-  open_qa_count?: number;
+  open_qa_count?: number | null;
   board_id: string;
   spec_id: string | null;
   title: string;
@@ -2201,6 +2518,10 @@ export interface CardSummary {
   linked_test_task_ids?: string[] | null;
   skip_task_requirement_link_gate?: boolean;
   archived?: boolean;
+  current_rejection_kind?: CardRejectionKind | null;
+  current_rejection_id?: string | null;
+  current_rejection_code?: string | null;
+  current_rejection_summary?: string | null;
 }
 
 export interface KanbanColumnMeta {
@@ -2321,11 +2642,585 @@ export interface AgentBoardGrant {
 export type SpecResourceAutoDeriveType = 'knowledge_base' | 'architecture' | 'mockup';
 export type ReviewerSeparationMode = 'off' | 'warn' | 'enforce';
 
+export interface CodeTraceabilitySettings {
+  mode: 'off' | 'advisory' | 'blocking';
+  evidence_attestation: 'none' | 'preferred' | 'required';
+  target_resolution: 'advisory' | 'required' | 'required_current_receipt';
+  accepted_attestor_policy:
+    | 'granular_permission'
+    | 'granular_permission_and_board_allowlist';
+  minimum_trust: 'single_attestation' | 'corroborated';
+  preflight_freshness_seconds: number;
+  overlap_policy: 'off' | 'warn' | 'block_parallel';
+  observed_state_policy:
+    | 'allow_dirty_attestation'
+    | 'require_committed_attestation';
+  receipt_content: 'metadata_only' | 'safe_excerpt';
+}
+
+export type CodeTraceabilitySubjectType = 'refinement' | 'spec' | 'card';
+export type CodeTraceabilityProfile = 'summary' | 'detail' | 'full';
+export type DeliveryContext = 'brownfield' | 'greenfield' | 'hybrid';
+export type ContextualInvestigationOutcomeV2 =
+  | 'evidence_applicable'
+  | 'no_relevant_existing_implementation'
+  | 'partial'
+  | 'unavailable';
+export type CodeEvidenceSourceRole =
+  | 'current_implementation'
+  | 'existing_scaffold'
+  | 'existing_constraint'
+  | 'reference_pattern'
+  | 'uncategorized_legacy';
+export type AuthoredCodeEvidenceSourceRole = Exclude<
+  CodeEvidenceSourceRole,
+  'uncategorized_legacy'
+>;
+export type CodeEvidenceContextOrigin =
+  | 'authored'
+  | 'human_legacy_classification'
+  | 'unclassified_legacy';
+export type CodeEvidenceBaselinePresence =
+  | 'committed_snapshot'
+  | 'preexisting_worktree';
+
+export interface CodeEvidenceBaselineProvenance {
+  presence: CodeEvidenceBaselinePresence;
+  workspace_state_id: string;
+  provenance_note: string | null;
+}
+
+export interface CodeEvidenceBaselineProvenanceView {
+  presence: CodeEvidenceBaselinePresence;
+  workspace_state_id: string;
+  provenance_note?: string | null;
+}
+
+export interface RefinementDeliveryContextProvenance {
+  value: DeliveryContext;
+  source_refinement_id: string;
+  source_refinement_version: number;
+}
+
+export interface SpecDeliveryContextProvenance {
+  value: DeliveryContext;
+  inherited_value: DeliveryContext;
+  source_refinement_id: string;
+  source_refinement_version: number;
+  override_reason: string | null;
+}
+
+export interface DirectSpecDeliveryContextProvenance {
+  value: DeliveryContext;
+  source_spec_id: string;
+  source_spec_version: number;
+}
+
+export type DeliveryContextProvenance =
+  | RefinementDeliveryContextProvenance
+  | SpecDeliveryContextProvenance
+  | DirectSpecDeliveryContextProvenance;
+
+export interface SourceContextRoleCountsV2 {
+  current_implementation_count: number;
+  existing_scaffold_count: number;
+  existing_constraint_count: number;
+  reference_pattern_count: number;
+  uncategorized_legacy_count: number;
+}
+
+export interface SourceContextClassificationStateV2 {
+  classified_count: number;
+  uncategorized_legacy_count: number;
+}
+
+export interface SourceContextSummaryV2 {
+  delivery_context: DeliveryContext | null;
+  delivery_context_provenance: DeliveryContextProvenance | null;
+  investigation_outcome: ContextualInvestigationOutcomeV2 | null;
+  role_counts: SourceContextRoleCountsV2;
+  classification_state: SourceContextClassificationStateV2;
+  evidence_applicable: boolean | null;
+  interpretation_rule: string;
+  items_not_current_implementation_count: number;
+  technical_details_available: boolean;
+}
+
+export interface SourceContextEvidenceItemV2 {
+  evidence_id: string;
+  source_role: CodeEvidenceSourceRole;
+  relevance_summary: string | null;
+  scope_relation: string | null;
+  source_origin: string | null;
+  interpretation_limit: string | null;
+  baseline_provenance?: CodeEvidenceBaselineProvenance | null;
+  context_origin: CodeEvidenceContextOrigin;
+  context_contract_version: 2 | null;
+  evidence_applicable: boolean | null;
+  classification_revision?: number | null;
+  classification_sha256?: string | null;
+  classification_id?: string | null;
+  classified_by?: string | null;
+  classified_at?: string | null;
+}
+
+export interface SourceContextClassificationBaselineInputV2 {
+  presence: CodeEvidenceBaselinePresence;
+  workspace_state_id: string;
+  provenance_note: string | null;
+  provenance_note_required: boolean;
+}
+
+export interface SourceContextClassificationInputV2 {
+  evidence_id: string;
+  expected_evidence_payload_sha256: string;
+  expected_classification_revision: number;
+  baseline_provenance: SourceContextClassificationBaselineInputV2;
+}
+
+export interface ContextualEvidenceCoverage {
+  total: number;
+  linked: number;
+  dispositioned: number;
+  pending: number;
+  pending_ids: string[];
+  unresolved_applicability_count: number;
+  coverage_pct: number | null;
+  projection_complete: boolean;
+}
+
+export interface ObligationEvidenceMapping {
+  link_id: string;
+  evidence_id: string;
+  obligation_type: string;
+  obligation_id: string;
+  obligation_ref: string;
+  relation_type: string;
+  evidence_applicable: boolean | null;
+  context_origin: CodeEvidenceContextOrigin | null;
+  source_role: CodeEvidenceSourceRole | null;
+}
+
+export interface LegacyEvidenceClassificationItemRequest {
+  evidence_id: string;
+  expected_evidence_payload_sha256: string;
+  expected_classification_revision: number;
+  source_role: AuthoredCodeEvidenceSourceRole;
+  relevance_summary: string;
+  scope_relation: string;
+  source_origin: string;
+  interpretation_limit: string | null;
+  baseline_provenance: CodeEvidenceBaselineProvenance;
+}
+
+export interface LegacyEvidenceClassificationBatchRequest {
+  items: LegacyEvidenceClassificationItemRequest[];
+  justification: string;
+  idempotency_key: string;
+}
+
+export interface CodeEvidenceLegacyClassificationView {
+  id: string;
+  batch_id: string;
+  board_id: string;
+  evidence_id: string;
+  evidence_payload_sha256: string;
+  revision: number;
+  predecessor_classification_id?: string | null;
+  source_role: AuthoredCodeEvidenceSourceRole;
+  relevance_summary: string;
+  scope_relation: string;
+  source_origin: string;
+  interpretation_limit?: string | null;
+  baseline_provenance: CodeEvidenceBaselineProvenanceView;
+  classified_by: string;
+  classified_at: string;
+  justification: string;
+  request_sha256: string;
+  batch_item_count: number;
+  batch_item_index: number;
+  context_contract_version: 2;
+  classification_sha256: string;
+}
+
+export interface LegacyEvidenceClassificationBatchResult {
+  batch_id: string;
+  board_id: string;
+  classified_by: string;
+  classified_at: string;
+  request_sha256: string;
+  classifications: CodeEvidenceLegacyClassificationView[];
+  replayed: boolean;
+}
+
+export type CodeTraceabilityReceiptCurrentness =
+  | 'current'
+  | 'outdated'
+  | 'expired'
+  | 'revoked'
+  | 'conflicted'
+  | 'unknown';
+
+export interface CodeTraceabilityWorkspaceState {
+  workspace_state_id: string;
+  declared_revision: string | null;
+  declared_dirty: boolean;
+  observed_at: string;
+  reproducibility_claim: string;
+  fingerprint_algorithm: string;
+  manifest_digest: string;
+  manifest_entry_count: number;
+}
+
+export interface CodeInvestigationReceipt {
+  id: string;
+  request_id: string;
+  board_id: string;
+  subject_type: CodeTraceabilitySubjectType;
+  subject_id: string;
+  subject_version: number;
+  attestor_actor_id: string;
+  generation: number;
+  predecessor_receipt_id: string | null;
+  trust_level: 'single_attestation' | 'corroborated' | 'conflicted' | string;
+  acceptance_status: 'accepted' | 'rejected' | string;
+  outcome: 'accessible' | 'partial' | 'unavailable';
+  capabilities: string[];
+  source_ref: string;
+  source_identity_digest: string | null;
+  canonicalization_profile: string;
+  limits_profile: string;
+  selector_scope_digest: string;
+  declared_revision: string | null;
+  workspace_state: CodeTraceabilityWorkspaceState | null;
+  omission_manifest: Array<{
+    reason_code: string;
+    affected_scope_digest: string;
+    count: number;
+  }>;
+  omission_digest: string;
+  omission_count: number;
+  tooling: {
+    tool_id?: string;
+    tool_version?: string;
+    method_id?: string;
+    [key: string]: unknown;
+  };
+  observed_at: string;
+  received_at: string;
+  expires_at: string;
+  observation_sha256: string;
+  payload_sha256: string;
+  /** Present on current Core projections; optional for legacy snapshots. */
+  idempotency_key?: string;
+  delivery_context?: DeliveryContext | null;
+  contextual_outcome?: ContextualInvestigationOutcomeV2 | null;
+  context_contract_version?: 2 | null;
+}
+
+export interface CodeInvestigationReceiptReadResult {
+  receipt: CodeInvestigationReceipt;
+  currentness: CodeTraceabilityReceiptCurrentness;
+}
+
+export interface CodeTraceabilityEvidence {
+  id: string;
+  board_id?: string;
+  investigation_receipt_id: string;
+  source_ref: string;
+  parent_type: CodeTraceabilitySubjectType;
+  parent_id: string;
+  parent_version: number;
+  evidence_type: string;
+  claim?: string | null;
+  workspace_state?: CodeTraceabilityWorkspaceState | null;
+  selector_kind: string;
+  relative_path: string | null;
+  language: string | null;
+  symbol_kind: string | null;
+  qualified_symbol: string | null;
+  symbol_signature?: string | null;
+  snapshot_line_start?: number | null;
+  snapshot_line_end?: number | null;
+  excerpt?: string | null;
+  excerpt_sha256?: string | null;
+  excerpt_truncated?: boolean | null;
+  declared_file_blob_sha256?: string | null;
+  declared_source_content_sha256?: string | null;
+  excerpt_omitted_reason?: string | null;
+  attestation_state: 'agent_attested' | 'agent_attested_worktree' | string;
+  attestation_basis?: 'authenticated_agent_receipt' | string;
+  lifecycle_status: 'active' | 'superseded' | 'revoked' | string;
+  supersedes_evidence_id: string | null;
+  revocation_reason?: string | null;
+  submitted_by?: string | null;
+  received_at?: string | null;
+  payload_sha256?: string | null;
+  /** Contextual V2 fields are absent on legacy transport fixtures. */
+  source_role?: CodeEvidenceSourceRole;
+  relevance_summary?: string | null;
+  scope_relation?: string | null;
+  source_origin?: string | null;
+  interpretation_limit?: string | null;
+  baseline_provenance?: CodeEvidenceBaselineProvenance | null;
+  context_contract_version?: 2 | null;
+}
+
+export interface CodeEvidenceRevokeRequest {
+  reason: string;
+}
+
+export interface CodeTraceabilityEvidenceLink {
+  id: string;
+  evidence_id: string;
+  spec_id: string;
+  entity_type: string;
+  entity_id: string;
+  relation_type: string;
+  rationale?: string;
+}
+
+export interface CodeTraceabilityDisposition {
+  id: string;
+  evidence_id: string;
+  disposition: string;
+  justification?: string;
+  active: boolean;
+}
+
+export interface ImplementationTargetResolution {
+  id: string;
+  target_id: string;
+  investigation_receipt_id: string;
+  receipt_generation: number;
+  subject_version: number;
+  target_revision: number;
+  state: string;
+  resolved_relative_path: string | null;
+  resolved_qualified_symbol: string | null;
+  resolved_line_start?: number | null;
+  resolved_line_end?: number | null;
+  confidence: number | null;
+  received_at?: string;
+}
+
+export type ImplementationTargetSelectorKind =
+  | 'symbol'
+  | 'file'
+  | 'glob'
+  | 'semantic'
+  | 'new_file';
+
+export type ImplementationTargetRole =
+  | 'read'
+  | 'modify'
+  | 'extend'
+  | 'create'
+  | 'delete'
+  | 'test'
+  | 'validate';
+
+export interface ImplementationTargetCreateRequest {
+  source_ref: string;
+  selector_kind: ImplementationTargetSelectorKind;
+  relative_path_hint: string | null;
+  language: string | null;
+  symbol_kind: string | null;
+  qualified_symbol: string | null;
+  symbol_signature: string | null;
+  role: ImplementationTargetRole;
+  intent: string;
+  required: boolean;
+  expected_spec_version: number;
+  baseline_evidence_id: string | null;
+  spec_links: Array<{ entity_type: string; entity_id: string }>;
+  evidence_links: Array<{ evidence_id: string; relation_type: string }>;
+}
+
+export type TargetOverlapDisposition =
+  | 'ordered_by_dependency'
+  | 'accepted_parallel'
+  | 'merged_targets'
+  | 'false_positive';
+
+export interface TargetOverlapAcknowledgementRequest {
+  target_a_id: string;
+  target_b_id: string;
+  resolution_a_id: string;
+  resolution_b_id: string;
+  disposition: TargetOverlapDisposition;
+  justification: string;
+}
+
+export type CodeTraceabilityWaiverScope =
+  | 'implementation_target'
+  | 'target_resolution'
+  | 'target_overlap';
+
+export type CodeTraceabilityWaiverReason =
+  | 'no_code_change'
+  | 'documentation_only'
+  | 'manual_process'
+  | 'external_source_unavailable'
+  | 'conceptual_board'
+  | 'runtime_only'
+  | 'other';
+
+export interface CodeTraceabilityWaiver {
+  id: string;
+  board_id: string;
+  entity_type: 'refinement' | 'spec' | 'card' | 'spec_entity';
+  entity_id: string;
+  scope: CodeTraceabilityWaiverScope | 'code_evidence' | 'evidence_linkage';
+  reason_code: CodeTraceabilityWaiverReason;
+  justification: string;
+  active: boolean;
+  created_by: string;
+  created_at: string;
+  cleared_by: string | null;
+  cleared_at: string | null;
+}
+
+export interface CodeTraceabilityWaiverCreateRequest {
+  entity_type: 'card';
+  entity_id: string;
+  scope: CodeTraceabilityWaiverScope;
+  reason_code: CodeTraceabilityWaiverReason;
+  justification: string;
+}
+
+export interface ImplementationTargetProjection {
+  id: string;
+  card_id: string;
+  source_ref: string;
+  selector_kind: string;
+  relative_path_hint: string | null;
+  qualified_symbol: string | null;
+  role: 'read' | 'modify' | 'create' | 'delete' | string;
+  intent?: string;
+  required: boolean;
+  lifecycle_status: string;
+  revision: number;
+  current_resolution_id: string | null;
+}
+
+export type ImplementationTargetExecutionDisposition =
+  | 'touched'
+  | 'not_touched'
+  | 'replaced'
+  | 'created'
+  | 'deleted'
+  | 'superseded';
+
+export interface ImplementationTargetExecutionRecordProjection {
+  id: string;
+  board_id?: string;
+  card_id: string;
+  target_id: string;
+  target_revision: number;
+  result_investigation_receipt_id: string;
+  disposition: ImplementationTargetExecutionDisposition;
+  source_ref: string;
+  result_declared_revision?: string | null;
+  result_workspace_state_id?: string | null;
+  actual_relative_path?: string | null;
+  actual_qualified_symbol?: string | null;
+  replacement_target_id?: string | null;
+  justification?: string;
+  submitted_by?: string;
+  received_at?: string;
+  payload_sha256?: string;
+  idempotency_key?: string;
+}
+
+export interface ImplementationOverlapProjection {
+  target_a_id: string;
+  target_b_id: string;
+  resolution_a_id: string;
+  resolution_b_id: string;
+  severity: string;
+  reason_code: string;
+  relative_path: string | null;
+  qualified_symbol: string | null;
+  acknowledgement?: { id: string; disposition: string } | null;
+}
+
+export interface CodeTraceabilityProjection {
+  subject_type: CodeTraceabilitySubjectType;
+  subject_id: string;
+  subject_version: number;
+  profile: CodeTraceabilityProfile;
+  context_scope: 'default' | 'gate';
+  /** Additive V2 projection fields; optional only for old server compatibility. */
+  source_refinement_id?: string | null;
+  source_refinement_snapshot_id?: string | null;
+  source_refinement_version?: number | null;
+  source_context?: SourceContextSummaryV2 | null;
+  source_context_items?: SourceContextEvidenceItemV2[];
+  source_context_classification_inputs?: SourceContextClassificationInputV2[];
+  contextual_evidence_coverage?: ContextualEvidenceCoverage;
+  obligation_evidence_mappings?: ObligationEvidenceMapping[];
+  /** Current bounded receipts are included by contextual projections that expose omission detail. */
+  current_receipts?: Array<Pick<
+    CodeInvestigationReceipt,
+    'id' | 'outcome' | 'source_ref' | 'omission_manifest'
+  >>;
+  evidence: CodeTraceabilityEvidence[];
+  inherited_evidence_ids: string[];
+  direct_evidence_ids: string[];
+  referenced_evidence_ids: string[];
+  links: CodeTraceabilityEvidenceLink[];
+  dispositions: CodeTraceabilityDisposition[];
+  targets: ImplementationTargetProjection[];
+  resolutions: ImplementationTargetResolution[];
+  executions?: ImplementationTargetExecutionRecordProjection[];
+  overlaps: ImplementationOverlapProjection[];
+  waivers: CodeTraceabilityWaiver[];
+  heads: Array<{
+    source_ref: string;
+    generation: number;
+    current_receipt_id: string | null;
+    state: string;
+  }>;
+  counts: Record<string, number>;
+  coverage: {
+    total: number;
+    linked: number;
+    dispositioned: number;
+    pending: number;
+    pending_ids: string[];
+    coverage_pct: number;
+    skipped?: boolean;
+  };
+  resolution_freshness: Record<string, {
+    state: string;
+    currentness: CodeTraceabilityReceiptCurrentness;
+    resolution_id: string | null;
+    target_revision?: number;
+  }>;
+  gate_readiness: {
+    mode: string;
+    allowed: boolean;
+    passed: boolean;
+    evidence_coverage_skipped?: boolean;
+    blockers: Array<{ code: string; message: string; blocking: boolean }>;
+    receipt_currentness: Record<string, CodeTraceabilityReceiptCurrentness>;
+    resolution_freshness: Record<string, {
+      state: string;
+      currentness: CodeTraceabilityReceiptCurrentness;
+      resolution_id: string | null;
+      target_revision?: number;
+    }>;
+  };
+}
+
 export interface BoardSettings {
   max_scenarios_per_card: number;
   skip_test_coverage_global: boolean;
   skip_rules_coverage_global: boolean;
   skip_trs_coverage_global: boolean;
+  /** Missing on legacy board snapshots; effective default is false. */
+  skip_code_evidence_coverage_global?: boolean;
   skip_contract_coverage_global: boolean;
   skip_ir_coverage_global: boolean;
   skip_or_coverage_global: boolean;
@@ -2347,6 +3242,10 @@ export interface BoardSettings {
   max_drift: number;
   // Spec Validation Gate settings (default enabled unless explicitly disabled)
   require_spec_validation?: boolean;
+  min_spec_confidence?: number;
+  min_spec_clarity?: number;
+  min_spec_decidability?: number;
+  /** Legacy setting retained for reading older board snapshots. */
   min_spec_completeness?: number;
   min_spec_assertiveness?: number;
   max_spec_ambiguity?: number;
@@ -2372,56 +3271,133 @@ export interface BoardSettings {
   // recorded in the activity log; require = gated moves reject a conclusion
   // without a minimally populated block.
   impact_evidence_mode?: 'off' | 'advisory' | 'require';
-  // Requirement lint language profile. The deterministic lint analyzes
-  // requirements against the union of the declared languages' lexicons;
-  // empty/absent = neutral-only signals (numbers, comparators, units).
+  // Requirement-lint language profiles exposed during preflight to an
+  // external evaluating agent. Community persists the configuration and the
+  // returned evidence; it does not perform the analysis. Empty/absent means
+  // the agent receives only neutral signals (numbers, comparators and units).
   lint_languages?: LintLanguageCode[];
+  /** Source-blind policy for observations submitted by authenticated agents. */
+  code_traceability?: CodeTraceabilitySettings | null;
+  /** Board-scoped analytics policy. Missing legacy values resolve to backend defaults. */
+  analytics?: {
+    version: 1;
+    flow_health: {
+      version: 1;
+      general_stale_hours: number;
+      rejected_stale_hours: number;
+      overrides: Record<string, unknown>;
+    };
+  } | null;
 }
 
 export type LintLanguageCode = 'pt-BR' | 'en-US' | 'es-ES' | 'de-DE' | 'fr-FR';
 
 // Spec Validation Gate
+export type SpecValidationMetric =
+  | 'confidence'
+  | 'clarity'
+  | 'assertiveness'
+  | 'decidability'
+  | 'ambiguity';
+
+export interface SpecValidationPinpoint {
+  metric: SpecValidationMetric;
+  anchor_type: QualityFindingAnchorType;
+  anchor_ref?: string | null;
+  detail: string;
+}
+
 export interface SpecValidation {
   id: string;
+  validation_id?: string;
+  validation_edition?: number;
+  is_current?: boolean;
   spec_id: string;
   board_id: string;
   reviewer_id: string;
   reviewer_name?: string | null;
-  completeness: number;
-  completeness_justification: string;
-  assertiveness: number;
-  assertiveness_justification: string;
-  ambiguity: number;
-  ambiguity_justification: string;
-  general_justification: string;
-  recommendation: 'approve' | 'reject';
-  outcome: 'success' | 'failed';
-  threshold_violations: string[];
+  /** Canonical human validation fields. */
+  score?: number | null;
+  summary?: string | null;
+  confidence?: number | null;
+  confidence_justification?: string | null;
+  clarity?: number | null;
+  clarity_justification?: string | null;
+  decidability?: number | null;
+  decidability_justification?: string | null;
+  pinpoints?: SpecValidationPinpoint[] | null;
+  /** Legacy dimension fields remain readable in immutable history. */
+  completeness?: number | null;
+  completeness_justification?: string | null;
+  assertiveness?: number | null;
+  assertiveness_justification?: string | null;
+  ambiguity?: number | null;
+  ambiguity_justification?: string | null;
+  general_justification?: string | null;
+  recommendation?: 'approve' | 'reject' | null;
+  outcome?: 'success' | 'failed' | null;
+  threshold_violations?: string[] | null;
   resolved_thresholds?: {
-    min_spec_completeness: number;
-    min_spec_assertiveness: number;
-    max_spec_ambiguity: number;
+    min_spec_confidence?: number;
+    min_spec_clarity?: number;
+    min_spec_assertiveness?: number;
+    min_spec_decidability?: number;
+    max_spec_ambiguity?: number;
+    /** Legacy threshold retained for old immutable records. */
+    min_spec_completeness?: number;
   } | null;
   created_at: string;
   spec_status?: string | null;
   active?: boolean | null;
+  /** Null marks legacy evidence that is available only in previous results. */
+  edition?: number | null;
+  lifecycle_state?: 'current' | 'previous' | 'history_only' | null;
 }
 
 export interface SpecValidationSubmitPayload {
-  completeness: number;
-  completeness_justification: string;
+  expected_validation_edition: number;
+  expected_spec_version: number;
+  expected_head_revision: number;
+  confidence: number;
+  confidence_justification: string;
+  clarity: number;
+  clarity_justification: string;
   assertiveness: number;
   assertiveness_justification: string;
+  decidability: number;
+  decidability_justification: string;
   ambiguity: number;
   ambiguity_justification: string;
-  general_justification: string;
+  pinpoints: SpecValidationPinpoint[];
   recommendation: 'approve' | 'reject';
+}
+
+export interface SpecValidationSubmitResponse {
+  validation_id: string;
+  validation_edition: number;
+  is_current: boolean;
+  spec_status?: string | null;
+  outcome?: 'success' | 'failed' | null;
+  threshold_violations?: string[] | null;
 }
 
 export interface SpecValidationList {
   spec_id: string;
   current_validation_id: string | null;
   validations: SpecValidation[];
+  total?: number;
+  limit?: number;
+  offset?: number;
+  has_more?: boolean;
+}
+
+/** Bounded human projection for the current Spec validation edition. */
+export interface SpecValidationCurrentSummary {
+  spec_id: string;
+  edition: number;
+  lifecycle_state: 'pending' | 'current';
+  current_validation: SpecValidation | null;
+  previous_count: number;
 }
 
 // Curated Spec checklist (/specify/v1)
@@ -2480,6 +3456,7 @@ export interface ChecklistReceipt {
   board_id: string;
   spec_id: string;
   spec_version: number;
+  spec_edition?: number | null;
   content_digest: string;
   input_digest: string;
   template_version_id: '/specify/v1';
@@ -2516,6 +3493,7 @@ export interface ChecklistSpecState {
     board_id: string;
     spec_id: string;
     spec_version: number;
+    spec_edition?: number;
     content_digest: string;
     input_digest: string;
     status: string;
@@ -2532,6 +3510,20 @@ export interface ChecklistExecutionStartResult {
   items: ChecklistTemplateItem[];
   subject_digest: string;
   template_digest: string;
+  spec_edition?: number;
+}
+
+export interface ChecklistExecutionStartRequest {
+  spec_edition: number;
+  expected_spec_version: number;
+  binding_version: number;
+}
+
+export interface ChecklistExecutionSubmitRequest {
+  spec_edition: number;
+  expected_spec_version: number;
+  execution_id: string;
+  item_results: ChecklistItemResult[];
 }
 
 export interface ChecklistExecutionSubmitResult {
@@ -3181,6 +4173,7 @@ export interface UpdateSpecRequest extends TaskValidationGateOverride {
   decisions?: Decision[];
   screen_mockups?: ScreenMockup[];
   skip_test_coverage?: boolean;
+  skip_code_evidence_coverage?: boolean;
   skip_contract_coverage?: boolean;
   skip_ir_coverage?: boolean;
   skip_or_coverage?: boolean;

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import json
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from okto_pulse.community.api.auth_deps import (
 from okto_pulse.community.api.boards import router as boards_router
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.domain.realm import RealmScope
+from okto_pulse.core.domain.permissions import PERMISSION_REGISTRY
 from okto_pulse.core.models import CardPageItem
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.ports.application_persistence import (
@@ -298,6 +300,7 @@ def cards_client(tmp_path: Path):
             subject=x_user,
             realm_id="local",
             actor_kind="human",
+            claims={"permissions": deepcopy(PERMISSION_REGISTRY)},
         )
 
     app.dependency_overrides[require_user] = _user
@@ -365,6 +368,60 @@ def test_complete_filter_set_is_pre_limit_and_pages_without_gaps(
         "blue",
         "green",
     }
+
+
+def test_card_page_redacts_validation_aggregates_for_sparse_reader(
+    cards_client: TestClient,
+) -> None:
+    flags = deepcopy(PERMISSION_REGISTRY)
+    flags["card"]["validation"]["read"] = False
+    original = cards_client.app.dependency_overrides[require_principal]
+    cards_client.app.dependency_overrides[require_principal] = lambda: Principal(
+        subject="owner",
+        realm_id="local",
+        actor_kind="human",
+        claims={"permissions": flags},
+    )
+    try:
+        response = cards_client.get(
+            "/api/v1/boards/b1/cards?status=in_progress&include_archived=true&limit=25"
+        )
+    finally:
+        cards_client.app.dependency_overrides[require_principal] = original
+
+    assert response.status_code == 200, response.text
+    item = next(item for item in response.json()["items"] if item["id"] == "c029")
+    assert item["status"] == "in_progress"
+    assert item["validations_count"] == 0
+    assert item["validations_fail_count"] == 0
+    assert item["validations_has_pass"] is False
+    assert item["first_pass_confidence"] is None
+    assert item["first_pass_completeness"] is None
+    assert item["first_pass_drift"] is None
+
+
+def test_card_page_omits_open_qa_count_without_qa_read(
+    cards_client: TestClient,
+) -> None:
+    flags = deepcopy(PERMISSION_REGISTRY)
+    flags["card"]["qa"]["read"] = False
+    original = cards_client.app.dependency_overrides[require_principal]
+    cards_client.app.dependency_overrides[require_principal] = lambda: Principal(
+        subject="owner",
+        realm_id="local",
+        actor_kind="human",
+        claims={"permissions": flags},
+    )
+    try:
+        response = cards_client.get(
+            "/api/v1/boards/b1/cards?status=in_progress&include_archived=true&limit=25"
+        )
+    finally:
+        cards_client.app.dependency_overrides[require_principal] = original
+
+    assert response.status_code == 200, response.text
+    assert response.json()["items"]
+    assert all("open_qa_count" not in item for item in response.json()["items"])
 
 
 def test_archived_toggle_drives_both_totals(cards_client: TestClient) -> None:

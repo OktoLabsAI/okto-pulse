@@ -314,7 +314,7 @@ export function IdeationsPanel({ boardId }: IdeationsPanelProps) {
                             : null
                         : null}
                     />
-                    <span className="text-xs text-gray-400">v{ideation.version}</span>
+                    <span className="text-xs text-gray-400">Edition {ideation.edition ?? 1}</span>
                   </div>
                   <h3 className="font-medium text-gray-900 dark:text-white text-sm truncate">
                     {ideation.title}

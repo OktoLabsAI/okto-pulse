@@ -31,6 +31,7 @@ describe('refinement ambiguity gate skip API', () => {
       {
         skip_ambiguity_gate: true,
         reason: 'Accepted risk for this delivery.',
+        expected_refinement_edition: 2,
         expected_refinement_version: 7,
       },
     );
@@ -42,6 +43,7 @@ describe('refinement ambiguity gate skip API', () => {
         body: JSON.stringify({
           skip_ambiguity_gate: true,
           reason: 'Accepted risk for this delivery.',
+          expected_refinement_edition: 2,
           expected_refinement_version: 7,
         }),
       },
@@ -61,6 +63,7 @@ describe('refinement ambiguity gate skip API', () => {
       {
         skip_ambiguity_gate: true,
         reason: '   ',
+        expected_refinement_edition: 2,
         expected_refinement_version: 7,
       },
     )).rejects.toThrow('non-empty reason');
@@ -70,6 +73,7 @@ describe('refinement ambiguity gate skip API', () => {
       {
         skip_ambiguity_gate: true,
         reason: 'Accepted risk.',
+        expected_refinement_edition: 2,
         expected_refinement_version: 0,
       },
     )).rejects.toThrow('valid expected refinement version');

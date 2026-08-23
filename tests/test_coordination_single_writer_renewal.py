@@ -15,6 +15,7 @@ the original error chained as its cause.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -26,7 +27,12 @@ from okto_pulse.core.kg.global_discovery_writer import (
     GlobalDiscoveryWriterFenceLost,
     GlobalDiscoveryWriterLease,
 )
-from okto_pulse.core.kg.single_writer_lock import KGSingleWriterLock
+from okto_pulse.core.kg.guarded_write import GuardedWriteError, guarded_board_write
+from okto_pulse.core.kg.single_writer_lock import (
+    KGSingleWriterLock,
+    SingleWriterLockError,
+    SingleWriterLockErrorCode,
+)
 
 _BOARD_ID = "board-renewal"
 _ARTIFACT_ID = "writer.lock"
@@ -45,7 +51,9 @@ def _acquire(port: CommunityLocalWriteLockPort, tmp_path: Path, *, ttl_seconds=3
     return acquisition
 
 
-def _renew(port: CommunityLocalWriteLockPort, tmp_path: Path, *, owner_token, ttl_seconds=45):
+def _renew(
+    port: CommunityLocalWriteLockPort, tmp_path: Path, *, owner_token, ttl_seconds=45
+):
     return port.renew_single_writer_sync(
         board_id=_BOARD_ID,
         artifact_id=_ARTIFACT_ID,
@@ -108,6 +116,179 @@ def _install_denying_replace(
     return denials, passthrough
 
 
+def test_transient_recovery_mutex_contention_retries_writer_acquisition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port = CommunityLocalWriteLockPort()
+    real_mutex = port._single_writer_recovery_mutex  # noqa: SLF001
+    attempts: list[int] = []
+
+    class _BusyMutex:
+        def __enter__(self):
+            raise coordination_module._SingleWriterRecoveryMutexBusy  # noqa: SLF001
+
+        def __exit__(self, *_args):
+            return None
+
+    def transient_mutex(board_dir: Path):
+        attempts.append(len(attempts) + 1)
+        if len(attempts) < 3:
+            return _BusyMutex()
+        return real_mutex(board_dir)
+
+    monkeypatch.setattr(port, "_single_writer_recovery_mutex", transient_mutex)
+
+    acquisition = port.acquire_single_writer_sync(
+        board_id=_BOARD_ID,
+        artifact_id=_ARTIFACT_ID,
+        operation="acquire-after-transient-mutex",
+        owner_id="acquire-owner",
+        ttl_seconds=30,
+        base_dir_hint=str(tmp_path),
+    )
+
+    assert acquisition.acquired is True
+    assert acquisition.owner_token
+    assert attempts == [1, 2, 3]
+    manifest = _manifest(port, tmp_path)
+    assert manifest is not None
+    assert manifest.owner_token == acquisition.owner_token
+    assert manifest.owner_id == "acquire-owner"
+    _assert_no_debris(_board_dir(port, tmp_path))
+
+
+def test_real_kernel_mutex_collision_retries_writer_acquisition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The root-bound port waits out the reservation heartbeat's real mutex."""
+
+    port = CommunityLocalWriteLockPort(kg_base_dir=tmp_path)
+    board_dir = tmp_path / "locks" / _BOARD_ID
+    mutex_held = threading.Event()
+    release_mutex = threading.Event()
+    mutex_released = threading.Event()
+
+    def hold_mutex() -> None:
+        with port._single_writer_recovery_mutex(board_dir):  # noqa: SLF001
+            mutex_held.set()
+            assert release_mutex.wait(timeout=5)
+        mutex_released.set()
+
+    holder = threading.Thread(target=hold_mutex, daemon=True)
+    holder.start()
+    assert mutex_held.wait(timeout=5)
+    real_sleep = time.sleep
+    backoffs: list[float] = []
+
+    def release_on_backoff(delay: float) -> None:
+        backoffs.append(delay)
+        release_mutex.set()
+        assert mutex_released.wait(timeout=5)
+        real_sleep(0)
+
+    monkeypatch.setattr(coordination_module.time, "sleep", release_on_backoff)
+    acquisition = port.acquire_single_writer_sync(
+        board_id=_BOARD_ID,
+        artifact_id=_ARTIFACT_ID,
+        operation="acquire-after-real-mutex",
+        owner_id="graph-writer",
+        ttl_seconds=30,
+    )
+    holder.join(timeout=5)
+
+    assert not holder.is_alive()
+    assert acquisition.acquired is True
+    assert acquisition.owner_token
+    assert backoffs == [0.05]
+    _assert_no_debris(board_dir)
+    manifest = port.inspect_single_writer_sync(
+        board_id=_BOARD_ID,
+        artifact_id=_ARTIFACT_ID,
+    )
+    assert manifest is not None
+    assert manifest.owner_token == acquisition.owner_token
+
+
+def test_acquire_mutex_contention_exhaustion_is_typed_and_non_mutating(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port = CommunityLocalWriteLockPort()
+    attempts: list[int] = []
+
+    class _BusyMutex:
+        def __enter__(self):
+            attempts.append(len(attempts) + 1)
+            raise coordination_module._SingleWriterRecoveryMutexBusy  # noqa: SLF001
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(
+        port,
+        "_single_writer_recovery_mutex",
+        lambda _board_dir: _BusyMutex(),
+    )
+
+    with pytest.raises(SingleWriterLockError) as caught:
+        port.acquire_single_writer_sync(
+            board_id=_BOARD_ID,
+            artifact_id=_ARTIFACT_ID,
+            operation="bounded-acquire",
+            owner_id="bounded-owner",
+            ttl_seconds=30,
+            base_dir_hint=str(tmp_path),
+        )
+
+    assert caught.value.code is SingleWriterLockErrorCode.STALE_LOCK_RECOVERY_FAILED
+    assert caught.value.retryable is True
+    assert caught.value.reason == "recovery_mutex_busy_exhausted"
+    assert attempts == [1, 2, 3]
+    assert _manifest(port, tmp_path) is None
+    assert not port._single_writer_path(  # noqa: SLF001
+        _board_dir(port, tmp_path), _ARTIFACT_ID
+    ).exists()
+    _assert_no_debris(_board_dir(port, tmp_path))
+
+
+def test_guarded_write_reports_mutex_exhaustion_not_foreign_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port = CommunityLocalWriteLockPort()
+
+    class _BusyMutex:
+        def __enter__(self):
+            raise coordination_module._SingleWriterRecoveryMutexBusy  # noqa: SLF001
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(
+        port,
+        "_single_writer_recovery_mutex",
+        lambda _board_dir: _BusyMutex(),
+    )
+    writer = KGSingleWriterLock(base_dir=tmp_path, write_lock_port=port)
+
+    with pytest.raises(GuardedWriteError) as caught:
+        with guarded_board_write(
+            board_id=_BOARD_ID,
+            operation="exact-consolidation",
+            owner_id="exact-worker",
+            mutation_ref="queue:one",
+            writer_lock=writer,
+        ):
+            raise AssertionError("writer body must not be entered")
+
+    assert caught.value.code == "stale_lock_recovery_failed"
+    assert caught.value.retryable is True
+    assert str(caught.value) != "another writer currently owns the board graph"
+    assert writer.inspect(board_id=_BOARD_ID) is None
+
+
 def test_transient_replace_denial_retries_and_renews_the_exact_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -128,6 +309,241 @@ def test_transient_replace_denial_retries_and_renews_the_exact_token(
     assert after.owner_id == before.owner_id
     assert after.acquired_at_epoch == before.acquired_at_epoch
     assert after.expires_at_epoch > before.expires_at_epoch
+    _assert_no_debris(_board_dir(port, tmp_path))
+
+
+def test_transient_recovery_mutex_contention_retries_exact_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port = CommunityLocalWriteLockPort()
+    acquisition = _acquire(port, tmp_path)
+    before = _manifest(port, tmp_path)
+    real_mutex = port._single_writer_recovery_mutex  # noqa: SLF001
+    attempts: list[int] = []
+
+    class _BusyMutex:
+        def __enter__(self):
+            raise coordination_module._SingleWriterRecoveryMutexBusy  # noqa: SLF001
+
+        def __exit__(self, *_args):
+            return None
+
+    def transient_mutex(board_dir: Path):
+        attempts.append(len(attempts) + 1)
+        if len(attempts) < 3:
+            return _BusyMutex()
+        return real_mutex(board_dir)
+
+    monkeypatch.setattr(port, "_single_writer_recovery_mutex", transient_mutex)
+
+    renewed = _renew(port, tmp_path, owner_token=acquisition.owner_token)
+
+    assert renewed is True
+    assert attempts == [1, 2, 3]
+    after = _manifest(port, tmp_path)
+    assert after is not None and before is not None
+    assert after.owner_token == before.owner_token == acquisition.owner_token
+    assert after.expires_at_epoch > before.expires_at_epoch
+    _assert_no_debris(_board_dir(port, tmp_path))
+
+
+def test_recovery_mutex_contention_exhaustion_is_bounded_and_non_mutating(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port = CommunityLocalWriteLockPort()
+    acquisition = _acquire(port, tmp_path)
+    before = _manifest(port, tmp_path)
+    attempts: list[int] = []
+
+    class _BusyMutex:
+        def __enter__(self):
+            attempts.append(len(attempts) + 1)
+            raise coordination_module._SingleWriterRecoveryMutexBusy  # noqa: SLF001
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(
+        port,
+        "_single_writer_recovery_mutex",
+        lambda _board_dir: _BusyMutex(),
+    )
+
+    started = time.monotonic()
+    renewed = _renew(port, tmp_path, owner_token=acquisition.owner_token)
+    elapsed = time.monotonic() - started
+
+    assert renewed is False
+    assert attempts == [1, 2, 3]
+    assert 0.1 <= elapsed < 2.0
+    after = _manifest(port, tmp_path)
+    assert after is not None and before is not None
+    assert after.to_disk_dict() == before.to_disk_dict()
+    _assert_no_debris(_board_dir(port, tmp_path))
+
+
+def test_transient_recovery_mutex_contention_retries_exact_token_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port = CommunityLocalWriteLockPort()
+    acquisition = _acquire(port, tmp_path)
+    manifest_path = port._single_writer_path(  # noqa: SLF001
+        _board_dir(port, tmp_path), _ARTIFACT_ID
+    )
+    real_mutex = port._single_writer_recovery_mutex  # noqa: SLF001
+    attempts: list[int] = []
+
+    class _BusyMutex:
+        def __enter__(self):
+            raise coordination_module._SingleWriterRecoveryMutexBusy  # noqa: SLF001
+
+        def __exit__(self, *_args):
+            return None
+
+    def transient_mutex(board_dir: Path):
+        attempts.append(len(attempts) + 1)
+        if len(attempts) < 3:
+            return _BusyMutex()
+        return real_mutex(board_dir)
+
+    monkeypatch.setattr(port, "_single_writer_recovery_mutex", transient_mutex)
+
+    released = port.release_single_writer_sync(
+        board_id=_BOARD_ID,
+        artifact_id=_ARTIFACT_ID,
+        owner_token=str(acquisition.owner_token),
+        base_dir_hint=str(tmp_path),
+    )
+
+    assert released is True
+    assert attempts == [1, 2, 3]
+    assert not manifest_path.exists()
+    _assert_no_debris(_board_dir(port, tmp_path))
+
+
+def test_release_mutex_contention_exhaustion_is_bounded_and_non_mutating(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port = CommunityLocalWriteLockPort()
+    acquisition = _acquire(port, tmp_path)
+    before = _manifest(port, tmp_path)
+    attempts: list[int] = []
+
+    class _BusyMutex:
+        def __enter__(self):
+            attempts.append(len(attempts) + 1)
+            raise coordination_module._SingleWriterRecoveryMutexBusy  # noqa: SLF001
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(
+        port,
+        "_single_writer_recovery_mutex",
+        lambda _board_dir: _BusyMutex(),
+    )
+
+    started = time.monotonic()
+    released = port.release_single_writer_sync(
+        board_id=_BOARD_ID,
+        artifact_id=_ARTIFACT_ID,
+        owner_token=str(acquisition.owner_token),
+        base_dir_hint=str(tmp_path),
+    )
+    elapsed = time.monotonic() - started
+
+    assert released is False
+    assert attempts == [1, 2, 3]
+    assert 0.1 <= elapsed < 2.0
+    after = _manifest(port, tmp_path)
+    assert after is not None and before is not None
+    assert after.to_disk_dict() == before.to_disk_dict()
+    _assert_no_debris(_board_dir(port, tmp_path))
+
+
+def test_release_refuses_foreign_and_repeated_tokens_but_cleans_exact_expired(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    port = CommunityLocalWriteLockPort()
+    acquisition = _acquire(port, tmp_path)
+    before = _manifest(port, tmp_path)
+    assert before is not None
+
+    assert (
+        port.release_single_writer_sync(
+            board_id=_BOARD_ID,
+            artifact_id=_ARTIFACT_ID,
+            owner_token="foreign-token",
+            base_dir_hint=str(tmp_path),
+        )
+        is False
+    )
+    assert _manifest(port, tmp_path).to_disk_dict() == before.to_disk_dict()
+
+    manifest_path = port._single_writer_path(  # noqa: SLF001
+        _board_dir(port, tmp_path), _ARTIFACT_ID
+    )
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw["expires_at_epoch"] = time.time() - 1
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+    expired_bytes = manifest_path.read_bytes()
+    assert port.release_single_writer_sync(
+        board_id=_BOARD_ID,
+        artifact_id=_ARTIFACT_ID,
+        owner_token=str(acquisition.owner_token),
+        base_dir_hint=str(tmp_path),
+    )
+    assert expired_bytes
+    assert not manifest_path.exists()
+    assert (
+        port.release_single_writer_sync(
+            board_id=_BOARD_ID,
+            artifact_id=_ARTIFACT_ID,
+            owner_token=str(acquisition.owner_token),
+            base_dir_hint=str(tmp_path),
+        )
+        is False
+    )
+    assert not manifest_path.exists()
+    _assert_no_debris(_board_dir(port, tmp_path))
+
+
+def test_expired_predecessor_release_cannot_remove_reclaimed_successor(
+    tmp_path: Path,
+) -> None:
+    port = CommunityLocalWriteLockPort()
+    predecessor = _acquire(port, tmp_path, ttl_seconds=1)
+    time.sleep(1.05)
+    successor = _acquire(port, tmp_path, ttl_seconds=30)
+    assert successor.stale_recovered is True
+    successor_manifest = _manifest(port, tmp_path)
+    assert successor_manifest is not None
+
+    assert (
+        port.release_single_writer_sync(
+            board_id=_BOARD_ID,
+            artifact_id=_ARTIFACT_ID,
+            owner_token=str(predecessor.owner_token),
+            base_dir_hint=str(tmp_path),
+        )
+        is False
+    )
+    current = _manifest(port, tmp_path)
+    assert current is not None
+    assert current.to_disk_dict() == successor_manifest.to_disk_dict()
+    assert port.release_single_writer_sync(
+        board_id=_BOARD_ID,
+        artifact_id=_ARTIFACT_ID,
+        owner_token=str(successor.owner_token),
+        base_dir_hint=str(tmp_path),
+    )
+    assert _manifest(port, tmp_path) is None
     _assert_no_debris(_board_dir(port, tmp_path))
 
 
@@ -335,8 +751,7 @@ def test_real_lock_chain_surfaces_typed_fence_lost_after_exhaustion(
             lease.renew()
         assert isinstance(excinfo.value.__cause__, PermissionError)
         assert (
-            len(denials)
-            == coordination_module._SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS  # noqa: SLF001
+            len(denials) == coordination_module._SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS  # noqa: SLF001
         )
     finally:
         lease.release()

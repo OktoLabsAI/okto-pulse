@@ -62,7 +62,11 @@ class CommunityTraceMiddleware(Middleware):
         record: dict[str, Any],
     ) -> None:
         try:
-            result = self._trace_sink.write_trace(session_id, record)
+            writer = self._trace_sink.write_trace
+            if inspect.iscoroutinefunction(writer):
+                await writer(session_id, record)
+                return
+            result = await asyncio.to_thread(writer, session_id, record)
             if inspect.isawaitable(result):
                 await result
         except Exception:
@@ -83,7 +87,7 @@ class CommunityTraceMiddleware(Middleware):
             "ts": datetime.now(timezone.utc).isoformat(),
             "session_id": session_id,
             "tool": tool_name,
-            "arguments": _safe_jsonable(arguments),
+            "arguments": await asyncio.to_thread(_safe_jsonable, arguments),
             "is_error": False,
             "response": None,
             "error": None,
@@ -93,7 +97,7 @@ class CommunityTraceMiddleware(Middleware):
         try:
             result = await call_next(context)
             record["duration_ms"] = round((time.perf_counter() - start) * 1000, 3)
-            record["response"] = _safe_jsonable(result)
+            record["response"] = await asyncio.to_thread(_safe_jsonable, result)
             record["is_error"] = bool(getattr(result, "is_error", False))
             return result
         except asyncio.CancelledError:

@@ -165,7 +165,7 @@ describe('SpecsPanel grouping modes', () => {
     await waitFor(() => expect(screen.getByText('Spec with refinement')).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText('Refinement: Refinement Alpha')).toBeInTheDocument());
     expect(
-      screen.getAllByLabelText('Edition v2; technical revision r9'),
+      screen.getAllByLabelText('Edition 2'),
     ).toHaveLength(3);
 
     expect(screen.getByTestId('specs-list-group-refinement:ref-1')).toBeInTheDocument();

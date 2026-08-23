@@ -38,6 +38,9 @@ from okto_pulse.core.ports.kg_operational import (
     get_kg_worker_queue_port,
     reset_kg_operational_ports_for_tests,
 )
+from okto_pulse.core.domain.code_traceability_kg import (
+    KGDeadLetterReprocessScope,
+)
 from okto_pulse.core.application.processors.dead_letter import build_attempt_entry
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -402,5 +405,159 @@ async def test_dlq_replay_classifies_and_deduplicates_active_claim(tmp_path):
         )
         assert replay["selected"] == 0
         assert count == 1
+
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_code_traceability_dlq_replay_is_explicit_board_scoped_and_idempotent(
+    tmp_path,
+):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'ct_dlq.db'}")
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    board_id = "ct-dlq-board"
+    foreign_board_id = "ct-dlq-foreign-board"
+    async with factory() as session:
+        session.add_all(
+            [
+                Board(id=board_id, name="CT DLQ", owner_id="agent"),
+                Board(id=foreign_board_id, name="Foreign CT DLQ", owner_id="agent"),
+                ConsolidationDeadLetter(
+                    id="dlq-ct-receipt-1",
+                    board_id=board_id,
+                    artifact_type="code_investigation_receipt",
+                    artifact_id="receipt-conflicted-1",
+                    attempts=5,
+                    errors=[
+                        {
+                            "attempt": 5,
+                            "error_type": "ValueError",
+                            "message": "code_traceability_status_invalid:conflicted",
+                        }
+                    ],
+                ),
+                ConsolidationDeadLetter(
+                    id="dlq-ct-receipt-2",
+                    board_id=board_id,
+                    artifact_type="code_investigation_receipt",
+                    artifact_id="receipt-conflicted-2",
+                    attempts=5,
+                    errors=[
+                        {
+                            "attempt": 5,
+                            "error_type": "ValueError",
+                            "message": "code_traceability_status_invalid:conflicted",
+                        }
+                    ],
+                ),
+                ConsolidationDeadLetter(
+                    id="dlq-ct-foreign",
+                    board_id=foreign_board_id,
+                    artifact_type="code_investigation_receipt",
+                    artifact_id="receipt-foreign",
+                    attempts=5,
+                    errors=[],
+                ),
+            ]
+        )
+        await session.commit()
+
+    queue = CommunitySqlAlchemyKGWorkerQueue()
+    selected_ids = ["dlq-ct-receipt-1", "dlq-ct-receipt-2"]
+
+    async with factory() as session:
+        generic = await queue.reprocess_dead_letter_rows(
+            session,
+            board_id=board_id,
+            dead_letter_ids=selected_ids,
+            limit=2,
+        )
+        assert generic["selected"] == 0
+        assert generic["scope"] == "generic"
+        assert generic["mutated"] is False
+
+        mixed_scope = await queue.reprocess_dead_letter_rows(
+            session,
+            board_id=board_id,
+            dead_letter_ids=[selected_ids[0], "dlq-ct-foreign"],
+            limit=2,
+            scope=KGDeadLetterReprocessScope.CODE_TRACEABILITY,
+        )
+        assert mixed_scope["success"] is False
+        assert mixed_scope["blocked"] is True
+        assert mixed_scope["error"] == "code_traceability_dlq_selection_invalid"
+        assert mixed_scope["selected"] == 0
+        assert mixed_scope["mutated"] is False
+        assert await session.get(ConsolidationDeadLetter, selected_ids[0]) is not None
+
+    async with factory() as session:
+        replay = await queue.reprocess_dead_letter_rows(
+            session,
+            board_id=board_id,
+            dead_letter_ids=selected_ids,
+            limit=2,
+            scope=KGDeadLetterReprocessScope.CODE_TRACEABILITY,
+        )
+        await session.commit()
+
+        rows = list(
+            (
+                await session.execute(
+                    select(ConsolidationQueue).where(
+                        ConsolidationQueue.board_id == board_id,
+                        ConsolidationQueue.artifact_type
+                        == "code_investigation_receipt",
+                    )
+                )
+            ).scalars().all()
+        )
+        assert replay["success"] is True
+        assert replay["blocked"] is False
+        assert replay["mutated"] is True
+        assert replay["scope"] == "code_traceability"
+        assert replay["selected"] == 2
+        assert replay["requeued_count"] == 2
+        assert {row.artifact_id for row in rows} == {
+            "receipt-conflicted-1",
+            "receipt-conflicted-2",
+        }
+        assert {row.status for row in rows} == {"pending"}
+        assert {row.source for row in rows} == {"dead_letter_reprocess"}
+        remaining = list(
+            (
+                await session.execute(
+                    select(ConsolidationDeadLetter).where(
+                        ConsolidationDeadLetter.id.in_(selected_ids)
+                    )
+                )
+            ).scalars().all()
+        )
+        assert remaining == []
+
+    async with factory() as session:
+        repeated = await queue.reprocess_dead_letter_rows(
+            session,
+            board_id=board_id,
+            dead_letter_ids=selected_ids,
+            limit=2,
+            scope=KGDeadLetterReprocessScope.CODE_TRACEABILITY,
+        )
+        queue_count = len(
+            (
+                await session.execute(
+                    select(ConsolidationQueue).where(
+                        ConsolidationQueue.board_id == board_id,
+                        ConsolidationQueue.artifact_type
+                        == "code_investigation_receipt",
+                    )
+                )
+            ).scalars().all()
+        )
+        assert repeated["blocked"] is True
+        assert repeated["mutated"] is False
+        assert queue_count == 2
 
     await engine.dispose()

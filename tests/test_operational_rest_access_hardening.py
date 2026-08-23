@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -23,6 +24,7 @@ from okto_pulse.community.api.dead_letter import router as dead_letter_router
 import okto_pulse.community.api.kg_cognitive_badges as cognitive_badges_api
 import okto_pulse.community.api.kg_cognitive_candidates as cognitive_candidates_api
 import okto_pulse.community.api.kg_cognitive_pending as cognitive_pending_api
+import okto_pulse.community.api.kg_rebuild as kg_rebuild_api
 from okto_pulse.community.api.kg_cognitive_badges import (
     router as cognitive_badges_router,
 )
@@ -116,7 +118,12 @@ class _Downstream:
             "graph_lock_retries_5m": 0,
         }
 
-    async def queue_drilldown(self, board_id):
+    async def queue_drilldown(
+        self,
+        board_id,
+        *,
+        include_code_traceability=True,
+    ):
         self._events.append(f"queue-drilldown:{board_id}")
         return {"board_id": board_id, "total_active_depth": 0}
 
@@ -204,6 +211,89 @@ def _client(uow: _Uow, *, claims=None) -> TestClient:
     app.dependency_overrides[get_current_user] = lambda: principal.legacy_user()
     app.dependency_overrides[get_realm_id] = lambda: LOCAL_REALM_ID
     return TestClient(app)
+
+
+def _install_rebuild_boundary_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep boundary tests local and prove no rebuild artifacts are touched."""
+
+    async def _allowed(*args, **kwargs) -> None:
+        return None
+
+    async def _not_quarantined(*args, **kwargs):
+        return None
+
+    async def _health(*args, **kwargs):
+        return {
+            "graph_state": "recovery_needed",
+            "metric_status": "available",
+            "current_kg_generation_id": "generation-old",
+        }
+
+    source_set = SimpleNamespace(
+        eligible_count=3,
+        skipped_cancelled_count=0,
+        has_non_deterministic_inputs=False,
+        canonical_source_count=3,
+        working_source_count=0,
+        skipped_by_maturity_count=0,
+        skipped_expired_working_count=0,
+        legacy_unknown_count=0,
+        layer_counts={"canonical": 3},
+        source_partition_counts={"spec": 3},
+    )
+
+    class _Enumerator:
+        def __init__(self, *, source_store) -> None:
+            assert source_store is not None
+
+        def enumerate(self, *, board_id: str):
+            assert board_id == "board-b"
+            return source_set
+
+    monkeypatch.setattr(kg_rebuild_api, "_require_rebuild_authority", _allowed)
+    monkeypatch.setattr(
+        kg_rebuild_api,
+        "_refuse_rebuild_if_quarantined",
+        _not_quarantined,
+    )
+    monkeypatch.setattr(kg_rebuild_api, "get_kg_health", _health)
+    monkeypatch.setattr(kg_rebuild_api, "_build_source_store", object)
+
+    import okto_pulse.core.kg.rebuild_sources as rebuild_sources
+
+    monkeypatch.setattr(rebuild_sources, "RebuildSourceEnumerator", _Enumerator)
+
+    def _artifact_write_forbidden(*args, **kwargs):
+        raise AssertionError("online_rebuild_artifact_write_forbidden")
+
+    from okto_pulse.core.kg.rebuild_audit import (
+        RebuildAuditArtifactStore,
+    )
+    from okto_pulse.core.kg.rebuild_confirmation import RebuildConfirmationStore
+    from okto_pulse.core.kg.rebuild_service import KGRebuildService
+    from okto_pulse.core.kg.rebuild_sources import KGRebuildSourceManifest
+
+    monkeypatch.setattr(
+        KGRebuildSourceManifest,
+        "build",
+        _artifact_write_forbidden,
+    )
+    monkeypatch.setattr(
+        RebuildConfirmationStore,
+        "issue",
+        _artifact_write_forbidden,
+    )
+    monkeypatch.setattr(
+        RebuildConfirmationStore,
+        "consume",
+        _artifact_write_forbidden,
+    )
+    monkeypatch.setattr(KGRebuildService, "run", _artifact_write_forbidden)
+    monkeypatch.setattr(
+        RebuildAuditArtifactStore,
+        "write_json_atomic",
+        _artifact_write_forbidden,
+    )
 
 
 FOREIGN_BOARD = SimpleNamespace(id="board-b", owner_id="user-b")
@@ -474,6 +564,111 @@ def test_board_surface_returns_same_404_before_downstream_access(
     assert uow.events == expected
 
 
+def test_online_rebuild_boundary_is_diagnostic_and_never_writes_or_consumes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_rebuild_boundary_stubs(monkeypatch)
+    client = _client(_Uow(board=OWN_BOARD))
+
+    preflight = client.post(
+        "/api/v1/kg/rebuild/preflight",
+        params={"board_id": "board-b"},
+    )
+    assert preflight.status_code == 200
+    preflight_body = preflight.json()
+    assert preflight_body["outcome"] == "diagnostic_complete"
+    assert preflight_body["preflight_outcome"]
+    assert preflight_body["manifest_ref"] is None
+    assert preflight_body["source_set_hash"] is None
+    assert preflight_body["operator_action"] == "run_local_offline_kg_recovery_executor"
+
+    confirm = client.post(
+        "/api/v1/kg/rebuild/confirm",
+        json={
+            "board_id": "board-b",
+            "operation": "rebuild",
+            "preflight_hash": "a" * 64,
+            "manifest_ref": "diagnostic-only",
+        },
+    )
+    assert confirm.status_code == 409
+    assert confirm.json()["detail"] == {
+        "error": "recovery_execution_required",
+        "outcome": "recovery_execution_required",
+        "reason": (
+            "Board KG rebuild is supported only by the local one-shot recovery "
+            "executor while Pulse and SDLC source writers are offline."
+        ),
+        "execution_mode": "recovery_only_offline",
+        "operator_action": "run_local_offline_kg_recovery_executor",
+        "remediation": (
+            "Stop Pulse/API/MCP and SDLC writers. Run the installed "
+            "okto-pulse-kg-recovery-only command in three stages: inspect the live "
+            "data home, rehearse against a physical isolated copy while writing a "
+            "rehearsal receipt, then within 2 hours execute against that exact live "
+            "home with the single-use receipt and reviewed install fingerprint. See "
+            "okto-pulse://reference/kg-health; never retry confirm/run online."
+        ),
+    }
+
+    run = client.post(
+        "/api/v1/kg/rebuild/run",
+        json={
+            "confirmation_id": "legacy-confirmation",
+            "board_id": "board-b",
+            "operation": "rebuild",
+            "preflight_hash": "a" * 64,
+            "manifest_ref": "diagnostic-only",
+            "reason": "legacy token must remain untouched",
+        },
+    )
+    assert run.status_code == 409
+    assert run.json()["detail"]["error"] == "recovery_execution_required"
+
+
+def test_online_rebuild_openapi_has_no_impossible_confirm_or_run_success_schema() -> (
+    None
+):
+    schema = _client(_Uow(board=OWN_BOARD)).get("/openapi.json").json()
+
+    for path in ("/api/v1/kg/rebuild/confirm", "/api/v1/kg/rebuild/run"):
+        responses = schema["paths"][path]["post"]["responses"]
+        assert "200" not in responses
+        assert "409" in responses
+        detail_schema = responses["409"]["content"]["application/json"]["schema"]
+        assert detail_schema["$ref"].endswith("/RecoveryExecutionRequiredEnvelope")
+
+
+def test_operational_resource_documents_installed_three_stage_recovery_cli() -> None:
+    resource = (
+        Path(__file__).parent.parent
+        / "src"
+        / "okto_pulse"
+        / "community"
+        / "resources"
+        / "operational"
+        / "reference"
+        / "tool-docs"
+        / "kg.md"
+    )
+    text = resource.read_text(encoding="utf-8")
+
+    for required in (
+        "okto-pulse-kg-recovery-only",
+        "--inspect-install",
+        "--rehearsal-copy-of <ABS_LIVE_HOME>",
+        "--rehearsal-receipt-out <NEW_ABS_RECEIPT.json>",
+        "--execute",
+        "--rehearsal-receipt <ABS_RECEIPT.json>",
+        "--expected-install-fingerprint <SHA256>",
+        "7200-second",
+        "single-use",
+    ):
+        assert required in text
+    assert ".artifacts" not in text
+    assert "pulse-kg-recovery-only.py" not in text
+
+
 @pytest.mark.parametrize(
     ("params", "invalid_field"),
     [
@@ -571,6 +766,7 @@ def test_canonical_debt_valid_filters_preserve_rest_pagination() -> None:
             "state": "failed",
             "limit": 1,
             "offset": 2,
+            "include_code_traceability": False,
         }
     ]
     assert uow.events == ["board:board-b"]
@@ -655,10 +851,7 @@ async def test_kg_routes_editor_or_board_admin_can_resolve_writer(permission) ->
     "path",
     [
         "/api/v1/kg/cognitive-pending/candidate-decisions?board_id=board-b",
-        (
-            "/api/v1/kg/cognitive-pending/badges?board_id=board-b"
-            "&source_refs=card%3A1"
-        ),
+        ("/api/v1/kg/cognitive-pending/badges?board_id=board-b&source_refs=card%3A1"),
         "/api/v1/kg/cognitive-pending?board_id=board-b",
     ],
     ids=["candidate-decisions", "badges", "pending-items"],

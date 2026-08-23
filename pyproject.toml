@@ -1,6 +1,6 @@
 [project]
 name = "okto-pulse"
-version = "0.3.1"
+version = "0.3.2"
 description = "Okto Pulse — spec-driven project management with AI agents via MCP. Local-first, single command setup."
 requires-python = ">=3.11"
 license = {text = "Elastic-2.0"}
@@ -26,23 +26,28 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "okto-pulse-core>=0.3.1,<1.0.0",
+    "okto-pulse-core>=0.3.2,<1.0.0",
     # 0.137.0 regressed include_router for empty collection paths; 0.137.1 fixed it.
     "fastapi>=0.109.0,!=0.137.0,<1.0.0",
     "starlette>=0.35.0,<1.0.0",
     "pydantic>=2.12.0,<2.14",
     "pydantic-settings>=2.1.0,<3.0.0",
     "python-multipart>=0.0.6,<1.0.0",
-    "sqlalchemy[asyncio]>=2.0.0,<3.0.0",
+    # Emergency recovery fingerprints require the vetted release build exactly.
+    "sqlalchemy[asyncio]==2.0.49",
     "aiosqlite>=0.19.0,<1.0.0",
     "anyio>=4.0.0,<5.0.0",
     "httpx>=0.27.0,<1.0.0",
     "fastmcp>=2.0.0,<3.0.0",
+    # FastMCP 2.14.x still imports authlib.jose. Authlib 1.7 emits a runtime
+    # deprecation warning for that namespace; keep the supported 1.6 line
+    # until the Community MCP host is migrated to FastMCP 3 / joserfc.
+    "authlib>=1.6.5,<1.7.0",
     "mcp>=1.20.0,<2.0.0",
     "uvicorn[standard]>=0.27.0,<1.0.0",
     "wsproto>=1.2.0,<2.0.0",
     "apscheduler>=3.10.0,<4.0.0",
-    "ladybug>=0.16.0,<0.17.0",
+    "ladybug==0.16.0",
     "requests>=2.32.0,<3.0.0",
     "filelock>=3.16.0,<4.0.0",
     "chardet>=3.0.2,<6.0.0",
@@ -62,6 +67,7 @@ content-type = "text/markdown"
 
 [project.scripts]
 okto-pulse = "okto_pulse.community.cli:main"
+okto-pulse-kg-recovery-only = "okto_pulse.community.kg_recovery_only:main"
 okto-pulse-saas-closure = "okto_pulse.community.saas_closure:main"
 
 [build-system]

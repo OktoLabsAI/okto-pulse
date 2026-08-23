@@ -2,13 +2,18 @@
  * GraphControlsPanel — left sidebar with filters, sub-view nav, search.
  *
  * Spec 8 / Sprint 4:
- *   - S4.4: 10 coloured chips, one per KGEdgeType; independent toggle.
+ *   - S4.4: one coloured chip per KGEdgeType; independent toggle.
  *   - S4.5: confidence slider restricted to 0..1 with step 0.05.
  *   - S4.6: node-limit dropdown (50/100/200/500/1000); `onNodeLimitChange` bubbles
  *     up so the parent can refetch with the new page size.
  */
 
-import type { GraphLayerMode, KGEdgeType, KGNodeType } from '@/types/knowledge-graph';
+import type {
+  CodeTraceabilityKGKind,
+  GraphLayerMode,
+  KGEdgeType,
+  KGNodeType,
+} from '@/types/knowledge-graph';
 import {
   ALL_NODE_TYPES,
   ALL_EDGE_TYPES,
@@ -23,6 +28,8 @@ type SubView = 'graph' | 'audit' | 'pending' | 'pending_tree' | 'settings' | 'gl
 export interface Filters {
   types: KGNodeType[];
   edgeTypes: KGEdgeType[];
+  /** Empty/absent means all nodes; values isolate agent-attested traceability facets. */
+  codeTraceabilityKinds?: CodeTraceabilityKGKind[];
   graphLayer: GraphLayerMode;
   /** Minimum relevance_score (0..1) for the visibility slider. */
   minRelevance: number;
@@ -39,8 +46,10 @@ interface Props {
   nodeLimit: number;
   /** Notified when the user picks a new page size — parent refetches. */
   onNodeLimitChange: (limit: number) => void;
-  /** Board scope for permission resolution. Fail-open if absent. */
+  /** Board scope for permission resolution. */
   boardId?: string;
+  /** Explicit Code Traceability read authority. Defaults false (fail-closed). */
+  showCodeTraceabilityFacets?: boolean;
   /** Distribution data for the relevance mini-histogram below the slider. */
   relevanceScores?: number[];
   /** Number of nodes visible after the local UI filters are applied. */
@@ -68,6 +77,15 @@ const GRAPH_LAYER_OPTIONS: Array<{ value: GraphLayerMode; label: string }> = [
   { value: 'all', label: 'All' },
 ];
 
+const CODE_TRACEABILITY_FACETS: Array<{
+  value: CodeTraceabilityKGKind;
+  label: string;
+}> = [
+  { value: 'code_investigation_receipt', label: 'Receipts' },
+  { value: 'code_evidence', label: 'Evidence' },
+  { value: 'implementation_target', label: 'Targets' },
+];
+
 // Maps each sub-view to the permission flag that gates its visibility.
 // Absent entry = always visible.
 const SUB_VIEW_GATES: Partial<Record<SubView, string>> = {
@@ -87,6 +105,7 @@ export function GraphControlsPanel({
   nodeLimit,
   onNodeLimitChange,
   boardId,
+  showCodeTraceabilityFacets = false,
   relevanceScores = [],
   visibleNodeCount,
   nodeTypeCounts,
@@ -173,6 +192,52 @@ export function GraphControlsPanel({
           })}
         </div>
       </div>
+
+      {showCodeTraceabilityFacets && (
+      <div data-testid="kg-code-traceability-facets">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <h3 className="text-xs font-medium uppercase text-gray-500">Code Traceability</h3>
+          <button
+            type="button"
+            onClick={() => updateFilters({ codeTraceabilityKinds: [] })}
+            className="text-[10px] text-blue-600 hover:underline dark:text-blue-400"
+          >
+            All nodes
+          </button>
+        </div>
+        <div className="flex flex-wrap gap-1" role="group" aria-label="Code traceability facets">
+          {CODE_TRACEABILITY_FACETS.map((facet) => {
+            const selected = filters.codeTraceabilityKinds?.includes(facet.value) ?? false;
+            return (
+              <button
+                key={facet.value}
+                type="button"
+                aria-pressed={selected}
+                data-testid={`kg-code-traceability-${facet.value}`}
+                onClick={() => {
+                  const current = filters.codeTraceabilityKinds ?? [];
+                  updateFilters({
+                    codeTraceabilityKinds: selected
+                      ? current.filter((kind) => kind !== facet.value)
+                      : [...current, facet.value],
+                  });
+                }}
+                className={`rounded-full border px-2 py-1 text-[10px] font-medium transition ${
+                  selected
+                    ? 'border-cyan-500 bg-cyan-500 text-white shadow-sm'
+                    : 'border-gray-300 bg-white text-gray-600 hover:border-cyan-300 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300'
+                }`}
+              >
+                {facet.label}
+              </button>
+            );
+          })}
+        </div>
+        <p className="mt-1.5 text-[10px] leading-4 text-gray-400">
+          Agent-attested nodes already accepted into the graph.
+        </p>
+      </div>
+      )}
 
       {/* Node type filter — header shows page-vs-total context.
           nodeCount is the size of the currently-loaded page (driven by

@@ -10,6 +10,10 @@ from typing import Any, Mapping, Sequence
 
 from sqlalchemy import func, select
 
+from okto_pulse.community.adapters.code_traceability_kg_sql import (
+    exclude_code_traceability_artifact,
+)
+
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
     Card,
@@ -23,6 +27,11 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Refinement,
     Spec,
     Sprint,
+)
+from okto_pulse.core.domain.code_traceability_kg import (
+    CODE_TRACEABILITY_KG_SUBTYPES,
+    KGDeadLetterReprocessScope,
+    is_code_traceability_artifact_type,
 )
 from okto_pulse.core.ports.kg_operational import (
     KGCanonicalDebtSignal,
@@ -45,16 +54,23 @@ class CommunitySqlAlchemyKGOperationalReadModel(KGOperationalReadModelPort):
         *,
         board_id: str,
         limit: int,
+        include_code_traceability: bool = True,
     ) -> Sequence[Mapping[str, Any]]:
+        query = select(ConsolidationAudit).where(
+            ConsolidationAudit.board_id == board_id,
+            ConsolidationAudit.committed_at.is_not(None),
+        )
+        if not include_code_traceability:
+            query = query.where(
+                exclude_code_traceability_artifact(
+                    ConsolidationAudit.artifact_type
+                )
+            )
         rows = (
             await context.execute(
-                select(ConsolidationAudit)
-                .where(
-                    ConsolidationAudit.board_id == board_id,
-                    ConsolidationAudit.committed_at.is_not(None),
+                query.order_by(ConsolidationAudit.committed_at.desc()).limit(
+                    limit
                 )
-                .order_by(ConsolidationAudit.committed_at.desc())
-                .limit(limit)
             )
         ).scalars().all()
         return [
@@ -91,13 +107,20 @@ class CommunitySqlAlchemyKGOperationalReadModel(KGOperationalReadModelPort):
         context: Any,
         *,
         board_id: str,
+        include_code_traceability: bool = True,
     ) -> Sequence[Mapping[str, Any]]:
+        statement = select(ConsolidationQueue).where(
+            ConsolidationQueue.board_id == board_id
+        )
+        if not include_code_traceability:
+            statement = statement.where(
+                ConsolidationQueue.artifact_type.not_in(
+                    CODE_TRACEABILITY_KG_SUBTYPES
+                )
+            )
         rows = (
             await context.execute(
-                select(ConsolidationQueue)
-                .where(ConsolidationQueue.board_id == board_id)
-                .order_by(ConsolidationQueue.triggered_at.desc())
-                .limit(100)
+                statement.order_by(ConsolidationQueue.triggered_at.desc()).limit(100)
             )
         ).scalars().all()
         return [
@@ -455,13 +478,22 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
         *,
         board_id: str,
         limit: int = 100,
+        include_code_traceability: bool = True,
     ) -> Sequence[Any]:
+        query = select(ConsolidationDeadLetter).where(
+            ConsolidationDeadLetter.board_id == board_id
+        )
+        if not include_code_traceability:
+            query = query.where(
+                exclude_code_traceability_artifact(
+                    ConsolidationDeadLetter.artifact_type
+                )
+            )
         rows = (
             await context.execute(
-                select(ConsolidationDeadLetter)
-                .where(ConsolidationDeadLetter.board_id == board_id)
-                .order_by(ConsolidationDeadLetter.dead_lettered_at.desc())
-                .limit(limit)
+                query.order_by(
+                    ConsolidationDeadLetter.dead_lettered_at.desc()
+                ).limit(limit)
             )
         ).scalars().all()
         return list(rows)
@@ -473,19 +505,27 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
         board_id: str,
         limit: int,
         offset: int,
+        include_code_traceability: bool = True,
     ) -> tuple[int, Sequence[Any]]:
+        where = [ConsolidationDeadLetter.board_id == board_id]
+        if not include_code_traceability:
+            where.append(
+                exclude_code_traceability_artifact(
+                    ConsolidationDeadLetter.artifact_type
+                )
+            )
         total = int(
             await context.scalar(
                 select(func.count())
                 .select_from(ConsolidationDeadLetter)
-                .where(ConsolidationDeadLetter.board_id == board_id)
+                .where(*where)
             )
             or 0
         )
         rows = (
             await context.execute(
                 select(ConsolidationDeadLetter)
-                .where(ConsolidationDeadLetter.board_id == board_id)
+                .where(*where)
                 .order_by(ConsolidationDeadLetter.id)
                 .limit(limit)
                 .offset(offset)
@@ -500,13 +540,54 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
         board_id: str,
         dead_letter_ids: Sequence[str],
         limit: int,
+        scope: KGDeadLetterReprocessScope = KGDeadLetterReprocessScope.GENERIC,
     ) -> Mapping[str, Any]:
+        resolved_scope = KGDeadLetterReprocessScope(scope)
+        supplied_ids = tuple(
+            str(item).strip() for item in dead_letter_ids if str(item).strip()
+        )
+        selected_ids = tuple(dict.fromkeys(supplied_ids))
+
+        def blocked_selection() -> Mapping[str, Any]:
+            return {
+                "success": False,
+                "blocked": True,
+                "mutated": False,
+                "scope": resolved_scope.value,
+                "error": "code_traceability_dlq_selection_invalid",
+                "requested": len(supplied_ids),
+                "selected": 0,
+                "requeued": [],
+                "already_queued": [],
+                "requeued_count": 0,
+                "already_queued_count": 0,
+            }
+
+        if resolved_scope is KGDeadLetterReprocessScope.CODE_TRACEABILITY and (
+            not selected_ids
+            or len(selected_ids) != len(supplied_ids)
+            or len(selected_ids) > limit
+        ):
+            return blocked_selection()
+
         query = select(ConsolidationDeadLetter).where(
             ConsolidationDeadLetter.board_id == board_id
         )
-        if dead_letter_ids:
+        if resolved_scope is KGDeadLetterReprocessScope.CODE_TRACEABILITY:
             query = query.where(
-                ConsolidationDeadLetter.id.in_(dead_letter_ids)
+                ConsolidationDeadLetter.artifact_type.in_(
+                    CODE_TRACEABILITY_KG_SUBTYPES
+                )
+            )
+        else:
+            query = query.where(
+                exclude_code_traceability_artifact(
+                    ConsolidationDeadLetter.artifact_type
+                )
+            )
+        if selected_ids:
+            query = query.where(
+                ConsolidationDeadLetter.id.in_(selected_ids)
             )
         rows = list(
             (
@@ -517,6 +598,13 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
                 )
             ).scalars().all()
         )
+        if (
+            resolved_scope is KGDeadLetterReprocessScope.CODE_TRACEABILITY
+            and len(rows) != len(selected_ids)
+        ):
+            # Fail closed before touching any row.  Do not reveal whether an
+            # unmatched identifier belongs to another board or artifact class.
+            return blocked_selection()
         from okto_pulse.core.ports.kg_operational import (
             classify_kg_recovery_failure,
         )
@@ -607,7 +695,10 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
             await context.delete(row)
         return {
             "success": True,
-            "requested": len(dead_letter_ids) if dead_letter_ids else None,
+            "blocked": False,
+            "mutated": bool(rows),
+            "scope": resolved_scope.value,
+            "requested": len(selected_ids) if selected_ids else None,
             "selected": len(rows),
             "requeued": requeued,
             "already_queued": already_queued,
@@ -624,9 +715,15 @@ class CommunitySqlAlchemyKGWorkerQueue(KGWorkerQueuePort):
         board_id: str,
         queue_entry_id: str,
         recursive: bool = False,
+        include_code_traceability: bool = True,
     ) -> Mapping[str, Any] | None:
         entry = await context.get(ConsolidationQueue, queue_entry_id)
         if entry is None or entry.board_id != board_id:
+            return None
+        if (
+            not include_code_traceability
+            and is_code_traceability_artifact_type(entry.artifact_type)
+        ):
             return None
 
         now = datetime.now(timezone.utc)

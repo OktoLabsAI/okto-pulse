@@ -4,14 +4,19 @@
  * Action buttons are wired to real API calls.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import type { KGNode } from '@/types/knowledge-graph';
-import { NODE_TYPE_CONFIG } from '@/types/knowledge-graph';
+import {
+  isCodeTraceabilityKind,
+  kgNodeDisplayType,
+  kgNodeVisualConfig,
+} from '@/types/knowledge-graph';
 import * as kgApi from '@/services/kg-api';
 import { RelevanceBadge } from './RelevanceBadge';
 import { useOptionalModalStack } from '@/contexts/ModalStackContext';
 import { usePermissions } from '@/hooks/usePermissions';
+import { useCodeTraceabilityAuthority } from '@/components/code-traceability';
 
 interface Props {
   node: KGNode;
@@ -36,13 +41,20 @@ interface ChainNode {
 
 export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Props) {
   const permissions = usePermissions(boardId);
+  const { canReadProjection: canReadCodeTraceability } =
+    useCodeTraceabilityAuthority(boardId);
+  const traceabilityDenied = isCodeTraceabilityKind(node.kind_of)
+    && !canReadCodeTraceability;
+  useEffect(() => {
+    if (traceabilityDenied) onClose();
+  }, [onClose, traceabilityDenied]);
   const canBoostNode = (
     !permissions.isLoading
     && !permissions.error
     && !permissions.ownerReviewRequired
     && permissions.has('kg.operations.node.boost')
   );
-  const config = NODE_TYPE_CONFIG[node.node_type] || NODE_TYPE_CONFIG.Decision;
+  const config = kgNodeVisualConfig(node);
   const [similar, setSimilar] = useState<SimilarResult[] | null>(null);
   const [chain, setChain] = useState<ChainNode[] | null>(null);
   const [loadingSimilar, setLoadingSimilar] = useState(false);
@@ -122,6 +134,8 @@ export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Prop
   const displayScore =
     typeof optimisticScore === 'number' ? optimisticScore : node.relevance_score ?? 0.5;
 
+  if (traceabilityDenied) return null;
+
   return (
     <div className="p-4" role="complementary" aria-label="Node detail panel">
       <div className="flex items-center justify-between mb-4">
@@ -129,7 +143,7 @@ export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Prop
           className="px-2 py-1 rounded text-xs font-medium text-white"
           style={{ backgroundColor: config.color }}
         >
-          {config.icon} {node.node_type}
+          {config.icon} {kgNodeDisplayType(node)}
         </span>
         <button
           onClick={onClose}
@@ -198,9 +212,48 @@ export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Prop
       <div className="mb-4 text-xs bg-gray-50 dark:bg-gray-800 p-2 rounded">
         <div className="text-gray-500">Node Type</div>
         <div className="font-mono text-gray-900 dark:text-gray-100">{node.node_type}</div>
+        {canReadCodeTraceability && node.kind_of && (
+          <>
+            <div className="text-gray-500 mt-2">Semantic Subtype</div>
+            <div className="font-mono text-gray-900 dark:text-gray-100">
+              {node.kind_of}
+            </div>
+          </>
+        )}
         <div className="text-gray-500 mt-2">Node ID</div>
         <div className="font-mono text-xs text-gray-600 dark:text-gray-400 break-all">{node.id}</div>
       </div>
+
+      {canReadCodeTraceability && node.kind_of && (
+        <section
+          className="mb-4 rounded border border-cyan-100 bg-cyan-50/50 p-3 text-xs dark:border-cyan-900/60 dark:bg-cyan-950/20"
+          data-testid="kg-code-traceability-metadata"
+        >
+          <h4 className="mb-2 text-xs font-medium uppercase text-cyan-700 dark:text-cyan-300">
+            Agent-attested traceability metadata
+          </h4>
+          <dl className="space-y-1.5">
+            {[
+              ['Receipt', node.investigation_receipt_id],
+              ['Logical source', node.source_ref],
+              ['Attestor', node.attestor_actor_id],
+              ['Declared revision', node.declared_revision],
+              ['Workspace fingerprint', node.workspace_state_id],
+              ['Submitted path', node.code_path],
+              ['Submitted symbol', node.symbol_qualified_name],
+              ['Symbol kind', node.symbol_kind],
+              ['Selector kind', node.selector_kind],
+              ['Selector fingerprint', node.selector_fingerprint],
+              ['Resolution state', node.resolution_state],
+            ].filter((entry): entry is [string, string] => Boolean(entry[1])).map(([label, value]) => (
+              <div key={label} className="grid grid-cols-[8rem_minmax(0,1fr)] gap-2">
+                <dt className="text-gray-500 dark:text-gray-400">{label}</dt>
+                <dd className="break-all font-mono text-gray-700 dark:text-gray-200">{value}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      )}
 
       {node.source_artifact_ref && (
         <div className="mb-4 text-xs">

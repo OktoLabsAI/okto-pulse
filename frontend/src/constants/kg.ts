@@ -4,7 +4,7 @@
  * Two distinct version strings live here — easy to confuse:
  *
  * - SCHEMA_VERSION: graph storage schema version
- *   (okto_pulse_core/src/okto_pulse/core/kg/schema.py::SCHEMA_VERSION).
+ *   (okto_pulse_core/src/okto_pulse/core/kg/schema_contract.py::SCHEMA_VERSION).
  *   Bumped when nodes/edges/columns change. Currently displayed in
  *   KGHelpModal as "Schema version: …".
  *
@@ -15,6 +15,6 @@
  *
  * Both must be kept in sync manually with their backend counterparts.
  */
-export const SCHEMA_VERSION = '0.3.3';
+export const SCHEMA_VERSION = '0.5.0';
 
 export const EXPECTED_KG_HEALTH_SCHEMA_VERSION = '1.1';

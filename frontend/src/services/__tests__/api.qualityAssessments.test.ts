@@ -123,6 +123,7 @@ describe('quality assessment REST client', () => {
     const { result } = renderHook(() => useDashboardApi());
     const payload = {
       idempotency_key: 'idem-1',
+      expected_subject_edition: 2,
       expected_subject_version: 7,
       expected_head_revision: 2,
       score: 3,
@@ -149,6 +150,103 @@ describe('quality assessment REST client', () => {
         method: 'POST',
         body: JSON.stringify(payload),
       },
+    );
+  });
+
+  it('loads the bounded human validation-cycle summary without previous results', async () => {
+    const controller = new AbortController();
+    const { result } = renderHook(() => useDashboardApi());
+
+    await result.current.getValidationCycle('spec', 'spec/1', {
+      signal: controller.signal,
+    });
+
+    expect(mockApiClient.fetchJson).toHaveBeenCalledWith(
+      '/specs/spec%2F1/validation-cycle?include_previous=false&offset=0&limit=25',
+      { signal: controller.signal },
+    );
+  });
+
+  it('loads technical audit only through a result-scoped endpoint', async () => {
+    const controller = new AbortController();
+    const { result } = renderHook(() => useDashboardApi());
+
+    await result.current.getValidationTechnicalAudit(
+      'ideation',
+      'idea/1',
+      'result/1',
+      'ambiguity_assessment',
+      controller.signal,
+    );
+
+    expect(mockApiClient.fetchJson).toHaveBeenCalledWith(
+      '/ideations/idea%2F1/validation-cycle/results/result%2F1/technical-audit?result_type=ambiguity_assessment',
+      { signal: controller.signal },
+    );
+  });
+
+  it('submits only the canonical Spec validation and checklist lifecycle fields', async () => {
+    const { result } = renderHook(() => useDashboardApi());
+    const validation = {
+      expected_validation_edition: 3,
+      expected_spec_version: 11,
+      expected_head_revision: 4,
+      confidence: 91,
+      confidence_justification: 'The evaluator has strong confidence.',
+      clarity: 90,
+      clarity_justification: 'The problem and solution are explicit.',
+      assertiveness: 92,
+      assertiveness_justification: 'Requirements are direct and testable.',
+      decidability: 88,
+      decidability_justification: 'The requirements provide concrete choices.',
+      ambiguity: 12,
+      ambiguity_justification: 'Only one reasonable interpretation remains.',
+      pinpoints: [],
+      recommendation: 'approve' as const,
+    };
+    const checklistStart = {
+      spec_edition: 3,
+      expected_spec_version: 11,
+      binding_version: 2,
+    };
+    const checklistSubmit = {
+      spec_edition: 3,
+      expected_spec_version: 11,
+      execution_id: 'execution-1',
+      item_results: [{
+        item_id: 'item-1',
+        outcome: 'pass' as const,
+        anchor: 'functional_requirements:req-1',
+        rationale: null,
+      }],
+    };
+
+    await result.current.submitSpecValidation('spec-1', validation);
+    await result.current.startChecklistExecution(
+      'board-1',
+      'spec-1',
+      checklistStart,
+    );
+    await result.current.submitChecklistExecution(
+      'board-1',
+      'spec-1',
+      checklistSubmit,
+    );
+
+    expect(mockApiClient.fetchJson).toHaveBeenNthCalledWith(
+      1,
+      '/specs/spec-1/validation',
+      { method: 'POST', body: JSON.stringify(validation) },
+    );
+    expect(mockApiClient.fetchJson).toHaveBeenNthCalledWith(
+      2,
+      '/boards/board-1/specs/spec-1/checklist-executions',
+      { method: 'POST', body: JSON.stringify(checklistStart) },
+    );
+    expect(mockApiClient.fetchJson).toHaveBeenNthCalledWith(
+      3,
+      '/boards/board-1/specs/spec-1/checklist-executions/execution-1/submit',
+      { method: 'POST', body: JSON.stringify(checklistSubmit) },
     );
   });
 });

@@ -11,12 +11,18 @@ def resolve_core_repo(community_repo: Path) -> Path:
 
     configured = os.environ.get("OKTO_PULSE_CORE_REPO")
     workspace_root = community_repo.parent.parent
+    # Keep the paired checkout in the same repository-name family as the
+    # Community anchor.  Workspaces may intentionally retain both the current
+    # ``okto_labs_*`` repositories and older hyphenated checkouts; blindly
+    # preferring the latter makes Windows spawn children import a stale Core.
+    if community_repo.name.casefold() == "okto_labs_pulse_community":
+        sibling_names = ("okto_labs_pulse_core", "okto-pulse-core")
+    else:
+        sibling_names = ("okto-pulse-core", "okto_labs_pulse_core")
     candidates = (
         Path(configured).expanduser() if configured else None,
-        community_repo.parent / "okto-pulse-core",
-        community_repo.parent / "okto_labs_pulse_core",
-        workspace_root / "okto-pulse-core",
-        workspace_root / "okto_labs_pulse_core",
+        *(community_repo.parent / name for name in sibling_names),
+        *(workspace_root / name for name in sibling_names),
     )
     checked: list[str] = []
     for candidate in candidates:

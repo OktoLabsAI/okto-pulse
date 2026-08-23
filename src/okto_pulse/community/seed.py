@@ -27,13 +27,8 @@ from sqlalchemy import JSON as sa_JSON
 from sqlalchemy import bindparam, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from okto_pulse.community.adapters.sqlalchemy_models import Spec
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
-from okto_pulse.core.ports.requirement_lint import RequirementLintWriter
 from okto_pulse.core.services.application_agents import credential_marker, hash_api_key
-from okto_pulse.core.services.requirement_lint_writer import (
-    stage_spec_requirement_lint,
-)
 from okto_pulse.core.services.spec_entity_canonicalization import (
     canonicalize_spec_requirement_fields,
 )
@@ -414,24 +409,6 @@ async def _seed_demo_board(db: AsyncSession) -> str | None:
                 "created_by": "local-user",
             },
         )
-    demo_spec = await db.get(Spec, demo_spec_id)
-    if demo_spec is None:
-        raise RuntimeError("demo_spec_disappeared_before_requirement_lint")
-    await stage_spec_requirement_lint(
-        db,
-        demo_spec,
-        actor_id="system:community-seed",
-        writer=RequirementLintWriter.SEED,
-        changed_fields=(
-            "title",
-            "description",
-            "context",
-            "functional_requirements",
-            "technical_requirements",
-            "acceptance_criteria",
-            "business_rules",
-        ),
-    )
     await db.commit()
 
     # Run the KG consolidation in an isolated, deterministic stub-embedding

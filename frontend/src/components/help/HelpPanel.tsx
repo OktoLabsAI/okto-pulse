@@ -596,6 +596,14 @@ Click **"+ New Ideation"** in the Ideations tab and fill in:
 
 Additional status: \`cancelled\`
 
+### Ambiguity assessment lifecycle
+
+Manual ambiguity assessment is available only while the Ideation is
+**Evaluating**. In every other lifecycle state, the assessment is read-only:
+you can review the current and previous results, but cannot record a new
+manual result. Move the Ideation into **Evaluating** when a new assessment is
+required; previously recorded results remain available as history.
+
 ### Complexity and what comes next
 
 | Complexity | Next step |
@@ -652,6 +660,15 @@ From a "done" ideation, click **"Derive Spec/Refinement"**. Choose Refinement fo
 
 Additional status: \`cancelled\`
 
+### Ambiguity assessment lifecycle
+
+Manual ambiguity assessment is available only while the Refinement is
+**Approved**. In every other lifecycle state, the assessment is read-only:
+you can review the current and previous results, but cannot record a new
+manual result. Return the Refinement to the appropriate lifecycle and reach
+**Approved** when a new assessment is required; previously recorded results
+remain available as history.
+
 ### Key features
 
 - **Description & Analysis** — Detailed breakdown of the problem space
@@ -665,6 +682,81 @@ Additional status: \`cancelled\`
 ### From refinement to spec
 
 When a refinement is "done", you can derive one or more Specs from it. Each spec inherits context from the refinement. You can also derive specs directly from the refinement modal.
+`,
+    },
+    {
+      id: 'code-traceability',
+      title: 'Code Traceability',
+      icon: <GitBranch size={16} />,
+      content: `
+## Code Traceability — Preserve what the agent learned about the code
+
+Code Traceability keeps repository findings connected to the product entities
+that depend on them. **Agent-mediated:** Pulse stores and presents the accepted
+records, but it does **not** access, clone, scan, or resolve source code. An
+authenticated external agent checks access and capabilities in its own
+environment and then submits an **accessible**, **partial**, or **unavailable**
+attestation.
+
+### Code Evidence in a Refinement
+
+The **Code Evidence** tab lists immutable observations captured during a
+Refinement investigation. Each item explains the finding in human terms and
+may identify the relevant file, symbol, and line range. Its accepted receipt
+records the source state the agent actually observed.
+
+Evidence is immutable so later work can distinguish the original observation
+from a newer source state. Human governance can revoke an item, but cannot
+silently rewrite the attestation.
+
+### Why a Spec uses a Code Evidence Matrix
+
+A Spec does not create a second copy of the parent Refinement evidence. Its
+**Code Evidence Matrix** shows how inherited Code Evidence supports the Spec's
+structured requirements, acceptance criteria, rules, contracts, decisions,
+and test scenarios. Each evidence row must either be linked to the applicable
+Spec entities or receive an explicit disposition explaining why it does not
+apply.
+
+In short: **Code Evidence** is the observation; the **Code Evidence Matrix** is
+the coverage view that connects that observation to the Spec.
+
+The matrix reports **Covered**, **Pending**, **Skipped**, **No evidence**, or
+**Incomplete** in the Spec tab. Incomplete means the authoritative gate
+projection could not be evaluated in full and requires technical remediation;
+skip does not resolve it. A user with permission may enable **Skip Code
+Evidence coverage** while the Spec is in Draft. This is a deliberate exception
+for evidence rows that still lack a link or disposition. It does not alter the
+underlying Evidence or receipt status, nor waive any independently applicable
+ownership or technical check.
+
+### Technical anchors in Tasks
+
+Task **Implementation Targets** are technical anchors: mutable implementation
+intent such as the file or symbol expected to change. Before implementation,
+the external agent runs a target-bound preflight and resolves each target
+against that source state. After implementation, the agent runs a fresh
+result-state preflight and records the execution disposition: touched,
+not touched, replaced, created, deleted, or superseded.
+
+### Currentness and enforcement
+
+Currentness is evaluated against the source receipt and the entity version.
+When either moves, the earlier evidence remains visible as history but may no
+longer authorize the current lifecycle transition.
+
+Pulse cannot detect source changes until an agent submits a newer preflight
+receipt. This is why currentness describes the latest agent-attested source
+state, rather than continuous repository monitoring.
+
+- **Advisory** reports missing or outdated traceability without blocking the
+  transition. The missing trail may still force the repository investigation
+  to be repeated after source or entity drift.
+- **Blocking** prevents applicable transitions until the configured Code
+  Evidence, technical-anchor, and attestation requirements are satisfied.
+
+Use **Submission guide** in the Code Evidence or Implementation Targets view
+when you need the exact agent workflow and MCP operations.
 `,
     },
     {
@@ -726,15 +818,17 @@ These checks can be bypassed per-spec (\`skip_test_coverage\`, \`skip_rules_cove
 
 ### Spec Validation Gate
 
-Before a spec can move from **approved** to **validated**, it can be evaluated on 3 dimensions:
+Before a spec can move from **approved** to **validated**, it is evaluated on five dimensions:
 
 | Metric | What it measures |
 |--------|-----------------|
-| **Completeness** (0–100) | How thoroughly does the spec define what to build? |
-| **Assertiveness** (0–100) | How measurable and testable are the requirements? |
+| **Confidence** (0–100) | How confident is the evaluator in the assessment? |
+| **Clarity** (0–100) | How clearly are the problem, solution and requirements expressed? |
+| **Assertiveness** (0–100) | How direct, measurable and testable are the statements? |
+| **Decidability** (0–100) | How many concrete implementation decisions can be made from the Spec? |
 | **Ambiguity** (0–100) | How many ways can the requirements be interpreted? (lower is better) |
 
-Thresholds are configurable per board in Settings. Multiple evaluations can be submitted; the spec must pass all three to advance.
+Each score includes a justification and may include metric-tagged pinpoint findings. Thresholds are configurable per board in Settings; the spec must pass all five to advance.
 
 ### Export
 
@@ -757,6 +851,10 @@ Tasks are created within a spec context. Each task links back to its parent spec
 ### Task lifecycle (columns)
 
 \`not_started\` → \`started\` → \`in_progress\` → \`validation\` → \`done\`
+
+If a governed completion decision fails for a normal Task or Bug, Pulse moves it from \`validation\` to **\`rejected\`**. Rejected means **rework is required**, not that the card is waiting for another evaluator. Its only manual exit is \`rejected\` → \`in_progress\`; after rework, a new execution report and Current technical traceability are required before returning to \`validation\`.
+
+Rejected is consequence-only: cards cannot be created, manually moved, or dragged into it. Test Cards keep their existing lifecycle and never receive Rejected.
 
 Additional statuses: \`on_hold\`, \`cancelled\`
 
@@ -806,7 +904,7 @@ When the board has \`require_task_validation\` enabled, tasks pass through a **v
 | **Completeness** (0–100) | ≥ 80% |
 | **Drift** (0–100) | ≤ 50% |
 
-If the task **passes** all thresholds → moves to \`done\`. If it **fails** → returns to \`not_started\` for rework. Thresholds are configurable per board in Settings.
+If the task **passes** all thresholds → moves to \`done\`. If it **fails** → moves to \`rejected\` with the failed evaluation preserved as the current rework feedback. The executor reads that feedback, explicitly moves the card to \`in_progress\`, records a new execution attempt, and only then hands it back to \`validation\`. Thresholds are configurable per board in Settings.
 
 ### Dependencies
 
@@ -1037,10 +1135,10 @@ assessment has been recorded:
 | **Ready with waivers** | Blocking findings are covered by effective waivers |
 | **Not applicable** | No adopted semantic metric targets this subject |
 
-A receipt is current only while the subject version, adopted policy set,
-metric contract and binding head still match. Stale history remains
-auditable but never authorizes a transition. Fix the subject or guideline and
-evaluate again.
+One **Current** policy result belongs to the entity's active validation edition.
+When the entity returns to Draft, that result moves to **Previous**. A new
+evaluation is required when the entity enters Validation again; earlier results
+remain available for review and never authorize the new edition.
 
 Advisory findings never block. Blocking bindings compose with the existing
 entity gate at supported completion transitions; they do not create another
@@ -1063,7 +1161,7 @@ Expiry, revocation or source drift removes its effect.
 Policy lists use opaque keyset cursors. Keep filters and projection unchanged
 between pages, pass the cursor back without decoding it, and keep the same
 waiver snapshot time. **Summary** is for browsing; load **Full** for the
-bounded score, rationale, evidence and pinpoint set you need. Receipt and
+bounded score, rationale, evidence and pinpoint set you need. Result and
 waiver-event history is append-only.
 
 ### Capabilities and fail-closed UI
@@ -1183,11 +1281,13 @@ When \`require_spec_validation\` is enabled in board settings, specs must pass a
 
 | Metric | What it measures | Default |
 |--------|-----------------|---------|
-| **Completeness** | How thoroughly defined | ≥ 70 |
-| **Assertiveness** | How measurable/testable | ≥ 70 |
+| **Confidence** | Evaluator confidence in the assessment | ≥ 70 |
+| **Clarity** | Problem, solution and requirements are clear | ≥ 80 |
+| **Assertiveness** | Statements are direct, measurable and testable | ≥ 80 |
+| **Decidability** | Requirements provide concrete decision parameters | ≥ 80 |
 | **Ambiguity** | How many interpretations possible | ≤ 30 |
 
-Multiple evaluations can be submitted (by humans or AI agents). The spec must pass all thresholds to advance.
+Every metric requires a justification. Evaluators may attach pinpoint findings tagged with the affected metric. The current lifecycle edition must pass all thresholds to advance.
 
 ### Spec → Done gates
 
@@ -1199,7 +1299,7 @@ Multiple evaluations can be submitted (by humans or AI agents). The spec must pa
 | **TR coverage** | Every technical requirement links to a task card |
 | **Tasks complete** | All linked tasks (non-bug) are done or cancelled |
 
-### Task Validation Gate (in_progress → done)
+### Task Validation Gate (validation → done or rejected)
 
 When \`require_task_validation\` is enabled in board settings, tasks must pass through a validation column:
 
@@ -1209,7 +1309,7 @@ When \`require_task_validation\` is enabled in board settings, tasks must pass t
 | **Completeness** | How complete is the implementation | ≥ 80% |
 | **Drift** | How much did it deviate from the plan | ≤ 50% |
 
-Pass → task moves to \`done\`. Fail → task returns to \`not_started\` for rework.
+Pass → task moves to \`done\`. An admitted failed validation or governed completion blocker → normal Task/Bug moves to \`rejected\` with one current causal feedback record. Rejected cards are executor work: move only to \`in_progress\`, address the feedback, record a new execution report and Current traceability, then submit a fresh handoff to \`validation\`. Test Cards are unchanged and never enter Rejected.
 
 ### Task → Started gates
 
@@ -1390,9 +1490,9 @@ Click the **Knowledge Graph** tab in the main navigation. The KG page has 6 sub-
 | **Learning** | 💡 | Lessons learned from bugs or incidents |
 | **Alternative** | ↔️ | Considered but not chosen alternatives |
 
-### Edge types (10)
+### Edge types (16)
 
-\`supersedes\` · \`contradicts\` · \`derives_from\` · \`relates_to\` · \`mentions\` · \`depends_on\` · \`violates\` · \`implements\` · \`tests\` · \`validates\`
+\`supersedes\` · \`contradicts\` · \`derives_from\` · \`relates_to\` · \`mentions\` · \`depends_on\` · \`violates\` · \`implements\` · \`tests\` · \`validates\` · \`precedes\` · \`supports\` · \`overlaps\` · \`belongs_to\` · \`originates_from\` · \`covered_by\`
 
 ### How consolidation works
 
@@ -1501,7 +1601,7 @@ MCP agents can query **and curate** the Knowledge Graph via 25+ tools:
       content: `
 ## Board Settings — Configure quality gates and behavior
 
-Each board has configurable settings that control governance rules, validation thresholds, and coverage requirements. Access via **Menu** (☰) → **Settings**.
+Each board has configurable settings that control governance rules, validation thresholds, and coverage requirements. Access via **Menu** (☰) → **Board**.
 
 ### Coverage skip flags
 
@@ -1512,6 +1612,7 @@ These flags bypass specific coverage checks for the entire board:
 | \`skip_test_coverage_global\` | Test scenario → acceptance criteria coverage |
 | \`skip_rules_coverage_global\` | Business rules → functional requirements coverage |
 | \`skip_trs_coverage_global\` | Technical requirements → task card linkage |
+| \`skip_code_evidence_coverage_global\` | Pending Code Evidence Matrix links or dispositions for every Spec; projection integrity and independently applicable technical gates remain enforced |
 | \`skip_contract_coverage_global\` | API contract → task card linkage |
 | \`skip_task_requirement_link_gate_global\` | Task start gate requiring a direct FR/TR/BR/IR/OR link |
 | \`skip_test_evidence_global\` | **Test Evidence Gate** (NC-9) — when ON, test scenarios can be marked \`automated/passed/failed\` without proof of execution. A persistent amber banner appears app-wide until disabled. |
@@ -1530,8 +1631,10 @@ These flags bypass specific coverage checks for the entire board:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | \`require_spec_validation\` | true | Enable the spec validation gate (approved → validated) |
-| \`min_spec_completeness\` | 80 | Minimum completeness score |
+| \`min_spec_confidence\` | 70 | Minimum evaluator-confidence score |
+| \`min_spec_clarity\` | 80 | Minimum clarity score |
 | \`min_spec_assertiveness\` | 80 | Minimum assertiveness score |
+| \`min_spec_decidability\` | 80 | Minimum decidability score |
 | \`max_spec_ambiguity\` | 30 | Maximum ambiguity score |
 
 ### Other settings
@@ -1564,27 +1667,27 @@ Individual specs can override board-level settings. Toggle the skip flags direct
       title: 'Requirement lint',
       icon: <BarChart3 size={16} />,
       content: `
-## Requirement lint — deterministic advisory analysis
+## Requirement lint — Edition-based advisory findings
 
-Requirement lint checks a Spec's governed semantic content after relevant changes. It is available in **Spec → Validation → Requirement lint** and is read-only in the UI: the server creates a new immutable receipt automatically.
+Requirement lint is evaluated when a Spec enters Validation. It is available in **Spec → Validation → Requirement lint** and is read-only in the UI: an external agent evaluates the current edition and submits the result to Pulse. Pulse stores and verifies the submitted evidence; Community does not perform repository investigation or run cognition on the user's machine.
 
 ### Reading the result
 
 The headline is a **finding count**, not a percentage or approval score:
 
-- **Findings** — issues detected by the deterministic ruleset.
+- **Findings** — issues reported by the configured ruleset.
 - **Evaluated rules** — rules that applied to the current Spec input.
 - **Lower is better** — zero means the ruleset found no issue in that run.
 
-Findings carry severity, category, a precise anchor and suggested remediation. Expand **Pinpoint findings** to locate the affected field or structured child. Expand **Receipt history** to audit earlier runs.
+Findings carry severity, category, a precise anchor and suggested remediation. Expand **Pinpoint findings** to locate the affected field or structured child. Expand **Previous results** to review earlier evaluations.
 
-### Current and stale receipts
+### Current and Previous
 
-A receipt is **current** only while its Spec content, ruleset, taxonomy and policy inputs still match the evaluated revision. A semantic edit can make the previous receipt stale and trigger a replacement. Historical receipts remain traceable and are never rewritten.
+The result submitted for the active validation edition appears as **Current**. When the Spec returns to Draft, Current clears and that result moves to **Previous**. The next entry into Validation requires a new result. Editing technical fields within an edition does not change that Current/Previous placement.
 
 ### Advisory authority
 
-Requirement lint never changes Spec transition eligibility. **Zero findings does not authorize a transition**, and one or more findings do not block it. When available, **Checklist** and **Spec Validation** are the authoritative controls shown in the neighboring Validation sub-tabs.
+An accepted requirement-lint result for the current edition is required to continue. The finding count and severity remain advisory: **zero findings does not authorize a transition**, and one or more findings do not block by count or severity. **Checklist**, **Policy compliance**, and **Spec Validation** remain independent controls shown in the neighboring Validation workspace.
 
 Use lint findings to improve the Spec before formal validation; use the authoritative controls to determine whether the Spec may advance.
 `,
@@ -1606,7 +1709,7 @@ Configure the policy for the current board in **Menu → Board → Board Config*
 |------|---------------------|-------------------|
 | **Off** | Disabled | Never blocks validation |
 | **Advisory** | Enabled and stored as traceable evidence | Never blocks validation |
-| **Blocking** | Required | Requires a current passing receipt before the Spec can be validated |
+| **Blocking** | Required | Requires a passing result for the current validation edition |
 
 **Advisory** is the recommended adoption mode while a team calibrates evidence and anchors. Promote the policy to **Blocking** once checklist runs are consistent. Use **Off** only for an intentional opt-out or legacy compatibility.
 
@@ -1625,19 +1728,19 @@ Configure the policy for the current board in **Menu → Board → Board Config*
 
 Every result requires a concrete **anchor** to evidence in the Spec. Items 5, 6, 8 and 10 may be marked **Not applicable**, with a required rationale. All ten ordered results are submitted together.
 
-### Receipts and currentness
+### Current and Previous results
 
-A completed run produces an immutable, auditable receipt. The Spec modal shows its result, counts, currentness and paginated receipt history.
+A completed run produces an immutable, auditable result. The Spec modal shows one **Current** result for the active validation edition and keeps earlier evaluations under **Previous**.
 
-A receipt becomes **stale** when the evaluated Spec technical revision, content, inputs, or executable checklist identity changes. Changing only the policy from Advisory to Blocking does not make an otherwise current receipt stale; an existing native receipt with no failed items can immediately satisfy Blocking.
+When the Spec returns to Draft, its Current checklist result moves to Previous. The next entry into Validation starts a new edition and requires a new result. Changing only the policy from Advisory to Blocking does not create a new edition; an existing passing Current result can immediately satisfy Blocking.
 
 The visible states are:
 
-- \`off\` — policy disabled
-- \`not_started\` — no receipt exists
-- \`current\` — receipt still matches the Spec
-- \`stale\` — the Spec or executable inputs changed
-- \`failed\` — at least one checklist item failed
+- **Off** — the policy is disabled
+- **Not started** — the current edition has no submitted result
+- **In progress** — the checklist is being completed
+- **Passed** — every required item passed for the current edition
+- **Failed** — at least one required item failed
 
 ### Relationship with Spec Validation
 

@@ -103,8 +103,8 @@ release oracle is:
 | Historical private reach-in baseline | `32` |
 | Current private reach-in budget | `0` |
 | Current governed private reach-ins | `0` |
-| Current full Community->Core import inventory | `951` |
-| Inventory classification | `public_contract=951`, `governed_temporary_reach_in=0` |
+| Current full Community->Core import inventory | `1132` |
+| Inventory classification | `public_contract=1132`, `governed_temporary_reach_in=0` |
 | Boundary violations | `0` violations, `0` stale ledger entries, `0` incomplete ledger entries, `0` baseline-growth violations |
 | Burn-down progression | `32 -> 21 -> 10 -> 0` after AF42 inventory, lifecycle/auth/MCP, then complete Community ORM ownership |
 | Community release command | `python -m pytest tests/test_af21_core_import_boundary.py tests/test_af25_docs_truthfulness.py tests/test_af33_capstone_community_readiness.py tests/test_af35_s1_community_adapters.py tests/test_af35_s2_community_kg_operational_adapters.py tests/test_af41_runtime_dependency_ownership.py tests/test_af41_serving_boundary.py tests/test_r06_mcp_auth_context_community.py tests/test_r08a_mcp_auth_adapter.py tests/test_cli_init.py tests/test_cli_kg_backfill.py tests/test_hnd2_credential_surface_gate.py tests/test_r01c_imp4_schema_lifecycle_orchestrator.py tests/test_r16b_relational_schema_migrator.py tests/test_r16c_data_bootstrapper.py -q` -> `105 passed` |
@@ -168,7 +168,9 @@ Adapter source map:
 - Relational runtime: `community/adapters/sqlalchemy_database.py`,
   `community/adapters/sqlalchemy_unit_of_work.py`,
   `community/adapters/sqlalchemy_repositories.py`,
-  `community/adapters/af35_sqlalchemy_services.py`,
+  `community/adapters/sqlalchemy_resource_gate_service.py`,
+  `community/adapters/sqlalchemy_runtime_settings_service.py`,
+  `community/adapters/sqlalchemy_traceability_read_model.py`,
   `community/adapters/coordination.py` and
   `community/adapters/relational_effects.py`; read-only sprint-lineage health is
   owned by `community/adapters/sprint_origin_integrity.py`; the SQLite PRAGMA owner is
@@ -177,8 +179,10 @@ Adapter source map:
 - Relational mappings and persistence implementations:
   `community/adapters/sqlalchemy_*`.
 - KG source/rebuild ingestion: `community/adapters/board_source_reader.py` and
-  `community/adapters/board_rebuild_ingestion.py`; content ingestion helpers
-  live in `community/adapters/content_ingestion.py`.
+  `community/adapters/board_rebuild_ingestion.py`; the closed legacy recovery
+  intent and source-revision fence live in
+  `community/adapters/legacy_rebuild_reconciliation.py`; content ingestion
+  helpers live in `community/adapters/content_ingestion.py`.
 - Knowledge propagation rollout: `community/adapters/knowledge_propagation_backfill.py`.
 - KG local schema/durability adapters: `community/adapters/global_discovery_*` and
   `community/adapters/rebuild_audit_storage.py`.
@@ -188,7 +192,10 @@ Adapter source map:
   and `community/adapters/terminal_debt_snapshot.py`.
 - KG outbox/audit persistence: `community/adapters/sqlite_outbox_event_bus.py`,
   `community/adapters/sqlalchemy_audit_repo.py` and
-  `community/adapters/kg_operational.py`.
+  `community/adapters/kg_operational.py`; generic KG queries exclude
+  Code Traceability artifacts through
+  `community/adapters/code_traceability_kg_sql.py` without inspecting source
+  repositories.
 - KG data and graph runtime: `community/adapters/data.py`,
   `community/adapters/memory.py`, `community/adapters/kg.py`,
   `community/adapters/kg_runtime.py`,
@@ -202,6 +209,7 @@ Adapter source map:
   `community/adapters/hybrid_search.py` and
   `community/adapters/reflective_query.py`.
 - MCP/resource overlays and host runtime: `community/adapters/mcp_auth.py`,
+  `community/adapters/mcp_admission.py`,
   `community/adapters/mcp_host.py`,
   `community/adapters/resources.py`,
   `community/adapters/capability_descriptors.py` and
@@ -214,9 +222,13 @@ Adapter source map:
   `community/adapters/relational_application.py` and
   `community/adapters/kg_events.py`; semantic-guideline KG events are emitted by
   `community/adapters/semantic_guideline_kg_events.py`.
-- SK-A quality writes and bounded projection observability:
-  `community/adapters/requirement_lint_writer.py` and
-  `community/adapters/ska_observability.py`.
+- Externally-produced SK-A quality evidence persistence and bounded projection
+  observability: `community/adapters/sqlalchemy_quality_assessment.py` and
+  `community/adapters/ska_observability.py`; readers-first rollout capability
+  checks live in
+  `community/adapters/semantic_assessment_v2_capabilities.py`. Community does not run a
+  Requirement Lint analyzer; an external agent submits evidence through the
+  governed preflight/write contract.
 - Telemetry: `community/adapters/telemetry_store.py`,
   `community/adapters/telemetry_sender.py`,
   `community/adapters/telemetry_state.py`,
@@ -253,7 +265,7 @@ core `adapter_readiness_inventory` when a port is added or retired.
 
 The source map above answers *"where does this file live?"*. This matrix answers the complementary
 question: **which core port does each adapter implement?** Core declares the `Protocol`; Community
-provides the only production implementation. **146 adapter modules** currently fill core's
+provides the only production implementation. **156 adapter modules** currently fill core's
 ~100 port protocols and 30 KG interfaces.
 
 Anything core needs that is not in this table is either supplied by another edition or an unfilled

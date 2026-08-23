@@ -3,39 +3,28 @@
 The paginated Ideation, Refinement and Spec surfaces expose only one compact
 summary per current assessment kind.  This adapter keeps the projection out of
 the legacy array routes, resolves the dedicated read leaf before touching
-Quality rows, and uses two page-bounded statements (heads/receipts/subjects +
-Q&A) instead of one query per parent.  The nested Ideation→Refinements route
-therefore moves from its six-statement historical ceiling to seven statements
-for direct permissions (at most eight when preset lineage adds one read), still
-constant for page sizes 1..200.
+Quality rows, and uses one page-bounded aggregate statement for both the
+current head and the prior-result count.  Findings and historical bodies remain
+lazy and are never loaded by a parent-page projection.
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass
 import json
 from time import perf_counter
 from typing import Any, Literal, TypeAlias
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Ideation,
-    IdeationQAItem,
     QualityAssessmentHeadRow,
     QualityAssessmentReceiptRow,
     Refinement,
-    RefinementQAItem,
     Spec,
-    SpecQAItem,
 )
 from okto_pulse.core.domain.permissions import check_permission
-from okto_pulse.core.domain.quality_assessment import AssessmentDigestSet
-from okto_pulse.core.services.quality_projection_currentness import (
-    QualityProjectionCurrentnessError,
-    evaluate_quality_projection_currentness,
-)
 from okto_pulse.core.services.ska_observability import (
     observe_ska_projection_queries,
 )
@@ -48,26 +37,24 @@ QualitySummaryMap: TypeAlias = dict[str, dict[str, QualitySummary]]
 @dataclass(frozen=True, slots=True)
 class _SubjectBinding:
     model: type
-    qa_model: type
-    qa_subject_fk: str
 
 
 _SUBJECT_BINDINGS: dict[str, _SubjectBinding] = {
     "ideation": _SubjectBinding(
         model=Ideation,
-        qa_model=IdeationQAItem,
-        qa_subject_fk="ideation_id",
     ),
     "refinement": _SubjectBinding(
         model=Refinement,
-        qa_model=RefinementQAItem,
-        qa_subject_fk="refinement_id",
     ),
     "spec": _SubjectBinding(
         model=Spec,
-        qa_model=SpecQAItem,
-        qa_subject_fk="spec_id",
     ),
+}
+
+_SUBJECT_ASSESSMENT_KINDS: dict[QualitySubjectType, tuple[str, ...]] = {
+    "ideation": ("ambiguity",),
+    "refinement": ("ambiguity",),
+    "spec": ("requirement_lint", "spec_validation"),
 }
 
 
@@ -89,6 +76,7 @@ async def load_quality_summaries_for_page(
     board_id: str,
     subject_type: QualitySubjectType,
     subject_ids: tuple[str, ...],
+    can_read_quality: bool | None = None,
 ) -> QualitySummaryMap | None:
     """Resolve the read leaf and batch-project current Quality heads.
 
@@ -100,23 +88,23 @@ async def load_quality_summaries_for_page(
     started = perf_counter()
     query_count = 0
     try:
-        ordered_ids = tuple(
-            dict.fromkeys(item for item in subject_ids if item)
-        )
+        ordered_ids = tuple(dict.fromkeys(item for item in subject_ids if item))
         if not ordered_ids:
             summaries: QualitySummaryMap | None = {}
         else:
-            permission_set = await uow.services.resolve_user_permissions(
-                user_id,
-                board_id,
-            )
-            if check_permission(
-                permission_set,
-                f"{subject_type}.quality.read",
-            ):
+            if can_read_quality is None:
+                permission_set = await uow.services.resolve_user_permissions(
+                    user_id,
+                    board_id,
+                )
+                can_read_quality = not check_permission(
+                    permission_set,
+                    f"{subject_type}.quality.read",
+                )
+            if not can_read_quality:
                 summaries = None
             else:
-                query_count = 2
+                query_count = 1
                 summaries = await _load_quality_summaries(
                     session=uow.services.cards.db,
                     board_id=board_id,
@@ -162,102 +150,131 @@ async def _load_quality_summaries(
     subject_ids: tuple[str, ...],
 ) -> QualitySummaryMap:
     binding = _SUBJECT_BINDINGS[subject_type]
-    joined_rows = (
+    columns: list[Any] = [
+        binding.model.id.label("subject_id"),
+        binding.model.edition.label("edition"),
+    ]
+    for assessment_kind in _SUBJECT_ASSESSMENT_KINDS[subject_type]:
+        receipt_scope = (
+            QualityAssessmentReceiptRow.board_id == board_id,
+            QualityAssessmentReceiptRow.subject_type == subject_type,
+            QualityAssessmentReceiptRow.subject_id == binding.model.id,
+            QualityAssessmentReceiptRow.assessment_kind == assessment_kind,
+        )
+        total_count = (
+            select(func.count(QualityAssessmentReceiptRow.id))
+            .where(*receipt_scope)
+            .correlate(binding.model)
+            .scalar_subquery()
+        )
+        head_join = and_(
+            QualityAssessmentHeadRow.board_id == QualityAssessmentReceiptRow.board_id,
+            QualityAssessmentHeadRow.subject_type
+            == QualityAssessmentReceiptRow.subject_type,
+            QualityAssessmentHeadRow.subject_id
+            == QualityAssessmentReceiptRow.subject_id,
+            QualityAssessmentHeadRow.assessment_kind
+            == QualityAssessmentReceiptRow.assessment_kind,
+            QualityAssessmentHeadRow.receipt_id == QualityAssessmentReceiptRow.id,
+        )
+
+        def current_value(column: Any) -> Any:
+            return (
+                select(column)
+                .select_from(QualityAssessmentReceiptRow)
+                .join(QualityAssessmentHeadRow, head_join)
+                .where(
+                    *receipt_scope,
+                    QualityAssessmentReceiptRow.subject_edition
+                    == binding.model.edition,
+                )
+                .correlate(binding.model)
+                .limit(1)
+                .scalar_subquery()
+            )
+
+        columns.extend(
+            (
+                total_count.label(f"{assessment_kind}_total_count"),
+                current_value(QualityAssessmentReceiptRow.score).label(
+                    f"{assessment_kind}_current_score"
+                ),
+                current_value(QualityAssessmentReceiptRow.scale_kind).label(
+                    f"{assessment_kind}_current_scale_kind"
+                ),
+                current_value(QualityAssessmentReceiptRow.scale_minimum).label(
+                    f"{assessment_kind}_current_scale_minimum"
+                ),
+                current_value(QualityAssessmentReceiptRow.scale_maximum).label(
+                    f"{assessment_kind}_current_scale_maximum"
+                ),
+                current_value(QualityAssessmentReceiptRow.scale_direction).label(
+                    f"{assessment_kind}_current_scale_direction"
+                ),
+            )
+        )
+    rows = (
         await session.execute(
-            select(
-                QualityAssessmentReceiptRow,
-                QualityAssessmentHeadRow,
-                binding.model,
-            )
-            .join(
-                QualityAssessmentHeadRow,
-                QualityAssessmentHeadRow.receipt_id
-                == QualityAssessmentReceiptRow.id,
-            )
-            .join(
-                binding.model,
-                binding.model.id == QualityAssessmentHeadRow.subject_id,
-            )
-            .where(
-                QualityAssessmentHeadRow.board_id == board_id,
-                QualityAssessmentHeadRow.subject_type == subject_type,
-                QualityAssessmentHeadRow.subject_id.in_(subject_ids),
-                QualityAssessmentReceiptRow.board_id == board_id,
+            select(*columns).where(
+                binding.model.id.in_(subject_ids),
                 binding.model.board_id == board_id,
-            )
-            .order_by(
-                QualityAssessmentHeadRow.subject_id,
-                QualityAssessmentHeadRow.assessment_kind,
             )
         )
     ).all()
-    qa_rows = (
-        (
-            await session.execute(
-                select(binding.qa_model)
-                .where(
-                    getattr(binding.qa_model, binding.qa_subject_fk).in_(
-                        subject_ids
-                    )
-                )
-                .order_by(
-                    getattr(binding.qa_model, binding.qa_subject_fk),
-                    binding.qa_model.id,
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    qa_by_subject: dict[str, list[object]] = defaultdict(list)
-    for qa_row in qa_rows:
-        qa_by_subject[
-            str(getattr(qa_row, binding.qa_subject_fk))
-        ].append(qa_row)
 
     summaries: QualitySummaryMap = {}
-    for receipt, head, subject in joined_rows:
-        currentness = "stale"
-        try:
-            freshness = evaluate_quality_projection_currentness(
-                board_id=board_id,
-                subject_type=subject_type,
-                subject_id=receipt.subject_id,
-                assessed_subject_version=receipt.subject_version,
-                assessed_digests=AssessmentDigestSet(
-                    content_digest=receipt.content_digest,
-                    clarification_digest=receipt.clarification_digest,
-                    ruleset_digest=receipt.ruleset_digest,
-                    taxonomy_digest=receipt.taxonomy_digest,
-                    policy_digest=receipt.policy_digest,
-                ),
-                assessment_kind=receipt.assessment_kind,
-                origin=receipt.origin,
-                source=receipt.source,
-                current_subject=subject,
-                qa_items=qa_by_subject.get(receipt.subject_id, ()),
-                board_settings=None,
+    for row in rows:
+        subject_id = str(row.subject_id)
+        current_edition = int(row.edition)
+        subject_summaries = summaries.setdefault(subject_id, {})
+        for assessment_kind in _SUBJECT_ASSESSMENT_KINDS[subject_type]:
+            total_count = int(getattr(row, f"{assessment_kind}_total_count"))
+            current_score = getattr(
+                row,
+                f"{assessment_kind}_current_score",
             )
-            currentness = "current" if freshness.current else "stale"
-        except QualityProjectionCurrentnessError:
-            # Unsupported persisted identities are never presented as current.
-            currentness = "stale"
-
-        summaries.setdefault(receipt.subject_id, {})[
-            receipt.assessment_kind
-        ] = {
-            "receipt_id": receipt.id,
-            "subject_version": receipt.subject_version,
-            "currentness": currentness,
-            "score": receipt.score,
-            "scale": {
-                "kind": receipt.scale_kind,
-                "min": receipt.scale_minimum,
-                "max": receipt.scale_maximum,
-                "direction": receipt.scale_direction,
-            },
-            "head_revision": head.revision,
-        }
+            if current_score is None:
+                subject_summaries[assessment_kind] = {
+                    "edition": current_edition,
+                    "state": "not_started",
+                    "previous_count": total_count,
+                    "current_result": None,
+                }
+                continue
+            subject_summaries[assessment_kind] = {
+                "edition": current_edition,
+                "state": "current",
+                "previous_count": max(total_count - 1, 0),
+                "current_result": {
+                    "score": int(current_score),
+                    "scale": {
+                        "kind": str(
+                            getattr(
+                                row,
+                                f"{assessment_kind}_current_scale_kind",
+                            )
+                        ),
+                        "min": int(
+                            getattr(
+                                row,
+                                f"{assessment_kind}_current_scale_minimum",
+                            )
+                        ),
+                        "max": int(
+                            getattr(
+                                row,
+                                f"{assessment_kind}_current_scale_maximum",
+                            )
+                        ),
+                        "direction": str(
+                            getattr(
+                                row,
+                                f"{assessment_kind}_current_scale_direction",
+                            )
+                        ),
+                    },
+                },
+            }
     return summaries
 
 

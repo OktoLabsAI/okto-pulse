@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import hashlib
 import json
+import logging
 import os
 import os as _os
 import sqlite3
@@ -244,8 +245,11 @@ def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
     )
     env.update(
         {
+            "DATA_DIR": str(pulse_home),
             "OKTO_PULSE_HOME": str(pulse_home),
             "OKTO_PULSE_SKIP_DEMO_SEED": "0",
+            "OKTO_PULSE_NO_BANNER": "1",
+            "PYTHONUTF8": "1",
             # Keep the normal runtime semantic. The demo must override this in
             # its isolated provider scope and therefore succeed with a brand-new,
             # offline cache containing no model weights.
@@ -257,18 +261,35 @@ def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
         }
     )
 
+    handoff_path = tmp_path / "bootstrap-api-key"
     result = subprocess.run(
-        [sys.executable, "-m", "okto_pulse.community.cli", "init"],
+        [
+            sys.executable,
+            "-m",
+            "okto_pulse.community.cli",
+            "init",
+            "--bootstrap-key-handoff",
+            str(handoff_path),
+        ],
         cwd=tmp_path,
         env=env,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="strict",
         timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     output = result.stdout + result.stderr
     assert "community.seed.demo_failed" not in output
     assert "Knowledge Graph:" in output
+    assert handoff_path.exists()
+    assert "API Key: reserved for one-time automation handoff" in result.stdout
+    assert "kg.bootstrap.fresh_graph_created" in result.stderr
+    assert (
+        "if a previous graph existed and was manually removed, rematerialize it "
+        "through historical consolidation or an explicit rebuild"
+    ) in result.stderr
+    assert "se um grafo anterior existia" not in result.stderr
     assert not [path for path in hf_home.rglob("*") if path.is_file()]
 
     conn = sqlite3.connect(pulse_home / "data" / "pulse.db")
@@ -339,6 +360,54 @@ def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
         global_db.close()
         del global_graph, global_db
         gc.collect()
+
+
+def test_init_embedding_guard_feedback_is_english(monkeypatch, caplog):
+    """The indeterminate init-time embedding warning is operator-facing English."""
+    import okto_pulse.community.adapters.kg_runtime as kg_runtime
+
+    @contextmanager
+    def fake_registered_raw_connection(_board_id):
+        yield object(), object()
+
+    monkeypatch.setattr(
+        kg_runtime,
+        "registered_raw_connection",
+        fake_registered_raw_connection,
+    )
+    monkeypatch.setattr(
+        kg_runtime,
+        "_read_board_meta_embedding",
+        lambda _conn, _board_id: (None, None),
+    )
+    monkeypatch.setattr(
+        kg_runtime,
+        "_effective_embedding_meta",
+        lambda: {
+            "model_name": None,
+            "embedding_dimension": 0,
+            "is_stub": True,
+        },
+    )
+
+    with caplog.at_level(logging.WARNING, logger=kg_runtime.logger.name):
+        kg_runtime._enforce_embedding_guard("board-init-locale")
+
+    records = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "kg.embedding_guard.indeterminate"
+    ]
+    assert len(records) == 1
+    record = records[0]
+    assert record.levelno == logging.WARNING
+    assert getattr(record, "board_id", None) == "board-init-locale"
+    assert record.getMessage() == (
+        "kg.embedding_guard.indeterminate board=board-init-locale "
+        "(provider metadata is missing or invalid, or the provider is a stub; "
+        "compatibility guard was not applied)"
+    )
+    assert "provider sem metadata" not in record.getMessage()
 
 
 # ---------------------------------------------------------------------------

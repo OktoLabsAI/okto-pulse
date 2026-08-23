@@ -9,6 +9,7 @@ import { useDashboardApi } from '@/services/api';
 import type { SprintSummary } from '@/types';
 import { SPRINT_STATUS_LABELS, SPRINT_STATUS_COLORS } from '@/types';
 import { SprintModal } from '@/components/sprints/SprintModal';
+import { QABadge } from '@/components/shared/QABadge';
 
 interface SprintsTabProps {
   specId: string;
@@ -120,6 +121,11 @@ export function SprintsTab({ specId, boardId }: SprintsTabProps) {
                 <p className="text-sm font-medium text-gray-900 dark:text-white truncate">{sprint.title}</p>
                 {sprint.description && (
                   <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{sprint.description}</p>
+                )}
+                {(sprint.open_qa_count ?? 0) > 0 && (
+                  <div className="mt-1.5">
+                    <QABadge count={sprint.open_qa_count} />
+                  </div>
                 )}
               </div>
               <div className="flex items-center gap-2 text-xs text-gray-400">

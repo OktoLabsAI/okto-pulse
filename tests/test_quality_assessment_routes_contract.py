@@ -13,9 +13,16 @@ from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.application.use_cases.quality_assessment import (
     QualityAssessmentReadUseCases,
     RecordAmbiguityAssessmentUseCase,
+    RecordRequirementLintUseCase,
 )
 from okto_pulse.core.services.quality_assessment import (
     QualityAssessmentNotFoundError,
+)
+from okto_pulse.core.ports.quality_assessment import (
+    AssessmentHeadRevisionConflict,
+    AssessmentSubjectEditionConflict,
+    AssessmentSubjectStatusConflict,
+    AssessmentSubjectVersionConflict,
 )
 
 
@@ -30,12 +37,17 @@ def client() -> TestClient:
 
 def _record_payload() -> dict[str, object]:
     return {
+        "assessment_kind": "ambiguity",
         "idempotency_key": "quality-rest-1",
         "expected_subject_version": 2,
+        "expected_subject_edition": 3,
         "expected_head_revision": 0,
-        "score": 2,
-        "findings": [],
-        "proposed_questions": [],
+        "assessment": {
+            "score": 2,
+            "summary": "The subject is sufficiently precise.",
+            "findings": [],
+            "proposed_questions": [],
+        },
     }
 
 
@@ -50,9 +62,12 @@ def test_api01_write_schema_is_closed_and_server_owned(
     request_schema = schema["components"]["schemas"][request_name]
 
     assert request_schema["additionalProperties"] is False
-    assert request_schema["properties"]["proposed_questions"]["maxItems"] == 5
+    assessment_ref = request_schema["properties"]["assessment"]["$ref"]
+    assessment_name = assessment_ref.rsplit("/", 1)[-1]
+    assessment_schema = schema["components"]["schemas"][assessment_name]
+    assert assessment_schema["additionalProperties"] is False
+    assert assessment_schema["properties"]["proposed_questions"]["maxItems"] == 5
     assert not {
-        "assessment_kind",
         "scale",
         "board_id",
         "subject_type",
@@ -87,6 +102,7 @@ def test_api01_success_and_replay_are_separate(
             replayed=True,
             receipt_id="receipt-1",
             head_revision=3,
+            subject_edition=3,
             qa_id_map=(("client-q1", "qa-1"),),
         )
 
@@ -109,11 +125,9 @@ def test_api01_success_and_replay_are_separate(
 
     assert response.status_code == 201, response.text
     assert response.json() == {
-        "outcome": "success",
-        "replayed": True,
-        "receipt_id": "receipt-1",
-        "head_revision": 3,
-        "qa_id_map": {"client-q1": "qa-1"},
+        "result_id": "receipt-1",
+        "subject_edition": 3,
+        "status": "accepted",
     }
 
 
@@ -121,7 +135,7 @@ def test_api01_question_budget_uses_declared_typed_error(
     client: TestClient,
 ) -> None:
     payload = _record_payload()
-    payload["proposed_questions"] = [
+    payload["assessment"]["proposed_questions"] = [
         {
             "client_key": f"q-{index}",
             "question": f"Question {index}?",
@@ -144,6 +158,89 @@ def test_api01_question_budget_uses_declared_typed_error(
         "maximum": 5,
         "actual": 6,
     }
+
+
+def test_requirement_lint_write_uses_canonical_closed_contract(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def board_id(**_kwargs):
+        return "board-1"
+
+    async def execute(_self, command, *, actor):
+        assert command.board_id == "board-1"
+        assert command.score == 0
+        assert command.summary == "No requirement-lint findings."
+        assert actor.source == "rest"
+        return SimpleNamespace(
+            replayed=False,
+            receipt_id="lint-result-1",
+            head_revision=1,
+            subject_edition=4,
+        )
+
+    monkeypatch.setattr(quality_assessments, "_subject_board_id", board_id)
+    monkeypatch.setattr(
+        quality_assessments,
+        "get_unit_of_work_factory",
+        lambda _request: object(),
+    )
+    monkeypatch.setattr(
+        RecordRequirementLintUseCase,
+        "execute",
+        execute,
+    )
+    payload = {
+        "assessment_kind": "requirement_lint",
+        "idempotency_key": "lint-rest-1",
+        "expected_subject_version": 7,
+        "expected_subject_edition": 4,
+        "expected_head_revision": 0,
+        "ruleset_digest": "a" * 64,
+        "assessment": {
+            "score": 0,
+            "summary": "No requirement-lint findings.",
+            "findings": [],
+        },
+    }
+
+    response = client.post(
+        "/api/v1/specs/spec-1/quality-assessments",
+        json=payload,
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json() == {
+        "result_id": "lint-result-1",
+        "subject_edition": 4,
+        "status": "accepted",
+        "idempotent_replay": False,
+    }
+    payload["assessment_kind"] = "ambiguity"
+    invalid = client.post(
+        "/api/v1/specs/spec-1/quality-assessments",
+        json=payload,
+    )
+    assert invalid.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("error_type", "code"),
+    (
+        (AssessmentSubjectEditionConflict, "assessment_subject_edition_conflict"),
+        (AssessmentSubjectVersionConflict, "assessment_subject_version_conflict"),
+        (AssessmentHeadRevisionConflict, "assessment_head_revision_conflict"),
+        (AssessmentSubjectStatusConflict, "assessment_subject_status_conflict"),
+    ),
+)
+def test_quality_write_cas_conflicts_are_typed_http_409(
+    error_type,
+    code: str,
+) -> None:
+    error = quality_assessments._quality_http_error(error_type())
+
+    assert error.status_code == 409
+    assert error.detail["error_code"] == code
 
 
 @pytest.mark.parametrize(
@@ -230,8 +327,8 @@ def test_api15_receipt_shape_is_nested_and_currentness_is_flat(
         "project_quality_receipt_currentness",
         lambda _receipt, _currentness: {
             "receipt": {"id": "receipt-1"},
-            "currentness": "stale",
-            "stale_reasons": ["subject_version_changed"],
+            "currentness": "previous",
+            "stale_reasons": ["subject_edition_changed"],
         },
     )
 
@@ -242,8 +339,8 @@ def test_api15_receipt_shape_is_nested_and_currentness_is_flat(
     assert response.status_code == 200, response.text
     assert response.json() == {
         "receipt": {"id": "receipt-1"},
-        "currentness": "stale",
-        "stale_reasons": ["subject_version_changed"],
+        "currentness": "previous",
+        "stale_reasons": ["subject_edition_changed"],
     }
 
 
@@ -254,6 +351,8 @@ def test_api14_uses_the_shared_current_gate_projection(
     current = object()
     expected = {
         "receipt": {"id": "receipt-1"},
+        "edition": 3,
+        "lifecycle_state": "current",
         "head_revision": 3,
         "currentness": "current",
         "stale_reasons": [],

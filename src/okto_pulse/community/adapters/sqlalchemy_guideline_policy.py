@@ -4201,13 +4201,13 @@ class CommunitySqlAlchemyGuidelinePolicy:
 
         subjects: list[PolicySubjectRef] = []
         model_specs = (
-            (PolicyEntityType.IDEATION, Ideation, "version"),
-            (PolicyEntityType.REFINEMENT, Refinement, "version"),
-            (PolicyEntityType.SPEC, Spec, "version"),
-            (PolicyEntityType.SPRINT, Sprint, "version"),
-            (PolicyEntityType.CARD, Card, "policy_version"),
+            (PolicyEntityType.IDEATION, Ideation, "version", "edition"),
+            (PolicyEntityType.REFINEMENT, Refinement, "version", "edition"),
+            (PolicyEntityType.SPEC, Spec, "version", "edition"),
+            (PolicyEntityType.SPRINT, Sprint, "version", None),
+            (PolicyEntityType.CARD, Card, "policy_version", None),
         )
-        for entity_type, model, version_field in model_specs:
+        for entity_type, model, version_field, edition_field in model_specs:
             rows = list(
                 (
                     await self._session.execute(
@@ -4225,6 +4225,11 @@ class CommunitySqlAlchemyGuidelinePolicy:
                     entity_type=entity_type,
                     subject_id=row.id,
                     subject_version=int(getattr(row, version_field)),
+                    subject_edition=(
+                        int(getattr(row, edition_field))
+                        if edition_field is not None
+                        else None
+                    ),
                 )
                 for row in rows
             )

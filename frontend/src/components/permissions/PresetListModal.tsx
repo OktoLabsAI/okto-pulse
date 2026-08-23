@@ -14,7 +14,8 @@ import {
   ExportItemButton,
   ImportExportButtons,
 } from '@/components/shared/ImportExportButtons';
-import { countPerEntity, ENTITY_LABELS, countAllFlags } from './PermissionFlagsEditor';
+import { countPerEntity, countAllFlags } from './PermissionFlagsEditor';
+import { getEntityChipClasses, getEntityLabel } from './permissionLabels';
 import { PresetEditorModal } from './PresetEditorModal';
 import type { FlagsMap } from './PermissionFlagsEditor';
 import { PresetLineageInfo } from './PresetLineageInfo';
@@ -29,19 +30,6 @@ interface PresetListModalProps {
   /** Optional explicit scope; existing callers fall back to the current board. */
   boardId?: string | null;
 }
-
-const ENTITY_BG: Record<string, string> = {
-  board: 'bg-blue-50 text-blue-600 dark:bg-blue-900/20 dark:text-blue-300',
-  story: 'bg-sky-50 text-sky-600 dark:bg-sky-900/20 dark:text-sky-300',
-  topic: 'bg-teal-50 text-teal-600 dark:bg-teal-900/20 dark:text-teal-300',
-  spec: 'bg-violet-50 text-violet-600 dark:bg-violet-900/20 dark:text-violet-300',
-  card: 'bg-green-50 text-green-600 dark:bg-green-900/20 dark:text-green-300',
-  ideation: 'bg-amber-50 text-amber-600 dark:bg-amber-900/20 dark:text-amber-300',
-  refinement: 'bg-cyan-50 text-cyan-600 dark:bg-cyan-900/20 dark:text-cyan-300',
-  profile: 'bg-gray-50 text-gray-600 dark:bg-gray-700/50 dark:text-gray-400',
-  guidelines: 'bg-pink-50 text-pink-600 dark:bg-pink-900/20 dark:text-pink-300',
-  kg: 'bg-indigo-50 text-indigo-600 dark:bg-indigo-900/20 dark:text-indigo-300',
-};
 
 export function PresetListModal({ onClose, boardId }: PresetListModalProps) {
   const api = useDashboardApi();
@@ -343,8 +331,8 @@ function PresetCard({
       {/* Entity breakdown */}
       <div className="flex flex-wrap gap-1.5 mt-2.5">
         {Object.entries(perEntity).map(([entity, { total: t, enabled: e }]) => (
-          <span key={entity} className={`text-[10px] px-2 py-0.5 rounded ${ENTITY_BG[entity] || 'bg-gray-50 text-gray-600'}`}>
-            {ENTITY_LABELS[entity] || entity} {e}/{t}
+          <span key={entity} className={`text-[10px] px-2 py-0.5 rounded ${getEntityChipClasses(entity)}`}>
+            {getEntityLabel(entity)} {e}/{t}
           </span>
         ))}
       </div>

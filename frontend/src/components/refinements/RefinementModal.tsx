@@ -32,18 +32,27 @@ import {
   RefreshCw,
   Maximize2,
   Minimize2,
-  Download,
   GitBranch,
   Shield,
+  Fingerprint,
+  Grid3X3,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { v4 as uuidv4 } from 'uuid';
-import { exportRefinement, downloadMarkdown, slugify } from '@/lib/exportMarkdown';
+import { EntityExportButton } from '@/components/export';
 import { getErrorMessage } from '@/lib/getErrorMessage';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
 import { openLineageGraph } from '@/components/traceability';
-import type { Refinement, RefinementStatus, RefinementQAItem, RefinementHistoryEntry, RefinementSnapshot, RefinementSnapshotSummary } from '@/types';
+import type {
+  Refinement,
+  RefinementHistoryEntry,
+  RefinementQAItem,
+  RefinementSnapshot,
+  RefinementSnapshotSummary,
+  RefinementStatus,
+  SpecSummary,
+} from '@/types';
 import { REFINEMENT_STATUSES, REFINEMENT_STATUS_LABELS } from '@/types';
 import { MentionInput, type Mentionable } from '@/components/shared/MentionInput';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
@@ -74,16 +83,18 @@ import { usePermissions } from '@/hooks/usePermissions';
 import { QualityPanel } from '@/components/quality';
 import {
   PolicyCompliancePanel,
-  PolicyComplianceTransitionPreview,
   isAllowedTransitionActionable,
   policyTransitionRejectionMessage,
   readPolicyTransitionRejection,
   requirePolicyTransitionEnvelope,
-  type PolicyTransitionRejection,
   type PolicyTransitionPreviewLoadState,
 } from '@/components/policy-compliance';
 import { useOptionalModalStack } from '@/contexts/ModalStackContext';
 import type { RefinementModalTab } from '@/components/shared/tabRouting';
+import {
+  CodeEvidencePanel,
+  useCodeTraceabilityAuthority,
+} from '@/components/code-traceability';
 import { ResearchDecisionTab } from './ResearchDecisionPanel';
 import { RefinementResourcesPanel } from './RefinementResourcesPanel';
 import {
@@ -507,7 +518,15 @@ function ChoiceAnswerForm({
   );
 }
 
-function QATab({ refinementId, mentionables }: { refinementId: string; mentionables: Mentionable[] }) {
+function QATab({
+  refinementId,
+  mentionables,
+  onChanged,
+}: {
+  refinementId: string;
+  mentionables: Mentionable[];
+  onChanged: () => void;
+}) {
   const api = useDashboardApi();
   const [items, setItems] = useState<RefinementQAItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -538,6 +557,7 @@ function QATab({ refinementId, mentionables }: { refinementId: string; mentionab
       setNewQuestion('');
       toast.success('Question posted');
       await load();
+      onChanged();
     } catch { toast.error('Failed to post question'); }
   };
 
@@ -555,6 +575,7 @@ function QATab({ refinementId, mentionables }: { refinementId: string; mentionab
       setNewQuestion(''); setNewOptions(''); setNewMulti(false); setNewAllowFreeText(false);
       toast.success('Choice question posted');
       await load();
+      onChanged();
     } catch { toast.error('Failed to post choice question'); }
   };
 
@@ -565,6 +586,7 @@ function QATab({ refinementId, mentionables }: { refinementId: string; mentionab
       setAnswerDraft('');
       toast.success('Answer posted');
       await load();
+      onChanged();
     } catch { toast.error('Failed to post answer'); }
   };
 
@@ -578,6 +600,7 @@ function QATab({ refinementId, mentionables }: { refinementId: string; mentionab
     try {
       await api.deleteRefinementQuestion(refinementId, qaId);
       await load();
+      onChanged();
     } catch { toast.error('Failed to delete'); }
   };
 
@@ -766,6 +789,152 @@ function QATab({ refinementId, mentionables }: { refinementId: string; mentionab
   );
 }
 
+export function RefinementEvidenceMatrixNavigation({
+  specs,
+  onOpenSpec,
+}: {
+  specs: SpecSummary[];
+  onOpenSpec?: (specId: string) => void;
+}) {
+  const modalStack = useOptionalModalStack();
+  const [selectedSpecId, setSelectedSpecId] = useState('');
+  const orderedSpecs = [...specs].sort((left, right) => (
+    left.title.localeCompare(right.title) || left.id.localeCompare(right.id)
+  ));
+  const openSpec = (specId: string) => {
+    if (onOpenSpec) {
+      onOpenSpec(specId);
+      return;
+    }
+    modalStack?.push({
+      type: 'spec',
+      id: specId,
+      initialTab: 'evidence-matrix',
+    });
+  };
+
+  if (orderedSpecs.length === 0) {
+    return (
+      <section
+        aria-label="Derived Spec evidence matrices"
+        className="rounded-lg border border-dashed border-gray-300 bg-gray-50/60 px-3 py-2.5 dark:border-gray-700 dark:bg-gray-900/30"
+        data-testid="refinement-evidence-matrix-navigation"
+      >
+        <div className="flex items-start gap-2">
+          <Grid3X3 size={14} className="mt-0.5 shrink-0 text-gray-400" />
+          <div>
+            <p className="text-xs font-medium text-gray-700 dark:text-gray-200">
+              No derived Spec yet
+            </p>
+            <p className="mt-0.5 text-[11px] leading-4 text-gray-500 dark:text-gray-400">
+              Code Evidence belongs to this Refinement. Its obligation matrix becomes available after a Spec is derived.
+            </p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  if (orderedSpecs.length === 1) {
+    const spec = orderedSpecs[0];
+    return (
+      <section
+        aria-label="Derived Spec evidence matrices"
+        className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-violet-200 bg-violet-50/50 px-3 py-2.5 dark:border-violet-900 dark:bg-violet-950/20"
+        data-testid="refinement-evidence-matrix-navigation"
+      >
+        <div className="min-w-0">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-violet-500">
+            Derived Spec matrix
+          </p>
+          <p className="truncate text-xs font-medium text-gray-800 dark:text-gray-100">
+            {spec.title}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => openSpec(spec.id)}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-violet-200 bg-white px-2.5 py-1.5 text-[11px] font-medium text-violet-700 hover:bg-violet-100 dark:border-violet-800 dark:bg-gray-900 dark:text-violet-300 dark:hover:bg-violet-950/40"
+          aria-label={`Open Code Evidence Matrix for ${spec.title}`}
+        >
+          <Grid3X3 size={12} /> Open matrix
+        </button>
+      </section>
+    );
+  }
+
+  return (
+    <section
+      aria-label="Derived Spec evidence matrices"
+      className="rounded-lg border border-violet-200 bg-violet-50/50 px-3 py-2.5 dark:border-violet-900 dark:bg-violet-950/20"
+      data-testid="refinement-evidence-matrix-navigation"
+    >
+      <div className="flex items-center gap-2">
+        <Grid3X3 size={14} className="shrink-0 text-violet-500" />
+        <div>
+          <p className="text-xs font-medium text-gray-800 dark:text-gray-100">
+            Open a derived Spec matrix
+          </p>
+          <p className="text-[11px] text-gray-500 dark:text-gray-400">
+            This Refinement has {orderedSpecs.length} derived Specs. Choose the obligation context you want to inspect.
+          </p>
+        </div>
+      </div>
+      <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+        <label className="min-w-0 flex-1">
+          <span className="sr-only">Choose a Spec for its Code Evidence Matrix</span>
+          <select
+            value={selectedSpecId}
+            onChange={(event) => setSelectedSpecId(event.target.value)}
+            className="w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs text-gray-800 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+            aria-label="Choose a Spec for its Code Evidence Matrix"
+          >
+            <option value="">Select a Spec…</option>
+            {orderedSpecs.map((spec) => (
+              <option key={spec.id} value={spec.id}>
+                {spec.title} · edition {spec.edition ?? 1}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button
+          type="button"
+          disabled={!selectedSpecId}
+          onClick={() => {
+            if (selectedSpecId) openSpec(selectedSpecId);
+          }}
+          className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-violet-200 bg-white px-2.5 py-1.5 text-[11px] font-medium text-violet-700 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-violet-800 dark:bg-gray-900 dark:text-violet-300 dark:hover:bg-violet-950/40"
+        >
+          <Grid3X3 size={12} /> Open matrix
+        </button>
+      </div>
+    </section>
+  );
+}
+
+export function RefinementCodeEvidenceTabContent({
+  boardId,
+  refinementId,
+  refinementVersion,
+  specs,
+}: {
+  boardId: string;
+  refinementId: string;
+  refinementVersion: number;
+  specs: SpecSummary[];
+}) {
+  return (
+    <div className="space-y-4" data-testid="refinement-code-evidence-tab-content">
+      <CodeEvidencePanel
+        boardId={boardId}
+        subjectId={refinementId}
+        subjectVersion={refinementVersion}
+      />
+      <RefinementEvidenceMatrixNavigation specs={specs} />
+    </div>
+  );
+}
+
 /* ============================================================
    Main RefinementModal
    ============================================================ */
@@ -779,6 +948,8 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
   const canAssessQuality = perms.has('refinement.quality.assess');
   const canProposeQualityQuestions = perms.has('refinement.qa.ask');
   const canReadResearchDecisions = perms.has('refinement.research_decisions.read');
+  const { canReadProjection: canReadCodeTraceability } =
+    useCodeTraceabilityAuthority(_boardId);
   const canReadPolicyCompliance = perms.has(
     'guidelines.assessments.read',
   );
@@ -801,10 +972,6 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
     transitions: [],
     error: null,
   });
-  const [
-    policyTransitionRejection,
-    setPolicyTransitionRejection,
-  ] = useState<PolicyTransitionRejection | null>(null);
   const lastTransitionSubjectKey = useRef<string | null>(null);
   const transitionRequestId = useRef(0);
   const [activeTab, setActiveTab] = useState<ModalTab>('details');
@@ -822,11 +989,13 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
     if (
       (activeTab === 'validation' && !canViewValidation)
       || (activeTab === 'research-decisions' && !canReadResearchDecisions)
+      || (activeTab === 'code-evidence' && !canReadCodeTraceability)
     ) {
       setActiveTab('details');
     }
   }, [
     activeTab,
+    canReadCodeTraceability,
     canReadResearchDecisions,
     canViewValidation,
   ]);
@@ -881,7 +1050,6 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
       data.version,
       data.status,
     ].join(':');
-    setPolicyTransitionRejection(null);
     setNextStatuses([]);
     setPolicyTransitionPreview({
       status: 'loading',
@@ -961,7 +1129,6 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
   const performMove = async (status: RefinementStatus, cancellationReason?: string) => {
     if (!refinement) return;
     setMovingTo(status);
-    setPolicyTransitionRejection(null);
     try {
       const updated = await api.moveRefinement(refinementId, {
         status,
@@ -981,11 +1148,10 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
       });
       toast.error(
         rejection
-          ? policyTransitionRejectionMessage(rejection)
+          ? policyTransitionRejectionMessage(rejection, 'lifecycle-edition')
           : getErrorMessage(err),
       );
       await loadAllowedTransitions(refinement);
-      setPolicyTransitionRejection(rejection);
     } finally { setMovingTo(null); }
   };
 
@@ -1009,10 +1175,15 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
           ? 'Max ambiguity gate skipped from the refinement UI.'
           : 'Max ambiguity gate re-enabled from the refinement UI.',
         expected_refinement_version: refinement.version,
+        expected_refinement_edition: refinement.edition ?? 1,
       });
       const updated: Refinement = {
         ...refinement,
         skip_ambiguity_gate: receipt.skipped,
+        skip_ambiguity_gate_edition: receipt.skipped
+          ? receipt.edition
+          : null,
+        edition: receipt.edition,
         version: receipt.version,
       };
       setRefinement(updated);
@@ -1172,6 +1343,9 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
   const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
     { id: 'research-decisions', label: 'Research decisions', icon: <Lightbulb size={14} />, permission: 'refinement.research_decisions.read' },
+    ...(canReadCodeTraceability
+      ? [{ id: 'code-evidence' as ModalTab, label: 'Code Evidence', icon: <Fingerprint size={14} /> }]
+      : []),
     { id: 'resources', label: 'Resources', icon: <Layers size={14} /> },
     { id: 'qa', label: 'Q&A', icon: <MessageCircleQuestion size={14} />, count: refinement.qa_items?.length || 0, highlight: unansweredQA > 0 },
     { id: 'references', label: 'References', icon: <Link2 size={14} /> },
@@ -1195,7 +1369,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
             </span>
             <DerivationPendingBadge label={getRefinementPendingDerivationLabel(refinement)} />
             <h2 className="text-lg font-semibold text-gray-900 dark:text-white truncate">{refinement.title}</h2>
-            <span className="text-xs text-gray-400 shrink-0">v{refinement.version}</span>
+            <span className="text-xs text-gray-400 shrink-0">Edition {refinement.edition ?? 1}</span>
           </div>
           <div className="flex items-center gap-1">
             <button
@@ -1205,33 +1379,13 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
             >
               <GitBranch size={16} />
             </button>
-            <button
-              onClick={async () => {
-                try {
-                  const fullKnowledge = await Promise.all(
-                    (refinement.knowledge_bases || []).map((kb) =>
-                      api.getRefinementKnowledge(refinement.id, kb.id).catch(() => kb)
-                    )
-                  );
-                  // Hydrate architecture design summaries into full designs so the
-                  // Markdown export renders the Mermaid diagram — same pattern as Spec/Card.
-                  const fullArchitecture = await Promise.all(
-                    (refinement.architecture_designs || []).map((d) =>
-                      api.getArchitectureDesign(d.id, true).catch(() => d)
-                    )
-                  );
-                  const md = exportRefinement({ ...refinement, knowledge_bases: fullKnowledge as any, architecture_designs: fullArchitecture as any });
-                  downloadMarkdown(md, `refinement_${slugify(refinement.title)}_v${refinement.version}.md`);
-                } catch {
-                  toast.error('Failed to prepare markdown export');
-                }
-              }}
+            <EntityExportButton
+              boardId={refinement.board_id || _boardId}
+              entityType="refinement"
+              entityId={refinement.id}
+              entityTitle={refinement.title}
               disabled={loading}
-              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-30"
-              title="Download Markdown"
-            >
-              <Download size={16} />
-            </button>
+            />
             <button onClick={loadRefinement} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="Refresh">
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
             </button>
@@ -1392,6 +1546,22 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
             </div>
           </AccessibleTabPanel>
 
+          {canReadCodeTraceability && (
+            <AccessibleTabPanel
+              idBase={`refinement-${refinement.id}`}
+              tabId="code-evidence"
+              value={activeTab}
+              mount="lazy-keep"
+            >
+              <RefinementCodeEvidenceTabContent
+                boardId={refinement.board_id}
+                refinementId={refinement.id}
+                refinementVersion={refinement.version}
+                specs={refinement.specs || []}
+              />
+            </AccessibleTabPanel>
+          )}
+
           <AccessibleTabPanel
             idBase={`refinement-${refinement.id}`}
             tabId="resources"
@@ -1488,6 +1658,8 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                             subjectType="refinement"
                             subjectId={refinementId}
                             subjectVersion={refinement.version}
+                            subjectEdition={refinement.edition ?? 1}
+                            presentationMode="lifecycle-edition"
                             subjectStatus={refinement.status}
                             subjectArchived={refinement.archived ?? false}
                             canRead={canReadQuality}
@@ -1503,7 +1675,7 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                             className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300"
                             data-testid="refinement-ambiguity-currentness-note"
                           >
-                            The assessment and server gate preview are omitted because Quality read permission is not available.
+                            The current assessment is omitted because Quality read permission is not available.
                           </p>
                         )}
                         <AmbiguityGateSkipToggle
@@ -1520,6 +1692,8 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                         subjectType="refinement"
                         subjectId={refinementId}
                         subjectVersion={refinement.version}
+                        subjectEdition={refinement.edition ?? 1}
+                        presentationMode="lifecycle-edition"
                         subjectStatus={refinement.status}
                         subjectArchived={refinement.archived ?? false}
                         canRead={canReadQuality}
@@ -1542,15 +1716,13 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
                     mount="lazy-keep"
                     className="space-y-4"
                   >
-                    <PolicyComplianceTransitionPreview
-                      preview={policyTransitionPreview}
-                      rejection={policyTransitionRejection}
-                    />
                     <PolicyCompliancePanel
                       boardId={refinement.board_id || _boardId}
                       entityType="refinement"
                       subjectId={refinement.id}
                       subjectVersion={refinement.version}
+                      subjectEdition={refinement.edition ?? 1}
+                      presentationMode="lifecycle-edition"
                       transitionPreview={policyTransitionPreview}
                       refreshKey={refinement.version}
                       onEvaluated={() => {
@@ -1594,7 +1766,11 @@ export function RefinementModal({ refinementId, boardId: _boardId, onClose, onEs
             value={activeTab}
             mount="lazy-keep"
           >
-            <QATab refinementId={refinementId} mentionables={mentionables} />
+            <QATab
+              refinementId={refinementId}
+              mentionables={mentionables}
+              onChanged={onChanged}
+            />
           </AccessibleTabPanel>
           <AccessibleTabPanel
             idBase={`refinement-${refinement.id}`}

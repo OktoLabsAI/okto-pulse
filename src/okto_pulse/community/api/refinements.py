@@ -45,6 +45,11 @@ from okto_pulse.community.api.quality_summary_projection import (
     load_quality_summaries_for_page,
     quality_summary_field,
 )
+from okto_pulse.community.api.qa_count_projection import (
+    project_open_qa_count,
+    redact_open_qa_count_records,
+    resolve_board_projection_permissions,
+)
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     PageRequest,
@@ -110,6 +115,10 @@ from okto_pulse.core.application.knowledge_propagation_projection import (
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.domain.guideline_policy_transition import (
     PolicyTransitionRejected,
+)
+from okto_pulse.core.domain.human_validation_cycle import (
+    LifecycleTransitionConflictError,
+    SubjectEditRequiresDraftError,
 )
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.models.schemas import (
@@ -212,7 +221,9 @@ async def create_refinement(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     return result.refinement
 
 
@@ -236,13 +247,13 @@ async def list_refinements(
     ideation id is the surface's identity anchor); without: legacy shape
     unchanged (DR9).
     """
+    actor = RESTAdapterContract.actor(user_id)
     if pagination_requested(offset, limit):
         command = ListRefinementsCommand(
             ideation_id,
             status_filter=status_filter,
             include_archived=include_archived,
         )
-        actor = RESTAdapterContract.actor(user_id)
         use_case = ListRefinementsUseCase()
         try:
             resolved_offset, resolved_limit = resolve_window(offset, limit)
@@ -265,47 +276,60 @@ async def list_refinements(
                     limit=resolved_limit,
                     filters=filters,
                 ),
-                preflight=lambda: use_case.preflight(
-                    command, actor=actor, uow=uow
-                ),
+                preflight=lambda: use_case.preflight(command, actor=actor, uow=uow),
             )
         except EntityNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
             )
+        subject_ids = tuple(str(record.values["id"]) for record in page.items)
+        page_board_id = str(page.items[0].values["board_id"]) if page.items else ""
+        projection_permissions = (
+            await resolve_board_projection_permissions(
+                actor=actor,
+                uow=uow,
+                board_id=page_board_id,
+                permission_leaves=(
+                    "refinement.qa.read",
+                    "refinement.quality.read",
+                ),
+            )
+            if subject_ids
+            else {}
+        )
         quality_summaries = await load_quality_summaries_for_page(
             uow=uow,
             user_id=user_id,
-            board_id=(
-                str(page.items[0].values["board_id"])
-                if page.items
-                else ""
-            ),
+            board_id=page_board_id,
             subject_type="refinement",
-            subject_ids=tuple(
-                str(record.values["id"]) for record in page.items
-            ),
+            subject_ids=subject_ids,
+            can_read_quality=projection_permissions.get("refinement.quality.read"),
         )
         return project_page(
             page,
             lambda record: RefinementPageItem(
-                **record_fields(
-                    record,
-                    (
-                        "id",
-                        "ideation_id",
-                        "board_id",
-                        "title",
-                        "description",
-                        "status",
-                        "version",
-                        "assignee_id",
-                        "created_by",
-                        "created_at",
-                        "updated_at",
-                        "labels",
-                        "archived",
+                **project_open_qa_count(
+                    record_fields(
+                        record,
+                        (
+                            "id",
+                            "ideation_id",
+                            "board_id",
+                            "title",
+                            "description",
+                            "status",
+                            "edition",
+                            "version",
+                            "assignee_id",
+                            "created_by",
+                            "created_at",
+                            "updated_at",
+                            "labels",
+                            "archived",
+                            "open_qa_count",
+                        ),
                     ),
+                    can_read_qa=projection_permissions.get("refinement.qa.read", False),
                 ),
                 **quality_summary_field(
                     str(record.values["id"]),
@@ -320,11 +344,25 @@ async def list_refinements(
                 status_filter=status_filter,
                 include_archived=include_archived,
             ),
-            actor=RESTAdapterContract.actor(user_id),
+            actor=actor,
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
+    if result.refinements:
+        page_board_id = str(result.refinements[0].board_id)
+        projection_permissions = await resolve_board_projection_permissions(
+            actor=actor,
+            uow=uow,
+            board_id=page_board_id,
+            permission_leaves=("refinement.qa.read",),
+        )
+        redact_open_qa_count_records(
+            result.refinements,
+            can_read_qa=projection_permissions["refinement.qa.read"],
+        )
     return result.refinements
 
 
@@ -383,19 +421,35 @@ async def list_board_refinements(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": "board_not_found"},
         )
+    subject_ids = tuple(str(record.values["id"]) for record in page.items)
+    projection_permissions = (
+        await resolve_board_projection_permissions(
+            actor=actor,
+            uow=uow,
+            board_id=board_id,
+            permission_leaves=(
+                "refinement.qa.read",
+                "refinement.quality.read",
+            ),
+        )
+        if subject_ids
+        else {}
+    )
     quality_summaries = await load_quality_summaries_for_page(
         uow=uow,
         user_id=user_id,
         board_id=board_id,
         subject_type="refinement",
-        subject_ids=tuple(
-            str(record.values["id"]) for record in page.items
-        ),
+        subject_ids=subject_ids,
+        can_read_quality=projection_permissions.get("refinement.quality.read"),
     )
     return project_page(
         page,
         lambda record: BoardRefinementPageItem(
-            **record.values,
+            **project_open_qa_count(
+                record.values,
+                can_read_qa=projection_permissions.get("refinement.qa.read", False),
+            ),
             **quality_summary_field(
                 str(record.values["id"]),
                 quality_summaries,
@@ -418,7 +472,9 @@ async def get_refinement(
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     return result.refinement
 
 
@@ -437,7 +493,11 @@ async def update_refinement(
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     return result.refinement
 
 
@@ -460,6 +520,7 @@ async def set_refinement_ambiguity_gate_skip(
                 skip=data.skip_ambiguity_gate,
                 reason=data.reason,
                 expected_refinement_version=data.expected_refinement_version,
+                expected_refinement_edition=data.expected_refinement_edition,
             ),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
@@ -494,6 +555,7 @@ async def set_refinement_ambiguity_gate_skip(
         skipped=result.skipped,
         activity_id=result.activity_id,
         version=result.version,
+        edition=result.edition,
     )
 
 
@@ -515,10 +577,14 @@ async def move_refinement(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict())
     except PolicyTransitionRejected as e:
         raise RESTAdapterContract.http_error(e) from e
+    except LifecycleTransitionConflictError as e:
+        raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     return result.refinement
 
 
@@ -536,7 +602,9 @@ async def delete_refinement(
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
 
 
 @router.post(
@@ -610,10 +678,15 @@ async def derive_spec(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
 
 
-@router.get("/refinements/{refinement_id}/history", response_model=list[RefinementHistoryResponse])
+@router.get(
+    "/refinements/{refinement_id}/history",
+    response_model=list[RefinementHistoryResponse],
+)
 async def list_refinement_history(
     refinement_id: str,
     limit: int = Query(50, ge=1, le=200),
@@ -834,7 +907,9 @@ async def get_research_decision_head(
 # ==================== REFINEMENT Q&A ====================
 
 
-@router.get("/refinements/{refinement_id}/qa", response_model=list[RefinementQAResponse])
+@router.get(
+    "/refinements/{refinement_id}/qa", response_model=list[RefinementQAResponse]
+)
 async def list_refinement_qa(
     refinement_id: str,
     user_id: str = Depends(require_user),
@@ -854,7 +929,11 @@ async def list_refinement_qa(
     return result.items
 
 
-@router.post("/refinements/{refinement_id}/qa", response_model=RefinementQAResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/refinements/{refinement_id}/qa",
+    response_model=RefinementQAResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_refinement_question(
     refinement_id: str,
     data: RefinementQACreate,
@@ -869,11 +948,18 @@ async def create_refinement_question(
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     return result.qa
 
 
-@router.post("/refinements/{refinement_id}/qa/{qa_id}/answer", response_model=RefinementQAResponse)
+@router.post(
+    "/refinements/{refinement_id}/qa/{qa_id}/answer",
+    response_model=RefinementQAResponse,
+)
 async def answer_refinement_question(
     refinement_id: str,
     qa_id: str,
@@ -899,11 +985,17 @@ async def answer_refinement_question(
             detail=exc.to_error_dict(),
         ) from exc
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     return result.qa
 
 
-@router.delete("/refinements/{refinement_id}/qa/{qa_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/refinements/{refinement_id}/qa/{qa_id}", status_code=status.HTTP_204_NO_CONTENT
+)
 async def delete_refinement_question(
     refinement_id: str,
     qa_id: str,
@@ -918,13 +1010,20 @@ async def delete_refinement_question(
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
 
 
 # ==================== REFINEMENT SNAPSHOTS ====================
 
 
-@router.get("/refinements/{refinement_id}/snapshots", response_model=list[RefinementSnapshotSummary])
+@router.get(
+    "/refinements/{refinement_id}/snapshots",
+    response_model=list[RefinementSnapshotSummary],
+)
 async def list_refinement_snapshots(
     refinement_id: str,
     user_id: str = Depends(require_user),
@@ -944,7 +1043,10 @@ async def list_refinement_snapshots(
     return result.snapshots
 
 
-@router.get("/refinements/{refinement_id}/snapshots/{version}", response_model=RefinementSnapshotResponse)
+@router.get(
+    "/refinements/{refinement_id}/snapshots/{version}",
+    response_model=RefinementSnapshotResponse,
+)
 async def get_refinement_snapshot(
     refinement_id: str,
     version: int,
@@ -960,7 +1062,8 @@ async def get_refinement_snapshot(
         )
     except EntityNotFoundError:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"Snapshot v{version} not found"
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Snapshot v{version} not found",
         )
     return result.snapshot
 
@@ -968,7 +1071,10 @@ async def get_refinement_snapshot(
 # ==================== REFINEMENT KNOWLEDGE BASE ====================
 
 
-@router.get("/refinements/{refinement_id}/knowledge", response_model=list[RefinementKnowledgeSummary])
+@router.get(
+    "/refinements/{refinement_id}/knowledge",
+    response_model=list[RefinementKnowledgeSummary],
+)
 async def list_refinement_knowledge(
     refinement_id: str,
     user_id: str = Depends(require_user),
@@ -988,7 +1094,10 @@ async def list_refinement_knowledge(
     return result.items
 
 
-@router.get("/refinements/{refinement_id}/knowledge/{knowledge_id}", response_model=RefinementKnowledgeResponse)
+@router.get(
+    "/refinements/{refinement_id}/knowledge/{knowledge_id}",
+    response_model=RefinementKnowledgeResponse,
+)
 async def get_refinement_knowledge(
     refinement_id: str,
     knowledge_id: str,
@@ -1003,7 +1112,9 @@ async def get_refinement_knowledge(
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     return result.knowledge
 
 
@@ -1026,13 +1137,20 @@ async def create_refinement_knowledge(
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except KnowledgeGovernanceInvalidMetadata as exc:
         return knowledge_governance_error_response(exc)
     return result.knowledge
 
 
-@router.delete("/refinements/{refinement_id}/knowledge/{knowledge_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/refinements/{refinement_id}/knowledge/{knowledge_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
 async def delete_refinement_knowledge(
     refinement_id: str,
     knowledge_id: str,
@@ -1047,4 +1165,8 @@ async def delete_refinement_knowledge(
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc

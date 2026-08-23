@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
-from okto_pulse.core.kg.schema_contract import EDGE_METADATA_COLUMNS
+from okto_pulse.core.kg.schema_contract import (
+    CODE_TRACEABILITY_COLUMNS,
+    EDGE_METADATA_COLUMNS,
+)
 
-COMMON_NODE_ATTRIBUTES = """
+
+_CODE_TRACEABILITY_NODE_ATTRIBUTES = ",\n".join(
+    f"    {name} {data_type}" for name, data_type in CODE_TRACEABILITY_COLUMNS
+)
+
+COMMON_NODE_ATTRIBUTES = f"""
     id STRING PRIMARY KEY,
     title STRING,
     content STRING,
@@ -37,6 +45,7 @@ COMMON_NODE_ATTRIBUTES = """
     attestation_count INT64,
     last_attested_at TIMESTAMP,
     kind_of STRING,
+{_CODE_TRACEABILITY_NODE_ATTRIBUTES},
     embedding DOUBLE[384]
 """.strip()
 

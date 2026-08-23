@@ -83,6 +83,39 @@ def test_ts_4a74634e_uris_preserved_and_read_nonempty(active_runtime_registry):
     assert len(sample.read()) > 0
 
 
+def test_community_effective_catalog_preserves_spec_validation_rubric(
+    active_runtime_registry,
+):
+    """Community must publish the Core-owned calibrated evaluator method."""
+
+    register_and_freeze_community_resource_catalog(active_runtime_registry)
+    by_uri = {
+        item.uri: item for item in core_srv.effective_resource_catalog().specs()
+    }
+
+    gates = by_uri["okto-pulse://reference/spec_gates"].read()
+    workflow = by_uri["okto-pulse://workflows/specs"].read()
+    tool_docs = by_uri["okto-pulse://reference/tool-docs/spec"].read()
+
+    assert "### Canonical Spec Validation scoring rubric" in gates
+    assert "### Dimension boundaries — do not double-count automatically" in gates
+    assert "### Evidence, justifications, and pinpoint anchors" in gates
+    assert "### Calibrated examples" in gates
+    assert "Run active-active across at least three availability zones" in gates
+    for dimension in (
+        "`confidence`",
+        "`clarity`",
+        "`assertiveness`",
+        "`decidability`",
+        "`ambiguity`",
+    ):
+        assert dimension in gates
+
+    for body in (workflow, tool_docs):
+        assert "okto-pulse://reference/spec_gates" in body
+        assert "Canonical Spec Validation scoring rubric" in body
+
+
 # ===========================================================================
 # ts_2a2d4e73 (TS06) — golden replay of the combined_lifespan composition hook.
 # ===========================================================================

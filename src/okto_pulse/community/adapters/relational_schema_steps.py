@@ -2,25 +2,187 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 import shutil
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 
-from okto_pulse.community.adapters.sqlalchemy_models import Base
+from okto_pulse.community.adapters.sqlalchemy_models import (
+    CODE_EVIDENCE_CLASSIFICATION_BATCH_ID_MAX_LENGTH,
+    CODE_EVIDENCE_CLASSIFICATION_IDEMPOTENCY_KEY_MAX_LENGTH,
+    Base,
+)
 from okto_pulse.community.adapters.sqlalchemy_database import (
     get_engine,
     get_session_factory,
 )
 
 StepCallable = Callable[[], "Awaitable[object] | object"]
+logger = logging.getLogger(__name__)
+
+
+def _normalize_legacy_code_traceability_settings_payload(
+    raw: object,
+) -> tuple[object, bool]:
+    """Converge only the two Code Traceability compatibility values.
+
+    Historical board/default-template JSON could explicitly persist ``null``
+    or ``mode=off``. The authored Core contract no longer accepts either, so
+    startup upgrades them to Advisory while preserving every sibling policy
+    field. Missing policies remain missing and inherit the Core default; any
+    other malformed value is left untouched so validation still fails closed.
+    """
+
+    value = raw
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return raw, False
+    if not isinstance(value, Mapping) or "code_traceability" not in value:
+        return raw, False
+    payload = dict(value)
+    policy = payload.get("code_traceability")
+    if policy is None:
+        payload["code_traceability"] = {"mode": "advisory"}
+        return payload, True
+    if isinstance(policy, Mapping) and policy.get("mode") == "off":
+        payload["code_traceability"] = {**policy, "mode": "advisory"}
+        return payload, True
+    return raw, False
+
+
+def _decoded_history_changes(raw: object) -> tuple[Mapping[str, object], ...]:
+    """Decode one cross-dialect JSON history value without guessing on drift."""
+
+    value = raw
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return ()
+    if not isinstance(value, list):
+        return ()
+    return tuple(item for item in value if isinstance(item, Mapping))
+
+
+def _history_proves_current_spec_edition_started(
+    *,
+    current_edition: int,
+    history_changes: tuple[object, ...],
+) -> bool:
+    """Infer execution memory only from an unbroken current-edition history.
+
+    Edition 1 has an implicit creation boundary.  Later editions must have an
+    explicit edition change to the current value before an ``in_progress``
+    transition can be attributed safely.  A Draft transition resets the
+    inference even if a malformed legacy row omitted its edition delta.
+    """
+
+    observed_edition = 1
+    current_boundary_observed = current_edition == 1
+    started = False
+    for raw in history_changes:
+        changes = _decoded_history_changes(raw)
+        next_edition: int | None = None
+        next_status: str | None = None
+        previous_status: str | None = None
+        for change in changes:
+            field = str(change.get("field") or "")
+            if field == "edition":
+                try:
+                    next_edition = int(change.get("new"))
+                except (TypeError, ValueError):
+                    return False
+            elif field == "status":
+                previous_status = str(change.get("old") or "")
+                next_status = str(change.get("new") or "")
+        if next_status == "draft":
+            started = False
+            if next_edition is None and current_edition != 1:
+                current_boundary_observed = False
+        if next_edition is not None:
+            observed_edition = next_edition
+            current_boundary_observed = observed_edition == current_edition
+            started = False
+        if (
+            (
+                next_status == "in_progress"
+                or (previous_status == "in_progress" and next_status != "draft")
+            )
+            and current_boundary_observed
+            and observed_edition == current_edition
+        ):
+            started = True
+    return current_boundary_observed and observed_edition == current_edition and started
+
+
+def _history_current_spec_edition_boundary(
+    *,
+    current_edition: int,
+    history_rows: tuple[Mapping[str, object], ...],
+) -> tuple[bool, object | None]:
+    """Locate the explicit boundary that opened the current lifecycle edition.
+
+    Edition 1 starts at creation and therefore needs no timestamp lower bound.
+    For later editions, card activity is attributable only after an immutable
+    history row records the exact edition advance.  This keeps a Done card
+    from a prior edition from falsely proving that a newly reopened Draft has
+    already executed.
+    """
+
+    if current_edition == 1:
+        return True, None
+    observed_edition = 1
+    boundary_at: object | None = None
+    for row in history_rows:
+        changes = _decoded_history_changes(row.get("changes"))
+        next_status: str | None = None
+        next_edition: int | None = None
+        for change in changes:
+            field = str(change.get("field") or "")
+            if field == "status":
+                next_status = str(change.get("new") or "")
+            elif field == "edition":
+                try:
+                    next_edition = int(change.get("new"))
+                except (TypeError, ValueError):
+                    return False, None
+        if next_status == "draft":
+            boundary_at = None
+        if next_edition is not None:
+            observed_edition = next_edition
+            boundary_at = (
+                row.get("created_at") if observed_edition == current_edition else None
+            )
+    return observed_edition == current_edition, boundary_at
 
 
 def normalize_global_discovery_source_revision_trigger_sql(raw: object) -> str:
     """Canonicalize SQLite trigger DDL for bounded integrity comparison."""
 
     return re.sub(r'[\s"`;\[\]]+', "", str(raw or "").lower())
+
+
+def _normalize_spec_started_edition_postgresql_check(raw: object) -> str:
+    """Normalize only catalog formatting for the owned edition CHECK.
+
+    This deliberately preserves every operand and boolean operator.  A
+    substring check would accept weakened definitions such as ``... OR TRUE``
+    and silently turn the lifecycle-edition fence into documentation only.
+    PostgreSQL's ``pg_get_constraintdef`` adds quotes and parentheses around
+    the same expression, so those representation-only tokens are removed.
+    """
+
+    normalized = re.sub(
+        r"::\s*(?:smallint|integer|bigint)\b",
+        "",
+        str(raw or "").lower(),
+    )
+    return re.sub(r'[\s"()]+', "", normalized)
 
 
 def global_discovery_source_revision_trigger_manifest() -> dict[str, tuple[str, str]]:
@@ -46,7 +208,7 @@ def global_discovery_source_revision_trigger_manifest() -> dict[str, tuple[str, 
                 f"{GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX}_"
                 f"{table_name}_{operation}"
             )
-            trigger_sql = f'''CREATE TRIGGER "{trigger_name}"
+            trigger_sql = f"""CREATE TRIGGER "{trigger_name}"
 AFTER {sql_operation} ON "{table_name}"
 BEGIN
     UPDATE "{revision_table_name}"
@@ -56,7 +218,7 @@ BEGIN
     WHERE scope_id = '{GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID}';
     SELECT CASE WHEN changes() <> 1
         THEN RAISE(ABORT, 'global_discovery_source_revision_missing') END;
-END'''
+END"""
             expected[trigger_name] = (table_name, trigger_sql)
 
     delete_guard_name = (
@@ -64,25 +226,25 @@ END'''
     )
     expected[delete_guard_name] = (
         revision_table_name,
-        f'''CREATE TRIGGER "{delete_guard_name}"
+        f"""CREATE TRIGGER "{delete_guard_name}"
 BEFORE DELETE ON "{revision_table_name}"
 WHEN OLD.scope_id = '{GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID}'
 BEGIN
     SELECT RAISE(ABORT, 'global_discovery_source_revision_delete_forbidden');
-END''',
+END""",
     )
     scope_guard_name = (
         f"{GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX}_scope_update_guard"
     )
     expected[scope_guard_name] = (
         revision_table_name,
-        f'''CREATE TRIGGER "{scope_guard_name}"
+        f"""CREATE TRIGGER "{scope_guard_name}"
 BEFORE UPDATE OF scope_id ON "{revision_table_name}"
 WHEN OLD.scope_id = '{GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID}'
     AND NEW.scope_id <> '{GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID}'
 BEGIN
     SELECT RAISE(ABORT, 'global_discovery_source_revision_scope_forbidden');
-END''',
+END""",
     )
     return expected
 
@@ -91,15 +253,14 @@ COGNITIVE_SOURCE_IMMUTABILITY_TRIGGER_PREFIX = "trg_kg_cognitive_source_immutabl
 
 KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX = "trg_knowledge_propagation_v2"
 GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX = "trg_guideline_policy_immutable"
-GUIDELINE_IMPORT_CANDIDATE_TRIGGER_PREFIX = (
-    "trg_guideline_import_binding_candidate"
-)
+GUIDELINE_IMPORT_CANDIDATE_TRIGGER_PREFIX = "trg_guideline_import_binding_candidate"
 GUIDELINE_REVISION_NOOP_TRIGGER_PREFIX = "trg_guideline_revision_noop"
 GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX = "trg_guideline_impact_v2"
 POLICY_COMPLIANCE_IMMUTABILITY_TRIGGER_PREFIX = "trg_policy_compliance_immutable"
 POLICY_WAIVER_TRIGGER_PREFIX = "trg_policy_waiver_v2"
 POLICY_WAIVER_PREDECESSOR_TRIGGER_PREFIX = "trg_policy_waiver_v1"
 SEMANTIC_GUIDELINE_TRIGGER_PREFIX = "trg_semantic_guideline_v3"
+SEMANTIC_PINPOINT_V2_TRIGGER_PREFIX = "trg_semantic_pinpoint_v2"
 
 
 def _guideline_binding_fence_payload_v2(
@@ -204,7 +365,7 @@ def guideline_revision_noop_trigger_manifest(
     delete_name = f"{GUIDELINE_REVISION_NOOP_TRIGGER_PREFIX}_delete"
     delete_when = ""
     if allow_board_erasure:
-        delete_when = f'''
+        delete_when = f"""
 WHEN NOT EXISTS (
     SELECT 1
     FROM "{permit_table}" AS permit
@@ -212,11 +373,11 @@ WHEN NOT EXISTS (
       ON guideline."board_id" = permit."board_id"
     WHERE guideline."id" = OLD."guideline_id"
       AND guideline."scope" = 'inline'
-)'''
+)"""
     return {
         insert_name: (
             table_name,
-            f'''CREATE TRIGGER "{insert_name}"
+            f"""CREATE TRIGGER "{insert_name}"
 BEFORE INSERT ON "{table_name}"
 BEGIN
     SELECT RAISE(ABORT, 'guideline_revision_noop_head_conflict')
@@ -230,23 +391,23 @@ BEGIN
           AND head."head_revision" = NEW."original_head_revision"
           AND head."updated_at" = NEW."original_head_updated_at"
     );
-END''',
+END""",
         ),
         update_name: (
             table_name,
-            f'''CREATE TRIGGER "{update_name}"
+            f"""CREATE TRIGGER "{update_name}"
 BEFORE UPDATE ON "{table_name}"
 BEGIN
     SELECT RAISE(ABORT, 'guideline_revision_noop_immutable');
-END''',
+END""",
         ),
         delete_name: (
             table_name,
-            f'''CREATE TRIGGER "{delete_name}"
+            f"""CREATE TRIGGER "{delete_name}"
 BEFORE DELETE ON "{table_name}"{delete_when}
 BEGIN
     SELECT RAISE(ABORT, 'guideline_revision_noop_immutable');
-END''',
+END""",
         ),
     }
 
@@ -267,7 +428,7 @@ def guideline_revision_noop_postgresql_ddl() -> tuple[str, str]:
     permit_table = BoardErasurePermit.__tablename__
     function_name = "pulse_guideline_revision_noop_guard"
     trigger_name = GUIDELINE_REVISION_NOOP_TRIGGER_PREFIX
-    function = f'''CREATE OR REPLACE FUNCTION "{function_name}"()
+    function = f"""CREATE OR REPLACE FUNCTION "{function_name}"()
 RETURNS trigger AS $$
 BEGIN
     IF TG_OP = 'INSERT' THEN
@@ -297,10 +458,10 @@ BEGIN
     END IF;
     RAISE EXCEPTION 'guideline_revision_noop_immutable';
 END;
-$$ LANGUAGE plpgsql'''
-    trigger = f'''CREATE TRIGGER "{trigger_name}"
+$$ LANGUAGE plpgsql"""
+    trigger = f"""CREATE TRIGGER "{trigger_name}"
 BEFORE INSERT OR UPDATE OR DELETE ON "{table_name}"
-FOR EACH ROW EXECUTE FUNCTION "{function_name}"()'''
+FOR EACH ROW EXECUTE FUNCTION "{function_name}"()"""
     return function, trigger
 
 
@@ -319,24 +480,22 @@ def guideline_import_binding_candidate_trigger_manifest(
     permit_table = BoardErasurePermit.__tablename__
     manifest: dict[str, tuple[str, str]] = {}
     for operation in ("update", "delete"):
-        trigger_name = (
-            f"{GUIDELINE_IMPORT_CANDIDATE_TRIGGER_PREFIX}_{operation}"
-        )
+        trigger_name = f"{GUIDELINE_IMPORT_CANDIDATE_TRIGGER_PREFIX}_{operation}"
         when = ""
         if allow_board_erasure and operation == "delete":
-            when = f'''
+            when = f"""
 WHEN NOT EXISTS (
     SELECT 1
     FROM "{permit_table}" AS permit
     WHERE permit."board_id" = OLD."target_board_id"
-)'''
+)"""
         manifest[trigger_name] = (
             table_name,
-            f'''CREATE TRIGGER "{trigger_name}"
+            f"""CREATE TRIGGER "{trigger_name}"
 BEFORE {operation.upper()} ON "{table_name}"{when}
 BEGIN
     SELECT RAISE(ABORT, 'guideline_import_binding_candidate_immutable');
-END''',
+END""",
         )
     return manifest
 
@@ -353,7 +512,7 @@ def guideline_import_binding_candidate_postgresql_ddl() -> tuple[str, str]:
     permit_table = BoardErasurePermit.__tablename__
     function_name = "pulse_guideline_import_binding_candidate_guard"
     trigger_name = GUIDELINE_IMPORT_CANDIDATE_TRIGGER_PREFIX
-    function = f'''CREATE OR REPLACE FUNCTION "{function_name}"()
+    function = f"""CREATE OR REPLACE FUNCTION "{function_name}"()
 RETURNS trigger AS $$
 BEGIN
     IF TG_OP = 'DELETE' AND EXISTS (
@@ -365,10 +524,10 @@ BEGIN
     END IF;
     RAISE EXCEPTION 'guideline_import_binding_candidate_immutable';
 END;
-$$ LANGUAGE plpgsql'''
-    trigger = f'''CREATE TRIGGER "{trigger_name}"
+$$ LANGUAGE plpgsql"""
+    trigger = f"""CREATE TRIGGER "{trigger_name}"
 BEFORE UPDATE OR DELETE ON "{table_name}"
-FOR EACH ROW EXECUTE FUNCTION "{function_name}"()'''
+FOR EACH ROW EXECUTE FUNCTION "{function_name}"()"""
     return function, trigger
 
 
@@ -588,7 +747,7 @@ def guideline_impact_immutability_trigger_manifest(
     )
     manifest[receipt_insert_name] = (
         receipt_table,
-        f'''CREATE TRIGGER "{receipt_insert_name}"
+        f"""CREATE TRIGGER "{receipt_insert_name}"
 BEFORE INSERT ON "{receipt_table}"
 WHEN NEW."sealed" <> 0
   OR json_type(NEW."proposed_metric_threshold_overrides") <> 'object'
@@ -651,14 +810,14 @@ WHEN NEW."sealed" <> 0
   )
 BEGIN
     SELECT RAISE(ABORT, 'guideline_impact_receipt_v2_invalid');
-END''',
+END""",
     )
     receipt_update_name = (
         f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_{receipt_table}_update"
     )
     manifest[receipt_update_name] = (
         receipt_table,
-        f'''CREATE TRIGGER "{receipt_update_name}"
+        f"""CREATE TRIGGER "{receipt_update_name}"
 BEFORE UPDATE ON "{receipt_table}"
 WHEN NOT (
     OLD."sealed" = 0
@@ -672,7 +831,7 @@ WHEN NOT (
 )
 BEGIN
     SELECT RAISE(ABORT, 'guideline_impact_evidence_immutable');
-END''',
+END""",
     )
 
     item_insert_name = (
@@ -680,7 +839,7 @@ END''',
     )
     manifest[item_insert_name] = (
         item_table,
-        f'''CREATE TRIGGER "{item_insert_name}"
+        f"""CREATE TRIGGER "{item_insert_name}"
 BEFORE INSERT ON "{item_table}"
 WHEN NOT EXISTS (
     SELECT 1
@@ -692,7 +851,7 @@ WHEN NOT EXISTS (
 )
 BEGIN
     SELECT RAISE(ABORT, 'guideline_impact_evidence_sealed');
-END''',
+END""",
     )
 
     adoption_insert_name = (
@@ -700,7 +859,7 @@ END''',
     )
     manifest[adoption_insert_name] = (
         adoption_table,
-        f'''CREATE TRIGGER "{adoption_insert_name}"
+        f"""CREATE TRIGGER "{adoption_insert_name}"
 BEFORE INSERT ON "{adoption_table}"
 WHEN NOT EXISTS (
     SELECT 1
@@ -780,7 +939,7 @@ WHEN NOT EXISTS (
 )
 BEGIN
     SELECT RAISE(ABORT, 'guideline_impact_adoption_evidence_invalid');
-END''',
+END""",
     )
 
     if include_unlink:
@@ -789,7 +948,7 @@ END''',
         )
         manifest[unlink_insert_name] = (
             unlink_table,
-            f'''CREATE TRIGGER "{unlink_insert_name}"
+            f"""CREATE TRIGGER "{unlink_insert_name}"
 BEFORE INSERT ON "{unlink_table}"
 WHEN NOT EXISTS (
     SELECT 1
@@ -932,7 +1091,7 @@ WHEN NOT EXISTS (
 )
 BEGIN
     SELECT RAISE(ABORT, 'guideline_impact_unlink_evidence_invalid');
-END''',
+END""",
         )
 
     if include_retirement:
@@ -942,7 +1101,7 @@ END''',
         )
         manifest[retirement_insert_name] = (
             retirement_impact_table,
-            f'''CREATE TRIGGER "{retirement_insert_name}"
+            f"""CREATE TRIGGER "{retirement_insert_name}"
 BEFORE INSERT ON "{retirement_impact_table}"
 WHEN NOT EXISTS (
     SELECT 1
@@ -1065,7 +1224,7 @@ BEGIN
         ABORT,
         'guideline_retirement_impact_evidence_invalid'
     );
-END''',
+END""",
         )
 
     default_materialization_proof = (
@@ -1171,7 +1330,7 @@ END''',
     )
     manifest[binding_insert_name] = (
         "guideline_board_bindings",
-        f'''CREATE TRIGGER "{binding_insert_name}"
+        f"""CREATE TRIGGER "{binding_insert_name}"
 BEFORE INSERT ON "guideline_board_bindings"
 WHEN ({binding_scope})
   AND NOT (
@@ -1256,7 +1415,7 @@ WHEN ({binding_scope})
   )
 BEGIN
     SELECT RAISE(ABORT, 'guideline_impact_preview_required');
-END''',
+END""",
     )
 
     immutable_tables = [receipt_table, item_table, adoption_table]
@@ -1297,11 +1456,11 @@ END''',
                 when = f"\nWHEN NOT EXISTS (\n    {allowed}\n)"
             manifest[trigger_name] = (
                 table_name,
-                f'''CREATE TRIGGER "{trigger_name}"
+                f"""CREATE TRIGGER "{trigger_name}"
 BEFORE {operation.upper()} ON "{table_name}"{when}
 BEGIN
     SELECT RAISE(ABORT, 'guideline_impact_evidence_immutable');
-END''',
+END""",
             )
     for table_name, id_column in (
         ("domain_events", "event_id"),
@@ -1335,9 +1494,9 @@ END''',
             )
             if table_name == "domain_events" and protect_materialized_events:
                 referenced = (
-                    f"({referenced} OR OLD.\"event_type\" = "
+                    f'({referenced} OR OLD."event_type" = '
                     f"'{POLICY_BINDING_MATERIALIZED_EVENT_TYPE}' OR "
-                    f"OLD.\"event_type\" = "
+                    f'OLD."event_type" = '
                     f"'{SEMANTIC_GUIDELINE_PROJECTION_EVENT_TYPE}')"
                 )
             if allow_board_erasure and operation == "delete":
@@ -1350,11 +1509,11 @@ END''',
             when = f"\nWHEN {referenced}"
             manifest[trigger_name] = (
                 table_name,
-                f'''CREATE TRIGGER "{trigger_name}"
+                f"""CREATE TRIGGER "{trigger_name}"
 BEFORE {operation.upper()} ON "{table_name}"{when}
 BEGIN
     SELECT RAISE(ABORT, 'guideline_impact_audit_evidence_immutable');
-END''',
+END""",
             )
     execution_trigger_name = (
         f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_"
@@ -1362,7 +1521,7 @@ END''',
     )
     manifest[execution_trigger_name] = (
         execution_table,
-        f'''CREATE TRIGGER "{execution_trigger_name}"
+        f"""CREATE TRIGGER "{execution_trigger_name}"
 BEFORE INSERT ON "{execution_table}"
 WHEN NEW."handler_name" = 'PolicyConstraintProjectionHandler'
   AND NOT EXISTS (
@@ -1463,7 +1622,7 @@ BEGIN
         ABORT,
         'policy_constraint_execution_event_invalid'
     );
-END''',
+END""",
     )
     return manifest
 
@@ -1503,7 +1662,7 @@ def policy_compliance_immutability_trigger_manifest(
         )
         manifest[receipt_update_name] = (
             receipt_table,
-            f'''CREATE TRIGGER "{receipt_update_name}"
+            f"""CREATE TRIGGER "{receipt_update_name}"
 BEFORE UPDATE ON "{receipt_table}"
 WHEN NOT (
     OLD."sealed" = 0
@@ -1512,7 +1671,7 @@ WHEN NOT (
 )
 BEGIN
     SELECT RAISE(ABORT, 'policy_compliance_evidence_immutable');
-END''',
+END""",
         )
 
     for table_name in (receipt_table, adopted_table, finding_table):
@@ -1546,11 +1705,11 @@ END''',
                 when = f"\nWHEN NOT EXISTS (\n    {allowed}\n)"
             manifest[trigger_name] = (
                 table_name,
-                f'''CREATE TRIGGER "{trigger_name}"
+                f"""CREATE TRIGGER "{trigger_name}"
 BEFORE {operation.upper()} ON "{table_name}"{when}
 BEGIN
     SELECT RAISE(ABORT, 'policy_compliance_evidence_immutable');
-END''',
+END""",
             )
     if allow_aggregate_sealing:
         for table_name in (adopted_table, finding_table):
@@ -1559,7 +1718,7 @@ END''',
             )
             manifest[trigger_name] = (
                 table_name,
-                f'''CREATE TRIGGER "{trigger_name}"
+                f"""CREATE TRIGGER "{trigger_name}"
 BEFORE INSERT ON "{table_name}"
 WHEN EXISTS (
     SELECT 1
@@ -1569,7 +1728,7 @@ WHEN EXISTS (
 )
 BEGIN
     SELECT RAISE(ABORT, 'policy_compliance_evidence_sealed');
-END''',
+END""",
             )
     return manifest
 
@@ -1616,7 +1775,7 @@ def policy_waiver_immutability_trigger_manifest(
     head_insert_name = f"{POLICY_WAIVER_TRIGGER_PREFIX}_head_insert"
     manifest[head_insert_name] = (
         head_table,
-        f'''CREATE TRIGGER "{head_insert_name}"
+        f"""CREATE TRIGGER "{head_insert_name}"
 BEFORE INSERT ON "{head_table}"
 WHEN NEW."status" <> 'requested'
   OR NEW."waiver_revision" <> 1
@@ -1658,12 +1817,12 @@ WHEN NEW."status" <> 'requested'
   )
 BEGIN
     SELECT RAISE(ABORT, 'policy_waiver_request_invalid');
-END''',
+END""",
     )
     head_update_name = f"{POLICY_WAIVER_TRIGGER_PREFIX}_head_update"
     manifest[head_update_name] = (
         head_table,
-        f'''CREATE TRIGGER "{head_update_name}"
+        f"""CREATE TRIGGER "{head_update_name}"
 BEFORE UPDATE ON "{head_table}"
 WHEN NOT (
     {unchanged}
@@ -1673,7 +1832,7 @@ WHEN NOT (
 )
 BEGIN
     SELECT RAISE(ABORT, 'policy_waiver_head_cas_invalid');
-END''',
+END""",
     )
     head_delete_name = f"{POLICY_WAIVER_TRIGGER_PREFIX}_head_delete"
     head_delete_when = ""
@@ -1687,16 +1846,16 @@ END''',
         )
     manifest[head_delete_name] = (
         head_table,
-        f'''CREATE TRIGGER "{head_delete_name}"
+        f"""CREATE TRIGGER "{head_delete_name}"
 BEFORE DELETE ON "{head_table}"{head_delete_when}
 BEGIN
     SELECT RAISE(ABORT, 'policy_waiver_head_immutable');
-END''',
+END""",
     )
     event_insert_name = f"{POLICY_WAIVER_TRIGGER_PREFIX}_event_insert"
     manifest[event_insert_name] = (
         event_table,
-        f'''CREATE TRIGGER "{event_insert_name}"
+        f"""CREATE TRIGGER "{event_insert_name}"
 BEFORE INSERT ON "{event_table}"
 WHEN length(trim(NEW."actor_id")) = 0
   OR length(trim(NEW."reason")) = 0
@@ -1808,16 +1967,16 @@ WHEN length(trim(NEW."actor_id")) = 0
   )
 BEGIN
     SELECT RAISE(ABORT, 'policy_waiver_event_append_invalid');
-END''',
+END""",
     )
     event_update_name = f"{POLICY_WAIVER_TRIGGER_PREFIX}_event_update"
     manifest[event_update_name] = (
         event_table,
-        f'''CREATE TRIGGER "{event_update_name}"
+        f"""CREATE TRIGGER "{event_update_name}"
 BEFORE UPDATE ON "{event_table}"
 BEGIN
     SELECT RAISE(ABORT, 'policy_waiver_event_immutable');
-END''',
+END""",
     )
     event_delete_name = f"{POLICY_WAIVER_TRIGGER_PREFIX}_event_delete"
     event_delete_when = ""
@@ -1831,11 +1990,11 @@ END''',
         )
     manifest[event_delete_name] = (
         event_table,
-        f'''CREATE TRIGGER "{event_delete_name}"
+        f"""CREATE TRIGGER "{event_delete_name}"
 BEFORE DELETE ON "{event_table}"{event_delete_when}
 BEGIN
     SELECT RAISE(ABORT, 'policy_waiver_event_immutable');
-END''',
+END""",
     )
     return manifest
 
@@ -2054,12 +2213,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql
 """.strip(),
-        f'''CREATE TRIGGER "{POLICY_WAIVER_TRIGGER_PREFIX}_head"
+        f"""CREATE TRIGGER "{POLICY_WAIVER_TRIGGER_PREFIX}_head"
 BEFORE INSERT OR UPDATE OR DELETE ON "policy_waivers"
-FOR EACH ROW EXECUTE FUNCTION {function_name}()''',
-        f'''CREATE TRIGGER "{POLICY_WAIVER_TRIGGER_PREFIX}_event"
+FOR EACH ROW EXECUTE FUNCTION {function_name}()""",
+        f"""CREATE TRIGGER "{POLICY_WAIVER_TRIGGER_PREFIX}_event"
 BEFORE INSERT OR UPDATE OR DELETE ON "policy_waiver_events"
-FOR EACH ROW EXECUTE FUNCTION {function_name}()''',
+FOR EACH ROW EXECUTE FUNCTION {function_name}()""",
     )
 
 
@@ -2108,43 +2267,37 @@ def semantic_guideline_sqlite_trigger_manifest(
         board_expression: str | None,
         message: str = "semantic_guideline_evidence_immutable",
     ) -> None:
-        update_name = (
-            f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_{table_name}_update"
-        )
+        update_name = f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_{table_name}_update"
         manifest[update_name] = (
             table_name,
-            f'''CREATE TRIGGER "{update_name}"
+            f"""CREATE TRIGGER "{update_name}"
 BEFORE UPDATE ON "{table_name}"
 BEGIN
     SELECT RAISE(ABORT, '{message}');
-END''',
+END""",
         )
-        delete_name = (
-            f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_{table_name}_delete"
-        )
+        delete_name = f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_{table_name}_delete"
         delete_when = ""
         if allow_board_erasure and board_expression is not None:
-            delete_when = f'''
+            delete_when = f"""
 WHEN NOT EXISTS (
     SELECT 1
     FROM "{permit_table}" AS permit
     WHERE permit.board_id = {board_expression}
-)'''
+)"""
         manifest[delete_name] = (
             table_name,
-            f'''CREATE TRIGGER "{delete_name}"
+            f"""CREATE TRIGGER "{delete_name}"
 BEFORE DELETE ON "{table_name}"{delete_when}
 BEGIN
     SELECT RAISE(ABORT, '{message}');
-END''',
+END""",
         )
 
-    revision_insert_name = (
-        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_revision_insert"
-    )
+    revision_insert_name = f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_revision_insert"
     manifest[revision_insert_name] = (
         revision_table,
-        f'''CREATE TRIGGER "{revision_insert_name}"
+        f"""CREATE TRIGGER "{revision_insert_name}"
 BEFORE INSERT ON "{revision_table}"
 WHEN json_type(NEW."metrics") <> 'array'
   OR (
@@ -2245,7 +2398,7 @@ WHEN json_type(NEW."metrics") <> 'array'
   )
 BEGIN
     SELECT RAISE(ABORT, 'semantic_guideline_metrics_invalid');
-END''',
+END""",
     )
     add_immutable(
         table_name=revision_table,
@@ -2259,7 +2412,7 @@ END''',
     )
     revision_delete_when = ""
     if allow_board_erasure:
-        revision_delete_when = f'''
+        revision_delete_when = f"""
 WHEN NOT EXISTS (
     SELECT 1
     FROM "{permit_table}" AS permit
@@ -2267,22 +2420,20 @@ WHEN NOT EXISTS (
       ON guideline.board_id = permit.board_id
     WHERE guideline.id = OLD.guideline_id
       AND guideline.scope = 'inline'
-)'''
+)"""
     manifest[revision_delete_name] = (
         revision_table,
-        f'''CREATE TRIGGER "{revision_delete_name}"
+        f"""CREATE TRIGGER "{revision_delete_name}"
 BEFORE DELETE ON "{revision_table}"{revision_delete_when}
 BEGIN
     SELECT RAISE(ABORT, 'semantic_guideline_revision_immutable');
-END''',
+END""",
     )
 
-    binding_insert_name = (
-        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_binding_insert"
-    )
+    binding_insert_name = f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_binding_insert"
     manifest[binding_insert_name] = (
         binding_table,
-        f'''CREATE TRIGGER "{binding_insert_name}"
+        f"""CREATE TRIGGER "{binding_insert_name}"
 BEFORE INSERT ON "{binding_table}"
 WHEN json_type(NEW."metric_threshold_overrides") <> 'object'
   OR NOT EXISTS (
@@ -2346,7 +2497,7 @@ WHEN json_type(NEW."metric_threshold_overrides") <> 'object'
   )
 BEGIN
     SELECT RAISE(ABORT, 'semantic_guideline_binding_configuration_invalid');
-END''',
+END""",
     )
     add_immutable(
         table_name=binding_table,
@@ -2359,24 +2510,24 @@ END''',
     )
     manifest[subject_head_insert_name] = (
         subject_head_table,
-        f'''CREATE TRIGGER "{subject_head_insert_name}"
+        f"""CREATE TRIGGER "{subject_head_insert_name}"
 BEFORE INSERT ON "{subject_head_table}"
 WHEN NEW."head_revision" <> 1
 BEGIN
     SELECT RAISE(ABORT, 'semantic_subject_head_initial_revision_invalid');
-END''',
+END""",
     )
     subject_head_immutable = (
-        "NEW.\"board_id\" IS OLD.\"board_id\"\n"
-        "    AND NEW.\"subject_type\" IS OLD.\"subject_type\"\n"
-        "    AND NEW.\"subject_id\" IS OLD.\"subject_id\""
+        'NEW."board_id" IS OLD."board_id"\n'
+        '    AND NEW."subject_type" IS OLD."subject_type"\n'
+        '    AND NEW."subject_id" IS OLD."subject_id"'
     )
     subject_head_update_name = (
         f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_subject_head_update"
     )
     manifest[subject_head_update_name] = (
         subject_head_table,
-        f'''CREATE TRIGGER "{subject_head_update_name}"
+        f"""CREATE TRIGGER "{subject_head_update_name}"
 BEFORE UPDATE ON "{subject_head_table}"
 WHEN NOT (
     {subject_head_immutable}
@@ -2387,32 +2538,32 @@ WHEN NOT (
 )
 BEGIN
     SELECT RAISE(ABORT, 'semantic_subject_head_cas_invalid');
-END''',
+END""",
     )
     subject_head_delete_name = (
         f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_subject_head_delete"
     )
     subject_head_delete_when = ""
     if allow_board_erasure:
-        subject_head_delete_when = f'''
+        subject_head_delete_when = f"""
 WHEN NOT EXISTS (
     SELECT 1 FROM "{permit_table}" AS permit
     WHERE permit.board_id = OLD.board_id
-)'''
+)"""
     manifest[subject_head_delete_name] = (
         subject_head_table,
-        f'''CREATE TRIGGER "{subject_head_delete_name}"
+        f"""CREATE TRIGGER "{subject_head_delete_name}"
 BEFORE DELETE ON "{subject_head_table}"{subject_head_delete_when}
 BEGIN
     SELECT RAISE(ABORT, 'semantic_subject_head_immutable');
-END''',
+END""",
     )
     subject_event_insert_name = (
         f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_subject_event_insert"
     )
     manifest[subject_event_insert_name] = (
         subject_event_table,
-        f'''CREATE TRIGGER "{subject_event_insert_name}"
+        f"""CREATE TRIGGER "{subject_event_insert_name}"
 BEFORE INSERT ON "{subject_event_table}"
 WHEN NOT EXISTS (
       SELECT 1
@@ -2461,7 +2612,7 @@ WHEN NOT EXISTS (
   )
 BEGIN
     SELECT RAISE(ABORT, 'semantic_subject_event_append_invalid');
-END''',
+END""",
     )
     add_immutable(
         table_name=subject_event_table,
@@ -2469,17 +2620,15 @@ END''',
         message="semantic_subject_event_immutable",
     )
 
-    receipt_insert_name = (
-        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_assessment_insert"
-    )
+    receipt_insert_name = f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_assessment_insert"
     manifest[receipt_insert_name] = (
         receipt_table,
-        f'''CREATE TRIGGER "{receipt_insert_name}"
+        f"""CREATE TRIGGER "{receipt_insert_name}"
 BEFORE INSERT ON "{receipt_table}"
 WHEN NEW."sealed" <> 0
 BEGIN
     SELECT RAISE(ABORT, 'semantic_guideline_assessment_initially_unsealed');
-END''',
+END""",
     )
     receipt_columns = tuple(
         column.name
@@ -2489,12 +2638,10 @@ END''',
     receipt_unchanged = "\n    AND ".join(
         f'NEW."{column}" IS OLD."{column}"' for column in receipt_columns
     )
-    receipt_update_name = (
-        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_assessment_seal"
-    )
+    receipt_update_name = f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_assessment_seal"
     manifest[receipt_update_name] = (
         receipt_table,
-        f'''CREATE TRIGGER "{receipt_update_name}"
+        f"""CREATE TRIGGER "{receipt_update_name}"
 BEFORE UPDATE ON "{receipt_table}"
 WHEN NOT (
     OLD."sealed" = 0
@@ -2531,33 +2678,29 @@ WHEN NOT (
 )
 BEGIN
     SELECT RAISE(ABORT, 'semantic_guideline_assessment_seal_invalid');
-END''',
+END""",
     )
-    receipt_delete_name = (
-        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_{receipt_table}_delete"
-    )
+    receipt_delete_name = f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_{receipt_table}_delete"
     receipt_delete_when = ""
     if allow_board_erasure:
-        receipt_delete_when = f'''
+        receipt_delete_when = f"""
 WHEN NOT EXISTS (
     SELECT 1 FROM "{permit_table}" AS permit
     WHERE permit.board_id = OLD.board_id
-)'''
+)"""
     manifest[receipt_delete_name] = (
         receipt_table,
-        f'''CREATE TRIGGER "{receipt_delete_name}"
+        f"""CREATE TRIGGER "{receipt_delete_name}"
 BEFORE DELETE ON "{receipt_table}"{receipt_delete_when}
 BEGIN
     SELECT RAISE(ABORT, 'semantic_guideline_assessment_immutable');
-END''',
+END""",
     )
 
-    result_insert_name = (
-        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_metric_result_insert"
-    )
+    result_insert_name = f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_metric_result_insert"
     manifest[result_insert_name] = (
         result_table,
-        f'''CREATE TRIGGER "{result_insert_name}"
+        f"""CREATE TRIGGER "{result_insert_name}"
 BEFORE INSERT ON "{result_table}"
 WHEN NOT EXISTS (
       SELECT 1
@@ -2683,7 +2826,7 @@ WHEN NOT EXISTS (
   )
 BEGIN
     SELECT RAISE(ABORT, 'semantic_guideline_metric_result_invalid');
-END''',
+END""",
     )
     add_immutable(
         table_name=result_table,
@@ -2691,12 +2834,10 @@ END''',
         message="semantic_guideline_metric_result_immutable",
     )
 
-    finding_insert_name = (
-        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_finding_insert"
-    )
+    finding_insert_name = f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_finding_insert"
     manifest[finding_insert_name] = (
         finding_table,
-        f'''CREATE TRIGGER "{finding_insert_name}"
+        f"""CREATE TRIGGER "{finding_insert_name}"
 BEFORE INSERT ON "{finding_table}"
 WHEN NOT EXISTS (
     SELECT 1
@@ -2730,7 +2871,7 @@ WHEN NOT EXISTS (
 )
 BEGIN
     SELECT RAISE(ABORT, 'semantic_guideline_finding_invalid');
-END''',
+END""",
     )
     add_immutable(
         table_name=finding_table,
@@ -2748,6 +2889,7 @@ END''',
         "subject_type",
         "subject_id",
         "subject_version",
+        "validation_edition",
         "subject_content_digest",
         "receipt_digest",
         "guideline_id",
@@ -2770,15 +2912,12 @@ END''',
         "request_digest",
     )
     waiver_unchanged = "\n    AND ".join(
-        f'NEW."{column}" IS OLD."{column}"'
-        for column in waiver_head_immutable_columns
+        f'NEW."{column}" IS OLD."{column}"' for column in waiver_head_immutable_columns
     )
-    waiver_insert_name = (
-        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_waiver_insert"
-    )
+    waiver_insert_name = f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_waiver_insert"
     manifest[waiver_insert_name] = (
         waiver_table,
-        f'''CREATE TRIGGER "{waiver_insert_name}"
+        f"""CREATE TRIGGER "{waiver_insert_name}"
 BEFORE INSERT ON "{waiver_table}"
 WHEN NEW."status" <> 'requested'
   OR NEW."waiver_revision" <> 1
@@ -2863,14 +3002,14 @@ WHEN NEW."status" <> 'requested'
   )
 BEGIN
     SELECT RAISE(ABORT, 'semantic_guideline_waiver_request_invalid');
-END''',
+END""",
     )
     waiver_scope_insert_name = (
         f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_waiver_scope_insert"
     )
     manifest[waiver_scope_insert_name] = (
         waiver_table,
-        f'''CREATE TRIGGER "{waiver_scope_insert_name}"
+        f"""CREATE TRIGGER "{waiver_scope_insert_name}"
 BEFORE INSERT ON "{waiver_table}"
 WHEN EXISTS (
     SELECT 1
@@ -2885,14 +3024,12 @@ WHEN EXISTS (
 )
 BEGIN
     SELECT RAISE(ABORT, 'semantic_guideline_waiver_scope_conflict');
-END''',
+END""",
     )
-    waiver_update_name = (
-        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_waiver_update"
-    )
+    waiver_update_name = f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_waiver_update"
     manifest[waiver_update_name] = (
         waiver_table,
-        f'''CREATE TRIGGER "{waiver_update_name}"
+        f"""CREATE TRIGGER "{waiver_update_name}"
 BEFORE UPDATE ON "{waiver_table}"
 WHEN NOT (
     {waiver_unchanged}
@@ -2919,32 +3056,30 @@ WHEN NOT (
 )
 BEGIN
     SELECT RAISE(ABORT, 'semantic_guideline_waiver_head_cas_invalid');
-END''',
+END""",
     )
-    waiver_delete_name = (
-        f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_waiver_delete"
-    )
+    waiver_delete_name = f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_waiver_delete"
     waiver_delete_when = ""
     if allow_board_erasure:
-        waiver_delete_when = f'''
+        waiver_delete_when = f"""
 WHEN NOT EXISTS (
     SELECT 1 FROM "{permit_table}" AS permit
     WHERE permit.board_id = OLD.board_id
-)'''
+)"""
     manifest[waiver_delete_name] = (
         waiver_table,
-        f'''CREATE TRIGGER "{waiver_delete_name}"
+        f"""CREATE TRIGGER "{waiver_delete_name}"
 BEFORE DELETE ON "{waiver_table}"{waiver_delete_when}
 BEGIN
     SELECT RAISE(ABORT, 'semantic_guideline_waiver_immutable');
-END''',
+END""",
     )
     waiver_event_insert_name = (
         f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_waiver_event_insert"
     )
     manifest[waiver_event_insert_name] = (
         waiver_event_table,
-        f'''CREATE TRIGGER "{waiver_event_insert_name}"
+        f"""CREATE TRIGGER "{waiver_event_insert_name}"
 BEFORE INSERT ON "{waiver_event_table}"
 WHEN length(trim(NEW."actor_id")) = 0
   OR length(trim(NEW."reason")) = 0
@@ -3153,7 +3288,7 @@ WHEN length(trim(NEW."actor_id")) = 0
   )
 BEGIN
     SELECT RAISE(ABORT, 'semantic_guideline_waiver_event_append_invalid');
-END''',
+END""",
     )
     add_immutable(
         table_name=waiver_event_table,
@@ -3164,7 +3299,7 @@ END''',
     skip_insert_name = f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_skip_insert"
     manifest[skip_insert_name] = (
         skip_table,
-        f'''CREATE TRIGGER "{skip_insert_name}"
+        f"""CREATE TRIGGER "{skip_insert_name}"
 BEFORE INSERT ON "{skip_table}"
 WHEN length(trim(NEW."reason")) = 0
   OR length(trim(NEW."actor_id")) = 0
@@ -3244,7 +3379,7 @@ WHEN length(trim(NEW."reason")) = 0
   )
 BEGIN
     SELECT RAISE(ABORT, 'semantic_guideline_skip_invalid');
-END''',
+END""",
     )
     add_immutable(
         table_name=skip_table,
@@ -3259,8 +3394,7 @@ END''',
     return manifest
 
 
-def semantic_guideline_postgresql_ddl(
-) -> tuple[str, dict[str, tuple[str, str, int]]]:
+def semantic_guideline_postgresql_ddl() -> tuple[str, dict[str, tuple[str, str, int]]]:
     """Return PostgreSQL guards equivalent to the SQLite SK-B3 authority.
 
     The returned trigger map stores ``table, operation clause, tgtype``.  Names
@@ -4627,7 +4761,7 @@ def guideline_policy_immutability_trigger_manifest(
     revision_insert = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_revision_insert"
     expected[revision_insert] = (
         revision_table,
-        f'''CREATE TRIGGER "{revision_insert}"
+        f"""CREATE TRIGGER "{revision_insert}"
 BEFORE INSERT ON "{revision_table}"
 BEGIN
     SELECT RAISE(ABORT, 'guideline_retired')
@@ -4636,16 +4770,16 @@ BEGIN
         FROM "{retirement_table}" AS retirement
         WHERE retirement.guideline_id = NEW.guideline_id
     );
-END''',
+END""",
     )
     revision_update = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_revision_update"
     expected[revision_update] = (
         revision_table,
-        f'''CREATE TRIGGER "{revision_update}"
+        f"""CREATE TRIGGER "{revision_update}"
 BEFORE UPDATE ON "{revision_table}"
 BEGIN
     SELECT RAISE(ABORT, 'guideline_revision_immutable');
-END''',
+END""",
     )
     revision_delete = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_revision_delete"
     revision_delete_when = ""
@@ -4662,17 +4796,17 @@ END''',
         )
     expected[revision_delete] = (
         revision_table,
-        f'''CREATE TRIGGER "{revision_delete}"
+        f"""CREATE TRIGGER "{revision_delete}"
 BEFORE DELETE ON "{revision_table}"{revision_delete_when}
 BEGIN
     SELECT RAISE(ABORT, 'guideline_revision_immutable');
-END''',
+END""",
     )
 
     head_update = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_head_update"
     expected[head_update] = (
         head_table,
-        f'''CREATE TRIGGER "{head_update}"
+        f"""CREATE TRIGGER "{head_update}"
 BEFORE UPDATE ON "{head_table}"
 WHEN EXISTS (
     SELECT 1
@@ -4685,7 +4819,7 @@ WHEN EXISTS (
   OR NEW.revision_id = OLD.revision_id
 BEGIN
     SELECT RAISE(ABORT, 'guideline_head_cas_invalid');
-END''',
+END""",
     )
     head_delete = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_head_delete"
     head_delete_when = ""
@@ -4702,17 +4836,17 @@ END''',
         )
     expected[head_delete] = (
         head_table,
-        f'''CREATE TRIGGER "{head_delete}"
+        f"""CREATE TRIGGER "{head_delete}"
 BEFORE DELETE ON "{head_table}"{head_delete_when}
 BEGIN
     SELECT RAISE(ABORT, 'guideline_head_immutable');
-END''',
+END""",
     )
 
     binding_insert = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_binding_insert"
     expected[binding_insert] = (
         binding_table,
-        f'''CREATE TRIGGER "{binding_insert}"
+        f"""CREATE TRIGGER "{binding_insert}"
 BEFORE INSERT ON "{binding_table}"
 BEGIN
     SELECT RAISE(ABORT, 'guideline_retired')
@@ -4833,16 +4967,16 @@ BEGIN
             )
         )
     );
-END''',
+END""",
     )
     binding_update = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_binding_update"
     expected[binding_update] = (
         binding_table,
-        f'''CREATE TRIGGER "{binding_update}"
+        f"""CREATE TRIGGER "{binding_update}"
 BEFORE UPDATE ON "{binding_table}"
 BEGIN
     SELECT RAISE(ABORT, 'guideline_binding_immutable');
-END''',
+END""",
     )
     binding_delete = f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_binding_delete"
     binding_delete_when = ""
@@ -4856,18 +4990,18 @@ END''',
         )
     expected[binding_delete] = (
         binding_table,
-        f'''CREATE TRIGGER "{binding_delete}"
+        f"""CREATE TRIGGER "{binding_delete}"
 BEFORE DELETE ON "{binding_table}"{binding_delete_when}
 BEGIN
     SELECT RAISE(ABORT, 'guideline_binding_immutable');
-END''',
+END""",
     )
     retirement_insert = (
         f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_retirement_insert"
     )
     expected[retirement_insert] = (
         retirement_table,
-        f'''CREATE TRIGGER "{retirement_insert}"
+        f"""CREATE TRIGGER "{retirement_insert}"
 BEFORE INSERT ON "{retirement_table}"
 BEGIN
     SELECT RAISE(ABORT, 'guideline_retirement_head_conflict')
@@ -4894,18 +5028,18 @@ BEGIN
             WHERE successor_retirement.guideline_id = successor.id
           )
       );
-END''',
+END""",
     )
     retirement_update = (
         f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_retirement_update"
     )
     expected[retirement_update] = (
         retirement_table,
-        f'''CREATE TRIGGER "{retirement_update}"
+        f"""CREATE TRIGGER "{retirement_update}"
 BEFORE UPDATE ON "{retirement_table}"
 BEGIN
     SELECT RAISE(ABORT, 'guideline_retirement_immutable');
-END''',
+END""",
     )
     retirement_delete = (
         f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_retirement_delete"
@@ -4924,11 +5058,11 @@ END''',
         )
     expected[retirement_delete] = (
         retirement_table,
-        f'''CREATE TRIGGER "{retirement_delete}"
+        f"""CREATE TRIGGER "{retirement_delete}"
 BEFORE DELETE ON "{retirement_table}"{retirement_delete_when}
 BEGIN
     SELECT RAISE(ABORT, 'guideline_retirement_immutable');
-END''',
+END""",
     )
     return expected
 
@@ -4954,7 +5088,7 @@ def guideline_policy_b03_sqlite_trigger_predecessors() -> dict[str, tuple[str, s
     return {
         head_update: (
             head_table,
-            f'''CREATE TRIGGER "{head_update}"
+            f"""CREATE TRIGGER "{head_update}"
 BEFORE UPDATE ON "{head_table}"
 WHEN NEW.guideline_id <> OLD.guideline_id
   OR NEW.head_revision <> OLD.head_revision + 1
@@ -4962,11 +5096,11 @@ WHEN NEW.guideline_id <> OLD.guideline_id
   OR NEW.revision_id = OLD.revision_id
 BEGIN
     SELECT RAISE(ABORT, 'guideline_head_cas_invalid');
-END''',
+END""",
         ),
         binding_insert: (
             binding_table,
-            f'''CREATE TRIGGER "{binding_insert}"
+            f"""CREATE TRIGGER "{binding_insert}"
 BEFORE INSERT ON "{binding_table}"
 BEGIN
     SELECT RAISE(ABORT, 'guideline_binding_scope_invalid')
@@ -5018,7 +5152,7 @@ BEGIN
             )
         )
     );
-END''',
+END""",
         ),
     }
 
@@ -5052,7 +5186,7 @@ def guideline_policy_postgresql_immutability_ddl() -> tuple[str, ...]:
         f"{GUIDELINE_POLICY_IMMUTABILITY_TRIGGER_PREFIX}_retirement_guard"
     )
     return (
-        f'''CREATE OR REPLACE FUNCTION "{revision_function}"()
+        f"""CREATE OR REPLACE FUNCTION "{revision_function}"()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
@@ -5081,8 +5215,8 @@ BEGIN
     RAISE EXCEPTION 'guideline_revision_immutable'
         USING ERRCODE = 'integrity_constraint_violation';
 END;
-$$''',
-        f'''CREATE OR REPLACE FUNCTION "{head_function}"()
+$$""",
+        f"""CREATE OR REPLACE FUNCTION "{head_function}"()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
@@ -5113,8 +5247,8 @@ BEGIN
     RAISE EXCEPTION 'guideline_head_immutable'
         USING ERRCODE = 'integrity_constraint_violation';
 END;
-$$''',
-        f'''CREATE OR REPLACE FUNCTION "{binding_function}"()
+$$""",
+        f"""CREATE OR REPLACE FUNCTION "{binding_function}"()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
@@ -5220,8 +5354,8 @@ BEGIN
     RAISE EXCEPTION 'guideline_binding_immutable'
         USING ERRCODE = 'integrity_constraint_violation';
 END;
-$$''',
-        f'''CREATE OR REPLACE FUNCTION "{retirement_function}"()
+$$""",
+        f"""CREATE OR REPLACE FUNCTION "{retirement_function}"()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
@@ -5269,19 +5403,19 @@ BEGIN
     RAISE EXCEPTION 'guideline_retirement_immutable'
         USING ERRCODE = 'integrity_constraint_violation';
 END;
-$$''',
-        f'''CREATE TRIGGER "{revision_trigger}"
+$$""",
+        f"""CREATE TRIGGER "{revision_trigger}"
 BEFORE INSERT OR UPDATE OR DELETE ON "{revision_table}"
-FOR EACH ROW EXECUTE FUNCTION "{revision_function}"()''',
-        f'''CREATE TRIGGER "{head_trigger}"
+FOR EACH ROW EXECUTE FUNCTION "{revision_function}"()""",
+        f"""CREATE TRIGGER "{head_trigger}"
 BEFORE UPDATE OR DELETE ON "{head_table}"
-FOR EACH ROW EXECUTE FUNCTION "{head_function}"()''',
-        f'''CREATE TRIGGER "{binding_trigger}"
+FOR EACH ROW EXECUTE FUNCTION "{head_function}"()""",
+        f"""CREATE TRIGGER "{binding_trigger}"
 BEFORE INSERT OR UPDATE OR DELETE ON "{binding_table}"
-FOR EACH ROW EXECUTE FUNCTION "{binding_function}"()''',
-        f'''CREATE TRIGGER "{retirement_trigger}"
+FOR EACH ROW EXECUTE FUNCTION "{binding_function}"()""",
+        f"""CREATE TRIGGER "{retirement_trigger}"
 BEFORE INSERT OR UPDATE OR DELETE ON "{retirement_table}"
-FOR EACH ROW EXECUTE FUNCTION "{retirement_function}"()''',
+FOR EACH ROW EXECUTE FUNCTION "{retirement_function}"()""",
     )
 
 
@@ -5406,11 +5540,11 @@ def _knowledge_propagation_v2_trigger_manifest(
                     "    WHERE permit.board_id = OLD.board_id\n"
                     ")"
                 )
-            trigger_sql = f'''CREATE TRIGGER "{trigger_name}"
+            trigger_sql = f"""CREATE TRIGGER "{trigger_name}"
 BEFORE {operation.upper()} ON "{table_name}"{erasure_guard}
 BEGIN
     SELECT RAISE(ABORT, 'knowledge_mutation_ledger_immutable');
-END'''
+END"""
             expected[trigger_name] = (table_name, trigger_sql)
 
     activation_insert = (
@@ -5418,7 +5552,7 @@ END'''
     )
     expected[activation_insert] = (
         scope_table,
-        f'''CREATE TRIGGER "{activation_insert}"
+        f"""CREATE TRIGGER "{activation_insert}"
 BEFORE INSERT ON "{scope_table}"
 WHEN (
         NEW.v2_active = 1
@@ -5433,14 +5567,14 @@ BEGIN
         ABORT,
         'knowledge_propagation_v2_activation_invalid'
     );
-END''',
+END""",
     )
     activation_update = (
         f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_{scope_table}_activation_update"
     )
     expected[activation_update] = (
         scope_table,
-        f'''CREATE TRIGGER "{activation_update}"
+        f"""CREATE TRIGGER "{activation_update}"
 BEFORE UPDATE OF v2_active, v2_activated_at ON "{scope_table}"
 WHEN (
         NEW.v2_active = 0
@@ -5467,7 +5601,7 @@ BEGIN
         ABORT,
         'knowledge_propagation_v2_activation_immutable'
     );
-END''',
+END""",
     )
 
     def add_temporal_transition_guards(
@@ -5479,7 +5613,7 @@ END''',
         )
         expected[closure_name] = (
             table_name,
-            f'''CREATE TRIGGER "{closure_name}"
+            f"""CREATE TRIGGER "{closure_name}"
 BEFORE UPDATE OF effective_to ON "{table_name}"
 WHEN OLD.effective_to IS NOT NULL
     AND NEW.effective_to IS NOT OLD.effective_to
@@ -5488,7 +5622,7 @@ BEGIN
         ABORT,
         'knowledge_propagation_{history_kind}_closure_immutable'
     );
-END''',
+END""",
         )
         supersession_name = (
             f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_"
@@ -5496,7 +5630,7 @@ END''',
         )
         expected[supersession_name] = (
             table_name,
-            f'''CREATE TRIGGER "{supersession_name}"
+            f"""CREATE TRIGGER "{supersession_name}"
 BEFORE UPDATE OF superseded_by_id ON "{table_name}"
 WHEN NEW.superseded_by_id IS NOT OLD.superseded_by_id
     AND NOT (
@@ -5509,7 +5643,7 @@ BEGIN
         ABORT,
         'knowledge_propagation_{history_kind}_supersession_immutable'
     );
-END''',
+END""",
         )
 
     temporal_guards = {
@@ -5573,12 +5707,12 @@ END''',
         )
         expected[update_name] = (
             table_name,
-            f'''CREATE TRIGGER "{update_name}"
+            f"""CREATE TRIGGER "{update_name}"
 BEFORE UPDATE OF {protected_columns} ON "{table_name}"
 WHEN {changed_predicate}
 BEGIN
     SELECT RAISE(ABORT, '{error_code}');
-END''',
+END""",
         )
         delete_name = f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_{table_name}_delete"
         erasure_guard = ""
@@ -5594,17 +5728,19 @@ END''',
             )
         expected[delete_name] = (
             table_name,
-            f'''CREATE TRIGGER "{delete_name}"
+            f"""CREATE TRIGGER "{delete_name}"
 BEFORE DELETE ON "{table_name}"{erasure_guard}
 BEGIN
     SELECT RAISE(ABORT, '{error_code}');
-END''',
+END""",
         )
         add_temporal_transition_guards(
             table_name,
-            "assignment"
-            if table_name == KnowledgeAssignmentRecord.__tablename__
-            else "snapshot",
+            (
+                "assignment"
+                if table_name == KnowledgeAssignmentRecord.__tablename__
+                else "snapshot"
+            ),
         )
 
     tombstone_table = KnowledgeTombstoneRecord.__tablename__
@@ -5614,7 +5750,7 @@ END''',
     )
     expected[conflict_insert] = (
         tombstone_table,
-        f'''CREATE TRIGGER "{conflict_insert}"
+        f"""CREATE TRIGGER "{conflict_insert}"
 BEFORE INSERT ON "{tombstone_table}"
 WHEN NEW.effective_to IS NULL
     AND EXISTS (
@@ -5632,14 +5768,14 @@ BEGIN
         ABORT,
         'knowledge_propagation_current_global_tombstone_conflict'
     );
-END''',
+END""",
     )
     identity_update = (
         f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_tombstone_identity_update"
     )
     expected[identity_update] = (
         tombstone_table,
-        f'''CREATE TRIGGER "{identity_update}"
+        f"""CREATE TRIGGER "{identity_update}"
 BEFORE UPDATE OF tombstone_id, scope_id, root_id, actor_id, justification,
     effective_from ON "{tombstone_table}"
 WHEN NEW.tombstone_id IS NOT OLD.tombstone_id
@@ -5653,7 +5789,7 @@ BEGIN
         ABORT,
         'knowledge_propagation_tombstone_identity_immutable'
     );
-END''',
+END""",
     )
     tombstone_delete = f"{KNOWLEDGE_PROPAGATION_V2_TRIGGER_PREFIX}_tombstone_delete"
     erasure_guard = ""
@@ -5669,14 +5805,14 @@ END''',
         )
     expected[tombstone_delete] = (
         tombstone_table,
-        f'''CREATE TRIGGER "{tombstone_delete}"
+        f"""CREATE TRIGGER "{tombstone_delete}"
 BEFORE DELETE ON "{tombstone_table}"{erasure_guard}
 BEGIN
     SELECT RAISE(
         ABORT,
         'knowledge_propagation_tombstone_history_immutable'
     );
-END''',
+END""",
     )
     return expected
 
@@ -5903,10 +6039,7 @@ def _sqlite_owned_table_contract(
             rf"\[{re.escape(column_name)}\]|"
             rf"{re.escape(column_name)})"
         )
-        name = (
-            r'(?:"([^"]+)"|`([^`]+)`|\[([^\]]+)\]|'
-            r"([A-Za-z_][A-Za-z0-9_$]*))"
-        )
+        name = r'(?:"([^"]+)"|`([^`]+)`|\[([^\]]+)\]|' r"([A-Za-z_][A-Za-z0-9_$]*))"
         inline = re.search(
             rf"(?is)(?:\(|,)\s*{identifier}\s+[^,]*?"
             rf"\bCONSTRAINT\s+{name}\s+REFERENCES\b",
@@ -6064,15 +6197,13 @@ def _postgresql_owned_table_contract(
             flags=re.IGNORECASE,
         )
         normalized = re.sub(
-            r"\bTRIM\s*\(\s*BOTH\s+FROM\s+"
-            r"(?P<value>[A-Za-z_][A-Za-z0-9_$.]*)\s*\)",
+            r"\bTRIM\s*\(\s*BOTH\s+FROM\s+" r"(?P<value>[A-Za-z_][A-Za-z0-9_$.]*)\s*\)",
             lambda match: f"TRIM({match.group('value')})",
             normalized,
             flags=re.IGNORECASE,
         )
         normalized = re.sub(
-            r"\(\s*(?P<left>[A-Za-z_][A-Za-z0-9_$.]*)\s*\)"
-            r"(?=\s*=\s*ANY\b)",
+            r"\(\s*(?P<left>[A-Za-z_][A-Za-z0-9_$.]*)\s*\)" r"(?=\s*=\s*ANY\b)",
             lambda match: match.group("left"),
             normalized,
             flags=re.IGNORECASE,
@@ -6121,9 +6252,7 @@ def _postgresql_owned_table_contract(
             closing = _matching_parenthesis(normalized, opening)
             if closing is None:
                 break
-            body = _strip_outer_parentheses(
-                normalized[opening + 1 : closing]
-            )
+            body = _strip_outer_parentheses(normalized[opening + 1 : closing])
             array = re.fullmatch(
                 r"ARRAY\s*\[(?P<values>.*)\]",
                 body,
@@ -6132,13 +6261,9 @@ def _postgresql_owned_table_contract(
             if array is None:
                 search_from = closing + 1
                 continue
-            replacement = (
-                f"{match.group('left')} IN ({array.group('values')})"
-            )
+            replacement = f"{match.group('left')} IN ({array.group('values')})"
             normalized = (
-                normalized[: match.start()]
-                + replacement
-                + normalized[closing + 1 :]
+                normalized[: match.start()] + replacement + normalized[closing + 1 :]
             )
             search_from = match.start() + len(replacement)
 
@@ -6177,11 +6302,7 @@ def _postgresql_owned_table_contract(
                     unmatched_closes += 1
             position += 1
         if unmatched_closes or stack:
-            normalized = (
-                "(" * unmatched_closes
-                + normalized
-                + ")" * len(stack)
-            )
+            normalized = "(" * unmatched_closes + normalized + ")" * len(stack)
 
         comparison = re.compile(
             r"(?:<>|<=|>=|=|<|>|\bIS\b|\bIN\b)",
@@ -6307,10 +6428,7 @@ def _postgresql_owned_table_contract(
                     )
                     and (
                         end == len(expression)
-                        or not (
-                            expression[end].isalnum()
-                            or expression[end] == "_"
-                        )
+                        or not (expression[end].isalnum() or expression[end] == "_")
                     )
                 ):
                     parts.append(expression[start:position].strip())
@@ -6323,10 +6441,7 @@ def _postgresql_owned_table_contract(
             parts.append(expression[start:].strip())
             return tuple(parts)
 
-        simple_atom = (
-            r'(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_$.]*|'
-            r"'(?:''|[^'])*')"
-        )
+        simple_atom = r'(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_$.]*|' r"'(?:''|[^'])*')"
 
         def _normalized_atom(expression: str) -> str:
             atom = _strip_outer_parentheses(expression)
@@ -6388,10 +6503,14 @@ def _postgresql_owned_table_contract(
                 return str(tree[1])
             if operator == "not":
                 return "not(" + _render_boolean(tree[1]) + ")"  # type: ignore[arg-type]
-            return "(" + str(operator).join(
-                _render_boolean(child)  # type: ignore[arg-type]
-                for child in tree[1:]
-            ) + ")"
+            return (
+                "("
+                + str(operator).join(
+                    _render_boolean(child)  # type: ignore[arg-type]
+                    for child in tree[1:]
+                )
+                + ")"
+            )
 
         return _render_boolean(_boolean_tree(normalized))
 
@@ -6460,20 +6579,24 @@ def _postgresql_owned_table_contract(
     unnamed_foreign_keys = {
         (
             tuple(str(element.parent.name) for element in constraint.elements),
-            getattr(
-                constraint.elements[0].column.table,
-                "schema",
-                None,
-            )
-            if constraint.elements
-            else None,
-            getattr(
-                constraint.elements[0].column.table,
-                "name",
-                None,
-            )
-            if constraint.elements
-            else None,
+            (
+                getattr(
+                    constraint.elements[0].column.table,
+                    "schema",
+                    None,
+                )
+                if constraint.elements
+                else None
+            ),
+            (
+                getattr(
+                    constraint.elements[0].column.table,
+                    "name",
+                    None,
+                )
+                if constraint.elements
+                else None
+            ),
             tuple(str(element.column.name) for element in constraint.elements),
         )
         for constraint in table.foreign_key_constraints
@@ -7497,9 +7620,7 @@ async def _migrate_cognitive_source_revision_ledger() -> str | None:
                 observed["tbl_name"]
             ) != table_name or normalize_global_discovery_source_revision_trigger_sql(
                 observed["sql"]
-            ) != normalize_global_discovery_source_revision_trigger_sql(
-                trigger_sql
-            ):
+            ) != normalize_global_discovery_source_revision_trigger_sql(trigger_sql):
                 raise RuntimeError(
                     "cognitive source immutability trigger audit failed: "
                     + trigger_name
@@ -8333,6 +8454,321 @@ async def _migrate_add_spec_edition() -> None:
             pass
 
 
+async def _migrate_add_human_lifecycle_editions() -> object:
+    """Add Ideation/Refinement lifecycle editions without inventing evidence.
+
+    Subject rows have a safe creation epoch and therefore converge to edition
+    one.  Ambiguity skips deliberately do not: a legacy boolean has no
+    trustworthy lifecycle scope, so its nullable edition remains ``NULL`` and
+    the read policy treats it as history-only.
+    """
+
+    import re
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        HUMAN_LIFECYCLE_EDITION_SUBJECT_TABLES,
+        human_lifecycle_edition_sqlite_trigger_manifest,
+    )
+    from okto_pulse.core.services.ska_observability import (
+        observe_validation_edition_migration_rows,
+    )
+
+    engine = get_engine()
+    subject_tables = HUMAN_LIFECYCLE_EDITION_SUBJECT_TABLES
+    sqlite_trigger_manifest = human_lifecycle_edition_sqlite_trigger_manifest()
+    changed = False
+    changed_tables: set[str] = set()
+    table_row_counts: dict[str, int] = {}
+    async with engine.begin() as conn:
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(sa_inspect(sync_conn).get_table_names())
+        )
+        for table_name in subject_tables:
+            if table_name not in table_names:
+                continue
+            table_row_counts[table_name] = int(
+                (
+                    await conn.execute(sa_text(f'SELECT COUNT(*) FROM "{table_name}"'))
+                ).scalar_one()
+            )
+            columns = await conn.run_sync(
+                lambda sync_conn, name=table_name: {
+                    str(column["name"])
+                    for column in sa_inspect(sync_conn).get_columns(name)
+                }
+            )
+            if "edition" not in columns:
+                await conn.execute(
+                    sa_text(
+                        f'ALTER TABLE "{table_name}" ADD COLUMN '
+                        "edition INTEGER DEFAULT 1 NOT NULL"
+                    )
+                )
+                changed = True
+                changed_tables.add(table_name)
+            else:
+                result = await conn.execute(
+                    sa_text(
+                        f'UPDATE "{table_name}" SET edition = 1 WHERE edition IS NULL'
+                    )
+                )
+                if int(result.rowcount or 0):
+                    changed_tables.add(table_name)
+                    changed = True
+            if table_name != "specs" and "skip_ambiguity_gate_edition" not in columns:
+                await conn.execute(
+                    sa_text(
+                        f'ALTER TABLE "{table_name}" ADD COLUMN '
+                        "skip_ambiguity_gate_edition INTEGER"
+                    )
+                )
+                changed = True
+                changed_tables.add(table_name)
+
+        if conn.dialect.name == "postgresql":
+            for table_name in subject_tables:
+                if table_name not in table_names:
+                    continue
+                observed = await conn.run_sync(
+                    lambda sync_conn, name=table_name: next(
+                        column
+                        for column in sa_inspect(sync_conn).get_columns(name)
+                        if str(column["name"]) == "edition"
+                    )
+                )
+                canonical = observed.get("nullable") is False and str(
+                    observed.get("default") or ""
+                ).strip("()'\"") in {"1", "1::integer"}
+                if not canonical:
+                    await conn.exec_driver_sql(
+                        f'ALTER TABLE "{table_name}" ALTER COLUMN edition SET DEFAULT 1'
+                    )
+                    await conn.exec_driver_sql(
+                        f'ALTER TABLE "{table_name}" ALTER COLUMN edition SET NOT NULL'
+                    )
+                    changed = True
+                    changed_tables.add(table_name)
+                constraint_name = f"ck_{table_name[:-1]}_edition"
+                await conn.exec_driver_sql(
+                    "DO $$ BEGIN "
+                    f'ALTER TABLE "{table_name}" ADD CONSTRAINT '
+                    f'"{constraint_name}" CHECK (edition >= 1); '
+                    "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+                )
+                if table_name == "specs":
+                    continue
+                skip_constraint = f"ck_{table_name[:-1]}_skip_ambiguity_gate_edition"
+                await conn.exec_driver_sql(
+                    "DO $$ BEGIN "
+                    f'ALTER TABLE "{table_name}" ADD CONSTRAINT '
+                    f'"{skip_constraint}" CHECK '
+                    "(skip_ambiguity_gate_edition IS NULL OR "
+                    "skip_ambiguity_gate_edition >= 1); "
+                    "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+                )
+
+    def _canonical_sqlite_create(
+        create_sql: str,
+        *,
+        table_name: str,
+        temporary_name: str,
+    ) -> str:
+        open_index = create_sql.find("(")
+        close_index = create_sql.rfind(")")
+        if open_index < 0 or close_index <= open_index:
+            raise RuntimeError(f"lifecycle edition migration cannot parse {table_name}")
+        body = create_sql[open_index + 1 : close_index]
+        parts: list[str] = []
+        start = 0
+        depth = 0
+        quote: str | None = None
+        index = 0
+        while index < len(body):
+            character = body[index]
+            if quote is not None:
+                if character == quote:
+                    if index + 1 < len(body) and body[index + 1] == quote:
+                        index += 1
+                    else:
+                        quote = None
+            elif character in {"'", '"', "`"}:
+                quote = character
+            elif character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+            elif character == "," and depth == 0:
+                parts.append(body[start:index])
+                start = index + 1
+            index += 1
+        parts.append(body[start:])
+        edition_pattern = re.compile(
+            r'^\s*(?:"edition"|`edition`|\[edition\]|edition)(?:\s|$)',
+            re.IGNORECASE,
+        )
+        matches = [i for i, part in enumerate(parts) if edition_pattern.match(part)]
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"lifecycle edition migration found invalid {table_name}.edition"
+            )
+        parts[matches[0]] = '"edition" INTEGER DEFAULT 1 NOT NULL'
+        prefix = re.sub(
+            r"^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+            r'(?:"[^"]+"|`[^`]+`|\[[^\]]+\]|[^\s(]+)',
+            f'CREATE TABLE "{temporary_name}"',
+            create_sql[:open_index],
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        return f"{prefix}({','.join(parts)}){create_sql[close_index + 1 :]}"
+
+    def _sqlite_contract(sync_conn: object, table_name: str) -> dict[str, object]:
+        columns = sa_inspect(sync_conn).get_columns(table_name)
+        edition = next(
+            (column for column in columns if str(column["name"]) == "edition"),
+            None,
+        )
+        if edition is None:
+            raise RuntimeError(f"{table_name}.edition missing after migration")
+        default = str(edition.get("default") or "").strip("()'\"")
+        return {
+            "canonical": edition.get("nullable") is False and default == "1",
+            "columns": tuple(str(column["name"]) for column in columns),
+        }
+
+    def _rebuild_sqlite_subject(sync_conn: object, table_name: str) -> None:
+        temporary_name = f"{table_name}__lifecycle_edition_rebuild"
+        existing = set(sa_inspect(sync_conn).get_table_names())
+        if temporary_name in existing:
+            raise RuntimeError(
+                f"lifecycle edition migration found stale {temporary_name}"
+            )
+        create_sql = sync_conn.exec_driver_sql(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (table_name,),
+        ).scalar_one()
+        owned_sql = tuple(
+            str(row[0])
+            for row in sync_conn.exec_driver_sql(
+                "SELECT sql FROM sqlite_master "
+                "WHERE tbl_name=? AND type IN ('index','trigger') "
+                "AND sql IS NOT NULL ORDER BY type,name",
+                (table_name,),
+            ).all()
+        )
+        columns = _sqlite_contract(sync_conn, table_name)["columns"]
+        quoted_columns = ", ".join(f'"{name}"' for name in columns)
+        sync_conn.exec_driver_sql(
+            _canonical_sqlite_create(
+                str(create_sql),
+                table_name=table_name,
+                temporary_name=temporary_name,
+            )
+        )
+        sync_conn.exec_driver_sql(
+            f'INSERT INTO "{temporary_name}" ({quoted_columns}) '
+            f'SELECT {quoted_columns} FROM "{table_name}"'
+        )
+        sync_conn.exec_driver_sql(f'DROP TABLE "{table_name}"')
+        sync_conn.exec_driver_sql(
+            f'ALTER TABLE "{temporary_name}" RENAME TO "{table_name}"'
+        )
+        for statement in owned_sql:
+            sync_conn.exec_driver_sql(statement)
+
+    async with engine.connect() as conn:
+        if conn.dialect.name == "sqlite":
+            table_names = await conn.run_sync(
+                lambda sync_conn: set(sa_inspect(sync_conn).get_table_names())
+            )
+            rebuild_items: list[str] = []
+            for table_name in subject_tables:
+                if table_name not in table_names:
+                    continue
+                contract = await conn.run_sync(
+                    lambda sync_conn, name=table_name: _sqlite_contract(sync_conn, name)
+                )
+                if not bool(contract["canonical"]):
+                    rebuild_items.append(table_name)
+            rebuild = tuple(rebuild_items)
+            await conn.rollback()
+            if rebuild:
+                original_foreign_keys = int(
+                    (await conn.exec_driver_sql("PRAGMA foreign_keys")).scalar_one()
+                )
+                await conn.rollback()
+                await conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+                await conn.exec_driver_sql("BEGIN IMMEDIATE")
+                try:
+                    for table_name in rebuild:
+                        await conn.run_sync(
+                            lambda sync_conn, name=table_name: _rebuild_sqlite_subject(
+                                sync_conn, name
+                            )
+                        )
+                        changed_tables.add(table_name)
+                    violations = (
+                        await conn.exec_driver_sql("PRAGMA foreign_key_check")
+                    ).all()
+                    if violations:
+                        raise RuntimeError(
+                            "lifecycle edition migration left foreign-key "
+                            f"violations: {violations!r}"
+                        )
+                    await conn.commit()
+                    changed = True
+                except BaseException:
+                    await conn.rollback()
+                    raise
+                finally:
+                    await conn.exec_driver_sql(
+                        f"PRAGMA foreign_keys={1 if original_foreign_keys else 0}"
+                    )
+                    await conn.commit()
+
+    async with engine.begin() as conn:
+        if conn.dialect.name == "sqlite":
+            table_names = await conn.run_sync(
+                lambda sync_conn: set(sa_inspect(sync_conn).get_table_names())
+            )
+            for table_name in subject_tables:
+                if table_name not in table_names:
+                    continue
+                for trigger_name, (
+                    trigger_table_name,
+                    trigger_ddl,
+                ) in sqlite_trigger_manifest.items():
+                    if trigger_table_name != table_name:
+                        continue
+                    before = (
+                        await conn.exec_driver_sql(
+                            "SELECT 1 FROM sqlite_master "
+                            "WHERE type='trigger' AND name=?",
+                            (trigger_name,),
+                        )
+                    ).first()
+                    changed = (before is None) or changed
+                    if before is None:
+                        changed_tables.add(table_name)
+                    await conn.exec_driver_sql(trigger_ddl)
+                contract = await conn.run_sync(
+                    lambda sync_conn, name=table_name: _sqlite_contract(sync_conn, name)
+                )
+                if not contract["canonical"]:
+                    raise RuntimeError(
+                        f"{table_name}.edition contract did not converge"
+                    )
+    for table_name, row_count in table_row_counts.items():
+        observe_validation_edition_migration_rows(
+            subject_type=table_name[:-1],
+            outcome=("migrated" if table_name in changed_tables else "already_current"),
+            row_count=row_count if table_name in changed_tables else 0,
+        )
+    return None if changed else "skipped"
+
+
 async def _migrate_add_spec_validation_columns() -> None:
     """Add spec validation columns: skip_contract_coverage, skip_qualitative_validation, validation_threshold, evaluations."""
     from sqlalchemy import text as sa_text
@@ -8354,6 +8790,38 @@ async def _migrate_add_spec_validation_columns() -> None:
                 )
             except Exception:
                 pass
+
+
+async def _migrate_add_code_evidence_coverage_skip() -> object:
+    """Add the Code Evidence Matrix coverage skip to existing Specs.
+
+    Fresh databases receive the column from ``Base.metadata.create_all``.  On
+    upgraded databases this pre-create step adds it with the same fail-closed
+    default as the ORM/domain contract, while preserving every existing row.
+    """
+
+    from sqlalchemy import inspect as sa_inspect
+
+    async with get_engine().begin() as conn:
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(sa_inspect(sync_conn).get_table_names())
+        )
+        if "specs" not in table_names:
+            return "skipped"
+        columns = await conn.run_sync(
+            lambda sync_conn: {
+                str(column["name"])
+                for column in sa_inspect(sync_conn).get_columns("specs")
+            }
+        )
+        if "skip_code_evidence_coverage" in columns:
+            return "skipped"
+        default = "0" if conn.dialect.name == "sqlite" else "false"
+        await conn.exec_driver_sql(
+            "ALTER TABLE specs ADD COLUMN "
+            f"skip_code_evidence_coverage BOOLEAN DEFAULT {default} NOT NULL"
+        )
+    return None
 
 
 async def _migrate_add_ir_or_columns() -> None:
@@ -8596,6 +9064,1513 @@ async def _migrate_heal_task_validation_field_names() -> None:
                 f"Task validation healing: patched {healed_count} card(s) with clean "
                 f"aliases and/or auto-populated conclusions."
             )
+
+
+def _decode_rejected_migration_validations(
+    raw: object,
+) -> tuple[list[object] | None, object]:
+    """Return a list when legacy JSON is structurally usable plus digest input."""
+
+    decoded = raw
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except (TypeError, ValueError):
+            return None, {"invalid_json": raw}
+    if decoded is None:
+        return [], []
+    if not isinstance(decoded, list):
+        return None, {"invalid_shape": repr(decoded)}
+    digest_input = [
+        item
+        for item in decoded
+        if not (
+            isinstance(item, Mapping)
+            and item.get("migration_contract")
+            == "card-rejected-lifecycle-quarantine/v1"
+        )
+    ]
+    return decoded, digest_input
+
+
+def _decode_spec_validation_pointer_repair_history(
+    raw: object,
+) -> tuple[list[object] | None, object]:
+    """Decode the immutable Spec validation history without coercion."""
+
+    decoded = raw
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except (TypeError, ValueError):
+            return None, {"invalid_json": raw}
+    if decoded is None:
+        return [], []
+    if not isinstance(decoded, list):
+        return None, {"invalid_shape": repr(decoded)}
+    return decoded, decoded
+
+
+def _classify_spec_validation_pointer_repair(
+    *,
+    spec_id: str,
+    board_id: str,
+    edition: int,
+    version: int,
+    validations: list[object] | None,
+) -> tuple[str, str | None, str, dict[str, object]]:
+    """Select only one unequivocal latest successful current-edition attempt.
+
+    Canonical Spec validations are append-only and carry a monotonically
+    increasing ``head_revision`` within the lifecycle edition.  The classifier
+    validates that fence, timestamp order, append order and stable identity;
+    it never falls back to an older success when newer evidence failed or is
+    malformed.
+    """
+
+    from datetime import datetime, timezone
+
+    def ambiguous(
+        reason: str,
+        *,
+        append_index: int | None = None,
+    ) -> tuple[str, None, str, dict[str, object]]:
+        details: dict[str, object] = {"current_edition": edition}
+        if append_index is not None:
+            details["append_index"] = append_index
+        return "ambiguous_evidence", None, reason, details
+
+    if validations is None:
+        return ambiguous("validation_history_malformed")
+
+    current: list[dict[str, object]] = []
+    seen_ids: set[str] = set()
+    previous_head = 0
+    previous_created_at: datetime | None = None
+    for append_index, raw in enumerate(validations):
+        if not isinstance(raw, Mapping):
+            return ambiguous(
+                "validation_record_malformed",
+                append_index=append_index,
+            )
+        item = dict(raw)
+        record_edition = item.get("edition")
+        validation_edition = item.get("validation_edition")
+        if record_edition is None:
+            # Core projects records without ``edition`` as legacy history-only.
+            # A current-edition alias without that canonical field is conflict.
+            if validation_edition is not None:
+                return ambiguous(
+                    "validation_edition_without_edition",
+                    append_index=append_index,
+                )
+            continue
+        if (
+            isinstance(record_edition, bool)
+            or not isinstance(record_edition, int)
+            or record_edition < 1
+        ):
+            return ambiguous(
+                "validation_edition_invalid",
+                append_index=append_index,
+            )
+        if validation_edition is not None and (
+            isinstance(validation_edition, bool)
+            or not isinstance(validation_edition, int)
+            or validation_edition != record_edition
+        ):
+            return ambiguous(
+                "validation_edition_conflict",
+                append_index=append_index,
+            )
+        if record_edition > edition:
+            return ambiguous(
+                "validation_future_edition",
+                append_index=append_index,
+            )
+        if record_edition != edition:
+            continue
+
+        validation_id = item.get("id")
+        alias_id = item.get("validation_id")
+        if (
+            not isinstance(validation_id, str)
+            or not validation_id.strip()
+            or len(validation_id.strip()) > 32
+        ):
+            return ambiguous(
+                "validation_id_invalid",
+                append_index=append_index,
+            )
+        validation_id = validation_id.strip()
+        if alias_id is not None and (
+            not isinstance(alias_id, str) or alias_id.strip() != validation_id
+        ):
+            return ambiguous(
+                "validation_id_conflict",
+                append_index=append_index,
+            )
+        if validation_id in seen_ids:
+            return ambiguous(
+                "validation_id_duplicate",
+                append_index=append_index,
+            )
+        seen_ids.add(validation_id)
+
+        for field_name, expected in (("spec_id", spec_id), ("board_id", board_id)):
+            observed = item.get(field_name)
+            if observed is not None and (
+                not isinstance(observed, str) or observed != expected
+            ):
+                return ambiguous(
+                    f"validation_{field_name}_mismatch",
+                    append_index=append_index,
+                )
+
+        outcome = item.get("outcome")
+        if outcome not in {"success", "failed"}:
+            return ambiguous(
+                "validation_outcome_invalid",
+                append_index=append_index,
+            )
+        head_revision = item.get("head_revision")
+        if (
+            isinstance(head_revision, bool)
+            or not isinstance(head_revision, int)
+            or head_revision <= previous_head
+        ):
+            return ambiguous(
+                "validation_head_order_invalid",
+                append_index=append_index,
+            )
+        subject_version = item.get("subject_version")
+        if (
+            isinstance(subject_version, bool)
+            or not isinstance(subject_version, int)
+            or subject_version < 1
+            or subject_version > version
+        ):
+            return ambiguous(
+                "validation_subject_version_invalid",
+                append_index=append_index,
+            )
+        created_raw = item.get("created_at")
+        if not isinstance(created_raw, str) or not created_raw.strip():
+            return ambiguous(
+                "validation_timestamp_invalid",
+                append_index=append_index,
+            )
+        try:
+            created_at = datetime.fromisoformat(
+                created_raw.strip().replace("Z", "+00:00")
+            )
+        except ValueError:
+            return ambiguous(
+                "validation_timestamp_invalid",
+                append_index=append_index,
+            )
+        if created_at.tzinfo is None or created_at.utcoffset() is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        else:
+            created_at = created_at.astimezone(timezone.utc)
+        if previous_created_at is not None and created_at < previous_created_at:
+            return ambiguous(
+                "validation_timestamp_order_invalid",
+                append_index=append_index,
+            )
+        previous_head = head_revision
+        previous_created_at = created_at
+        current.append(
+            {
+                "id": validation_id,
+                "outcome": outcome,
+                "head": head_revision,
+                "created_at": created_at.isoformat(),
+                "append_index": append_index,
+            }
+        )
+
+    if not current:
+        return (
+            "no_current_validation",
+            None,
+            "no_current_edition_validation",
+            {"current_edition": edition, "attempt_count": 0},
+        )
+    latest = current[-1]
+    details = {
+        "current_edition": edition,
+        "attempt_count": len(current),
+        "latest_outcome": str(latest["outcome"]),
+        "latest_append_index": int(latest["append_index"]),
+        "latest_created_at": str(latest["created_at"]),
+    }
+    if latest["outcome"] != "success":
+        return (
+            "latest_not_success",
+            str(latest["id"]),
+            "latest_current_edition_validation_failed",
+            details,
+        )
+    return (
+        "restored",
+        str(latest["id"]),
+        "latest_current_edition_validation_success",
+        details,
+    )
+
+
+def _legacy_task_validation_decision(
+    *,
+    card_id: str,
+    board_id: str,
+    validations: list[object] | None,
+) -> tuple[bool | None, str | None, str, dict[str, object]]:
+    """Classify only demonstrable accepted legacy task-validation evidence.
+
+    ``True`` means the newest append-only entry is an admitted failure and can
+    safely converge to Rejected. ``False`` is an admitted non-failure and must
+    remain in Validation. ``None`` means the evidence is incomplete or
+    contradictory, so migration deliberately leaves the lifecycle untouched.
+    """
+
+    if validations is None:
+        return None, None, "validation_history_malformed", {}
+    considered = [
+        item
+        for item in validations
+        if not (
+            isinstance(item, Mapping)
+            and item.get("migration_contract")
+            == "card-rejected-lifecycle-quarantine/v1"
+        )
+    ]
+    if not considered:
+        return None, None, "validation_history_empty", {}
+    latest = considered[-1]
+    if not isinstance(latest, Mapping):
+        return None, None, "latest_validation_malformed", {}
+
+    validation_id = latest.get("id")
+    if not isinstance(validation_id, str) or not validation_id.strip():
+        return None, None, "latest_validation_id_missing", {}
+    from okto_pulse.core.domain.card_completion import REJECTION_ID_MAX_LENGTH
+
+    validation_id = validation_id.strip()
+    if len(validation_id) > REJECTION_ID_MAX_LENGTH:
+        return (
+            None,
+            None,
+            "latest_validation_id_too_long",
+            {
+                "observed_length": len(validation_id),
+                "maximum_length": REJECTION_ID_MAX_LENGTH,
+            },
+        )
+    for key, expected in (("card_id", card_id), ("board_id", board_id)):
+        observed = latest.get(key)
+        if observed is not None and str(observed) != expected:
+            return (
+                None,
+                validation_id,
+                f"latest_validation_{key}_mismatch",
+                {"observed": str(observed), "expected": expected},
+            )
+
+    outcome_raw = latest.get("outcome")
+    verdict_raw = latest.get("verdict")
+    outcome = str(outcome_raw).strip().lower() if outcome_raw is not None else None
+    verdict = str(verdict_raw).strip().lower() if verdict_raw is not None else None
+    if outcome not in {None, "success", "failed"}:
+        return None, validation_id, "latest_validation_outcome_invalid", {}
+    if verdict not in {None, "pass", "fail"}:
+        return None, validation_id, "latest_validation_verdict_invalid", {}
+    if outcome is None and verdict is None:
+        return None, validation_id, "latest_validation_result_missing", {}
+    failed_by_outcome = outcome == "failed" if outcome is not None else None
+    failed_by_verdict = verdict == "fail" if verdict is not None else None
+    if (
+        failed_by_outcome is not None
+        and failed_by_verdict is not None
+        and failed_by_outcome != failed_by_verdict
+    ):
+        return None, validation_id, "latest_validation_result_conflict", {}
+    failed = (
+        failed_by_outcome if failed_by_outcome is not None else bool(failed_by_verdict)
+    )
+    validation_outcome = str(latest.get("validation_outcome") or "").strip().lower()
+    if validation_outcome and validation_outcome not in {"success", "failed"}:
+        return None, validation_id, "latest_validation_canonical_outcome_invalid", {}
+    expected_validation_outcome = "failed" if failed else "success"
+    if validation_outcome and validation_outcome != expected_validation_outcome:
+        return None, validation_id, "latest_validation_canonical_outcome_conflict", {}
+    completion_outcome = str(latest.get("completion_outcome") or "").strip().lower()
+    if completion_outcome and completion_outcome not in {"completed", "rejected"}:
+        return None, validation_id, "latest_validation_completion_outcome_invalid", {}
+    if failed and completion_outcome and completion_outcome != "rejected":
+        return None, validation_id, "latest_validation_completion_outcome_conflict", {}
+    expected_version = latest.get("expected_subject_version")
+    if expected_version is not None and (
+        isinstance(expected_version, bool)
+        or not isinstance(expected_version, int)
+        or expected_version < 1
+    ):
+        return None, validation_id, "latest_validation_subject_version_invalid", {}
+    recommendation = str(latest.get("recommendation") or "").strip().lower()
+    if recommendation == "reject" and not failed:
+        return None, validation_id, "latest_validation_recommendation_conflict", {}
+    details: dict[str, object] = {
+        "outcome": outcome,
+        "verdict": verdict,
+        "recommendation": recommendation or None,
+        "validation_outcome": validation_outcome or None,
+        "completion_outcome": completion_outcome or None,
+    }
+    violations = latest.get("threshold_violations")
+    if isinstance(violations, list):
+        details["threshold_violations"] = [
+            str(item).strip() for item in violations if str(item).strip()
+        ]
+    return (
+        failed,
+        validation_id,
+        ("latest_validation_failed" if failed else "latest_validation_not_failed"),
+        details,
+    )
+
+
+def _legacy_task_rejection_summary(
+    validation: Mapping[str, object],
+) -> str:
+    """Project a concise human cause without leaking migration mechanics."""
+
+    from okto_pulse.core.domain.card_completion import REJECTION_SUMMARY_MAX_LENGTH
+
+    def bounded(value: str) -> str:
+        normalized = " ".join(value.split())
+        if len(normalized) <= REJECTION_SUMMARY_MAX_LENGTH:
+            return normalized
+        return normalized[: REJECTION_SUMMARY_MAX_LENGTH - 1].rstrip() + "…"
+
+    authored = validation.get("general_justification") or validation.get("summary")
+    if isinstance(authored, str) and authored.strip():
+        return bounded(authored)
+    violations = validation.get("threshold_violations")
+    readable = (
+        [str(item).strip() for item in violations if str(item).strip()]
+        if isinstance(violations, list)
+        else []
+    )
+    if readable:
+        return bounded("Task validation failed: " + "; ".join(readable))
+    if str(validation.get("recommendation") or "").strip().lower() == "reject":
+        return "The evaluator rejected the delivered work."
+    return "The delivered work did not meet the task validation criteria."
+
+
+def _legacy_task_rejection_reason_codes(
+    validation: Mapping[str, object],
+) -> list[str]:
+    """Normalize legacy validation evidence to the authored stable codes."""
+
+    resolved: list[str] = []
+    violations = validation.get("threshold_violations")
+    if isinstance(violations, list):
+        for raw in violations:
+            token = str(raw).strip().casefold()
+            code = (
+                "confidence_below"
+                if "confidence" in token
+                else "completeness_below"
+                if "completeness" in token
+                else "drift_above"
+                if "drift" in token
+                else "reject_recommendation"
+                if "recommend" in token or "verdict" in token
+                else None
+            )
+            if code is not None and code not in resolved:
+                resolved.append(code)
+    if (
+        str(validation.get("recommendation") or "").strip().casefold() == "reject"
+        and "reject_recommendation" not in resolved
+    ):
+        resolved.append("reject_recommendation")
+    return resolved
+
+
+def _decode_rejected_migration_records(raw: object) -> list[object] | None:
+    """Decode legacy completion-rejection history without discarding evidence."""
+
+    decoded = raw
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+    if decoded is None:
+        return []
+    return decoded if isinstance(decoded, list) else None
+
+
+def _valid_legacy_rejection_history_record(
+    candidate: object,
+    *,
+    row: Mapping[str, object],
+) -> bool:
+    """Validate one persisted append-only cause record without coercion."""
+
+    from okto_pulse.core.domain.card_completion import (
+        REJECTION_CODE_MAX_LENGTH,
+        REJECTION_ID_MAX_LENGTH,
+        REJECTION_REASON_CODE_MAX_COUNT,
+        REJECTION_REASON_CODE_MAX_LENGTH,
+        REJECTION_SUMMARY_MAX_LENGTH,
+    )
+
+    if not isinstance(candidate, Mapping):
+        return False
+    record_id = str(candidate.get("id") or "").strip()
+    kind = str(candidate.get("kind") or "").strip()
+    code = str(candidate.get("code") or "").strip()
+    summary = " ".join(str(candidate.get("summary") or "").split())
+    source_id = candidate.get("source_id")
+    reason_codes = candidate.get("reason_codes")
+    if (
+        not record_id
+        or len(record_id) > REJECTION_ID_MAX_LENGTH
+        or kind not in {"task_validation", "completion_gate"}
+        or not code
+        or len(code) > REJECTION_CODE_MAX_LENGTH
+        or not summary
+        or len(summary) > REJECTION_SUMMARY_MAX_LENGTH
+        or str(candidate.get("card_id") or "") != str(row["id"])
+        or str(candidate.get("board_id") or "") != str(row["board_id"])
+        or not isinstance(reason_codes, list)
+        or len(reason_codes) > REJECTION_REASON_CODE_MAX_COUNT
+        or any(not isinstance(item, str) or not item.strip() for item in reason_codes)
+        or any(
+            len(item.strip()) > REJECTION_REASON_CODE_MAX_LENGTH
+            for item in reason_codes
+            if isinstance(item, str)
+        )
+        or not str(candidate.get("created_by") or "").strip()
+        or not str(candidate.get("created_at") or "").strip()
+        or not isinstance(candidate.get("subject_version"), int)
+        or int(candidate["subject_version"]) < 1
+    ):
+        return False
+    if source_id is not None and (
+        not isinstance(source_id, str)
+        or not source_id.strip()
+        or len(source_id.strip()) > REJECTION_ID_MAX_LENGTH
+    ):
+        return False
+    return True
+
+
+def _valid_legacy_current_rejection(
+    *,
+    row: Mapping[str, object],
+    latest_failed_validation_id: str | None,
+    validations: list[object] | None,
+    rejection_records: list[object] | None,
+) -> dict[str, str] | None:
+    """Return the exact Current cause only when its target is self-consistent."""
+
+    from okto_pulse.core.domain.card_completion import (
+        REJECTION_CODE_MAX_LENGTH,
+        REJECTION_ID_MAX_LENGTH,
+        REJECTION_SUMMARY_MAX_LENGTH,
+    )
+
+    kind = str(row.get("current_rejection_kind") or "").strip()
+    cause_id = str(row.get("current_rejection_id") or "").strip()
+    code = str(row.get("current_rejection_code") or "").strip()
+    summary = " ".join(str(row.get("current_rejection_summary") or "").split())
+    if not kind or not cause_id or not code or not summary:
+        return None
+    if (
+        len(cause_id) > REJECTION_ID_MAX_LENGTH
+        or len(code) > REJECTION_CODE_MAX_LENGTH
+        or len(summary) > REJECTION_SUMMARY_MAX_LENGTH
+    ):
+        return None
+    if (
+        kind not in {"task_validation", "completion_gate"}
+        or validations is None
+        or rejection_records is None
+    ):
+        return None
+    from okto_pulse.core.domain.card_completion import (
+        resolve_current_rejection_record,
+    )
+
+    resolved = resolve_current_rejection_record(
+        {
+            "id": str(row["id"]),
+            "board_id": str(row["board_id"]),
+            "validations": validations,
+            "rejection_records": rejection_records,
+            "current_rejection_kind": kind,
+            "current_rejection_id": cause_id,
+            "current_rejection_code": code,
+            "current_rejection_summary": summary,
+        }
+    )
+    if resolved is None:
+        return None
+    if kind == "task_validation" and (
+        latest_failed_validation_id is None
+        or resolved.source_id != latest_failed_validation_id
+    ):
+        return None
+    return {"kind": kind, "id": cause_id, "code": code, "summary": summary}
+
+
+async def _migrate_card_rejected_lifecycle() -> str | None:
+    """Converge proven legacy failed validations into the Rejected lifecycle.
+
+    Only Normal/Bug cards whose newest accepted validation explicitly failed
+    are moved. Test cards and ambiguous evidence stay in Validation and receive
+    an immutable audit decision. Existing Rejected cards are audited too: an
+    unequivocal legacy validation repairs their Current cause, while an
+    unresolvable cause receives a deterministic completion-gate quarantine
+    record so the card remains explainable and administrable. Existing Rejected
+    rows keep their relative order; migrated rows append in their former
+    Validation order. Both affected columns are then densely resequenced with
+    active rows before archived rows.
+    """
+
+    from datetime import datetime, timezone
+
+    from sqlalchemy import JSON as sa_JSON
+    from sqlalchemy import bindparam
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import select as sa_select
+    from sqlalchemy import text as sa_text
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        Card,
+        CardRejectedLifecycleMigrationRow,
+    )
+    from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
+
+    engine = get_engine()
+
+    def _table_contract(sync_conn: object) -> tuple[set[str], set[str]]:
+        inspector = sa_inspect(sync_conn)
+        tables = set(inspector.get_table_names())
+        columns = (
+            {str(item["name"]) for item in inspector.get_columns("cards")}
+            if "cards" in tables
+            else set()
+        )
+        return tables, columns
+
+    changed = False
+    async with engine.begin() as conn:
+        if conn.dialect.name not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "card rejected lifecycle migration supports only SQLite and PostgreSQL"
+            )
+        tables, columns = await conn.run_sync(_table_contract)
+        if "cards" not in tables:
+            return "skipped"
+        column_ddl = {
+            "rejection_records": "JSON NOT NULL DEFAULT '[]'",
+            "current_rejection_kind": "VARCHAR(32)",
+            "current_rejection_id": "VARCHAR(128)",
+            "current_rejection_code": "VARCHAR(128)",
+            "current_rejection_summary": "TEXT",
+        }
+        for name, ddl in column_ddl.items():
+            if name in columns:
+                continue
+            await conn.execute(sa_text(f"ALTER TABLE cards ADD COLUMN {name} {ddl}"))
+            changed = True
+
+        # Deployments that briefly ran the nullable bridge must converge to
+        # the persistent append-only-list invariant before any projection is
+        # served.  The Core boundary also normalizes legacy ``NULL`` values,
+        # but storage remains authoritative and therefore cannot retain one.
+        null_history = await conn.scalar(
+            sa_text("SELECT COUNT(*) FROM cards WHERE rejection_records IS NULL")
+        )
+        if int(null_history or 0):
+            await conn.execute(
+                sa_text(
+                    "UPDATE cards SET rejection_records = '[]' "
+                    "WHERE rejection_records IS NULL"
+                )
+            )
+            changed = True
+
+        if CardRejectedLifecycleMigrationRow.__tablename__ not in tables:
+            await conn.run_sync(
+                lambda sync_conn: CardRejectedLifecycleMigrationRow.__table__.create(
+                    sync_conn, checkfirst=True
+                )
+            )
+            changed = True
+
+        audit_contract = await conn.run_sync(
+            (
+                lambda sync_conn: _sqlite_owned_table_contract(
+                    sync_conn, CardRejectedLifecycleMigrationRow.__table__
+                )
+            )
+            if conn.dialect.name == "sqlite"
+            else (
+                lambda sync_conn: _postgresql_owned_table_contract(
+                    sync_conn, CardRejectedLifecycleMigrationRow.__table__
+                )
+            )
+        )
+        if audit_contract["observed"] != audit_contract["expected"]:
+            raise RuntimeError(
+                "card rejected lifecycle migration audit has a non-canonical contract"
+            )
+        _, final_card_columns = await conn.run_sync(_table_contract)
+        missing_card_columns = set(column_ddl) - final_card_columns
+        if missing_card_columns:
+            raise RuntimeError(
+                "card rejected lifecycle migration columns are missing: "
+                + ", ".join(sorted(missing_card_columns))
+            )
+        card_contract = await conn.run_sync(
+            (lambda sync_conn: _sqlite_owned_table_contract(sync_conn, Card.__table__))
+            if conn.dialect.name == "sqlite"
+            else (
+                lambda sync_conn: _postgresql_owned_table_contract(
+                    sync_conn, Card.__table__
+                )
+            )
+        )
+        expected_rejection_columns = tuple(
+            column
+            for column in card_contract["expected"]["columns"]
+            if column[0] in column_ddl
+        )
+        observed_rejection_columns = tuple(
+            column
+            for column in card_contract["observed"]["columns"]
+            if column[0] in column_ddl
+        )
+        if observed_rejection_columns != expected_rejection_columns:
+            raise RuntimeError(
+                "card rejected lifecycle columns have a non-canonical contract"
+            )
+
+        rows = list(
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT id, board_id, card_type, status, position, archived, "
+                        "validations, rejection_records, current_rejection_kind, "
+                        "current_rejection_id, current_rejection_code, "
+                        "current_rejection_summary, created_at, updated_at, "
+                        "policy_version "
+                        "FROM cards WHERE status IN ('validation', 'rejected') "
+                        "ORDER BY board_id, status, archived, position, id DESC"
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        if not rows:
+            return None if changed else "skipped"
+
+        audit_table = CardRejectedLifecycleMigrationRow.__table__
+        migrated_ids: set[str] = set()
+        affected_boards: set[str] = set()
+
+        for row in rows:
+            card_id = str(row["id"])
+            board_id = str(row["board_id"])
+            status_value = str(row["status"])
+            card_type = str(row["card_type"] or "normal").strip().lower()
+            validations, digest_value = _decode_rejected_migration_validations(
+                row["validations"]
+            )
+            rejection_records = _decode_rejected_migration_records(
+                row["rejection_records"]
+            )
+            decision, validation_id, reason_code, evidence_details = (
+                _legacy_task_validation_decision(
+                    card_id=card_id,
+                    board_id=board_id,
+                    validations=validations,
+                )
+            )
+            validation_projection_changed = False
+            if decision is True and validations is not None and validation_id:
+                latest = validations[-1]
+                if not isinstance(latest, Mapping):
+                    raise RuntimeError(
+                        "card rejected migration classifier lost its evidence"
+                    )
+                current_record_id = str(row["current_rejection_id"] or "").strip()
+                current_record = next(
+                    (
+                        candidate
+                        for candidate in rejection_records or []
+                        if isinstance(candidate, Mapping)
+                        and candidate.get("id") == current_record_id
+                        and candidate.get("source_id") == validation_id
+                    ),
+                    None,
+                )
+                expected_subject_version = latest.get("expected_subject_version")
+                if not isinstance(expected_subject_version, int):
+                    record_version = (
+                        current_record.get("subject_version")
+                        if isinstance(current_record, Mapping)
+                        else None
+                    )
+                    expected_subject_version = (
+                        record_version
+                        if isinstance(record_version, int) and record_version >= 1
+                        else int(row["policy_version"] or 1)
+                    )
+                canonical_latest = {
+                    **latest,
+                    "card_id": card_id,
+                    "board_id": board_id,
+                    "expected_subject_version": expected_subject_version,
+                    "validation_outcome": "failed",
+                    "completion_outcome": "rejected",
+                }
+                canonical_validations = list(validations)
+                canonical_validations[-1] = canonical_latest
+                validation_projection_changed = canonical_sha256(
+                    canonical_validations
+                ) != canonical_sha256(validations)
+                validations = canonical_validations
+                digest_value = canonical_validations
+                evidence_details = {
+                    **evidence_details,
+                    "validation_outcome": "failed",
+                    "completion_outcome": "rejected",
+                }
+            source_digest = canonical_sha256(
+                {
+                    "contract": "card-rejected-lifecycle-migration/v2",
+                    "card_id": card_id,
+                    "board_id": board_id,
+                    "card_type": card_type,
+                    "validations": digest_value,
+                }
+            )
+            migrated_at = row["updated_at"] or row["created_at"]
+            if isinstance(migrated_at, str):
+                try:
+                    migrated_at = datetime.fromisoformat(
+                        migrated_at.replace("Z", "+00:00")
+                    )
+                except ValueError as exc:
+                    raise RuntimeError(
+                        "card rejected migration timestamp is invalid: " + card_id
+                    ) from exc
+            if not isinstance(migrated_at, datetime):
+                raise RuntimeError(
+                    "card rejected migration timestamp is missing: " + card_id
+                )
+            if migrated_at.tzinfo is None or migrated_at.utcoffset() is None:
+                migrated_at = migrated_at.replace(tzinfo=timezone.utc)
+
+            def _task_validation_target() -> tuple[dict[str, str], list[object]]:
+                """Return one deterministic/adopted record and its Current pointer."""
+
+                if validations is None or not validation_id:
+                    raise RuntimeError(
+                        "card rejected migration lost its task validation evidence: "
+                        + card_id
+                    )
+                if rejection_records is None:
+                    raise RuntimeError(
+                        "card rejected migration requires readable rejection history: "
+                        + card_id
+                    )
+                latest = validations[-1]
+                if not isinstance(latest, Mapping):
+                    raise RuntimeError(
+                        "card rejected migration classifier lost its evidence"
+                    )
+                summary = _legacy_task_rejection_summary(latest)
+                matching = [
+                    candidate
+                    for candidate in rejection_records
+                    if isinstance(candidate, Mapping)
+                    and _valid_legacy_rejection_history_record(candidate, row=row)
+                    and candidate.get("kind") == "task_validation"
+                    and candidate.get("source_id") == validation_id
+                    and candidate.get("code") == "task_validation_failed"
+                ]
+                if len(matching) > 1:
+                    raise RuntimeError(
+                        "card rejected migration found duplicate task causes: "
+                        + card_id
+                    )
+                if matching:
+                    record = dict(matching[0])
+                else:
+                    record_id = (
+                        "rej_mig_"
+                        + canonical_sha256(
+                            {
+                                "contract": "card-rejected-lifecycle-task-record/v2",
+                                "card_id": card_id,
+                                "board_id": board_id,
+                                "validation_id": validation_id,
+                            }
+                        )[:40]
+                    )
+                    authored_by = (
+                        latest.get("reviewer_id")
+                        or latest.get("evaluator_id")
+                        or "system:rejected-lifecycle-migration"
+                    )
+                    authored_at = latest.get("created_at") or latest.get("submitted_at")
+                    if (
+                        not isinstance(authored_at, str)
+                        or not authored_at.strip()
+                        or len(authored_at.strip()) > 64
+                    ):
+                        authored_at = migrated_at.isoformat()
+                    subject_version = latest.get("expected_subject_version")
+                    if not isinstance(subject_version, int) or subject_version < 1:
+                        subject_version = int(row["policy_version"] or 1)
+                    record = {
+                        "id": record_id,
+                        "card_id": card_id,
+                        "board_id": board_id,
+                        "kind": "task_validation",
+                        "source_id": validation_id,
+                        "code": "task_validation_failed",
+                        "summary": summary,
+                        "reason_codes": _legacy_task_rejection_reason_codes(latest),
+                        "created_by": str(authored_by).strip()
+                        or "system:rejected-lifecycle-migration",
+                        "created_at": authored_at.strip(),
+                        "subject_version": subject_version,
+                    }
+                    same_id = next(
+                        (
+                            candidate
+                            for candidate in rejection_records
+                            if isinstance(candidate, Mapping)
+                            and candidate.get("id") == record_id
+                        ),
+                        None,
+                    )
+                    if same_id is not None:
+                        if canonical_sha256(same_id) != canonical_sha256(record):
+                            raise RuntimeError(
+                                "card rejected migration task record conflict: "
+                                + card_id
+                            )
+                        record = dict(same_id)
+                target_records = list(rejection_records)
+                if not any(
+                    isinstance(candidate, Mapping)
+                    and candidate.get("id") == record["id"]
+                    for candidate in target_records
+                ):
+                    target_records.append(record)
+                return (
+                    {
+                        "kind": "task_validation",
+                        "id": str(record["id"]),
+                        "code": str(record["code"]),
+                        "summary": " ".join(str(record["summary"]).split()),
+                    },
+                    target_records,
+                )
+
+            target_cause: dict[str, str] | None = None
+            target_rejection_records: list[object] | None = None
+            requires_current_update = False
+            if status_value == "validation":
+                if card_type == "test":
+                    state = "excluded_test"
+                    audit_reason = "test_cards_never_auto_migrate"
+                elif card_type not in {"normal", "bug"}:
+                    state = "ambiguous_evidence"
+                    audit_reason = "card_type_unrecognized"
+                elif decision is True and validations is not None and validation_id:
+                    state = "migrated"
+                    audit_reason = reason_code
+                    target_cause, target_rejection_records = _task_validation_target()
+                elif decision is False:
+                    state = "not_rejected"
+                    audit_reason = reason_code
+                else:
+                    state = "ambiguous_evidence"
+                    audit_reason = reason_code
+            else:
+                affected_boards.add(board_id)
+                current_cause = _valid_legacy_current_rejection(
+                    row=row,
+                    latest_failed_validation_id=(
+                        validation_id if decision is True else None
+                    ),
+                    validations=validations,
+                    rejection_records=rejection_records,
+                )
+                if current_cause is not None and (
+                    card_type in {"normal", "bug"}
+                    or current_cause["kind"] == "completion_gate"
+                ):
+                    target_cause = current_cause
+                    state = (
+                        "quarantined"
+                        if current_cause["code"] == "legacy_rejected_cause_unresolved"
+                        else "already_rejected"
+                    )
+                    audit_reason = (
+                        "legacy_rejected_cause_unresolved"
+                        if state == "quarantined"
+                        else (
+                            reason_code
+                            if current_cause["kind"] == "task_validation"
+                            else "current_rejection_cause_valid"
+                        )
+                    )
+                    if validation_projection_changed:
+                        target_rejection_records = list(rejection_records or [])
+                        requires_current_update = True
+                elif (
+                    card_type in {"normal", "bug"}
+                    and decision is True
+                    and validations is not None
+                    and validation_id
+                ):
+                    target_cause, target_rejection_records = _task_validation_target()
+                    state = "already_rejected"
+                    audit_reason = reason_code
+                    requires_current_update = True
+                else:
+                    if rejection_records is None or validations is None:
+                        raise RuntimeError(
+                            "card rejected lifecycle quarantine requires readable "
+                            "validation and rejection histories: " + card_id
+                        )
+                    quarantine_id = canonical_sha256(
+                        {
+                            "contract": "card-rejected-lifecycle-quarantine/v1",
+                            "card_id": card_id,
+                            "source_digest": source_digest,
+                        }
+                    )
+                    quarantine_summary = (
+                        "This legacy Rejected card has no verifiable rejection "
+                        "cause. Review its validation history before starting "
+                        "rework."
+                    )
+                    quarantine_reason = (
+                        "test_card_rejected_state_unexpected"
+                        if card_type == "test"
+                        else reason_code
+                    )
+                    quarantine_subject_version = int(row["policy_version"] or 1)
+                    quarantine_validation_id = (
+                        "val_mig_"
+                        + canonical_sha256(
+                            {
+                                "contract": (
+                                    "card-rejected-lifecycle-quarantine-validation/v1"
+                                ),
+                                "card_id": card_id,
+                                "source_digest": source_digest,
+                            }
+                        )[:40]
+                    )
+                    quarantine_failure = {
+                        "code": "legacy_rejected_cause_unresolved",
+                        "summary": quarantine_summary,
+                        "reason_codes": [quarantine_reason],
+                    }
+                    quarantine_validation = {
+                        "id": quarantine_validation_id,
+                        "card_id": card_id,
+                        "board_id": board_id,
+                        "reviewer_id": "system:rejected-lifecycle-migration",
+                        "reviewer_name": "Rejected lifecycle migration",
+                        "outcome": "success",
+                        "verdict": "pass",
+                        "recommendation": "approve",
+                        "validation_outcome": "success",
+                        "completion_outcome": "rejected",
+                        "completion_gate_failures": [quarantine_failure],
+                        "general_justification": quarantine_summary,
+                        "expected_subject_version": quarantine_subject_version,
+                        "created_at": migrated_at.isoformat(),
+                        "migration_contract": ("card-rejected-lifecycle-quarantine/v1"),
+                    }
+                    existing_quarantine_validation = next(
+                        (
+                            candidate
+                            for candidate in validations
+                            if isinstance(candidate, Mapping)
+                            and candidate.get("id") == quarantine_validation_id
+                        ),
+                        None,
+                    )
+                    if existing_quarantine_validation is not None and canonical_sha256(
+                        existing_quarantine_validation
+                    ) != canonical_sha256(quarantine_validation):
+                        raise RuntimeError(
+                            "card rejected lifecycle quarantine validation conflict: "
+                            + card_id
+                        )
+                    target_validations = list(validations)
+                    if existing_quarantine_validation is None:
+                        target_validations.append(quarantine_validation)
+                    validations = target_validations
+                    quarantine_record = {
+                        "id": quarantine_id,
+                        "card_id": card_id,
+                        "board_id": board_id,
+                        "kind": "completion_gate",
+                        "source_id": quarantine_validation_id,
+                        "code": "legacy_rejected_cause_unresolved",
+                        "summary": quarantine_summary,
+                        "reason_codes": [quarantine_reason],
+                        "created_by": "system:rejected-lifecycle-migration",
+                        "created_at": migrated_at.isoformat(),
+                        "subject_version": quarantine_subject_version,
+                    }
+                    existing_quarantine = next(
+                        (
+                            candidate
+                            for candidate in rejection_records
+                            if isinstance(candidate, Mapping)
+                            and candidate.get("id") == quarantine_id
+                        ),
+                        None,
+                    )
+                    if existing_quarantine is not None and canonical_sha256(
+                        existing_quarantine
+                    ) != canonical_sha256(quarantine_record):
+                        raise RuntimeError(
+                            "card rejected lifecycle quarantine record conflict: "
+                            + card_id
+                        )
+                    target_rejection_records = list(rejection_records)
+                    if existing_quarantine is None:
+                        target_rejection_records.append(quarantine_record)
+                    target_cause = {
+                        "kind": "completion_gate",
+                        "id": quarantine_id,
+                        "code": "legacy_rejected_cause_unresolved",
+                        "summary": quarantine_summary,
+                    }
+                    state = "quarantined"
+                    audit_reason = "legacy_rejected_cause_unresolved"
+                    requires_current_update = True
+            migration_id = canonical_sha256(
+                {
+                    "contract": "card-rejected-lifecycle-migration-audit/v2",
+                    "card_id": card_id,
+                    "source_digest": source_digest,
+                }
+            )
+            audit_details = {
+                "card_type": card_type,
+                "evidence": evidence_details,
+                "cause": target_cause,
+            }
+            existing = (
+                (
+                    await conn.execute(
+                        sa_select(audit_table).where(
+                            audit_table.c.card_id == card_id,
+                            audit_table.c.source_digest == source_digest,
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                existing is not None
+                and existing["migration_state"] == "migrated"
+                and status_value == "rejected"
+                and state == "already_rejected"
+                and target_cause is not None
+                and target_cause["kind"] == "task_validation"
+            ):
+                # This is the stable replay of a row migrated from Validation
+                # during the first run, not a distinct already-Rejected input.
+                state = "migrated"
+            # This exact evidence has already been considered. In particular,
+            # do not re-reject a card that a human moved back through rework.
+            if existing is not None:
+                expected_existing = {
+                    "migration_id": migration_id,
+                    "board_id": board_id,
+                    "migration_state": state,
+                    "latest_validation_id": validation_id,
+                    "reason_code": audit_reason,
+                    "source_digest": source_digest,
+                }
+                for field_name, expected_value in expected_existing.items():
+                    if existing[field_name] != expected_value:
+                        raise RuntimeError(
+                            "card rejected lifecycle migration audit conflict: "
+                            f"{card_id}:{field_name}"
+                        )
+                if canonical_sha256(existing["details"]) != canonical_sha256(
+                    audit_details
+                ):
+                    raise RuntimeError(
+                        "card rejected lifecycle migration audit conflict: "
+                        f"{card_id}:details"
+                    )
+                if not requires_current_update:
+                    continue
+            else:
+                await conn.execute(
+                    audit_table.insert().values(
+                        migration_id=migration_id,
+                        board_id=board_id,
+                        card_id=card_id,
+                        migration_state=state,
+                        latest_validation_id=validation_id,
+                        reason_code=audit_reason,
+                        source_digest=source_digest,
+                        details=audit_details,
+                        migrated_at=migrated_at,
+                    )
+                )
+                changed = True
+
+            if status_value == "rejected":
+                if not requires_current_update or target_cause is None:
+                    continue
+                if target_rejection_records is None or validations is None:
+                    raise RuntimeError(
+                        "card rejected migration lost its causal histories: " + card_id
+                    )
+                update_values: dict[str, object] = {
+                    "card_id": card_id,
+                    "board_id": board_id,
+                    "validations": validations,
+                    "rejection_records": target_rejection_records,
+                    "kind": target_cause["kind"],
+                    "cause_id": target_cause["id"],
+                    "code": target_cause["code"],
+                    "summary": target_cause["summary"],
+                    "policy_version": int(row["policy_version"] or 1),
+                }
+                update_statement = sa_text(
+                    "UPDATE cards SET validations = :validations, "
+                    "rejection_records = :rejection_records, "
+                    "current_rejection_kind = :kind, "
+                    "current_rejection_id = :cause_id, "
+                    "current_rejection_code = :code, "
+                    "current_rejection_summary = :summary, "
+                    "policy_version = policy_version + 1 "
+                    "WHERE id = :card_id AND board_id = :board_id "
+                    "AND status = 'rejected' "
+                    "AND policy_version = :policy_version"
+                ).bindparams(
+                    bindparam("validations", type_=sa_JSON),
+                    bindparam("rejection_records", type_=sa_JSON),
+                )
+                result = await conn.execute(update_statement, update_values)
+                if result.rowcount != 1:
+                    raise RuntimeError(
+                        "card rejected migration lost its cause/version fence: "
+                        + card_id
+                    )
+                changed = True
+                continue
+
+            if state != "migrated" or validations is None or validation_id is None:
+                continue
+            latest = validations[-1]
+            if not isinstance(latest, Mapping):  # fenced by the classifier
+                raise RuntimeError("rejected migration classifier lost its evidence")
+            if target_cause is None or target_rejection_records is None:
+                raise RuntimeError(
+                    "card rejected migration lost its materialized cause: " + card_id
+                )
+            result = await conn.execute(
+                sa_text(
+                    "UPDATE cards SET status = 'rejected', "
+                    "validations = :validations, "
+                    "rejection_records = :rejection_records, "
+                    "current_rejection_kind = 'task_validation', "
+                    "current_rejection_id = :cause_id, "
+                    "current_rejection_code = 'task_validation_failed', "
+                    "current_rejection_summary = :summary, "
+                    "policy_version = policy_version + 1 "
+                    "WHERE id = :card_id AND board_id = :board_id "
+                    "AND status = 'validation' AND policy_version = :policy_version"
+                ).bindparams(
+                    bindparam("validations", type_=sa_JSON),
+                    bindparam("rejection_records", type_=sa_JSON),
+                ),
+                {
+                    "card_id": card_id,
+                    "board_id": board_id,
+                    "validations": validations,
+                    "rejection_records": target_rejection_records,
+                    "cause_id": target_cause["id"],
+                    "summary": target_cause["summary"],
+                    "policy_version": int(row["policy_version"] or 1),
+                },
+            )
+            if result.rowcount != 1:
+                raise RuntimeError(
+                    "card rejected migration lost its status/version fence: " + card_id
+                )
+            migrated_ids.add(card_id)
+            affected_boards.add(board_id)
+
+        def _canonical_order(
+            items: list[Mapping[str, object]],
+        ) -> list[Mapping[str, object]]:
+            by_id = sorted(items, key=lambda item: str(item["id"]), reverse=True)
+            return sorted(
+                by_id,
+                key=lambda item: (
+                    bool(item["archived"]),
+                    int(item["position"] or 0),
+                ),
+            )
+
+        for board_id in affected_boards:
+            board_rows = [row for row in rows if str(row["board_id"]) == board_id]
+            existing_rejected = [
+                row for row in board_rows if str(row["status"]) == "rejected"
+            ]
+            migrated = [row for row in board_rows if str(row["id"]) in migrated_ids]
+            remaining_validation = [
+                row
+                for row in board_rows
+                if str(row["status"]) == "validation"
+                and str(row["id"]) not in migrated_ids
+            ]
+
+            def _existing_then_migrated(
+                archived: bool,
+            ) -> list[Mapping[str, object]]:
+                return [
+                    *[
+                        item
+                        for item in _canonical_order(existing_rejected)
+                        if bool(item["archived"]) is archived
+                    ],
+                    *[
+                        item
+                        for item in _canonical_order(migrated)
+                        if bool(item["archived"]) is archived
+                    ],
+                ]
+
+            rejected_order = [
+                *_existing_then_migrated(False),
+                *_existing_then_migrated(True),
+            ]
+            validation_order = _canonical_order(remaining_validation)
+            for ordered in (rejected_order, validation_order):
+                for position, item in enumerate(ordered):
+                    if int(item["position"] or 0) == position:
+                        continue
+                    await conn.execute(
+                        sa_text("UPDATE cards SET position = :position WHERE id = :id"),
+                        {"id": str(item["id"]), "position": position},
+                    )
+                    changed = True
+
+    return None if changed else "skipped"
+
+
+async def _migrate_restore_spec_validation_pointers() -> str | None:
+    """Repair only demonstrably lost current Spec Validation pointers.
+
+    Historical Code Traceability effects could clear the pointer while
+    preserving the append-only successful validation.  Eligible lifecycle
+    states are Approved or beyond; the exact latest current-edition
+    attempt must be a unique canonical success.  Every other classification is
+    persisted as an immutable fail-closed audit decision.
+    """
+
+    from datetime import datetime, timezone
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import select as sa_select
+    from sqlalchemy import text as sa_text
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        SpecValidationPointerRepairRow,
+    )
+    from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
+
+    changed = False
+    async with get_engine().begin() as conn:
+        tables = set(
+            await conn.run_sync(
+                lambda sync_conn: sa_inspect(sync_conn).get_table_names()
+            )
+        )
+        if "specs" not in tables:
+            return "skipped"
+        audit_table = SpecValidationPointerRepairRow.__table__
+        if audit_table.name not in tables:
+            await conn.run_sync(
+                lambda sync_conn: audit_table.create(sync_conn, checkfirst=True)
+            )
+            changed = True
+        audit_contract = await conn.run_sync(
+            (lambda sync_conn: _sqlite_owned_table_contract(sync_conn, audit_table))
+            if conn.dialect.name == "sqlite"
+            else (
+                lambda sync_conn: _postgresql_owned_table_contract(
+                    sync_conn, audit_table
+                )
+            )
+        )
+        if audit_contract["observed"] != audit_contract["expected"]:
+            raise RuntimeError(
+                "spec validation pointer repair audit has a non-canonical contract"
+            )
+
+        rows = list(
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT id, board_id, status, edition, version, validations "
+                        "FROM specs WHERE current_validation_id IS NULL "
+                        "AND status IN ('approved', 'validated', 'in_progress', 'done') "
+                        "ORDER BY board_id, id"
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        for row in rows:
+            spec_id = str(row["id"])
+            board_id = str(row["board_id"])
+            status = str(row["status"])
+            edition = int(row["edition"])
+            version = int(row["version"])
+            validations, digest_input = _decode_spec_validation_pointer_repair_history(
+                row["validations"]
+            )
+            state, candidate_id, reason_code, details = (
+                _classify_spec_validation_pointer_repair(
+                    spec_id=spec_id,
+                    board_id=board_id,
+                    edition=edition,
+                    version=version,
+                    validations=validations,
+                )
+            )
+            source_digest = canonical_sha256(
+                {
+                    "contract": "spec-validation-pointer-repair/v1",
+                    "spec_id": spec_id,
+                    "board_id": board_id,
+                    "status": status,
+                    "edition": edition,
+                    "version": version,
+                    "validations": digest_input,
+                    "current_validation_id": None,
+                }
+            )
+            migration_id = canonical_sha256(
+                {
+                    "contract": "spec-validation-pointer-repair-audit/v1",
+                    "spec_id": spec_id,
+                    "source_digest": source_digest,
+                }
+            )
+            audit_details = {
+                **details,
+                "eligible_status": status,
+            }
+            existing = (
+                (
+                    await conn.execute(
+                        sa_select(audit_table).where(
+                            audit_table.c.spec_id == spec_id,
+                            audit_table.c.source_digest == source_digest,
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if existing is not None:
+                expected = {
+                    "migration_id": migration_id,
+                    "board_id": board_id,
+                    "migration_state": state,
+                    "candidate_validation_id": candidate_id,
+                    "reason_code": reason_code,
+                    "source_digest": source_digest,
+                }
+                for field_name, expected_value in expected.items():
+                    if existing[field_name] != expected_value:
+                        raise RuntimeError(
+                            "spec validation pointer repair audit conflict: "
+                            f"{spec_id}:{field_name}"
+                        )
+                if canonical_sha256(existing["details"]) != canonical_sha256(
+                    audit_details
+                ):
+                    raise RuntimeError(
+                        "spec validation pointer repair audit conflict: "
+                        f"{spec_id}:details"
+                    )
+            else:
+                await conn.execute(
+                    audit_table.insert().values(
+                        migration_id=migration_id,
+                        board_id=board_id,
+                        spec_id=spec_id,
+                        migration_state=state,
+                        candidate_validation_id=candidate_id,
+                        reason_code=reason_code,
+                        source_digest=source_digest,
+                        details=audit_details,
+                        repaired_at=datetime.now(timezone.utc),
+                    )
+                )
+                changed = True
+
+            if state != "restored" or candidate_id is None:
+                continue
+            result = await conn.execute(
+                sa_text(
+                    "UPDATE specs SET current_validation_id = :candidate_id "
+                    "WHERE id = :spec_id AND board_id = :board_id "
+                    "AND status = :status AND edition = :edition "
+                    "AND version = :version AND current_validation_id IS NULL"
+                ),
+                {
+                    "candidate_id": candidate_id,
+                    "spec_id": spec_id,
+                    "board_id": board_id,
+                    "status": status,
+                    "edition": edition,
+                    "version": version,
+                },
+            )
+            if result.rowcount != 1:
+                raise RuntimeError(
+                    "spec validation pointer repair lost its lifecycle fence: "
+                    + spec_id
+                )
+            changed = True
+
+    return None if changed else "skipped"
 
 
 async def _migrate_status_renames() -> None:
@@ -10279,9 +12254,7 @@ async def _migrate_guideline_policy_lifecycle_substrate() -> str | None:
         revision_columns = await conn.run_sync(
             lambda sync_conn: {
                 str(column["name"])
-                for column in sa_inspect(sync_conn).get_columns(
-                    revision_table
-                )
+                for column in sa_inspect(sync_conn).get_columns(revision_table)
             }
         )
         if "legacy_version_text" not in revision_columns:
@@ -10300,9 +12273,7 @@ async def _migrate_guideline_policy_lifecycle_substrate() -> str | None:
                 "AND legacy_version_text IS NULL"
             )
         )
-        changed = (
-            changed or int(backfilled_legacy_versions.rowcount or 0) > 0
-        )
+        changed = changed or int(backfilled_legacy_versions.rowcount or 0) > 0
         if GuidelineImportBindingCandidateRow.__tablename__ not in table_names:
             await conn.run_sync(
                 lambda sync_conn: GuidelineImportBindingCandidateRow.__table__.create(
@@ -10320,8 +12291,7 @@ async def _migrate_guideline_policy_lifecycle_substrate() -> str | None:
             )
             if noop_contract["observed"] != noop_contract["expected"]:
                 raise RuntimeError(
-                    "guideline revision no-op ledger has a non-canonical "
-                    "contract"
+                    "guideline revision no-op ledger has a non-canonical contract"
                 )
             expected_noop_triggers = guideline_revision_noop_trigger_manifest()
             noop_trigger_rows = (
@@ -10331,11 +12301,7 @@ async def _migrate_guideline_policy_lifecycle_substrate() -> str | None:
                             "SELECT name, tbl_name, sql FROM sqlite_master "
                             "WHERE type = 'trigger' AND name LIKE :prefix"
                         ),
-                        {
-                            "prefix": (
-                                f"{GUIDELINE_REVISION_NOOP_TRIGGER_PREFIX}%"
-                            )
-                        },
+                        {"prefix": (f"{GUIDELINE_REVISION_NOOP_TRIGGER_PREFIX}%")},
                     )
                 )
                 .mappings()
@@ -10346,12 +12312,12 @@ async def _migrate_guideline_policy_lifecycle_substrate() -> str | None:
             }
             if set(observed_noop_triggers) - set(expected_noop_triggers):
                 raise RuntimeError(
-                    "guideline revision no-op ledger has unexpected owned "
-                    "triggers"
+                    "guideline revision no-op ledger has unexpected owned triggers"
                 )
-            for trigger_name, (table_name, trigger_sql) in (
-                expected_noop_triggers.items()
-            ):
+            for trigger_name, (
+                table_name,
+                trigger_sql,
+            ) in expected_noop_triggers.items():
                 observed = observed_noop_triggers.get(trigger_name)
                 if observed is None:
                     await conn.execute(sa_text(trigger_sql))
@@ -10367,8 +12333,7 @@ async def _migrate_guideline_policy_lifecycle_substrate() -> str | None:
                     )
                 ):
                     raise RuntimeError(
-                        "guideline revision no-op trigger drift: "
-                        + trigger_name
+                        "guideline revision no-op trigger drift: " + trigger_name
                     )
             candidate_contract = await conn.run_sync(
                 lambda sync_conn: _sqlite_owned_table_contract(
@@ -10381,9 +12346,7 @@ async def _migrate_guideline_policy_lifecycle_substrate() -> str | None:
                     "guideline import binding candidate table has a "
                     "non-canonical contract"
                 )
-            expected_triggers = (
-                guideline_import_binding_candidate_trigger_manifest()
-            )
+            expected_triggers = guideline_import_binding_candidate_trigger_manifest()
             trigger_rows = (
                 (
                     await conn.execute(
@@ -10391,29 +12354,20 @@ async def _migrate_guideline_policy_lifecycle_substrate() -> str | None:
                             "SELECT name, tbl_name, sql FROM sqlite_master "
                             "WHERE type = 'trigger' AND name LIKE :prefix"
                         ),
-                        {
-                            "prefix": (
-                                f"{GUIDELINE_IMPORT_CANDIDATE_TRIGGER_PREFIX}%"
-                            )
-                        },
+                        {"prefix": (f"{GUIDELINE_IMPORT_CANDIDATE_TRIGGER_PREFIX}%")},
                     )
                 )
                 .mappings()
                 .all()
             )
-            observed_triggers = {
-                str(row["name"]): row for row in trigger_rows
-            }
+            observed_triggers = {str(row["name"]): row for row in trigger_rows}
             unexpected = set(observed_triggers) - set(expected_triggers)
             if unexpected:
                 raise RuntimeError(
                     "guideline import candidate has unexpected owned "
-                    "triggers: "
-                    + ", ".join(sorted(unexpected))
+                    "triggers: " + ", ".join(sorted(unexpected))
                 )
-            for trigger_name, (table_name, trigger_sql) in (
-                expected_triggers.items()
-            ):
+            for trigger_name, (table_name, trigger_sql) in expected_triggers.items():
                 observed = observed_triggers.get(trigger_name)
                 if observed is None:
                     await conn.execute(sa_text(trigger_sql))
@@ -10429,8 +12383,7 @@ async def _migrate_guideline_policy_lifecycle_substrate() -> str | None:
                     )
                 ):
                     raise RuntimeError(
-                        "guideline import candidate trigger drift: "
-                        + trigger_name
+                        "guideline import candidate trigger drift: " + trigger_name
                     )
         else:
             noop_function_ddl, noop_trigger_ddl = (
@@ -10473,9 +12426,7 @@ async def _migrate_guideline_policy_lifecycle_substrate() -> str | None:
                 or str(noop_trigger_rows[0]["enabled"]) != "O"
                 or int(noop_trigger_rows[0]["trigger_type"]) != 31
             ):
-                raise RuntimeError(
-                    "guideline revision no-op PostgreSQL trigger drift"
-                )
+                raise RuntimeError("guideline revision no-op PostgreSQL trigger drift")
             function_ddl, trigger_ddl = (
                 guideline_import_binding_candidate_postgresql_ddl()
             )
@@ -12064,7 +14015,7 @@ async def _migrate_guideline_impact_v1_schema() -> str | None:
 
     async def _install_postgresql_triggers(conn: object) -> bool:
         function_name = "guideline_impact_v2_guard"
-        function_ddl = f'''
+        function_ddl = f"""
 CREATE OR REPLACE FUNCTION "{function_name}"()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -13018,7 +14969,7 @@ BEGIN
     RAISE EXCEPTION 'guideline_impact_evidence_immutable';
 END;
 $$
-'''
+"""
         await conn.execute(sa_text(function_ddl))
         contracts = {
             (f"{GUIDELINE_IMPACT_IMMUTABILITY_TRIGGER_PREFIX}_{receipt_table}_guard"): (
@@ -13464,7 +15415,7 @@ $$
                       event."payload_json"->'occurred_at'
               )"""
 
-        adoption_lineage_audit = f'''
+        adoption_lineage_audit = f"""
 SELECT COUNT(*)
 FROM "{adoption_table}" AS adoption
 WHERE NOT EXISTS (
@@ -13546,7 +15497,7 @@ WHERE NOT EXISTS (
           )
       ){adoption_payload_audit}
 )
-'''
+"""
 
         row_audits = {
             "unsealed_receipts": (
@@ -13800,9 +15751,7 @@ WHERE NOT EXISTS (
                             "previous_enforcement"
                         ),
                         unlink_previous.state.label("previous_state"),
-                        unlink_previous.binding_origin.label(
-                            "previous_source_kind"
-                        ),
+                        unlink_previous.binding_origin.label("previous_source_kind"),
                         unlink_previous_configuration.minimum_confidence.label(
                             "previous_minimum_confidence"
                         ),
@@ -13895,9 +15844,7 @@ WHERE NOT EXISTS (
                 priority=row["previous_priority"],
                 enforcement=row["previous_enforcement"],
                 minimum_confidence=row["previous_minimum_confidence"],
-                metric_threshold_overrides=(
-                    row["previous_metric_threshold_overrides"]
-                ),
+                metric_threshold_overrides=(row["previous_metric_threshold_overrides"]),
                 configuration_digest=row["previous_configuration_digest"],
                 state=row["previous_state"],
                 source_kind=row["previous_source_kind"],
@@ -13999,9 +15946,7 @@ WHERE NOT EXISTS (
             )
 
         retirement_binding = aliased(GuidelineBoardBindingRow)
-        retirement_configuration = aliased(
-            SemanticGuidelineBindingConfigurationRow
-        )
+        retirement_configuration = aliased(SemanticGuidelineBindingConfigurationRow)
         retirement_digest_rows = (
             (
                 await conn.execute(
@@ -14036,9 +15981,7 @@ WHERE NOT EXISTS (
                             "binding_enforcement"
                         ),
                         retirement_binding.state.label("binding_state"),
-                        retirement_binding.binding_origin.label(
-                            "binding_source_kind"
-                        ),
+                        retirement_binding.binding_origin.label("binding_source_kind"),
                         retirement_configuration.minimum_confidence.label(
                             "binding_minimum_confidence"
                         ),
@@ -14140,9 +16083,7 @@ WHERE NOT EXISTS (
                 priority=row["binding_priority"],
                 enforcement=row["binding_enforcement"],
                 minimum_confidence=row["binding_minimum_confidence"],
-                metric_threshold_overrides=(
-                    row["binding_metric_threshold_overrides"]
-                ),
+                metric_threshold_overrides=(row["binding_metric_threshold_overrides"]),
                 configuration_digest=row["binding_configuration_digest"],
                 state=row["binding_state"],
                 source_kind=row["binding_source_kind"],
@@ -14977,6 +16918,227 @@ WHERE NOT trigger.tgisinternal
     return None if changed else "skipped"
 
 
+def semantic_pinpoint_v2_owned_tables() -> tuple[object, ...]:
+    """Return the additive SK-B3.1 ledger tables in dependency order."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        SemanticGuidelineAssessmentV2Row,
+        SemanticGuidelineFindingV2Row,
+        SemanticGuidelineMetricResultV2Row,
+    )
+
+    return (
+        SemanticGuidelineAssessmentV2Row.__table__,
+        SemanticGuidelineMetricResultV2Row.__table__,
+        SemanticGuidelineFindingV2Row.__table__,
+    )
+
+
+def semantic_pinpoint_v2_sqlite_trigger_manifest() -> dict[str, tuple[str, str]]:
+    """Exact SQLite immutability and cross-contract idempotency guards."""
+
+    receipt, result, finding = (
+        table.name for table in semantic_pinpoint_v2_owned_tables()
+    )
+    manifest: dict[str, tuple[str, str]] = {}
+    for table_name, message in (
+        (receipt, "semantic_assessment_v2_immutable"),
+        (result, "semantic_metric_result_v2_immutable"),
+        (finding, "semantic_finding_v2_immutable"),
+    ):
+        update_name = f"{SEMANTIC_PINPOINT_V2_TRIGGER_PREFIX}_{table_name}_u"
+        delete_name = f"{SEMANTIC_PINPOINT_V2_TRIGGER_PREFIX}_{table_name}_d"
+        manifest[update_name] = (
+            table_name,
+            f"""CREATE TRIGGER "{update_name}"
+BEFORE UPDATE ON "{table_name}"
+BEGIN
+    SELECT RAISE(ABORT, '{message}');
+END""",
+        )
+        manifest[delete_name] = (
+            table_name,
+            f"""CREATE TRIGGER "{delete_name}"
+BEFORE DELETE ON "{table_name}"
+WHEN NOT EXISTS (
+    SELECT 1 FROM "kg_board_erasure_permits" AS permit
+    WHERE permit.board_id = OLD.board_id
+)
+BEGIN
+    SELECT RAISE(ABORT, '{message}');
+END""",
+        )
+
+    receipt_insert = f"{SEMANTIC_PINPOINT_V2_TRIGGER_PREFIX}_receipt_i"
+    manifest[receipt_insert] = (
+        receipt,
+        f"""CREATE TRIGGER "{receipt_insert}"
+BEFORE INSERT ON "{receipt}"
+WHEN NEW.contract_version <> 'semantic-guideline-assessment/v2'
+  OR json_type(NEW.payload) <> 'object'
+  OR json_extract(NEW.payload, '$.contract_version') <> 2
+  OR EXISTS (
+      SELECT 1 FROM semantic_guideline_assessment_receipts AS legacy
+      WHERE legacy.board_id = NEW.board_id
+        AND legacy.idempotency_key = NEW.idempotency_key
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_assessment_idempotency_contract_conflict');
+END""",
+    )
+    legacy_receipt_insert = f"{SEMANTIC_PINPOINT_V2_TRIGGER_PREFIX}_legacy_receipt_i"
+    manifest[legacy_receipt_insert] = (
+        "semantic_guideline_assessment_receipts",
+        f"""CREATE TRIGGER "{legacy_receipt_insert}"
+BEFORE INSERT ON "semantic_guideline_assessment_receipts"
+WHEN EXISTS (
+    SELECT 1 FROM "{receipt}" AS v2
+    WHERE v2.board_id = NEW.board_id
+      AND v2.idempotency_key = NEW.idempotency_key
+)
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_assessment_idempotency_contract_conflict');
+END""",
+    )
+    result_insert = f"{SEMANTIC_PINPOINT_V2_TRIGGER_PREFIX}_result_i"
+    manifest[result_insert] = (
+        result,
+        f"""CREATE TRIGGER "{result_insert}"
+BEFORE INSERT ON "{result}"
+WHEN NEW.contract_version <> 'semantic-metric-result/v2'
+  OR json_type(NEW.payload) <> 'object'
+  OR json_extract(NEW.payload, '$.contract_version') <> 2
+  OR json_extract(NEW.payload, '$.receipt_id') <> NEW.receipt_id
+  OR json_extract(NEW.payload, '$.metric_result_id') <> NEW.result_id
+  OR NOT EXISTS (
+      SELECT 1 FROM "{receipt}" AS aggregate
+      WHERE aggregate.receipt_id = NEW.receipt_id
+        AND aggregate.board_id = NEW.board_id
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_metric_result_v2_invalid');
+END""",
+    )
+    finding_insert = f"{SEMANTIC_PINPOINT_V2_TRIGGER_PREFIX}_finding_i"
+    manifest[finding_insert] = (
+        finding,
+        f"""CREATE TRIGGER "{finding_insert}"
+BEFORE INSERT ON "{finding}"
+WHEN NEW.contract_version <> 'semantic-metric-finding/v2'
+  OR json_type(NEW.payload) <> 'object'
+  OR json_extract(NEW.payload, '$.contract_version') <> 2
+  OR json_extract(NEW.payload, '$.finding_id') <> NEW.finding_id
+  OR NOT EXISTS (
+      SELECT 1 FROM "{result}" AS metric
+      WHERE metric.result_id = NEW.metric_result_id
+        AND metric.receipt_id = NEW.receipt_id
+        AND metric.board_id = NEW.board_id
+        AND metric.outcome = 'fail'
+        AND metric.result_digest = NEW.metric_result_digest
+  )
+BEGIN
+    SELECT RAISE(ABORT, 'semantic_finding_v2_invalid');
+END""",
+    )
+    return manifest
+
+
+def semantic_pinpoint_v2_postgresql_ddl() -> tuple[
+    str, dict[str, tuple[str, str, int]]
+]:
+    """Return PostgreSQL guards equivalent to the SQLite v2 manifest."""
+
+    receipt, result, finding = (
+        table.name for table in semantic_pinpoint_v2_owned_tables()
+    )
+    function_name = "semantic_pinpoint_v2_guard"
+    function_sql = f"""
+CREATE OR REPLACE FUNCTION {function_name}() RETURNS trigger AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' THEN
+        RAISE EXCEPTION 'semantic_pinpoint_v2_immutable';
+    END IF;
+    IF TG_OP = 'DELETE' THEN
+        IF EXISTS (
+            SELECT 1 FROM kg_board_erasure_permits AS permit
+            WHERE permit.board_id = OLD.board_id
+        ) THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'semantic_pinpoint_v2_immutable';
+    END IF;
+    IF TG_TABLE_NAME = 'semantic_guideline_assessment_receipts' THEN
+        IF EXISTS (
+            SELECT 1 FROM {receipt} AS v2
+            WHERE v2.board_id = NEW.board_id
+              AND v2.idempotency_key = NEW.idempotency_key
+        ) THEN
+            RAISE EXCEPTION 'semantic_assessment_idempotency_contract_conflict';
+        END IF;
+    ELSIF TG_TABLE_NAME = '{receipt}' THEN
+        IF NEW.contract_version <> 'semantic-guideline-assessment/v2'
+           OR jsonb_typeof(NEW.payload::jsonb) <> 'object'
+           OR NEW.payload::jsonb ->> 'contract_version' <> '2'
+           OR EXISTS (
+               SELECT 1 FROM semantic_guideline_assessment_receipts AS legacy
+               WHERE legacy.board_id = NEW.board_id
+                 AND legacy.idempotency_key = NEW.idempotency_key
+           ) THEN
+            RAISE EXCEPTION 'semantic_assessment_idempotency_contract_conflict';
+        END IF;
+    ELSIF TG_TABLE_NAME = '{result}' THEN
+        IF NEW.contract_version <> 'semantic-metric-result/v2'
+           OR jsonb_typeof(NEW.payload::jsonb) <> 'object'
+           OR NEW.payload::jsonb ->> 'contract_version' <> '2'
+           OR NEW.payload::jsonb ->> 'receipt_id' <> NEW.receipt_id
+           OR NEW.payload::jsonb ->> 'metric_result_id' <> NEW.result_id
+           OR NOT EXISTS (
+               SELECT 1 FROM {receipt} AS aggregate
+               WHERE aggregate.receipt_id = NEW.receipt_id
+                 AND aggregate.board_id = NEW.board_id
+           ) THEN
+            RAISE EXCEPTION 'semantic_metric_result_v2_invalid';
+        END IF;
+    ELSIF TG_TABLE_NAME = '{finding}' THEN
+        IF NEW.contract_version <> 'semantic-metric-finding/v2'
+           OR jsonb_typeof(NEW.payload::jsonb) <> 'object'
+           OR NEW.payload::jsonb ->> 'contract_version' <> '2'
+           OR NEW.payload::jsonb ->> 'finding_id' <> NEW.finding_id
+           OR NOT EXISTS (
+               SELECT 1 FROM {result} AS metric
+               WHERE metric.result_id = NEW.metric_result_id
+                 AND metric.receipt_id = NEW.receipt_id
+                 AND metric.board_id = NEW.board_id
+                 AND metric.outcome = 'fail'
+                 AND metric.result_digest = NEW.metric_result_digest
+           ) THEN
+            RAISE EXCEPTION 'semantic_finding_v2_invalid';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql"""
+    specs: dict[str, tuple[str, str, int]] = {}
+    # PostgreSQL tgtype: row(1) + before(2) + operation bit.
+    for table_name, stem in (
+        (receipt, "receipt"),
+        (result, "result"),
+        (finding, "finding"),
+    ):
+        insert_name = f"trg_spv2_{stem}_i"
+        update_name = f"trg_spv2_{stem}_u"
+        delete_name = f"trg_spv2_{stem}_d"
+        specs[insert_name] = (table_name, "INSERT", 7)
+        specs[update_name] = (table_name, "UPDATE", 19)
+        specs[delete_name] = (table_name, "DELETE", 11)
+    specs["trg_spv2_legacy_receipt_i"] = (
+        "semantic_guideline_assessment_receipts",
+        "INSERT",
+        7,
+    )
+    return function_sql, specs
+
+
 def semantic_guideline_owned_tables() -> tuple[object, ...]:
     """Return the single ORM-owned manifest for all semantic v2 tables."""
 
@@ -15033,16 +17195,11 @@ def audit_semantic_guideline_postgresql_trigger_rows(
     """
 
     if not isinstance(expected_schema, str) or not expected_schema.strip():
-        raise RuntimeError(
-            "semantic guideline PostgreSQL trigger schema is invalid"
-        )
+        raise RuntimeError("semantic guideline PostgreSQL trigger schema is invalid")
     expected = trigger_specs
     if expected is None:
         _function_sql, expected = semantic_guideline_postgresql_ddl()
-    existing = {
-        str(row["trigger_name"]): row
-        for row in rows
-    }
+    existing = {str(row["trigger_name"]): row for row in rows}
     if len(existing) != len(rows):
         seen: set[str] = set()
         duplicates: set[str] = set()
@@ -15083,8 +17240,7 @@ def audit_semantic_guideline_postgresql_trigger_rows(
             or str(observed["update_columns"]).strip()
         ):
             raise RuntimeError(
-                "semantic guideline PostgreSQL trigger is corrupt: "
-                + trigger_name
+                "semantic guideline PostgreSQL trigger is corrupt: " + trigger_name
             )
     return tuple(missing)
 
@@ -15122,10 +17278,10 @@ async def _backfill_semantic_guideline_waiver_digests(conn: object) -> bool:
     event_table = SemanticGuidelineWaiverEventRow.__table__
     receipt_table = SemanticGuidelineAssessmentReceiptRow.__table__
     heads = (
-        await conn.execute(
-            sa_select(waiver_table).order_by(waiver_table.c.waiver_id)
-        )
-    ).mappings().all()
+        (await conn.execute(sa_select(waiver_table).order_by(waiver_table.c.waiver_id)))
+        .mappings()
+        .all()
+    )
     if not heads:
         return False
 
@@ -15135,8 +17291,7 @@ async def _backfill_semantic_guideline_waiver_digests(conn: object) -> bool:
                 sa_select(receipt_table.c.assessor_agent_id).where(
                     receipt_table.c.receipt_id == head["receipt_id"],
                     receipt_table.c.board_id == head["board_id"],
-                    receipt_table.c.receipt_digest
-                    == head["receipt_digest"],
+                    receipt_table.c.receipt_digest == head["receipt_digest"],
                     receipt_table.c.sealed.is_(True),
                 )
             )
@@ -15158,6 +17313,7 @@ async def _backfill_semantic_guideline_waiver_digests(conn: object) -> bool:
                 entity_type=PolicyEntityType(head["subject_type"]),
                 subject_id=head["subject_id"],
                 subject_version=head["subject_version"],
+                subject_edition=head["validation_edition"],
             ),
             subject_content_digest=head["subject_content_digest"],
             guideline_id=head["guideline_id"],
@@ -15171,12 +17327,16 @@ async def _backfill_semantic_guideline_waiver_digests(conn: object) -> bool:
             assessment_assessor_id=assessor_id,
         )
         events = (
-            await conn.execute(
-                sa_select(event_table)
-                .where(event_table.c.waiver_id == head["waiver_id"])
-                .order_by(event_table.c.waiver_revision)
+            (
+                await conn.execute(
+                    sa_select(event_table)
+                    .where(event_table.c.waiver_id == head["waiver_id"])
+                    .order_by(event_table.c.waiver_revision)
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
         if not events or events[0]["event_type"] != "request":
             raise RuntimeError(
                 "semantic waiver assessor backfill found an invalid event "
@@ -15216,9 +17376,7 @@ async def _backfill_semantic_guideline_waiver_digests(conn: object) -> bool:
                 mutation = revalidate_semantic_metric_waiver(
                     mutation.waiver,
                     event_id=raw["event_id"],
-                    expected_waiver_revision=(
-                        mutation.waiver.waiver_revision
-                    ),
+                    expected_waiver_revision=(mutation.waiver.waiver_revision),
                     actor_id=raw["actor_id"],
                     occurred_at=raw["occurred_at"],
                     evaluated_at=raw["evaluated_at"],
@@ -15232,9 +17390,7 @@ async def _backfill_semantic_guideline_waiver_digests(conn: object) -> bool:
                         SemanticAssessmentCurrentnessReason(item)
                         for item in raw["currentness_reasons"]
                     ),
-                    scheduled_expiry_observed=bool(
-                        raw["scheduled_expiry_observed"]
-                    ),
+                    scheduled_expiry_observed=bool(raw["scheduled_expiry_observed"]),
                     evidence_refs=evidence(raw["evidence_refs"]),
                     idempotency_key=raw["idempotency_key"],
                 )
@@ -15244,16 +17400,12 @@ async def _backfill_semantic_guideline_waiver_digests(conn: object) -> bool:
                     transition_kwargs["expires_at"] = raw["expires_at"]
                 if event_type is SemanticMetricWaiverEventType.EXPIRE:
                     transition_kwargs["expire_reason"] = (
-                        SemanticMetricWaiverExpireReason(
-                            raw["expire_reason_code"]
-                        )
+                        SemanticMetricWaiverExpireReason(raw["expire_reason_code"])
                     )
                 mutation = transition_semantic_metric_waiver(
                     mutation.waiver,
                     event_id=raw["event_id"],
-                    expected_waiver_revision=(
-                        mutation.waiver.waiver_revision
-                    ),
+                    expected_waiver_revision=(mutation.waiver.waiver_revision),
                     event_type=event_type,
                     actor_id=raw["actor_id"],
                     occurred_at=raw["occurred_at"],
@@ -15263,8 +17415,7 @@ async def _backfill_semantic_guideline_waiver_digests(conn: object) -> bool:
                     **transition_kwargs,
                 )
             if (
-                mutation.waiver.waiver_revision
-                != raw["waiver_revision"]
+                mutation.waiver.waiver_revision != raw["waiver_revision"]
                 or mutation.waiver.status.value != raw["to_status"]
             ):
                 raise RuntimeError(
@@ -15284,15 +17435,14 @@ async def _backfill_semantic_guideline_waiver_digests(conn: object) -> bool:
             "subject_type": anchor.subject.entity_type.value,
             "subject_id": anchor.subject.subject_id,
             "subject_version": anchor.subject.subject_version,
+            "validation_edition": anchor.subject.subject_edition,
             "subject_content_digest": anchor.subject_content_digest,
             "guideline_id": anchor.guideline_id,
             "revision_id": anchor.guideline_revision_id,
             "revision_digest": anchor.guideline_revision_digest,
             "binding_id": anchor.binding_id,
             "binding_revision": anchor.binding_revision,
-            "configuration_digest": (
-                anchor.binding_configuration_digest
-            ),
+            "configuration_digest": (anchor.binding_configuration_digest),
             "metric_id": anchor.metric_id,
             "metric_code": anchor.metric_code,
         }
@@ -15316,9 +17466,7 @@ async def _backfill_semantic_guideline_waiver_digests(conn: object) -> bool:
             "revoked_by": final.revoked_by,
             "revoked_at": final.revoked_at,
             "expire_reason_code": (
-                final.expire_reason.value
-                if final.expire_reason is not None
-                else None
+                final.expire_reason.value if final.expire_reason is not None else None
             ),
             "idempotency_key": rebuilt[0].event.idempotency_key,
         }
@@ -15342,12 +17490,11 @@ async def _backfill_semantic_guideline_waiver_digests(conn: object) -> bool:
                 "predecessor_event_id": event.predecessor_event_id,
                 "waiver_id": event.waiver_id,
                 "board_id": waiver.anchor.subject.board_id,
+                "validation_edition": waiver.anchor.subject.subject_edition,
                 "waiver_revision": event.waiver_revision,
                 "event_type": event.event_type.value,
                 "from_status": (
-                    event.from_status.value
-                    if event.from_status is not None
-                    else None
+                    event.from_status.value if event.from_status is not None else None
                 ),
                 "to_status": event.to_status.value,
                 "actor_id": event.actor_id,
@@ -15377,12 +17524,9 @@ async def _backfill_semantic_guideline_waiver_digests(conn: object) -> bool:
                     else None
                 ),
                 "currentness_reasons": [
-                    reason.value
-                    for reason in event.currentness_reasons
+                    reason.value for reason in event.currentness_reasons
                 ],
-                "scheduled_expiry_observed": (
-                    event.scheduled_expiry_observed
-                ),
+                "scheduled_expiry_observed": (event.scheduled_expiry_observed),
                 "idempotency_key": event.idempotency_key,
             }
             for field_name, expected_value in expected_event.items():
@@ -15427,12 +17571,9 @@ async def _backfill_semantic_guideline_waiver_digests(conn: object) -> bool:
                         else None
                     ),
                     currentness_reasons=[
-                        reason.value
-                        for reason in event.currentness_reasons
+                        reason.value for reason in event.currentness_reasons
                     ],
-                    scheduled_expiry_observed=(
-                        event.scheduled_expiry_observed
-                    ),
+                    scheduled_expiry_observed=(event.scheduled_expiry_observed),
                     request_digest=event.request_digest,
                 )
             )
@@ -15449,9 +17590,7 @@ async def _backfill_semantic_guideline_waiver_digests(conn: object) -> bool:
                 last_event_id=final.last_event_id,
                 last_event_type=final.last_event_type.value,
                 last_event_at=final.last_event_at,
-                last_event_idempotency_key=(
-                    final.last_event_idempotency_key
-                ),
+                last_event_idempotency_key=(final.last_event_idempotency_key),
                 reviewed_by=final.reviewed_by,
                 reviewed_at=final.reviewed_at,
                 review_reason=final.review_reason,
@@ -15467,26 +17606,19 @@ async def _backfill_semantic_guideline_waiver_digests(conn: object) -> bool:
                     if final.last_revalidation_status is not None
                     else None
                 ),
-                last_revalidation_current=(
-                    final.last_revalidation_current
-                ),
+                last_revalidation_current=(final.last_revalidation_current),
                 last_revalidation_reason_code=(
                     final.last_revalidation_reason_code.value
                     if final.last_revalidation_reason_code is not None
                     else None
                 ),
-                last_revalidation_evaluated_at=(
-                    final.last_revalidation_evaluated_at
-                ),
+                last_revalidation_evaluated_at=(final.last_revalidation_evaluated_at),
                 last_revalidation_currentness_reasons=[
                     reason.value
-                    for reason in (
-                        final.last_revalidation_currentness_reasons
-                    )
+                    for reason in (final.last_revalidation_currentness_reasons)
                 ],
                 last_revalidation_scheduled_expiry_observed=(
-                    final
-                    .last_revalidation_scheduled_expiry_observed
+                    final.last_revalidation_scheduled_expiry_observed
                 ),
                 head_digest=final.head_digest,
                 request_digest=rebuilt[0].event.request_digest,
@@ -15562,8 +17694,7 @@ def _semantic_waiver_upgrade_column_definitions(
                 "revalidation_reason_code",
             ),
             "currentness_reasons": (
-                f"{sql_type(event_table, 'currentness_reasons')} "
-                "NOT NULL DEFAULT '[]'"
+                f"{sql_type(event_table, 'currentness_reasons')} NOT NULL DEFAULT '[]'"
             ),
             "scheduled_expiry_observed": (
                 f"{sql_type(event_table, 'scheduled_expiry_observed')} "
@@ -15644,8 +17775,7 @@ async def _converge_semantic_guideline_waiver_contract() -> bool:
         return tuple(
             token.lower()
             for token in re.findall(
-                r"'(?:''|[^'])*'|[A-Za-z_][A-Za-z0-9_]*|"
-                r"<>|<=|>=|=|<|>|\d+",
+                r"'(?:''|[^'])*'|[A-Za-z_][A-Za-z0-9_]*|" r"<>|<=|>=|=|<|>|\d+",
                 str(value),
             )
         )
@@ -15663,14 +17793,10 @@ async def _converge_semantic_guideline_waiver_contract() -> bool:
             else predecessor_event_columns
         )
         expected["columns"] = tuple(
-            column
-            for column in expected["columns"]
-            if column[0] not in removed_columns
+            column for column in expected["columns"] if column[0] not in removed_columns
         )
         removed_checks = (
-            new_waiver_checks
-            if table_kind == "waiver"
-            else new_event_checks
+            new_waiver_checks if table_kind == "waiver" else new_event_checks
         )
         checks = {
             name: expression
@@ -15701,20 +17827,18 @@ async def _converge_semantic_guideline_waiver_contract() -> bool:
         )
         if dialect == "postgresql" and table_kind == "event":
             observed_checks = {
-                name: expression
-                for name, expression in observed["checks"]
+                name: expression for name, expression in observed["checks"]
             }
             expected_checks = dict(expected["checks"])
             for name in predecessor_event_checks:
                 expression = observed_checks.get(name)
-                if expression is None or _sql_tokens(expression) != (
-                    expected_checks[name]
+                if (
+                    expression is None
+                    or _sql_tokens(expression) != (expected_checks[name])
                 ):
                     return False
                 observed_checks[name] = expected_checks[name]
-            observed["checks"] = tuple(
-                sorted(observed_checks.items(), key=repr)
-            )
+            observed["checks"] = tuple(sorted(observed_checks.items(), key=repr))
         return observed == expected
 
     def classify_contracts(sync_conn: object) -> str:
@@ -15732,12 +17856,8 @@ async def _converge_semantic_guideline_waiver_contract() -> bool:
             if sync_conn.dialect.name == "sqlite"
             else _postgresql_owned_table_contract(sync_conn, event_table)
         )
-        waiver_current = (
-            waiver_contract["observed"] == waiver_contract["expected"]
-        )
-        event_current = (
-            event_contract["observed"] == event_contract["expected"]
-        )
+        waiver_current = waiver_contract["observed"] == waiver_contract["expected"]
+        event_current = event_contract["observed"] == event_contract["expected"]
         if waiver_current and event_current:
             return "current"
         dialect = sync_conn.dialect.name
@@ -15759,8 +17879,7 @@ async def _converge_semantic_guideline_waiver_contract() -> bool:
         dialect = conn.dialect.name
         if dialect not in {"sqlite", "postgresql"}:
             raise RuntimeError(
-                "semantic waiver convergence supports only SQLite and "
-                "PostgreSQL"
+                "semantic waiver convergence supports only SQLite and PostgreSQL"
             )
         contract_state = await conn.run_sync(classify_contracts)
         if contract_state in {"missing", "current"}:
@@ -15776,19 +17895,11 @@ async def _converge_semantic_guideline_waiver_contract() -> bool:
                     )
                 ).scalars()
             )
-            current_trigger_names = set(
-                semantic_guideline_sqlite_trigger_manifest()
-            )
+            current_trigger_names = set(semantic_guideline_sqlite_trigger_manifest())
             predecessor_trigger_names = (
                 current_trigger_names
-                - {
-                    f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}"
-                    "_waiver_scope_insert"
-                }
-            ) | {
-                f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}"
-                "_waiver_revalidate_scope"
-            }
+                - {f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_waiver_scope_insert"}
+            ) | {f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_waiver_revalidate_scope"}
             if observed_triggers not in (
                 set(),
                 predecessor_trigger_names,
@@ -15798,15 +17909,9 @@ async def _converge_semantic_guideline_waiver_contract() -> bool:
                     "SQLite trigger drift"
                 )
         else:
-            _function_sql, trigger_specs = (
-                semantic_guideline_postgresql_ddl()
-            )
+            _function_sql, trigger_specs = semantic_guideline_postgresql_ddl()
             expected_schema = str(
-                (
-                    await conn.exec_driver_sql(
-                        "SELECT current_schema()"
-                    )
-                ).scalar_one()
+                (await conn.exec_driver_sql("SELECT current_schema()")).scalar_one()
             )
             trigger_rows = list(
                 (
@@ -15846,9 +17951,7 @@ WHERE NOT trigger.tgisinternal
         await conn.rollback()
         if dialect == "sqlite":
             original_foreign_keys = int(
-                (
-                    await conn.exec_driver_sql("PRAGMA foreign_keys")
-                ).scalar_one()
+                (await conn.exec_driver_sql("PRAGMA foreign_keys")).scalar_one()
             )
             await conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
             await conn.exec_driver_sql("BEGIN IMMEDIATE")
@@ -15857,35 +17960,30 @@ WHERE NOT trigger.tgisinternal
         try:
             if dialect == "sqlite":
                 trigger_names = (
-                    await conn.exec_driver_sql(
-                        "SELECT name FROM sqlite_master "
-                        "WHERE type = 'trigger' "
-                        "AND name LIKE "
-                        f"'{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}%'"
+                    (
+                        await conn.exec_driver_sql(
+                            "SELECT name FROM sqlite_master "
+                            "WHERE type = 'trigger' "
+                            "AND name LIKE "
+                            f"'{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}%'"
+                        )
                     )
-                ).scalars().all()
-                for trigger_name in trigger_names:
-                    await conn.exec_driver_sql(
-                        f'DROP TRIGGER "{trigger_name}"'
-                    )
-            else:
-                _function_sql, trigger_specs = (
-                    semantic_guideline_postgresql_ddl()
+                    .scalars()
+                    .all()
                 )
-                for trigger_name, (table_name, _ops, _type) in (
-                    trigger_specs.items()
-                ):
+                for trigger_name in trigger_names:
+                    await conn.exec_driver_sql(f'DROP TRIGGER "{trigger_name}"')
+            else:
+                _function_sql, trigger_specs = semantic_guideline_postgresql_ddl()
+                for trigger_name, (table_name, _ops, _type) in trigger_specs.items():
                     await conn.exec_driver_sql(
-                        f'DROP TRIGGER IF EXISTS "{trigger_name}" '
-                        f'ON "{table_name}"'
+                        f'DROP TRIGGER IF EXISTS "{trigger_name}" ON "{table_name}"'
                     )
 
             def column_names(sync_conn: object, table_name: str) -> set[str]:
                 return {
                     str(column["name"])
-                    for column in sa_inspect(sync_conn).get_columns(
-                        table_name
-                    )
+                    for column in sa_inspect(sync_conn).get_columns(table_name)
                 }
 
             waiver_columns = await conn.run_sync(
@@ -15900,9 +17998,7 @@ WHERE NOT trigger.tgisinternal
                     event_table.name,
                 )
             )
-            definitions = _semantic_waiver_upgrade_column_definitions(
-                conn.dialect
-            )
+            definitions = _semantic_waiver_upgrade_column_definitions(conn.dialect)
             observed_by_table = {
                 waiver_table.name: waiver_columns,
                 event_table.name: event_columns,
@@ -15917,19 +18013,13 @@ WHERE NOT trigger.tgisinternal
                     )
                     changed = True
 
-            changed = (
-                await _backfill_semantic_guideline_waiver_digests(conn)
-                or changed
-            )
+            changed = await _backfill_semantic_guideline_waiver_digests(conn) or changed
 
             if dialect == "sqlite":
+
                 def rebuild_tables(sync_conn: object) -> None:
-                    waiver_backup_name = (
-                        f"{waiver_table.name}__skb3_contract_upgrade"
-                    )
-                    event_backup_name = (
-                        f"{event_table.name}__skb3_contract_upgrade"
-                    )
+                    waiver_backup_name = f"{waiver_table.name}__skb3_contract_upgrade"
+                    event_backup_name = f"{event_table.name}__skb3_contract_upgrade"
                     inspector = sa_inspect(sync_conn)
                     existing = set(inspector.get_table_names())
                     if {
@@ -15937,21 +18027,15 @@ WHERE NOT trigger.tgisinternal
                         event_backup_name,
                     } & existing:
                         raise RuntimeError(
-                            "semantic waiver convergence found stale "
-                            "temporary tables"
+                            "semantic waiver convergence found stale temporary tables"
                         )
                     for table in (waiver_table, event_table):
                         for index in inspector.get_indexes(table.name):
                             index_name = str(index.get("name") or "")
-                            if (
-                                index_name
-                                and not index_name.startswith(
-                                    "sqlite_autoindex_"
-                                )
+                            if index_name and not index_name.startswith(
+                                "sqlite_autoindex_"
                             ):
-                                sync_conn.exec_driver_sql(
-                                    f'DROP INDEX "{index_name}"'
-                                )
+                                sync_conn.exec_driver_sql(f'DROP INDEX "{index_name}"')
                     sync_conn.exec_driver_sql(
                         f'ALTER TABLE "{event_table.name}" RENAME TO '
                         f'"{event_backup_name}"'
@@ -15967,19 +18051,14 @@ WHERE NOT trigger.tgisinternal
                         (event_table, event_backup_name),
                     ):
                         columns = ", ".join(
-                            f'"{column.name}"'
-                            for column in table.columns
+                            f'"{column.name}"' for column in table.columns
                         )
                         sync_conn.exec_driver_sql(
                             f'INSERT INTO "{table.name}" ({columns}) '
                             f'SELECT {columns} FROM "{backup_name}"'
                         )
-                    sync_conn.exec_driver_sql(
-                        f'DROP TABLE "{event_backup_name}"'
-                    )
-                    sync_conn.exec_driver_sql(
-                        f'DROP TABLE "{waiver_backup_name}"'
-                    )
+                    sync_conn.exec_driver_sql(f'DROP TABLE "{event_backup_name}"')
+                    sync_conn.exec_driver_sql(f'DROP TABLE "{waiver_backup_name}"')
 
                 await conn.run_sync(rebuild_tables)
                 changed = True
@@ -16051,10 +18130,7 @@ WHERE NOT trigger.tgisinternal
                     .mappings()
                     .all()
                 )
-                observed = {
-                    str(row["name"]): row
-                    for row in rows
-                }
+                observed = {str(row["name"]): row for row in rows}
                 if set(observed) != set(manifest):
                     raise RuntimeError(
                         "semantic waiver convergence produced a "
@@ -16079,11 +18155,7 @@ WHERE NOT trigger.tgisinternal
                             "SQLite trigger: " + trigger_name
                         )
                 violations = list(
-                    (
-                        await conn.exec_driver_sql(
-                            "PRAGMA foreign_key_check"
-                        )
-                    ).all()
+                    (await conn.exec_driver_sql("PRAGMA foreign_key_check")).all()
                 )
                 if violations:
                     raise RuntimeError(
@@ -16091,15 +18163,9 @@ WHERE NOT trigger.tgisinternal
                         "violations: " + repr(violations[:10])
                     )
             else:
-                function_sql, trigger_specs = (
-                    semantic_guideline_postgresql_ddl()
-                )
+                function_sql, trigger_specs = semantic_guideline_postgresql_ddl()
                 expected_schema = str(
-                    (
-                        await conn.exec_driver_sql(
-                            "SELECT current_schema()"
-                        )
-                    ).scalar_one()
+                    (await conn.exec_driver_sql("SELECT current_schema()")).scalar_one()
                 )
                 await conn.exec_driver_sql(function_sql)
                 for trigger_name, (
@@ -16217,7 +18283,7 @@ async def _migrate_semantic_guideline_governance_schema() -> str | None:
         table_names = await conn.run_sync(_table_names)
         if GuidelineBoardBindingRow.__tablename__ in table_names:
             await conn.exec_driver_sql(
-                'CREATE UNIQUE INDEX IF NOT EXISTS '
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
                 '"uq_guideline_binding_exact_authority" ON '
                 '"guideline_board_bindings" '
                 '("binding_id", "binding_revision", "board_id", '
@@ -16235,14 +18301,14 @@ async def _migrate_semantic_guideline_governance_schema() -> str | None:
                 changed = True
             contract = await conn.run_sync(
                 (
-                    lambda sync_conn, owned=table: (
-                        _sqlite_owned_table_contract(sync_conn, owned)
+                    lambda sync_conn, owned=table: _sqlite_owned_table_contract(
+                        sync_conn, owned
                     )
                 )
                 if dialect == "sqlite"
                 else (
-                    lambda sync_conn, owned=table: (
-                        _postgresql_owned_table_contract(sync_conn, owned)
+                    lambda sync_conn, owned=table: _postgresql_owned_table_contract(
+                        sync_conn, owned
                     )
                 )
             )
@@ -16252,21 +18318,16 @@ async def _migrate_semantic_guideline_governance_schema() -> str | None:
                     + table.name
                 )
 
-        revision_source = (
-            GuidelineRevisionRow.__table__.join(
-                Guideline.__table__,
-                Guideline.__table__.c.id
-                == GuidelineRevisionRow.__table__.c.guideline_id,
-            )
+        revision_source = GuidelineRevisionRow.__table__.join(
+            Guideline.__table__,
+            Guideline.__table__.c.id == GuidelineRevisionRow.__table__.c.guideline_id,
         )
         revision_rows = (
             (
                 await conn.execute(
                     sa_select(
                         GuidelineRevisionRow.__table__,
-                        Guideline.__table__.c.board_id.label(
-                            "source_board_id"
-                        ),
+                        Guideline.__table__.c.board_id.label("source_board_id"),
                     )
                     .select_from(revision_source)
                     .order_by(
@@ -16344,8 +18405,7 @@ async def _migrate_semantic_guideline_governance_schema() -> str | None:
                 (
                     await conn.execute(
                         sa_select(semantic_revision_table).where(
-                            semantic_revision_table.c.revision_id
-                            == row["revision_id"]
+                            semantic_revision_table.c.revision_id == row["revision_id"]
                         )
                     )
                 )
@@ -16355,8 +18415,7 @@ async def _migrate_semantic_guideline_governance_schema() -> str | None:
             if existing is not None:
                 if (
                     existing["guideline_id"] != row["guideline_id"]
-                    or existing["source_revision_digest"]
-                    != row["content_digest"]
+                    or existing["source_revision_digest"] != row["content_digest"]
                 ):
                     raise RuntimeError(
                         "semantic guideline revision source fence conflict: "
@@ -16369,13 +18428,13 @@ async def _migrate_semantic_guideline_governance_schema() -> str | None:
             else:
                 rules = row["rules"]
                 rules_are_empty = isinstance(rules, list) and not rules
-                legacy_rules_payload = rules if isinstance(rules, list) else {
-                    "invalid_legacy_rules_payload": repr(rules)
-                }
+                legacy_rules_payload = (
+                    rules
+                    if isinstance(rules, list)
+                    else {"invalid_legacy_rules_payload": repr(rules)}
+                )
                 authority_state = (
-                    "legacy_context_only"
-                    if rules_are_empty
-                    else "legacy_incompatible"
+                    "legacy_context_only" if rules_are_empty else "legacy_incompatible"
                 )
                 try:
                     revision_digest = guideline_revision_digest_v2(
@@ -16393,23 +18452,17 @@ async def _migrate_semantic_guideline_governance_schema() -> str | None:
                 expected_revision = {
                     "revision_id": row["revision_id"],
                     "guideline_id": row["guideline_id"],
-                    "contract_version": (
-                        GUIDELINE_REVISION_DIGEST_CONTRACT_VERSION
-                    ),
+                    "contract_version": (GUIDELINE_REVISION_DIGEST_CONTRACT_VERSION),
                     "metrics": [],
                     "revision_digest": revision_digest,
                     "source_revision_digest": row["content_digest"],
                     "authority_state": authority_state,
-                    "legacy_rules_digest": canonical_sha256(
-                        legacy_rules_payload
-                    ),
+                    "legacy_rules_digest": canonical_sha256(legacy_rules_payload),
                     "created_by": row["created_by"],
                     "created_at": row["created_at"],
                 }
                 await conn.execute(
-                    semantic_revision_table.insert().values(
-                        **expected_revision
-                    )
+                    semantic_revision_table.insert().values(**expected_revision)
                 )
                 existing = expected_revision
                 changed = True
@@ -16441,9 +18494,7 @@ async def _migrate_semantic_guideline_governance_schema() -> str | None:
             ):
                 changed = True
 
-        semantic_binding_table = (
-            SemanticGuidelineBindingConfigurationRow.__table__
-        )
+        semantic_binding_table = SemanticGuidelineBindingConfigurationRow.__table__
         binding_rows = (
             (
                 await conn.execute(
@@ -16469,9 +18520,7 @@ async def _migrate_semantic_guideline_governance_schema() -> str | None:
             ).first()
             if semantic_binding_exists is not None:
                 continue
-            source_id = (
-                f'{row["binding_id"]}:{int(row["binding_revision"])}'
-            )
+            source_id = f"{row['binding_id']}:{int(row['binding_revision'])}"
             source_digest = canonical_sha256(
                 {
                     "binding_id": row["binding_id"],
@@ -16503,11 +18552,7 @@ async def _migrate_semantic_guideline_governance_schema() -> str | None:
                 changed = True
 
         receipt_rows = (
-            (
-                await conn.execute(
-                    sa_select(PolicyComplianceReceiptRow.__table__)
-                )
-            )
+            (await conn.execute(sa_select(PolicyComplianceReceiptRow.__table__)))
             .mappings()
             .all()
         )
@@ -16530,11 +18575,7 @@ async def _migrate_semantic_guideline_governance_schema() -> str | None:
                 changed = True
 
         waiver_rows = (
-            (
-                await conn.execute(sa_select(PolicyWaiverRow.__table__))
-            )
-            .mappings()
-            .all()
+            (await conn.execute(sa_select(PolicyWaiverRow.__table__))).mappings().all()
         )
         for row in waiver_rows:
             if await _insert_migration_audit(
@@ -16565,11 +18606,7 @@ async def _migrate_semantic_guideline_governance_schema() -> str | None:
                             "SELECT name, tbl_name, sql FROM sqlite_master "
                             "WHERE type = 'trigger' AND name LIKE :prefix"
                         ),
-                        {
-                            "prefix": (
-                                f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}%"
-                            )
-                        },
+                        {"prefix": (f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}%")},
                     )
                 )
                 .mappings()
@@ -16598,8 +18635,7 @@ async def _migrate_semantic_guideline_governance_schema() -> str | None:
                     )
                 ):
                     raise RuntimeError(
-                        "semantic guideline owned trigger is corrupt: "
-                        + trigger_name
+                        "semantic guideline owned trigger is corrupt: " + trigger_name
                     )
             violations = list(
                 (await conn.exec_driver_sql("PRAGMA foreign_key_check")).all()
@@ -16610,16 +18646,10 @@ async def _migrate_semantic_guideline_governance_schema() -> str | None:
                     + repr(violations[:10])
                 )
         else:
-            function_sql, trigger_specs = (
-                semantic_guideline_postgresql_ddl()
-            )
+            function_sql, trigger_specs = semantic_guideline_postgresql_ddl()
             function_name = "semantic_guideline_guard_v3"
             expected_schema = str(
-                (
-                    await conn.exec_driver_sql(
-                        "SELECT current_schema()"
-                    )
-                ).scalar_one()
+                (await conn.exec_driver_sql("SELECT current_schema()")).scalar_one()
             )
             await conn.execute(sa_text(function_sql))
             trigger_rows = list(
@@ -16678,6 +18708,157 @@ WHERE NOT trigger.tgisinternal
                     )
                     changed = True
 
+    return None if changed else "skipped"
+
+
+async def _migrate_semantic_pinpoint_v2_schema() -> str | None:
+    """Converge the additive actionable-pinpoint ledger and exact guards."""
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+
+    engine = get_engine()
+    changed = False
+
+    def _table_names(sync_conn: object) -> set[str]:
+        return set(sa_inspect(sync_conn).get_table_names())
+
+    async with engine.begin() as conn:
+        dialect = conn.dialect.name
+        if dialect not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "semantic pinpoint v2 migration supports only SQLite and PostgreSQL"
+            )
+        if dialect == "sqlite":
+            await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+            await conn.exec_driver_sql("BEGIN IMMEDIATE")
+        table_names = await conn.run_sync(_table_names)
+        for table in semantic_pinpoint_v2_owned_tables():
+            if table.name not in table_names:
+                await conn.run_sync(
+                    lambda sync_conn, owned=table: owned.create(
+                        sync_conn, checkfirst=True
+                    )
+                )
+                table_names.add(table.name)
+                changed = True
+            contract = await conn.run_sync(
+                (
+                    lambda sync_conn, owned=table: _sqlite_owned_table_contract(
+                        sync_conn, owned
+                    )
+                )
+                if dialect == "sqlite"
+                else (
+                    lambda sync_conn, owned=table: _postgresql_owned_table_contract(
+                        sync_conn, owned
+                    )
+                )
+            )
+            if contract["observed"] != contract["expected"]:
+                raise RuntimeError(
+                    "semantic pinpoint v2 table has a non-canonical contract: "
+                    + table.name
+                )
+
+        if dialect == "sqlite":
+            expected = semantic_pinpoint_v2_sqlite_trigger_manifest()
+            rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, tbl_name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name LIKE :prefix"
+                        ),
+                        {"prefix": f"{SEMANTIC_PINPOINT_V2_TRIGGER_PREFIX}%"},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing = {str(row["name"]): row for row in rows}
+            unexpected = set(existing) - set(expected)
+            if unexpected:
+                raise RuntimeError(
+                    "semantic pinpoint v2 has unexpected owned triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for trigger_name, (table_name, trigger_sql) in expected.items():
+                observed = existing.get(trigger_name)
+                if observed is None:
+                    await conn.execute(sa_text(trigger_sql))
+                    changed = True
+                elif (
+                    str(observed["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        observed["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
+                ):
+                    raise RuntimeError(
+                        "semantic pinpoint v2 owned trigger is corrupt: " + trigger_name
+                    )
+        else:
+            function_sql, trigger_specs = semantic_pinpoint_v2_postgresql_ddl()
+            await conn.execute(sa_text(function_sql))
+            rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            """
+SELECT trigger.tgname AS trigger_name,
+       relation.relname AS table_name,
+       function.proname AS function_name,
+       trigger.tgtype AS trigger_type,
+       trigger.tgenabled AS trigger_enabled
+FROM pg_trigger AS trigger
+JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+JOIN pg_proc AS function ON function.oid = trigger.tgfoid
+WHERE NOT trigger.tgisinternal
+  AND trigger.tgname LIKE 'trg_spv2_%'
+"""
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing = {str(row["trigger_name"]): row for row in rows}
+            unexpected = set(existing) - set(trigger_specs)
+            if unexpected:
+                raise RuntimeError(
+                    "semantic pinpoint v2 has unexpected PostgreSQL triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for trigger_name, (
+                table_name,
+                operation_clause,
+                expected_type,
+            ) in trigger_specs.items():
+                observed = existing.get(trigger_name)
+                if observed is None:
+                    await conn.execute(
+                        sa_text(
+                            f'CREATE TRIGGER "{trigger_name}" '
+                            f"BEFORE {operation_clause} "
+                            f'ON "{table_name}" FOR EACH ROW '
+                            "EXECUTE FUNCTION semantic_pinpoint_v2_guard()"
+                        )
+                    )
+                    changed = True
+                    continue
+                if (
+                    str(observed["table_name"]) != table_name
+                    or str(observed["function_name"]) != "semantic_pinpoint_v2_guard"
+                    or int(observed["trigger_type"]) != expected_type
+                    or str(observed["trigger_enabled"]) != "O"
+                ):
+                    raise RuntimeError(
+                        "semantic pinpoint v2 PostgreSQL trigger is corrupt: "
+                        + trigger_name
+                    )
     return None if changed else "skipped"
 
 
@@ -17027,13 +19208,15 @@ async def _migrate_rebuild_guideline_import_candidates_semantic_shape() -> str |
                 "shape; refusing to rebuild"
             )
         legacy_rows = (
-            await conn.exec_driver_sql(
-                "SELECT * FROM guideline_import_binding_candidates"
+            (
+                await conn.exec_driver_sql(
+                    "SELECT * FROM guideline_import_binding_candidates"
+                )
             )
-        ).mappings().all()
-        await conn.exec_driver_sql(
-            "DROP TABLE guideline_import_binding_candidates"
+            .mappings()
+            .all()
         )
+        await conn.exec_driver_sql("DROP TABLE guideline_import_binding_candidates")
         await conn.run_sync(
             lambda sync_conn: GuidelineImportBindingCandidateRow.__table__.create(
                 sync_conn
@@ -17046,15 +19229,12 @@ async def _migrate_rebuild_guideline_import_candidates_semantic_shape() -> str |
             ]
             for row in legacy_rows:
                 values = dict(row)
-                values["source_enforcement"] = values.pop(
-                    "source_default_enforcement"
-                )
+                values["source_enforcement"] = values.pop("source_default_enforcement")
                 missing = set(canonical_columns) - set(values)
                 if missing:
                     raise RuntimeError(
                         "guideline import candidate rebuild cannot map legacy "
-                        "row; missing canonical columns: "
-                        + ", ".join(sorted(missing))
+                        "row; missing canonical columns: " + ", ".join(sorted(missing))
                     )
                 placeholders = ", ".join(f":{name}" for name in canonical_columns)
                 await conn.execute(
@@ -17174,9 +19354,7 @@ async def _migrate_rebuild_guideline_policy_v1_semantic_alignment() -> str | Non
             return {
                 str(row[1])
                 for row in (
-                    await conn.exec_driver_sql(
-                        f"PRAGMA table_info({table_name})"
-                    )
+                    await conn.exec_driver_sql(f"PRAGMA table_info({table_name})")
                 ).all()
             }
 
@@ -17193,8 +19371,7 @@ async def _migrate_rebuild_guideline_policy_v1_semantic_alignment() -> str | Non
             # detected by its FK still targeting guideline_revisions.
             ddl = (
                 await conn.exec_driver_sql(
-                    "SELECT sql FROM sqlite_master WHERE name = "
-                    f"'{table_name}'"
+                    f"SELECT sql FROM sqlite_master WHERE name = '{table_name}'"
                 )
             ).scalar_one_or_none() or ""
             if (
@@ -17226,9 +19403,7 @@ async def _migrate_rebuild_guideline_policy_v1_semantic_alignment() -> str | Non
             return _hashlib.sha256(encoded).hexdigest()
 
         revision_table = GuidelineRevisionRow.__table__
-        revision_rows = (
-            (await conn.execute(sa_select(revision_table))).mappings().all()
-        )
+        revision_rows = (await conn.execute(sa_select(revision_table))).mappings().all()
         # The revision/binding ledgers are guarded by immutability triggers;
         # the digest realignment is the sanctioned rewrite point, so the
         # exact observed triggers are captured, dropped, and recreated
@@ -17247,9 +19422,7 @@ async def _migrate_rebuild_guideline_policy_v1_semantic_alignment() -> str | Non
             semantic_row = (
                 (
                     await conn.execute(
-                        sa_select(
-                            semantic_ledger_table.c.authority_state
-                        ).where(
+                        sa_select(semantic_ledger_table.c.authority_state).where(
                             semantic_ledger_table.c.revision_id
                             == revision_row["revision_id"]
                         )
@@ -17258,10 +19431,7 @@ async def _migrate_rebuild_guideline_policy_v1_semantic_alignment() -> str | Non
                 .mappings()
                 .one_or_none()
             )
-            if (
-                semantic_row is not None
-                and semantic_row["authority_state"] == "native"
-            ):
+            if semantic_row is not None and semantic_row["authority_state"] == "native":
                 # Native semantic revisions carry METRICS in their digest;
                 # recomputing here with metrics=() would be a false rewrite.
                 # The semantic adapter wrote their digest atomically — it is
@@ -17295,8 +19465,7 @@ async def _migrate_rebuild_guideline_policy_v1_semantic_alignment() -> str | Non
                 if guideline_row is None:
                     raise RuntimeError(
                         "guideline v1 semantic alignment: baseline revision "
-                        "without its guideline: "
-                        + str(revision_row["guideline_id"])
+                        "without its guideline: " + str(revision_row["guideline_id"])
                     )
                 updates["request_digest"] = _aligned_request_digest(
                     {
@@ -17308,17 +19477,16 @@ async def _migrate_rebuild_guideline_policy_v1_semantic_alignment() -> str | Non
                         "legacy_content": guideline_row["content"],
                         "content_digest": recomputed,
                         "legacy_version": guideline_row["version"],
-                        "legacy_tags": _json.loads(guideline_row["tags"])
-                        if isinstance(guideline_row["tags"], str)
-                        else guideline_row["tags"],
+                        "legacy_tags": (
+                            _json.loads(guideline_row["tags"])
+                            if isinstance(guideline_row["tags"], str)
+                            else guideline_row["tags"]
+                        ),
                     }
                 )
             await conn.execute(
                 revision_table.update()
-                .where(
-                    revision_table.c.revision_id
-                    == revision_row["revision_id"]
-                )
+                .where(revision_table.c.revision_id == revision_row["revision_id"])
                 .values(**updates)
             )
             digest_rewrites += 1
@@ -17352,8 +19520,7 @@ async def _migrate_rebuild_guideline_policy_v1_semantic_alignment() -> str | Non
                     "have dependents; refusing to realign by deletion"
                 )
             await conn.exec_driver_sql(
-                "DELETE FROM guideline_board_bindings "
-                "WHERE source_kind != 'native'"
+                "DELETE FROM guideline_board_bindings WHERE source_kind != 'native'"
             )
 
         for _trigger_name, trigger_sql in guard_triggers:
@@ -17420,8 +19587,7 @@ async def _migrate_rebuild_guideline_policy_v1_semantic_alignment() -> str | Non
                     ):
                         raise RuntimeError(
                             "guideline v1 semantic alignment: semantic "
-                            "revision source fence conflict: "
-                            + str(revision_id)
+                            "revision source fence conflict: " + str(revision_id)
                         )
                     semantic_digest_by_revision[str(revision_id)] = str(
                         existing["revision_digest"]
@@ -17445,9 +19611,7 @@ async def _migrate_rebuild_guideline_policy_v1_semantic_alignment() -> str | Non
                     semantic_table.insert().values(
                         revision_id=legacy_row["revision_id"],
                         guideline_id=legacy_row["guideline_id"],
-                        contract_version=(
-                            GUIDELINE_REVISION_DIGEST_CONTRACT_VERSION
-                        ),
+                        contract_version=(GUIDELINE_REVISION_DIGEST_CONTRACT_VERSION),
                         metrics=[],
                         revision_digest=revision_digest,
                         source_revision_digest=legacy_row["content_digest"],
@@ -17456,9 +19620,7 @@ async def _migrate_rebuild_guideline_policy_v1_semantic_alignment() -> str | Non
                             if rules_are_empty
                             else "legacy_incompatible"
                         ),
-                        legacy_rules_digest=canonical_sha256(
-                            legacy_rules_payload
-                        ),
+                        legacy_rules_digest=canonical_sha256(legacy_rules_payload),
                         created_by=legacy_row["created_by"],
                         created_at=legacy_row["created_at"],
                     )
@@ -17475,9 +19637,7 @@ async def _migrate_rebuild_guideline_policy_v1_semantic_alignment() -> str | Non
                 .all()
             )
             await conn.exec_driver_sql(f"DROP TABLE {table_name}")
-            await conn.run_sync(
-                lambda sync_conn, owned=table: owned.create(sync_conn)
-            )
+            await conn.run_sync(lambda sync_conn, owned=table: owned.create(sync_conn))
             canonical_columns = [str(column.name) for column in table.columns]
             for legacy_row in legacy_rows:
                 values = dict(legacy_row)
@@ -17490,9 +19650,7 @@ async def _migrate_rebuild_guideline_policy_v1_semantic_alignment() -> str | Non
                         revision_id = values.get(f"{prefix}_revision_id")
                         if revision_id is None:
                             continue
-                        digest = semantic_digest_by_revision.get(
-                            str(revision_id)
-                        )
+                        digest = semantic_digest_by_revision.get(str(revision_id))
                         if digest is None:
                             raise RuntimeError(
                                 "guideline v1 semantic alignment: no "
@@ -17507,9 +19665,7 @@ async def _migrate_rebuild_guideline_policy_v1_semantic_alignment() -> str | Non
                         "legacy row lacks canonical columns: "
                         + ", ".join(sorted(missing))
                     )
-                placeholders = ", ".join(
-                    f":{name}" for name in canonical_columns
-                )
+                placeholders = ", ".join(f":{name}" for name in canonical_columns)
                 await conn.execute(
                     sa_text(
                         f"INSERT INTO {table_name} ("
@@ -17535,9 +19691,7 @@ async def _migrate_rebuild_guideline_policy_v1_semantic_alignment() -> str | Non
         await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
         for table_name in checked_tables:
             violations = (
-                await conn.exec_driver_sql(
-                    f"PRAGMA foreign_key_check({table_name})"
-                )
+                await conn.exec_driver_sql(f"PRAGMA foreign_key_check({table_name})")
             ).all()
             if violations:
                 raise RuntimeError(
@@ -17622,16 +19776,13 @@ async def _migrate_seed_semantic_configurations_for_legacy_bindings() -> str | N
         binding_table = GuidelineBoardBindingRow.__table__
         config_table = SemanticGuidelineBindingConfigurationRow.__table__
         semantic_table = SemanticGuidelineRevisionRow.__table__
-        binding_rows = (
-            (await conn.execute(sa_select(binding_table))).mappings().all()
-        )
+        binding_rows = (await conn.execute(sa_select(binding_table))).mappings().all()
         for binding in binding_rows:
             existing = (
                 await conn.execute(
                     sa_select(config_table.c.binding_id).where(
                         config_table.c.binding_id == binding["binding_id"],
-                        config_table.c.binding_revision
-                        == binding["binding_revision"],
+                        config_table.c.binding_revision == binding["binding_revision"],
                     )
                 )
             ).first()
@@ -17641,10 +19792,8 @@ async def _migrate_seed_semantic_configurations_for_legacy_bindings() -> str | N
                 (
                     await conn.execute(
                         sa_select(semantic_table).where(
-                            semantic_table.c.guideline_id
-                            == binding["guideline_id"],
-                            semantic_table.c.revision_id
-                            == binding["revision_id"],
+                            semantic_table.c.guideline_id == binding["guideline_id"],
+                            semantic_table.c.revision_id == binding["revision_id"],
                         )
                     )
                 )
@@ -17757,7 +19906,7 @@ async def _migrate_recompute_cognitive_source_fingerprints_v2() -> str | None:
 
         observed_trigger = (
             await conn.exec_driver_sql(
-                "SELECT sql FROM sqlite_master " "WHERE type='trigger' AND name=?",
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
                 (update_trigger,),
             )
         ).scalar()
@@ -18195,6 +20344,1094 @@ def _remove_known_fixture_graph_if_present(engine: object) -> bool:
     return True
 
 
+CODE_TRACEABILITY_TRIGGER_PREFIX = "trg_code_traceability_v1"
+
+
+def _code_traceability_v1_owned_tables() -> tuple[object, ...]:
+    """Return the original structured-attestation table census."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        CodeEvidenceDispositionRow,
+        CodeEvidenceRow,
+        CodeEvidenceSpecLinkRow,
+        CodeInvestigationHeadRow,
+        CodeInvestigationReceiptRevocationRow,
+        CodeInvestigationReceiptRow,
+        CodeInvestigationRequestRow,
+        CodeTraceabilityWaiverRow,
+        ImplementationTargetEvidenceLinkRow,
+        ImplementationTargetExecutionRecordRow,
+        ImplementationTargetResolutionRow,
+        ImplementationTargetRow,
+        ImplementationTargetSpecLinkRow,
+        TargetOverlapAcknowledgementRow,
+    )
+
+    return (
+        CodeInvestigationRequestRow.__table__,
+        CodeInvestigationReceiptRow.__table__,
+        CodeInvestigationReceiptRevocationRow.__table__,
+        CodeInvestigationHeadRow.__table__,
+        CodeEvidenceRow.__table__,
+        CodeEvidenceSpecLinkRow.__table__,
+        CodeEvidenceDispositionRow.__table__,
+        ImplementationTargetRow.__table__,
+        ImplementationTargetSpecLinkRow.__table__,
+        ImplementationTargetEvidenceLinkRow.__table__,
+        ImplementationTargetResolutionRow.__table__,
+        ImplementationTargetExecutionRecordRow.__table__,
+        TargetOverlapAcknowledgementRow.__table__,
+        CodeTraceabilityWaiverRow.__table__,
+    )
+
+
+def contextual_code_evidence_owned_tables() -> tuple[object, ...]:
+    """Return the v2 human legacy-classification authority tables."""
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        CodeEvidenceClassificationEventRow,
+        CodeEvidenceClassificationHeadRow,
+    )
+
+    return (
+        CodeEvidenceClassificationEventRow.__table__,
+        CodeEvidenceClassificationHeadRow.__table__,
+    )
+
+
+def code_traceability_owned_tables() -> tuple[object, ...]:
+    """Return the complete relational Code Traceability table census."""
+
+    return (
+        *_code_traceability_v1_owned_tables(),
+        *contextual_code_evidence_owned_tables(),
+    )
+
+
+def code_traceability_sqlite_trigger_manifest() -> dict[str, tuple[str, str]]:
+    """Return exact, permit-aware SQLite guards for structured attestations."""
+
+    tables = {table.name: table for table in _code_traceability_v1_owned_tables()}
+    permit_table = "kg_board_erasure_permits"
+    manifest: dict[str, tuple[str, str]] = {}
+
+    def same_columns(table_name: str, *, except_columns: set[str]) -> str:
+        return "\n      AND ".join(
+            f'NEW."{column.name}" IS OLD."{column.name}"'
+            for column in tables[table_name].columns
+            if column.name not in except_columns
+        )
+
+    def add_delete_guard(
+        table_name: str,
+        *,
+        alias: str,
+        message: str,
+    ) -> None:
+        name = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_{alias}_d"
+        manifest[name] = (
+            table_name,
+            f"""CREATE TRIGGER "{name}"
+BEFORE DELETE ON "{table_name}"
+WHEN NOT EXISTS (
+    SELECT 1 FROM "{permit_table}" AS permit
+    WHERE permit.board_id = OLD.board_id
+)
+BEGIN
+    SELECT RAISE(ABORT, '{message}');
+END""",
+        )
+
+    def add_immutable_update(
+        table_name: str,
+        *,
+        alias: str,
+        message: str,
+    ) -> None:
+        name = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_{alias}_u"
+        manifest[name] = (
+            table_name,
+            f"""CREATE TRIGGER "{name}"
+BEFORE UPDATE ON "{table_name}"
+BEGIN
+    SELECT RAISE(ABORT, '{message}');
+END""",
+        )
+
+    # Fully append-only records.  Deletion is possible only while the
+    # board-erasure transaction owns the explicit board permit.
+    for table_name, alias, message in (
+        (
+            "code_investigation_receipts",
+            "receipt",
+            "code_investigation_receipt_immutable",
+        ),
+        (
+            "code_investigation_receipt_revocations",
+            "revocation",
+            "code_investigation_revocation_immutable",
+        ),
+        (
+            "implementation_target_resolutions",
+            "resolution",
+            "implementation_target_resolution_immutable",
+        ),
+        (
+            "implementation_target_execution_records",
+            "execution",
+            "implementation_target_execution_immutable",
+        ),
+        (
+            "target_overlap_acknowledgements",
+            "ack",
+            "target_overlap_acknowledgement_immutable",
+        ),
+    ):
+        add_immutable_update(table_name, alias=alias, message=message)
+        add_delete_guard(table_name, alias=alias, message=message)
+
+    request_same = same_columns(
+        "code_investigation_requests",
+        except_columns={"status", "consumed_at"},
+    )
+    request_update = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_request_u"
+    manifest[request_update] = (
+        "code_investigation_requests",
+        f"""CREATE TRIGGER "{request_update}"
+BEFORE UPDATE ON "code_investigation_requests"
+WHEN NOT (
+    OLD.status = 'open'
+    AND NEW.status IN ('consumed', 'expired', 'revoked')
+    AND {request_same}
+    AND (
+        (
+            NEW.status = 'consumed'
+            AND NEW.consumed_at IS NOT NULL
+            AND EXISTS (
+                SELECT 1 FROM code_investigation_receipts AS receipt
+                WHERE receipt.request_id = OLD.id
+            )
+        )
+        OR (
+            NEW.status IN ('expired', 'revoked')
+            AND NEW.consumed_at IS NULL
+        )
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_investigation_request_transition_invalid');
+END""",
+    )
+    add_delete_guard(
+        "code_investigation_requests",
+        alias="request",
+        message="code_investigation_request_delete_forbidden",
+    )
+
+    receipt_insert = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_receipt_i"
+    manifest[receipt_insert] = (
+        "code_investigation_receipts",
+        f"""CREATE TRIGGER "{receipt_insert}"
+BEFORE INSERT ON "code_investigation_receipts"
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM code_investigation_requests AS request
+    WHERE request.id = NEW.request_id
+      AND request.board_id = NEW.board_id
+      AND request.subject_type = NEW.subject_type
+      AND request.subject_id = NEW.subject_id
+      AND request.subject_version = NEW.subject_version
+      AND request.issued_to_actor_id = NEW.attestor_actor_id
+      AND request.source_ref = NEW.source_ref
+      AND request.selector_scope_digest = NEW.selector_scope_digest
+      AND request.canonicalization_profile = NEW.canonicalization_profile
+      AND request.limits_profile = NEW.limits_profile
+      AND request.status = 'open'
+      AND request.expires_at > CURRENT_TIMESTAMP
+      AND NEW.generation = request.expected_head_generation + 1
+      AND NEW.predecessor_receipt_id IS request.expected_predecessor_receipt_id
+      AND (
+          (
+              request.expected_head_generation = 0
+              AND request.expected_predecessor_receipt_id IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM code_investigation_heads AS head
+                  WHERE head.board_id = request.board_id
+                    AND head.source_ref = request.source_ref
+              )
+          )
+          OR EXISTS (
+              SELECT 1 FROM code_investigation_heads AS head
+              WHERE head.board_id = request.board_id
+                AND head.source_ref = request.source_ref
+                AND head.generation = request.expected_head_generation
+                AND head.latest_receipt_id =
+                    request.expected_predecessor_receipt_id
+          )
+      )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_investigation_receipt_request_invalid');
+END""",
+    )
+
+    head_insert = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_head_i"
+    manifest[head_insert] = (
+        "code_investigation_heads",
+        f"""CREATE TRIGGER "{head_insert}"
+BEFORE INSERT ON "code_investigation_heads"
+WHEN NEW.generation <> 1
+   OR NEW.revision <> 1
+   OR NOT EXISTS (
+       SELECT 1 FROM code_investigation_receipts AS receipt
+       WHERE receipt.id = NEW.latest_receipt_id
+         AND receipt.board_id = NEW.board_id
+         AND receipt.source_ref = NEW.source_ref
+         AND receipt.generation = NEW.generation
+         AND receipt.predecessor_receipt_id IS NULL
+         AND receipt.acceptance_status = 'accepted'
+         AND (
+             (
+                 receipt.trust_level <> 'conflicted'
+                 AND NEW.state = 'current'
+                 AND NEW.current_receipt_id = NEW.latest_receipt_id
+             )
+             OR (
+                 receipt.trust_level = 'conflicted'
+                 AND NEW.state = 'conflicted'
+                 AND NEW.current_receipt_id IS NULL
+             )
+         )
+   )
+BEGIN
+    SELECT RAISE(ABORT, 'code_investigation_head_insert_invalid');
+END""",
+    )
+    head_update = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_head_u"
+    manifest[head_update] = (
+        "code_investigation_heads",
+        f"""CREATE TRIGGER "{head_update}"
+BEFORE UPDATE ON "code_investigation_heads"
+WHEN NEW.board_id IS NOT OLD.board_id
+   OR NEW.source_ref IS NOT OLD.source_ref
+   OR NEW.generation <> OLD.generation + 1
+   OR NEW.revision <> OLD.revision + 1
+   OR NOT EXISTS (
+       SELECT 1 FROM code_investigation_receipts AS receipt
+       WHERE receipt.id = NEW.latest_receipt_id
+         AND receipt.board_id = NEW.board_id
+         AND receipt.source_ref = NEW.source_ref
+         AND receipt.generation = NEW.generation
+         AND receipt.predecessor_receipt_id = OLD.latest_receipt_id
+         AND receipt.acceptance_status = 'accepted'
+         AND (
+             (
+                 receipt.trust_level <> 'conflicted'
+                 AND NEW.state = 'current'
+                 AND NEW.current_receipt_id = NEW.latest_receipt_id
+             )
+             OR (
+                 receipt.trust_level = 'conflicted'
+                 AND NEW.state = 'conflicted'
+                 AND NEW.current_receipt_id IS OLD.current_receipt_id
+             )
+         )
+   )
+BEGIN
+    SELECT RAISE(ABORT, 'code_investigation_head_cas_invalid');
+END""",
+    )
+    add_delete_guard(
+        "code_investigation_heads",
+        alias="head",
+        message="code_investigation_head_delete_forbidden",
+    )
+
+    evidence_insert = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_evidence_i"
+    manifest[evidence_insert] = (
+        "code_evidence",
+        f"""CREATE TRIGGER "{evidence_insert}"
+BEFORE INSERT ON "code_evidence"
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM code_investigation_receipts AS receipt
+    JOIN code_investigation_heads AS head
+      ON head.board_id = receipt.board_id
+     AND head.source_ref = receipt.source_ref
+    WHERE receipt.id = NEW.investigation_receipt_id
+      AND receipt.board_id = NEW.board_id
+      AND receipt.source_ref = NEW.source_ref
+      AND receipt.subject_type = NEW.parent_type
+      AND receipt.subject_id = COALESCE(
+          NEW.refinement_id, NEW.spec_id, NEW.card_id
+      )
+      AND receipt.subject_version = NEW.parent_version
+      AND receipt.declared_revision IS NEW.declared_revision
+      AND receipt.workspace_state_id = NEW.workspace_state_id
+      AND receipt.declared_dirty = NEW.declared_dirty
+      AND receipt.reproducibility_claim = NEW.reproducibility_claim
+      AND head.state = 'current'
+      AND head.current_receipt_id = receipt.id
+      AND NOT EXISTS (
+          SELECT 1 FROM code_investigation_receipt_revocations AS revocation
+          WHERE revocation.board_id = NEW.board_id
+            AND revocation.receipt_id = receipt.id
+      )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_receipt_cas_invalid');
+END""",
+    )
+
+    evidence_same = same_columns(
+        "code_evidence",
+        except_columns={"lifecycle_status", "revocation_reason"},
+    )
+    evidence_update = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_evidence_u"
+    manifest[evidence_update] = (
+        "code_evidence",
+        f"""CREATE TRIGGER "{evidence_update}"
+BEFORE UPDATE ON "code_evidence"
+WHEN NOT (
+    OLD.lifecycle_status = 'active'
+    AND NEW.lifecycle_status IN ('superseded', 'revoked')
+    AND {evidence_same}
+    AND (
+        NEW.lifecycle_status = 'revoked'
+        OR EXISTS (
+            SELECT 1 FROM code_evidence AS successor
+            WHERE successor.supersedes_evidence_id = OLD.id
+              AND successor.board_id = OLD.board_id
+        )
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_content_immutable');
+END""",
+    )
+    add_delete_guard(
+        "code_evidence",
+        alias="evidence",
+        message="code_evidence_delete_forbidden",
+    )
+
+    spec_link_insert = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_spec_link_i"
+    manifest[spec_link_insert] = (
+        "code_evidence_spec_links",
+        f"""CREATE TRIGGER "{spec_link_insert}"
+BEFORE INSERT ON "code_evidence_spec_links"
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM specs AS spec
+    JOIN code_evidence AS evidence ON evidence.id = NEW.evidence_id
+    WHERE spec.id = NEW.spec_id
+      AND spec.board_id = NEW.board_id
+      AND evidence.board_id = NEW.board_id
+      AND evidence.lifecycle_status = 'active'
+      AND evidence.payload_sha256 = NEW.evidence_content_sha256
+      AND NEW.spec_version = spec.version + 1
+      AND NOT EXISTS (
+          SELECT 1 FROM code_evidence_dispositions AS disposition
+          WHERE disposition.board_id = NEW.board_id
+            AND disposition.spec_id = NEW.spec_id
+            AND disposition.evidence_id = NEW.evidence_id
+            AND disposition.active = true
+      )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_spec_link_cas_invalid');
+END""",
+    )
+
+    disposition_insert = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_disposition_i"
+    manifest[disposition_insert] = (
+        "code_evidence_dispositions",
+        f"""CREATE TRIGGER "{disposition_insert}"
+BEFORE INSERT ON "code_evidence_dispositions"
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM specs AS spec
+    JOIN code_evidence AS evidence ON evidence.id = NEW.evidence_id
+    WHERE spec.id = NEW.spec_id
+      AND spec.board_id = NEW.board_id
+      AND evidence.board_id = NEW.board_id
+      AND evidence.lifecycle_status <> 'revoked'
+      AND NEW.spec_version = spec.version + 1
+      AND NOT EXISTS (
+          SELECT 1 FROM code_evidence_spec_links AS link
+          WHERE link.board_id = NEW.board_id
+            AND link.spec_id = NEW.spec_id
+            AND link.evidence_id = NEW.evidence_id
+      )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_disposition_cas_invalid');
+END""",
+    )
+
+    disposition_same = same_columns(
+        "code_evidence_dispositions",
+        except_columns={"spec_version", "active", "cleared_by", "cleared_at"},
+    )
+    disposition_update = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_disposition_u"
+    manifest[disposition_update] = (
+        "code_evidence_dispositions",
+        f"""CREATE TRIGGER "{disposition_update}"
+BEFORE UPDATE ON "code_evidence_dispositions"
+WHEN NOT (
+    OLD.active = true
+    AND NEW.active = false
+    AND NEW.spec_version >= OLD.spec_version
+    AND NEW.cleared_by IS NOT NULL
+    AND NEW.cleared_at IS NOT NULL
+    AND {disposition_same}
+    AND EXISTS (
+        SELECT 1 FROM specs AS spec
+        WHERE spec.id = OLD.spec_id
+          AND spec.board_id = OLD.board_id
+          AND NEW.spec_version IN (spec.version, spec.version + 1)
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_disposition_immutable');
+END""",
+    )
+    add_delete_guard(
+        "code_evidence_dispositions",
+        alias="disposition",
+        message="code_evidence_disposition_delete_forbidden",
+    )
+
+    target_semantic_same = same_columns(
+        "implementation_targets",
+        except_columns={"current_resolution_id", "updated_at"},
+    )
+    target_identity_same = same_columns(
+        "implementation_targets",
+        except_columns={
+            "selector_kind",
+            "relative_path_hint",
+            "language",
+            "symbol_kind",
+            "qualified_symbol",
+            "symbol_signature",
+            "role",
+            "intent",
+            "required",
+            "source_spec_version",
+            "baseline_evidence_id",
+            "lifecycle_status",
+            "revision",
+            "current_resolution_id",
+            "last_change_reason_sha256",
+            "updated_at",
+        },
+    )
+    target_update = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_target_u"
+    manifest[target_update] = (
+        "implementation_targets",
+        f"""CREATE TRIGGER "{target_update}"
+BEFORE UPDATE ON "implementation_targets"
+WHEN NOT (
+    (
+        {target_semantic_same}
+        AND NEW.current_resolution_id IS NOT OLD.current_resolution_id
+        AND NEW.current_resolution_id IS NOT NULL
+        AND EXISTS (
+            SELECT 1 FROM implementation_target_resolutions AS resolution
+            WHERE resolution.id = NEW.current_resolution_id
+              AND resolution.target_id = OLD.id
+              AND resolution.board_id = OLD.board_id
+              AND resolution.target_revision = OLD.revision
+        )
+    )
+    OR (
+        OLD.lifecycle_status = 'active'
+        AND {target_identity_same}
+        AND NEW.revision = OLD.revision + 1
+        AND NEW.current_resolution_id IS NULL
+        AND NEW.last_change_reason_sha256 IS NOT NULL
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'implementation_target_cas_invalid');
+END""",
+    )
+    add_delete_guard(
+        "implementation_targets",
+        alias="target",
+        message="implementation_target_delete_forbidden",
+    )
+
+    resolution_insert = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_resolution_i"
+    manifest[resolution_insert] = (
+        "implementation_target_resolutions",
+        f"""CREATE TRIGGER "{resolution_insert}"
+BEFORE INSERT ON "implementation_target_resolutions"
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM implementation_targets AS target
+    JOIN code_investigation_receipts AS receipt
+      ON receipt.id = NEW.investigation_receipt_id
+    JOIN code_investigation_heads AS head
+      ON head.board_id = receipt.board_id
+     AND head.source_ref = receipt.source_ref
+    WHERE target.id = NEW.target_id
+      AND target.board_id = NEW.board_id
+      AND target.source_ref = NEW.source_ref
+      AND target.revision = NEW.target_revision
+      AND target.lifecycle_status = 'active'
+      AND receipt.board_id = NEW.board_id
+      AND receipt.source_ref = NEW.source_ref
+      AND receipt.subject_type = 'card'
+      AND receipt.subject_id = target.card_id
+      AND receipt.subject_version = NEW.subject_version
+      AND receipt.generation = NEW.receipt_generation
+      AND receipt.declared_revision IS NEW.declared_revision
+      AND receipt.workspace_state_id = NEW.workspace_state_id
+      AND receipt.declared_dirty = NEW.declared_dirty
+      AND head.state = 'current'
+      AND head.current_receipt_id = receipt.id
+      AND NOT EXISTS (
+          SELECT 1 FROM code_investigation_receipt_revocations AS revocation
+          WHERE revocation.board_id = NEW.board_id
+            AND revocation.receipt_id = receipt.id
+      )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'implementation_target_resolution_cas_invalid');
+END""",
+    )
+
+    execution_insert = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_execution_i"
+    manifest[execution_insert] = (
+        "implementation_target_execution_records",
+        f"""CREATE TRIGGER "{execution_insert}"
+BEFORE INSERT ON "implementation_target_execution_records"
+WHEN NOT EXISTS (
+    SELECT 1
+    FROM implementation_targets AS target
+    JOIN code_investigation_receipts AS receipt
+      ON receipt.id = NEW.result_investigation_receipt_id
+    JOIN code_investigation_heads AS head
+      ON head.board_id = receipt.board_id
+     AND head.source_ref = receipt.source_ref
+    WHERE target.id = NEW.target_id
+      AND target.board_id = NEW.board_id
+      AND target.card_id = NEW.card_id
+      AND target.source_ref = NEW.source_ref
+      AND target.revision = NEW.target_revision
+      AND target.lifecycle_status = 'active'
+      AND receipt.board_id = NEW.board_id
+      AND receipt.source_ref = NEW.source_ref
+      AND receipt.subject_type = 'card'
+      AND receipt.subject_id = NEW.card_id
+      AND receipt.declared_revision IS NEW.result_declared_revision
+      AND receipt.workspace_state_id IS NEW.result_workspace_state_id
+      AND head.state = 'current'
+      AND head.current_receipt_id = receipt.id
+      AND NOT EXISTS (
+          SELECT 1 FROM code_investigation_receipt_revocations AS revocation
+          WHERE revocation.board_id = NEW.board_id
+            AND revocation.receipt_id = receipt.id
+      )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'implementation_target_execution_cas_invalid');
+END""",
+    )
+
+    waiver_same = same_columns(
+        "code_traceability_waivers",
+        except_columns={"active", "cleared_by", "cleared_at"},
+    )
+    waiver_update = f"{CODE_TRACEABILITY_TRIGGER_PREFIX}_waiver_u"
+    manifest[waiver_update] = (
+        "code_traceability_waivers",
+        f"""CREATE TRIGGER "{waiver_update}"
+BEFORE UPDATE ON "code_traceability_waivers"
+WHEN NOT (
+    OLD.active = true
+    AND NEW.active = false
+    AND NEW.cleared_by IS NOT NULL
+    AND NEW.cleared_at IS NOT NULL
+    AND {waiver_same}
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_traceability_waiver_immutable');
+END""",
+    )
+    add_delete_guard(
+        "code_traceability_waivers",
+        alias="waiver",
+        message="code_traceability_waiver_delete_forbidden",
+    )
+    return manifest
+
+
+def code_traceability_postgresql_ddl() -> tuple[str, dict[str, tuple[str, str, int]]]:
+    """Return PostgreSQL guards equivalent to the SQLite authority manifest."""
+
+    function_name = "pulse_code_traceability_guard_v1"
+    function_sql = f"""CREATE OR REPLACE FUNCTION "{function_name}"()
+RETURNS trigger AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        IF EXISTS (
+            SELECT 1 FROM "kg_board_erasure_permits" AS permit
+            WHERE permit."board_id" = OLD."board_id"
+        ) THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'code_traceability_delete_forbidden';
+    END IF;
+
+    IF TG_TABLE_NAME = 'code_investigation_receipts' THEN
+        IF TG_OP = 'UPDATE' THEN
+            RAISE EXCEPTION 'code_investigation_receipt_immutable';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1
+            FROM code_investigation_requests AS request
+            WHERE request.id = NEW.request_id
+              AND request.board_id = NEW.board_id
+              AND request.subject_type = NEW.subject_type
+              AND request.subject_id = NEW.subject_id
+              AND request.subject_version = NEW.subject_version
+              AND request.issued_to_actor_id = NEW.attestor_actor_id
+              AND request.source_ref = NEW.source_ref
+              AND request.selector_scope_digest = NEW.selector_scope_digest
+              AND request.canonicalization_profile =
+                  NEW.canonicalization_profile
+              AND request.limits_profile = NEW.limits_profile
+              AND request.status = 'open'
+              AND request.expires_at > CURRENT_TIMESTAMP
+              AND NEW.generation = request.expected_head_generation + 1
+              AND NEW.predecessor_receipt_id IS NOT DISTINCT FROM
+                  request.expected_predecessor_receipt_id
+              AND (
+                  (
+                      request.expected_head_generation = 0
+                      AND request.expected_predecessor_receipt_id IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM code_investigation_heads AS head
+                          WHERE head.board_id = request.board_id
+                            AND head.source_ref = request.source_ref
+                      )
+                  )
+                  OR EXISTS (
+                      SELECT 1 FROM code_investigation_heads AS head
+                      WHERE head.board_id = request.board_id
+                        AND head.source_ref = request.source_ref
+                        AND head.generation =
+                            request.expected_head_generation
+                        AND head.latest_receipt_id =
+                            request.expected_predecessor_receipt_id
+                  )
+              )
+        ) THEN
+            RAISE EXCEPTION 'code_investigation_receipt_request_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'code_investigation_requests' THEN
+        IF OLD.status <> 'open'
+           OR NEW.status NOT IN ('consumed', 'expired', 'revoked')
+           OR (to_jsonb(NEW) - 'status' - 'consumed_at')
+              IS DISTINCT FROM
+              (to_jsonb(OLD) - 'status' - 'consumed_at')
+           OR (
+               NEW.status = 'consumed'
+               AND (
+                   NEW.consumed_at IS NULL
+                   OR NOT EXISTS (
+                       SELECT 1 FROM code_investigation_receipts AS receipt
+                       WHERE receipt.request_id = OLD.id
+                   )
+               )
+           )
+           OR (
+               NEW.status IN ('expired', 'revoked')
+               AND NEW.consumed_at IS NOT NULL
+           ) THEN
+            RAISE EXCEPTION 'code_investigation_request_transition_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'code_investigation_heads' THEN
+        IF TG_OP = 'INSERT' THEN
+            IF NEW.generation <> 1
+               OR NEW.revision <> 1
+               OR NOT EXISTS (
+                   SELECT 1 FROM code_investigation_receipts AS receipt
+                   WHERE receipt.id = NEW.latest_receipt_id
+                     AND receipt.board_id = NEW.board_id
+                     AND receipt.source_ref = NEW.source_ref
+                     AND receipt.generation = NEW.generation
+                     AND receipt.predecessor_receipt_id IS NULL
+                     AND receipt.acceptance_status = 'accepted'
+                     AND (
+                         (
+                             receipt.trust_level <> 'conflicted'
+                             AND NEW.state = 'current'
+                             AND NEW.current_receipt_id =
+                                 NEW.latest_receipt_id
+                         )
+                         OR (
+                             receipt.trust_level = 'conflicted'
+                             AND NEW.state = 'conflicted'
+                             AND NEW.current_receipt_id IS NULL
+                         )
+                     )
+               ) THEN
+                RAISE EXCEPTION 'code_investigation_head_insert_invalid';
+            END IF;
+        ELSIF NEW.board_id IS DISTINCT FROM OLD.board_id
+           OR NEW.source_ref IS DISTINCT FROM OLD.source_ref
+           OR NEW.generation <> OLD.generation + 1
+           OR NEW.revision <> OLD.revision + 1
+           OR NOT EXISTS (
+               SELECT 1 FROM code_investigation_receipts AS receipt
+               WHERE receipt.id = NEW.latest_receipt_id
+                 AND receipt.board_id = NEW.board_id
+                 AND receipt.source_ref = NEW.source_ref
+                 AND receipt.generation = NEW.generation
+                 AND receipt.predecessor_receipt_id = OLD.latest_receipt_id
+                 AND receipt.acceptance_status = 'accepted'
+                 AND (
+                     (
+                         receipt.trust_level <> 'conflicted'
+                         AND NEW.state = 'current'
+                         AND NEW.current_receipt_id = NEW.latest_receipt_id
+                     )
+                     OR (
+                         receipt.trust_level = 'conflicted'
+                         AND NEW.state = 'conflicted'
+                         AND NEW.current_receipt_id IS NOT DISTINCT FROM
+                             OLD.current_receipt_id
+                     )
+                 )
+           ) THEN
+            RAISE EXCEPTION 'code_investigation_head_cas_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'code_evidence' THEN
+        IF TG_OP = 'INSERT' THEN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM code_investigation_receipts AS receipt
+                JOIN code_investigation_heads AS head
+                  ON head.board_id = receipt.board_id
+                 AND head.source_ref = receipt.source_ref
+                WHERE receipt.id = NEW.investigation_receipt_id
+                  AND receipt.board_id = NEW.board_id
+                  AND receipt.source_ref = NEW.source_ref
+                  AND receipt.subject_type = NEW.parent_type
+                  AND receipt.subject_id = COALESCE(
+                      NEW.refinement_id, NEW.spec_id, NEW.card_id
+                  )
+                  AND receipt.subject_version = NEW.parent_version
+                  AND receipt.declared_revision IS NOT DISTINCT FROM
+                      NEW.declared_revision
+                  AND receipt.workspace_state_id = NEW.workspace_state_id
+                  AND receipt.declared_dirty = NEW.declared_dirty
+                  AND receipt.reproducibility_claim =
+                      NEW.reproducibility_claim
+                  AND head.state = 'current'
+                  AND head.current_receipt_id = receipt.id
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM code_investigation_receipt_revocations AS revocation
+                      WHERE revocation.board_id = NEW.board_id
+                        AND revocation.receipt_id = receipt.id
+                  )
+            ) THEN
+                RAISE EXCEPTION 'code_evidence_receipt_cas_invalid';
+            END IF;
+            RETURN NEW;
+        END IF;
+        IF OLD.lifecycle_status <> 'active'
+           OR NEW.lifecycle_status NOT IN ('superseded', 'revoked')
+           OR (to_jsonb(NEW) - 'lifecycle_status' - 'revocation_reason')
+              IS DISTINCT FROM
+              (to_jsonb(OLD) - 'lifecycle_status' - 'revocation_reason')
+           OR (
+               NEW.lifecycle_status = 'superseded'
+               AND NOT EXISTS (
+                   SELECT 1 FROM code_evidence AS successor
+                   WHERE successor.supersedes_evidence_id = OLD.id
+                     AND successor.board_id = OLD.board_id
+               )
+           ) THEN
+            RAISE EXCEPTION 'code_evidence_content_immutable';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'implementation_target_resolutions' THEN
+        IF TG_OP <> 'INSERT' THEN
+            RAISE EXCEPTION 'implementation_target_resolution_immutable';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1
+            FROM implementation_targets AS target
+            JOIN code_investigation_receipts AS receipt
+              ON receipt.id = NEW.investigation_receipt_id
+            JOIN code_investigation_heads AS head
+              ON head.board_id = receipt.board_id
+             AND head.source_ref = receipt.source_ref
+            WHERE target.id = NEW.target_id
+              AND target.board_id = NEW.board_id
+              AND target.source_ref = NEW.source_ref
+              AND target.revision = NEW.target_revision
+              AND target.lifecycle_status = 'active'
+              AND receipt.board_id = NEW.board_id
+              AND receipt.source_ref = NEW.source_ref
+              AND receipt.subject_type = 'card'
+              AND receipt.subject_id = target.card_id
+              AND receipt.subject_version = NEW.subject_version
+              AND receipt.generation = NEW.receipt_generation
+              AND receipt.declared_revision IS NOT DISTINCT FROM
+                  NEW.declared_revision
+              AND receipt.workspace_state_id = NEW.workspace_state_id
+              AND receipt.declared_dirty = NEW.declared_dirty
+              AND head.state = 'current'
+              AND head.current_receipt_id = receipt.id
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM code_investigation_receipt_revocations AS revocation
+                  WHERE revocation.board_id = NEW.board_id
+                    AND revocation.receipt_id = receipt.id
+              )
+        ) THEN
+            RAISE EXCEPTION 'implementation_target_resolution_cas_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'implementation_target_execution_records' THEN
+        IF TG_OP <> 'INSERT' THEN
+            RAISE EXCEPTION 'implementation_target_execution_immutable';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1
+            FROM implementation_targets AS target
+            JOIN code_investigation_receipts AS receipt
+              ON receipt.id = NEW.result_investigation_receipt_id
+            JOIN code_investigation_heads AS head
+              ON head.board_id = receipt.board_id
+             AND head.source_ref = receipt.source_ref
+            WHERE target.id = NEW.target_id
+              AND target.board_id = NEW.board_id
+              AND target.card_id = NEW.card_id
+              AND target.source_ref = NEW.source_ref
+              AND target.revision = NEW.target_revision
+              AND target.lifecycle_status = 'active'
+              AND receipt.board_id = NEW.board_id
+              AND receipt.source_ref = NEW.source_ref
+              AND receipt.subject_type = 'card'
+              AND receipt.subject_id = NEW.card_id
+              AND receipt.declared_revision IS NOT DISTINCT FROM
+                  NEW.result_declared_revision
+              AND receipt.workspace_state_id IS NOT DISTINCT FROM
+                  NEW.result_workspace_state_id
+              AND head.state = 'current'
+              AND head.current_receipt_id = receipt.id
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM code_investigation_receipt_revocations AS revocation
+                  WHERE revocation.board_id = NEW.board_id
+                    AND revocation.receipt_id = receipt.id
+              )
+        ) THEN
+            RAISE EXCEPTION 'implementation_target_execution_cas_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'code_evidence_spec_links' THEN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM specs AS spec
+            JOIN code_evidence AS evidence ON evidence.id = NEW.evidence_id
+            WHERE spec.id = NEW.spec_id
+              AND spec.board_id = NEW.board_id
+              AND evidence.board_id = NEW.board_id
+              AND evidence.lifecycle_status = 'active'
+              AND evidence.payload_sha256 = NEW.evidence_content_sha256
+              AND NEW.spec_version = spec.version + 1
+              AND NOT EXISTS (
+                  SELECT 1 FROM code_evidence_dispositions AS disposition
+                  WHERE disposition.board_id = NEW.board_id
+                    AND disposition.spec_id = NEW.spec_id
+                    AND disposition.evidence_id = NEW.evidence_id
+                    AND disposition.active
+              )
+        ) THEN
+            RAISE EXCEPTION 'code_evidence_spec_link_cas_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'code_evidence_dispositions' THEN
+        IF TG_OP = 'INSERT' THEN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM specs AS spec
+                JOIN code_evidence AS evidence
+                  ON evidence.id = NEW.evidence_id
+                WHERE spec.id = NEW.spec_id
+                  AND spec.board_id = NEW.board_id
+                  AND evidence.board_id = NEW.board_id
+                  AND evidence.lifecycle_status <> 'revoked'
+                  AND NEW.spec_version = spec.version + 1
+                  AND NOT EXISTS (
+                      SELECT 1 FROM code_evidence_spec_links AS link
+                      WHERE link.board_id = NEW.board_id
+                        AND link.spec_id = NEW.spec_id
+                        AND link.evidence_id = NEW.evidence_id
+                  )
+            ) THEN
+                RAISE EXCEPTION 'code_evidence_disposition_cas_invalid';
+            END IF;
+            RETURN NEW;
+        END IF;
+        IF NOT OLD.active
+           OR NEW.active
+           OR NEW.spec_version < OLD.spec_version
+           OR NEW.cleared_by IS NULL
+           OR NEW.cleared_at IS NULL
+           OR (to_jsonb(NEW) - 'spec_version' - 'active' - 'cleared_by' - 'cleared_at')
+              IS DISTINCT FROM
+              (to_jsonb(OLD) - 'spec_version' - 'active' - 'cleared_by' - 'cleared_at')
+           OR NOT EXISTS (
+               SELECT 1 FROM specs AS spec
+               WHERE spec.id = OLD.spec_id
+                 AND spec.board_id = OLD.board_id
+                 AND NEW.spec_version IN (spec.version, spec.version + 1)
+           ) THEN
+            RAISE EXCEPTION 'code_evidence_disposition_immutable';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'implementation_targets' THEN
+        IF (
+            (to_jsonb(NEW) - 'current_resolution_id' - 'updated_at') =
+            (to_jsonb(OLD) - 'current_resolution_id' - 'updated_at')
+            AND NEW.current_resolution_id IS DISTINCT FROM
+                OLD.current_resolution_id
+            AND NEW.current_resolution_id IS NOT NULL
+            AND EXISTS (
+                SELECT 1 FROM implementation_target_resolutions AS resolution
+                WHERE resolution.id = NEW.current_resolution_id
+                  AND resolution.target_id = OLD.id
+                  AND resolution.board_id = OLD.board_id
+                  AND resolution.target_revision = OLD.revision
+            )
+        ) THEN
+            RETURN NEW;
+        END IF;
+        IF OLD.lifecycle_status <> 'active'
+           OR NEW.id IS DISTINCT FROM OLD.id
+           OR NEW.board_id IS DISTINCT FROM OLD.board_id
+           OR NEW.card_id IS DISTINCT FROM OLD.card_id
+           OR NEW.source_ref IS DISTINCT FROM OLD.source_ref
+           OR NEW.created_by IS DISTINCT FROM OLD.created_by
+           OR NEW.created_at IS DISTINCT FROM OLD.created_at
+           OR NEW.revision <> OLD.revision + 1
+           OR NEW.current_resolution_id IS NOT NULL
+           OR NEW.last_change_reason_sha256 IS NULL THEN
+            RAISE EXCEPTION 'implementation_target_cas_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = 'code_traceability_waivers' THEN
+        IF NOT OLD.active
+           OR NEW.active
+           OR NEW.cleared_by IS NULL
+           OR NEW.cleared_at IS NULL
+           OR (to_jsonb(NEW) - 'active' - 'cleared_by' - 'cleared_at')
+              IS DISTINCT FROM
+              (to_jsonb(OLD) - 'active' - 'cleared_by' - 'cleared_at') THEN
+            RAISE EXCEPTION 'code_traceability_waiver_immutable';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    RAISE EXCEPTION 'code_traceability_row_immutable';
+END;
+$$ LANGUAGE plpgsql"""
+    specs = {
+        "trg_ctv1_request_ud": (
+            "code_investigation_requests",
+            "UPDATE OR DELETE",
+            27,
+        ),
+        "trg_ctv1_receipt_iud": (
+            "code_investigation_receipts",
+            "INSERT OR UPDATE OR DELETE",
+            31,
+        ),
+        "trg_ctv1_revocation_ud": (
+            "code_investigation_receipt_revocations",
+            "UPDATE OR DELETE",
+            27,
+        ),
+        "trg_ctv1_head_iud": (
+            "code_investigation_heads",
+            "INSERT OR UPDATE OR DELETE",
+            31,
+        ),
+        "trg_ctv1_evidence_iud": (
+            "code_evidence",
+            "INSERT OR UPDATE OR DELETE",
+            31,
+        ),
+        "trg_ctv1_spec_link_i": (
+            "code_evidence_spec_links",
+            "INSERT",
+            7,
+        ),
+        "trg_ctv1_disposition_iud": (
+            "code_evidence_dispositions",
+            "INSERT OR UPDATE OR DELETE",
+            31,
+        ),
+        "trg_ctv1_target_ud": (
+            "implementation_targets",
+            "UPDATE OR DELETE",
+            27,
+        ),
+        "trg_ctv1_resolution_iud": (
+            "implementation_target_resolutions",
+            "INSERT OR UPDATE OR DELETE",
+            31,
+        ),
+        "trg_ctv1_execution_iud": (
+            "implementation_target_execution_records",
+            "INSERT OR UPDATE OR DELETE",
+            31,
+        ),
+        "trg_ctv1_ack_ud": (
+            "target_overlap_acknowledgements",
+            "UPDATE OR DELETE",
+            27,
+        ),
+        "trg_ctv1_waiver_ud": (
+            "code_traceability_waivers",
+            "UPDATE OR DELETE",
+            27,
+        ),
+    }
+    return function_sql, specs
+
+
 def _quality_c7_sqlite_trigger_manifest() -> dict[str, tuple[str, str]]:
     """Return permit-aware append-only guards installed after create_all."""
 
@@ -18404,8 +21641,7 @@ def _quality_c7_sqlite_trigger_manifest() -> dict[str, tuple[str, str]]:
     return manifest
 
 
-def research_decision_postgresql_ddl(
-) -> tuple[str, dict[str, tuple[str, str, int]]]:
+def research_decision_postgresql_ddl() -> tuple[str, dict[str, tuple[str, str, int]]]:
     """Return permit-aware PostgreSQL append-only guards for the RDL.
 
     Entry, history, snapshot, and derivation rows are immutable on every
@@ -18414,7 +21650,7 @@ def research_decision_postgresql_ddl(
     """
 
     function_name = "pulse_research_decision_immutable_guard"
-    function_sql = f'''CREATE OR REPLACE FUNCTION "{function_name}"()
+    function_sql = f"""CREATE OR REPLACE FUNCTION "{function_name}"()
 RETURNS trigger AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN
@@ -18458,7 +21694,7 @@ BEGIN
     END IF;
     RAISE EXCEPTION 'research_decision_entry_immutable';
 END;
-$$ LANGUAGE plpgsql'''
+$$ LANGUAGE plpgsql"""
     tables = (
         ("entries", "research_decision_entries"),
         ("history", "research_decision_history"),
@@ -18514,6 +21750,2473 @@ def audit_research_decision_postgresql_trigger_rows(
                 + trigger_name
             )
     return tuple(missing)
+
+
+async def _migrate_code_traceability_schema() -> str | None:
+    """Converge Code Traceability tables, lineage columns, and DB guards.
+
+    This step owns relational persistence only.  It intentionally installs no
+    source reader, Git/filesystem adapter, provider client, parser, or resolver.
+    """
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import select as sa_select
+    from sqlalchemy import text as sa_text
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        Board,
+        DefaultBoardConfiguration,
+    )
+
+    engine = get_engine()
+    changed = False
+
+    def table_names(sync_conn: object) -> set[str]:
+        return set(sa_inspect(sync_conn).get_table_names())
+
+    def column_names(sync_conn: object, table_name: str) -> set[str]:
+        return {
+            str(column["name"])
+            for column in sa_inspect(sync_conn).get_columns(table_name)
+        }
+
+    async with engine.begin() as conn:
+        dialect = conn.dialect.name
+        if dialect not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "Code Traceability migration supports only SQLite and PostgreSQL"
+            )
+        if dialect == "sqlite":
+            await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+            await conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+        existing_tables = await conn.run_sync(table_names)
+        for table, payload_column in (
+            (Board.__table__, Board.__table__.c.settings),
+            (
+                DefaultBoardConfiguration.__table__,
+                DefaultBoardConfiguration.__table__.c.settings_payload,
+            ),
+        ):
+            if table.name not in existing_tables:
+                continue
+            rows = (await conn.execute(sa_select(table.c.id, payload_column))).all()
+            for row_id, raw_payload in rows:
+                normalized, payload_changed = (
+                    _normalize_legacy_code_traceability_settings_payload(raw_payload)
+                )
+                if not payload_changed:
+                    continue
+                await conn.execute(
+                    table.update()
+                    .where(table.c.id == row_id)
+                    .values({payload_column.key: normalized})
+                )
+                changed = True
+        for table_name, additions in (
+            (
+                "refinement_snapshots",
+                (("code_evidence_manifest", "JSON"),),
+            ),
+            (
+                "specs",
+                (
+                    ("source_refinement_snapshot_id", "VARCHAR(36)"),
+                    ("source_refinement_version", "INTEGER"),
+                ),
+            ),
+        ):
+            if table_name not in existing_tables:
+                raise RuntimeError(
+                    "Code Traceability requires existing SDLC table: " + table_name
+                )
+            observed_columns = await conn.run_sync(
+                lambda sync_conn, name=table_name: column_names(sync_conn, name)
+            )
+            for column_name, column_type in additions:
+                if column_name in observed_columns:
+                    continue
+                await conn.execute(
+                    sa_text(
+                        f'ALTER TABLE "{table_name}" '
+                        f'ADD COLUMN "{column_name}" {column_type}'
+                    )
+                )
+                changed = True
+
+        await conn.execute(
+            sa_text(
+                "CREATE INDEX IF NOT EXISTS "
+                "ix_specs_source_refinement_snapshot_id "
+                "ON specs(source_refinement_snapshot_id)"
+            )
+        )
+        if dialect == "postgresql":
+            await conn.execute(
+                sa_text(
+                    """
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint AS constraint_row
+        JOIN pg_class AS relation
+          ON relation.oid = constraint_row.conrelid
+        JOIN pg_namespace AS namespace_row
+          ON namespace_row.oid = relation.relnamespace
+        WHERE namespace_row.nspname = current_schema()
+          AND relation.relname = 'specs'
+          AND constraint_row.conname =
+              'fk_specs_source_refinement_snapshot_id'
+    ) THEN
+        ALTER TABLE specs
+        ADD CONSTRAINT fk_specs_source_refinement_snapshot_id
+        FOREIGN KEY (source_refinement_snapshot_id)
+        REFERENCES refinement_snapshots(id)
+        ON DELETE RESTRICT
+        ON UPDATE RESTRICT;
+    END IF;
+END $$
+"""
+                )
+            )
+
+        existing_tables = await conn.run_sync(table_names)
+        contextual_columns = {
+            "code_investigation_receipts": {
+                "delivery_context",
+                "contextual_outcome",
+                "context_contract_version",
+            },
+            "code_evidence": {
+                "source_role",
+                "relevance_summary",
+                "scope_relation",
+                "source_origin",
+                "interpretation_limit",
+                "baseline_presence",
+                "baseline_workspace_state_id",
+                "baseline_provenance_note",
+                "context_contract_version",
+            },
+        }
+        observed_contextual_columns: dict[str, set[str]] = {}
+        for table_name, expected_columns in contextual_columns.items():
+            if table_name not in existing_tables:
+                continue
+            observed_contextual_columns[table_name] = await conn.run_sync(
+                lambda sync_conn, name=table_name: column_names(sync_conn, name)
+            )
+        contextual_pending = any(
+            not expected_columns.issubset(
+                observed_contextual_columns.get(table_name, set())
+            )
+            for table_name, expected_columns in contextual_columns.items()
+        )
+
+        contextual_check_names = {
+            "code_investigation_receipts": {
+                "ck_code_investigation_receipt_context_v2",
+            },
+            "code_evidence": {
+                "ck_code_evidence_source_role",
+                "ck_code_evidence_context_v2",
+            },
+        }
+
+        def pre_context_compatible_contract(
+            contract: dict[str, dict[str, object]],
+            table_name: str,
+        ) -> dict[str, dict[str, object]]:
+            """Project exact v1 structure while the dedicated v2 step is pending.
+
+            SQLite cannot add table CHECK constraints in place.  Those checks
+            are therefore removed from both sides permanently and are audited
+            by the v2 trigger manifest instead.  Only genuinely absent v2
+            columns are removed from the expected side during the one-step
+            hand-off; all original v1 structure remains exact.
+            """
+
+            checks_to_ignore = contextual_check_names.get(table_name, set())
+            fields = contextual_columns.get(table_name, set())
+            projected = {
+                side: dict(payload) for side, payload in contract.items()
+            }
+            if fields:
+                # Additive ALTER places SQLite columns at the physical tail,
+                # while create_all follows ORM declaration order.  The v2
+                # migration audits this owned overlay independently, so the
+                # v1 fingerprint excludes it on both paths.
+                for side in ("expected", "observed"):
+                    projected[side]["columns"] = tuple(
+                        column
+                        for column in projected[side]["columns"]
+                        if column[0] not in fields
+                    )
+            if checks_to_ignore:
+                for side in ("expected", "observed"):
+                    projected[side]["checks"] = tuple(
+                        check
+                        for check in projected[side]["checks"]
+                        if check[0] not in checks_to_ignore
+                    )
+            return projected
+
+        for table in _code_traceability_v1_owned_tables():
+            if table.name not in existing_tables:
+                await conn.run_sync(
+                    lambda sync_conn, owned=table: owned.create(
+                        sync_conn,
+                        checkfirst=True,
+                    )
+                )
+                existing_tables.add(table.name)
+                changed = True
+            contract = await conn.run_sync(
+                (
+                    lambda sync_conn, owned=table: _sqlite_owned_table_contract(
+                        sync_conn, owned
+                    )
+                )
+                if dialect == "sqlite"
+                else (
+                    lambda sync_conn, owned=table: _postgresql_owned_table_contract(
+                        sync_conn, owned
+                    )
+                )
+            )
+            contract = pre_context_compatible_contract(contract, table.name)
+            if contract["observed"] != contract["expected"]:
+                raise RuntimeError(
+                    "Code Traceability table has a non-canonical contract: "
+                    + table.name
+                )
+
+        if dialect == "sqlite":
+            manifest = code_traceability_sqlite_trigger_manifest()
+            trigger_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, tbl_name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name LIKE :prefix"
+                        ),
+                        {"prefix": f"{CODE_TRACEABILITY_TRIGGER_PREFIX}%"},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing = {str(row["name"]): row for row in trigger_rows}
+            unexpected = set(existing) - set(manifest)
+            if unexpected:
+                raise RuntimeError(
+                    "Code Traceability has unexpected owned triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for trigger_name, (table_name, trigger_sql) in manifest.items():
+                observed = existing.get(trigger_name)
+                if contextual_pending:
+                    # The following dedicated step atomically adds all v2
+                    # columns and replaces this entire v1 trigger family.  Do
+                    # not compile a NEW-column reference against the old table.
+                    continue
+                if observed is None:
+                    await conn.execute(sa_text(trigger_sql))
+                    changed = True
+                    continue
+                if (
+                    str(observed["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        observed["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
+                ):
+                    raise RuntimeError(
+                        "Code Traceability owned trigger is corrupt: " + trigger_name
+                    )
+            foreign_key_violations = list(
+                (await conn.exec_driver_sql("PRAGMA foreign_key_check")).all()
+            )
+            if foreign_key_violations:
+                raise RuntimeError(
+                    "Code Traceability migration left foreign-key violations: "
+                    + repr(foreign_key_violations[:10])
+                )
+        else:
+            function_sql, trigger_specs = code_traceability_postgresql_ddl()
+            await conn.execute(sa_text(function_sql))
+            trigger_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            """
+SELECT trigger.tgname AS trigger_name,
+       relation.relname AS table_name,
+       function.proname AS function_name,
+       trigger.tgtype AS trigger_type,
+       trigger.tgenabled AS trigger_enabled
+FROM pg_trigger AS trigger
+JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+JOIN pg_namespace AS namespace_row
+  ON namespace_row.oid = relation.relnamespace
+JOIN pg_proc AS function ON function.oid = trigger.tgfoid
+WHERE NOT trigger.tgisinternal
+  AND namespace_row.nspname = current_schema()
+  AND trigger.tgname LIKE 'trg_ctv1_%'
+"""
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing = {str(row["trigger_name"]): row for row in trigger_rows}
+            unexpected = set(existing) - set(trigger_specs)
+            if unexpected:
+                raise RuntimeError(
+                    "Code Traceability has unexpected PostgreSQL triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for trigger_name, (
+                table_name,
+                operation_clause,
+                expected_type,
+            ) in trigger_specs.items():
+                observed = existing.get(trigger_name)
+                if observed is None:
+                    await conn.execute(
+                        sa_text(
+                            f'CREATE TRIGGER "{trigger_name}" '
+                            f"BEFORE {operation_clause} "
+                            f'ON "{table_name}" FOR EACH ROW '
+                            'EXECUTE FUNCTION "pulse_code_traceability_guard_v1"()'
+                        )
+                    )
+                    changed = True
+                    continue
+                if (
+                    str(observed["table_name"]) != table_name
+                    or str(observed["function_name"])
+                    != "pulse_code_traceability_guard_v1"
+                    or int(observed["trigger_type"]) != expected_type
+                    or _postgresql_catalog_char(observed["trigger_enabled"]) != "O"
+                ):
+                    raise RuntimeError(
+                        "Code Traceability PostgreSQL trigger is corrupt: "
+                        + trigger_name
+                    )
+
+        final_snapshot_columns = await conn.run_sync(
+            lambda sync_conn: column_names(sync_conn, "refinement_snapshots")
+        )
+        final_spec_columns = await conn.run_sync(
+            lambda sync_conn: column_names(sync_conn, "specs")
+        )
+        if "code_evidence_manifest" not in final_snapshot_columns or not {
+            "source_refinement_snapshot_id",
+            "source_refinement_version",
+        }.issubset(final_spec_columns):
+            raise RuntimeError(
+                "Code Traceability lineage-column convergence is incomplete"
+            )
+    return None if changed else "skipped"
+
+
+CONTEXTUAL_CODE_EVIDENCE_TRIGGER_PREFIX = "trg_contextual_code_evidence_v2"
+
+
+def contextual_code_evidence_sqlite_trigger_manifest() -> (
+    dict[str, tuple[str, str]]
+):
+    """Return exact SQLite guards for contextual Evidence persistence.
+
+    Fresh databases also carry ORM CHECK constraints.  These triggers are the
+    equivalent upgrade contract for SQLite, where additive ALTER TABLE cannot
+    install named CHECK constraints without rebuilding governed legacy tables.
+    """
+
+    prefix = CONTEXTUAL_CODE_EVIDENCE_TRIGGER_PREFIX
+    permit_table = "kg_board_erasure_permits"
+    manifest: dict[str, tuple[str, str]] = {}
+
+    refinement_invalid = (
+        "NEW.delivery_context IS NOT NULL "
+        "AND NEW.delivery_context NOT IN ('brownfield', 'greenfield', 'hybrid')"
+    )
+    snapshot_invalid = """(
+    NEW.delivery_context IS NOT NULL
+    AND NEW.delivery_context NOT IN ('brownfield', 'greenfield', 'hybrid')
+) OR NOT (
+    (NEW.source_context_manifest IS NULL AND NEW.source_context_sha256 IS NULL)
+    OR (
+        NEW.source_context_manifest IS NOT NULL
+        AND NEW.source_context_sha256 IS NOT NULL
+        AND length(NEW.source_context_sha256) = 64
+    )
+)"""
+    spec_invalid = """(
+    NEW.delivery_context IS NOT NULL
+    AND NEW.delivery_context NOT IN ('brownfield', 'greenfield', 'hybrid')
+) OR NOT (
+    (NEW.delivery_context IS NULL AND NEW.delivery_context_provenance IS NULL)
+    OR (
+        NEW.delivery_context IS NOT NULL
+        AND NEW.delivery_context_provenance IS NOT NULL
+    )
+) OR NOT (
+    (NEW.source_context_manifest IS NULL AND NEW.source_context_sha256 IS NULL)
+    OR (
+        NEW.source_context_manifest IS NOT NULL
+        AND NEW.source_context_sha256 IS NOT NULL
+        AND length(NEW.source_context_sha256) = 64
+    )
+)"""
+    receipt_invalid = """NOT (
+    (
+        NEW.delivery_context IS NULL
+        AND NEW.contextual_outcome IS NULL
+        AND NEW.context_contract_version IS NULL
+    )
+    OR (
+        NEW.delivery_context IN ('brownfield', 'greenfield', 'hybrid')
+        AND NEW.contextual_outcome IN (
+            'evidence_applicable',
+            'no_relevant_existing_implementation',
+            'partial',
+            'unavailable'
+        )
+        AND NEW.context_contract_version = 2
+        AND (
+            (
+                NEW.contextual_outcome IN (
+                    'evidence_applicable',
+                    'no_relevant_existing_implementation'
+                )
+                AND NEW.outcome = 'accessible'
+            )
+            OR (
+                NEW.contextual_outcome = 'partial'
+                AND NEW.outcome = 'partial'
+            )
+            OR (
+                NEW.contextual_outcome = 'unavailable'
+                AND NEW.outcome = 'unavailable'
+            )
+        )
+        AND (
+            NEW.contextual_outcome <>
+                'no_relevant_existing_implementation'
+            OR NEW.delivery_context = 'greenfield'
+        )
+    )
+)"""
+    evidence_invalid = """NOT (
+    (
+        NEW.source_role = 'uncategorized_legacy'
+        AND NEW.relevance_summary IS NULL
+        AND NEW.scope_relation IS NULL
+        AND NEW.source_origin IS NULL
+        AND NEW.interpretation_limit IS NULL
+        AND NEW.baseline_presence IS NULL
+        AND NEW.baseline_workspace_state_id IS NULL
+        AND NEW.baseline_provenance_note IS NULL
+        AND NEW.context_contract_version IS NULL
+    )
+    OR (
+        NEW.source_role IN (
+            'current_implementation',
+            'existing_scaffold',
+            'existing_constraint',
+            'reference_pattern'
+        )
+        AND NEW.relevance_summary IS NOT NULL
+        AND length(trim(NEW.relevance_summary)) >= 1
+        AND NEW.scope_relation IS NOT NULL
+        AND length(trim(NEW.scope_relation)) >= 1
+        AND NEW.source_origin IS NOT NULL
+        AND length(trim(NEW.source_origin)) >= 1
+        AND NEW.baseline_presence IN (
+            'committed_snapshot',
+            'preexisting_worktree'
+        )
+        AND NEW.baseline_workspace_state_id = NEW.workspace_state_id
+        AND NEW.context_contract_version = 2
+        AND (
+            NEW.source_role NOT IN (
+                'existing_scaffold',
+                'reference_pattern'
+            )
+            OR (
+                NEW.interpretation_limit IS NOT NULL
+                AND length(trim(NEW.interpretation_limit)) >= 1
+            )
+        )
+        AND (
+            (
+                NEW.baseline_presence = 'committed_snapshot'
+                AND NEW.declared_dirty = false
+            )
+            OR (
+                NEW.baseline_presence = 'preexisting_worktree'
+                AND NEW.declared_dirty = true
+                AND NEW.baseline_provenance_note IS NOT NULL
+                AND length(trim(NEW.baseline_provenance_note)) >= 1
+            )
+        )
+    )
+)"""
+
+    for table_name, alias, predicate, message in (
+        (
+            "refinements",
+            "refinement",
+            refinement_invalid,
+            "refinement_delivery_context_invalid",
+        ),
+        (
+            "refinement_snapshots",
+            "snapshot",
+            snapshot_invalid,
+            "refinement_source_context_invalid",
+        ),
+        (
+            "specs",
+            "spec",
+            spec_invalid,
+            "spec_source_context_invalid",
+        ),
+        (
+            "code_investigation_receipts",
+            "receipt",
+            receipt_invalid,
+            "code_investigation_context_invalid",
+        ),
+        (
+            "code_evidence",
+            "evidence",
+            evidence_invalid,
+            "code_evidence_context_invalid",
+        ),
+    ):
+        for operation in ("INSERT", "UPDATE"):
+            trigger_name = f"{prefix}_{alias}_{operation.lower()}"
+            manifest[trigger_name] = (
+                table_name,
+                f'''CREATE TRIGGER "{trigger_name}"
+BEFORE {operation} ON "{table_name}"
+WHEN {predicate}
+BEGIN
+    SELECT RAISE(ABORT, '{message}');
+END''',
+            )
+
+    event_table = "code_evidence_classification_events"
+    head_table = "code_evidence_classification_heads"
+    event_insert = f"{prefix}_classification_event_insert"
+    manifest[event_insert] = (
+        event_table,
+        f'''CREATE TRIGGER "{event_insert}"
+BEFORE INSERT ON "{event_table}"
+WHEN length(trim(NEW."batch_id")) < 1
+OR length(NEW."batch_id") >
+    {CODE_EVIDENCE_CLASSIFICATION_BATCH_ID_MAX_LENGTH}
+OR length(trim(NEW."idempotency_key")) < 1
+OR length(NEW."idempotency_key") >
+    {CODE_EVIDENCE_CLASSIFICATION_IDEMPOTENCY_KEY_MAX_LENGTH}
+OR NOT EXISTS (
+    SELECT 1
+    FROM "code_evidence" AS evidence
+    WHERE evidence."id" = NEW."evidence_id"
+      AND evidence."board_id" = NEW."board_id"
+      AND evidence."payload_sha256" = NEW."evidence_payload_sha256"
+      AND evidence."workspace_state_id" =
+          NEW."baseline_workspace_state_id"
+      AND evidence."source_role" = 'uncategorized_legacy'
+      AND evidence."lifecycle_status" = 'active'
+      AND (
+          (
+              NEW."baseline_presence" = 'committed_snapshot'
+              AND evidence."declared_dirty" = false
+          )
+          OR (
+              NEW."baseline_presence" = 'preexisting_worktree'
+              AND evidence."declared_dirty" = true
+              AND NEW."baseline_provenance_note" IS NOT NULL
+              AND length(trim(NEW."baseline_provenance_note")) >= 1
+          )
+      )
+      AND (
+          (
+              NEW."revision" = 1
+              AND NEW."predecessor_classification_id" IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM "{head_table}" AS head
+                  WHERE head."board_id" = NEW."board_id"
+                    AND head."evidence_id" = NEW."evidence_id"
+              )
+          )
+          OR (
+              NEW."revision" > 1
+              AND EXISTS (
+                  SELECT 1
+                  FROM "{head_table}" AS head
+                  WHERE head."board_id" = NEW."board_id"
+                    AND head."evidence_id" = NEW."evidence_id"
+                    AND head."current_classification_id" =
+                        NEW."predecessor_classification_id"
+                    AND head."revision" = NEW."revision" - 1
+                    AND head."evidence_payload_sha256" =
+                        NEW."evidence_payload_sha256"
+              )
+          )
+      )
+)
+OR EXISTS (
+    SELECT 1
+    FROM "{event_table}" AS batch_item
+    WHERE batch_item."batch_id" = NEW."batch_id"
+      AND (
+          batch_item."board_id" IS NOT NEW."board_id"
+          OR batch_item."classified_by" IS NOT NEW."classified_by"
+          OR batch_item."classified_at" IS NOT NEW."classified_at"
+          OR batch_item."idempotency_key" IS NOT NEW."idempotency_key"
+          OR batch_item."request_sha256" IS NOT NEW."request_sha256"
+          OR batch_item."batch_item_count" <> NEW."batch_item_count"
+          OR batch_item."context_contract_version" <>
+              NEW."context_contract_version"
+      )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_classification_event_invalid');
+END''',
+    )
+    event_update = f"{prefix}_classification_event_update"
+    manifest[event_update] = (
+        event_table,
+        f'''CREATE TRIGGER "{event_update}"
+BEFORE UPDATE ON "{event_table}"
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_classification_event_immutable');
+END''',
+    )
+    event_delete = f"{prefix}_classification_event_delete"
+    manifest[event_delete] = (
+        event_table,
+        f'''CREATE TRIGGER "{event_delete}"
+BEFORE DELETE ON "{event_table}"
+WHEN NOT EXISTS (
+    SELECT 1 FROM "{permit_table}" AS permit
+    WHERE permit."board_id" = OLD."board_id"
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_classification_event_immutable');
+END''',
+    )
+
+    complete_batch = f'''(
+    SELECT count(*)
+    FROM "{event_table}" AS batch_item
+    WHERE batch_item."batch_id" = event."batch_id"
+) = event."batch_item_count"
+AND (
+    SELECT min(batch_item."batch_item_index")
+    FROM "{event_table}" AS batch_item
+    WHERE batch_item."batch_id" = event."batch_id"
+) = 1
+AND (
+    SELECT max(batch_item."batch_item_index")
+    FROM "{event_table}" AS batch_item
+    WHERE batch_item."batch_id" = event."batch_id"
+) = event."batch_item_count"'''
+
+    head_insert = f"{prefix}_classification_head_insert"
+    manifest[head_insert] = (
+        head_table,
+        f'''CREATE TRIGGER "{head_insert}"
+BEFORE INSERT ON "{head_table}"
+WHEN NEW."revision" <> 1
+OR NOT EXISTS (
+    SELECT 1
+    FROM "{event_table}" AS event
+    WHERE event."id" = NEW."current_classification_id"
+      AND event."board_id" = NEW."board_id"
+      AND event."evidence_id" = NEW."evidence_id"
+      AND event."evidence_payload_sha256" =
+          NEW."evidence_payload_sha256"
+      AND event."revision" = NEW."revision"
+      AND event."predecessor_classification_id" IS NULL
+      AND {complete_batch}
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_classification_head_insert_invalid');
+END''',
+    )
+    head_update = f"{prefix}_classification_head_update"
+    manifest[head_update] = (
+        head_table,
+        f'''CREATE TRIGGER "{head_update}"
+BEFORE UPDATE ON "{head_table}"
+WHEN NEW."board_id" IS NOT OLD."board_id"
+OR NEW."evidence_id" IS NOT OLD."evidence_id"
+OR NEW."revision" <> OLD."revision" + 1
+OR NEW."evidence_payload_sha256" IS NOT OLD."evidence_payload_sha256"
+OR julianday(NEW."updated_at") < julianday(OLD."updated_at")
+OR NOT EXISTS (
+    SELECT 1
+    FROM "{event_table}" AS event
+    WHERE event."id" = NEW."current_classification_id"
+      AND event."board_id" = NEW."board_id"
+      AND event."evidence_id" = NEW."evidence_id"
+      AND event."evidence_payload_sha256" =
+          NEW."evidence_payload_sha256"
+      AND event."revision" = NEW."revision"
+      AND event."predecessor_classification_id" =
+          OLD."current_classification_id"
+      AND {complete_batch}
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_classification_head_cas_invalid');
+END''',
+    )
+    head_delete = f"{prefix}_classification_head_delete"
+    manifest[head_delete] = (
+        head_table,
+        f'''CREATE TRIGGER "{head_delete}"
+BEFORE DELETE ON "{head_table}"
+WHEN NOT EXISTS (
+    SELECT 1 FROM "{permit_table}" AS permit
+    WHERE permit."board_id" = OLD."board_id"
+)
+BEGIN
+    SELECT RAISE(ABORT, 'code_evidence_classification_head_delete_forbidden');
+END''',
+    )
+    return manifest
+
+
+def contextual_code_evidence_postgresql_ddl() -> (
+    tuple[str, dict[str, tuple[str, str, int]]]
+):
+    """Return PostgreSQL CAS/immutability guards for classification rows."""
+
+    function_name = "pulse_contextual_code_evidence_guard_v2"
+    event_table = "code_evidence_classification_events"
+    head_table = "code_evidence_classification_heads"
+    function_sql = f'''CREATE OR REPLACE FUNCTION "{function_name}"()
+RETURNS trigger AS $$
+DECLARE
+    event_row "{event_table}"%ROWTYPE;
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        IF EXISTS (
+            SELECT 1 FROM "kg_board_erasure_permits" AS permit
+            WHERE permit."board_id" = OLD."board_id"
+        ) THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'code_evidence_classification_delete_forbidden';
+    END IF;
+
+    IF TG_TABLE_NAME = '{event_table}' THEN
+        IF TG_OP = 'UPDATE' THEN
+            RAISE EXCEPTION 'code_evidence_classification_event_immutable';
+        END IF;
+        IF length(trim(NEW."batch_id")) < 1
+           OR length(NEW."batch_id") >
+              {CODE_EVIDENCE_CLASSIFICATION_BATCH_ID_MAX_LENGTH}
+           OR length(trim(NEW."idempotency_key")) < 1
+           OR length(NEW."idempotency_key") >
+              {CODE_EVIDENCE_CLASSIFICATION_IDEMPOTENCY_KEY_MAX_LENGTH}
+           OR NOT EXISTS (
+            SELECT 1
+            FROM "code_evidence" AS evidence
+            WHERE evidence."id" = NEW."evidence_id"
+              AND evidence."board_id" = NEW."board_id"
+              AND evidence."payload_sha256" =
+                  NEW."evidence_payload_sha256"
+              AND evidence."workspace_state_id" =
+                  NEW."baseline_workspace_state_id"
+              AND evidence."source_role" = 'uncategorized_legacy'
+              AND evidence."lifecycle_status" = 'active'
+              AND (
+                  (
+                      NEW."baseline_presence" = 'committed_snapshot'
+                      AND evidence."declared_dirty" = false
+                  )
+                  OR (
+                      NEW."baseline_presence" = 'preexisting_worktree'
+                      AND evidence."declared_dirty" = true
+                      AND NEW."baseline_provenance_note" IS NOT NULL
+                      AND length(trim(NEW."baseline_provenance_note")) >= 1
+                  )
+              )
+              AND (
+                  (
+                      NEW."revision" = 1
+                      AND NEW."predecessor_classification_id" IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM "{head_table}" AS head
+                          WHERE head."board_id" = NEW."board_id"
+                            AND head."evidence_id" = NEW."evidence_id"
+                      )
+                  )
+                  OR (
+                      NEW."revision" > 1
+                      AND EXISTS (
+                          SELECT 1 FROM "{head_table}" AS head
+                          WHERE head."board_id" = NEW."board_id"
+                            AND head."evidence_id" = NEW."evidence_id"
+                            AND head."current_classification_id" =
+                                NEW."predecessor_classification_id"
+                            AND head."revision" = NEW."revision" - 1
+                            AND head."evidence_payload_sha256" =
+                                NEW."evidence_payload_sha256"
+                      )
+                  )
+              )
+        ) OR EXISTS (
+            SELECT 1
+            FROM "{event_table}" AS batch_item
+            WHERE batch_item."batch_id" = NEW."batch_id"
+              AND (
+                  batch_item."board_id" IS DISTINCT FROM NEW."board_id"
+                  OR batch_item."classified_by" IS DISTINCT FROM
+                      NEW."classified_by"
+                  OR batch_item."classified_at" IS DISTINCT FROM
+                      NEW."classified_at"
+                  OR batch_item."idempotency_key" IS DISTINCT FROM
+                      NEW."idempotency_key"
+                  OR batch_item."request_sha256" IS DISTINCT FROM
+                      NEW."request_sha256"
+                  OR batch_item."batch_item_count" <>
+                      NEW."batch_item_count"
+                  OR batch_item."context_contract_version" <>
+                      NEW."context_contract_version"
+              )
+        ) THEN
+            RAISE EXCEPTION 'code_evidence_classification_event_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_TABLE_NAME = '{head_table}' THEN
+        SELECT * INTO event_row
+        FROM "{event_table}" AS event
+        WHERE event."id" = NEW."current_classification_id";
+        IF NOT FOUND
+           OR event_row."board_id" IS DISTINCT FROM NEW."board_id"
+           OR event_row."evidence_id" IS DISTINCT FROM NEW."evidence_id"
+           OR event_row."evidence_payload_sha256" IS DISTINCT FROM
+               NEW."evidence_payload_sha256"
+           OR event_row."revision" <> NEW."revision"
+           OR (
+               SELECT count(*) FROM "{event_table}" AS batch_item
+               WHERE batch_item."batch_id" = event_row."batch_id"
+           ) <> event_row."batch_item_count" THEN
+            RAISE EXCEPTION 'code_evidence_classification_head_event_invalid';
+        END IF;
+        IF TG_OP = 'INSERT' THEN
+            IF NEW."revision" <> 1
+               OR event_row."predecessor_classification_id" IS NOT NULL THEN
+                RAISE EXCEPTION
+                    'code_evidence_classification_head_insert_invalid';
+            END IF;
+        ELSIF NEW."board_id" IS DISTINCT FROM OLD."board_id"
+           OR NEW."evidence_id" IS DISTINCT FROM OLD."evidence_id"
+           OR NEW."revision" <> OLD."revision" + 1
+           OR NEW."evidence_payload_sha256" IS DISTINCT FROM
+               OLD."evidence_payload_sha256"
+           OR NEW."updated_at" < OLD."updated_at"
+           OR event_row."predecessor_classification_id" IS DISTINCT FROM
+               OLD."current_classification_id" THEN
+            RAISE EXCEPTION 'code_evidence_classification_head_cas_invalid';
+        END IF;
+        RETURN NEW;
+    END IF;
+    RAISE EXCEPTION 'contextual_code_evidence_guard_scope_invalid';
+END;
+$$ LANGUAGE plpgsql'''
+    trigger_specs = {
+        "trg_contextual_code_evidence_v2_event_iud": (
+            event_table,
+            "INSERT OR UPDATE OR DELETE",
+            31,
+        ),
+        "trg_contextual_code_evidence_v2_head_iud": (
+            head_table,
+            "INSERT OR UPDATE OR DELETE",
+            31,
+        ),
+    }
+    return function_sql, trigger_specs
+
+
+def contextual_code_evidence_postgresql_width_ddl() -> dict[str, str]:
+    """Return the closed widening artifact for the two Core request IDs."""
+
+    table_name = "code_evidence_classification_events"
+    return {
+        "batch_id": (
+            f'ALTER TABLE "{table_name}" ALTER COLUMN "batch_id" '
+            "TYPE VARCHAR("
+            f"{CODE_EVIDENCE_CLASSIFICATION_BATCH_ID_MAX_LENGTH})"
+        ),
+        "idempotency_key": (
+            f'ALTER TABLE "{table_name}" ALTER COLUMN "idempotency_key" '
+            "TYPE VARCHAR("
+            f"{CODE_EVIDENCE_CLASSIFICATION_IDEMPOTENCY_KEY_MAX_LENGTH})"
+        ),
+        "request_identity_constraint": (
+            f'ALTER TABLE "{table_name}" ADD CONSTRAINT '
+            '"ck_code_evidence_classification_request_identity" CHECK '
+            "(length(trim(batch_id)) >= 1 "
+            "AND length(batch_id) <= "
+            f"{CODE_EVIDENCE_CLASSIFICATION_BATCH_ID_MAX_LENGTH} "
+            "AND length(trim(idempotency_key)) >= 1 "
+            "AND length(idempotency_key) <= "
+            f"{CODE_EVIDENCE_CLASSIFICATION_IDEMPOTENCY_KEY_MAX_LENGTH})"
+        ),
+    }
+
+
+async def _migrate_contextual_code_evidence_schema() -> str | None:
+    """Converge contextual Evidence persistence without inventing AS-IS facts."""
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+
+    engine = get_engine()
+    changed = False
+    added_contextual_column = False
+
+    column_additions: dict[str, tuple[tuple[str, str], ...]] = {
+        "refinements": (("delivery_context", "VARCHAR(16)"),),
+        "refinement_snapshots": (
+            ("delivery_context", "VARCHAR(16)"),
+            ("source_context_manifest", "JSON"),
+            ("source_context_sha256", "VARCHAR(64)"),
+        ),
+        "specs": (
+            ("delivery_context", "VARCHAR(16)"),
+            ("delivery_context_provenance", "JSON"),
+            ("source_context_manifest", "JSON"),
+            ("source_context_sha256", "VARCHAR(64)"),
+        ),
+        "code_investigation_receipts": (
+            ("delivery_context", "VARCHAR(16)"),
+            ("contextual_outcome", "VARCHAR(48)"),
+            ("context_contract_version", "INTEGER"),
+        ),
+        "code_evidence": (
+            (
+                "source_role",
+                "VARCHAR(32) NOT NULL DEFAULT 'uncategorized_legacy'",
+            ),
+            ("relevance_summary", "TEXT"),
+            ("scope_relation", "TEXT"),
+            ("source_origin", "TEXT"),
+            ("interpretation_limit", "TEXT"),
+            ("baseline_presence", "VARCHAR(32)"),
+            ("baseline_workspace_state_id", "VARCHAR(255)"),
+            ("baseline_provenance_note", "TEXT"),
+            ("context_contract_version", "INTEGER"),
+        ),
+    }
+
+    async with engine.begin() as conn:
+        dialect = conn.dialect.name
+        if dialect not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "Contextual Code Evidence migration supports only SQLite "
+                "and PostgreSQL"
+            )
+        if dialect == "sqlite":
+            await conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+            await conn.exec_driver_sql("BEGIN IMMEDIATE")
+
+        def table_names(sync_conn: object) -> set[str]:
+            return set(sa_inspect(sync_conn).get_table_names())
+
+        def column_names(sync_conn: object, table_name: str) -> set[str]:
+            return {
+                str(column["name"])
+                for column in sa_inspect(sync_conn).get_columns(table_name)
+            }
+
+        def column_lengths(
+            sync_conn: object,
+            table_name: str,
+        ) -> dict[str, int | None]:
+            return {
+                str(column["name"]): getattr(column["type"], "length", None)
+                for column in sa_inspect(sync_conn).get_columns(table_name)
+            }
+
+        async def rebuild_sqlite_classification_authority() -> None:
+            """Widen the pre-I2 authority without losing append-only rows."""
+
+            event_table, head_table = contextual_code_evidence_owned_tables()
+            event_name = str(event_table.name)
+            head_name = str(head_table.name)
+            trigger_manifest = contextual_code_evidence_sqlite_trigger_manifest()
+            allowed_triggers = {
+                name
+                for name, (table_name, _sql) in trigger_manifest.items()
+                if table_name in {event_name, head_name}
+            }
+            attached_triggers = {
+                str(row[0])
+                for row in (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name FROM sqlite_master "
+                            "WHERE type = 'trigger' "
+                            "AND tbl_name IN (:event_name, :head_name)"
+                        ),
+                        {"event_name": event_name, "head_name": head_name},
+                    )
+                ).all()
+            }
+            unexpected_triggers = attached_triggers - allowed_triggers
+            if unexpected_triggers:
+                raise RuntimeError(
+                    "Contextual Code Evidence width migration found "
+                    "unexpected triggers: "
+                    + ", ".join(sorted(unexpected_triggers))
+                )
+
+            temp_event = "_pulse_contextual_evidence_event_width_v2"
+            temp_head = "_pulse_contextual_evidence_head_width_v2"
+            temp_objects = {
+                str(row[0])
+                for row in (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name FROM sqlite_temp_master "
+                            "WHERE name IN (:temp_event, :temp_head)"
+                        ),
+                        {"temp_event": temp_event, "temp_head": temp_head},
+                    )
+                ).all()
+            }
+            if temp_objects:
+                raise RuntimeError(
+                    "Contextual Code Evidence width migration found stale "
+                    "temporary authority: "
+                    + ", ".join(sorted(temp_objects))
+                )
+
+            await conn.exec_driver_sql("PRAGMA defer_foreign_keys=ON")
+            await conn.execute(
+                sa_text(
+                    f'CREATE TEMP TABLE "{temp_event}" AS '
+                    f'SELECT * FROM "{event_name}"'
+                )
+            )
+            await conn.execute(
+                sa_text(
+                    f'CREATE TEMP TABLE "{temp_head}" AS '
+                    f'SELECT * FROM "{head_name}"'
+                )
+            )
+            await conn.execute(sa_text(f'DROP TABLE "{head_name}"'))
+            await conn.execute(sa_text(f'DROP TABLE "{event_name}"'))
+            await conn.run_sync(
+                lambda sync_conn: event_table.create(sync_conn, checkfirst=False)
+            )
+            await conn.run_sync(
+                lambda sync_conn: head_table.create(sync_conn, checkfirst=False)
+            )
+
+            event_columns = tuple(str(column.name) for column in event_table.columns)
+            head_columns = tuple(str(column.name) for column in head_table.columns)
+
+            def quoted_columns(columns: tuple[str, ...]) -> str:
+                return ", ".join(f'"{column}"' for column in columns)
+
+            await conn.execute(
+                sa_text(
+                    f'INSERT INTO "{event_name}" '
+                    f'({quoted_columns(event_columns)}) '
+                    f'SELECT {quoted_columns(event_columns)} '
+                    f'FROM "{temp_event}" ORDER BY "revision", "id"'
+                )
+            )
+            await conn.execute(
+                sa_text(
+                    f'INSERT INTO "{head_name}" '
+                    f'({quoted_columns(head_columns)}) '
+                    f'SELECT {quoted_columns(head_columns)} '
+                    f'FROM "{temp_head}"'
+                )
+            )
+            await conn.execute(sa_text(f'DROP TABLE "{temp_head}"'))
+            await conn.execute(sa_text(f'DROP TABLE "{temp_event}"'))
+
+        existing_tables = await conn.run_sync(table_names)
+        missing_required = set(column_additions) - existing_tables
+        if "kg_board_erasure_permits" not in existing_tables:
+            missing_required.add("kg_board_erasure_permits")
+        if missing_required:
+            raise RuntimeError(
+                "Contextual Code Evidence requires existing tables: "
+                + ", ".join(sorted(missing_required))
+            )
+
+        event_table_name = "code_evidence_classification_events"
+        head_table_name = "code_evidence_classification_heads"
+        if event_table_name in existing_tables:
+            if head_table_name not in existing_tables:
+                raise RuntimeError(
+                    "Contextual Code Evidence classification authority is "
+                    "incomplete"
+                )
+            widths = await conn.run_sync(
+                lambda sync_conn: column_lengths(sync_conn, event_table_name)
+            )
+            observed_widths = (
+                widths.get("batch_id"),
+                widths.get("idempotency_key"),
+            )
+            canonical_widths = (
+                CODE_EVIDENCE_CLASSIFICATION_BATCH_ID_MAX_LENGTH,
+                CODE_EVIDENCE_CLASSIFICATION_IDEMPOTENCY_KEY_MAX_LENGTH,
+            )
+            accepted_widths = (
+                {64, CODE_EVIDENCE_CLASSIFICATION_BATCH_ID_MAX_LENGTH},
+                {255, CODE_EVIDENCE_CLASSIFICATION_IDEMPOTENCY_KEY_MAX_LENGTH},
+            )
+            if observed_widths != canonical_widths:
+                if any(
+                    observed not in accepted
+                    for observed, accepted in zip(
+                        observed_widths,
+                        accepted_widths,
+                        strict=True,
+                    )
+                ):
+                    raise RuntimeError(
+                        "Contextual Code Evidence classification identifier "
+                        "width is non-canonical: "
+                        + repr(observed_widths)
+                    )
+                if dialect == "sqlite":
+                    await rebuild_sqlite_classification_authority()
+                else:
+                    width_ddl = contextual_code_evidence_postgresql_width_ddl()
+                    for column_name, observed, expected in zip(
+                        ("batch_id", "idempotency_key"),
+                        observed_widths,
+                        canonical_widths,
+                        strict=True,
+                    ):
+                        if observed == expected:
+                            continue
+                        await conn.execute(sa_text(width_ddl[column_name]))
+                changed = True
+            if dialect == "postgresql":
+                request_identity_constraint = (
+                    "ck_code_evidence_classification_request_identity"
+                )
+                constraint_exists = (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT 1 FROM information_schema.table_constraints "
+                            "WHERE table_schema = current_schema() "
+                            "AND table_name = :table_name "
+                            "AND constraint_name = :constraint_name"
+                        ),
+                        {
+                            "table_name": event_table_name,
+                            "constraint_name": request_identity_constraint,
+                        },
+                    )
+                ).scalar_one_or_none()
+                if constraint_exists is None:
+                    await conn.execute(
+                        sa_text(
+                            contextual_code_evidence_postgresql_width_ddl()[
+                                "request_identity_constraint"
+                            ]
+                        )
+                    )
+                    changed = True
+
+        for table_name, additions in column_additions.items():
+            observed = await conn.run_sync(
+                lambda sync_conn, name=table_name: column_names(sync_conn, name)
+            )
+            for column_name, column_type in additions:
+                if column_name in observed:
+                    continue
+                await conn.execute(
+                    sa_text(
+                        f'ALTER TABLE "{table_name}" '
+                        f'ADD COLUMN "{column_name}" {column_type}'
+                    )
+                )
+                observed.add(column_name)
+                added_contextual_column = True
+                changed = True
+
+        # This is the only legacy backfill: no role or delivery context is
+        # inferred.  Old rows are explicitly marked as unclassified legacy.
+        update_result = await conn.execute(
+            sa_text(
+                "UPDATE code_evidence "
+                "SET source_role = 'uncategorized_legacy' "
+                "WHERE source_role IS NULL"
+            )
+        )
+        if int(update_result.rowcount or 0) > 0:
+            changed = True
+
+        existing_tables = await conn.run_sync(table_names)
+        for table in contextual_code_evidence_owned_tables():
+            if table.name not in existing_tables:
+                await conn.run_sync(
+                    lambda sync_conn, owned=table: owned.create(
+                        sync_conn,
+                        checkfirst=True,
+                    )
+                )
+                existing_tables.add(table.name)
+                changed = True
+            contract = await conn.run_sync(
+                (
+                    lambda sync_conn, owned=table: _sqlite_owned_table_contract(
+                        sync_conn,
+                        owned,
+                    )
+                )
+                if dialect == "sqlite"
+                else (
+                    lambda sync_conn, owned=table: _postgresql_owned_table_contract(
+                        sync_conn,
+                        owned,
+                    )
+                )
+            )
+            if contract["observed"] != contract["expected"]:
+                raise RuntimeError(
+                    "Contextual Code Evidence table has a non-canonical "
+                    "contract: "
+                    + table.name
+                )
+
+        if dialect == "sqlite":
+            # Once the overlay exists, the original immutability guards must
+            # compare the newly added Evidence columns too.  Replace only the
+            # recognized predecessor during this same atomic upgrade.
+            v1_manifest = code_traceability_sqlite_trigger_manifest()
+            v1_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, tbl_name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name LIKE :prefix"
+                        ),
+                        {"prefix": f"{CODE_TRACEABILITY_TRIGGER_PREFIX}%"},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            v1_existing = {str(row["name"]): row for row in v1_rows}
+            unexpected_v1 = set(v1_existing) - set(v1_manifest)
+            if unexpected_v1:
+                raise RuntimeError(
+                    "Contextual Code Evidence found unexpected v1 triggers: "
+                    + ", ".join(sorted(unexpected_v1))
+                )
+            for trigger_name, (table_name, trigger_sql) in v1_manifest.items():
+                observed = v1_existing.get(trigger_name)
+                exact = observed is not None and (
+                    str(observed["tbl_name"]) == table_name
+                    and normalize_global_discovery_source_revision_trigger_sql(
+                        observed["sql"]
+                    )
+                    == normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
+                )
+                if exact:
+                    continue
+                if observed is not None and not added_contextual_column:
+                    raise RuntimeError(
+                        "Code Traceability owned trigger is corrupt: "
+                        + trigger_name
+                    )
+                if observed is not None:
+                    await conn.execute(
+                        sa_text(f'DROP TRIGGER "{trigger_name}"')
+                    )
+                await conn.execute(sa_text(trigger_sql))
+                changed = True
+
+            manifest = contextual_code_evidence_sqlite_trigger_manifest()
+            trigger_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, tbl_name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name LIKE :prefix"
+                        ),
+                        {
+                            "prefix": (
+                                f"{CONTEXTUAL_CODE_EVIDENCE_TRIGGER_PREFIX}%"
+                            )
+                        },
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing = {str(row["name"]): row for row in trigger_rows}
+            unexpected = set(existing) - set(manifest)
+            if unexpected:
+                raise RuntimeError(
+                    "Contextual Code Evidence has unexpected triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for trigger_name, (table_name, trigger_sql) in manifest.items():
+                observed = existing.get(trigger_name)
+                if observed is None:
+                    await conn.execute(sa_text(trigger_sql))
+                    changed = True
+                    continue
+                if (
+                    str(observed["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        observed["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
+                ):
+                    raise RuntimeError(
+                        "Contextual Code Evidence trigger is corrupt: "
+                        + trigger_name
+                    )
+            violations = list(
+                (await conn.exec_driver_sql("PRAGMA foreign_key_check")).all()
+            )
+            if violations:
+                raise RuntimeError(
+                    "Contextual Code Evidence migration left foreign-key "
+                    "violations: "
+                    + repr(violations[:10])
+                )
+        else:
+            # PostgreSQL can add the exact modified-table checks in place.
+            constraint_sql = {
+                "ck_refinement_delivery_context": (
+                    "refinements",
+                    "delivery_context IS NULL OR delivery_context IN "
+                    "('brownfield', 'greenfield', 'hybrid')",
+                ),
+                "ck_refinement_snapshot_delivery_context": (
+                    "refinement_snapshots",
+                    "delivery_context IS NULL OR delivery_context IN "
+                    "('brownfield', 'greenfield', 'hybrid')",
+                ),
+                "ck_refinement_snapshot_source_context": (
+                    "refinement_snapshots",
+                    "(source_context_manifest IS NULL AND "
+                    "source_context_sha256 IS NULL) OR "
+                    "(source_context_manifest IS NOT NULL AND "
+                    "source_context_sha256 IS NOT NULL AND "
+                    "length(source_context_sha256) = 64)",
+                ),
+                "ck_spec_delivery_context": (
+                    "specs",
+                    "delivery_context IS NULL OR delivery_context IN "
+                    "('brownfield', 'greenfield', 'hybrid')",
+                ),
+                "ck_spec_delivery_context_provenance": (
+                    "specs",
+                    "(delivery_context IS NULL AND "
+                    "delivery_context_provenance IS NULL) OR "
+                    "(delivery_context IS NOT NULL AND "
+                    "delivery_context_provenance IS NOT NULL)",
+                ),
+                "ck_spec_source_context": (
+                    "specs",
+                    "(source_context_manifest IS NULL AND "
+                    "source_context_sha256 IS NULL) OR "
+                    "(source_context_manifest IS NOT NULL AND "
+                    "source_context_sha256 IS NOT NULL AND "
+                    "length(source_context_sha256) = 64)",
+                ),
+                "ck_code_investigation_receipt_context_v2": (
+                    "code_investigation_receipts",
+                    "(delivery_context IS NULL AND contextual_outcome IS NULL "
+                    "AND context_contract_version IS NULL) OR "
+                    "(delivery_context IN "
+                    "('brownfield', 'greenfield', 'hybrid') AND "
+                    "contextual_outcome IN ('evidence_applicable', "
+                    "'no_relevant_existing_implementation', 'partial', "
+                    "'unavailable') AND context_contract_version = 2 AND "
+                    "((contextual_outcome IN ('evidence_applicable', "
+                    "'no_relevant_existing_implementation') AND "
+                    "outcome = 'accessible') OR "
+                    "(contextual_outcome = 'partial' AND outcome = 'partial') "
+                    "OR (contextual_outcome = 'unavailable' AND "
+                    "outcome = 'unavailable')) AND "
+                    "(contextual_outcome <> "
+                    "'no_relevant_existing_implementation' OR "
+                    "delivery_context = 'greenfield'))",
+                ),
+                "ck_code_evidence_source_role": (
+                    "code_evidence",
+                    "source_role IN ('current_implementation', "
+                    "'existing_scaffold', 'existing_constraint', "
+                    "'reference_pattern', 'uncategorized_legacy')",
+                ),
+                "ck_code_evidence_context_v2": (
+                    "code_evidence",
+                    "(source_role = 'uncategorized_legacy' AND "
+                    "relevance_summary IS NULL AND scope_relation IS NULL "
+                    "AND source_origin IS NULL AND "
+                    "interpretation_limit IS NULL AND "
+                    "baseline_presence IS NULL AND "
+                    "baseline_workspace_state_id IS NULL AND "
+                    "baseline_provenance_note IS NULL AND "
+                    "context_contract_version IS NULL) OR "
+                    "(source_role IN ('current_implementation', "
+                    "'existing_scaffold', 'existing_constraint', "
+                    "'reference_pattern') AND relevance_summary IS NOT NULL "
+                    "AND length(trim(relevance_summary)) >= 1 AND "
+                    "scope_relation IS NOT NULL AND "
+                    "length(trim(scope_relation)) >= 1 AND "
+                    "source_origin IS NOT NULL AND "
+                    "length(trim(source_origin)) >= 1 AND "
+                    "baseline_presence IN ('committed_snapshot', "
+                    "'preexisting_worktree') AND "
+                    "baseline_workspace_state_id = workspace_state_id AND "
+                    "context_contract_version = 2 AND "
+                    "(source_role NOT IN ('existing_scaffold', "
+                    "'reference_pattern') OR "
+                    "(interpretation_limit IS NOT NULL AND "
+                    "length(trim(interpretation_limit)) >= 1)) AND "
+                    "((baseline_presence = 'committed_snapshot' AND "
+                    "declared_dirty = false) OR "
+                    "(baseline_presence = 'preexisting_worktree' AND "
+                    "declared_dirty = true AND "
+                    "baseline_provenance_note IS NOT NULL AND "
+                    "length(trim(baseline_provenance_note)) >= 1)))",
+                ),
+            }
+            existing_constraints = {
+                str(row[0])
+                for row in (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT constraint_name "
+                            "FROM information_schema.table_constraints "
+                            "WHERE table_schema = current_schema()"
+                        )
+                    )
+                ).all()
+            }
+            for constraint_name, (table_name, expression) in (
+                constraint_sql.items()
+            ):
+                if constraint_name in existing_constraints:
+                    continue
+                await conn.execute(
+                    sa_text(
+                        f'ALTER TABLE "{table_name}" ADD CONSTRAINT '
+                        f'"{constraint_name}" CHECK ({expression})'
+                    )
+                )
+                changed = True
+            await conn.execute(
+                sa_text(
+                    "ALTER TABLE code_evidence ALTER COLUMN source_role "
+                    "SET DEFAULT 'uncategorized_legacy'"
+                )
+            )
+            await conn.execute(
+                sa_text(
+                    "ALTER TABLE code_evidence ALTER COLUMN source_role "
+                    "SET NOT NULL"
+                )
+            )
+
+            function_sql, trigger_specs = (
+                contextual_code_evidence_postgresql_ddl()
+            )
+            await conn.execute(sa_text(function_sql))
+            trigger_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            """
+SELECT trigger.tgname AS trigger_name,
+       relation.relname AS table_name,
+       function.proname AS function_name,
+       trigger.tgtype AS trigger_type,
+       trigger.tgenabled AS trigger_enabled
+FROM pg_trigger AS trigger
+JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+JOIN pg_namespace AS namespace_row
+  ON namespace_row.oid = relation.relnamespace
+JOIN pg_proc AS function ON function.oid = trigger.tgfoid
+WHERE NOT trigger.tgisinternal
+  AND namespace_row.nspname = current_schema()
+  AND trigger.tgname LIKE 'trg_contextual_code_evidence_v2_%'
+"""
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing = {str(row["trigger_name"]): row for row in trigger_rows}
+            unexpected = set(existing) - set(trigger_specs)
+            if unexpected:
+                raise RuntimeError(
+                    "Contextual Code Evidence has unexpected PostgreSQL "
+                    "triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for trigger_name, (
+                table_name,
+                operation_clause,
+                expected_type,
+            ) in trigger_specs.items():
+                observed = existing.get(trigger_name)
+                if observed is None:
+                    await conn.execute(
+                        sa_text(
+                            f'CREATE TRIGGER "{trigger_name}" BEFORE '
+                            f'{operation_clause} ON "{table_name}" '
+                            "FOR EACH ROW EXECUTE FUNCTION "
+                            '"pulse_contextual_code_evidence_guard_v2"()'
+                        )
+                    )
+                    changed = True
+                    continue
+                if (
+                    str(observed["table_name"]) != table_name
+                    or str(observed["function_name"])
+                    != "pulse_contextual_code_evidence_guard_v2"
+                    or int(observed["trigger_type"]) != expected_type
+                    or _postgresql_catalog_char(observed["trigger_enabled"])
+                    != "O"
+                ):
+                    raise RuntimeError(
+                        "Contextual Code Evidence PostgreSQL trigger is "
+                        "corrupt: "
+                        + trigger_name
+                    )
+
+        final_tables = await conn.run_sync(table_names)
+        if {
+            table.name for table in contextual_code_evidence_owned_tables()
+        } - final_tables:
+            raise RuntimeError(
+                "Contextual Code Evidence authority tables are incomplete"
+            )
+        for table_name, additions in column_additions.items():
+            final_columns = await conn.run_sync(
+                lambda sync_conn, name=table_name: column_names(sync_conn, name)
+            )
+            missing = {name for name, _ in additions} - final_columns
+            if missing:
+                raise RuntimeError(
+                    "Contextual Code Evidence columns are incomplete on "
+                    + table_name
+                    + ": "
+                    + ", ".join(sorted(missing))
+                )
+    return None if changed else "skipped"
+
+
+async def _migrate_spec_dependency_schema() -> str | None:
+    """Converge and audit the exact SK-M relational authority.
+
+    ``create_all`` is the only table-create boundary.  This post-boundary step
+    verifies that an existing table was not silently accepted with schema
+    drift and installs the small, closed immutability-trigger manifest.  It is
+    deliberately relational-only and never calls an agent, network provider,
+    or knowledge graph while holding SQLite's writer lock.
+    """
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        SPEC_DEPENDENCY_TRIGGER_PREFIX,
+        SpecDependency,
+        SpecDependencyBoardLock,
+        SpecDependencyOperation,
+        spec_dependency_sqlite_trigger_manifest,
+        spec_dependency_sqlite_trigger_predecessors,
+    )
+
+    engine = get_engine()
+    tables = (
+        SpecDependencyBoardLock.__table__,
+        SpecDependency.__table__,
+        SpecDependencyOperation.__table__,
+    )
+    changed = False
+    async with engine.begin() as conn:
+        dialect = conn.dialect.name
+        if dialect not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "Spec dependency migration supports only SQLite and PostgreSQL"
+            )
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(sa_inspect(sync_conn).get_table_names())
+        )
+        required_authorization_tables = {
+            "artifact_deletion_tombstones",
+            "kg_board_erasure_permits",
+            "specs",
+        }
+        missing_authorization_tables = required_authorization_tables - table_names
+        if missing_authorization_tables:
+            raise RuntimeError(
+                "Spec dependency migration requires governed erasure authority: "
+                + ", ".join(sorted(missing_authorization_tables))
+            )
+        # These six columns are additive, nullable sealed snapshots.  They are
+        # deliberately installed before the exact owned-table audit below so
+        # an existing 0.3.x database converges rather than being rejected as
+        # unrecognised drift.  Historical values cannot be reconstructed from
+        # mutable current Spec rows, therefore this migration never backfills
+        # them; NULL has the explicit meaning "legacy value unavailable".
+        if "spec_dependencies" in table_names:
+            dependency_columns = await conn.run_sync(
+                lambda sync_conn: {
+                    str(column["name"])
+                    for column in sa_inspect(sync_conn).get_columns("spec_dependencies")
+                }
+            )
+            additive_snapshot_columns = (
+                ("source_title_on_create", "VARCHAR(500)"),
+                ("source_edition_on_create", "INTEGER"),
+                ("source_title_on_remove", "VARCHAR(500)"),
+                ("source_edition_on_remove", "INTEGER"),
+                ("target_title_on_remove", "VARCHAR(500)"),
+                ("target_edition_on_remove", "INTEGER"),
+            )
+            for column_name, column_type in additive_snapshot_columns:
+                if column_name in dependency_columns:
+                    continue
+                await conn.execute(
+                    sa_text(
+                        "ALTER TABLE spec_dependencies ADD COLUMN "
+                        + column_name
+                        + " "
+                        + column_type
+                    )
+                )
+                dependency_columns.add(column_name)
+                changed = True
+        spec_columns = await conn.run_sync(
+            lambda sync_conn: {
+                str(column["name"])
+                for column in sa_inspect(sync_conn).get_columns("specs")
+            }
+        )
+        added_started_edition_column = "last_started_edition" not in spec_columns
+        if added_started_edition_column:
+            await conn.execute(
+                sa_text("ALTER TABLE specs ADD COLUMN last_started_edition INTEGER")
+            )
+            changed = True
+        started_trigger_names = {
+            "trg_spec_dependency_started_edition_insert",
+            "trg_spec_dependency_started_edition_update",
+        }
+        if dialect == "sqlite":
+            current_started_trigger_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name IN "
+                            "('trg_spec_dependency_started_edition_insert', "
+                            "'trg_spec_dependency_started_edition_update')"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            current_started_triggers = {
+                str(
+                    row["name"]
+                ): normalize_global_discovery_source_revision_trigger_sql(row["sql"])
+                for row in current_started_trigger_rows
+            }
+            canonical_started_triggers = {
+                trigger_name: normalize_global_discovery_source_revision_trigger_sql(
+                    spec_dependency_sqlite_trigger_manifest()[trigger_name][1]
+                )
+                for trigger_name in started_trigger_names
+            }
+            started_contract_needs_upgrade = (
+                current_started_triggers != canonical_started_triggers
+            )
+        else:
+            current_started_trigger_names = set(
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT trigger_row.tgname FROM pg_trigger AS trigger_row "
+                            "JOIN pg_class AS relation "
+                            "ON relation.oid = trigger_row.tgrelid "
+                            "JOIN pg_namespace AS relation_namespace "
+                            "ON relation_namespace.oid = relation.relnamespace "
+                            "WHERE NOT trigger_row.tgisinternal "
+                            "AND relation_namespace.nspname = current_schema() "
+                            "AND relation.relname = 'specs' "
+                            "AND trigger_row.tgname IN "
+                            "('trg_spec_dependency_started_edition_insert', "
+                            "'trg_spec_dependency_started_edition_update')"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            started_contract_needs_upgrade = (
+                current_started_trigger_names != started_trigger_names
+            )
+        needs_started_backfill = (
+            added_started_edition_column or started_contract_needs_upgrade
+        )
+        if needs_started_backfill:
+            started_backfill = await conn.execute(
+                sa_text(
+                    "UPDATE specs SET last_started_edition = edition "
+                    "WHERE last_started_edition IS NULL "
+                    "AND status IN ('in_progress', 'done', 'cancelled')"
+                )
+            )
+            if int(started_backfill.rowcount or 0) > 0:
+                changed = True
+        # A Spec can move backward from In progress to Validated, Approved,
+        # or Review without opening a new edition.  Reconstruct that durable
+        # execution memory from immutable status history and from associated
+        # normal/test cards whose execution activity belongs to this edition.
+        # A recorded return to Draft is an edition boundary: prior-edition
+        # cards must never make the new Draft look started.
+        card_columns: set[str] = set()
+        if needs_started_backfill and "cards" in table_names:
+            card_columns = await conn.run_sync(
+                lambda sync_conn: {
+                    str(column["name"])
+                    for column in sa_inspect(sync_conn).get_columns("cards")
+                }
+            )
+        candidates = (
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT id, edition, status FROM specs "
+                        "WHERE last_started_edition IS NULL ORDER BY id"
+                    )
+                )
+            ).all()
+            if needs_started_backfill
+            else ()
+        )
+        conservative_validated_backfill: list[str] = []
+        for spec_id, edition, status in candidates:
+            history_rows: tuple[Mapping[str, object], ...] = ()
+            if "spec_history" in table_names:
+                history_rows = tuple(
+                    (
+                        await conn.execute(
+                            sa_text(
+                                "SELECT changes, created_at FROM spec_history "
+                                "WHERE spec_id = :spec_id "
+                                "AND action = 'status_changed' "
+                                "ORDER BY created_at, id"
+                            ),
+                            {"spec_id": str(spec_id)},
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+            history_proves_started = _history_proves_current_spec_edition_started(
+                current_edition=int(edition),
+                history_changes=tuple(row["changes"] for row in history_rows),
+            )
+            card_proves_started = False
+            required_card_columns = {"spec_id", "status"}
+            if required_card_columns.issubset(card_columns):
+                boundary_known, boundary_at = _history_current_spec_edition_boundary(
+                    current_edition=int(edition),
+                    history_rows=history_rows,
+                )
+                time_column = (
+                    "COALESCE(updated_at, created_at)"
+                    if {"created_at", "updated_at"}.issubset(card_columns)
+                    else "updated_at"
+                    if "updated_at" in card_columns
+                    else "created_at"
+                    if "created_at" in card_columns
+                    else None
+                )
+                can_attribute_card = int(edition) == 1 or (
+                    boundary_known
+                    and boundary_at is not None
+                    and time_column is not None
+                )
+                if can_attribute_card:
+                    time_predicate = (
+                        ""
+                        if int(edition) == 1
+                        else f"AND {time_column} >= :boundary_at "
+                    )
+                    card_proves_started = bool(
+                        (
+                            await conn.execute(
+                                sa_text(
+                                    "SELECT COUNT(*) FROM cards "
+                                    "WHERE spec_id = :spec_id "
+                                    "AND status IN ('started', 'in_progress', "
+                                    "'validation', 'rejected', 'on_hold', 'done') "
+                                    + time_predicate
+                                ),
+                                {
+                                    "spec_id": str(spec_id),
+                                    **(
+                                        {"boundary_at": boundary_at}
+                                        if int(edition) != 1
+                                        else {}
+                                    ),
+                                },
+                            )
+                        ).scalar_one()
+                    )
+            # Legacy Validated is intrinsically ambiguous: it may be the
+            # pre-execution admission state or a rollback from In progress.
+            # Leaving NULL would fail open and authorize graph mutation after
+            # execution.  The one-time migration therefore fails closed while
+            # live writes continue to set the marker only at actual start.
+            fail_closed_validated = str(status) == "validated"
+            if fail_closed_validated and not (
+                history_proves_started or card_proves_started
+            ):
+                conservative_validated_backfill.append(str(spec_id))
+            if history_proves_started or card_proves_started or fail_closed_validated:
+                derived_backfill = await conn.execute(
+                    sa_text(
+                        "UPDATE specs SET last_started_edition = edition "
+                        "WHERE id = :spec_id "
+                        "AND last_started_edition IS NULL"
+                    ),
+                    {"spec_id": str(spec_id)},
+                )
+                if int(derived_backfill.rowcount or 0) > 0:
+                    changed = True
+        if conservative_validated_backfill:
+            logger.warning(
+                "spec_dependency.started_edition_backfill_fail_closed count=%s",
+                len(conservative_validated_backfill),
+                extra={
+                    "event": "spec_dependency.started_edition_backfill_fail_closed",
+                    "count": len(conservative_validated_backfill),
+                    "spec_ids": tuple(conservative_validated_backfill),
+                },
+            )
+        invalid_started_edition_count = int(
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT COUNT(*) FROM specs "
+                        "WHERE last_started_edition IS NOT NULL "
+                        "AND (last_started_edition < 1 "
+                        "OR last_started_edition > edition)"
+                    )
+                )
+            ).scalar_one()
+        )
+        if invalid_started_edition_count:
+            raise RuntimeError(
+                "Spec dependency started-edition data is corrupt: "
+                f"{invalid_started_edition_count} invalid row(s)"
+            )
+        if dialect == "postgresql":
+            constraint_row = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT pg_get_constraintdef(constraint_row.oid) AS definition "
+                            "FROM pg_constraint AS constraint_row "
+                            "JOIN pg_class AS relation "
+                            "ON relation.oid = constraint_row.conrelid "
+                            "JOIN pg_namespace AS relation_namespace "
+                            "ON relation_namespace.oid = relation.relnamespace "
+                            "WHERE relation.relname = 'specs' "
+                            "AND relation_namespace.nspname = current_schema() "
+                            "AND constraint_row.conname = "
+                            "'ck_spec_last_started_edition'"
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if constraint_row is None:
+                await conn.execute(
+                    sa_text(
+                        "ALTER TABLE specs ADD CONSTRAINT "
+                        "ck_spec_last_started_edition CHECK "
+                        "(last_started_edition IS NULL OR "
+                        "(last_started_edition >= 1 "
+                        "AND last_started_edition <= edition))"
+                    )
+                )
+                changed = True
+            else:
+                normalized_definition = (
+                    _normalize_spec_started_edition_postgresql_check(
+                        constraint_row["definition"]
+                    )
+                )
+                expected_definition = _normalize_spec_started_edition_postgresql_check(
+                    "CHECK (last_started_edition IS NULL OR "
+                    "(last_started_edition >= 1 "
+                    "AND last_started_edition <= edition))"
+                )
+                if normalized_definition != expected_definition:
+                    raise RuntimeError(
+                        "Spec dependency started-edition constraint is corrupt"
+                    )
+        missing = [table.name for table in tables if table.name not in table_names]
+        if missing:
+            raise RuntimeError(
+                "Spec dependency migration requires create_all; missing tables: "
+                + ", ".join(sorted(missing))
+            )
+        for table in tables:
+            contract = await conn.run_sync(
+                (
+                    lambda sync_conn, owned=table: _sqlite_owned_table_contract(
+                        sync_conn, owned
+                    )
+                )
+                if dialect == "sqlite"
+                else (
+                    lambda sync_conn, owned=table: _postgresql_owned_table_contract(
+                        sync_conn, owned
+                    )
+                )
+            )
+            if contract["observed"] != contract["expected"]:
+                raise RuntimeError(
+                    "Spec dependency table has a non-canonical contract: " + table.name
+                )
+
+        # Existing rows may predate the boundary guards. Fail closed rather
+        # than installing triggers over a graph that already crosses boards
+        # or whose live FK disagrees with its immutable prerequisite identity.
+        invalid_board_boundary_count = int(
+            (
+                await conn.execute(
+                    sa_text(
+                        "SELECT COUNT(*) FROM spec_dependencies AS dependency "
+                        "LEFT JOIN specs AS dependent "
+                        "ON dependent.id = dependency.dependent_spec_id "
+                        "LEFT JOIN specs AS prerequisite "
+                        "ON prerequisite.id = dependency.prerequisite_spec_ref "
+                        "WHERE dependent.id IS NULL "
+                        "OR dependent.board_id <> dependency.board_id "
+                        "OR (dependency.active = true AND ("
+                        "prerequisite.id IS NULL "
+                        "OR prerequisite.board_id <> dependency.board_id "
+                        "OR dependency.prerequisite_spec_id IS NULL "
+                        "OR dependency.prerequisite_spec_id "
+                        "<> dependency.prerequisite_spec_ref))"
+                    )
+                )
+            ).scalar_one()
+        )
+        if invalid_board_boundary_count:
+            raise RuntimeError(
+                "Spec dependency board-boundary data is corrupt: "
+                f"{invalid_board_boundary_count} invalid row(s)"
+            )
+
+        # SQLAlchemy's generic index inspector does not make the partial
+        # predicate part of its cross-dialect contract.  Audit it explicitly:
+        # silently widening this index to a full unique index would prevent a
+        # removed edge from being added again, while dropping the predicate
+        # without uniqueness would permit two active edges.
+        if dialect == "sqlite":
+            active_index_sql = (
+                await conn.execute(
+                    sa_text(
+                        "SELECT sql FROM sqlite_master WHERE type = 'index' "
+                        "AND name = 'uq_spec_dependency_active_edge'"
+                    )
+                )
+            ).scalar_one_or_none()
+            normalized_active_index = re.sub(
+                r'[\s"`()\[\]]+', "", str(active_index_sql or "").lower()
+            )
+            if not normalized_active_index.endswith("whereactive=true"):
+                raise RuntimeError(
+                    "Spec dependency active-edge index predicate is corrupt"
+                )
+        else:
+            active_index_predicate = (
+                await conn.execute(
+                    sa_text(
+                        "SELECT pg_get_expr(index_row.indpred, "
+                        "index_row.indrelid) AS predicate "
+                        "FROM pg_index AS index_row "
+                        "JOIN pg_class AS index_relation "
+                        "ON index_relation.oid = index_row.indexrelid "
+                        "JOIN pg_class AS table_relation "
+                        "ON table_relation.oid = index_row.indrelid "
+                        "JOIN pg_namespace AS table_namespace "
+                        "ON table_namespace.oid = table_relation.relnamespace "
+                        "WHERE table_relation.relname = 'spec_dependencies' "
+                        "AND table_namespace.nspname = current_schema() "
+                        "AND index_relation.relname = "
+                        "'uq_spec_dependency_active_edge'"
+                    )
+                )
+            ).scalar_one_or_none()
+            normalized_active_predicate = re.sub(
+                r'[\s"()]+', "", str(active_index_predicate or "").lower()
+            )
+            if normalized_active_predicate not in {"active", "active=true"}:
+                raise RuntimeError(
+                    "Spec dependency active-edge index predicate is corrupt"
+                )
+
+        if dialect == "sqlite":
+            manifest = spec_dependency_sqlite_trigger_manifest()
+            rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT name, tbl_name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' "
+                            "AND substr(name, 1, :prefix_length) = :prefix"
+                        ),
+                        {
+                            "prefix": SPEC_DEPENDENCY_TRIGGER_PREFIX,
+                            "prefix_length": len(SPEC_DEPENDENCY_TRIGGER_PREFIX),
+                        },
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            observed = {str(row["name"]): row for row in rows}
+            predecessors = spec_dependency_sqlite_trigger_predecessors()
+            unexpected = set(observed) - set(manifest)
+            if unexpected:
+                raise RuntimeError(
+                    "Spec dependency has unexpected owned triggers: "
+                    + ", ".join(sorted(unexpected))
+                )
+            for trigger_name, (table_name, trigger_sql) in manifest.items():
+                current = observed.get(trigger_name)
+                if current is None:
+                    await conn.execute(sa_text(trigger_sql))
+                    changed = True
+                    continue
+                current_sql = normalize_global_discovery_source_revision_trigger_sql(
+                    current["sql"]
+                )
+                expected_sql = normalize_global_discovery_source_revision_trigger_sql(
+                    trigger_sql
+                )
+                if str(current["tbl_name"]) != table_name:
+                    raise RuntimeError(
+                        "Spec dependency owned trigger is corrupt: " + trigger_name
+                    )
+                if current_sql == expected_sql:
+                    continue
+                known_predecessors = {
+                    normalize_global_discovery_source_revision_trigger_sql(source)
+                    for source in predecessors.get(trigger_name, ())
+                }
+                if current_sql not in known_predecessors:
+                    raise RuntimeError(
+                        "Spec dependency owned trigger is corrupt: " + trigger_name
+                    )
+                await conn.execute(sa_text(f'DROP TRIGGER "{trigger_name}"'))
+                await conn.execute(sa_text(trigger_sql))
+                changed = True
+            violations = list(
+                (await conn.exec_driver_sql("PRAGMA foreign_key_check")).all()
+            )
+            if violations:
+                raise RuntimeError(
+                    "Spec dependency migration left foreign-key violations: "
+                    + repr(violations[:10])
+                )
+        else:
+            board_boundary_function_body = """BEGIN
+    IF NOT EXISTS (
+           SELECT 1 FROM specs
+           WHERE id = NEW.dependent_spec_id AND board_id = NEW.board_id
+       ) OR (NEW.active = true AND NOT EXISTS (
+           SELECT 1 FROM specs
+           WHERE id = NEW.prerequisite_spec_ref AND board_id = NEW.board_id
+       )) OR (NEW.active = true AND (
+           NEW.prerequisite_spec_id IS NULL OR
+           NEW.prerequisite_spec_id IS DISTINCT FROM NEW.prerequisite_spec_ref
+       )) THEN
+        RAISE EXCEPTION 'spec_dependency_board_boundary_invalid';
+    END IF;
+    RETURN NEW;
+END;"""
+            spec_board_function_body = """BEGIN
+    IF NEW.board_id IS DISTINCT FROM OLD.board_id AND (
+        EXISTS (
+            SELECT 1 FROM spec_dependencies
+            WHERE dependent_spec_id = OLD.id
+        ) OR EXISTS (
+            SELECT 1 FROM spec_dependencies
+            WHERE active = true AND prerequisite_spec_id = OLD.id
+        )
+    ) THEN
+        RAISE EXCEPTION 'spec_dependency_board_boundary_invalid';
+    END IF;
+    RETURN NEW;
+END;"""
+            started_edition_function_body = """BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.edition < 1 OR (
+            NEW.last_started_edition IS NOT NULL AND
+            NEW.last_started_edition IS DISTINCT FROM NEW.edition
+        ) THEN
+            RAISE EXCEPTION 'spec_dependency_started_edition_invalid';
+        END IF;
+    ELSIF TG_OP = 'UPDATE' THEN
+        IF NEW.edition < OLD.edition OR
+           NEW.edition > OLD.edition + 1 OR
+           (NEW.edition = OLD.edition + 1 AND
+            NEW.last_started_edition IS DISTINCT FROM OLD.last_started_edition) OR
+           (NEW.edition = OLD.edition AND NOT (
+            NEW.last_started_edition IS NOT DISTINCT FROM OLD.last_started_edition OR
+            (NEW.last_started_edition = NEW.edition AND (
+             OLD.last_started_edition IS NULL OR
+             OLD.last_started_edition < NEW.edition
+            ))
+           )) THEN
+            RAISE EXCEPTION 'spec_dependency_started_edition_invalid';
+        END IF;
+    ELSE
+        RAISE EXCEPTION 'spec_dependency_started_edition_operation_invalid';
+    END IF;
+    RETURN NEW;
+END;"""
+            predecessor_function_body = """BEGIN
+    IF TG_TABLE_NAME = 'spec_dependencies'
+       AND OLD.active = true AND NEW.active = false
+       AND NEW.id IS NOT DISTINCT FROM OLD.id
+       AND NEW.board_id IS NOT DISTINCT FROM OLD.board_id
+       AND NEW.dependent_spec_id IS NOT DISTINCT FROM OLD.dependent_spec_id
+       AND NEW.prerequisite_spec_id IS NULL
+       AND NEW.prerequisite_spec_ref IS NOT DISTINCT FROM OLD.prerequisite_spec_ref
+       AND NEW.resolved_on_create IS NOT DISTINCT FROM OLD.resolved_on_create
+       AND NEW.retrospective IS NOT DISTINCT FROM OLD.retrospective
+       AND NEW.introduced_at_spec_version IS NOT DISTINCT FROM OLD.introduced_at_spec_version
+       AND NEW.source_version_on_create IS NOT DISTINCT FROM OLD.source_version_on_create
+       AND NEW.source_status_on_create IS NOT DISTINCT FROM OLD.source_status_on_create
+       AND NEW.target_status_on_create IS NOT DISTINCT FROM OLD.target_status_on_create
+       AND NEW.target_version_on_create IS NOT DISTINCT FROM OLD.target_version_on_create
+       AND NEW.target_title_on_create IS NOT DISTINCT FROM OLD.target_title_on_create
+       AND NEW.target_edition_on_create IS NOT DISTINCT FROM OLD.target_edition_on_create
+       AND NEW.target_ideation_id_on_create IS NOT DISTINCT FROM OLD.target_ideation_id_on_create
+       AND NEW.add_idempotency_key IS NOT DISTINCT FROM OLD.add_idempotency_key
+       AND NEW.add_request_digest IS NOT DISTINCT FROM OLD.add_request_digest
+       AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at
+       AND NEW.created_by_id IS NOT DISTINCT FROM OLD.created_by_id
+       AND NEW.created_by_type IS NOT DISTINCT FROM OLD.created_by_type
+       AND NEW.created_by_name IS NOT DISTINCT FROM OLD.created_by_name THEN
+        RETURN NEW;
+    END IF;
+    RAISE EXCEPTION 'spec_dependency_immutable';
+END;"""
+            function_body = """BEGIN
+    IF TG_TABLE_NAME = 'spec_dependencies'
+       AND OLD.active = true AND NEW.active = false
+       AND NEW.id IS NOT DISTINCT FROM OLD.id
+       AND NEW.board_id IS NOT DISTINCT FROM OLD.board_id
+       AND NEW.dependent_spec_id IS NOT DISTINCT FROM OLD.dependent_spec_id
+       AND NEW.prerequisite_spec_id IS NULL
+       AND NEW.prerequisite_spec_ref IS NOT DISTINCT FROM OLD.prerequisite_spec_ref
+       AND NEW.resolved_on_create IS NOT DISTINCT FROM OLD.resolved_on_create
+       AND NEW.retrospective IS NOT DISTINCT FROM OLD.retrospective
+       AND NEW.introduced_at_spec_version IS NOT DISTINCT FROM OLD.introduced_at_spec_version
+       AND NEW.source_version_on_create IS NOT DISTINCT FROM OLD.source_version_on_create
+       AND NEW.source_status_on_create IS NOT DISTINCT FROM OLD.source_status_on_create
+       AND NEW.source_title_on_create IS NOT DISTINCT FROM OLD.source_title_on_create
+       AND NEW.source_edition_on_create IS NOT DISTINCT FROM OLD.source_edition_on_create
+       AND NEW.target_status_on_create IS NOT DISTINCT FROM OLD.target_status_on_create
+       AND NEW.target_version_on_create IS NOT DISTINCT FROM OLD.target_version_on_create
+       AND NEW.target_title_on_create IS NOT DISTINCT FROM OLD.target_title_on_create
+       AND NEW.target_edition_on_create IS NOT DISTINCT FROM OLD.target_edition_on_create
+       AND NEW.target_ideation_id_on_create IS NOT DISTINCT FROM OLD.target_ideation_id_on_create
+       AND NEW.add_idempotency_key IS NOT DISTINCT FROM OLD.add_idempotency_key
+       AND NEW.add_request_digest IS NOT DISTINCT FROM OLD.add_request_digest
+       AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at
+       AND NEW.created_by_id IS NOT DISTINCT FROM OLD.created_by_id
+       AND NEW.created_by_type IS NOT DISTINCT FROM OLD.created_by_type
+       AND NEW.created_by_name IS NOT DISTINCT FROM OLD.created_by_name THEN
+        RETURN NEW;
+    END IF;
+    RAISE EXCEPTION 'spec_dependency_immutable';
+END;"""
+            delete_function_body = """BEGIN
+    IF TG_TABLE_NAME = 'spec_dependencies' THEN
+        IF EXISTS (
+               SELECT 1 FROM kg_board_erasure_permits
+               WHERE board_id = OLD.board_id
+           ) OR EXISTS (
+               SELECT 1 FROM artifact_deletion_tombstones
+               WHERE board_id = OLD.board_id
+                 AND artifact_type = 'spec'
+                 AND artifact_id = OLD.dependent_spec_id
+           ) THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'spec_dependency_delete_forbidden';
+    ELSIF TG_TABLE_NAME = 'spec_dependency_operations' THEN
+        IF EXISTS (
+            SELECT 1 FROM kg_board_erasure_permits
+            WHERE board_id = OLD.board_id
+        ) THEN
+            RETURN OLD;
+        END IF;
+        RAISE EXCEPTION 'spec_dependency_operation_immutable';
+    END IF;
+    RAISE EXCEPTION 'spec_dependency_delete_guard_table_invalid';
+END;"""
+            function_contracts = {
+                "pulse_spec_dependency_board_boundary_guard": (
+                    board_boundary_function_body
+                ),
+                "pulse_spec_dependency_spec_board_guard": spec_board_function_body,
+                "pulse_spec_dependency_started_edition_guard": (
+                    started_edition_function_body
+                ),
+                "pulse_spec_dependency_immutable_guard": function_body,
+                "pulse_spec_dependency_delete_guard": delete_function_body,
+            }
+            function_predecessors = {
+                "pulse_spec_dependency_immutable_guard": (predecessor_function_body,),
+            }
+            function_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT function_row.proname AS function_name, "
+                            "language.lanname, "
+                            "pg_get_function_result(function_row.oid) AS result_type, "
+                            "pg_get_function_arguments(function_row.oid) AS arguments, "
+                            "function_row.prosrc AS source "
+                            "FROM pg_proc AS function_row "
+                            "JOIN pg_namespace AS namespace "
+                            "ON namespace.oid = function_row.pronamespace "
+                            "JOIN pg_language AS language "
+                            "ON language.oid = function_row.prolang "
+                            "WHERE namespace.nspname = current_schema() "
+                            "AND left(function_row.proname, "
+                            "length('pulse_spec_dependency_')) = "
+                            "'pulse_spec_dependency_'"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            observed_functions: dict[str, list[object]] = {}
+            for function_row in function_rows:
+                observed_functions.setdefault(
+                    str(function_row["function_name"]), []
+                ).append(function_row)
+            unexpected_functions = set(observed_functions) - set(function_contracts)
+            if unexpected_functions:
+                raise RuntimeError(
+                    "Spec dependency has unexpected owned functions: "
+                    + ", ".join(sorted(unexpected_functions))
+                )
+            normalize_body = lambda value: re.sub(  # noqa: E731
+                r"\s+", " ", str(value).strip()
+            ).lower()
+            for function_name, expected_body in function_contracts.items():
+                observed_rows = observed_functions.get(function_name, [])
+                if len(observed_rows) > 1:
+                    raise RuntimeError(
+                        "Spec dependency guard has unexpected overloads: "
+                        + function_name
+                    )
+                if not observed_rows:
+                    await conn.execute(
+                        sa_text(
+                            f"CREATE FUNCTION {function_name}() "
+                            "RETURNS trigger AS $$\n"
+                            + expected_body
+                            + "\n$$ LANGUAGE plpgsql"
+                        )
+                    )
+                    changed = True
+                    continue
+                function_row = observed_rows[0]
+                shape_is_valid = (
+                    str(function_row["lanname"]).lower() == "plpgsql"
+                    and str(function_row["result_type"]).lower() == "trigger"
+                    and str(function_row["arguments"]).strip() == ""
+                )
+                observed_body = normalize_body(function_row["source"])
+                if shape_is_valid and observed_body == normalize_body(expected_body):
+                    continue
+                known_predecessors = {
+                    normalize_body(source)
+                    for source in function_predecessors.get(function_name, ())
+                }
+                if shape_is_valid and observed_body in known_predecessors:
+                    await conn.execute(
+                        sa_text(
+                            f"CREATE OR REPLACE FUNCTION {function_name}() "
+                            "RETURNS trigger AS $$\n"
+                            + expected_body
+                            + "\n$$ LANGUAGE plpgsql"
+                        )
+                    )
+                    changed = True
+                    continue
+                raise RuntimeError(
+                    "Spec dependency guard function is corrupt: " + function_name
+                )
+            trigger_specs = {
+                "trg_spec_dependency_board_boundary_insert": (
+                    "spec_dependencies",
+                    "pulse_spec_dependency_board_boundary_guard",
+                    7,
+                ),
+                "trg_spec_dependency_board_boundary_update": (
+                    "spec_dependencies",
+                    "pulse_spec_dependency_board_boundary_guard",
+                    19,
+                ),
+                "trg_spec_dependency_tombstone_immutable_update": (
+                    "spec_dependencies",
+                    "pulse_spec_dependency_immutable_guard",
+                    19,
+                ),
+                "trg_spec_dependency_operation_immutable_update": (
+                    "spec_dependency_operations",
+                    "pulse_spec_dependency_immutable_guard",
+                    19,
+                ),
+                "trg_spec_dependency_immutable_delete": (
+                    "spec_dependencies",
+                    "pulse_spec_dependency_delete_guard",
+                    11,
+                ),
+                "trg_spec_dependency_operation_immutable_delete": (
+                    "spec_dependency_operations",
+                    "pulse_spec_dependency_delete_guard",
+                    11,
+                ),
+                "trg_spec_dependency_spec_board_update": (
+                    "specs",
+                    "pulse_spec_dependency_spec_board_guard",
+                    19,
+                ),
+                "trg_spec_dependency_started_edition_insert": (
+                    "specs",
+                    "pulse_spec_dependency_started_edition_guard",
+                    7,
+                ),
+                "trg_spec_dependency_started_edition_update": (
+                    "specs",
+                    "pulse_spec_dependency_started_edition_guard",
+                    19,
+                ),
+            }
+            trigger_rows = (
+                (
+                    await conn.execute(
+                        sa_text(
+                            "SELECT trigger_row.tgname, relation.relname AS table_name, "
+                            "trigger_row.tgenabled, trigger_row.tgtype, "
+                            "trigger_row.tgnargs, trigger_row.tgattr::text AS tgattr, "
+                            "function_row.proname AS function_name "
+                            "FROM pg_trigger AS trigger_row "
+                            "JOIN pg_class AS relation "
+                            "ON relation.oid = trigger_row.tgrelid "
+                            "JOIN pg_namespace AS relation_namespace "
+                            "ON relation_namespace.oid = relation.relnamespace "
+                            "JOIN pg_proc AS function_row "
+                            "ON function_row.oid = trigger_row.tgfoid "
+                            "WHERE NOT trigger_row.tgisinternal "
+                            "AND relation_namespace.nspname = current_schema() "
+                            "AND left(trigger_row.tgname, "
+                            "length('trg_spec_dependency_')) = "
+                            "'trg_spec_dependency_'"
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            observed_triggers = {str(row["tgname"]): row for row in trigger_rows}
+            unexpected_triggers = set(observed_triggers) - set(trigger_specs)
+            if unexpected_triggers:
+                raise RuntimeError(
+                    "Spec dependency has unexpected owned triggers: "
+                    + ", ".join(sorted(unexpected_triggers))
+                )
+            for trigger_name, (
+                table_name,
+                function_name,
+                trigger_type,
+            ) in trigger_specs.items():
+                observed_trigger = observed_triggers.get(trigger_name)
+                if observed_trigger is None:
+                    trigger_event = {
+                        7: "INSERT",
+                        11: "DELETE",
+                        19: "UPDATE",
+                    }[trigger_type]
+                    await conn.execute(
+                        sa_text(
+                            f'CREATE TRIGGER "{trigger_name}" BEFORE '
+                            f"{trigger_event} "
+                            f'ON "{table_name}" FOR EACH ROW EXECUTE FUNCTION '
+                            f"{function_name}()"
+                        )
+                    )
+                    changed = True
+                    continue
+                if (
+                    str(observed_trigger["table_name"]) != table_name
+                    or str(observed_trigger["tgenabled"]) != "O"
+                    # PostgreSQL tgtype bitmask: ROW(1) | BEFORE(2) |
+                    # INSERT(4), DELETE(8), or UPDATE(16).
+                    or int(observed_trigger["tgtype"]) != trigger_type
+                    or int(observed_trigger["tgnargs"]) != 0
+                    or str(observed_trigger["tgattr"]).strip() != ""
+                    or str(observed_trigger["function_name"]) != function_name
+                ):
+                    raise RuntimeError(
+                        "Spec dependency owned trigger is corrupt: " + trigger_name
+                    )
+
+    return None if changed else "skipped"
 
 
 async def _migrate_quality_assessment_c7_schema() -> None:
@@ -18628,6 +24331,748 @@ WHERE NOT trigger.tgisinternal
             raise RuntimeError(f"quality C7 trigger convergence incomplete: {missing}")
 
 
+def _validation_cycle_edition_column_manifest() -> dict[
+    str, tuple[tuple[str, str], ...]
+]:
+    return {
+        "quality_assessment_receipts": (("subject_edition", "INTEGER"),),
+        "checklist_executions": (("spec_edition", "INTEGER"),),
+        "checklist_receipts": (("spec_edition", "INTEGER"),),
+        "semantic_guideline_assessment_receipts": (("validation_edition", "INTEGER"),),
+        "semantic_guideline_waivers": (("validation_edition", "INTEGER"),),
+        "semantic_guideline_waiver_events": (("validation_edition", "INTEGER"),),
+        "semantic_guideline_skips": (("validation_edition", "INTEGER"),),
+        "semantic_guideline_assessments_v2": (("validation_edition", "INTEGER"),),
+        "quality_assessment_lifecycle_transitions": (
+            ("before_edition", "INTEGER"),
+            ("after_edition", "INTEGER"),
+        ),
+    }
+
+
+def _validation_cycle_edition_index_manifest() -> tuple[tuple[str, str, str], ...]:
+    return (
+        (
+            "ix_quality_receipt_subject_edition_kind_created",
+            "quality_assessment_receipts",
+            "board_id, subject_type, subject_id, subject_edition, "
+            "assessment_kind, created_at, id",
+        ),
+        (
+            "ix_checklist_execution_spec_edition_created",
+            "checklist_executions",
+            "board_id, spec_id, spec_edition, created_at, id",
+        ),
+        (
+            "ix_checklist_receipt_spec_edition_created",
+            "checklist_receipts",
+            "board_id, spec_id, spec_edition, created_at, id",
+        ),
+        (
+            "ix_sg_assessment_subject_edition_time",
+            "semantic_guideline_assessment_receipts",
+            "board_id, subject_type, subject_id, validation_edition, "
+            "assessed_at, receipt_id",
+        ),
+        (
+            "ix_sg_waiver_edition_scope",
+            "semantic_guideline_waivers",
+            "board_id, subject_type, subject_id, validation_edition, status",
+        ),
+        (
+            "ix_sg_skip_edition_scope",
+            "semantic_guideline_skips",
+            "board_id, binding_id, subject_type, subject_id, "
+            "validation_edition, status, skip_revision",
+        ),
+        (
+            "ix_sg_assessment_v2_edition_current",
+            "semantic_guideline_assessments_v2",
+            "board_id, subject_type, subject_id, validation_edition, "
+            "recorded_at, receipt_id",
+        ),
+    )
+
+
+def validation_cycle_edition_sqlite_trigger_manifest() -> dict[str, tuple[str, str]]:
+    """Return exact positive guards for nullable validation editions."""
+
+    manifest: dict[str, tuple[str, str]] = {}
+    for table_name, definitions in _validation_cycle_edition_column_manifest().items():
+        for column_name, _sql_type in definitions:
+            insert_name = f"trg_{table_name}_{column_name}_positive"
+            manifest[insert_name] = (
+                table_name,
+                f'CREATE TRIGGER "{insert_name}" '
+                f"BEFORE INSERT ON {table_name} "
+                f"WHEN NEW.{column_name} IS NOT NULL "
+                f"AND NEW.{column_name} < 1 "
+                "BEGIN SELECT RAISE(ABORT, "
+                "'validation_edition_invalid'); END",
+            )
+            update_name = f"{insert_name}_update"
+            manifest[update_name] = (
+                table_name,
+                f'CREATE TRIGGER "{update_name}" '
+                f"BEFORE UPDATE OF {column_name} ON {table_name} "
+                f"WHEN NEW.{column_name} IS NOT NULL "
+                f"AND NEW.{column_name} < 1 "
+                "BEGIN SELECT RAISE(ABORT, "
+                "'validation_edition_invalid'); END",
+            )
+    return manifest
+
+
+async def _migrate_validation_cycle_editions() -> object:
+    """Converge validation evidence to the exact lifecycle-edition schema.
+
+    SQLite cannot add a named CHECK or place a new column in its canonical
+    physical position.  The previous additive implementation therefore left a
+    deterministic ``ALTER TABLE`` overlay which strict semantic audits rejected.
+    The first lifecycle-edition build also omitted ``admit_validation`` from the
+    transition action CHECK even though Core emitted that action on validation
+    admission. Recognize only the exact current, pre-edition, known overlay, or
+    immediately preceding action contracts and rebuild every affected ledger
+    atomically. Historical evidence keeps a NULL edition because no trustworthy
+    lifecycle edition can be inferred.
+    """
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+    from sqlalchemy.schema import CreateIndex, CreateTable
+
+    column_manifest = _validation_cycle_edition_column_manifest()
+    index_manifest = _validation_cycle_edition_index_manifest()
+    check_manifest: dict[str, tuple[str, ...]] = {
+        "quality_assessment_receipts": ("ck_quality_receipt_subject_edition",),
+        "checklist_executions": ("ck_checklist_execution_spec_edition",),
+        "checklist_receipts": ("ck_checklist_receipt_spec_edition",),
+        "semantic_guideline_assessment_receipts": (
+            "ck_sg_assessment_validation_edition",
+        ),
+        "semantic_guideline_waivers": ("ck_sg_waiver_validation_edition",),
+        "semantic_guideline_waiver_events": ("ck_sg_waiver_event_validation_edition",),
+        "semantic_guideline_skips": ("ck_sg_skip_validation_edition",),
+        "semantic_guideline_assessments_v2": (
+            "ck_sg_assessment_v2_validation_edition",
+        ),
+        "quality_assessment_lifecycle_transitions": ("ck_quality_lifecycle_editions",),
+    }
+    lifecycle_action_table = "quality_assessment_lifecycle_transitions"
+    lifecycle_action_constraint = "ck_quality_lifecycle_action"
+    legacy_lifecycle_actions = frozenset({"archive", "cancel", "restore", "reopen"})
+    current_lifecycle_actions = legacy_lifecycle_actions | {"admit_validation"}
+    legacy_lifecycle_action_sql = "action IN ('archive', 'cancel', 'restore', 'reopen')"
+    lifecycle_action_check = next(
+        constraint
+        for constraint in Base.metadata.tables[lifecycle_action_table].constraints
+        if constraint.name == lifecycle_action_constraint
+    )
+    lifecycle_action_sql = str(lifecycle_action_check.sqltext)
+
+    def _lifecycle_action_values(raw: object) -> frozenset[str] | None:
+        normalized = _normalize_sqlite_contract_ddl(raw)
+        if "action" not in normalized or not (
+            "actionin(" in normalized or "=any(" in normalized
+        ):
+            return None
+        return frozenset(
+            value.replace("''", "'").lower()
+            for value in re.findall(r"'((?:''|[^'])*)'", str(raw))
+        )
+
+    indexes_by_table: dict[str, set[str]] = {
+        table_name: set() for table_name in column_manifest
+    }
+    for index_name, table_name, _columns_sql in index_manifest:
+        indexes_by_table[table_name].add(index_name)
+    positive_manifest = validation_cycle_edition_sqlite_trigger_manifest()
+    positive_columns = {
+        (table_name, column_name)
+        for table_name, definitions in column_manifest.items()
+        for column_name, _sql_type in definitions
+    }
+    engine = get_engine()
+
+    async with engine.connect() as dialect_conn:
+        dialect = dialect_conn.dialect.name
+    if dialect == "postgresql":
+        changed = False
+        async with engine.begin() as conn:
+            table_names = await conn.run_sync(
+                lambda sync_conn: set(sa_inspect(sync_conn).get_table_names())
+            )
+            for table_name, definitions in column_manifest.items():
+                if table_name not in table_names:
+                    continue
+                columns = await conn.run_sync(
+                    lambda sync_conn, name=table_name: {
+                        str(column["name"])
+                        for column in sa_inspect(sync_conn).get_columns(name)
+                    }
+                )
+                for column_name, sql_type in definitions:
+                    if column_name not in columns:
+                        await conn.execute(
+                            sa_text(
+                                f'ALTER TABLE "{table_name}" ADD COLUMN '
+                                f'"{column_name}" {sql_type}'
+                            )
+                        )
+                        changed = True
+            for index_name, table_name, columns_sql in index_manifest:
+                if table_name in table_names:
+                    await conn.exec_driver_sql(
+                        f'CREATE INDEX IF NOT EXISTS "{index_name}" '
+                        f'ON "{table_name}" ({columns_sql})'
+                    )
+            for table_name, column_name in sorted(positive_columns):
+                if table_name not in table_names:
+                    continue
+                constraint_name = f"ck_{table_name}_{column_name}_positive"
+                await conn.exec_driver_sql(
+                    "DO $$ BEGIN "
+                    f'ALTER TABLE "{table_name}" ADD CONSTRAINT '
+                    f'"{constraint_name}" CHECK ('
+                    f'"{column_name}" IS NULL OR "{column_name}" >= 1); '
+                    "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+                )
+            if lifecycle_action_table in table_names:
+                action_checks = await conn.run_sync(
+                    lambda sync_conn: tuple(
+                        check
+                        for check in sa_inspect(sync_conn).get_check_constraints(
+                            lifecycle_action_table
+                        )
+                        if check.get("name") == lifecycle_action_constraint
+                    )
+                )
+                if len(action_checks) != 1:
+                    raise RuntimeError(
+                        "validation edition convergence found an unrecognized "
+                        "lifecycle action constraint"
+                    )
+                action_values = _lifecycle_action_values(
+                    action_checks[0].get("sqltext")
+                )
+                if action_values == legacy_lifecycle_actions:
+                    await conn.exec_driver_sql(
+                        f'ALTER TABLE "{lifecycle_action_table}" DROP CONSTRAINT '
+                        f'"{lifecycle_action_constraint}"'
+                    )
+                    await conn.exec_driver_sql(
+                        f'ALTER TABLE "{lifecycle_action_table}" ADD CONSTRAINT '
+                        f'"{lifecycle_action_constraint}" CHECK '
+                        f"({lifecycle_action_sql})"
+                    )
+                    changed = True
+                elif action_values != current_lifecycle_actions:
+                    raise RuntimeError(
+                        "validation edition convergence found an unrecognized "
+                        "lifecycle action constraint"
+                    )
+        return None if changed else "skipped"
+    if dialect != "sqlite":
+        raise RuntimeError(
+            "validation edition migration supports only SQLite and PostgreSQL"
+        )
+
+    def _edition_contract(
+        expected: dict[str, object],
+        *,
+        table_name: str,
+        overlay: bool,
+    ) -> dict[str, object]:
+        derived = dict(expected)
+        edition_names = tuple(
+            column_name for column_name, _sql_type in column_manifest[table_name]
+        )
+        edition_name_set = set(edition_names)
+        ordinary_columns = tuple(
+            column
+            for column in expected["columns"]
+            if column[0] not in edition_name_set
+        )
+        if overlay:
+            edition_columns = {
+                column[0]: column
+                for column in expected["columns"]
+                if column[0] in edition_name_set
+            }
+            derived["columns"] = ordinary_columns + tuple(
+                edition_columns[name] for name in edition_names
+            )
+        else:
+            derived["columns"] = ordinary_columns
+        removed_checks = set(check_manifest[table_name])
+        derived["checks"] = tuple(
+            item for item in expected["checks"] if item[0] not in removed_checks
+        )
+        if not overlay:
+            removed_indexes = indexes_by_table[table_name]
+            derived["indexes"] = tuple(
+                item for item in expected["indexes"] if item[0] not in removed_indexes
+            )
+        return derived
+
+    def _legacy_action_contract(
+        expected: dict[str, object],
+    ) -> dict[str, object]:
+        derived = dict(expected)
+        checks = tuple(
+            (
+                (
+                    name,
+                    _normalize_sqlite_contract_ddl(legacy_lifecycle_action_sql),
+                )
+                if name == lifecycle_action_constraint
+                else (name, expression)
+            )
+            for name, expression in expected["checks"]
+        )
+        if checks == expected["checks"]:
+            raise RuntimeError(
+                "validation edition convergence cannot derive the preceding "
+                "lifecycle action contract"
+            )
+        derived["checks"] = tuple(sorted(checks, key=repr))
+        return derived
+
+    def _classify_tables(
+        sync_conn: object,
+    ) -> dict[str, tuple[object, str]]:
+        inspector = sa_inspect(sync_conn)
+        existing = set(inspector.get_table_names())
+        temporary_names = {
+            f"{table_name}__validation_edition_convergence"
+            for table_name in column_manifest
+        }
+        stale = temporary_names & existing
+        if stale:
+            raise RuntimeError(
+                "validation edition convergence found stale temporary tables: "
+                + ", ".join(sorted(stale))
+            )
+        classified: dict[str, tuple[object, str]] = {}
+        for table_name in column_manifest:
+            if table_name not in existing:
+                continue
+            table = Base.metadata.tables[table_name]
+            contract = _sqlite_owned_table_contract(sync_conn, table)
+            observed = contract["observed"]
+            expected = contract["expected"]
+            legacy_action_expected = (
+                _legacy_action_contract(expected)
+                if table_name == lifecycle_action_table
+                else None
+            )
+            if observed == expected:
+                state = "current"
+            elif observed == legacy_action_expected:
+                state = "legacy_action"
+            elif observed == _edition_contract(
+                expected,
+                table_name=table_name,
+                overlay=False,
+            ):
+                state = "pre_edition"
+            elif legacy_action_expected is not None and observed == _edition_contract(
+                legacy_action_expected,
+                table_name=table_name,
+                overlay=False,
+            ):
+                state = "pre_edition_legacy_action"
+            elif observed == _edition_contract(
+                expected,
+                table_name=table_name,
+                overlay=True,
+            ):
+                state = "overlay"
+            elif legacy_action_expected is not None and observed == _edition_contract(
+                legacy_action_expected,
+                table_name=table_name,
+                overlay=True,
+            ):
+                state = "overlay_legacy_action"
+            else:
+                raise RuntimeError(
+                    "validation edition convergence found unrecognized schema "
+                    f"drift: {table_name}"
+                )
+            classified[table_name] = (table, state)
+        for cohort in (
+            ("checklist_executions", "checklist_receipts"),
+            (
+                "semantic_guideline_waivers",
+                "semantic_guideline_waiver_events",
+            ),
+        ):
+            states = {classified[name][1] for name in cohort if name in classified}
+            if len(states) > 1:
+                raise RuntimeError(
+                    "validation edition convergence found a partial cohort: "
+                    + ", ".join(cohort)
+                )
+        return classified
+
+    def _canonical_temp_create_sql(
+        sync_conn: object,
+        table: object,
+        temporary_name: str,
+    ) -> str:
+        create_sql = str(
+            CreateTable(table).compile(
+                dialect=sync_conn.dialect,
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        open_index = create_sql.find("(")
+        if open_index < 0:
+            raise RuntimeError(
+                "validation edition convergence cannot compile table: "
+                + str(table.name)
+            )
+        rewritten = re.sub(
+            r"^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+            r'(?:"[^"]+"|`[^`]+`|\[[^\]]+\]|[^\s(]+)',
+            f'CREATE TABLE "{temporary_name}"',
+            create_sql[:open_index],
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        if rewritten == create_sql[:open_index]:
+            raise RuntimeError(
+                "validation edition convergence cannot rewrite table: "
+                + str(table.name)
+            )
+        return rewritten + create_sql[open_index:]
+
+    async with engine.connect() as conn:
+        original_foreign_keys = int(
+            (await conn.exec_driver_sql("PRAGMA foreign_keys")).scalar_one()
+        )
+        await conn.rollback()
+        await conn.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        await conn.exec_driver_sql("BEGIN IMMEDIATE")
+        changed = False
+        try:
+            classified = await conn.run_sync(_classify_tables)
+
+            existing_positive_rows = (
+                (
+                    await conn.exec_driver_sql(
+                        "SELECT name, tbl_name, sql FROM sqlite_master "
+                        "WHERE type = 'trigger'"
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            existing_positive = {
+                str(row["name"]): row
+                for row in existing_positive_rows
+                if str(row["name"]) in positive_manifest
+            }
+            positive_prefixes = tuple(
+                trigger_name.removesuffix("_update")
+                for trigger_name in positive_manifest
+            )
+            unexpected_positive = {
+                str(row["name"])
+                for row in existing_positive_rows
+                if str(row["name"]).startswith(positive_prefixes)
+                and str(row["name"]) not in positive_manifest
+            }
+            if unexpected_positive:
+                raise RuntimeError(
+                    "validation edition convergence found unexpected owned "
+                    "triggers: " + ", ".join(sorted(unexpected_positive))
+                )
+            for trigger_name, (table_name, trigger_sql) in positive_manifest.items():
+                observed = existing_positive.get(trigger_name)
+                if observed is None:
+                    continue
+                if (
+                    str(observed["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        observed["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
+                ):
+                    raise RuntimeError(
+                        "validation edition owned trigger is corrupt: " + trigger_name
+                    )
+
+            semantic_manifest = {
+                **semantic_guideline_sqlite_trigger_manifest(),
+                **semantic_pinpoint_v2_sqlite_trigger_manifest(),
+            }
+            semantic_rows = {
+                str(row["name"]): row
+                for row in existing_positive_rows
+                if str(row["name"]).startswith(
+                    (
+                        SEMANTIC_GUIDELINE_TRIGGER_PREFIX,
+                        SEMANTIC_PINPOINT_V2_TRIGGER_PREFIX,
+                    )
+                )
+            }
+            unexpected_semantic = set(semantic_rows) - set(semantic_manifest)
+            if unexpected_semantic:
+                raise RuntimeError(
+                    "validation edition convergence found unexpected semantic "
+                    "triggers: " + ", ".join(sorted(unexpected_semantic))
+                )
+            edition_immutability_triggers = {
+                f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_assessment_seal",
+                f"{SEMANTIC_GUIDELINE_TRIGGER_PREFIX}_waiver_update",
+            }
+            for trigger_name, row in semantic_rows.items():
+                table_name, trigger_sql = semantic_manifest[trigger_name]
+                observed_sql = normalize_global_discovery_source_revision_trigger_sql(
+                    row["sql"]
+                )
+                accepted_sql = {
+                    normalize_global_discovery_source_revision_trigger_sql(trigger_sql)
+                }
+                if trigger_name in edition_immutability_triggers:
+                    predecessor_sql = "\n".join(
+                        line
+                        for line in trigger_sql.splitlines()
+                        if 'NEW."validation_edition" IS '
+                        'OLD."validation_edition"' not in line
+                    )
+                    accepted_sql.add(
+                        normalize_global_discovery_source_revision_trigger_sql(
+                            predecessor_sql
+                        )
+                    )
+                if (
+                    str(row["tbl_name"]) != table_name
+                    or observed_sql not in accepted_sql
+                ):
+                    raise RuntimeError(
+                        "validation edition semantic trigger is corrupt: "
+                        + trigger_name
+                    )
+
+            rebuild = tuple(
+                table for table, state in classified.values() if state != "current"
+            )
+            rebuild_names = {str(table.name) for table in rebuild}
+            affected_trigger_rows = tuple(
+                row
+                for row in existing_positive_rows
+                if str(row["tbl_name"]) in rebuild_names
+                or any(
+                    table_name.lower() in str(row["sql"] or "").lower()
+                    for table_name in rebuild_names
+                )
+            )
+            preserved_triggers = tuple(
+                str(row["sql"])
+                for row in affected_trigger_rows
+                if row["sql"] is not None
+                and str(row["name"]) not in positive_manifest
+                and str(row["name"]) not in semantic_manifest
+            )
+            affected_trigger_names = tuple(
+                str(row["name"]) for row in affected_trigger_rows
+            )
+            if rebuild:
+
+                def _rebuild_tables(sync_conn: object) -> None:
+                    inspector = sa_inspect(sync_conn)
+                    existing = set(inspector.get_table_names())
+                    temporary_names = {
+                        str(table.name): (
+                            f"{table.name}__validation_edition_convergence"
+                        )
+                        for table in rebuild
+                    }
+                    stale = set(temporary_names.values()) & existing
+                    if stale:
+                        raise RuntimeError(
+                            "validation edition convergence found stale temporary "
+                            "tables: " + ", ".join(sorted(stale))
+                        )
+                    quote = sync_conn.dialect.identifier_preparer.quote
+                    source_columns = {
+                        str(table.name): tuple(
+                            str(column["name"])
+                            for column in inspector.get_columns(table.name)
+                        )
+                        for table in rebuild
+                    }
+                    before_counts = {
+                        str(table.name): int(
+                            sync_conn.exec_driver_sql(
+                                f'SELECT count(*) FROM "{table.name}"'
+                            ).scalar_one()
+                        )
+                        for table in rebuild
+                    }
+                    for trigger_name in affected_trigger_names:
+                        sync_conn.exec_driver_sql(f"DROP TRIGGER {quote(trigger_name)}")
+                    for table in rebuild:
+                        temporary_name = temporary_names[str(table.name)]
+                        sync_conn.exec_driver_sql(
+                            _canonical_temp_create_sql(
+                                sync_conn,
+                                table,
+                                temporary_name,
+                            )
+                        )
+                    for table in rebuild:
+                        table_name = str(table.name)
+                        temporary_name = temporary_names[table_name]
+                        available = set(source_columns[table_name])
+                        target_columns = tuple(
+                            str(column.name) for column in table.columns
+                        )
+                        insert_columns = ", ".join(
+                            quote(name) for name in target_columns
+                        )
+                        select_columns = ", ".join(
+                            quote(name) if name in available else "NULL"
+                            for name in target_columns
+                        )
+                        sync_conn.exec_driver_sql(
+                            f'INSERT INTO "{temporary_name}" '
+                            f"({insert_columns}) SELECT {select_columns} "
+                            f'FROM "{table_name}"'
+                        )
+                        copied = int(
+                            sync_conn.exec_driver_sql(
+                                f'SELECT count(*) FROM "{temporary_name}"'
+                            ).scalar_one()
+                        )
+                        if copied != before_counts[table_name]:
+                            raise RuntimeError(
+                                "validation edition convergence did not preserve "
+                                f"every row in {table_name}"
+                            )
+                    for table in reversed(rebuild):
+                        sync_conn.exec_driver_sql(f'DROP TABLE "{table.name}"')
+                    for table in rebuild:
+                        temporary_name = temporary_names[str(table.name)]
+                        sync_conn.exec_driver_sql(
+                            f'ALTER TABLE "{temporary_name}" RENAME TO "{table.name}"'
+                        )
+                    for table in rebuild:
+                        for index in sorted(
+                            table.indexes,
+                            key=lambda item: str(item.name),
+                        ):
+                            sync_conn.execute(CreateIndex(index))
+                    for trigger_sql in preserved_triggers:
+                        sync_conn.exec_driver_sql(trigger_sql)
+
+                await conn.run_sync(_rebuild_tables)
+                changed = True
+
+            # Legacy heads are mutable caches, not evidence.  Leaving one
+            # behind makes a new edition collide with a historical NULL epoch.
+            if {
+                "quality_assessment_heads",
+                "quality_assessment_receipts",
+            }.issubset(
+                set(
+                    await conn.run_sync(
+                        lambda sync_conn: sa_inspect(sync_conn).get_table_names()
+                    )
+                )
+            ):
+                result = await conn.execute(
+                    sa_text(
+                        "DELETE FROM quality_assessment_heads "
+                        "WHERE receipt_id IN ("
+                        "SELECT id FROM quality_assessment_receipts "
+                        "WHERE subject_edition IS NULL)"
+                    )
+                )
+                changed = bool(int(result.rowcount or 0)) or changed
+            current_table_names = set(
+                await conn.run_sync(
+                    lambda sync_conn: sa_inspect(sync_conn).get_table_names()
+                )
+            )
+            if {
+                "checklist_execution_heads",
+                "checklist_receipts",
+            }.issubset(current_table_names):
+                result = await conn.execute(
+                    sa_text(
+                        "DELETE FROM checklist_execution_heads "
+                        "WHERE receipt_id IN ("
+                        "SELECT id FROM checklist_receipts "
+                        "WHERE spec_edition IS NULL)"
+                    )
+                )
+                changed = bool(int(result.rowcount or 0)) or changed
+
+            for trigger_name, (table_name, trigger_sql) in positive_manifest.items():
+                if table_name not in current_table_names:
+                    continue
+                observed = (
+                    (
+                        await conn.exec_driver_sql(
+                            "SELECT tbl_name, sql FROM sqlite_master "
+                            "WHERE type = 'trigger' AND name = ?",
+                            (trigger_name,),
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if observed is None:
+                    await conn.exec_driver_sql(trigger_sql)
+                    changed = True
+                elif (
+                    str(observed["tbl_name"]) != table_name
+                    or normalize_global_discovery_source_revision_trigger_sql(
+                        observed["sql"]
+                    )
+                    != normalize_global_discovery_source_revision_trigger_sql(
+                        trigger_sql
+                    )
+                ):
+                    raise RuntimeError(
+                        "validation edition owned trigger is corrupt: " + trigger_name
+                    )
+
+            def _audit_contracts(sync_conn: object) -> None:
+                for table_name, (table, _state) in classified.items():
+                    contract = _sqlite_owned_table_contract(sync_conn, table)
+                    if contract["observed"] != contract["expected"]:
+                        raise RuntimeError(
+                            "validation edition convergence produced a "
+                            "non-canonical table: " + table_name
+                        )
+
+            await conn.run_sync(_audit_contracts)
+            violations = list(
+                (await conn.exec_driver_sql("PRAGMA foreign_key_check")).all()
+            )
+            if violations:
+                raise RuntimeError(
+                    "validation edition convergence left foreign-key "
+                    "violations: " + repr(violations[:10])
+                )
+            await conn.commit()
+        except BaseException:
+            await conn.rollback()
+            raise
+        finally:
+            await conn.exec_driver_sql(
+                f"PRAGMA foreign_keys={1 if original_foreign_keys else 0}"
+            )
+            await conn.commit()
+    return None if changed else "skipped"
+
+
 SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_card_statuses": _migrate_card_statuses,
     "_migrate_add_priority_column": _migrate_add_priority_column,
@@ -18641,7 +25086,11 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_decisions_default_false": _migrate_decisions_default_false,
     "_migrate_add_archive_columns": _migrate_add_archive_columns,
     "_migrate_add_spec_edition": _migrate_add_spec_edition,
+    "_migrate_add_human_lifecycle_editions": (_migrate_add_human_lifecycle_editions),
     "_migrate_add_spec_validation_columns": _migrate_add_spec_validation_columns,
+    "_migrate_add_code_evidence_coverage_skip": (
+        _migrate_add_code_evidence_coverage_skip
+    ),
     "_migrate_add_ir_or_columns": _migrate_add_ir_or_columns,
     "_migrate_add_spec_validation_gate_columns": _migrate_add_spec_validation_gate_columns,
     "_migrate_add_ideation_skip_ambiguity_gate": _migrate_add_ideation_skip_ambiguity_gate,
@@ -18650,6 +25099,7 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_status_renames": _migrate_status_renames,
     "_migrate_add_permission_columns": _migrate_add_permission_columns,
     "_migrate_add_event_tables": _migrate_add_event_tables,
+    "_migrate_validation_cycle_editions": _migrate_validation_cycle_editions,
     "_migrate_add_consolidation_work_kinds": _migrate_add_consolidation_work_kinds,
     "_migrate_global_discovery_delivery_contract": (
         _migrate_global_discovery_delivery_contract
@@ -18702,10 +25152,15 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_guideline_policy_v1_schema": _migrate_guideline_policy_v1_schema,
     "_migrate_guideline_impact_v1_schema": (_migrate_guideline_impact_v1_schema),
     "_migrate_policy_compliance_v1_schema": (_migrate_policy_compliance_v1_schema),
+    "_migrate_card_rejected_lifecycle": _migrate_card_rejected_lifecycle,
+    "_migrate_restore_spec_validation_pointers": (
+        _migrate_restore_spec_validation_pointers
+    ),
     "_migrate_policy_waiver_v1_schema": _migrate_policy_waiver_v1_schema,
     "_migrate_semantic_guideline_governance_schema": (
         _migrate_semantic_guideline_governance_schema
     ),
+    "_migrate_semantic_pinpoint_v2_schema": (_migrate_semantic_pinpoint_v2_schema),
     "_migrate_seed_semantic_configurations_for_legacy_bindings": (
         _migrate_seed_semantic_configurations_for_legacy_bindings
     ),
@@ -18713,5 +25168,10 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
         _migrate_recompute_cognitive_source_fingerprints_v2
     ),
     "_migrate_quality_assessment_c7_schema": _migrate_quality_assessment_c7_schema,
+    "_migrate_code_traceability_schema": _migrate_code_traceability_schema,
+    "_migrate_contextual_code_evidence_schema": (
+        _migrate_contextual_code_evidence_schema
+    ),
+    "_migrate_spec_dependency_schema": _migrate_spec_dependency_schema,
     "_migrate_agent_permissions": _migrate_agent_permissions,
 }

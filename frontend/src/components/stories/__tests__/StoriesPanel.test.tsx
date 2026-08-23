@@ -215,7 +215,7 @@ describe('StoriesPanel', () => {
     expect(within(descriptionField).getByRole('textbox')).toHaveValue('As a maintainer, I want raw needs grouped before ideation.');
   });
 
-  it('adds standard Story modal header actions for lineage, markdown download, and expand', async () => {
+  it('adds standard Story modal header actions for lineage, report export, and expand', async () => {
     render(<StoriesPanel boardId="board-1" />);
 
     await waitFor(() => expect(screen.getByText('Stories intake before ideation')).toBeInTheDocument());
@@ -225,12 +225,9 @@ describe('StoriesPanel', () => {
     fireEvent.click(screen.getByTitle('Open lineage graph'));
     expect(lineageMock.openLineageGraph).toHaveBeenCalledWith('story', 'story-1');
 
-    fireEvent.click(screen.getByTitle('Download Markdown'));
-    expect(markdownMock.exportStory).toHaveBeenCalledWith(expect.objectContaining({ id: 'story-1' }));
-    expect(markdownMock.downloadMarkdown).toHaveBeenCalledWith(
-      '# Story export',
-      'story-stories-intake-before-ideation.md',
-    );
+    expect(screen.getByTitle('Export report')).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(markdownMock.exportStory).not.toHaveBeenCalled();
+    expect(markdownMock.downloadMarkdown).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByTitle('Expand'));
     expect(screen.getByTitle('Collapse')).toBeInTheDocument();

@@ -8,6 +8,9 @@ from typing import Any
 from sqlalchemy import and_, func, select
 
 from okto_pulse.community.adapters.sqlalchemy_models import CanonicalDebt
+from okto_pulse.community.adapters.code_traceability_kg_sql import (
+    exclude_code_traceability_artifact,
+)
 from okto_pulse.core.ports.canonical_debt import CanonicalDebtRecord
 
 
@@ -46,12 +49,21 @@ def _apply(row: CanonicalDebt, record: CanonicalDebtRecord) -> None:
 
 class CommunitySqlAlchemyCanonicalDebtStore:
     async def counts_by_state(
-        self, context: Any, *, board_id: str
+        self,
+        context: Any,
+        *,
+        board_id: str,
+        include_code_traceability: bool = True,
     ) -> dict[str, int]:
+        predicates = [CanonicalDebt.board_id == board_id]
+        if not include_code_traceability:
+            predicates.append(
+                exclude_code_traceability_artifact(CanonicalDebt.artifact_type)
+            )
         rows = (
             await context.execute(
                 select(CanonicalDebt.canonical_state, func.count())
-                .where(CanonicalDebt.board_id == board_id)
+                .where(*predicates)
                 .group_by(CanonicalDebt.canonical_state)
             )
         ).all()
@@ -66,12 +78,17 @@ class CommunitySqlAlchemyCanonicalDebtStore:
         state: str | None,
         limit: int,
         offset: int,
+        include_code_traceability: bool = True,
     ) -> tuple[int, Sequence[CanonicalDebtRecord]]:
         predicates = [CanonicalDebt.board_id == board_id]
         if artifact_type:
             predicates.append(CanonicalDebt.artifact_type == artifact_type)
         if state:
             predicates.append(CanonicalDebt.canonical_state == state)
+        if not include_code_traceability:
+            predicates.append(
+                exclude_code_traceability_artifact(CanonicalDebt.artifact_type)
+            )
         where = and_(*predicates)
         total = int(
             await context.scalar(
@@ -114,9 +131,25 @@ class CommunitySqlAlchemyCanonicalDebtStore:
         return _record(row) if row is not None else None
 
     async def get(
-        self, context: Any, *, debt_id: str
+        self,
+        context: Any,
+        *,
+        debt_id: str,
+        include_code_traceability: bool = True,
     ) -> CanonicalDebtRecord | None:
-        row = await context.get(CanonicalDebt, debt_id)
+        if include_code_traceability:
+            row = await context.get(CanonicalDebt, debt_id)
+        else:
+            row = (
+                await context.execute(
+                    select(CanonicalDebt).where(
+                        CanonicalDebt.id == debt_id,
+                        exclude_code_traceability_artifact(
+                            CanonicalDebt.artifact_type
+                        ),
+                    )
+                )
+            ).scalar_one_or_none()
         return _record(row) if row is not None else None
 
     async def find_open_by_evidence(

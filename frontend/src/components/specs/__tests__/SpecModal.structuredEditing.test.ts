@@ -34,15 +34,12 @@ describe('SpecModal structured entity editing', () => {
     expect(block).not.toContain('api.updateSpec(');
   });
 
-  it('routes Markdown download through sanitized filename helper without write APIs', () => {
-    const block = sourceBlock('const md = exportSpec', "} catch {");
-
-    expect(block).toContain('exportSpec');
-    expect(block).toContain('downloadMarkdown(md, markdownFilenameForSpec(spec))');
-    expect(block).not.toContain('api.updateSpec(');
-    expect(block).not.toContain('api.createSpecEntity');
-    expect(block).not.toContain('api.updateSpecEntity');
-    expect(block).not.toContain('api.operateSpecEntity');
+  it('routes report export through the shared server-rendered dialog', () => {
+    expect(source).toContain("import { EntityExportButton } from '@/components/export'");
+    expect(source).toContain('<EntityExportButton');
+    expect(source).toContain('entityType="spec"');
+    expect(source).not.toContain('downloadMarkdown(');
+    expect(source).not.toContain('exportSpec(');
   });
 
   it('drives status actions from allowed_transitions instead of a local status flow map', () => {

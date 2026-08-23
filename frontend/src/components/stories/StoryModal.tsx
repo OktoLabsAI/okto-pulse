@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock,
-  Download,
   GitBranch,
   Link2,
   Maximize2,
@@ -24,7 +23,7 @@ import { EditableField } from '@/components/shared/EditableField';
 import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { HorizontalOverflowNav } from '@/components/shared/HorizontalOverflowNav';
 import { openLineageGraph } from '@/components/traceability';
-import { downloadMarkdown, exportStory, slugify } from '@/lib/exportMarkdown';
+import { EntityExportButton } from '@/components/export';
 import type {
   IdeationStatus,
   IdeationSummary,
@@ -375,12 +374,6 @@ export function StoryModal({
   const handleOpenLineage = () => {
     if (!story) return;
     openLineageGraph('story', story.id);
-  };
-
-  const handleDownloadMarkdown = () => {
-    if (!story) return;
-    const filename = `story-${slugify(story.title || story.id)}.md`;
-    downloadMarkdown(exportStory(story), filename);
   };
 
   const handleConvert = async () => {
@@ -780,14 +773,14 @@ export function StoryModal({
                 >
                   <GitBranch size={18} />
                 </button>
-                <button
-                  type="button"
-                  onClick={handleDownloadMarkdown}
+                <EntityExportButton
+                  boardId={boardId}
+                  entityType="story"
+                  entityId={story.id}
+                  entityTitle={story.title}
+                  iconSize={18}
                   className="rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-blue-600 dark:hover:bg-gray-700 dark:hover:text-blue-300"
-                  title="Download Markdown"
-                >
-                  <Download size={18} />
-                </button>
+                />
                 <button
                   type="button"
                   onClick={handleRefresh}

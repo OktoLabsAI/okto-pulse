@@ -1,176 +1,525 @@
-/**
- * SpecValidationHistoryPanel — reverse chronological display of spec validation records.
- *
- * Fetches history via api.listSpecValidations and renders each record with:
- * - outcome badge (SUCCESS / FAILED)
- * - active badge on the current_validation_id pointer
- * - 3 scores with threshold comparison
- * - expand/collapse for full justifications
- * - reviewer + timestamp
- */
-
-import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronUp, Check, X } from 'lucide-react';
+import { useEffect, useId, useRef, useState } from 'react';
+import { Check, ChevronDown, ChevronUp, X } from 'lucide-react';
 import toast from 'react-hot-toast';
+
+import { ValidationCycleStatusBadge } from '@/components/validation-cycle/ValidationCyclePrimitives';
 import { useDashboardApi } from '@/services/api';
-import type { SpecValidation, SpecValidationList } from '@/types';
+import { measureValidationWorkspaceInteraction } from '@/services/validation-workspace-telemetry';
+import type {
+  SpecValidation,
+  SpecValidationList,
+  SpecValidationPinpoint,
+} from '@/types';
 
 interface SpecValidationHistoryPanelProps {
   specId: string;
-  refreshKey?: number; // bump to force re-fetch
+  refreshKey?: number;
+  currentEdition?: number;
+  view?: 'all' | 'current' | 'previous';
+  /** Avoids a history request when the bounded current summary is available. */
+  currentValidation?: SpecValidation | null;
+  /** Human-readable Spec content keyed by stable field, child, or Q&A id. */
+  anchorTexts?: Readonly<Record<string, string>>;
 }
 
-export function SpecValidationHistoryPanel({ specId, refreshKey = 0 }: SpecValidationHistoryPanelProps) {
+function belongsToCurrentEdition(
+  validation: SpecValidation,
+  currentEdition?: number,
+): boolean {
+  if (validation.edition == null) return false;
+  if (currentEdition === undefined) return validation.active === true;
+  return validation.edition === currentEdition
+    && (
+      validation.lifecycle_state === 'current'
+      || validation.active === true
+    );
+}
+
+export function SpecValidationHistoryPanel({
+  specId,
+  refreshKey = 0,
+  currentEdition,
+  view = 'all',
+  currentValidation,
+  anchorTexts,
+}: SpecValidationHistoryPanelProps) {
   const api = useDashboardApi();
-  // `useDashboardApi()` rebuilds its object every render, so keeping `api`
-  // in the effect deps would loop forever: effect fires → setLoading(true)
-  // → re-render → new api ref → cleanup cancels the in-flight request →
-  // effect fires again → repeat. Pin the latest api to a ref and depend
-  // only on the stable inputs (specId, refreshKey).
   const apiRef = useRef(api);
   apiRef.current = api;
-
   const [data, setData] = useState<SpecValidationList | null>(null);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [offset, setOffset] = useState(0);
 
   useEffect(() => {
+    setOffset(0);
+    setData(null);
+  }, [currentEdition, specId, view]);
+
+  useEffect(() => {
+    if (view === 'current' && currentValidation !== undefined) {
+      setData({
+        spec_id: specId,
+        current_validation_id: currentValidation?.id ?? null,
+        validations: currentValidation ? [currentValidation] : [],
+      });
+      setLoading(false);
+      return undefined;
+    }
     let cancelled = false;
+    const controller = new AbortController();
     setLoading(true);
-    apiRef.current.listSpecValidations(specId)
-      .then((res: SpecValidationList) => {
-        if (!cancelled) setData(res);
+    const request = view === 'current'
+      ? apiRef.current.getCurrentSpecValidation(specId, controller.signal)
+          .then((summary) => ({
+            spec_id: specId,
+            current_validation_id: summary.current_validation?.id ?? null,
+            validations: summary.current_validation
+              ? [summary.current_validation]
+              : [],
+          }))
+      : apiRef.current.listSpecValidations(
+          specId,
+          view === 'previous'
+            ? {
+                lifecycleState: 'previous',
+                offset,
+                limit: 25,
+                signal: controller.signal,
+              }
+            : undefined,
+        );
+    request
+      .then((result) => {
+        if (!cancelled) {
+          setData((previousData) => offset > 0 && previousData
+            ? {
+                ...result,
+                validations: [
+                  ...previousData.validations,
+                  ...result.validations,
+                ],
+              }
+            : result);
+        }
       })
-      .catch((e: any) => {
-        if (!cancelled) toast.error(e?.message || 'Failed to load validation history');
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : 'Failed to load validation results',
+          );
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
-    return () => { cancelled = true; };
-  }, [specId, refreshKey]);
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [currentEdition, currentValidation, offset, refreshKey, specId, view]);
 
-  if (loading) {
-    return <div className="text-xs text-gray-500 dark:text-gray-400 p-3">Loading validation history…</div>;
+  if (loading && !data) {
+    return (
+      <p role="status" className="p-3 text-xs text-surface-500 dark:text-surface-400">
+        Loading validation results…
+      </p>
+    );
   }
 
-  if (!data || data.validations.length === 0) {
+  const validations = data?.validations ?? [];
+  const current = validations.filter((validation) =>
+    belongsToCurrentEdition(validation, currentEdition)
+  );
+  const previous = validations.filter((validation) =>
+    !belongsToCurrentEdition(validation, currentEdition)
+  );
+  const visible = view === 'current'
+    ? current
+    : view === 'previous'
+      ? previous
+      : [...current, ...previous];
+
+  if (visible.length === 0) {
     return (
-      <div className="text-xs text-gray-400 dark:text-gray-500 p-3 italic">
-        No validation records yet. Submit a spec validation to begin tracking.
-      </div>
+      <p className="rounded-lg border border-dashed border-surface-300 p-3 text-xs text-surface-500 dark:border-surface-700 dark:text-surface-400">
+        {view === 'current'
+          ? `No current validation result${currentEdition ? ` for Edition ${currentEdition}` : ''}.`
+          : view === 'previous'
+            ? 'No previous validation results are available.'
+            : 'No validation results are available yet.'}
+      </p>
     );
   }
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <h4 className="text-xs font-semibold text-gray-800 dark:text-gray-200 uppercase tracking-wide">
-          Validation History
-        </h4>
-        <span className="text-[10px] text-gray-500 dark:text-gray-400">
-          {data.validations.length} {data.validations.length === 1 ? 'attempt' : 'attempts'}
-          {data.current_validation_id ? ' • 1 active' : ''}
-        </span>
-      </div>
-      <div className="space-y-2 max-h-[500px] overflow-y-auto">
-        {data.validations.map((v) => (
-          <ValidationRecord
-            key={v.id}
-            validation={v}
-            expanded={expandedId === v.id}
-            onToggleExpand={() => setExpandedId(expandedId === v.id ? null : v.id)}
-          />
-        ))}
-      </div>
+    <div className="space-y-2" data-testid={`spec-validation-results-${view}`}>
+      {visible.map((validation, index) => (
+        <ValidationRecord
+          key={validation.id}
+          validation={validation}
+          current={belongsToCurrentEdition(validation, currentEdition)}
+          currentEdition={currentEdition}
+          attemptNumber={visible.length - index}
+          expanded={expandedId === validation.id}
+          onToggleExpand={() => setExpandedId(
+            expandedId === validation.id ? null : validation.id,
+          )}
+          anchorTexts={anchorTexts}
+        />
+      ))}
+      {view === 'previous' && data?.has_more && (
+        <button
+          type="button"
+          onClick={() => setOffset((value) => value + 25)}
+          disabled={loading}
+          className="mt-2 inline-flex min-h-8 items-center rounded-lg border border-surface-300 bg-white px-3 text-xs font-medium text-surface-700 hover:bg-surface-50 disabled:opacity-50 dark:border-surface-600 dark:bg-surface-800 dark:text-surface-200"
+        >
+          {loading ? 'Loading…' : 'Load more previous validations'}
+        </button>
+      )}
     </div>
   );
 }
 
 interface ValidationRecordProps {
   validation: SpecValidation;
+  current: boolean;
+  currentEdition?: number;
+  attemptNumber: number;
   expanded: boolean;
   onToggleExpand: () => void;
+  anchorTexts?: Readonly<Record<string, string>>;
 }
 
-function ValidationRecord({ validation, expanded, onToggleExpand }: ValidationRecordProps) {
-  const isSuccess = validation.outcome === 'success';
-  const isActive = validation.active === true;
-  const isRejectedByReviewer = validation.recommendation === 'reject';
-
-  const outcomeBadge = isSuccess
-    ? 'bg-green-600 text-white'
-    : isRejectedByReviewer
-    ? 'bg-gray-600 text-white'
-    : 'bg-red-600 text-white';
-
-  const borderColor = isActive
-    ? 'border-2 border-green-400 dark:border-green-700 bg-green-50 dark:bg-green-900/10'
-    : isSuccess
-    ? 'border border-green-200 dark:border-green-800 bg-green-50/30 dark:bg-green-900/5'
-    : 'border border-red-200 dark:border-red-800 bg-red-50/30 dark:bg-red-900/5';
-
+function ValidationRecord({
+  validation,
+  current,
+  currentEdition,
+  attemptNumber,
+  expanded,
+  onToggleExpand,
+  anchorTexts,
+}: ValidationRecordProps) {
+  const detailsId = useId();
+  const isSuccess = validation.outcome !== 'failed';
   const thresholds = validation.resolved_thresholds;
+  const formalResult = typeof validation.score === 'number'
+    && Boolean(validation.summary?.trim());
+  const canonicalDimensions = typeof validation.confidence === 'number'
+    && typeof validation.clarity === 'number'
+    && typeof validation.assertiveness === 'number'
+    && typeof validation.decidability === 'number'
+    && typeof validation.ambiguity === 'number';
+  const legacyDimensions = typeof validation.completeness === 'number'
+    && typeof validation.assertiveness === 'number'
+    && typeof validation.ambiguity === 'number';
+  const editionLabel = validation.edition == null
+    ? 'Legacy'
+    : `Edition ${validation.edition}`;
+  const historyLabel = current
+    ? null
+    : validation.edition == null
+      ? 'Historical result'
+      : currentEdition !== undefined && validation.edition === currentEdition
+        ? 'Superseded attempt'
+        : 'Previous edition';
 
   return (
-    <div className={`rounded-lg p-3 ${borderColor}`}>
-      <div className="flex items-start justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${outcomeBadge}`}>
-            {validation.outcome.toUpperCase()}
-          </span>
-          {isActive && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-600 text-white font-bold">ACTIVE</span>
-          )}
-          <span className="text-xs font-medium text-gray-900 dark:text-white font-mono">{validation.id}</span>
+    <article
+      className={`rounded-xl border p-4 ${
+        current
+          ? isSuccess
+            ? 'border-emerald-300 bg-emerald-50/60 dark:border-emerald-800 dark:bg-emerald-950/20'
+            : 'border-red-300 bg-red-50/60 dark:border-red-800 dark:bg-red-950/20'
+          : 'border-surface-200 bg-surface-50/70 dark:border-surface-700 dark:bg-surface-800/40'
+      }`}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-semibold text-surface-900 dark:text-white">
+              {editionLabel}
+            </span>
+            {!current && (
+              <span className="text-[10px] text-surface-500 dark:text-surface-400">
+                {historyLabel} · Attempt {attemptNumber}
+              </span>
+            )}
+            <ValidationCycleStatusBadge
+              state={isSuccess ? 'passed' : 'failed'}
+              label={isSuccess ? 'Passed' : 'Failed'}
+            />
+          </div>
+          <p className="mt-1 text-[11px] text-surface-500 dark:text-surface-400">
+            Evaluated {new Date(validation.created_at).toLocaleString()} by{' '}
+            {validation.reviewer_name || validation.reviewer_id}
+          </p>
         </div>
-        <span className="text-[10px] text-gray-500 dark:text-gray-400">
-          {new Date(validation.created_at).toLocaleString()}
-        </span>
+        {canonicalDimensions ? (
+          <span className="text-xs font-semibold text-violet-700 dark:text-violet-300">
+            Five-metric assessment
+          </span>
+        ) : formalResult ? (
+          <span className="text-xs font-semibold text-violet-700 dark:text-violet-300">
+            Score {validation.score}/100
+          </span>
+        ) : validation.recommendation ? (
+          <span className={`text-xs font-semibold ${
+            validation.recommendation === 'approve'
+              ? 'text-emerald-700 dark:text-emerald-300'
+              : 'text-red-700 dark:text-red-300'
+          }`}>
+            {validation.recommendation === 'approve' ? 'Approved' : 'Rejected'}
+          </span>
+        ) : null}
       </div>
-      <div className="text-[11px] text-gray-600 dark:text-gray-400 mb-2">
-        by <span className="font-medium text-gray-800 dark:text-gray-200">{validation.reviewer_name || validation.reviewer_id}</span>
-        {' • recommendation='}
-        <span className={validation.recommendation === 'approve' ? 'text-green-600 font-medium' : 'text-red-600 font-medium'}>
-          {validation.recommendation}
-        </span>
-      </div>
-      <div className="mb-3 grid grid-cols-1 gap-5 sm:grid-cols-3">
-        <ScoreCell dimension="completeness" label="Completeness" value={validation.completeness} threshold={thresholds?.min_spec_completeness} direction="min" />
-        <ScoreCell dimension="assertiveness" label="Assertiveness" value={validation.assertiveness} threshold={thresholds?.min_spec_assertiveness} direction="min" />
-        <ScoreCell dimension="ambiguity" label="Ambiguity" value={validation.ambiguity} threshold={thresholds?.max_spec_ambiguity} direction="max" />
-      </div>
-      {validation.threshold_violations.length > 0 && (
-        <div className="bg-red-100 dark:bg-red-900/30 rounded p-1.5 mb-2">
-          <div className="text-[10px] font-semibold text-red-700 dark:text-red-300">Threshold violations</div>
-          <ul className="text-[10px] text-red-600 dark:text-red-400 list-disc list-inside">
-            {validation.threshold_violations.map((v, i) => <li key={i}>{v}</li>)}
+
+      {canonicalDimensions ? (
+        <div className="my-4 grid grid-cols-2 gap-5 sm:grid-cols-3 lg:grid-cols-5">
+          <ScoreCell
+            dimension="confidence"
+            label="Confidence"
+            value={validation.confidence!}
+            threshold={thresholds?.min_spec_confidence}
+            direction="min"
+          />
+          <ScoreCell
+            dimension="clarity"
+            label="Clarity"
+            value={validation.clarity!}
+            threshold={thresholds?.min_spec_clarity}
+            direction="min"
+          />
+          <ScoreCell
+            dimension="assertiveness"
+            label="Assertiveness"
+            value={validation.assertiveness!}
+            threshold={thresholds?.min_spec_assertiveness}
+            direction="min"
+          />
+          <ScoreCell
+            dimension="decidability"
+            label="Decidability"
+            value={validation.decidability!}
+            threshold={thresholds?.min_spec_decidability}
+            direction="min"
+          />
+          <ScoreCell
+            dimension="ambiguity"
+            label="Ambiguity"
+            value={validation.ambiguity!}
+            threshold={thresholds?.max_spec_ambiguity}
+            direction="max"
+          />
+        </div>
+      ) : formalResult ? (
+        <div className="my-4 flex justify-center">
+          <ScoreCell
+            dimension="overall"
+            label="Validation score"
+            value={validation.score!}
+            direction="min"
+          />
+        </div>
+      ) : legacyDimensions ? (
+        <div className="my-4 grid grid-cols-1 gap-5 sm:grid-cols-3">
+          <ScoreCell
+            dimension="completeness"
+            label="Completeness"
+            value={validation.completeness!}
+            threshold={thresholds?.min_spec_completeness}
+            direction="min"
+          />
+          <ScoreCell
+            dimension="assertiveness"
+            label="Assertiveness"
+            value={validation.assertiveness!}
+            threshold={thresholds?.min_spec_assertiveness}
+            direction="min"
+          />
+          <ScoreCell
+            dimension="ambiguity"
+            label="Ambiguity"
+            value={validation.ambiguity!}
+            threshold={thresholds?.max_spec_ambiguity}
+            direction="max"
+          />
+        </div>
+      ) : null}
+
+      {(validation.threshold_violations?.length ?? 0) > 0 && (
+        <div className="mb-3 rounded-lg border border-red-200 bg-red-50 p-2.5 dark:border-red-800 dark:bg-red-950/25">
+          <p className="text-[11px] font-semibold text-red-700 dark:text-red-300">
+            Thresholds needing attention
+          </p>
+          <ul className="mt-1 list-inside list-disc text-[10px] text-red-600 dark:text-red-400">
+            {validation.threshold_violations!.map((violation) => (
+              <li key={violation}>{violation}</li>
+            ))}
           </ul>
         </div>
       )}
-      <div className="text-[11px] text-gray-700 dark:text-gray-300 italic border-l-2 border-gray-300 dark:border-gray-600 pl-2">
-        {validation.general_justification}
-      </div>
-      <button
-        onClick={onToggleExpand}
-        className="text-[10px] text-violet-600 hover:text-violet-700 mt-2 flex items-center gap-1"
-      >
-        {expanded ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
-        {expanded ? 'Hide' : 'Show'} per-dimension justifications
-      </button>
-      {expanded && (
-        <div className="mt-2 space-y-1.5 text-[11px] text-gray-600 dark:text-gray-400">
-          <div><span className="font-semibold">Completeness:</span> {validation.completeness_justification}</div>
-          <div><span className="font-semibold">Assertiveness:</span> {validation.assertiveness_justification}</div>
-          <div><span className="font-semibold">Ambiguity:</span> {validation.ambiguity_justification}</div>
-        </div>
+
+      {!canonicalDimensions && (formalResult || validation.general_justification) && (
+        <p className="border-l-2 border-surface-300 pl-3 text-xs italic text-surface-700 dark:border-surface-600 dark:text-surface-300">
+          {formalResult ? validation.summary : validation.general_justification}
+        </p>
       )}
-    </div>
+      {(canonicalDimensions || legacyDimensions) && !current && (
+        <>
+          <button
+            type="button"
+            onClick={() => measureValidationWorkspaceInteraction(
+              'validation_check',
+              expanded,
+              onToggleExpand,
+            )}
+            aria-expanded={expanded}
+            aria-controls={detailsId}
+            className="mt-3 inline-flex items-center gap-1 rounded text-[11px] font-medium text-violet-600 hover:text-violet-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-500 focus-visible:ring-offset-2 dark:text-violet-300 dark:focus-visible:ring-offset-surface-900"
+          >
+            {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+            {expanded ? 'Hide details' : 'View metric justifications'}
+          </button>
+          {expanded && (
+            <dl
+              id={detailsId}
+              className="mt-3 space-y-2 text-xs text-surface-600 dark:text-surface-300"
+            >
+              {canonicalDimensions ? (
+                <>
+                  <div><dt className="font-semibold">Confidence</dt><dd>{validation.confidence_justification}</dd></div>
+                  <div><dt className="font-semibold">Clarity</dt><dd>{validation.clarity_justification}</dd></div>
+                  <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
+                  <div><dt className="font-semibold">Decidability</dt><dd>{validation.decidability_justification}</dd></div>
+                  <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
+                </>
+              ) : (
+                <>
+                  <div><dt className="font-semibold">Completeness</dt><dd>{validation.completeness_justification}</dd></div>
+                  <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
+                  <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
+                </>
+              )}
+            </dl>
+          )}
+        </>
+      )}
+      {(canonicalDimensions || legacyDimensions) && current && (
+        <MetricJustifications
+          validation={validation}
+          canonicalDimensions={canonicalDimensions}
+        />
+      )}
+
+      {(validation.pinpoints?.length ?? 0) > 0 && (
+        <section className="mt-4 space-y-2" aria-label="Pinpoint findings">
+          <h4 className="text-xs font-semibold text-surface-800 dark:text-surface-100">
+            Pinpoint findings
+          </h4>
+          <ol className="space-y-2">
+            {validation.pinpoints!.map((pinpoint, index) => {
+              const anchorReference = pinpoint.anchor_ref?.trim() || null;
+              const anchorText = resolvePinpointAnchorText(
+                pinpoint.anchor_type,
+                anchorReference,
+                anchorTexts,
+              );
+              return (
+              <li key={`${pinpoint.metric}-${pinpoint.anchor_type}-${pinpoint.anchor_ref ?? index}`} className="rounded-lg border border-surface-200 bg-white p-3 dark:border-surface-700 dark:bg-surface-900/50">
+                <div className="flex flex-wrap items-start gap-2">
+                  <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold uppercase text-violet-700 dark:bg-violet-950/50 dark:text-violet-300">
+                    {pinpoint.metric}
+                  </span>
+                  <p
+                    data-testid="spec-validation-pinpoint-target"
+                    className="min-w-0 flex-1 whitespace-pre-wrap text-xs font-medium text-surface-800 dark:text-surface-100"
+                  >
+                    {anchorText}
+                    {anchorReference ? (
+                      <>
+                        {' '}
+                        <span className="font-mono text-[11px] font-normal text-surface-500 dark:text-surface-400">
+                          ({anchorReference})
+                        </span>
+                      </>
+                    ) : null}
+                  </p>
+                </div>
+                <p className="mt-2 whitespace-pre-wrap text-xs text-surface-700 dark:text-surface-300">
+                  {pinpoint.detail}
+                </p>
+              </li>
+              );
+            })}
+          </ol>
+        </section>
+      )}
+    </article>
   );
 }
 
+function MetricJustifications({
+  validation,
+  canonicalDimensions,
+}: {
+  validation: SpecValidation;
+  canonicalDimensions: boolean;
+}) {
+  return (
+    <dl className="mt-3 space-y-2 text-xs text-surface-600 dark:text-surface-300">
+      {canonicalDimensions ? (
+        <>
+          <div><dt className="font-semibold">Confidence</dt><dd>{validation.confidence_justification}</dd></div>
+          <div><dt className="font-semibold">Clarity</dt><dd>{validation.clarity_justification}</dd></div>
+          <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
+          <div><dt className="font-semibold">Decidability</dt><dd>{validation.decidability_justification}</dd></div>
+          <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
+        </>
+      ) : (
+        <>
+          <div><dt className="font-semibold">Completeness</dt><dd>{validation.completeness_justification}</dd></div>
+          <div><dt className="font-semibold">Assertiveness</dt><dd>{validation.assertiveness_justification}</dd></div>
+          <div><dt className="font-semibold">Ambiguity</dt><dd>{validation.ambiguity_justification}</dd></div>
+        </>
+      )}
+    </dl>
+  );
+}
+
+function resolvePinpointAnchorText(
+  anchorType: SpecValidationPinpoint['anchor_type'],
+  anchorRef: string | null,
+  anchorTexts?: Readonly<Record<string, string>>,
+): string {
+  if (anchorType === 'whole_artifact') return 'Whole Spec';
+  if (!anchorRef) return 'Referenced Spec item';
+  const direct = anchorTexts?.[anchorRef];
+  if (direct) return direct;
+  const stableId = anchorRef.split('.').at(-1);
+  const qualified = stableId ? anchorTexts?.[stableId] : undefined;
+  if (qualified) return qualified;
+  if (anchorType === 'field') {
+    return anchorRef
+      .split('_')
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
+  }
+  return 'Referenced item is no longer available in the current Spec';
+}
+
 interface ScoreCellProps {
-  dimension: 'completeness' | 'assertiveness' | 'ambiguity';
+  dimension:
+    | 'overall'
+    | 'confidence'
+    | 'clarity'
+    | 'completeness'
+    | 'assertiveness'
+    | 'decidability'
+    | 'ambiguity';
   label: string;
   value: number;
   threshold?: number | null;
@@ -187,39 +536,37 @@ function ScoreCell({
   const passes = threshold == null
     ? null
     : direction === 'min'
-    ? value >= threshold
-    : value <= threshold;
+      ? value >= threshold
+      : value <= threshold;
   const ringTone = passes == null
     ? 'border-blue-400 text-blue-700 dark:border-blue-500 dark:text-blue-300'
     : passes
-    ? 'border-emerald-400 text-emerald-700 dark:border-emerald-500 dark:text-emerald-300'
-    : 'border-red-400 text-red-700 dark:border-red-500 dark:text-red-300';
+      ? 'border-emerald-400 text-emerald-700 dark:border-emerald-500 dark:text-emerald-300'
+      : 'border-red-400 text-red-700 dark:border-red-500 dark:text-red-300';
   const thresholdLabel = threshold == null
     ? 'No board threshold'
     : `${direction === 'min' ? 'Minimum' : 'Maximum'} ${threshold}`;
-  const resultLabel = passes == null
-    ? ''
-    : passes
-      ? ', threshold met'
-      : ', threshold not met';
+  const accessibleMetricLabel = label.toLowerCase().endsWith('score')
+    ? label
+    : `${label} score`;
 
   return (
     <div className="flex min-w-0 flex-col items-center text-center">
       <div
         role="img"
-        aria-label={`${label} score ${value} out of 100, ${thresholdLabel}${resultLabel}`}
+        aria-label={`${accessibleMetricLabel} ${value} out of 100, ${thresholdLabel}`}
         data-testid={`spec-validation-score-${dimension}`}
         className={`flex h-20 w-20 items-center justify-center rounded-full border-4 ${ringTone}`}
       >
         <span aria-hidden="true" className="text-2xl font-bold leading-none">
           {value}
-          <span className="ml-0.5 text-sm font-semibold text-gray-400">/100</span>
+          <span className="ml-0.5 text-sm font-semibold text-surface-400">/100</span>
         </span>
       </div>
-      <p className="mt-2 text-xs font-semibold text-gray-700 dark:text-gray-200">
+      <p className="mt-2 text-xs font-semibold text-surface-700 dark:text-surface-200">
         {label}
       </p>
-      <p className="mt-1 flex items-center gap-1 text-[10px] text-gray-500 dark:text-gray-400">
+      <p className="mt-1 flex items-center gap-1 text-[10px] text-surface-500 dark:text-surface-400">
         {thresholdLabel}
         {passes === true && <Check size={11} className="text-emerald-600 dark:text-emerald-400" aria-hidden="true" />}
         {passes === false && <X size={11} className="text-red-600 dark:text-red-400" aria-hidden="true" />}

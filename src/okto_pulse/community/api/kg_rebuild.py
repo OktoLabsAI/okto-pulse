@@ -1,22 +1,20 @@
 """REST endpoints for KG rebuild preflight + confirm (KG-02.1 + KG-02.2).
 
-Lifecycle (val_d0da4a75 rework):
+Online lifecycle (recovery-only enforcement):
 
     POST /api/v1/kg/rebuild/preflight  →  RebuildPreflightResponse
-                                           includes manifest_ref + source_set_hash
-                                           (manifest is PERSISTED here, immutably)
-    POST /api/v1/kg/rebuild/confirm    →  RebuildConfirmResponse
-                                           LOADS the manifest_ref + validates
-                                           preflight_hash matches; does NOT
-                                           re-enumerate or build a new manifest.
+                                           diagnostic only; no manifest write
+    POST /api/v1/kg/rebuild/confirm    →  HTTP 409
+                                           recovery_execution_required
+    POST /api/v1/kg/rebuild/run        →  HTTP 409
+                                           recovery_execution_required
 
-This closes the lifecycle gap: every preflight result lands in a
-durable, immutable manifest, and every confirm token is bound to the
-same manifest_ref the operator saw on screen.
+Confirmation and execution are owned by the local one-shot recovery runner
+while Pulse and SDLC writers are offline; online REST/MCP never persist a
+manifest, issue a confirmation, or consume one.
 
-TR13 invariant still holds: /preflight is READ-ONLY against KG storage
-— writing the manifest JSON to the rebuild dir is the only side effect,
-and it never touches graph.lbug or discovery.lbug.
+TR13 invariant: online /preflight is read-only across graph, relational and
+rebuild-artifact storage.
 
 FR10 — per-board scope (community edition):
     Access control is OWNERSHIP + MEMBERSHIP (shared boards).  realm_id is
@@ -29,25 +27,22 @@ FR10 — per-board scope (community edition):
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from starlette.concurrency import run_in_threadpool
 
-from okto_pulse.community.api.deps import get_unit_of_work, scheduler_control_from_request
+from okto_pulse.community.api.deps import (
+    get_unit_of_work,
+    scheduler_control_from_request,
+)
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.community.api.kg_health_probe import get_kg_health
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.application.kg_rebuild import (
     REBUILD_REJECT_STATES,
-    build_rebuild_step_adapter as _build_rebuild_step_adapter,
     build_source_store as _build_source_store,
-    provider_missing_payload as _provider_missing_payload,
     refuse_rebuild_if_quarantined as _core_refuse_rebuild_if_quarantined,
-)
-from okto_pulse.core.application.kg_runtime_access import (
-    require_rebuild_audit_artifact_store,
-    resolve_graph_lifecycle,
 )
 from okto_pulse.core.application.use_cases.board_access import load_accessible_board
 from okto_pulse.core.application.use_cases.authorize_operation import (
@@ -65,6 +60,44 @@ logger = logging.getLogger("okto_pulse.api.kg_rebuild")
 _REBUILD_REJECT_STATES = REBUILD_REJECT_STATES
 
 router = APIRouter()
+
+_RECOVERY_EXECUTION_REQUIRED = "recovery_execution_required"
+_RECOVERY_EXECUTOR_ACTION = "run_local_offline_kg_recovery_executor"
+_RECOVERY_EXECUTOR_REMEDIATION = (
+    "Stop Pulse/API/MCP and SDLC writers. Run the installed "
+    "okto-pulse-kg-recovery-only command in three stages: inspect the live "
+    "data home, rehearse against a physical isolated copy while writing a "
+    "rehearsal receipt, then within 2 hours execute against that exact live "
+    "home with the single-use receipt and reviewed install fingerprint. See "
+    "okto-pulse://reference/kg-health; never retry confirm/run online."
+)
+
+
+def _recovery_execution_required_detail() -> dict[str, str]:
+    return {
+        "error": _RECOVERY_EXECUTION_REQUIRED,
+        "outcome": _RECOVERY_EXECUTION_REQUIRED,
+        "reason": (
+            "Board KG rebuild is supported only by the local one-shot recovery "
+            "executor while Pulse and SDLC source writers are offline."
+        ),
+        "execution_mode": "recovery_only_offline",
+        "operator_action": _RECOVERY_EXECUTOR_ACTION,
+        "remediation": _RECOVERY_EXECUTOR_REMEDIATION,
+    }
+
+
+class RecoveryExecutionRequiredDetail(BaseModel):
+    error: Literal["recovery_execution_required"]
+    outcome: Literal["recovery_execution_required"]
+    reason: str
+    execution_mode: Literal["recovery_only_offline"]
+    operator_action: Literal["run_local_offline_kg_recovery_executor"]
+    remediation: str
+
+
+class RecoveryExecutionRequiredEnvelope(BaseModel):
+    detail: RecoveryExecutionRequiredDetail
 
 
 async def _refuse_rebuild_if_quarantined(
@@ -109,12 +142,15 @@ async def _require_board_access(
     """
     actor = RESTAdapterContract.actor(user_id, board_id=board_id)
     allowed = {"editor", "admin"} if write else None
-    if await load_accessible_board(
-        db,
-        board_id,
-        actor,
-        allowed_share_permissions=allowed,
-    ) is None:
+    if (
+        await load_accessible_board(
+            db,
+            board_id,
+            actor,
+            allowed_share_permissions=allowed,
+        )
+        is None
+    ):
         raise HTTPException(status_code=404, detail="Board not found")
 
 
@@ -142,15 +178,17 @@ async def _require_rebuild_authority(
 
 
 class RebuildPreflightResponse(BaseModel):
-    """Frozen response shape exposed by /api/v1/kg/rebuild/preflight.
+    """Diagnostic response exposed by /api/v1/kg/rebuild/preflight.
 
-    val_d0da4a75 rework: now includes ``manifest_ref`` and
-    ``source_set_hash`` — preflight is the manifest-issuance point.
-    The frontend MUST echo these back to /confirm unchanged.
+    The original preflight classification is retained in
+    ``preflight_outcome``. Online callers always receive the bounded
+    ``diagnostic_complete`` outcome and are directed to the local offline
+    executor; no online manifest or confirmation binding is issued.
     """
 
     board_id: str
     outcome: str
+    preflight_outcome: str
     action_required: str
     reason: str | None = None
     base_state: str
@@ -170,9 +208,12 @@ class RebuildPreflightResponse(BaseModel):
     generated_at: str
     rebuild_status: str = "idle"
     operational_substatus: str = ""
-    # val_d0da4a75 #1: manifest is built and persisted at preflight time.
-    manifest_ref: str
-    source_set_hash: str
+    # Online preflight is diagnostic and never persists a source manifest.
+    manifest_ref: str | None = None
+    source_set_hash: str | None = None
+    execution_mode: str = "recovery_only_offline"
+    operator_action: str = _RECOVERY_EXECUTOR_ACTION
+    remediation: str = _RECOVERY_EXECUTOR_REMEDIATION
 
 
 @router.post("/kg/rebuild/preflight", response_model=RebuildPreflightResponse)
@@ -182,11 +223,12 @@ async def post_rebuild_preflight(
     user_id: str = Depends(require_user),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> RebuildPreflightResponse:
-    """Run preflight + persist the immutable source manifest. READ-ONLY (TR13).
+    """Run a diagnostic preflight without persisting rebuild artifacts.
 
-    The manifest_ref returned here is the same one /confirm consumes —
-    /confirm NEVER recomputes a manifest, so the operator's preflight
-    view is the source of truth bound to the confirmation token.
+    The manifest is diagnostic only for online callers. The governed local
+    one-shot executor performs fresh internal authorization or resumes the one
+    verified active receipt before a governed fresh run, after proving Pulse
+    and SDLC writers are offline.
 
     FR10 — scope per-board: verifies the authenticated user has access
     to the requested board before running the preflight. Missing and
@@ -201,10 +243,7 @@ async def post_rebuild_preflight(
         RebuildHealthSummary,
         RebuildSourceSummary,
     )
-    from okto_pulse.core.kg.rebuild_sources import (
-        KGRebuildSourceManifest,
-        RebuildSourceEnumerator,
-    )
+    from okto_pulse.core.kg.rebuild_sources import RebuildSourceEnumerator
 
     if not board_id:
         raise HTTPException(status_code=400, detail="board_id is required")
@@ -251,11 +290,9 @@ async def post_rebuild_preflight(
             current_kg_generation_id=_raw_health.get("current_kg_generation_id"),
         )
 
-    # 2. Enumerate real sources via the injected source store. /preflight
-    # now drives the SAME enumerator the manifest is built from — no
-    # more divergence with /confirm. The preflight service consumes a
-    # RebuildSourceSummary (slim view); the full source_set is kept
-    # for the manifest builder below.
+    # 2. Enumerate real sources via the injected source store. Online callers
+    # receive bounded diagnostics only; the offline one-shot independently
+    # repeats enumeration before building its own immutable manifest.
     # bug b4c6920c fix: real SQLite-backed source store (was empty stub).
     enumerator = RebuildSourceEnumerator(source_store=_build_source_store())
     source_set = enumerator.enumerate(board_id=board_id)
@@ -268,9 +305,7 @@ async def post_rebuild_preflight(
             canonical_source_count=source_set.canonical_source_count,
             working_source_count=source_set.working_source_count,
             skipped_by_maturity_count=source_set.skipped_by_maturity_count,
-            skipped_expired_working_count=(
-                source_set.skipped_expired_working_count
-            ),
+            skipped_expired_working_count=(source_set.skipped_expired_working_count),
             legacy_unknown_count=source_set.legacy_unknown_count,
             layer_counts=source_set.layer_counts,
             source_partition_counts=source_set.source_partition_counts,
@@ -282,17 +317,15 @@ async def post_rebuild_preflight(
     )
     result = service.run(board_id=board_id)
 
-    # 3. Persist the immutable manifest bound to this preflight_hash.
-    artifact_store = require_rebuild_audit_artifact_store()
-    manifest_store = KGRebuildSourceManifest(artifact_store=artifact_store)
-    manifest = manifest_store.build(
-        source_set=source_set,
-        preflight_hash=result.preflight_hash,
-    )
-
     payload = result.to_dict()
-    payload["manifest_ref"] = manifest.manifest_ref
-    payload["source_set_hash"] = manifest.source_set_hash
+    payload["preflight_outcome"] = payload.get("outcome", result.outcome)
+    payload["outcome"] = "diagnostic_complete"
+    payload["manifest_ref"] = None
+    payload["source_set_hash"] = None
+    payload["action_required"] = _RECOVERY_EXECUTOR_ACTION
+    payload["execution_mode"] = "recovery_only_offline"
+    payload["operator_action"] = _RECOVERY_EXECUTOR_ACTION
+    payload["remediation"] = _RECOVERY_EXECUTOR_REMEDIATION
     return RebuildPreflightResponse(**payload)
 
 
@@ -300,11 +333,10 @@ async def post_rebuild_preflight(
 
 
 class RebuildConfirmRequest(BaseModel):
-    """Body of POST /api/v1/kg/rebuild/confirm.
+    """Compatibility request shape for the denied online confirm surface.
 
-    Bound to the manifest_ref + preflight_hash returned by /preflight.
-    The server LOADS the manifest by ref; it does NOT enumerate fresh
-    sources or build a new manifest.
+    The values are syntax-checked but are never loaded, persisted, or passed
+    to the one-shot executor. That executor creates its own bindings offline.
     """
 
     board_id: str = Field(..., min_length=1)
@@ -313,24 +345,27 @@ class RebuildConfirmRequest(BaseModel):
     manifest_ref: str = Field(..., min_length=8)
 
 
-class RebuildConfirmResponse(BaseModel):
-    confirmation_id: str
-    manifest_ref: str
-    source_set_hash: str
-    expires_at: str
-
-
-@router.post("/kg/rebuild/confirm", response_model=RebuildConfirmResponse)
+@router.post(
+    "/kg/rebuild/confirm",
+    status_code=409,
+    response_model=None,
+    responses={
+        409: {
+            "model": RecoveryExecutionRequiredEnvelope,
+            "description": "recovery_execution_required",
+        }
+    },
+)
 async def post_rebuild_confirm(
     body: RebuildConfirmRequest,
     user_id: str = Depends(require_user),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-) -> RebuildConfirmResponse:
-    """Bind the operator's confirmation to an existing manifest.
+) -> None:
+    """Validate the online request, then redirect to offline recovery.
 
-    val_d0da4a75 rework: loads the manifest by ref (never re-enumerates),
-    verifies the preflight_hash matches, then issues the single-use
-    token bound to the original manifest. Mismatch → HTTP 400.
+    Validates operation/hash syntax but does not load or create a manifest and
+    never issues a token online. Valid requests fail with typed HTTP 409
+    ``recovery_execution_required``.
 
     FR10 — missing and inaccessible boards both return HTTP 404.
     """
@@ -346,12 +381,8 @@ async def post_rebuild_confirm(
 
     from okto_pulse.core.kg.rebuild_confirmation import (
         CANONICAL_OPERATIONS,
-        RebuildConfirmationStore,
     )
-    from okto_pulse.core.kg.rebuild_sources import (
-        KGRebuildSourceManifest,
-        validate_preflight_hash,
-    )
+    from okto_pulse.core.kg.rebuild_sources import validate_preflight_hash
 
     if body.operation not in CANONICAL_OPERATIONS:
         raise HTTPException(
@@ -393,51 +424,9 @@ async def post_rebuild_confirm(
             },
         )
 
-    # val_d0da4a75 #1: LOAD the existing manifest. NO re-enumeration.
-    artifact_store = require_rebuild_audit_artifact_store()
-    manifest_store = KGRebuildSourceManifest(artifact_store=artifact_store)
-    manifest = manifest_store.load(body.manifest_ref)
-    if manifest is None:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "manifest_not_found",
-                "reason": "manifest_ref does not exist or is invalid",
-            },
-        )
-
-    if manifest.board_id != body.board_id:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "manifest_board_mismatch",
-                "reason": "manifest_ref belongs to a different board",
-            },
-        )
-
-    if manifest.preflight_hash != body.preflight_hash:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "preflight_hash_mismatch",
-                "reason": "preflight_hash does not match manifest binding",
-            },
-        )
-
-    confirmation_store = RebuildConfirmationStore(artifact_store=artifact_store)
-    token = confirmation_store.issue(
-        board_id=body.board_id,
-        actor_id=user_id,
-        operation=body.operation,
-        preflight_hash=body.preflight_hash,
-        manifest_ref=manifest.manifest_ref,
-    )
-
-    return RebuildConfirmResponse(
-        confirmation_id=token.confirmation_id,
-        manifest_ref=manifest.manifest_ref,
-        source_set_hash=manifest.source_set_hash,
-        expires_at=token.expires_at,
+    raise HTTPException(
+        status_code=409,
+        detail=_recovery_execution_required_detail(),
     )
 
 
@@ -453,37 +442,26 @@ class RebuildRunRequest(BaseModel):
     reason: str = Field(..., min_length=1, max_length=512)
 
 
-class RebuildRunResponse(BaseModel):
-    run_id: str
-    outcome: str
-    reason: str
-    audit_ref: str
-    previous_kg_generation_id: str | None = None
-    current_kg_generation_id: str | None = None
-    started_at: str
-    finished_at: str
-    affected_files: list[str] = Field(default_factory=list)
-    # KG-02.4 — report-first surfaces.
-    report_ref: str | None = None
-    report_id: str | None = None
-    publishable_status: str | None = None
-    promotion_outcome: str | None = None
-    operator_action: str | None = None
-    event_emitted: bool = False
-
-
-@router.post("/kg/rebuild/run", response_model=RebuildRunResponse)
+@router.post(
+    "/kg/rebuild/run",
+    status_code=409,
+    response_model=None,
+    responses={
+        409: {
+            "model": RecoveryExecutionRequiredEnvelope,
+            "description": "recovery_execution_required",
+        }
+    },
+)
 async def post_rebuild_run(
     body: RebuildRunRequest,
     user_id: str = Depends(require_user),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
-) -> RebuildRunResponse:
-    """Execute the KG rebuild under the KG-01 admin lane.
+) -> None:
+    """Reject online execution and direct the operator to offline recovery.
 
-    Consumes the confirmation token issued by /confirm. NEVER mutates
-    if confirmation is invalid, manifest drifted, or the admin lane
-    can't take the lock exclusively. Returns the run audit ref and
-    outcome.
+    Existing legacy confirmation tokens are not consumed. REST request data
+    cannot carry or mint the opaque recovery capability.
 
     FR10 — missing and inaccessible boards both return HTTP 404.
     """
@@ -497,168 +475,7 @@ async def post_rebuild_run(
         legacy_operation="kg.admin.settings_write",
     )
 
-    from okto_pulse.core.kg.rebuild_confirmation import (
-        RebuildConfirmationStore,
-    )
-    from okto_pulse.core.kg.rebuild_generation import (
-        KGGenerationPromotionGuard,
-        RebuildAuditKGGenerationRepository,
-    )
-    from okto_pulse.core.kg.rebuild_report import (
-        RebuildReportStore,
-        RebuildReportTerminalStateGuard,
-    )
-    from okto_pulse.core.kg.rebuild_service import (
-        KGRebuildService,
-    )
-    from okto_pulse.core.kg.rebuild_sources import (
-        KGRebuildSourceManifest,
-        RebuildSourceEnumerator,
-    )
-    from okto_pulse.core.kg.safe_write_lifecycle import (
-        HealthProbe,
-        KGSafeWriteLifecycle,
-        LockOwnerProbe,
-    )
-    from okto_pulse.core.kg.single_writer_lock import KGSingleWriterLock
-    from okto_pulse.core.kg.rebuild_audit import (
-        CognitivePendingMarker,
-        ConfirmationConsumptionAuditRecorder,
-        KGRebuiltEventPublisher,
-        build_kg_rebuilt_event_handler,
-    )
-
-    # Build KG-01 primitives.
-    lock = KGSingleWriterLock()
-
-    def _always_owner(board_id: str, owner_token: str) -> bool:
-        manifest = lock.inspect(board_id=board_id)
-        return manifest is not None and manifest.owner_token == owner_token
-
-    safe_lifecycle = KGSafeWriteLifecycle(
-        step_adapter=resolve_graph_lifecycle().apply_step,
-        owner_probe=LockOwnerProbe(is_active_owner=_always_owner),
-        health_probe=HealthProbe(
-            classify=lambda b, g, status, step: "at_risk"
-        ),
-    )
-
-    # bug b4c6920c fix: real source store (was empty stub).
-    source_store_fetch = _build_source_store()
-    enumerator = RebuildSourceEnumerator(source_store=source_store_fetch)
-    try:
-        artifact_store = require_rebuild_audit_artifact_store()
-    except Exception as exc:
-        from okto_pulse.core.composition import RuntimeProviderMissing
-
-        if isinstance(exc, RuntimeProviderMissing):
-            raise HTTPException(
-                status_code=503,
-                detail=_provider_missing_payload(exc),
-            ) from exc
-        raise
-
-    manifest_store_obj = KGRebuildSourceManifest(artifact_store=artifact_store)
-
-    try:
-        _step_adapter_with_sources = _build_rebuild_step_adapter(
-            manifest_store_obj=manifest_store_obj,
-        )
-    except Exception as exc:
-        from okto_pulse.core.composition import RuntimeProviderMissing
-
-        if isinstance(exc, RuntimeProviderMissing):
-            raise HTTPException(
-                status_code=503,
-                detail=_provider_missing_payload(exc),
-            ) from exc
-        raise
-
-    # bug b4c6920c fix: real event_emitter composing publisher + marker
-    # so kg.rebuilt is published AND cognitive pending is marked for the
-    # new generation (KG-02.7 wiring that was missing).
-    audit_recorder = ConfirmationConsumptionAuditRecorder(
-        artifact_store=artifact_store,
-    )
-    event_publisher = KGRebuiltEventPublisher(
-        artifact_store=artifact_store,
-    )
-    cognitive_marker = CognitivePendingMarker(
-        artifact_store=artifact_store,
-    )
-
-    def _source_resolver(event_payload):
-        manifest = manifest_store_obj.load(event_payload.get("manifest_ref", ""))
-        if manifest is None:
-            return ()
-        return tuple(row.to_dict() for row in manifest.materializable_sources)
-
-    event_handler = build_kg_rebuilt_event_handler(
-        publisher=event_publisher,
-        cognitive_marker=cognitive_marker,
-        source_resolver=_source_resolver,
-    )
-    from okto_pulse.core.kg.orphan_integrity import OrphanNodeScanner
-    orphan_scanner = OrphanNodeScanner()
-
-    service = KGRebuildService(
-        base_dir=None,
-        single_writer_lock=lock,
-        safe_write_lifecycle=safe_lifecycle,
-        quarantine_service=None,  # wired by KG-02.4 reset path
-        confirmation_store=RebuildConfirmationStore(
-            audit_recorder=audit_recorder,
-            artifact_store=artifact_store,
-        ),
-        manifest_store=manifest_store_obj,
-        source_enumerator=enumerator,
-        # bug b4c6920c: real step adapter (was _default_step_adapter stub).
-        rebuild_step_adapter=_step_adapter_with_sources,
-        # KG-02.4 — report-first terminal gate + generation promotion.
-        generation_repository=RebuildAuditKGGenerationRepository(
-            artifact_store=artifact_store
-        ),
-        promotion_guard=KGGenerationPromotionGuard,
-        report_store=RebuildReportStore(artifact_store=artifact_store),
-        terminal_state_guard=RebuildReportTerminalStateGuard,
-        # bug b4c6920c: real event handler (was no-op default).
-        event_emitter=event_handler,
-        orphan_scan_provider=lambda board_id, generation_id: orphan_scanner.scan(
-            board_id=board_id,
-            generation_id=generation_id,
-        ),
-        artifact_store=artifact_store,
-    )
-
-    # `KGRebuildService.run()` is synchronous and the rebuild step now waits
-    # for the async consolidation worker to drain the board queue. Running it
-    # directly inside this async endpoint would block the event loop and starve
-    # the very worker we are waiting for.
-    result = await run_in_threadpool(
-        service.run,
-        confirmation_id=body.confirmation_id,
-        board_id=body.board_id,
-        actor_id=user_id,
-        operation=body.operation,
-        preflight_hash=body.preflight_hash,
-        manifest_ref=body.manifest_ref,
-        reason=body.reason,
-    )
-
-    return RebuildRunResponse(
-        run_id=result.run_id,
-        outcome=result.outcome,
-        reason=result.reason,
-        audit_ref=result.audit_ref,
-        previous_kg_generation_id=result.previous_kg_generation_id,
-        current_kg_generation_id=result.current_kg_generation_id,
-        started_at=result.started_at,
-        finished_at=result.finished_at,
-        affected_files=list(result.affected_files),
-        report_ref=result.report_ref,
-        report_id=result.report_id,
-        publishable_status=result.publishable_status,
-        promotion_outcome=result.promotion_outcome,
-        operator_action=result.operator_action,
-        event_emitted=result.event_emitted,
+    raise HTTPException(
+        status_code=409,
+        detail=_recovery_execution_required_detail(),
     )

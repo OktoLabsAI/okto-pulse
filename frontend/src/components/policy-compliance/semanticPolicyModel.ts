@@ -4,6 +4,7 @@ import type {
   PolicyEntityType,
   PolicyProjection,
   SemanticAssessmentCurrentnessReason,
+  SemanticAssessmentCurrentV2,
   SemanticAssessmentDetail,
   SemanticAssessmentListItem,
   SemanticCursorPage,
@@ -11,7 +12,11 @@ import type {
   SemanticFindingDetail,
   SemanticFindingListItem,
   SemanticMetricOutcome,
+  SemanticMetricResultV2,
   SemanticMetricResultDetail,
+  SemanticCurrentAssessmentResponse,
+  SemanticAnchorV2,
+  SemanticPinpointV2,
   SemanticPinpoint,
   SemanticSkipDetail,
   SemanticSkipListItem,
@@ -42,6 +47,8 @@ const ASSESSMENT_DETAIL_FIELDS = [
   'entity_type',
   'subject_id',
   'subject_version',
+  'validation_edition',
+  'lifecycle_state',
   'binding_id',
   'guideline_id',
   'guideline_revision_id',
@@ -99,6 +106,8 @@ const FINDING_DETAIL_FIELDS = [
   'entity_type',
   'subject_id',
   'subject_version',
+  'validation_edition',
+  'lifecycle_state',
   'guideline_id',
   'guideline_revision_id',
   'binding_id',
@@ -121,6 +130,8 @@ const WAIVER_DETAIL_FIELDS = [
   'entity_type',
   'subject_id',
   'subject_version',
+  'validation_edition',
+  'lifecycle_state',
   'finding_id',
   'receipt_id',
   'guideline_id',
@@ -155,6 +166,8 @@ const SKIP_DETAIL_FIELDS = [
   'entity_type',
   'subject_id',
   'subject_version',
+  'validation_edition',
+  'lifecycle_state',
   'guideline_id',
   'guideline_revision_id',
   'binding_id',
@@ -204,6 +217,8 @@ export interface SemanticSubjectExpectation {
   boardId: string;
   entityType: PolicyEntityType;
   subjectId: string;
+  /** Required only for the human lifecycle projection of current evidence. */
+  validationEdition?: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -360,6 +375,38 @@ function matchesSubject(
     );
   }
   positiveInteger(value.subject_version, 'subject version');
+}
+
+function lifecyclePlacement(
+  value: Record<string, unknown>,
+  currentnessValue: PolicyCurrentness,
+  label: string,
+): {
+  validationEdition: number | null;
+  lifecycleState: 'current' | 'previous' | 'history_only';
+} {
+  const validationEdition = value.validation_edition === null
+    ? null
+    : positiveInteger(value.validation_edition, `${label} validation edition`);
+  if (
+    value.lifecycle_state !== 'current'
+    && value.lifecycle_state !== 'previous'
+    && value.lifecycle_state !== 'history_only'
+  ) {
+    throw new Error(`Semantic guideline ${label} lifecycle state is invalid.`);
+  }
+  const expectedState = validationEdition === null
+    ? 'history_only'
+    : currentnessValue === 'current' ? 'current' : 'previous';
+  if (value.lifecycle_state !== expectedState) {
+    throw new Error(
+      `Semantic guideline ${label} lifecycle state is inconsistent.`,
+    );
+  }
+  return {
+    validationEdition,
+    lifecycleState: value.lifecycle_state,
+  };
 }
 
 function parseEvidence(value: unknown): SemanticEvidenceRef {
@@ -520,6 +567,34 @@ export function parseSemanticAssessmentDetail(
     throw new Error('Semantic guideline assessor admission is invalid.');
   }
   const resolvedCurrentness = currentness(value);
+  const validationEdition = value.validation_edition === null
+    ? null
+    : positiveInteger(value.validation_edition, 'validation edition');
+  if (
+    value.lifecycle_state !== 'current'
+    && value.lifecycle_state !== 'previous'
+    && value.lifecycle_state !== 'history_only'
+  ) {
+    throw new Error('Semantic guideline assessment lifecycle state is invalid.');
+  }
+  const expectedLifecycleState = validationEdition === null
+    ? 'history_only'
+    : resolvedCurrentness.currentness === 'current'
+      ? 'current'
+      : 'previous';
+  if (value.lifecycle_state !== expectedLifecycleState) {
+    throw new Error(
+      'Semantic guideline assessment lifecycle state is inconsistent.',
+    );
+  }
+  if (
+    expected.validationEdition !== undefined
+    && validationEdition !== expected.validationEdition
+  ) {
+    throw new Error(
+      'Semantic guideline assessment does not match the active validation edition.',
+    );
+  }
   const confidence = boundedScore(value.confidence, 'confidence');
   const minimumConfidence = boundedScore(
     value.minimum_confidence,
@@ -572,6 +647,8 @@ export function parseSemanticAssessmentDetail(
     entity_type: expected.entityType,
     subject_id: expected.subjectId,
     subject_version: value.subject_version as number,
+    validation_edition: validationEdition,
+    lifecycle_state: value.lifecycle_state,
     binding_id: requiredText(value.binding_id, 'binding identity'),
     guideline_id: requiredText(value.guideline_id, 'guideline identity'),
     guideline_revision_id: requiredText(
@@ -618,6 +695,11 @@ export function parseSemanticFindingDetail(
   }
   matchesSubject(value, expected);
   const resolvedCurrentness = currentness(value);
+  const placement = lifecyclePlacement(
+    value,
+    resolvedCurrentness.currentness,
+    'finding',
+  );
   if (!Array.isArray(value.evidence_refs) || value.evidence_refs.length === 0) {
     throw new Error('Semantic guideline finding evidence is missing.');
   }
@@ -632,6 +714,8 @@ export function parseSemanticFindingDetail(
     entity_type: expected.entityType,
     subject_id: expected.subjectId,
     subject_version: value.subject_version as number,
+    validation_edition: placement.validationEdition,
+    lifecycle_state: placement.lifecycleState,
     guideline_id: requiredText(value.guideline_id, 'finding guideline'),
     guideline_revision_id: requiredText(
       value.guideline_revision_id,
@@ -698,6 +782,11 @@ export function parseSemanticWaiverDetail(
     throw new Error('Semantic guideline waiver lifecycle is invalid.');
   }
   const resolvedCurrentness = currentness(value);
+  const placement = lifecyclePlacement(
+    value,
+    resolvedCurrentness.currentness,
+    'waiver',
+  );
   if (!Array.isArray(value.evidence_refs) || value.evidence_refs.length === 0) {
     throw new Error('Semantic guideline waiver evidence is missing.');
   }
@@ -747,6 +836,8 @@ export function parseSemanticWaiverDetail(
     entity_type: expected.entityType,
     subject_id: expected.subjectId,
     subject_version: value.subject_version as number,
+    validation_edition: placement.validationEdition,
+    lifecycle_state: placement.lifecycleState,
     finding_id: requiredText(value.finding_id, 'waiver finding identity'),
     receipt_id: requiredText(value.receipt_id, 'waiver receipt identity'),
     guideline_id: requiredText(value.guideline_id, 'waiver guideline identity'),
@@ -810,6 +901,11 @@ export function parseSemanticSkipDetail(
     throw new Error('Semantic guideline skip lifecycle is invalid.');
   }
   const resolvedCurrentness = currentness(value);
+  const placement = lifecyclePlacement(
+    value,
+    resolvedCurrentness.currentness,
+    'skip',
+  );
   const createdAt = timestamp(value.created_at, 'skip creation timestamp');
   const lastEventAt = timestamp(value.last_event_at, 'skip event timestamp');
   if (Date.parse(lastEventAt) < Date.parse(createdAt)) {
@@ -848,6 +944,8 @@ export function parseSemanticSkipDetail(
     entity_type: expected.entityType,
     subject_id: expected.subjectId,
     subject_version: value.subject_version as number,
+    validation_edition: placement.validationEdition,
+    lifecycle_state: placement.lifecycleState,
     guideline_id: requiredText(value.guideline_id, 'skip guideline identity'),
     guideline_revision_id: requiredText(
       value.guideline_revision_id,
@@ -991,5 +1089,685 @@ export function parseRevokedSemanticSkipResponse(
     status: 'revoked',
     revoked_by: requiredText(value.revoked_by, 'skip revoker'),
     replayed: value.replayed,
+  };
+}
+
+const CURRENT_RESPONSE_FIELDS = ['contract_version', 'assessment'] as const;
+const V2_ASSESSMENT_FIELDS = [
+  'receipt_id',
+  'receipt_digest',
+  'currentness',
+  'board_id',
+  'subject_type',
+  'subject_id',
+  'subject_version',
+  'validation_edition',
+  'lifecycle_state',
+  'binding_id',
+  'guideline_id',
+  'guideline_revision_id',
+  'confidence',
+  'recorded_at',
+  'metrics',
+] as const;
+const V2_METRIC_FIELDS = [
+  'metric_result_id',
+  'metric_result_digest',
+  'metric_id',
+  'metric_code',
+  'score',
+  'direction',
+  'default_threshold',
+  'effective_threshold',
+  'threshold_source',
+  'outcome',
+  'blocking',
+  'pinpoints',
+] as const;
+const V2_PINPOINT_FIELDS = [
+  'contract_version',
+  'pinpoint_key',
+  'kind',
+  'title',
+  'detail',
+  'severity',
+  'remediation',
+  'anchor',
+  'anchor_snapshot',
+  'blocking',
+] as const;
+const V2_ANCHOR_FIELDS = [
+  'anchor_type',
+  'anchor_ref',
+  'excerpt_hash',
+] as const;
+const V2_SNAPSHOT_FIELDS = [
+  'label',
+  'excerpt',
+  'source_version',
+  'availability_at_seal',
+] as const;
+
+function booleanValue(value: unknown, label: string): boolean {
+  if (typeof value !== 'boolean') {
+    throw new Error(`Semantic guideline ${label} is invalid.`);
+  }
+  return value;
+}
+
+function parseV2Anchor(value: unknown): SemanticAnchorV2 {
+  if (!isRecord(value)) {
+    throw new Error('Semantic guideline v2 anchor is invalid.');
+  }
+  exactFields(value, V2_ANCHOR_FIELDS, 'v2 anchor');
+  if (
+    value.anchor_type !== 'whole_artifact'
+    && value.anchor_type !== 'field'
+    && value.anchor_type !== 'structured_child'
+    && value.anchor_type !== 'qa'
+  ) {
+    throw new Error('Semantic guideline v2 anchor type is invalid.');
+  }
+  const anchorRef = nullableText(value.anchor_ref, 'v2 anchor reference');
+  if (
+    (value.anchor_type === 'whole_artifact' && anchorRef !== null)
+    || (value.anchor_type !== 'whole_artifact' && anchorRef === null)
+  ) {
+    throw new Error('Semantic guideline v2 anchor shape is invalid.');
+  }
+  return {
+    anchor_type: value.anchor_type,
+    anchor_ref: anchorRef,
+    excerpt_hash: nullableSha256(value.excerpt_hash, 'v2 excerpt hash'),
+  };
+}
+
+function parseV2Pinpoint(
+  value: unknown,
+  outcome: SemanticMetricOutcome,
+): SemanticPinpointV2 {
+  if (!isRecord(value)) {
+    throw new Error('Semantic guideline v2 pinpoint is invalid.');
+  }
+  exactFields(value, V2_PINPOINT_FIELDS, 'v2 pinpoint');
+  if (value.contract_version !== 'v2') {
+    throw new Error('Semantic guideline v2 pinpoint version is invalid.');
+  }
+  if (value.kind !== 'evidence' && value.kind !== 'issue') {
+    throw new Error('Semantic guideline v2 pinpoint kind is invalid.');
+  }
+  if (
+    value.severity !== null
+    && value.severity !== 'low'
+    && value.severity !== 'medium'
+    && value.severity !== 'high'
+    && value.severity !== 'critical'
+  ) {
+    throw new Error('Semantic guideline v2 pinpoint severity is invalid.');
+  }
+  if (value.kind === 'issue' && value.severity === null) {
+    throw new Error('Semantic guideline v2 issue severity is missing.');
+  }
+  const anchorSnapshot = value.anchor_snapshot;
+  if (!isRecord(anchorSnapshot)) {
+    throw new Error('Semantic guideline v2 anchor snapshot is invalid.');
+  }
+  exactFields(anchorSnapshot, V2_SNAPSHOT_FIELDS, 'v2 anchor snapshot');
+  if (
+    anchorSnapshot.availability_at_seal !== 'available'
+    && anchorSnapshot.availability_at_seal !== 'removed'
+    && anchorSnapshot.availability_at_seal !== 'inaccessible'
+  ) {
+    throw new Error('Semantic guideline v2 snapshot availability is invalid.');
+  }
+  const excerpt = nullableText(
+    anchorSnapshot.excerpt,
+    'v2 snapshot excerpt',
+  );
+  if (
+    anchorSnapshot.availability_at_seal === 'inaccessible'
+    && excerpt !== null
+  ) {
+    throw new Error('Semantic guideline v2 inaccessible snapshot leaks text.');
+  }
+  const blocking = booleanValue(value.blocking, 'v2 pinpoint blocking state');
+  if (blocking !== (value.kind === 'issue' && outcome === 'fail')) {
+    throw new Error('Semantic guideline v2 pinpoint blocking state is inconsistent.');
+  }
+  return {
+    contract_version: 'v2',
+    pinpoint_key: requiredText(value.pinpoint_key, 'v2 pinpoint key'),
+    kind: value.kind,
+    title: requiredText(value.title, 'v2 pinpoint title'),
+    detail: requiredText(value.detail, 'v2 pinpoint detail'),
+    severity: value.severity,
+    remediation: nullableText(value.remediation, 'v2 pinpoint remediation'),
+    anchor: parseV2Anchor(value.anchor),
+    anchor_snapshot: {
+      label: requiredText(anchorSnapshot.label, 'v2 snapshot label'),
+      excerpt,
+      source_version: requiredText(
+        anchorSnapshot.source_version,
+        'v2 snapshot source version',
+      ),
+      availability_at_seal: anchorSnapshot.availability_at_seal,
+    },
+    blocking,
+  };
+}
+
+function parseV2Metric(value: unknown): SemanticMetricResultV2 {
+  if (!isRecord(value)) {
+    throw new Error('Semantic guideline v2 metric is invalid.');
+  }
+  exactFields(value, V2_METRIC_FIELDS, 'v2 metric');
+  if (value.direction !== 'minimum' && value.direction !== 'maximum') {
+    throw new Error('Semantic guideline v2 metric direction is invalid.');
+  }
+  if (
+    value.threshold_source !== 'default'
+    && value.threshold_source !== 'override'
+  ) {
+    throw new Error('Semantic guideline v2 threshold source is invalid.');
+  }
+  if (value.outcome !== 'pass' && value.outcome !== 'fail') {
+    throw new Error('Semantic guideline v2 metric outcome is invalid.');
+  }
+  const score = boundedScore(value.score, 'v2 metric score');
+  const defaultThreshold = boundedScore(
+    value.default_threshold,
+    'v2 default threshold',
+  );
+  const effectiveThreshold = boundedScore(
+    value.effective_threshold,
+    'v2 effective threshold',
+  );
+  if (
+    value.threshold_source === 'default'
+    && defaultThreshold !== effectiveThreshold
+  ) {
+    throw new Error('Semantic guideline v2 threshold source is inconsistent.');
+  }
+  const computedOutcome: SemanticMetricOutcome = value.direction === 'minimum'
+    ? score >= effectiveThreshold ? 'pass' : 'fail'
+    : score <= effectiveThreshold ? 'pass' : 'fail';
+  if (computedOutcome !== value.outcome) {
+    throw new Error('Semantic guideline v2 metric outcome is inconsistent.');
+  }
+  if (!Array.isArray(value.pinpoints) || value.pinpoints.length === 0) {
+    throw new Error('Semantic guideline v2 metric pinpoints are missing.');
+  }
+  const pinpoints = uniqueBy(
+    value.pinpoints.map((item) => parseV2Pinpoint(item, value.outcome as SemanticMetricOutcome)),
+    (item) => item.pinpoint_key,
+    'v2 pinpoint keys',
+  );
+  const blocking = booleanValue(value.blocking, 'v2 metric blocking state');
+  if (blocking !== pinpoints.some((item) => item.blocking)) {
+    throw new Error('Semantic guideline v2 metric blocking state is inconsistent.');
+  }
+  return {
+    metric_result_id: requiredText(value.metric_result_id, 'v2 metric result identity'),
+    metric_result_digest: sha256(value.metric_result_digest, 'v2 metric result digest'),
+    metric_id: requiredText(value.metric_id, 'v2 metric identity'),
+    metric_code: metricCode(value.metric_code, 'v2 metric code'),
+    score,
+    direction: value.direction,
+    default_threshold: defaultThreshold,
+    effective_threshold: effectiveThreshold,
+    threshold_source: value.threshold_source,
+    outcome: value.outcome,
+    blocking,
+    pinpoints,
+  };
+}
+
+function parseV2Assessment(
+  value: unknown,
+  expected: SemanticSubjectExpectation,
+): SemanticAssessmentCurrentV2 {
+  if (!isRecord(value)) {
+    throw new Error('Semantic guideline v2 assessment is invalid.');
+  }
+  exactFields(value, V2_ASSESSMENT_FIELDS, 'v2 assessment');
+  if (value.currentness !== 'current') {
+    throw new Error('Semantic guideline v2 currentness is invalid.');
+  }
+  if (value.lifecycle_state !== 'current') {
+    throw new Error('Semantic guideline v2 lifecycle state is invalid.');
+  }
+  if (
+    value.board_id !== expected.boardId
+    || value.subject_type !== expected.entityType
+    || value.subject_id !== expected.subjectId
+  ) {
+    throw new Error('Semantic guideline v2 evidence does not match the active subject.');
+  }
+  if (!Array.isArray(value.metrics) || value.metrics.length === 0) {
+    throw new Error('Semantic guideline v2 metrics are missing.');
+  }
+  const metrics = uniqueBy(
+    value.metrics.map(parseV2Metric),
+    (item) => `${item.metric_id}:${item.metric_result_id}:${item.metric_code}`,
+    'v2 metric results',
+  );
+  const validationEdition = value.validation_edition === null
+    ? null
+    : positiveInteger(value.validation_edition, 'v2 validation edition');
+  if (
+    expected.validationEdition !== undefined
+    && validationEdition !== expected.validationEdition
+  ) {
+    throw new Error(
+      'Semantic guideline v2 assessment does not match the active validation edition.',
+    );
+  }
+  return {
+    receipt_id: requiredText(value.receipt_id, 'v2 receipt identity'),
+    receipt_digest: sha256(value.receipt_digest, 'v2 receipt digest'),
+    currentness: 'current',
+    board_id: expected.boardId,
+    subject_type: expected.entityType,
+    subject_id: expected.subjectId,
+    subject_version: positiveInteger(value.subject_version, 'v2 subject version'),
+    validation_edition: validationEdition,
+    lifecycle_state: 'current',
+    binding_id: requiredText(value.binding_id, 'v2 binding identity'),
+    guideline_id: requiredText(value.guideline_id, 'v2 guideline identity'),
+    guideline_revision_id: requiredText(
+      value.guideline_revision_id,
+      'v2 guideline revision identity',
+    ),
+    confidence: boundedScore(value.confidence, 'v2 confidence'),
+    recorded_at: timestamp(value.recorded_at, 'v2 recorded timestamp'),
+    metrics,
+  };
+}
+
+/**
+ * Closed discriminator for the current-assessment REST envelope. Unknown keys
+ * or versions fail safely instead of being interpreted as a legacy receipt.
+ */
+export function parseCurrentSemanticAssessmentResponse(
+  value: unknown,
+  expected: SemanticSubjectExpectation,
+): SemanticCurrentAssessmentResponse {
+  if (!isRecord(value)) {
+    throw new Error('Semantic guideline current response is invalid.');
+  }
+  exactFields(value, CURRENT_RESPONSE_FIELDS, 'current response');
+  if (value.contract_version === 'v1') {
+    return {
+      contract_version: 'v1',
+      assessment: parseSemanticAssessmentDetail(value.assessment, expected),
+    };
+  }
+  if (value.contract_version === 'v2') {
+    return {
+      contract_version: 'v2',
+      assessment: parseV2Assessment(value.assessment, expected),
+    };
+  }
+  throw new Error('Semantic guideline contract version is unsupported.');
+}
+
+export type SemanticPolicyUiState =
+  | 'fail'
+  | 'positive_evidence'
+  | 'non_blocking_warning'
+  | 'waived_fail_finding'
+  | 'stale'
+  | 'legacy'
+  | 'removed'
+  | 'inaccessible'
+  | 'loading'
+  | 'no_assessment'
+  | 'no_visible_pinpoints'
+  | 'recoverable_transport_error';
+
+export type SemanticAnchorResolution =
+  | {
+      state: 'available';
+      navigationTarget: string;
+      /** Human-readable live content the caller is already authorized to see. */
+      displayText?: string;
+      /** Canonical stable identifier after resolving a qualified reference. */
+      stableReference?: string | null;
+    }
+  | { state: 'removed' }
+  | { state: 'inaccessible' };
+
+export interface SemanticPinpointTechnicalDetails {
+  anchorType: SemanticPinpoint['anchor_type'];
+  sourceVersion?: string;
+  anchorReference?: string;
+  excerptHash?: string;
+  inputDigest?: string;
+  metricResultDigest?: string;
+}
+
+export interface SemanticPinpointViewModel {
+  contractVersion: 'v1' | 'v2';
+  state: 'available' | 'removed' | 'inaccessible' | 'legacy';
+  kind: 'evidence' | 'issue' | 'legacy';
+  title: string;
+  detail: string;
+  severity: SemanticPinpointV2['severity'];
+  remediation: string | null;
+  blocking: boolean;
+  categoryLabel: string;
+  locationLabel: string;
+  locationReference: string | null;
+  excerpt: string | null;
+  navigationTarget: string | null;
+  unavailableMessage: string | null;
+  technicalDetails: SemanticPinpointTechnicalDetails | null;
+}
+
+function anchorCategoryLabel(
+  anchorType: SemanticPinpoint['anchor_type'],
+): string {
+  switch (anchorType) {
+    case 'whole_artifact':
+      return 'Whole artifact';
+    case 'field':
+      return 'Field';
+    case 'structured_child':
+      return 'Structured item';
+    case 'qa':
+      return 'Q&A';
+  }
+}
+
+export interface SemanticPolicyMetricViewModel {
+  metricCode: string;
+  score: number;
+  direction: SemanticMetricResultDetail['direction'];
+  effectiveThreshold: number;
+  outcome: SemanticMetricOutcome;
+  uiState: SemanticPolicyUiState;
+  rationale: string | null;
+  pinpoints: SemanticPinpointViewModel[];
+}
+
+export interface SemanticPolicyViewModel {
+  contractVersion: 'v1' | 'v2';
+  currentness: PolicyCurrentness;
+  uiStates: SemanticPolicyUiState[];
+  confidence: number;
+  recordedAt: string;
+  metrics: SemanticPolicyMetricViewModel[];
+}
+
+export interface SemanticPolicyResolverOptions {
+  resolveAnchor?: (
+    anchor: SemanticAnchorV2 | SemanticPinpoint,
+  ) => SemanticAnchorResolution;
+  canViewTechnicalDetails?: boolean;
+  waivedMetricCodes?: ReadonlySet<string>;
+}
+
+const OPAQUE_ID = /^(?:[0-9a-f]{8}-[0-9a-f-]{27,}|[0-9a-f]{32,})$/iu;
+
+function stableAnchorReference(anchorRef: string | null): string | null {
+  const trimmed = anchorRef?.trim();
+  if (!trimmed) return null;
+  const stableReference = trimmed.split('.').at(-1)?.trim();
+  return stableReference || trimmed;
+}
+
+function bestEffortLegacyLabel(pinpoint: SemanticPinpoint): string {
+  if (pinpoint.anchor_type === 'whole_artifact') return 'Whole artifact';
+  if (pinpoint.anchor_type === 'qa') return 'Question or answer';
+  if (!pinpoint.anchor_ref || OPAQUE_ID.test(pinpoint.anchor_ref)) {
+    return pinpoint.anchor_type === 'field'
+      ? 'Referenced field'
+      : 'Referenced item';
+  }
+  return pinpoint.anchor_ref
+    .replace(/[_-]+/gu, ' ')
+    .replace(/\b\p{L}/gu, (letter) => letter.toUpperCase());
+}
+
+function safeResolution(
+  resolveAnchor: SemanticPolicyResolverOptions['resolveAnchor'],
+  anchor: SemanticAnchorV2 | SemanticPinpoint,
+): SemanticAnchorResolution {
+  const resolution = resolveAnchor?.(anchor) ?? { state: 'inaccessible' };
+  if (
+    resolution.state === 'available'
+    && resolution.navigationTarget.trim() === ''
+  ) {
+    throw new Error('Semantic guideline navigation target is invalid.');
+  }
+  return resolution;
+}
+
+function v2PinpointView(
+  pinpoint: SemanticPinpointV2,
+  metric: SemanticMetricResultV2,
+  options: SemanticPolicyResolverOptions,
+): SemanticPinpointViewModel {
+  const resolution = safeResolution(options.resolveAnchor, pinpoint.anchor);
+  const inaccessible = resolution.state === 'inaccessible';
+  const removed = resolution.state === 'removed';
+  const locationReference = inaccessible
+    ? null
+    : resolution.state === 'available'
+      ? resolution.stableReference
+        ?? stableAnchorReference(pinpoint.anchor.anchor_ref)
+      : stableAnchorReference(pinpoint.anchor.anchor_ref);
+  return {
+    contractVersion: 'v2',
+    state: resolution.state,
+    kind: pinpoint.kind,
+    title: pinpoint.title,
+    detail: pinpoint.detail,
+    severity: pinpoint.severity,
+    remediation: pinpoint.remediation,
+    blocking: pinpoint.blocking,
+    categoryLabel: anchorCategoryLabel(pinpoint.anchor.anchor_type),
+    locationLabel: inaccessible
+      ? 'Restricted assessment location'
+      : pinpoint.anchor_snapshot.label,
+    locationReference,
+    excerpt: inaccessible ? null : pinpoint.anchor_snapshot.excerpt,
+    navigationTarget: resolution.state === 'available'
+      ? resolution.navigationTarget
+      : null,
+    unavailableMessage: removed
+      ? 'Referenced element is no longer available.'
+      : inaccessible
+        ? 'Location unavailable with your current access.'
+        : null,
+    technicalDetails: options.canViewTechnicalDetails
+      ? {
+          anchorType: pinpoint.anchor.anchor_type,
+          sourceVersion: pinpoint.anchor_snapshot.source_version,
+          ...(!inaccessible && pinpoint.anchor.anchor_ref
+            ? { anchorReference: pinpoint.anchor.anchor_ref }
+            : {}),
+          ...(!inaccessible && pinpoint.anchor.excerpt_hash
+            ? { excerptHash: pinpoint.anchor.excerpt_hash }
+            : {}),
+          ...(!inaccessible
+            ? { metricResultDigest: metric.metric_result_digest }
+            : {}),
+        }
+      : null,
+  };
+}
+
+function legacyPinpointView(
+  pinpoint: SemanticPinpoint,
+  rationale: string,
+  outcome: SemanticMetricOutcome,
+  options: SemanticPolicyResolverOptions,
+): SemanticPinpointViewModel {
+  const resolution = safeResolution(options.resolveAnchor, pinpoint);
+  const inaccessible = resolution.state === 'inaccessible';
+  const removed = resolution.state === 'removed';
+  const locationReference = inaccessible
+    ? null
+    : resolution.state === 'available'
+      ? resolution.stableReference ?? stableAnchorReference(pinpoint.anchor_ref)
+      : stableAnchorReference(pinpoint.anchor_ref);
+  return {
+    contractVersion: 'v1',
+    state: inaccessible || removed ? resolution.state : 'legacy',
+    kind: 'legacy',
+    title: 'Legacy assessment evidence',
+    detail: rationale,
+    severity: null,
+    remediation: null,
+    blocking: outcome === 'fail',
+    categoryLabel: anchorCategoryLabel(pinpoint.anchor_type),
+    locationLabel: inaccessible
+      ? 'Restricted assessment location'
+      : resolution.state === 'available' && resolution.displayText?.trim()
+        ? resolution.displayText.trim()
+        : removed
+          ? 'Referenced item'
+          : bestEffortLegacyLabel(pinpoint),
+    locationReference,
+    excerpt: null,
+    navigationTarget: resolution.state === 'available'
+      ? resolution.navigationTarget
+      : null,
+    unavailableMessage: removed
+      ? 'Referenced element is no longer available.'
+      : inaccessible
+        ? 'Location unavailable with your current access.'
+        : null,
+    technicalDetails: options.canViewTechnicalDetails
+      ? {
+          anchorType: pinpoint.anchor_type,
+          ...(!inaccessible && pinpoint.anchor_ref
+            ? { anchorReference: pinpoint.anchor_ref }
+            : {}),
+          ...(!inaccessible && pinpoint.excerpt_hash
+            ? { excerptHash: pinpoint.excerpt_hash }
+            : {}),
+          ...(!inaccessible ? { inputDigest: pinpoint.input_digest } : {}),
+        }
+      : null,
+  };
+}
+
+function uniqueStates(states: SemanticPolicyUiState[]): SemanticPolicyUiState[] {
+  return [...new Set(states)];
+}
+
+/** Build the presentation-safe model; sealed text explains, live access navigates. */
+export function resolveSemanticPolicyViewModel(
+  response: SemanticCurrentAssessmentResponse,
+  options: SemanticPolicyResolverOptions = {},
+): SemanticPolicyViewModel {
+  if (response.contract_version === 'v1') {
+    const metrics = response.assessment.metric_results.map((metric) => ({
+      metricCode: metric.metric_code,
+      score: metric.score,
+      direction: metric.direction,
+      effectiveThreshold: metric.effective_threshold,
+      outcome: metric.outcome,
+      uiState: response.assessment.currentness === 'stale'
+        ? 'stale' as const
+        : 'legacy' as const,
+      rationale: metric.rationale,
+      pinpoints: metric.pinpoints.map((pinpoint) => legacyPinpointView(
+        pinpoint,
+        metric.rationale,
+        metric.outcome,
+        options,
+      )),
+    }));
+    return {
+      contractVersion: 'v1',
+      currentness: response.assessment.currentness,
+      uiStates: uniqueStates([
+        response.assessment.currentness === 'stale' ? 'stale' : 'legacy',
+        ...metrics.flatMap((metric) => metric.pinpoints
+          .filter((pinpoint) => pinpoint.state !== 'legacy')
+          .map((pinpoint) => pinpoint.state as 'removed' | 'inaccessible')),
+      ]),
+      confidence: response.assessment.confidence,
+      recordedAt: response.assessment.recorded_at,
+      metrics,
+    };
+  }
+
+  const metrics = response.assessment.metrics.map((metric) => {
+    const waived = options.waivedMetricCodes?.has(metric.metric_code) ?? false;
+    const uiState: SemanticPolicyUiState = metric.outcome === 'fail'
+      ? waived ? 'waived_fail_finding' : 'fail'
+      : metric.pinpoints.some((pinpoint) => pinpoint.kind === 'issue')
+        ? 'non_blocking_warning'
+        : 'positive_evidence';
+    return {
+      metricCode: metric.metric_code,
+      score: metric.score,
+      direction: metric.direction,
+      effectiveThreshold: metric.effective_threshold,
+      outcome: metric.outcome,
+      uiState,
+      rationale: null,
+      pinpoints: metric.pinpoints.map((pinpoint) =>
+        v2PinpointView(pinpoint, metric, options)
+      ),
+    };
+  });
+  return {
+    contractVersion: 'v2',
+    currentness: 'current',
+    uiStates: uniqueStates([
+      ...metrics.map((metric) => metric.uiState),
+      ...metrics.flatMap((metric) => metric.pinpoints
+        .filter((pinpoint) => pinpoint.state !== 'available')
+        .map((pinpoint) => pinpoint.state as 'removed' | 'inaccessible')),
+    ]),
+    confidence: response.assessment.confidence,
+    recordedAt: response.assessment.recorded_at,
+    metrics,
+  };
+}
+
+export type SemanticPolicyRenderOutcome =
+  | 'current'
+  | 'stale'
+  | 'waived'
+  | 'unavailable'
+  | 'legacy'
+  | 'system_error';
+
+export interface SemanticPolicyRenderTelemetry {
+  metric: 'pulse_policy_compliance_render_total';
+  labels: {
+    contract_version: 'v1' | 'v2' | 'none';
+    outcome: SemanticPolicyRenderOutcome;
+  };
+}
+
+/** Closed, payload-free telemetry labels safe for any frontend sink. */
+export function semanticPolicyRenderTelemetry(
+  state: SemanticPolicyUiState,
+  contractVersion: 'v1' | 'v2' | 'none',
+): SemanticPolicyRenderTelemetry {
+  const outcome: SemanticPolicyRenderOutcome = state === 'stale'
+    ? 'stale'
+    : state === 'waived_fail_finding'
+      ? 'waived'
+      : state === 'legacy'
+        ? 'legacy'
+        : state === 'removed'
+          || state === 'inaccessible'
+          || state === 'no_assessment'
+          || state === 'no_visible_pinpoints'
+          ? 'unavailable'
+          : state === 'recoverable_transport_error'
+            ? 'system_error'
+            : 'current';
+  return {
+    metric: 'pulse_policy_compliance_render_total',
+    labels: { contract_version: contractVersion, outcome },
   };
 }

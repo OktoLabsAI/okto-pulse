@@ -5,6 +5,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { ValidationGateOverride } from './ValidationGateOverride';
 
 function renderOverride({
+  title,
+  description,
   requireValue = null,
   minConfidence = null,
   minCompleteness = null,
@@ -13,6 +15,8 @@ function renderOverride({
 }: Partial<ComponentProps<typeof ValidationGateOverride>> = {}) {
   const view = render(
     <ValidationGateOverride
+      title={title}
+      description={description}
       requireValue={requireValue}
       minConfidence={minConfidence}
       minCompleteness={minCompleteness}
@@ -25,6 +29,20 @@ function renderOverride({
 }
 
 describe('ValidationGateOverride', () => {
+  it('renders optional scope copy without changing the gate contract', () => {
+    renderOverride({
+      title: 'Task Validation Gate',
+      description: 'Controls validation for cards derived from this spec.',
+    });
+
+    expect(screen.getByRole('heading', { name: 'Task Validation Gate' })).toBeInTheDocument();
+    expect(
+      screen.getByText('Controls validation for cards derived from this spec.'),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText('Min Completeness')).toBeInTheDocument();
+    expect(screen.getByLabelText('Max Drift')).toBeInTheDocument();
+  });
+
   it('exposes numeric overrides independently while the gate requirement is inherited', () => {
     renderOverride({
       requireValue: null,

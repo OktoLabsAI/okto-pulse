@@ -123,7 +123,7 @@ describe('paginated Kanban DnD invariant', () => {
   });
 
   it('never emits position across every column destination', () => {
-    for (const status of CARD_STATUSES) {
+    for (const status of CARD_STATUSES.filter((candidate) => candidate !== 'rejected')) {
       const state = columns({
         started: [card('active', 'started')],
         [status]: status === 'started'
@@ -134,6 +134,40 @@ describe('paginated Kanban DnD invariant', () => {
       expect(destination?.targetIndex).toBeGreaterThanOrEqual(0);
       expect(destination?.request).not.toHaveProperty('position');
       expect(destination?.request.placement).toBe('end');
+    }
+  });
+
+  it('refuses every manual inbound drop into the consequence-only Rejected column', () => {
+    const state = columns({
+      validation: [card('active', 'validation')],
+      rejected: [card('rework-anchor', 'rejected')],
+    });
+
+    expect(resolveKanbanDropDestination(state, 'active', 'rejected')).toBeNull();
+    expect(resolveKanbanDropDestination(state, 'active', 'rework-anchor')).toBeNull();
+  });
+
+  it('allows Rejected reorder and its sole public exit to In Progress', () => {
+    const state = columns({
+      rejected: [
+        card('active', 'rejected'),
+        card('rework-anchor', 'rejected', 1),
+      ],
+      in_progress: [card('implementation-anchor', 'in_progress')],
+    });
+
+    expect(resolveKanbanDropDestination(state, 'active', 'rework-anchor'))
+      .toMatchObject({
+        targetStatus: 'rejected',
+        request: { status: 'rejected', before_id: 'rework-anchor' },
+      });
+    expect(resolveKanbanDropDestination(state, 'active', 'in_progress'))
+      .toMatchObject({
+        targetStatus: 'in_progress',
+        request: { status: 'in_progress', placement: 'end' },
+      });
+    for (const target of ['not_started', 'started', 'validation', 'on_hold', 'done', 'cancelled'] as CardStatus[]) {
+      expect(resolveKanbanDropDestination(state, 'active', target)).toBeNull();
     }
   });
 });

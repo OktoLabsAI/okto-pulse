@@ -13,6 +13,8 @@
   --kanban-not-started: #64748b;
   --kanban-started: #0ea5e9;
   --kanban-in-progress: #f59e0b;
+  --kanban-validation: #8b5cf6;
+  --kanban-rejected: #e11d48;
   --kanban-on-hold: #ef4444;
   --kanban-done: #10b981;
   --kanban-cancelled: #94a3b8;
@@ -150,6 +152,8 @@ h1, h2, h3, h4, h5, h6,
 .status-not_started { @apply bg-surface-200 text-surface-600 dark:bg-surface-700 dark:text-surface-300; }
 .status-started { @apply bg-accent-100 text-accent-700 dark:bg-accent-900/40 dark:text-accent-300; }
 .status-in_progress { @apply bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300; }
+.status-validation { @apply bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300; }
+.status-rejected { @apply bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300; }
 .status-on_hold { @apply bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300; }
 .status-done { @apply bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300; }
 .status-cancelled { @apply bg-surface-100 text-surface-500 dark:bg-surface-800 dark:text-surface-400; }

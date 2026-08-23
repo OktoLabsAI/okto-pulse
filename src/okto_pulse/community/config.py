@@ -52,8 +52,19 @@ class CommunitySettings(CoreSettings, BaseSettings):
     metrics_dir: str = ""
     metrics_beacon_url: str = COMMUNITY_DEFAULT_METRICS_BEACON_URL
     mcp_server_name: str = "okto-pulse"
-    mcp_server_version: str = "0.3.1"
+    mcp_server_version: str = "0.3.2"
     mcp_port: int = 8101
+    # MCP and API/UI share one event loop.  Keep tool-call bursts bounded while
+    # leaving transport sessions, streams and every REST route outside the gate.
+    mcp_admission_max_active: int = Field(4, ge=1, le=64)
+    mcp_admission_max_active_per_session: int = Field(2, ge=1, le=64)
+    # Embedded persistence remains single-writer.  This is intentionally a
+    # validated constant rather than a tuning escape hatch.
+    mcp_admission_max_active_writers: int = Field(1, ge=1, le=1)
+    mcp_admission_max_queued: int = Field(16, ge=0, le=256)
+    mcp_admission_max_queued_per_session: int = Field(4, ge=0, le=256)
+    mcp_admission_wait_timeout_ms: int = Field(250, ge=0, le=10_000)
+    mcp_admission_retry_after_ms: int = Field(500, ge=1, le=60_000)
     cors_origins: str = "*"
     kg_base_dir: str = "~/.okto-pulse"
 
@@ -151,6 +162,16 @@ class CommunitySettings(CoreSettings, BaseSettings):
 
     @model_validator(mode="after")
     def _derive_paths(self) -> "CommunitySettings":
+        if self.mcp_admission_max_active_per_session > self.mcp_admission_max_active:
+            raise ValueError(
+                "mcp_admission_max_active_per_session cannot exceed "
+                "mcp_admission_max_active"
+            )
+        if self.mcp_admission_max_queued_per_session > self.mcp_admission_max_queued:
+            raise ValueError(
+                "mcp_admission_max_queued_per_session cannot exceed "
+                "mcp_admission_max_queued"
+            )
         if not self.data_dir:
             self.data_dir = os.environ.get("OKTO_PULSE_HOME") or str(
                 Path.home() / ".okto-pulse"

@@ -27,6 +27,11 @@ from okto_pulse.community.api.pagination import (
 from okto_pulse.community.api.permission_errors import (
     permission_denied_http_error,
 )
+from okto_pulse.community.api.qa_count_projection import (
+    project_open_qa_count,
+    redact_open_qa_count_records,
+    resolve_board_projection_permissions,
+)
 from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     PageRequest,
@@ -78,7 +83,7 @@ from okto_pulse.core.models.schemas import (
 )
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.services.cancellation import CancellationReasonRequiredError
-from okto_pulse.core.application.errors import SprintOperationError
+from okto_pulse.core.application.errors import CardOperationError, SprintOperationError
 
 router = APIRouter()
 
@@ -117,6 +122,7 @@ async def list_board_sprints(
     With ``offset``/``limit``: paginated envelope (spec 8b33f9a8); without:
     legacy shape unchanged (DR9).
     """
+    actor = RESTAdapterContract.actor(user_id, board_id=board_id)
     if pagination_requested(offset, limit):
         command = ListBoardSprintsCommand(
             board_id,
@@ -124,7 +130,6 @@ async def list_board_sprints(
             spec_id=spec_id,
             include_archived=include_archived,
         )
-        actor = RESTAdapterContract.actor(user_id, board_id=board_id)
         use_case = ListBoardSprintsUseCase()
         try:
             resolved_offset, resolved_limit = resolve_window(offset, limit)
@@ -143,33 +148,45 @@ async def list_board_sprints(
                     filters=filters,
                     any_groups=search_groups(search, ("title",)),
                 ),
-                preflight=lambda: use_case.preflight(
-                    command, actor=actor, uow=uow
-                ),
+                preflight=lambda: use_case.preflight(command, actor=actor, uow=uow),
             )
         except EntityNotFoundError as exc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
             )
+        projection_permissions = (
+            await resolve_board_projection_permissions(
+                actor=actor,
+                uow=uow,
+                board_id=board_id,
+                permission_leaves=("sprint.qa.read",),
+            )
+            if page.items
+            else {}
+        )
         return project_page(
             page,
             lambda record: SprintPageItem(
-                **record_fields(
-                    record,
-                    (
-                        "id",
-                        "spec_id",
-                        "board_id",
-                        "title",
-                        "description",
-                        "objective",
-                        "expected_outcome",
-                        "status",
-                        "created_by",
-                        "created_at",
-                        "updated_at",
-                        "archived",
+                **project_open_qa_count(
+                    record_fields(
+                        record,
+                        (
+                            "id",
+                            "spec_id",
+                            "board_id",
+                            "title",
+                            "description",
+                            "objective",
+                            "expected_outcome",
+                            "status",
+                            "created_by",
+                            "created_at",
+                            "updated_at",
+                            "archived",
+                            "open_qa_count",
+                        ),
                     ),
+                    can_read_qa=projection_permissions.get("sprint.qa.read", False),
                 )
             ),
         )
@@ -181,11 +198,24 @@ async def list_board_sprints(
                 spec_id=spec_id,
                 include_archived=include_archived,
             ),
-            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            actor=actor,
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
+    if result.sprints:
+        projection_permissions = await resolve_board_projection_permissions(
+            actor=actor,
+            uow=uow,
+            board_id=board_id,
+            permission_leaves=("sprint.qa.read",),
+        )
+        redact_open_qa_count_records(
+            result.sprints,
+            can_read_qa=projection_permissions["sprint.qa.read"],
+        )
     return result.sprints
 
 
@@ -213,7 +243,9 @@ async def create_sprint(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
     return result.sprint
@@ -252,35 +284,60 @@ async def list_sprints(
                     offset=resolved_offset,
                     limit=resolved_limit,
                 ),
-                preflight=lambda: use_case.preflight(
-                    command, actor=actor, uow=uow
-                ),
+                preflight=lambda: use_case.preflight(command, actor=actor, uow=uow),
+            )
+            projection_permissions = (
+                await resolve_board_projection_permissions(
+                    actor=actor,
+                    uow=uow,
+                    board_id=board_id,
+                    permission_leaves=("sprint.qa.read",),
+                )
+                if page.items
+                else {}
             )
             return project_page(
                 page,
                 lambda record: SprintPageItem(
-                    **record_fields(
-                        record,
-                        (
-                            "id",
-                            "spec_id",
-                            "board_id",
-                            "title",
-                            "description",
-                            "objective",
-                            "expected_outcome",
-                            "status",
-                            "created_by",
-                            "created_at",
-                            "updated_at",
-                            "archived",
+                    **project_open_qa_count(
+                        record_fields(
+                            record,
+                            (
+                                "id",
+                                "spec_id",
+                                "board_id",
+                                "title",
+                                "description",
+                                "objective",
+                                "expected_outcome",
+                                "status",
+                                "created_by",
+                                "created_at",
+                                "updated_at",
+                                "archived",
+                                "open_qa_count",
+                            ),
                         ),
+                        can_read_qa=projection_permissions.get("sprint.qa.read", False),
                     )
                 ),
             )
         result = await use_case.execute(command, actor=actor, uow=uow)
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
+    if result.sprints:
+        projection_permissions = await resolve_board_projection_permissions(
+            actor=actor,
+            uow=uow,
+            board_id=board_id,
+            permission_leaves=("sprint.qa.read",),
+        )
+        redact_open_qa_count_records(
+            result.sprints,
+            can_read_qa=projection_permissions["sprint.qa.read"],
+        )
     return result.sprints
 
 
@@ -298,7 +355,9 @@ async def get_sprint(
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     return result.sprint
 
 
@@ -321,7 +380,9 @@ async def update_sprint(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
     return result.sprint
@@ -350,7 +411,9 @@ async def move_sprint(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     return result.sprint
 
 
@@ -367,10 +430,14 @@ async def delete_sprint(
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except CardOperationError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except SprintOperationError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
 
@@ -394,11 +461,16 @@ async def submit_evaluation(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
     sprint = result.sprint
-    return {"success": True, "evaluation_id": sprint.evaluations[-1]["id"] if sprint.evaluations else None}
+    return {
+        "success": True,
+        "evaluation_id": sprint.evaluations[-1]["id"] if sprint.evaluations else None,
+    }
 
 
 @router.post("/sprints/{sprint_id}/assign-tasks")
@@ -411,28 +483,32 @@ async def assign_tasks(
     """Assign cards to a sprint. Cards must belong to the same spec."""
     card_ids = data.get("card_ids", [])
     if not card_ids:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="card_ids required")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="card_ids required"
+        )
     try:
         result = await AssignSprintTasksUseCase().execute(
             AssignSprintTasksCommand(sprint_id, card_ids),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except CardOperationError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except SprintOperationError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict())
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
     count = result.assigned
     sprint = result.sprint
     lane_type = sprint.lane_type.value if sprint else None
     accepted_card_types = (
-        ["bug", "test"]
-        if lane_type == "hotfix"
-        else ["normal", "test", "bug"]
+        ["bug", "test"] if lane_type == "hotfix" else ["normal", "test", "bug"]
     )
     return {
         "success": True,
@@ -453,17 +529,23 @@ async def unassign_tasks(
     """Remove cards from a sprint (set sprint_id to null)."""
     card_ids = data.get("card_ids", [])
     if not card_ids:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="card_ids required")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="card_ids required"
+        )
     try:
         result = await UnassignSprintTasksUseCase().execute(
             UnassignSprintTasksCommand(sprint_id, card_ids),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except CardOperationError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except SprintOperationError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict())
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
     return {"success": True, "unassigned": result.unassigned}
@@ -494,7 +576,9 @@ async def list_history(
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     return result.history
 
 
@@ -514,7 +598,9 @@ async def suggest_sprints(
             uow=uow,
         )
     except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc))
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=_not_found(exc)
+        )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return {"suggestions": result.suggestions, "count": len(result.suggestions)}

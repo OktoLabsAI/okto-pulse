@@ -3,13 +3,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IdeationsPanel } from '@/components/ideations/IdeationsPanel';
 import { RefinementsPanel } from '@/components/refinements/RefinementsPanel';
+import { SpecsPanel } from '@/components/specs/SpecsPanel';
 import { SprintsPanel } from '@/components/sprints/SprintsPanel';
 import { scopedPaginationKey } from '@/hooks/usePersistedPagination';
 
 const apiMock = vi.hoisted(() => ({
   listIdeationsPage: vi.fn(),
   listBoardRefinementsPage: vi.fn(),
+  listSpecsPage: vi.fn(),
   listBoardSprintsPage: vi.fn(),
+  lookupIdeations: vi.fn(),
   lookupSpecs: vi.fn(),
   archiveTree: vi.fn(),
   restoreTree: vi.fn(),
@@ -76,6 +79,25 @@ const sprint = {
   created_at: '2026-07-20T00:00:00Z',
   updated_at: '2026-07-20T00:00:00Z',
   archived: false,
+  open_qa_count: 0,
+};
+
+const spec = {
+  id: 'spec-1',
+  board_id: 'board-1',
+  ideation_id: null,
+  refinement_id: null,
+  title: 'Server spec',
+  description: 'Description',
+  status: 'draft' as const,
+  edition: 1,
+  version: 1,
+  assignee_id: null,
+  created_by: 'user-1',
+  created_at: '2026-07-20T00:00:00Z',
+  updated_at: '2026-07-20T00:00:00Z',
+  labels: [],
+  archived: false,
 };
 
 function envelope<T>(items: T[], offset = 0) {
@@ -95,7 +117,14 @@ describe('paginated entity panels', () => {
     window.history.replaceState({}, '', '/');
     apiMock.listIdeationsPage.mockResolvedValue(envelope([ideation]));
     apiMock.listBoardRefinementsPage.mockResolvedValue(envelope([refinement]));
+    apiMock.listSpecsPage.mockResolvedValue(envelope([spec]));
     apiMock.listBoardSprintsPage.mockResolvedValue(envelope([sprint]));
+    apiMock.lookupIdeations.mockResolvedValue({
+      items: [],
+      total: 0,
+      offset: 0,
+      limit: 50,
+    });
     apiMock.lookupSpecs.mockResolvedValue({
       items: [{ id: 'spec-1', title: 'Spec one', status: 'validated' }],
       total: 1,
@@ -215,5 +244,47 @@ describe('paginated entity panels', () => {
       'board-1',
       expect.objectContaining({ search: 'server sprint', offset: 0, limit: 25 }),
     );
+  });
+
+  it('renders open Q&A badges and omits zero counts in all non-Kanban board lists', async () => {
+    apiMock.listIdeationsPage.mockResolvedValue(envelope([
+      { ...ideation, id: 'idea-open', title: 'Ideation with Q&A', open_qa_count: 2 },
+      { ...ideation, id: 'idea-clear', title: 'Ideation without Q&A', open_qa_count: 0 },
+    ]));
+    let view = render(<IdeationsPanel boardId="board-1" />);
+    await screen.findByText('Ideation without Q&A');
+    expect(screen.getAllByTestId('qa-open-badge')).toHaveLength(1);
+    expect(screen.getByTestId('qa-open-badge')).toHaveTextContent('2 open Q&A');
+    view.unmount();
+
+    apiMock.listBoardRefinementsPage.mockResolvedValue(envelope([
+      { ...refinement, id: 'ref-open', title: 'Refinement with Q&A', open_qa_count: 3 },
+      { ...refinement, id: 'ref-clear', title: 'Refinement without Q&A', open_qa_count: 0 },
+    ]));
+    view = render(<RefinementsPanel boardId="board-1" />);
+    await screen.findByText('Refinement without Q&A');
+    expect(screen.getAllByTestId('qa-open-badge')).toHaveLength(1);
+    expect(screen.getByTestId('qa-open-badge')).toHaveTextContent('3 open Q&A');
+    view.unmount();
+
+    apiMock.listSpecsPage.mockResolvedValue(envelope([
+      { ...spec, id: 'spec-open', title: 'Spec with Q&A', open_qa_count: 4 },
+      { ...spec, id: 'spec-clear', title: 'Spec without Q&A', open_qa_count: 0 },
+    ]));
+    view = render(<SpecsPanel boardId="board-1" />);
+    await screen.findByText('Spec without Q&A');
+    expect(screen.getAllByTestId('qa-open-badge')).toHaveLength(1);
+    expect(screen.getByTestId('qa-open-badge')).toHaveTextContent('4 open Q&A');
+    view.unmount();
+
+    apiMock.listBoardSprintsPage.mockResolvedValue(envelope([
+      { ...sprint, id: 'sprint-open', title: 'Sprint with Q&A', open_qa_count: 5 },
+      { ...sprint, id: 'sprint-clear', title: 'Sprint without Q&A', open_qa_count: 0 },
+    ]));
+    view = render(<SprintsPanel boardId="board-1" />);
+    await screen.findByText('Sprint without Q&A');
+    expect(screen.getAllByTestId('qa-open-badge')).toHaveLength(1);
+    expect(screen.getByTestId('qa-open-badge')).toHaveTextContent('5 open Q&A');
+    view.unmount();
   });
 });

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+import threading
+import time
 from typing import Any
 
 import pytest
 
+from okto_pulse.community.adapters import mcp_trace_middleware as trace_module
 from okto_pulse.community.adapters.mcp_trace_middleware import (
     CommunityTraceMiddleware,
     install_trace_sink,
@@ -34,6 +37,17 @@ class _AsyncSink:
 
     async def write_trace(self, session_id: str, record: dict[str, Any]) -> None:
         self.records.append((session_id, dict(record)))
+
+
+class _SlowSyncSink(_RecordingSink):
+    def __init__(self) -> None:
+        super().__init__()
+        self.thread_ids: list[int] = []
+
+    def write_trace(self, session_id: str, record: dict[str, Any]) -> None:
+        self.thread_ids.append(threading.get_ident())
+        time.sleep(0.06)
+        super().write_trace(session_id, record)
 
 
 def test_trace_sink_protocol_is_structural() -> None:
@@ -109,6 +123,83 @@ def test_trace_middleware_awaits_async_sink_and_reraises_cancellation() -> None:
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(CommunityTraceMiddleware(_RecordingSink()).on_call_tool(_context("cancel"), _cancel))
+
+
+@pytest.mark.asyncio
+async def test_large_trace_normalization_and_sync_sink_do_not_block_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    main_thread_id = threading.get_ident()
+    sink = _SlowSyncSink()
+    result = SimpleNamespace(
+        is_error=False,
+        payload={
+            "items": [{"id": index, "content": "x" * 512} for index in range(2_000)]
+        },
+    )
+    original = trace_module._safe_jsonable
+    normalization_threads: list[int] = []
+
+    def slow_response_normalization(value: Any) -> Any:
+        if value is result:
+            normalization_threads.append(threading.get_ident())
+            time.sleep(0.06)
+        return original(value)
+
+    monkeypatch.setattr(
+        trace_module,
+        "_safe_jsonable",
+        slow_response_normalization,
+    )
+
+    async def call_next(_context):
+        return result
+
+    task = asyncio.create_task(
+        CommunityTraceMiddleware(sink).on_call_tool(_context("large"), call_next)
+    )
+    ticks = 0
+    while not task.done():
+        ticks += 1
+        await asyncio.sleep(0.002)
+    assert await task is result
+
+    # Thread scheduling granularity varies on Windows runners; multiple ticker
+    # turns plus explicit worker-thread identity prove the loop remained live.
+    assert ticks >= 3
+    assert normalization_threads
+    assert normalization_threads[0] != main_thread_id
+    assert sink.thread_ids
+    assert sink.thread_ids[0] != main_thread_id
+
+
+@pytest.mark.asyncio
+async def test_async_trace_sink_remains_on_event_loop_thread() -> None:
+    main_thread_id = threading.get_ident()
+
+    class ThreadRecordingAsyncSink(_AsyncSink):
+        def __init__(self) -> None:
+            super().__init__()
+            self.thread_ids: list[int] = []
+
+        async def write_trace(
+            self,
+            session_id: str,
+            record: dict[str, Any],
+        ) -> None:
+            self.thread_ids.append(threading.get_ident())
+            await super().write_trace(session_id, record)
+
+    sink = ThreadRecordingAsyncSink()
+
+    async def call_next(_context):
+        return SimpleNamespace(is_error=False)
+
+    await CommunityTraceMiddleware(sink).on_call_tool(
+        _context("async-thread"),
+        call_next,
+    )
+    assert sink.thread_ids == [main_thread_id]
 
 
 def _context(session_id: str):

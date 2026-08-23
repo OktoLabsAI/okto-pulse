@@ -9,6 +9,10 @@ from pydantic import BaseModel, Field
 
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.core.application.use_cases import ConflictError, EntityNotFoundError
+from okto_pulse.core.application.errors import CardOperationError
+from okto_pulse.core.domain.human_validation_cycle import (
+    SubjectEditRequiresDraftError,
+)
 from okto_pulse.core.application.use_cases.architecture_crud import (
     ArchitecturePropagationLegacyReportCommand,
     ArchitecturePropagationLegacyReportUseCase,
@@ -158,7 +162,7 @@ def _http_error_from_conflict(error: ConflictError) -> HTTPException:
         )
     return HTTPException(
         status_code=status.HTTP_409_CONFLICT,
-        detail="Spec is locked because validation passed. Move it back to draft or approved to edit architecture.",
+        detail="Spec is locked because validation passed. Move it to Draft to open a new edition before editing architecture.",
     )
 
 
@@ -211,8 +215,10 @@ async def _create_architecture(
     except ConflictError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Spec is locked because validation passed. Move it back to draft or approved to edit architecture.",
+            detail="Spec is locked because validation passed. Move it to Draft to open a new edition before editing architecture.",
         )
+    except SubjectEditRequiresDraftError as error:
+        raise RESTAdapterContract.http_error(error) from error
     except ValueError as error:
         raise _http_error_from_value(error)
     return result.response
@@ -414,6 +420,8 @@ async def update_architecture_design(
         )
     except ConflictError as exc:
         raise _http_error_from_conflict(exc)
+    except SubjectEditRequiresDraftError as error:
+        raise RESTAdapterContract.http_error(error) from error
     except ValueError as error:
         raise _http_error_from_value(error)
     return result.response
@@ -438,6 +446,8 @@ async def delete_architecture_design(
         )
     except ConflictError as exc:
         raise _http_error_from_conflict(exc)
+    except SubjectEditRequiresDraftError as error:
+        raise RESTAdapterContract.http_error(error) from error
 
 
 @router.get(
@@ -504,6 +514,8 @@ async def update_architecture_diagram_payload(
         )
     except ConflictError as exc:
         raise _http_error_from_conflict(exc)
+    except SubjectEditRequiresDraftError as error:
+        raise RESTAdapterContract.http_error(error) from error
     except ValueError as error:
         raise _http_error_from_value(error)
     return result.response
@@ -547,6 +559,8 @@ async def import_excalidraw_architecture_diagram(
         )
     except ConflictError as exc:
         raise _http_error_from_conflict(exc)
+    except SubjectEditRequiresDraftError as error:
+        raise RESTAdapterContract.http_error(error) from error
     except ValueError as error:
         raise _http_error_from_value(error)
     return result.response
@@ -628,6 +642,11 @@ async def copy_architecture_from_spec_to_card(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=error.to_error_dict(),
+        ) from error
+    except CardOperationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=error.to_dict(),
         ) from error
     except ValueError as error:
         raise _http_error_from_value(error)

@@ -129,7 +129,7 @@ describe('IdeationReferencesPanel', () => {
     expect(within(directSpecs).getByText('Direct checkout spec')).toBeInTheDocument();
     expect(
       within(directSpecs).getByLabelText(
-        'Edition v2; technical revision r2',
+        'Edition 2',
       ),
     ).toBeInTheDocument();
     expect(within(directSpecs).queryByText('Spec derived through refinement')).not.toBeInTheDocument();

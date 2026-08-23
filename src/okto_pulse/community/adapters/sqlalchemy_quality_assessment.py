@@ -8,13 +8,15 @@ ownership remains with the caller.
 from __future__ import annotations
 
 import inspect
+import hashlib
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from time import perf_counter
 from typing import TypeAlias
 
 from sqlalchemy import and_, func, not_, or_, select, update
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
@@ -33,6 +35,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     QualityFindingQaLinkRow,
     QualityFindingRow,
     QualityProposedQuestionRow,
+    RequirementLintValidationSnapshotRow,
     Refinement,
     RefinementHistory,
     RefinementQAItem,
@@ -41,6 +44,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     SpecQAItem,
 )
 from okto_pulse.core.domain.quality_assessment import (
+    AssessmentAnchorCatalog,
     AssessmentAuthoritySnapshot,
     AssessmentCommitResult,
     AssessmentDigestSet,
@@ -74,6 +78,20 @@ from okto_pulse.core.domain.quality_assessment import (
     ScoreDirection,
     project_assessment_receipt_view,
 )
+from okto_pulse.core.domain.requirement_lint import (
+    AMBIGUITY_TAXONOMY_DIGEST,
+    REQUIREMENT_LINT_RULESET_DIGEST,
+    external_requirement_lint_authority_snapshot_v1,
+    external_requirement_lint_digests_v1,
+    external_requirement_lint_scale_v1,
+    external_requirement_lint_versions_v1,
+)
+from okto_pulse.core.domain.validation_cycle import (
+    RequirementLintAnchor,
+    RequirementLintPreflight,
+    ValidationSubmissionFence,
+)
+from okto_pulse.core.domain.human_validation_cycle import is_current_edition
 from okto_pulse.core.domain.quality_canonicalization import (
     SEMANTIC_FIELD_MANIFEST_V1,
     clarification_digest_v1,
@@ -90,6 +108,7 @@ from okto_pulse.core.ports.quality_assessment import (
     AssessmentReadAccessDenied,
     AssessmentReceiptNotFound,
     AssessmentSubjectNotFound,
+    AssessmentSubjectEditionConflict,
     AssessmentSubjectLifecycleConflict,
     AssessmentSubjectStatusConflict,
     AssessmentSubjectVersionConflict,
@@ -104,6 +123,8 @@ from okto_pulse.core.services.ambiguity_assessment import (
     ambiguity_anchor_catalog,
     ambiguity_authority_snapshot_v1,
     ambiguity_digest_set,
+    ambiguity_qa_payload,
+    ambiguity_subject_payload,
     ambiguity_versions_v1,
     resolve_ambiguity_gate_configuration,
 )
@@ -173,6 +194,61 @@ def _enum_value(value: object) -> str:
     return str(raw)
 
 
+def _requirement_lint_anchor_payload(spec: Spec) -> list[dict[str, str | None]]:
+    anchors: list[dict[str, str | None]] = []
+    for field_name in (
+        "functional_requirements",
+        "acceptance_criteria",
+        "technical_requirements",
+    ):
+        for raw_item in getattr(spec, field_name, None) or ():
+            if not isinstance(raw_item, dict):
+                continue
+            if str(raw_item.get("status", "active")).casefold() != "active":
+                continue
+            child_id = raw_item.get("id")
+            child_text = raw_item.get("text")
+            if not isinstance(child_id, str) or not child_id.strip():
+                continue
+            if not isinstance(child_text, str):
+                child_text = ""
+            anchors.append(
+                {
+                    "anchor_type": "structured_child",
+                    "anchor_ref": child_id.strip(),
+                    "excerpt_hash": hashlib.sha256(
+                        child_text.strip().encode("utf-8")
+                    ).hexdigest(),
+                }
+            )
+    return sorted(anchors, key=lambda item: str(item["anchor_ref"]))
+
+
+async def freeze_requirement_lint_validation_snapshot(
+    session: AsyncSession,
+    *,
+    spec: Spec,
+) -> RequirementLintValidationSnapshotRow:
+    """Pin external-lint rule/taxonomy identity at validation admission."""
+
+    identity = (spec.board_id, spec.id, int(spec.edition))
+    existing = await session.get(RequirementLintValidationSnapshotRow, identity)
+    if existing is not None:
+        return existing
+    row = RequirementLintValidationSnapshotRow(
+        board_id=spec.board_id,
+        spec_id=spec.id,
+        spec_edition=int(spec.edition),
+        ruleset_digest=REQUIREMENT_LINT_RULESET_DIGEST,
+        taxonomy_digest=AMBIGUITY_TAXONOMY_DIGEST,
+        anchors_json=_requirement_lint_anchor_payload(spec),
+        captured_at=datetime.now(timezone.utc),
+    )
+    session.add(row)
+    await session.flush()
+    return row
+
+
 def _require_local_realm(realm_scope: RealmScope) -> None:
     if not isinstance(realm_scope, RealmScope) or realm_scope.realm_id != LOCAL_REALM_ID:
         raise QualityAssessmentPersistenceError(
@@ -187,6 +263,8 @@ async def _load_quality_subject_context(
     subject_type: AssessmentSubjectType,
     subject_id: str,
     assessment_kind: AssessmentKind,
+    load_qa_items: bool = True,
+    load_head: bool = True,
 ) -> _QualitySubjectContext | None:
     binding = _SUBJECT_BINDINGS[subject_type]
     row = (
@@ -202,31 +280,52 @@ async def _load_quality_subject_context(
     if row is None:
         return None
     subject, board = row
-    qa_items = tuple(
-        (
+    qa_items = (
+        tuple(
             (
-                await session.execute(
-                    select(binding.qa_model)
-                    .where(
-                        getattr(binding.qa_model, binding.subject_fk) == subject_id
+                (
+                    await session.execute(
+                        select(binding.qa_model)
+                        .where(
+                            getattr(binding.qa_model, binding.subject_fk)
+                            == subject_id
+                        )
+                        .order_by(binding.qa_model.id)
                     )
-                    .order_by(binding.qa_model.id)
                 )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
+        )
+        if load_qa_items
+        else ()
+    )
+    subject_edition = getattr(subject, "edition", None)
+    head_statement = (
+        select(QualityAssessmentHeadRow)
+        .join(
+            QualityAssessmentReceiptRow,
+            QualityAssessmentReceiptRow.id
+            == QualityAssessmentHeadRow.receipt_id,
+        )
+        .where(
+            QualityAssessmentHeadRow.board_id == board_id,
+            QualityAssessmentHeadRow.subject_type == subject_type.value,
+            QualityAssessmentHeadRow.subject_id == subject_id,
+            QualityAssessmentHeadRow.assessment_kind == assessment_kind.value,
+            QualityAssessmentReceiptRow.board_id == board_id,
         )
     )
-    head = (
-        await session.execute(
-            select(QualityAssessmentHeadRow).where(
-                QualityAssessmentHeadRow.board_id == board_id,
-                QualityAssessmentHeadRow.subject_type == subject_type.value,
-                QualityAssessmentHeadRow.subject_id == subject_id,
-                QualityAssessmentHeadRow.assessment_kind == assessment_kind.value,
-            )
+    if subject_edition is not None:
+        head_statement = head_statement.where(
+            QualityAssessmentReceiptRow.subject_edition
+            == int(subject_edition)
         )
-    ).scalar_one_or_none()
+    head = (
+        (await session.execute(head_statement)).scalar_one_or_none()
+        if load_head
+        else None
+    )
     return _QualitySubjectContext(
         board=board,
         subject=subject,
@@ -283,6 +382,53 @@ async def _ambiguity_authority_for(
             permissions is not None
             and access_level in {"owner", "editor", "admin", "agent"}
             and permissions.has(f"{subject_type.value}.qa.ask")
+        ),
+    )
+
+
+async def _external_requirement_lint_authority_for(
+    session: AsyncSession,
+    *,
+    actor_id: str,
+    board_id: str,
+    spec_id: str,
+    spec_version: int,
+    spec_edition: int,
+    channel: str,
+) -> AssessmentAuthoritySnapshot:
+    """Resolve only authority facts; external agents own the lint cognition."""
+
+    from okto_pulse.core.domain.permissions import (
+        SKA_PERMISSION_INTRODUCTION_V1,
+    )
+
+    permissions, access_level = await _quality_actor_permissions(
+        session,
+        actor_id=actor_id,
+        board_id=board_id,
+    )
+    quality_leaf = "spec.quality.assess"
+    historical_leaf = SKA_PERMISSION_INTRODUCTION_V1.historical_authority_for(
+        quality_leaf
+    )
+    writable = access_level in {"owner", "editor", "admin", "agent"}
+    return external_requirement_lint_authority_snapshot_v1(
+        board_id=board_id,
+        spec_id=spec_id,
+        spec_version=spec_version,
+        spec_edition=spec_edition,
+        actor_id=actor_id,
+        channel=channel,
+        domain_write=bool(
+            writable
+            and historical_leaf is not None
+            and permissions is not None
+            and permissions.has(historical_leaf)
+        ),
+        quality_assess=bool(
+            writable
+            and permissions is not None
+            and permissions.has(quality_leaf)
         ),
     )
 
@@ -353,6 +499,22 @@ async def resolve_quality_assessment_authority(
 
     receipt = bundle.receipt
     if (
+        receipt.assessment_kind is AssessmentKind.REQUIREMENT_LINT
+        and receipt.subject.subject_type is AssessmentSubjectType.SPEC
+        and receipt.subject.subject_edition is not None
+        and receipt.origin is AssessmentOrigin.HUMAN_OR_AGENT
+        and receipt.source is AssessmentSource.NATIVE
+    ):
+        return await _external_requirement_lint_authority_for(
+            session,
+            actor_id=receipt.created_by,
+            board_id=receipt.subject.board_id,
+            spec_id=receipt.subject.subject_id,
+            spec_version=receipt.subject.subject_version,
+            spec_edition=receipt.subject.subject_edition,
+            channel=receipt.channel,
+        )
+    if (
         receipt.assessment_kind is not AssessmentKind.AMBIGUITY
         or receipt.subject.subject_type
         not in {
@@ -394,6 +556,25 @@ async def resolve_quality_assessment_input_digests(
     if context is None:
         raise AssessmentInputDigestConflict("assessment_subject_missing")
     try:
+        if (
+            receipt.assessment_kind is AssessmentKind.REQUIREMENT_LINT
+            and receipt.origin is AssessmentOrigin.HUMAN_OR_AGENT
+            and receipt.source is AssessmentSource.NATIVE
+            and subject.subject_type is AssessmentSubjectType.SPEC
+            and subject.subject_edition is not None
+        ):
+            return external_requirement_lint_digests_v1(
+                content_digest=semantic_content_digest_v1(
+                    subject.subject_type,
+                    ambiguity_subject_payload(
+                        subject.subject_type,
+                        context.subject,
+                    ),
+                ),
+                clarification_digest=clarification_digest_v1(
+                    ambiguity_qa_payload(context.qa_items)
+                ),
+            )
         return current_quality_projection_digests(
             subject_type=subject.subject_type,
             assessment_kind=receipt.assessment_kind,
@@ -423,6 +604,7 @@ def _receipt_from_row(row: QualityAssessmentReceiptRow) -> AssessmentReceipt:
             subject_type=AssessmentSubjectType(row.subject_type),
             subject_id=row.subject_id,
             subject_version=row.subject_version,
+            subject_edition=row.subject_edition,
         ),
         assessment_kind=AssessmentKind(row.assessment_kind),
         origin=AssessmentOrigin(row.origin),
@@ -673,8 +855,16 @@ def _gate_inputs_for(
             applicable=True,
             enabled=configuration.required,
             threshold=configuration.maximum_score,
-            skipped=bool(
-                getattr(context.subject, "skip_ambiguity_gate", False)
+            skipped=(
+                bool(getattr(context.subject, "skip_ambiguity_gate", False))
+                and is_current_edition(
+                    getattr(
+                        context.subject,
+                        "skip_ambiguity_gate_edition",
+                        None,
+                    ),
+                    getattr(context.subject, "edition", None),
+                )
             ),
         ),
     )
@@ -710,6 +900,105 @@ class CommunitySqlAlchemyQualityAssessmentPreflightReader:
         if board_id is None:
             raise AssessmentSubjectNotFound()
         return str(board_id)
+
+    async def resolve_requirement_lint_preflight(
+        self,
+        *,
+        spec_id: str,
+        actor_id: str,
+        realm_scope: RealmScope,
+    ) -> RequirementLintPreflight:
+        """Expose data for an external agent without running lint cognition.
+
+        The requirement anchors are an identity-only snapshot of the Spec's
+        canonical FR/AC/TR children.  Rule evaluation and finding production
+        remain entirely outside Community.
+        """
+
+        _require_local_realm(realm_scope)
+        async with self._session_factory() as session:
+            spec = (
+                await session.execute(select(Spec).where(Spec.id == spec_id))
+            ).scalar_one_or_none()
+            if spec is None:
+                raise AssessmentSubjectNotFound()
+            authority = await _external_requirement_lint_authority_for(
+                session,
+                actor_id=actor_id,
+                board_id=str(spec.board_id),
+                spec_id=spec_id,
+                spec_version=int(spec.version),
+                spec_edition=int(spec.edition),
+                channel="rest:quality_assess",
+            )
+            if not (authority.domain_write and authority.quality_assess):
+                raise AssessmentReadAccessDenied()
+            subject_status = _enum_value(spec.status)
+            if subject_status != "approved":
+                from okto_pulse.core.ports.quality_assessment import (
+                    RequirementLintSubjectNotApproved,
+                )
+
+                raise RequirementLintSubjectNotApproved()
+
+            head = (
+                await session.execute(
+                    select(QualityAssessmentHeadRow, QualityAssessmentReceiptRow)
+                    .join(
+                        QualityAssessmentReceiptRow,
+                        QualityAssessmentReceiptRow.id
+                        == QualityAssessmentHeadRow.receipt_id,
+                    )
+                    .where(
+                        QualityAssessmentHeadRow.board_id == spec.board_id,
+                        QualityAssessmentHeadRow.subject_type == "spec",
+                        QualityAssessmentHeadRow.subject_id == spec.id,
+                        QualityAssessmentHeadRow.assessment_kind
+                        == AssessmentKind.REQUIREMENT_LINT.value,
+                        QualityAssessmentReceiptRow.subject_edition
+                        == int(spec.edition),
+                    )
+                )
+            ).one_or_none()
+            head_revision = 0 if head is None else int(head[0].revision)
+            snapshot = await session.get(
+                RequirementLintValidationSnapshotRow,
+                (spec.board_id, spec.id, int(spec.edition)),
+            )
+            ruleset_digest = (
+                str(head[1].ruleset_digest)
+                if head is not None
+                else (
+                    str(snapshot.ruleset_digest)
+                    if snapshot is not None
+                    else REQUIREMENT_LINT_RULESET_DIGEST
+                )
+            )
+            raw_anchors = (
+                snapshot.anchors_json
+                if snapshot is not None
+                else _requirement_lint_anchor_payload(spec)
+            )
+            anchors = tuple(
+                RequirementLintAnchor(
+                    anchor_type=str(item["anchor_type"]),
+                    anchor_ref=item.get("anchor_ref"),
+                    excerpt_hash=item.get("excerpt_hash"),
+                )
+                for item in raw_anchors
+                if isinstance(item, dict)
+            )
+            return RequirementLintPreflight(
+                subject_edition=int(spec.edition),
+                subject_status=subject_status,
+                ruleset_digest=ruleset_digest,
+                requirement_anchors=anchors,
+                submission_fence=ValidationSubmissionFence(
+                    expected_validation_edition=int(spec.edition),
+                    expected_subject_version=int(spec.version),
+                    expected_head_revision=head_revision,
+                ),
+            )
 
     async def lookup_assessment_replay(
         self,
@@ -786,6 +1075,7 @@ class CommunitySqlAlchemyQualityAssessmentPreflightReader:
                 subject_id=submission.subject_id,
                 assessment_kind=submission.assessment_kind,
                 expected_subject_version=submission.expected_subject_version,
+                expected_subject_edition=submission.expected_subject_edition,
                 expected_head_revision=submission.expected_head_revision,
                 channel="mcp:quality_assess",
             ),
@@ -801,14 +1091,19 @@ class CommunitySqlAlchemyQualityAssessmentPreflightReader:
         realm_scope: RealmScope,
     ) -> AssessmentPreflight:
         _require_local_realm(realm_scope)
-        if (
-            request.assessment_kind is not AssessmentKind.AMBIGUITY
-            or request.subject_type
-            not in {
+        ambiguity_identity = (
+            request.assessment_kind is AssessmentKind.AMBIGUITY
+            and request.subject_type
+            in {
                 AssessmentSubjectType.IDEATION,
                 AssessmentSubjectType.REFINEMENT,
             }
-        ):
+        )
+        requirement_lint_identity = (
+            request.assessment_kind is AssessmentKind.REQUIREMENT_LINT
+            and request.subject_type is AssessmentSubjectType.SPEC
+        )
+        if not ambiguity_identity and not requirement_lint_identity:
             raise QualityAssessmentPersistenceError(
                 "assessment_preflight_identity_unsupported"
             )
@@ -822,11 +1117,98 @@ class CommunitySqlAlchemyQualityAssessmentPreflightReader:
             )
             if context is None:
                 raise AssessmentSubjectNotFound()
+            subject_version = int(getattr(context.subject, "version"))
+            subject_edition = int(getattr(context.subject, "edition"))
+            if requirement_lint_identity:
+                lint_snapshot = await session.get(
+                    RequirementLintValidationSnapshotRow,
+                    (
+                        request.board_id,
+                        request.subject_id,
+                        subject_edition,
+                    ),
+                )
+                authority = await _external_requirement_lint_authority_for(
+                    session,
+                    actor_id=actor_id,
+                    board_id=request.board_id,
+                    spec_id=request.subject_id,
+                    spec_version=subject_version,
+                    spec_edition=subject_edition,
+                    channel=request.channel,
+                )
+                return AssessmentPreflight(
+                    subject=AssessmentSubjectRef(
+                        board_id=request.board_id,
+                        subject_type=request.subject_type,
+                        subject_id=request.subject_id,
+                        subject_version=subject_version,
+                        subject_edition=subject_edition,
+                    ),
+                    status=_enum_value(getattr(context.subject, "status")),
+                    current_head_revision=(
+                        0 if context.head is None else int(context.head.revision)
+                    ),
+                    current_head_receipt_id=(
+                        None if context.head is None else context.head.receipt_id
+                    ),
+                    channel=request.channel,
+                    expected_scale=external_requirement_lint_scale_v1(
+                        request.evaluated_rule_count
+                    ),
+                    digests=replace(
+                        external_requirement_lint_digests_v1(
+                            content_digest=semantic_content_digest_v1(
+                                request.subject_type,
+                                ambiguity_subject_payload(
+                                    request.subject_type,
+                                    context.subject,
+                                ),
+                            ),
+                            clarification_digest=clarification_digest_v1(
+                                ambiguity_qa_payload(context.qa_items)
+                            ),
+                        ),
+                        ruleset_digest=(
+                            REQUIREMENT_LINT_RULESET_DIGEST
+                            if lint_snapshot is None
+                            else lint_snapshot.ruleset_digest
+                        ),
+                        taxonomy_digest=(
+                            AMBIGUITY_TAXONOMY_DIGEST
+                            if lint_snapshot is None
+                            else lint_snapshot.taxonomy_digest
+                        ),
+                    ),
+                    versions=external_requirement_lint_versions_v1(),
+                    anchors=AssessmentAnchorCatalog(
+                        structured_child_ids=frozenset(
+                            str(item.get("anchor_ref"))
+                            for item in (
+                                lint_snapshot.anchors_json
+                                if lint_snapshot is not None
+                                else _requirement_lint_anchor_payload(
+                                    context.subject
+                                )
+                            )
+                            if isinstance(item, dict)
+                            and item.get("anchor_ref")
+                        )
+                    ),
+                    allowed_category_codes=(
+                        AMBIGUITY_TAXONOMY_CATEGORY_ID_SET
+                    ),
+                    authority=authority,
+                    origin=AssessmentOrigin.HUMAN_OR_AGENT,
+                    subject_archived=bool(
+                        getattr(context.subject, "archived")
+                    ),
+                )
+
             configuration = resolve_ambiguity_gate_configuration(
                 request.subject_type,
                 context.board.settings,
             )
-            subject_version = int(getattr(context.subject, "version"))
             authority = await _ambiguity_authority_for(
                 session,
                 actor_id=actor_id,
@@ -842,6 +1224,7 @@ class CommunitySqlAlchemyQualityAssessmentPreflightReader:
                     subject_type=request.subject_type,
                     subject_id=request.subject_id,
                     subject_version=subject_version,
+                    subject_edition=subject_edition,
                 ),
                 status=_enum_value(getattr(context.subject, "status")),
                 current_head_revision=(
@@ -888,6 +1271,10 @@ class CommunitySqlAlchemyQualityAssessmentPreflightReader:
                 subject_id=subject_id,
                 # The subject/board/Q&A read is kind-independent.
                 assessment_kind=AssessmentKind.AMBIGUITY,
+                # Human currentness is lifecycle-edition-only.  Q&A and the
+                # technical head are write/preflight inputs, not read inputs.
+                load_qa_items=False,
+                load_head=False,
             )
             if context is None:
                 raise AssessmentSubjectNotFound()
@@ -908,11 +1295,9 @@ class CommunitySqlAlchemyQualityAssessmentPreflightReader:
                     subject_type=subject_type,
                     subject_id=subject_id,
                     subject_version=int(getattr(context.subject, "version")),
+                    subject_edition=int(getattr(context.subject, "edition")),
                 ),
-                currentness_inputs=_currentness_inputs_for(
-                    context=context,
-                    subject_type=subject_type,
-                ),
+                currentness_inputs=(),
                 gate_inputs=_gate_inputs_for(
                     context=context,
                     subject_type=subject_type,
@@ -1023,6 +1408,7 @@ class CommunitySqlAlchemyQualityAssessment:
             AssessmentInputDigestConflict,
             AssessmentSubjectLifecycleConflict,
             AssessmentSubjectStatusConflict,
+            AssessmentSubjectEditionConflict,
             AssessmentSubjectVersionConflict,
             QualityAssessmentPersistenceError,
         ):
@@ -1069,6 +1455,7 @@ class CommunitySqlAlchemyQualityAssessment:
             row.subject_type != expected_subject.subject_type.value
             or row.subject_id != expected_subject.subject_id
             or row.subject_version != expected_subject.subject_version
+            or row.subject_edition != expected_subject.subject_edition
             or row.assessment_kind != bundle.receipt.assessment_kind.value
         ):
             raise AssessmentIdempotencyConflict(
@@ -1116,6 +1503,7 @@ class CommunitySqlAlchemyQualityAssessment:
             subject_type=AssessmentSubjectType(row.subject_type),
             subject_id=row.subject_id,
             subject_version=row.subject_version,
+            subject_edition=row.subject_edition,
             assessment_kind=AssessmentKind(row.assessment_kind),
             request_fingerprint=row.request_digest,
             receipt_id=row.id,
@@ -1192,6 +1580,8 @@ class CommunitySqlAlchemyQualityAssessment:
             "predecessor_receipt_id": receipt.predecessor_receipt_id,
             "outcome": receipt.outcome,
         }
+        if receipt.subject_edition is not None:
+            expected_payload["subject_edition"] = receipt.subject_edition
         if (
             event_row is None
             or execution_row is None
@@ -1238,6 +1628,18 @@ class CommunitySqlAlchemyQualityAssessment:
             if not snapshot.domain_write:
                 raise AssessmentAuthorityConflict("assessment_authority_fence_mismatch")
             return
+        external_lint = (
+            receipt.subject.subject_type is AssessmentSubjectType.SPEC
+            and receipt.assessment_kind is AssessmentKind.REQUIREMENT_LINT
+            and receipt.origin is AssessmentOrigin.HUMAN_OR_AGENT
+            and receipt.subject.subject_edition is not None
+        )
+        if external_lint:
+            if not snapshot.domain_write or not snapshot.quality_assess:
+                raise AssessmentAuthorityConflict(
+                    "assessment_authority_fence_mismatch"
+                )
+            return
         if (
             not snapshot.domain_write
             or not snapshot.quality_assess
@@ -1255,20 +1657,58 @@ class CommunitySqlAlchemyQualityAssessment:
     async def _fence_subject(self, bundle: AssessmentWriteBundle) -> object:
         subject = bundle.receipt.subject
         binding = _SUBJECT_BINDINGS[subject.subject_type]
-        current = (
-            await self._session.execute(
-                select(binding.model)
-                .where(
-                    binding.model.id == subject.subject_id,
-                    binding.model.board_id == subject.board_id,
-                    binding.model.version == bundle.expected_subject_version,
-                    binding.model.status == bundle.expected_subject_status,
-                    binding.model.archived.is_(bundle.expected_subject_archived),
-                )
-                .with_for_update()
+        fence_conditions = [
+            binding.model.id == subject.subject_id,
+            binding.model.board_id == subject.board_id,
+            binding.model.version == bundle.expected_subject_version,
+            binding.model.status == bundle.expected_subject_status,
+            binding.model.archived.is_(bundle.expected_subject_archived),
+        ]
+        if bundle.expected_subject_edition is not None:
+            fence_conditions.append(
+                binding.model.edition == bundle.expected_subject_edition
             )
+        bind = self._session.get_bind()
+        dialect_name = str(getattr(getattr(bind, "dialect", None), "name", ""))
+        if dialect_name == "sqlite":
+            fence_values = {
+                column.key: getattr(binding.model, column.key)
+                for column in binding.model.__table__.columns
+                if column.primary_key or column.onupdate is not None
+            }
+            try:
+                result = await self._session.execute(
+                    update(binding.model)
+                    .where(*fence_conditions)
+                    .values(**fence_values)
+                    .execution_options(synchronize_session=False)
+                )
+            except OperationalError as exc:
+                reason = str(exc).lower()
+                if "locked" in reason or "busy" in reason:
+                    raise AssessmentSubjectVersionConflict(
+                        "assessment_subject_write_fence_conflict",
+                        details={
+                            "retryable": True,
+                            "next_action": "refresh_and_retry",
+                        },
+                    ) from exc
+                raise
+            fence_acquired = int(result.rowcount or 0) == 1
+        else:
+            fence_acquired = None
+
+        statement = (
+            select(binding.model)
+            .where(*fence_conditions)
+            .execution_options(populate_existing=True)
+        )
+        if dialect_name != "sqlite":
+            statement = statement.with_for_update()
+        current = (
+            await self._session.execute(statement)
         ).scalar_one_or_none()
-        if current is not None:
+        if current is not None and fence_acquired is not False:
             return current
 
         diagnostic = (
@@ -1276,7 +1716,7 @@ class CommunitySqlAlchemyQualityAssessment:
                 select(binding.model).where(
                     binding.model.id == subject.subject_id,
                     binding.model.board_id == subject.board_id,
-                )
+                ).execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
         if diagnostic is None:
@@ -1284,6 +1724,17 @@ class CommunitySqlAlchemyQualityAssessment:
         if bool(diagnostic.archived) != bundle.expected_subject_archived:
             raise AssessmentSubjectLifecycleConflict(
                 "assessment_subject_lifecycle_mismatch"
+            )
+        if (
+            bundle.expected_subject_edition is not None
+            and int(diagnostic.edition) != bundle.expected_subject_edition
+        ):
+            raise AssessmentSubjectEditionConflict(
+                "assessment_subject_edition_mismatch",
+                details={
+                    "expected": bundle.expected_subject_edition,
+                    "current": int(diagnostic.edition),
+                },
             )
         if _enum_value(diagnostic.status) != bundle.expected_subject_status:
             raise AssessmentSubjectStatusConflict("assessment_subject_status_mismatch")
@@ -1409,6 +1860,7 @@ class CommunitySqlAlchemyQualityAssessment:
             subject_type=receipt.subject.subject_type.value,
             subject_id=receipt.subject.subject_id,
             subject_version=receipt.subject.subject_version,
+            subject_edition=receipt.subject.subject_edition,
             assessment_kind=receipt.assessment_kind.value,
             origin=receipt.origin.value,
             source=receipt.source.value,
@@ -1488,15 +1940,13 @@ class CommunitySqlAlchemyQualityAssessment:
         self,
         bundle: AssessmentWriteBundle,
     ) -> frozenset[str]:
-        """Texts already materialized on the subject's operational Q&A.
+        """Deduplicate only human ambiguity questions on operational Q&A."""
 
-        Every semantic write re-issues the advisory lint receipt; without
-        this fence each NEW receipt re-materialized byte-identical questions
-        (observed live: 300 duplicates of 19 findings on one spec).  The
-        receipt-owned proposal rows stay immutable per receipt — only the
-        operational subject Q&A row is deduplicated, by normalized text.
-        """
-
+        if (
+            bundle.receipt.assessment_kind is not AssessmentKind.AMBIGUITY
+            or not bundle.proposed_questions
+        ):
+            return frozenset()
         subject = bundle.receipt.subject
         binding = _SUBJECT_BINDINGS[subject.subject_type]
         rows = await self._session.execute(
@@ -1564,11 +2014,27 @@ class CommunitySqlAlchemyQualityAssessment:
         staged_question_texts = set(existing_question_texts)
         for question in bundle.proposed_questions:
             choices = list(question.choices)
-            # The immutable quality contract names free-form proposals
-            # ``free_text`` and choice labels as strings.  The existing
-            # subject Q&A contract names the interaction ``text`` and requires
-            # stable option objects. Preserve the receipt-owned values and
-            # adapt only the materialized operational Q&A row.
+            self._session.add(
+                QualityProposedQuestionRow(
+                    qa_id=question.qa_id,
+                    receipt_id=question.receipt_id,
+                    client_key=question.client_key,
+                    question=question.question,
+                    question_type=question.question_type,
+                    choices=choices,
+                    allow_free_text=question.allow_free_text,
+                    category_code=question.category_code,
+                    created_at=question.created_at,
+                )
+            )
+            if receipt.assessment_kind is not AssessmentKind.AMBIGUITY:
+                continue
+            normalized_text = self._normalized_question_text(
+                question.question
+            )
+            if normalized_text in staged_question_texts:
+                continue
+            staged_question_texts.add(normalized_text)
             qa_question_type = (
                 "text"
                 if question.question_type == "free_text"
@@ -1583,25 +2049,6 @@ class CommunitySqlAlchemyQualityAssessment:
                 }
                 for index, label in enumerate(question.choices, start=1)
             ]
-            self._session.add(
-                QualityProposedQuestionRow(
-                    qa_id=question.qa_id,
-                    receipt_id=question.receipt_id,
-                    client_key=question.client_key,
-                    question=question.question,
-                    question_type=question.question_type,
-                    choices=choices,
-                    allow_free_text=question.allow_free_text,
-                    category_code=question.category_code,
-                    created_at=question.created_at,
-                )
-            )
-            normalized_text = self._normalized_question_text(
-                question.question
-            )
-            if normalized_text in staged_question_texts:
-                continue
-            staged_question_texts.add(normalized_text)
             self._session.add(
                 binding.qa_model(
                     id=question.qa_id,
@@ -1651,6 +2098,8 @@ class CommunitySqlAlchemyQualityAssessment:
             "predecessor_receipt_id": receipt.predecessor_receipt_id,
             "outcome": receipt.outcome.value,
         }
+        if subject.subject_edition is not None:
+            payload["subject_edition"] = subject.subject_edition
         actor_type = (
             "agent" if receipt.origin is AssessmentOrigin.SEMANTIC_WRITER else "user"
         )
@@ -1738,6 +2187,7 @@ class CommunitySqlAlchemyQualityAssessment:
             subject_type=receipt.subject.subject_type,
             subject_id=receipt.subject.subject_id,
             subject_version=receipt.subject.subject_version,
+            subject_edition=receipt.subject.subject_edition,
             assessment_kind=receipt.assessment_kind,
             request_fingerprint=bundle.request_fingerprint,
             receipt_id=receipt.id,
@@ -1777,25 +2227,34 @@ class CommunitySqlAlchemyQualityAssessment:
         subject_type: AssessmentSubjectType,
         subject_id: str,
         assessment_kind: AssessmentKind,
+        subject_edition: int | None = None,
     ) -> tuple[AssessmentReceipt, AssessmentSubjectHead] | None:
+        statement = (
+            select(
+                QualityAssessmentReceiptRow,
+                QualityAssessmentHeadRow,
+            )
+            .join(
+                QualityAssessmentHeadRow,
+                QualityAssessmentHeadRow.receipt_id
+                == QualityAssessmentReceiptRow.id,
+            )
+            .where(
+                QualityAssessmentHeadRow.board_id == board_id,
+                QualityAssessmentHeadRow.subject_type == subject_type.value,
+                QualityAssessmentHeadRow.subject_id == subject_id,
+                QualityAssessmentHeadRow.assessment_kind == assessment_kind.value,
+                QualityAssessmentReceiptRow.board_id == board_id,
+            )
+        )
+        if subject_edition is not None:
+            statement = statement.where(
+                QualityAssessmentReceiptRow.subject_edition == subject_edition
+            )
+        statement = statement.execution_options(populate_existing=True)
         row = (
             await self._session.execute(
-                select(
-                    QualityAssessmentReceiptRow,
-                    QualityAssessmentHeadRow,
-                )
-                .join(
-                    QualityAssessmentHeadRow,
-                    QualityAssessmentHeadRow.receipt_id
-                    == QualityAssessmentReceiptRow.id,
-                )
-                .where(
-                    QualityAssessmentHeadRow.board_id == board_id,
-                    QualityAssessmentHeadRow.subject_type == subject_type.value,
-                    QualityAssessmentHeadRow.subject_id == subject_id,
-                    QualityAssessmentHeadRow.assessment_kind == assessment_kind.value,
-                    QualityAssessmentReceiptRow.board_id == board_id,
-                )
+                statement
             )
         ).one_or_none()
         if row is None:
@@ -1936,6 +2395,8 @@ class CommunitySqlAlchemyQualityAssessment:
         query: AssessmentListQuery,
     ) -> QualityPage[AssessmentReceiptView]:
         if query.current_subject_version is None or (
+            query.current_subject_edition is None
+            and
             query.current_digests is None and not query.currentness_inputs
         ):
             raise QualityAssessmentPersistenceError(
@@ -1968,7 +2429,13 @@ class CommunitySqlAlchemyQualityAssessment:
             == QualityAssessmentReceiptRow.assessment_kind,
         )
         is_head = QualityAssessmentHeadRow.receipt_id == QualityAssessmentReceiptRow.id
-        if query.currentness_inputs:
+        lifecycle_edition_mode = query.current_subject_edition is not None
+        if lifecycle_edition_mode:
+            current_inputs_match = (
+                QualityAssessmentReceiptRow.subject_edition
+                == query.current_subject_edition
+            )
+        elif query.currentness_inputs:
             current_inputs_match = or_(
                 *(
                     and_(
@@ -2008,7 +2475,23 @@ class CommunitySqlAlchemyQualityAssessment:
                 QualityAssessmentReceiptRow.policy_digest
                 == query.current_digests.policy_digest,
             )
-        if query.state is AssessmentReceiptState.SUPERSEDED:
+        if lifecycle_edition_mode and query.state is AssessmentReceiptState.PREVIOUS:
+            filtered_conditions.append(
+                or_(
+                    QualityAssessmentHeadRow.receipt_id.is_(None),
+                    QualityAssessmentHeadRow.receipt_id
+                    != QualityAssessmentReceiptRow.id,
+                    QualityAssessmentReceiptRow.subject_edition.is_(None),
+                    QualityAssessmentReceiptRow.subject_edition
+                    != query.current_subject_edition,
+                )
+            )
+        elif lifecycle_edition_mode and query.state in {
+            AssessmentReceiptState.STALE,
+            AssessmentReceiptState.SUPERSEDED,
+        }:
+            filtered_conditions.append(QualityAssessmentReceiptRow.id.is_(None))
+        elif query.state is AssessmentReceiptState.SUPERSEDED:
             filtered_conditions.append(
                 or_(
                     QualityAssessmentHeadRow.receipt_id.is_(None),
@@ -2094,6 +2577,7 @@ class CommunitySqlAlchemyQualityAssessment:
             subject_type=subject.subject_type,
             subject_id=subject.subject_id,
             subject_version=query.current_subject_version,
+            subject_edition=query.current_subject_edition,
         )
         input_by_identity = {
             (item.assessment_kind, item.origin, item.source): item.digests
@@ -2102,7 +2586,9 @@ class CommunitySqlAlchemyQualityAssessment:
         projected: list[AssessmentReceiptView] = []
         for receipt in map(_receipt_from_row, rows):
             current_digests = (
-                input_by_identity.get(
+                receipt.digests
+                if lifecycle_edition_mode
+                else input_by_identity.get(
                     (
                         receipt.assessment_kind,
                         receipt.origin,
@@ -2116,14 +2602,22 @@ class CommunitySqlAlchemyQualityAssessment:
                 raise QualityAssessmentPersistenceError(
                     "assessment_current_projection_identity_unsupported"
                 )
-            projected.append(
-                project_assessment_receipt_view(
+            view = project_assessment_receipt_view(
                     receipt,
                     head_receipt_id=heads.get(receipt.assessment_kind),
                     current_subject=current_subject,
                     current_digests=current_digests,
                 )
-            )
+            if lifecycle_edition_mode:
+                state = (
+                    AssessmentReceiptState.CURRENT
+                    if view.is_head
+                    and receipt.subject.subject_edition
+                    == query.current_subject_edition
+                    else AssessmentReceiptState.PREVIOUS
+                )
+                view = replace(view, state=state)
+            projected.append(view)
         items = tuple(projected)
         return QualityPage(
             items=items,

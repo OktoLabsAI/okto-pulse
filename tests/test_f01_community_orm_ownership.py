@@ -50,12 +50,15 @@ def test_community_metadata_matches_governed_inherited_schema_contract() -> None
     assert table_names & COMMUNITY_SCHEMA_EXTENSION_TABLES == (
         COMMUNITY_SCHEMA_EXTENSION_TABLES
     )
-    assert len(legacy_table_names) == 60
-    assert len(table_names) == 60 + len(COMMUNITY_SCHEMA_EXTENSION_TABLES)
-    assert schema_contract_sha256(
-        Base.metadata,
-        table_names=legacy_table_names,
-    ) == CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256
+    assert len(legacy_table_names) == 63
+    assert len(table_names) == 63 + len(COMMUNITY_SCHEMA_EXTENSION_TABLES)
+    assert (
+        schema_contract_sha256(
+            Base.metadata,
+            table_names=legacy_table_names,
+        )
+        == CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256
+    )
     assert CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 != LEGACY_CORE_SCHEMA_SHA256
 
 
@@ -85,9 +88,7 @@ def test_schema_contract_hash_preserves_compound_index_expression_order() -> Non
         right_table.c.left_value,
     )
 
-    assert schema_contract_sha256(left_first) != schema_contract_sha256(
-        right_first
-    )
+    assert schema_contract_sha256(left_first) != schema_contract_sha256(right_first)
 
 
 def test_explicit_repository_mappers_keep_domain_free_of_orm_state() -> None:
@@ -102,6 +103,7 @@ def test_explicit_repository_mappers_keep_domain_free_of_orm_state() -> None:
         created_by="owner",
         edition=4,
         version=17,
+        skip_code_evidence_coverage=True,
     )
 
     pairs = (
@@ -116,6 +118,7 @@ def test_explicit_repository_mappers_keep_domain_free_of_orm_state() -> None:
         if isinstance(entity, Spec):
             assert restored.edition == 4
             assert restored.version == 17
+            assert restored.skip_code_evidence_coverage is True
         assert not hasattr(restored, "_sa_instance_state")
         assert hasattr(row, "_sa_instance_state")
 
