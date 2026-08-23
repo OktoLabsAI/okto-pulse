@@ -80,6 +80,32 @@ describe('useOpaqueCursorPager', () => {
     expect(loop.result.current.error).toMatch(/repeated cursor/i);
   });
 
+  it('retries the exact cursor navigation that failed', async () => {
+    let cursorAttempts = 0;
+    const loadPage = vi.fn(async (cursor: string | undefined) => {
+      if (!cursor) return page([{ id: 'one' }], 'cursor-2');
+      cursorAttempts += 1;
+      if (cursorAttempts === 1) throw new Error('temporary failure');
+      return page([{ id: 'two' }]);
+    });
+    const { result } = renderHook(() => useOpaqueCursorPager({
+      enabled: true,
+      resetKey: 'retry-navigation',
+      loadPage,
+      getItemKey: (item: Row) => item.id,
+    }));
+
+    await waitFor(() => expect(result.current.hasNext).toBe(true));
+    act(() => result.current.next());
+    await waitFor(() => expect(result.current.error).toBe('temporary failure'));
+    expect(result.current.items).toEqual([{ id: 'one' }]);
+
+    act(() => result.current.retry());
+    await waitFor(() => expect(result.current.items).toEqual([{ id: 'two' }]));
+    expect(result.current.pageNumber).toBe(2);
+    expect(loadPage).toHaveBeenLastCalledWith('cursor-2', expect.any(AbortSignal));
+  });
+
   it('aborts and ignores an older response after the filter scope changes', async () => {
     let resolveOld!: (value: ReturnType<typeof page>) => void;
     let resolveNew!: (value: ReturnType<typeof page>) => void;

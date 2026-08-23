@@ -100,6 +100,8 @@ export function useOpaqueCursorPager<
   const repeatedCursorMessageRef = useRef(repeatedCursorMessage);
   const locationRef = useRef(location);
   const historyRef = useRef(history);
+  const retryLocationRef = useRef(location);
+  const retryHistoryRef = useRef(history);
   const loadedRef = useRef(loaded);
   const loadedResetKeyRef = useRef(loadedResetKey);
   const previousEnabledRef = useRef(enabled);
@@ -122,6 +124,8 @@ export function useOpaqueCursorPager<
     epoch: number,
   ) => {
     if (!enabledRef.current) return;
+    retryLocationRef.current = nextLocation;
+    retryHistoryRef.current = nextHistory;
     activeControllerRef.current?.abort();
     const controller = new AbortController();
     activeControllerRef.current = controller;
@@ -195,6 +199,8 @@ export function useOpaqueCursorPager<
     const first = { cursor: undefined, index: 0 };
     locationRef.current = first;
     historyRef.current = [];
+    retryLocationRef.current = first;
+    retryHistoryRef.current = [];
     setLocation(first);
     setHistory([]);
     setPage(null);
@@ -241,7 +247,11 @@ export function useOpaqueCursorPager<
       restart();
       return;
     }
-    void load(locationRef.current, historyRef.current, epochRef.current);
+    void load(
+      retryLocationRef.current,
+      retryHistoryRef.current,
+      epochRef.current,
+    );
   }, [load, loading, restart, restartRequired]);
 
   useEffect(() => {
