@@ -120,25 +120,33 @@ def _cognitive_snapshot_id(
     ).hexdigest()
 
 
-def _encode_board_kg_cursor(*, snapshot_id: str, offset: int) -> str:
-    return f"{_BOARD_KG_CURSOR_PREFIX}:{snapshot_id}:offset:{offset}"
+def _encode_board_kg_cursor(
+    *, snapshot_id: str, observed_at: datetime, offset: int
+) -> str:
+    observed_micros = int(observed_at.timestamp() * 1_000_000)
+    return (
+        f"{_BOARD_KG_CURSOR_PREFIX}:{snapshot_id}:"
+        f"observed:{observed_micros}:offset:{offset}"
+    )
 
 
 def _decode_board_kg_cursor(cursor: str, *, snapshot_id: str) -> int:
     parts = cursor.split(":")
     if (
-        len(parts) != 4
+        len(parts) != 6
         or parts[0] != _BOARD_KG_CURSOR_PREFIX
-        or parts[2] != "offset"
+        or parts[2] != "observed"
+        or parts[4] != "offset"
     ):
         raise ValueError("board_kg_analytics_cursor_invalid")
     if parts[1] != snapshot_id:
         raise ValueError("board_kg_analytics_cursor_stale")
     try:
-        offset = int(parts[3])
+        observed_micros = int(parts[3])
+        offset = int(parts[5])
     except ValueError as exc:
         raise ValueError("board_kg_analytics_cursor_invalid") from exc
-    if offset < 0:
+    if observed_micros < 0 or offset < 0:
         raise ValueError("board_kg_analytics_cursor_invalid")
     return offset
 
@@ -473,7 +481,11 @@ class CommunitySqlAlchemyBoardKgAnalyticsEvidence:
                 raise ValueError("board_kg_analytics_cursor_invalid")
         end = min(start + query.limit, len(facts))
         next_cursor = (
-            _encode_board_kg_cursor(snapshot_id=snapshot_id, offset=end)
+            _encode_board_kg_cursor(
+                snapshot_id=snapshot_id,
+                observed_at=observed_at,
+                offset=end,
+            )
             if end < len(facts)
             else None
         )

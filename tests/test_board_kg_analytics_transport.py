@@ -9,6 +9,9 @@ from types import SimpleNamespace
 import pytest
 
 from okto_pulse.community.api import analytics as analytics_api
+from okto_pulse.community.adapters.sqlalchemy_analytics_evidence import (
+    _encode_board_kg_cursor,
+)
 
 
 CANONICAL = {
@@ -40,6 +43,48 @@ def test_board_kg_command_uses_canonical_half_open_window() -> None:
     assert command.as_of == datetime(2026, 8, 20, 12, tzinfo=UTC)
     assert command.window.from_inclusive == datetime(2026, 8, 19, tzinfo=UTC)
     assert command.window.to_exclusive == datetime(2026, 8, 21, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_implicit_kg_window_is_stable_across_cursor_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands = []
+
+    async def execute(_self, command, *, actor, uow):
+        del actor, uow
+        commands.append(command)
+        return SimpleNamespace(
+            data={
+                **CANONICAL,
+                "next_cursor": (
+                    _encode_board_kg_cursor(
+                        snapshot_id="b" * 64,
+                        observed_at=command.as_of,
+                        offset=1,
+                    )
+                    if command.cursor is None
+                    else None
+                ),
+            }
+        )
+
+    monkeypatch.setattr(analytics_api.BoardKgAnalyticsUseCase, "execute", execute)
+    first = await analytics_api.board_kg_analytics(
+        "board-1",
+        user_id="user-1",
+        uow=object(),
+    )
+    await analytics_api.board_kg_analytics(
+        "board-1",
+        cursor=first["next_cursor"],
+        user_id="user-1",
+        uow=object(),
+    )
+
+    assert len(commands) == 2
+    assert commands[1].as_of == commands[0].as_of
+    assert commands[1].window == commands[0].window
 
 
 def test_canonical_csv_flattening_preserves_null_and_empty_values() -> None:

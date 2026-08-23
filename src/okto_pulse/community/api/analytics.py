@@ -1049,6 +1049,29 @@ def _board_kg_analytics_command(
     )
 
 
+def _board_kg_cursor_observed_at(cursor: str | None) -> datetime | None:
+    if not cursor:
+        return None
+    parts = cursor.split(":")
+    if (
+        len(parts) != 6
+        or parts[0] != "snapshot"
+        or parts[2] != "observed"
+        or parts[4] != "offset"
+    ):
+        return None
+    try:
+        observed_micros = int(parts[3])
+        if observed_micros < 0:
+            return None
+        return datetime.fromtimestamp(
+            observed_micros / 1_000_000,
+            tz=timezone.utc,
+        )
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
 async def _board_kg_analytics_payload(
     board_id: str,
     *,
@@ -1063,18 +1086,19 @@ async def _board_kg_analytics_payload(
     uow: PulseUnitOfWork,
     observed_at: datetime | None = None,
 ) -> dict[str, object]:
+    pinned_observed_at = observed_at or _board_kg_cursor_observed_at(cursor)
     temporal = _board_kg_analytics_command(
         board_id,
         date_from=date_from,
         date_to=date_to,
-        as_of=None,
+        as_of=(pinned_observed_at.isoformat() if pinned_observed_at else None),
     )
     try:
         result = await BoardKgAnalyticsUseCase().execute(
             BoardKgAnalyticsCommand(
                 board_id=board_id,
                 window=temporal.window,
-                as_of=observed_at or temporal.as_of,
+                as_of=pinned_observed_at or temporal.as_of,
                 cognitive_status=tuple(item.value for item in cognitive_status),
                 artifact_types=artifact_types,
                 cursor=cursor,

@@ -19,6 +19,9 @@ from okto_pulse.core.ports.analytics_foundation import (
 from okto_pulse.core.ports.board_kg_analytics import BoardKgAnalyticsQuery
 
 
+OBSERVED_AT = datetime(2026, 8, 22, 12, tzinfo=UTC)
+
+
 def _item(
     item_id: str,
     *,
@@ -59,7 +62,9 @@ def _snapshot(
 
 def test_board_kg_cursor_is_bound_to_the_exact_ledger_snapshot() -> None:
     first_snapshot = _snapshot("generation-1", [_item("a"), _item("b")])
-    cursor = _encode_board_kg_cursor(snapshot_id=first_snapshot, offset=1)
+    cursor = _encode_board_kg_cursor(
+        snapshot_id=first_snapshot, observed_at=OBSERVED_AT, offset=1
+    )
 
     assert _decode_board_kg_cursor(cursor, snapshot_id=first_snapshot) == 1
     assert first_snapshot == _snapshot(
@@ -76,7 +81,9 @@ def test_board_kg_cursor_is_bound_to_the_exact_ledger_snapshot() -> None:
 def test_board_kg_cursor_rejects_generation_changes_and_malformed_offsets() -> None:
     snapshot = _snapshot("generation-1", [_item("a")])
     next_generation = _snapshot("generation-2", [_item("a")])
-    cursor = _encode_board_kg_cursor(snapshot_id=snapshot, offset=1)
+    cursor = _encode_board_kg_cursor(
+        snapshot_id=snapshot, observed_at=OBSERVED_AT, offset=1
+    )
 
     with pytest.raises(ValueError, match="board_kg_analytics_cursor_stale"):
         _decode_board_kg_cursor(cursor, snapshot_id=next_generation)
@@ -84,7 +91,9 @@ def test_board_kg_cursor_rejects_generation_changes_and_malformed_offsets() -> N
         _decode_board_kg_cursor("offset:1", snapshot_id=snapshot)
     with pytest.raises(ValueError, match="board_kg_analytics_cursor_invalid"):
         _decode_board_kg_cursor(
-            _encode_board_kg_cursor(snapshot_id=snapshot, offset=-1),
+            _encode_board_kg_cursor(
+                snapshot_id=snapshot, observed_at=OBSERVED_AT, offset=-1
+            ),
             snapshot_id=snapshot,
         )
 
@@ -97,7 +106,9 @@ def test_board_kg_cursor_rejects_board_and_filter_changes() -> None:
         cognitive_status=("pending",),
         artifact_types=("spec",),
     )
-    cursor = _encode_board_kg_cursor(snapshot_id=snapshot, offset=1)
+    cursor = _encode_board_kg_cursor(
+        snapshot_id=snapshot, observed_at=OBSERVED_AT, offset=1
+    )
 
     changed_scopes = (
         _snapshot(
@@ -162,7 +173,7 @@ async def test_board_kg_cognitive_items_use_the_canonical_half_open_window(
     monkeypatch.setattr(
         sqlalchemy_analytics_evidence,
         "CognitiveConsolidationItemStore",
-        lambda _artifact_store: StubStore(),
+        lambda **_kwargs: StubStore(),
     )
     query = BoardKgAnalyticsQuery(
         foundation=AnalyticsFoundationQuery(
