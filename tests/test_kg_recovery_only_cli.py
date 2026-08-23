@@ -8072,7 +8072,7 @@ def test_entrypoint_hash_binds_metadata_and_launcher(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    metadata_path = Path("okto_pulse-0.3.2.dist-info/entry_points.txt")
+    metadata_path = Path("okto_pulse-0.3.3.dist-info/entry_points.txt")
     launcher_path = Path("bin/okto-pulse-kg-recovery-only.exe")
     (tmp_path / metadata_path).parent.mkdir(parents=True)
     (tmp_path / launcher_path).parent.mkdir(parents=True)

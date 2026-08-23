@@ -52,7 +52,7 @@ class CommunitySettings(CoreSettings, BaseSettings):
     metrics_dir: str = ""
     metrics_beacon_url: str = COMMUNITY_DEFAULT_METRICS_BEACON_URL
     mcp_server_name: str = "okto-pulse"
-    mcp_server_version: str = "0.3.2"
+    mcp_server_version: str = "0.3.3"
     mcp_port: int = 8101
     # MCP and API/UI share one event loop.  Keep tool-call bursts bounded while
     # leaving transport sessions, streams and every REST route outside the gate.

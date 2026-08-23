@@ -304,8 +304,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if "--json-evidence" in argv:
             payload = run_runtime_smoke_evidence(
-                core_version=os.environ.get("R15B_CORE_VERSION", "0.3.2"),
-                community_version=os.environ.get("R15B_COMMUNITY_VERSION", "0.3.2"),
+                core_version=os.environ.get("R15B_CORE_VERSION", "0.3.3"),
+                community_version=os.environ.get("R15B_COMMUNITY_VERSION", "0.3.3"),
                 core_commit=os.environ.get("R15B_CORE_COMMIT", "working-tree"),
                 community_commit=os.environ.get(
                     "R15B_COMMUNITY_COMMIT", "working-tree"

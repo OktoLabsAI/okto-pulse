@@ -63,7 +63,7 @@ Every stage has structured artifacts, lineage, status transitions and validation
 
 ## Platform Surface
 
-Current 0.3.2 surface:
+Current 0.3.3 surface:
 
 | Surface | Count |
 | --- | ---: |
@@ -443,12 +443,12 @@ Use the contextual error message as the source of truth when reporting an issue.
 
 ## Release Notes
 
-**Current: 0.3.2** — Community delivers actionable semantic-guideline evidence,
+**Current: 0.3.3** — Community delivers actionable semantic-guideline evidence,
 agent-mediated Code Traceability, governed lifecycle validation, resilient KG
 recovery, canonical Analytics dashboards and full-graph dependency lineage in a
 human-first UI.
 
-**→ [Full release notes](docs/RELEASE-NOTES.md)** — 0.3.2, 0.3.1 and 0.3.0 changesets, plus 0.2.6, 0.2.5,
+**→ [Full release notes](docs/RELEASE-NOTES.md)** — 0.3.3, 0.3.2, 0.3.1 and 0.3.0 changesets, plus 0.2.6, 0.2.5,
 0.2.3, 0.2.2, 0.2.1 and 0.2.0.
 
 ## SaaS Closure Audit

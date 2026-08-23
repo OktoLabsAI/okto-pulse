@@ -9,6 +9,27 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-23
+
+### Added
+
+- A contributor guide covering the paired repository setup, Python and
+  frontend validation commands, CLA handling and branch-matching CI behavior.
+- Complete CLI reference coverage for Code Traceability, Metrics, API-key,
+  pipeline verification and Knowledge Graph operations.
+
+### Changed
+
+- The frontend package and documentation now identify the Okto Pulse Community
+  workbench accurately, without obsolete Clerk setup instructions.
+- ESLint warning budgets now match the exact current per-rule counts.
+- Community now requires `okto-pulse-core>=0.3.3`.
+
+### Fixed
+
+- Delivery Intelligence rejects historical `as_of` requests until a real
+  snapshot reader is available, including complete CSV export requests.
+
 ## [0.3.2] - 2026-08-22
 
 ### Added

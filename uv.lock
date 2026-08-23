@@ -1454,7 +1454,7 @@ wheels = [
 
 [[package]]
 name = "okto-pulse"
-version = "0.3.2"
+version = "0.3.3"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
@@ -1502,7 +1502,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0,<1.0.0" },
     { name = "ladybug", specifier = "==0.16.0" },
     { name = "mcp", specifier = ">=1.20.0,<2.0.0" },
-    { name = "okto-pulse-core", specifier = ">=0.3.2,<1.0.0" },
+    { name = "okto-pulse-core", specifier = ">=0.3.3,<1.0.0" },
     { name = "pydantic", specifier = ">=2.12.0,<2.14" },
     { name = "pydantic-settings", specifier = ">=2.1.0,<3.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0,<10.0.0" },
@@ -1520,17 +1520,17 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "okto-pulse-core"
-version = "0.3.2"
-source = { registry = "https://pypi.org/simple" }
+version = "0.3.3"
+source = { registry = "../okto-pulse-core/dist" }
 dependencies = [
     { name = "pydantic" },
     { name = "pydantic-core" },
     { name = "pyyaml" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8b/2d/c07bcb23dd40cfe0090de709837435ff830e6536e918797cc23060f41af4/okto_pulse_core-0.3.2.tar.gz", hash = "sha256:00f4bab9c98a52a5622403925414d862accf4caa96555cc257a9614c0b3aadf7", size = 5685279, upload-time = "2026-08-23T11:50:24.116Z" }
+sdist = { path = "okto_pulse_core-0.3.3.tar.gz" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/73/e7/309e3d7dd695ebc49df114feb236da59b866b18a513697e3275b50407fb1/okto_pulse_core-0.3.2-py3-none-any.whl", hash = "sha256:1ffadc4f0cb7d8d6fd01daa2efead31f425f6afaa2f1dcd61bc3d30e8d897c28", size = 3546606, upload-time = "2026-08-23T11:50:22.072Z" },
+    { path = "okto_pulse_core-0.3.3-py3-none-any.whl" },
 ]
 
 [[package]]
