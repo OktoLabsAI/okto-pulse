@@ -223,10 +223,13 @@ export function EntityExportDialog({
   const handleDownload = async () => {
     if (!preflight || !canDownload) return;
     const controller = new AbortController();
+    const requestedFormat = format;
+    const requestedScope = scope;
+    const requestedSections = Array.from(selectedSections).sort();
+    const requestedSectionSet = new Set(requestedSections);
     setDownloading(true);
     setError(null);
     try {
-      const requestedSections = Array.from(selectedSections).sort();
       // The fingerprint covers both the entity snapshot and the requested
       // section set. Seal the exact selection immediately before download so
       // a subset never reuses the fingerprint issued for the full manifest.
@@ -234,13 +237,13 @@ export function EntityExportDialog({
         boardId,
         entityType,
         entityId,
-        { scope, sections: requestedSections },
+        { scope: requestedScope, sections: requestedSections },
         controller.signal,
       );
       const requestedManifest = downloadPreflight.sections.filter(
         (section) => section.section_key === 'base'
           || section.section_key === 'identity'
-          || selectedSections.has(section.section_key),
+          || requestedSectionSet.has(section.section_key),
       );
       const returnedKeys = new Set(requestedManifest.map((section) => section.section_key));
       const missingSections = requestedSections.filter((key) => !returnedKeys.has(key));
@@ -251,7 +254,7 @@ export function EntityExportDialog({
         !downloadPreflight.complete_for_actor
         || missingSections.length > 0
         || blockingRequestedSections.length > 0
-        || !downloadPreflight.formats.includes(format)
+        || !downloadPreflight.formats.includes(requestedFormat)
       ) {
         throw new Error('The selected report is no longer complete. Review the refreshed sources and try again.');
       }
@@ -260,8 +263,8 @@ export function EntityExportDialog({
         entityType,
         entityId,
         {
-          format,
-          scope,
+          format: requestedFormat,
+          scope: requestedScope,
           sections: requestedSections,
           expected_snapshot_fingerprint: downloadPreflight.snapshot_fingerprint,
         },
@@ -269,7 +272,7 @@ export function EntityExportDialog({
         controller.signal,
       );
       downloadBlob(attachment.blob, attachment.filename);
-      toast.success(`${format === 'html' ? 'HTML' : 'Markdown'} report downloaded`);
+      toast.success(`${requestedFormat === 'html' ? 'HTML' : 'Markdown'} report downloaded`);
       onClose();
     } catch (caught) {
       const message = humanError(caught);
@@ -385,7 +388,7 @@ export function EntityExportDialog({
                             key={value}
                             type="button"
                             data-export-initial-focus={value === 'markdown' ? '' : undefined}
-                            disabled={!supported}
+                            disabled={!supported || downloading}
                             aria-pressed={format === value}
                             onClick={() => setFormat(value)}
                             className={`flex min-h-16 items-center gap-3 rounded-xl border p-3 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${format === value ? 'border-violet-500 bg-violet-50 text-violet-800 ring-1 ring-violet-500 dark:bg-violet-950/35 dark:text-violet-200' : 'border-surface-200 text-surface-700 hover:border-surface-300 dark:border-surface-700 dark:text-surface-200'}`}
@@ -408,6 +411,7 @@ export function EntityExportDialog({
                         <button
                           key={value}
                           type="button"
+                          disabled={downloading}
                           aria-pressed={scope === value}
                           onClick={() => setScope(value)}
                           className={`min-h-16 rounded-xl border p-3 text-left transition-colors ${scope === value ? 'border-violet-500 bg-violet-50 text-violet-800 ring-1 ring-violet-500 dark:bg-violet-950/35 dark:text-violet-200' : 'border-surface-200 text-surface-700 hover:border-surface-300 dark:border-surface-700 dark:text-surface-200'}`}
@@ -428,7 +432,7 @@ export function EntityExportDialog({
                     </div>
                     <button
                       type="button"
-                      disabled={loading}
+                      disabled={loading || downloading}
                       onClick={() => setReloadKey((value) => value + 1)}
                       className="inline-flex items-center gap-1.5 rounded-lg border border-surface-300 px-2.5 py-1.5 text-[11px] font-semibold text-surface-600 hover:bg-surface-50 disabled:opacity-40 dark:border-surface-600 dark:text-surface-300 dark:hover:bg-surface-800"
                     >
@@ -443,7 +447,7 @@ export function EntityExportDialog({
                         <button
                           key={section.section_key}
                           type="button"
-                          disabled={!selectable}
+                          disabled={!selectable || downloading}
                           aria-pressed={selected}
                           onClick={() => toggleSection(section)}
                           className="flex min-h-16 items-start gap-3 rounded-xl border border-surface-200 bg-white p-3 text-left disabled:cursor-default dark:border-surface-700 dark:bg-surface-900"

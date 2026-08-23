@@ -218,6 +218,49 @@ describe('EntityExportDialog', () => {
     );
   });
 
+  it('locks export choices while sealing and generating the attachment', async () => {
+    const initial = preflight({
+      source_complete: true,
+      sections: [
+        { section_key: 'base', label: 'Identity', state: 'included', total_count: 1 },
+        { section_key: 'requirements', label: 'Requirements', state: 'included', total_count: 3 },
+      ],
+    });
+    let finishPreflight: ((value: EntityExportPreflight) => void) | undefined;
+    const pendingPreflight = new Promise<EntityExportPreflight>((resolve) => {
+      finishPreflight = resolve;
+    });
+    mocks.preflight.mockResolvedValueOnce(initial).mockReturnValueOnce(pendingPreflight);
+    mocks.download.mockResolvedValue({
+      blob: new Blob(['# Report'], { type: 'text/markdown' }),
+      filename: 'spec-export.md',
+      content_type: 'text/markdown',
+    });
+
+    render(
+      <EntityExportButton
+        boardId="board-1"
+        entityType="spec"
+        entityId="spec-1"
+        entityTitle="Export Spec"
+      />,
+    );
+    fireEvent.click(screen.getByTitle('Export report'));
+    const requirements = (await screen.findByText('Requirements')).closest('button');
+    expect(requirements).not.toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Download Markdown' }));
+
+    await waitFor(() => expect(requirements).toBeDisabled());
+    expect(screen.getByRole('button', { name: /^Markdown/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^Current/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^Complete/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^Refresh/i })).toBeDisabled();
+
+    finishPreflight?.(initial);
+    await waitFor(() => expect(mocks.download).toHaveBeenCalledTimes(1));
+  });
+
   it('surfaces preflight failures and retries without a silent fallback', async () => {
     mocks.preflight
       .mockRejectedValueOnce(new Error('preflight exploded'))
