@@ -175,8 +175,14 @@ export const CODE_TRACEABILITY_KIND_CONFIG: Record<CodeTraceabilityKGKind, {
   },
 };
 
+export function isCodeTraceabilityKind(
+  kindOf: string | null | undefined,
+): kindOf is CodeTraceabilityKGKind {
+  return Boolean(kindOf && kindOf in CODE_TRACEABILITY_KIND_CONFIG);
+}
+
 export function codeTraceabilityKindConfig(kindOf: string | null | undefined) {
-  return kindOf && kindOf in CODE_TRACEABILITY_KIND_CONFIG
+  return isCodeTraceabilityKind(kindOf)
     ? CODE_TRACEABILITY_KIND_CONFIG[kindOf as CodeTraceabilityKGKind]
     : null;
 }

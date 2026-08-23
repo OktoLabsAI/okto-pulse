@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import type { KGNode } from '@/types/knowledge-graph';
 import {
+  isCodeTraceabilityKind,
   kgNodeDisplayType,
   kgNodeVisualConfig,
 } from '@/types/knowledge-graph';
@@ -42,7 +43,8 @@ export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Prop
   const permissions = usePermissions(boardId);
   const { canReadProjection: canReadCodeTraceability } =
     useCodeTraceabilityAuthority(boardId);
-  const traceabilityDenied = Boolean(node.kind_of) && !canReadCodeTraceability;
+  const traceabilityDenied = isCodeTraceabilityKind(node.kind_of)
+    && !canReadCodeTraceability;
   useEffect(() => {
     if (traceabilityDenied) onClose();
   }, [onClose, traceabilityDenied]);

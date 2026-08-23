@@ -30,7 +30,12 @@ import { GlobalSearchView } from './GlobalSearchView';
 import { KGRefreshButton } from './KGRefreshButton';
 import { NodeDetailModal } from './NodeDetailModal';
 import { useKgLiveEvents } from '@/hooks/useKgLiveEvents';
-import type { KGNode, KGEdge, KGStats } from '@/types/knowledge-graph';
+import {
+  isCodeTraceabilityKind,
+  type KGNode,
+  type KGEdge,
+  type KGStats,
+} from '@/types/knowledge-graph';
 import * as kgApi from '@/services/kg-api';
 import { getKGHealth, type KGHealth } from '@/services/kg-health-api';
 import { PulseLoader } from '@/components/shared/PulseLoader';
@@ -163,7 +168,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
   const authorityNodes = useMemo(
     () => canReadCodeTraceability
       ? nodes
-      : nodes.filter((node) => !node.kind_of),
+      : nodes.filter((node) => !isCodeTraceabilityKind(node.kind_of)),
     [canReadCodeTraceability, nodes],
   );
   const authorityEdges = useMemo(() => {
@@ -181,8 +186,12 @@ export function KnowledgeGraphPage({ boardId }: Props) {
         ? { ...current, codeTraceabilityKinds: [] }
         : current
     ));
-    setSelectedNode((current) => current?.kind_of ? null : current);
-    setModalNode((current) => current?.kind_of ? null : current);
+    setSelectedNode((current) => (
+      isCodeTraceabilityKind(current?.kind_of) ? null : current
+    ));
+    setModalNode((current) => (
+      isCodeTraceabilityKind(current?.kind_of) ? null : current
+    ));
   }, [canReadCodeTraceability]);
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
     if (typeof window === 'undefined') return SIDEBAR_DEFAULT;

@@ -199,15 +199,33 @@ describe('KnowledgeGraphPage — historical completion release', () => {
       node_type: 'Entity',
       kind_of: 'implementation_target',
     };
+    const semanticGuidelineNode: KGNode = {
+      id: 'semantic-guideline-1',
+      title: 'Visible semantic guideline',
+      content: 'Governed guideline content',
+      source_confidence: 0.9,
+      relevance_score: 0.8,
+      node_type: 'Entity',
+      kind_of: 'SemanticGuidelineConstraint',
+    };
     vi.spyOn(kgApi, 'getSubgraph').mockResolvedValue({
-      nodes: [physicalNode, traceabilityNode],
-      edges: [{
-        id: 'supports-secret',
-        source: 'physical-1',
-        target: 'traceability-1',
-        edge_type: 'supports',
-        confidence: 0.9,
-      }],
+      nodes: [physicalNode, traceabilityNode, semanticGuidelineNode],
+      edges: [
+        {
+          id: 'supports-secret',
+          source: 'physical-1',
+          target: 'traceability-1',
+          edge_type: 'supports',
+          confidence: 0.9,
+        },
+        {
+          id: 'supports-guideline',
+          source: 'physical-1',
+          target: 'semantic-guideline-1',
+          edge_type: 'supports',
+          confidence: 0.9,
+        },
+      ],
       metadata: { edge_read_status: 'ok' },
       next_cursor: null,
     });
@@ -231,7 +249,7 @@ describe('KnowledgeGraphPage — historical completion release', () => {
     });
 
     const { rerender } = render(<KnowledgeGraphPage boardId="board-123" />);
-    expect(await screen.findByTestId('mock-graph-canvas')).toHaveTextContent('canvas nodes: 2; edges: 1');
+    expect(await screen.findByTestId('mock-graph-canvas')).toHaveTextContent('canvas nodes: 3; edges: 2');
     expect(screen.getByTestId('mock-graph-canvas')).toHaveTextContent('Secret implementation target');
 
     permissionHas.mockImplementation(
@@ -240,9 +258,10 @@ describe('KnowledgeGraphPage — historical completion release', () => {
     rerender(<KnowledgeGraphPage boardId="board-123" />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('mock-graph-canvas')).toHaveTextContent('canvas nodes: 1; edges: 0');
+      expect(screen.getByTestId('mock-graph-canvas')).toHaveTextContent('canvas nodes: 2; edges: 1');
     });
     expect(screen.getByTestId('mock-graph-canvas')).not.toHaveTextContent('Secret implementation target');
-    expect(screen.getByTestId('mock-graph-controls')).toHaveTextContent('loaded: 1; visible: 1');
+    expect(screen.getByTestId('mock-graph-canvas')).toHaveTextContent('Visible semantic guideline');
+    expect(screen.getByTestId('mock-graph-controls')).toHaveTextContent('loaded: 2; visible: 2');
   });
 });
