@@ -373,6 +373,24 @@ describe('Delivery Intelligence A5 full view', () => {
     expect(screen.queryByRole('button', { name: 'Load more Sprints' })).not.toBeInTheDocument();
   });
 
+  it('keeps the loaded projection visible and retries only a failed cursor page', async () => {
+    dashboardApi.getBoardDeliveryIntelligence
+      .mockResolvedValueOnce(deliveryPage({ nextCursor: 'cursor-2' }))
+      .mockRejectedValueOnce(new Error('Next page timed out.'))
+      .mockResolvedValueOnce(deliveryPage({ sprints: [sprint('sprint-2', 'Sprint Beta')], nextCursor: null }));
+    renderFullView();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more Sprints' }));
+    const paginationAlert = await screen.findByRole('alert');
+    expect(paginationAlert).toHaveTextContent('Next page timed out.');
+    expect(screen.getByRole('button', { name: 'Sprint Alpha' })).toBeInTheDocument();
+
+    fireEvent.click(within(paginationAlert).getByRole('button', { name: 'Retry page' }));
+    expect(await screen.findByRole('button', { name: 'Sprint Beta' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Sprint Alpha' })).toBeInTheDocument();
+    expect(dashboardApi.getBoardDeliveryIntelligence).toHaveBeenCalledTimes(3);
+  });
+
   it('ignores a stale response after the board changes', async () => {
     const stale = deferred<DeliveryIntelligenceResponse>();
     const current = deferred<DeliveryIntelligenceResponse>();

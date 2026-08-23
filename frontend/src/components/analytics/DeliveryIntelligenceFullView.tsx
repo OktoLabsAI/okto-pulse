@@ -115,6 +115,7 @@ export function DeliveryIntelligenceFullView({
   const [retry, setRetry] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [paginationError, setPaginationError] = useState<string | null>(null);
   const requestSequence = useRef(0);
 
   useEffect(() => {
@@ -137,6 +138,7 @@ export function DeliveryIntelligenceFullView({
     const sequence = ++requestSequence.current;
     setLoading(true);
     setLoadingMore(false);
+    setPaginationError(null);
     setError(null);
     try {
       const response = await api.getBoardDeliveryIntelligence(boardId, from, to, queryFilters);
@@ -192,7 +194,7 @@ export function DeliveryIntelligenceFullView({
     if (!data?.next_cursor || loadingMore) return;
     const sequence = ++requestSequence.current;
     setLoadingMore(true);
-    setError(null);
+    setPaginationError(null);
     try {
       const next = await api.getBoardDeliveryIntelligence(boardId, from, to, {
         ...filters,
@@ -203,7 +205,7 @@ export function DeliveryIntelligenceFullView({
       }
     } catch (caught) {
       if (requestSequence.current === sequence) {
-        setError(caught instanceof Error ? caught.message : 'Could not load more Sprints.');
+        setPaginationError(caught instanceof Error ? caught.message : 'Could not load more Sprints.');
       }
     } finally {
       if (requestSequence.current === sequence) setLoadingMore(false);
@@ -316,7 +318,7 @@ export function DeliveryIntelligenceFullView({
                   return <tr key={sprint.sprint_id} className="align-top"><th className="px-4 py-3"><button type="button" className="font-semibold text-blue-600 underline decoration-dotted underline-offset-4 dark:text-blue-400" onClick={() => onSelectEntity('sprint', sprint.sprint_id, sprint.title)}>{sprint.title}</button><p className="mt-1 font-normal text-[10px] text-gray-400">{words(sprint.status)} · {words(sprint.lane_type)}</p></th><td className="px-4 py-3">{commitmentRate === null ? <StateBadge value={sprint.commitment.state} title={sprint.commitment.unavailable_reason} /> : <><span className="font-semibold text-emerald-600 dark:text-emerald-400">{commitmentRate}%</span><p className="text-[10px] text-gray-400">{sprint.completed_committed_count}/{committed}</p></>}</td><td className="px-4 py-3">{sprint.commitment.state === 'available' ? `+${sprint.commitment.added_count ?? 0} / −${sprint.commitment.removed_count ?? 0}` : 'Unavailable'}</td><td className="px-4 py-3">{sprint.lane_type === 'hotfix' ? <><span>{sprint.done_cards} done</span><p className="text-[10px] text-gray-400">{sprint.origin_bug_id ? `Bug ${sprint.origin_bug_id}` : 'Origin unavailable'}</p></> : 'Normal lane'}</td><td className="px-4 py-3">{sprint.task_validation_gate.first_pass_rate === null ? 'Unavailable' : `${sprint.task_validation_gate.first_pass_rate}% first pass`}<p className="text-[10px] text-gray-400">{sprint.task_validation_gate.total_submitted} attempts</p></td><td className="px-4 py-3">{sprint.last_evaluation ? <><StateBadge value="current" /><p className="mt-1">{sprint.last_evaluation.overall_score ?? 'Unavailable'} · {words(sprint.last_evaluation.recommendation)}</p></> : <StateBadge value="empty" title="No current Sprint evaluation" />}</td></tr>;
                 })}
               </tbody></table></div>
-              {data.next_cursor && <div className="border-t border-gray-200 p-3 text-center dark:border-gray-700"><button type="button" disabled={loadingMore} onClick={() => void loadMore()} className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold disabled:opacity-50 dark:border-gray-600">{loadingMore ? 'Loading…' : 'Load more Sprints'}</button></div>}
+              {data.next_cursor && <div className="border-t border-gray-200 p-3 text-center dark:border-gray-700">{paginationError && <div className="mb-3 flex items-center justify-center gap-3 text-xs text-red-700 dark:text-red-300" role="alert"><span>{paginationError}</span><button type="button" className="font-semibold underline" onClick={() => void loadMore()}>Retry page</button></div>}<button type="button" disabled={loadingMore} onClick={() => void loadMore()} className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-semibold disabled:opacity-50 dark:border-gray-600">{loadingMore ? 'Loading…' : 'Load more Sprints'}</button></div>}
             </article>
           </section>
 

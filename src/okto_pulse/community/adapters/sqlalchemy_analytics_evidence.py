@@ -91,14 +91,24 @@ _BOARD_KG_CURSOR_PREFIX = "snapshot"
 def _cognitive_snapshot_id(
     generation: str | None,
     items: Iterable[CognitiveConsolidationItem],
+    *,
+    board_id: str,
+    cognitive_status: Iterable[str],
+    artifact_types: Iterable[str],
 ) -> str:
-    """Identify the exact mutable ledger snapshot behind a cursor page."""
+    """Identify the exact query and mutable ledger snapshot behind a page."""
 
     canonical_items = sorted(
         (item.to_dict() for item in items),
         key=lambda item: (str(item.get("artifact_id", "")), str(item["item_id"])),
     )
-    payload = {"generation": generation, "items": canonical_items}
+    payload = {
+        "board_id": board_id,
+        "cognitive_status": sorted(cognitive_status),
+        "artifact_types": sorted(artifact_types),
+        "generation": generation,
+        "items": canonical_items,
+    }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -439,7 +449,13 @@ class CommunitySqlAlchemyBoardKgAnalyticsEvidence:
                 )
             )
         facts.sort(key=lambda item: (item.artifact_id, item.cognitive_item_id))
-        snapshot_id = _cognitive_snapshot_id(generation, raw_items)
+        snapshot_id = _cognitive_snapshot_id(
+            generation,
+            raw_items,
+            board_id=query.board_id,
+            cognitive_status=(item.value for item in query.cognitive_status),
+            artifact_types=query.artifact_types,
+        )
         start = 0
         if query.cursor is not None:
             start = _decode_board_kg_cursor(query.cursor, snapshot_id=snapshot_id)
