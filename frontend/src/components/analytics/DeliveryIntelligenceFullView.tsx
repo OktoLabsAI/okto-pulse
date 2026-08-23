@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CalendarRange,
@@ -115,6 +115,7 @@ export function DeliveryIntelligenceFullView({
   const [retry, setRetry] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const requestSequence = useRef(0);
 
   useEffect(() => {
     const next = {
@@ -133,21 +134,29 @@ export function DeliveryIntelligenceFullView({
   );
 
   const load = useCallback(async () => {
+    const sequence = ++requestSequence.current;
     setLoading(true);
+    setLoadingMore(false);
     setError(null);
     try {
-      setData(await api.getBoardDeliveryIntelligence(boardId, from, to, queryFilters));
+      const response = await api.getBoardDeliveryIntelligence(boardId, from, to, queryFilters);
+      if (requestSequence.current === sequence) setData(response);
     } catch (caught) {
-      setData(null);
-      setError(caught instanceof Error ? caught.message : 'Delivery Intelligence is unavailable.');
+      if (requestSequence.current === sequence) {
+        setData(null);
+        setError(caught instanceof Error ? caught.message : 'Delivery Intelligence is unavailable.');
+      }
     } finally {
-      setLoading(false);
+      if (requestSequence.current === sequence) setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId, from, to, queryFilters, retry]);
 
   useEffect(() => {
     void load();
+    return () => {
+      requestSequence.current += 1;
+    };
   }, [load]);
 
   useEffect(() => {
@@ -181,6 +190,7 @@ export function DeliveryIntelligenceFullView({
 
   const loadMore = async () => {
     if (!data?.next_cursor || loadingMore) return;
+    const sequence = ++requestSequence.current;
     setLoadingMore(true);
     setError(null);
     try {
@@ -188,11 +198,15 @@ export function DeliveryIntelligenceFullView({
         ...filters,
         cursor: data.next_cursor,
       });
-      setData({ ...next, sprints: [...data.sprints, ...next.sprints] });
+      if (requestSequence.current === sequence) {
+        setData({ ...next, sprints: [...data.sprints, ...next.sprints] });
+      }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Could not load more Sprints.');
+      if (requestSequence.current === sequence) {
+        setError(caught instanceof Error ? caught.message : 'Could not load more Sprints.');
+      }
     } finally {
-      setLoadingMore(false);
+      if (requestSequence.current === sequence) setLoadingMore(false);
     }
   };
 

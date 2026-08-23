@@ -125,6 +125,7 @@ export function KgEffectivenessFullView(props: KgEffectivenessFullViewProps) {
   const loadFirstPage = useCallback(async (filters: KgEffectivenessFilterState) => {
     const sequence = ++requestSequence.current;
     setLoading(true);
+    setLoadingMore(false);
     setIssue(null);
     setPaginationIssue(null);
     try {

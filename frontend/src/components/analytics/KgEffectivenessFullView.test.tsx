@@ -110,6 +110,12 @@ function kgPage({
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolver) => { resolve = resolver; });
+  return { promise, resolve };
+}
+
 describe('KG effectiveness A6 UI', () => {
   beforeEach(() => {
     dashboardApi.getBoardKgAnalytics.mockReset();
@@ -233,6 +239,25 @@ describe('KG effectiveness A6 UI', () => {
       p50_hours: null,
       p95_hours: null,
     });
+  });
+
+  it('clears stale pagination loading when a first-page replacement starts', async () => {
+    const pagination = deferred<BoardKgAnalyticsResponse>();
+    dashboardApi.getBoardKgAnalytics
+      .mockResolvedValueOnce(kgPage())
+      .mockReturnValueOnce(pagination.promise)
+      .mockResolvedValueOnce(kgPage());
+
+    const view = render(<KgEffectivenessFullView boardId="board-1" from="2026-08-01" to="2026-08-21" pageLimit={2} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
+    expect(screen.getByRole('button', { name: 'Load more' })).toBeDisabled();
+
+    view.rerender(<KgEffectivenessFullView boardId="board-1" from="2026-08-02" to="2026-08-21" pageLimit={2} />);
+    await waitFor(() => expect(dashboardApi.getBoardKgAnalytics).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Load more' })).toBeEnabled());
+
+    pagination.resolve(kgPage({ nextCursor: null }));
+    await waitFor(() => expect(screen.getByText('1 page loaded')).toBeInTheDocument());
   });
 
   it('maps authorization failures to Restricted instead of a generic empty result', async () => {

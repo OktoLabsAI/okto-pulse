@@ -255,6 +255,12 @@ function renderFullView(overrides: Partial<React.ComponentProps<typeof DeliveryI
   return { ...render(<DeliveryIntelligenceFullView {...props} />), props };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolver) => { resolve = resolver; });
+  return { promise, resolve };
+}
+
 describe('Delivery Intelligence A5 full view', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -365,6 +371,23 @@ describe('Delivery Intelligence A5 full view', () => {
       expect.objectContaining({ cursor: 'cursor-2', limit: 25 }),
     );
     expect(screen.queryByRole('button', { name: 'Load more Sprints' })).not.toBeInTheDocument();
+  });
+
+  it('ignores a stale response after the board changes', async () => {
+    const stale = deferred<DeliveryIntelligenceResponse>();
+    const current = deferred<DeliveryIntelligenceResponse>();
+    dashboardApi.getBoardDeliveryIntelligence
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(current.promise);
+
+    const view = renderFullView();
+    view.rerender(<DeliveryIntelligenceFullView {...view.props} boardId="board-2" />);
+    current.resolve(deliveryPage({ sprints: [sprint('sprint-2', 'Sprint Current')] }));
+
+    expect(await screen.findByRole('button', { name: 'Sprint Current' })).toBeInTheDocument();
+    stale.resolve(deliveryPage({ sprints: [sprint('sprint-1', 'Sprint Stale')] }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Sprint Stale' })).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Sprint Current' })).toBeInTheDocument();
   });
 
   it('keeps a non-ready forecast absent and gives the governed remediation', async () => {
