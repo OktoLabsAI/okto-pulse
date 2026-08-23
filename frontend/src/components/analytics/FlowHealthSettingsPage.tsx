@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   RotateCcw,
@@ -38,6 +38,7 @@ export function FlowHealthSettingsPage({ boardId, onBack }: FlowHealthSettingsPa
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const requestSequence = useRef(0);
 
   const applyResponse = (response: FlowHealthSettingsResponse) => {
     setSettings(response.settings);
@@ -47,19 +48,29 @@ export function FlowHealthSettingsPage({ boardId, onBack }: FlowHealthSettingsPa
   };
 
   const loadSettings = async () => {
+    const sequence = ++requestSequence.current;
     setLoading(true);
+    setSaving(false);
+    setSettings(null);
     setError(null);
+    setMessage(null);
     try {
-      applyResponse(await api.getBoardFlowHealthSettings(boardId));
+      const response = await api.getBoardFlowHealthSettings(boardId);
+      if (requestSequence.current === sequence) applyResponse(response);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Could not load Flow Health settings.');
+      if (requestSequence.current === sequence) {
+        setError(reason instanceof Error ? reason.message : 'Could not load Flow Health settings.');
+      }
     } finally {
-      setLoading(false);
+      if (requestSequence.current === sequence) setLoading(false);
     }
   };
 
   useEffect(() => {
     void loadSettings();
+    return () => {
+      requestSequence.current += 1;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId]);
 
@@ -88,6 +99,7 @@ export function FlowHealthSettingsPage({ boardId, onBack }: FlowHealthSettingsPa
       setMessage(null);
       return;
     }
+    const sequence = ++requestSequence.current;
     setSaving(true);
     setError(null);
     setMessage(null);
@@ -98,28 +110,37 @@ export function FlowHealthSettingsPage({ boardId, onBack }: FlowHealthSettingsPa
         rejected_stale_hours: rejectedHours,
         overrides,
       });
-      applyResponse(response);
-      setMessage('Flow Health policy saved. The next Analytics refresh will use this version.');
+      if (requestSequence.current === sequence) {
+        applyResponse(response);
+        setMessage('Flow Health policy saved. The next Analytics refresh will use this version.');
+      }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Could not save Flow Health settings. No setting was changed.');
+      if (requestSequence.current === sequence) {
+        setError(reason instanceof Error ? reason.message : 'Could not save Flow Health settings. No setting was changed.');
+      }
     } finally {
-      setSaving(false);
+      if (requestSequence.current === sequence) setSaving(false);
     }
   };
 
   const restore = async () => {
     if (!settings || saving) return;
+    const sequence = ++requestSequence.current;
     setSaving(true);
     setError(null);
     setMessage(null);
     try {
       const response = await api.restoreBoardFlowHealthSettings(boardId, settings.version);
-      applyResponse(response);
-      setMessage('Safe defaults restored: 72 hours general and 96 hours rejected.');
+      if (requestSequence.current === sequence) {
+        applyResponse(response);
+        setMessage('Safe defaults restored: 72 hours general and 96 hours rejected.');
+      }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Could not restore safe defaults. No setting was changed.');
+      if (requestSequence.current === sequence) {
+        setError(reason instanceof Error ? reason.message : 'Could not restore safe defaults. No setting was changed.');
+      }
     } finally {
-      setSaving(false);
+      if (requestSequence.current === sequence) setSaving(false);
     }
   };
 

@@ -73,6 +73,12 @@ const flowHealth: FlowHealthResponse = {
   }],
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolver) => { resolve = resolver; });
+  return { promise, resolve };
+}
+
 describe('Flow Health governed surfaces', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -152,6 +158,30 @@ describe('Flow Health governed surfaces', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Restore safe defaults' }));
     await waitFor(() => expect(apiMock.restoreBoardFlowHealthSettings).toHaveBeenCalledWith('board-1', 2));
     expect(await screen.findByText(/Safe defaults restored/)).toBeInTheDocument();
+  });
+
+  it('ignores a superseded settings response after navigating to another board', async () => {
+    const stale = deferred<Awaited<ReturnType<typeof apiMock.getBoardFlowHealthSettings>>>();
+    const current = deferred<Awaited<ReturnType<typeof apiMock.getBoardFlowHealthSettings>>>();
+    apiMock.getBoardFlowHealthSettings
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(current.promise);
+
+    const view = render(<FlowHealthSettingsPage boardId="board-1" onBack={vi.fn()} />);
+    view.rerender(<FlowHealthSettingsPage boardId="board-2" onBack={vi.fn()} />);
+    current.resolve({
+      board_id: 'board-2',
+      settings: { version: 7, general_stale_hours: 24, rejected_stale_hours: 48, overrides: {} },
+    });
+
+    expect(await screen.findByText('Effective policy v7')).toBeInTheDocument();
+    expect(screen.getByLabelText('General stale after')).toHaveValue(24);
+    stale.resolve({
+      board_id: 'board-1',
+      settings: { version: 1, general_stale_hours: 72, rejected_stale_hours: 96, overrides: {} },
+    });
+    await waitFor(() => expect(screen.queryByText('Effective policy v1')).not.toBeInTheDocument());
+    expect(screen.getByLabelText('General stale after')).toHaveValue(24);
   });
 
   it('does not coerce restricted authority to healthy zeroes', () => {
