@@ -1,53 +1,41 @@
-# OmniFlow Project Dashboard
+# Okto Pulse Frontend
 
-Frontend React para o Dashboard Kanban estilo Trello.
+React frontend for the Okto Pulse SDLC workbench. It provides the Kanban board,
+specification and validation workflows, analytics, code traceability, and
+knowledge-graph exploration used by human operators.
 
-## Funcionalidades
-
-- Board Kanban com drag and drop
-- 6 colunas: Não Iniciado, Iniciado, Em Andamento, Em Pendência, Finalizado, Cancelado
-- Cards com detalhes, anexos, Q&A e comentários
-- Autenticação via Clerk
-- Interface responsiva e dark mode
-
-## Instalação
+## Development
 
 ```bash
 cd frontend
 npm install
-```
-
-## Configuração
-
-Copie `.env.example` para `.env`:
-
-```bash
-cp .env.example .env
-```
-
-Configure a chave pública do Clerk:
-```
-VITE_CLERK_PUBLISHABLE_KEY=pk_test_xxx
-```
-
-## Execução
-
-```bash
 npm run dev
 ```
 
-## Build
+The Community build uses the standalone authentication and portal adapters. It
+does not require a Clerk publishable key. Other editions can inject their own
+adapters without changing this Community setup.
+
+## Quality Checks
 
 ```bash
+npm run lint
+npm run test
 npm run build
 ```
 
+`npm run build` also synchronizes the compiled assets into the Python package at
+`src/okto_pulse/community/frontend_dist`.
+
 ## Stack
 
-- React 18 + TypeScript
+- React and TypeScript
 - Vite
 - Tailwind CSS
-- Zustand (state management)
-- @dnd-kit (drag and drop)
-- Clerk (autenticação)
-- Lucide React (ícones)
+- Zustand
+- dnd-kit
+- React Flow and Graphology
+- Vitest and Playwright
+
+The private package name is `okto-pulse-frontend`; it is an internal build
+workspace and is not published to npm.

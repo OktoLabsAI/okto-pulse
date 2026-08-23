@@ -705,6 +705,7 @@ async def _delivery_intelligence_payload(
     minimum_sample_size: int,
     user_id: str,
     uow: PulseUnitOfWork,
+    _current_snapshot_token: bool = False,
 ) -> dict[str, object]:
     if range_value is not None:
         raise HTTPException(
@@ -712,6 +713,14 @@ async def _delivery_intelligence_payload(
             detail={
                 "code": "analytics_query_invalid",
                 "message": "analytics_range_encoding_unsupported_use_from_and_to",
+            },
+        )
+    if as_of is not None and not _current_snapshot_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "analytics_query_invalid",
+                "message": "delivery_intelligence_historical_as_of_unsupported",
             },
         )
     try:
@@ -803,6 +812,14 @@ async def delivery_intelligence_export(
 ):
     """Export the complete authorized projection for the selected filters."""
     del cursor, limit  # Pagination controls never truncate a complete export.
+    if as_of is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "analytics_query_invalid",
+                "message": "delivery_intelligence_historical_as_of_unsupported",
+            },
+        )
     export_as_of = as_of or datetime.now(timezone.utc).isoformat(
         timespec="microseconds"
     ).replace("+00:00", "Z")
@@ -825,6 +842,7 @@ async def delivery_intelligence_export(
             minimum_sample_size=minimum_sample_size,
             user_id=user_id,
             uow=uow,
+            _current_snapshot_token=True,
         )
         pages.append(page)
         raw_cursor = page.get("next_cursor")

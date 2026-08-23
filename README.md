@@ -267,9 +267,26 @@ contract each of the 156 adapter modules implements.
 | `okto-pulse serve` | Start API/UI and MCP in one Python process. |
 | `okto-pulse serve --api-port N --mcp-port M` | Override API/UI and MCP ports. |
 | `okto-pulse status` | Show service status, database path, size and board counts. |
+| `okto-pulse code-traceability requests <board_id>` | List persisted code-investigation requests. |
+| `okto-pulse code-traceability receipts <board_id>` | List agent-attested execution receipts. |
+| `okto-pulse code-traceability inspect <board_id> <kind> <record_id>` | Inspect one persisted request or receipt. |
+| `okto-pulse code-traceability diagnose <board_id>` | Validate the persisted Code Traceability schema and board policy. |
+| `okto-pulse metrics status` | Show local metrics state and recent aggregates. |
+| `okto-pulse metrics enable-beacon --policy-version VERSION --yes` | Opt in to anonymous hourly aggregate metrics. |
+| `okto-pulse metrics disable` | Turn metrics off. |
+| `okto-pulse metrics export [--output PATH]` | Export local metrics as JSONL. |
+| `okto-pulse metrics purge-local --yes` | Delete local metrics files after explicit confirmation. |
+| `okto-pulse api-key [--handoff-file PATH]` | Atomically consume a reveal-once bootstrap API-key handoff. |
 | `okto-pulse reset [-y]` | Delete local data and re-seed after confirmation. |
+| `okto-pulse verify-pipeline <board_id>` | Check all five Kanban-KG pipeline layers for a board. |
 | `okto-pulse kg dedup-entities <board_id>` | Run the idempotent KG entity deduplication migration for a board. |
-| `okto-pulse kg migrate-schema [--all-boards]` | Apply graph schema migrations manually. The runtime also auto-heals supported legacy schemas. |
+| `okto-pulse kg migrate-schema (--board <board_id> or --all-boards)` | Apply graph schema migrations manually. The runtime also auto-heals supported legacy schemas. |
+| `okto-pulse kg backfill <board_id> [--apply]` | Re-extract deterministic KG nodes and edges; dry-run by default. |
+| `okto-pulse kg proposals <board_id>` | List pending KG curation proposals. |
+| `okto-pulse kg unmerge <board_id> <record_id>` | Logically reverse a dedup equivalence record without re-pointing edges. |
+| `okto-pulse kg export <board_id> --output PATH` | Export a deterministic JSON-LD graph. |
+| `okto-pulse kg subtype declare <node_type> <kind_of>` | Declare a governed KG subtype. |
+| `okto-pulse kg restore <quarantine_id> [--apply]` | Plan or apply restoration of a quarantined KG snapshot. |
 
 ## Run with Docker
 
