@@ -95,6 +95,8 @@ def _cognitive_snapshot_id(
     board_id: str,
     cognitive_status: Iterable[str],
     artifact_types: Iterable[str],
+    window_from: datetime,
+    window_to: datetime,
 ) -> str:
     """Identify the exact query and mutable ledger snapshot behind a page."""
 
@@ -106,6 +108,10 @@ def _cognitive_snapshot_id(
         "board_id": board_id,
         "cognitive_status": sorted(cognitive_status),
         "artifact_types": sorted(artifact_types),
+        "window": {
+            "from": window_from.isoformat(),
+            "to": window_to.isoformat(),
+        },
         "generation": generation,
         "items": canonical_items,
     }
@@ -401,6 +407,8 @@ class CommunitySqlAlchemyBoardKgAnalyticsEvidence:
             if artifact_types and artifact_id.partition(":")[0] not in artifact_types:
                 continue
             opened_at = _parse_utc(item.recorded_at, fallback=observed_at)
+            if not query.foundation.window.contains(opened_at):
+                continue
             updated_at = _parse_utc(item.updated_at, fallback=opened_at)
             consolidated = item.status == CognitiveItemStatus.CONSOLIDATED.value
             no_action = status is BoardKgCognitiveStatus.NO_ACTION
@@ -455,6 +463,8 @@ class CommunitySqlAlchemyBoardKgAnalyticsEvidence:
             board_id=query.board_id,
             cognitive_status=(item.value for item in query.cognitive_status),
             artifact_types=query.artifact_types,
+            window_from=query.foundation.window.from_inclusive,
+            window_to=query.foundation.window.to_exclusive,
         )
         start = 0
         if query.cursor is not None:

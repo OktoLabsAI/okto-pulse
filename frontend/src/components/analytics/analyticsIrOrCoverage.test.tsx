@@ -442,6 +442,38 @@ describe('analytics IR/OR coverage UI', () => {
     }
   });
 
+  it('loads every KG cursor page before presenting the board summary', async () => {
+    const base = await mockApi.getBoardKgAnalytics('board-1', '2026-05-01', '2026-05-28');
+    const cursor = `snapshot:${'c'.repeat(64)}:offset:500`;
+    mockApi.getBoardKgAnalytics.mockReset();
+    mockApi.getBoardKgAnalytics
+      .mockResolvedValueOnce({ ...base, next_cursor: cursor })
+      .mockResolvedValueOnce({
+        ...base,
+        query: { ...base.query, cursor },
+        next_cursor: null,
+      });
+
+    render(<BoardDashboard boardId="board-1" from="2026-05-01" to="2026-05-28" onSelectEntity={vi.fn()} />);
+
+    await waitFor(() => expect(mockApi.getBoardKgAnalytics).toHaveBeenCalledTimes(2));
+    expect(mockApi.getBoardKgAnalytics).toHaveBeenNthCalledWith(
+      1,
+      'board-1',
+      '2026-05-01',
+      '2026-05-28',
+      { cursor: null, limit: 500 },
+    );
+    expect(mockApi.getBoardKgAnalytics).toHaveBeenNthCalledWith(
+      2,
+      'board-1',
+      '2026-05-01',
+      '2026-05-28',
+      { cursor, limit: 500 },
+    );
+    expect(await screen.findByRole('heading', { name: 'Board KG Analytics' })).toBeInTheDocument();
+  });
+
   it('maps every canonical obligation type to a descriptive label', async () => {
     const obligationLabels = [
       ['ac', 'Acceptance Criteria'],

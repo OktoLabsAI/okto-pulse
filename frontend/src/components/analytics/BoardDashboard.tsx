@@ -28,6 +28,7 @@ import { CanonicalCoveragePanel } from './CanonicalCoveragePanel';
 import { DeliveryForecastPanel } from './DeliveryForecastPanel';
 import { FlowHealthSummary } from './FlowHealthSummary';
 import { KgEffectivenessPanel } from './KgEffectivenessPanel';
+import { mergeBoardKgAnalyticsPages } from './kgEffectivenessPagination';
 import type { CanonicalCoverageQueryState } from './canonicalCoverageQueryState';
 import type {
   BoardKgAnalyticsResponse,
@@ -473,7 +474,27 @@ export function BoardDashboard({
     let cancelled = false;
     setKgLoading(true);
     setKgError(null);
-    api.getBoardKgAnalytics(boardId, from, to)
+    const loadAllKgPages = async () => {
+      const pages: BoardKgAnalyticsResponse[] = [];
+      const seenCursors = new Set<string>();
+      let cursor: string | null = null;
+      do {
+        const payload = await api.getBoardKgAnalytics(boardId, from, to, {
+          cursor,
+          limit: 500,
+        });
+        if (!payload) return null;
+        pages.push(payload);
+        const nextCursor = payload.next_cursor;
+        if (nextCursor && seenCursors.has(nextCursor)) {
+          throw new Error('KG analytics pagination returned a repeated cursor.');
+        }
+        if (nextCursor) seenCursors.add(nextCursor);
+        cursor = nextCursor;
+      } while (cursor && !cancelled);
+      return mergeBoardKgAnalyticsPages(pages);
+    };
+    loadAllKgPages()
       .then((payload) => {
         if (!cancelled) setKgAnalytics(payload);
       })
