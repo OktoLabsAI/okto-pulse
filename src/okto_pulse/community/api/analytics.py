@@ -19,6 +19,9 @@ from okto_pulse.community.api.analytics_transport import (
 )
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.community.api.permission_errors import permission_denied_http_error
+from okto_pulse.community.adapters.sqlalchemy_analytics_evidence import (
+    validated_board_kg_cursor_observed_at,
+)
 from okto_pulse.core.application.use_cases import (
     AnalyticsOverviewCommand,
     CommandValidationError,
@@ -1037,9 +1040,21 @@ def _board_kg_analytics_command(
     date_to: str | None,
     as_of: str | None,
 ) -> BoardKgAnalyticsCommand:
-    observed_at = _parse_date(as_of) or datetime.now(timezone.utc)
-    window_from = _parse_date(date_from) or datetime(1970, 1, 1, tzinfo=timezone.utc)
-    window_to = _parse_date(date_to, end_of_day=True) or observed_at + timedelta(
+    normalized_as_of = as_of if isinstance(as_of, str) else None
+    normalized_from = date_from if isinstance(date_from, str) else None
+    normalized_to = date_to if isinstance(date_to, str) else None
+    parsed_as_of = _parse_date(normalized_as_of)
+    parsed_from = _parse_date(normalized_from)
+    parsed_to = _parse_date(normalized_to, end_of_day=True)
+    if normalized_as_of is not None and parsed_as_of is None:
+        raise ValueError("analytics_as_of_invalid")
+    if normalized_from is not None and parsed_from is None:
+        raise ValueError("analytics_from_invalid")
+    if normalized_to is not None and parsed_to is None:
+        raise ValueError("analytics_to_invalid")
+    observed_at = parsed_as_of or datetime.now(timezone.utc)
+    window_from = parsed_from or datetime(1970, 1, 1, tzinfo=timezone.utc)
+    window_to = parsed_to or observed_at + timedelta(
         microseconds=1
     )
     return BoardKgAnalyticsCommand(
@@ -1047,29 +1062,6 @@ def _board_kg_analytics_command(
         window=AnalyticsUtcWindow(window_from, window_to),
         as_of=observed_at,
     )
-
-
-def _board_kg_cursor_observed_at(cursor: str | None) -> datetime | None:
-    if not cursor:
-        return None
-    parts = cursor.split(":")
-    if (
-        len(parts) != 6
-        or parts[0] != "snapshot"
-        or parts[2] != "observed"
-        or parts[4] != "offset"
-    ):
-        return None
-    try:
-        observed_micros = int(parts[3])
-        if observed_micros < 0:
-            return None
-        return datetime.fromtimestamp(
-            observed_micros / 1_000_000,
-            tz=timezone.utc,
-        )
-    except (OSError, OverflowError, ValueError):
-        return None
 
 
 async def _board_kg_analytics_payload(
@@ -1086,14 +1078,14 @@ async def _board_kg_analytics_payload(
     uow: PulseUnitOfWork,
     observed_at: datetime | None = None,
 ) -> dict[str, object]:
-    pinned_observed_at = observed_at or _board_kg_cursor_observed_at(cursor)
-    temporal = _board_kg_analytics_command(
-        board_id,
-        date_from=date_from,
-        date_to=date_to,
-        as_of=(pinned_observed_at.isoformat() if pinned_observed_at else None),
-    )
+    pinned_observed_at = observed_at or validated_board_kg_cursor_observed_at(cursor)
     try:
+        temporal = _board_kg_analytics_command(
+            board_id,
+            date_from=date_from,
+            date_to=date_to,
+            as_of=(pinned_observed_at.isoformat() if pinned_observed_at else None),
+        )
         result = await BoardKgAnalyticsUseCase().execute(
             BoardKgAnalyticsCommand(
                 board_id=board_id,
@@ -1258,13 +1250,13 @@ async def _canonical_coverage_payload(
     user_id: str,
     uow: PulseUnitOfWork,
 ) -> dict[str, object]:
-    temporal = _board_kg_analytics_command(
-        board_id,
-        date_from=date_from,
-        date_to=date_to,
-        as_of=as_of,
-    )
     try:
+        temporal = _board_kg_analytics_command(
+            board_id,
+            date_from=date_from,
+            date_to=date_to,
+            as_of=as_of,
+        )
         result = await CoverageTraceabilityAnalyticsUseCase().execute(
             CoverageTraceabilityAnalyticsCommand(
                 board_id=board_id,
@@ -1350,13 +1342,13 @@ async def _flow_health_payload(
     user_id: str,
     uow: PulseUnitOfWork,
 ) -> dict[str, object]:
-    temporal = _board_kg_analytics_command(
-        board_id,
-        date_from=date_from,
-        date_to=date_to,
-        as_of=as_of,
-    )
     try:
+        temporal = _board_kg_analytics_command(
+            board_id,
+            date_from=date_from,
+            date_to=date_to,
+            as_of=as_of,
+        )
         result = await FlowHealthAnalyticsUseCase().execute(
             FlowHealthAnalyticsCommand(
                 board_id=board_id,
@@ -1536,18 +1528,18 @@ async def _readiness_payload(
     user_id: str,
     uow: PulseUnitOfWork,
 ) -> dict[str, object]:
-    temporal = _board_kg_analytics_command(
-        board_id,
-        date_from=date_from,
-        date_to=date_to,
-        as_of=as_of,
-    )
     use_case = (
         SpecReadinessAnalyticsUseCase()
         if kind == "spec"
         else PolicyResourceReadinessAnalyticsUseCase()
     )
     try:
+        temporal = _board_kg_analytics_command(
+            board_id,
+            date_from=date_from,
+            date_to=date_to,
+            as_of=as_of,
+        )
         result = await use_case.execute(
             ReadinessAnalyticsCommand(
                 board_id=board_id,

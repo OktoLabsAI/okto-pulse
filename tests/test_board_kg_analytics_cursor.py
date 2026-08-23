@@ -48,6 +48,7 @@ def _snapshot(
     artifact_types: tuple[str, ...] = (),
     window_from: datetime = datetime(2026, 8, 1, tzinfo=UTC),
     window_to: datetime = datetime(2026, 9, 1, tzinfo=UTC),
+    observed_at: datetime = OBSERVED_AT,
 ) -> str:
     return _cognitive_snapshot_id(
         generation,
@@ -57,6 +58,7 @@ def _snapshot(
         artifact_types=artifact_types,
         window_from=window_from,
         window_to=window_to,
+        observed_at=observed_at,
     )
 
 
@@ -94,6 +96,25 @@ def test_board_kg_cursor_rejects_generation_changes_and_malformed_offsets() -> N
             _encode_board_kg_cursor(
                 snapshot_id=snapshot, observed_at=OBSERVED_AT, offset=-1
             ),
+            snapshot_id=snapshot,
+        )
+
+
+@pytest.mark.parametrize("field", ("observed", "offset"))
+def test_board_kg_cursor_authenticates_the_complete_payload(field: str) -> None:
+    snapshot = _snapshot("generation-1", [_item("a")])
+    cursor = _encode_board_kg_cursor(
+        snapshot_id=snapshot,
+        observed_at=OBSERVED_AT,
+        offset=1,
+    )
+    parts = cursor.split(":")
+    index = 3 if field == "observed" else 5
+    parts[index] = str(int(parts[index]) + 1)
+
+    with pytest.raises(ValueError, match="board_kg_analytics_cursor_invalid"):
+        _decode_board_kg_cursor(
+            ":".join(parts),
             snapshot_id=snapshot,
         )
 

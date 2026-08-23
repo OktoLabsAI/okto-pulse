@@ -250,31 +250,31 @@ export function DeliveryIntelligenceFullView({
 
         <form className="mt-5 grid gap-3 md:grid-cols-5" aria-label="Delivery filters" onSubmit={(event) => event.preventDefault()}>
           <label className="text-xs font-medium text-gray-500">Period
-            <select aria-label="Delivery period" defaultValue="custom" onChange={(event) => { if (event.target.value === '30') onPeriodChange?.(30); if (event.target.value === '90') onPeriodChange?.(90); }} className="mt-1 min-h-10 w-full rounded-md border border-gray-300 bg-white px-3 text-sm dark:border-gray-600 dark:bg-gray-900">
+            <select aria-label="Delivery period" defaultValue="custom" disabled={exporting} onChange={(event) => { if (event.target.value === '30') onPeriodChange?.(30); if (event.target.value === '90') onPeriodChange?.(90); }} className="mt-1 min-h-10 w-full rounded-md border border-gray-300 bg-white px-3 text-sm disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-900">
               <option value="custom">{from} through {to}</option>
               <option value="30">Last 30 days</option>
               <option value="90">Last 90 days</option>
             </select>
           </label>
           <label className="text-xs font-medium text-gray-500">Sprint
-            <select aria-label="Delivery Sprint" value={filters.sprintId ?? ''} onChange={(event) => updateFilters({ sprintId: event.target.value || undefined })} className="mt-1 min-h-10 w-full rounded-md border border-gray-300 bg-white px-3 text-sm dark:border-gray-600 dark:bg-gray-900">
+            <select aria-label="Delivery Sprint" value={filters.sprintId ?? ''} disabled={exporting} onChange={(event) => updateFilters({ sprintId: event.target.value || undefined })} className="mt-1 min-h-10 w-full rounded-md border border-gray-300 bg-white px-3 text-sm disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-900">
               <option value="">All visible Sprints</option>
               {data?.sprints.map((sprint) => <option key={sprint.sprint_id} value={sprint.sprint_id}>{sprint.title}</option>)}
             </select>
           </label>
           <label className="text-xs font-medium text-gray-500">Lane
-            <select aria-label="Delivery lane" value={filters.lane ?? 'all'} onChange={(event) => updateFilters({ lane: event.target.value as DeliveryIntelligenceFilters['lane'] })} className="mt-1 min-h-10 w-full rounded-md border border-gray-300 bg-white px-3 text-sm dark:border-gray-600 dark:bg-gray-900">
+            <select aria-label="Delivery lane" value={filters.lane ?? 'all'} disabled={exporting} onChange={(event) => updateFilters({ lane: event.target.value as DeliveryIntelligenceFilters['lane'] })} className="mt-1 min-h-10 w-full rounded-md border border-gray-300 bg-white px-3 text-sm disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-900">
               <option value="all">Normal + hotfix</option><option value="normal">Normal</option><option value="hotfix">Hotfix</option>
             </select>
           </label>
           <label className="text-xs font-medium text-gray-500">Role
-            <select aria-label="Contribution role" value={filters.role ?? 'all'} onChange={(event) => updateFilters({ role: event.target.value })} className="mt-1 min-h-10 w-full rounded-md border border-gray-300 bg-white px-3 text-sm dark:border-gray-600 dark:bg-gray-900">
+            <select aria-label="Contribution role" value={filters.role ?? 'all'} disabled={exporting} onChange={(event) => updateFilters({ role: event.target.value })} className="mt-1 min-h-10 w-full rounded-md border border-gray-300 bg-white px-3 text-sm disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-900">
               <option value="all">All roles</option>
               {roleOptions.map((role) => <option key={role} value={role.toLowerCase().replace(/\s+/g, '_')}>{role}</option>)}
             </select>
           </label>
           <label className="text-xs font-medium text-gray-500">Contribution view
-            <select aria-label="Contribution visibility" value={filters.contributionView ?? 'self_and_aggregates'} onChange={(event) => updateFilters({ contributionView: event.target.value as DeliveryIntelligenceFilters['contributionView'] })} className="mt-1 min-h-10 w-full rounded-md border border-gray-300 bg-white px-3 text-sm dark:border-gray-600 dark:bg-gray-900">
+            <select aria-label="Contribution visibility" value={filters.contributionView ?? 'self_and_aggregates'} disabled={exporting} onChange={(event) => updateFilters({ contributionView: event.target.value as DeliveryIntelligenceFilters['contributionView'] })} className="mt-1 min-h-10 w-full rounded-md border border-gray-300 bg-white px-3 text-sm disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-600 dark:bg-gray-900">
               <option value="self_and_aggregates">Self + aggregates</option><option value="self">Self only</option><option value="aggregates">Aggregates only</option><option value="operator">Authorized operator</option>
             </select>
           </label>

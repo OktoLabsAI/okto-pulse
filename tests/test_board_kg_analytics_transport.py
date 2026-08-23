@@ -46,6 +46,41 @@ def test_board_kg_command_uses_canonical_half_open_window() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "extra"),
+    (
+        (analytics_api._board_kg_analytics_payload, {}),
+        (analytics_api._canonical_coverage_payload, {}),
+        (analytics_api._flow_health_payload, {}),
+        (analytics_api._readiness_payload, {"kind": "spec"}),
+    ),
+)
+@pytest.mark.parametrize(
+    ("date_from", "date_to"),
+    (("not-a-date", None), ("2026-08-20", "2026-08-19")),
+)
+async def test_canonical_payloads_map_invalid_temporal_input_to_400(
+    payload,
+    extra: dict[str, str],
+    date_from: str,
+    date_to: str | None,
+) -> None:
+    with pytest.raises(analytics_api.HTTPException) as caught:
+        await payload(
+            "board-1",
+            date_from=date_from,
+            date_to=date_to,
+            as_of=None,
+            user_id="user-1",
+            uow=object(),
+            **extra,
+        )
+
+    assert caught.value.status_code == 400
+    assert caught.value.detail["code"] == "analytics_query_invalid"
+
+
+@pytest.mark.asyncio
 async def test_implicit_kg_window_is_stable_across_cursor_pages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

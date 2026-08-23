@@ -9,7 +9,9 @@ application use case.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import secrets
 from datetime import datetime, timezone
 from typing import Iterable
 
@@ -86,6 +88,8 @@ _ACTIVE_QUEUE_STATES = ("pending", "claimed")
 _ACTIVE_POLICY_STATES = ("pending", "processing", "dlq")
 _POLICY_HANDLER = "PolicyConstraintProjectionHandler"
 _BOARD_KG_CURSOR_PREFIX = "snapshot"
+_BOARD_KG_CURSOR_INTEGRITY_CONTEXT = b"okto-pulse.board-kg-cursor.v1"
+_BOARD_KG_CURSOR_SIGNING_KEY = secrets.token_bytes(32)
 
 
 def _cognitive_snapshot_id(
@@ -97,6 +101,7 @@ def _cognitive_snapshot_id(
     artifact_types: Iterable[str],
     window_from: datetime,
     window_to: datetime,
+    observed_at: datetime,
 ) -> str:
     """Identify the exact query and mutable ledger snapshot behind a page."""
 
@@ -112,6 +117,7 @@ def _cognitive_snapshot_id(
             "from": window_from.isoformat(),
             "to": window_to.isoformat(),
         },
+        "observed_at": observed_at.isoformat(),
         "generation": generation,
         "items": canonical_items,
     }
@@ -124,23 +130,36 @@ def _encode_board_kg_cursor(
     *, snapshot_id: str, observed_at: datetime, offset: int
 ) -> str:
     observed_micros = int(observed_at.timestamp() * 1_000_000)
-    return (
+    payload = (
         f"{_BOARD_KG_CURSOR_PREFIX}:{snapshot_id}:"
         f"observed:{observed_micros}:offset:{offset}"
     )
+    integrity = hmac.new(
+        _BOARD_KG_CURSOR_SIGNING_KEY,
+        _BOARD_KG_CURSOR_INTEGRITY_CONTEXT + b"\x00" + payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{payload}:integrity:{integrity}"
 
 
-def _decode_board_kg_cursor(cursor: str, *, snapshot_id: str) -> int:
+def _decode_board_kg_cursor_envelope(cursor: str) -> tuple[str, int, int]:
     parts = cursor.split(":")
     if (
-        len(parts) != 6
+        len(parts) != 8
         or parts[0] != _BOARD_KG_CURSOR_PREFIX
         or parts[2] != "observed"
         or parts[4] != "offset"
+        or parts[6] != "integrity"
     ):
         raise ValueError("board_kg_analytics_cursor_invalid")
-    if parts[1] != snapshot_id:
-        raise ValueError("board_kg_analytics_cursor_stale")
+    payload = ":".join(parts[:6])
+    expected_integrity = hmac.new(
+        _BOARD_KG_CURSOR_SIGNING_KEY,
+        _BOARD_KG_CURSOR_INTEGRITY_CONTEXT + b"\x00" + payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(parts[7], expected_integrity):
+        raise ValueError("board_kg_analytics_cursor_invalid")
     try:
         observed_micros = int(parts[3])
         offset = int(parts[5])
@@ -148,6 +167,28 @@ def _decode_board_kg_cursor(cursor: str, *, snapshot_id: str) -> int:
         raise ValueError("board_kg_analytics_cursor_invalid") from exc
     if observed_micros < 0 or offset < 0:
         raise ValueError("board_kg_analytics_cursor_invalid")
+    return parts[1], observed_micros, offset
+
+
+def validated_board_kg_cursor_observed_at(cursor: str | None) -> datetime | None:
+    """Read the observation fence only from an integrity-verified cursor."""
+
+    if not cursor:
+        return None
+    try:
+        _, observed_micros, _ = _decode_board_kg_cursor_envelope(cursor)
+        return datetime.fromtimestamp(
+            observed_micros / 1_000_000,
+            tz=timezone.utc,
+        )
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _decode_board_kg_cursor(cursor: str, *, snapshot_id: str) -> int:
+    cursor_snapshot_id, _, offset = _decode_board_kg_cursor_envelope(cursor)
+    if cursor_snapshot_id != snapshot_id:
+        raise ValueError("board_kg_analytics_cursor_stale")
     return offset
 
 
@@ -473,6 +514,7 @@ class CommunitySqlAlchemyBoardKgAnalyticsEvidence:
             artifact_types=query.artifact_types,
             window_from=query.foundation.window.from_inclusive,
             window_to=query.foundation.window.to_exclusive,
+            observed_at=observed_at,
         )
         start = 0
         if query.cursor is not None:

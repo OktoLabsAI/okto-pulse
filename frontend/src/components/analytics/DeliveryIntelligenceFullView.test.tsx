@@ -354,6 +354,32 @@ describe('Delivery Intelligence A5 full view', () => {
     expect(dashboardApi.getBoardDeliveryIntelligence).toHaveBeenCalledTimes(1);
   });
 
+  it('locks all projection filters while a CSV export is pending', async () => {
+    const pendingExport = deferred<void>();
+    dashboardApi.exportBoardDeliveryIntelligenceCsv.mockReturnValue(
+      pendingExport.promise,
+    );
+    renderFullView();
+
+    const exportButton = await screen.findByRole('button', { name: 'Export CSV' });
+    await waitFor(() => expect(exportButton).toBeEnabled());
+    fireEvent.click(exportButton);
+
+    await waitFor(() => expect(exportButton).toHaveTextContent('Exporting…'));
+    for (const label of [
+      'Delivery period',
+      'Delivery Sprint',
+      'Delivery lane',
+      'Contribution role',
+      'Contribution visibility',
+    ]) {
+      expect(screen.getByLabelText(label)).toBeDisabled();
+    }
+
+    pendingExport.resolve();
+    await waitFor(() => expect(exportButton).toBeEnabled());
+  });
+
   it('exposes a transport error and retries without replacing it with an empty result', async () => {
     dashboardApi.getBoardDeliveryIntelligence
       .mockRejectedValueOnce(new Error('Delivery authority timed out.'))
