@@ -247,4 +247,12 @@ describe('Analytics A3-A6 route integration', () => {
       'kg:2026-02-01|2026-02-28|consolidated|decision|12',
     ));
   });
+
+  it('falls back safely when an analytics path contains malformed encoding', async () => {
+    window.history.replaceState({}, '', '/analytics/boards/%/entities/spec/id');
+
+    expect(() => render(<AnalyticsPage />)).not.toThrow();
+    expect(await screen.findByTestId('overview-route')).toBeInTheDocument();
+    expect(apiMock.getBoard).not.toHaveBeenCalled();
+  });
 });

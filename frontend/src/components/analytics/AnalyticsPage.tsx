@@ -61,6 +61,14 @@ function today(): string {
   return new Date().toISOString().split('T')[0];
 }
 
+function decodePathSegment(segment: string): string | undefined {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return undefined;
+  }
+}
+
 // Deriva state inicial do pathname atual. O overlay já só monta AnalyticsPage
 // quando showAnalytics=true, então aqui só precisamos decidir entre overview e
 // drill. Dedicated Board analytics surfaces are real URLs so refresh,
@@ -68,48 +76,62 @@ function today(): string {
 function stateFromPath(pathname: string): AnalyticsState {
   const entityMatch = pathname.match(/^\/analytics\/boards\/([^/]+)\/entities\/(ideation|spec|refinement|sprint|card)\/([^/]+)\/?$/);
   if (entityMatch) {
-    return {
-      level: 'entity',
-      boardId: decodeURIComponent(entityMatch[1]),
-      boardName: '',
-      entityType: entityMatch[2] as AnalyticsState['entityType'],
-      entityId: decodeURIComponent(entityMatch[3]),
-      entityName: '',
-    };
+    const boardId = decodePathSegment(entityMatch[1]);
+    const entityId = decodePathSegment(entityMatch[3]);
+    if (boardId !== undefined && entityId !== undefined) {
+      return {
+        level: 'entity',
+        boardId,
+        boardName: '',
+        entityType: entityMatch[2] as AnalyticsState['entityType'],
+        entityId,
+        entityName: '',
+      };
+    }
   }
   const flowSettingsMatch = pathname.match(/^\/analytics\/boards\/([^/]+)\/flow-health\/settings\/?$/);
   if (flowSettingsMatch) {
-    return { level: 'flow-health-settings', boardId: decodeURIComponent(flowSettingsMatch[1]), boardName: '' };
+    const boardId = decodePathSegment(flowSettingsMatch[1]);
+    if (boardId !== undefined) return { level: 'flow-health-settings', boardId, boardName: '' };
   }
   const flowMatch = pathname.match(/^\/analytics\/boards\/([^/]+)\/flow-health\/?$/);
   if (flowMatch) {
-    return { level: 'flow-health', boardId: decodeURIComponent(flowMatch[1]), boardName: '' };
+    const boardId = decodePathSegment(flowMatch[1]);
+    if (boardId !== undefined) return { level: 'flow-health', boardId, boardName: '' };
   }
   const coverageSpecMatch = pathname.match(/^\/analytics\/boards\/([^/]+)\/canonical-coverage\/specs\/([^/]+)\/?$/);
   if (coverageSpecMatch) {
-    return {
-      level: 'canonical-coverage',
-      boardId: decodeURIComponent(coverageSpecMatch[1]),
-      boardName: '',
-      focusedCoverageSpecId: decodeURIComponent(coverageSpecMatch[2]),
-      focusedCoverageSpecName: '',
-    };
+    const boardId = decodePathSegment(coverageSpecMatch[1]);
+    const focusedCoverageSpecId = decodePathSegment(coverageSpecMatch[2]);
+    if (boardId !== undefined && focusedCoverageSpecId !== undefined) {
+      return {
+        level: 'canonical-coverage',
+        boardId,
+        boardName: '',
+        focusedCoverageSpecId,
+        focusedCoverageSpecName: '',
+      };
+    }
   }
   const coverageMatch = pathname.match(/^\/analytics\/boards\/([^/]+)\/canonical-coverage\/?$/);
   if (coverageMatch) {
-    return { level: 'canonical-coverage', boardId: decodeURIComponent(coverageMatch[1]), boardName: '' };
+    const boardId = decodePathSegment(coverageMatch[1]);
+    if (boardId !== undefined) return { level: 'canonical-coverage', boardId, boardName: '' };
   }
   const deliveryMatch = pathname.match(/^\/analytics\/boards\/([^/]+)\/delivery-intelligence\/?$/);
   if (deliveryMatch) {
-    return { level: 'delivery-intelligence', boardId: decodeURIComponent(deliveryMatch[1]), boardName: '' };
+    const boardId = decodePathSegment(deliveryMatch[1]);
+    if (boardId !== undefined) return { level: 'delivery-intelligence', boardId, boardName: '' };
   }
   const kgMatch = pathname.match(/^\/analytics\/boards\/([^/]+)\/kg-effectiveness\/?$/);
   if (kgMatch) {
-    return { level: 'kg-effectiveness', boardId: decodeURIComponent(kgMatch[1]), boardName: '' };
+    const boardId = decodePathSegment(kgMatch[1]);
+    if (boardId !== undefined) return { level: 'kg-effectiveness', boardId, boardName: '' };
   }
   const boardMatch = pathname.match(/^\/analytics\/boards\/([^/]+)/);
   if (boardMatch) {
-    return { level: 'board', boardId: decodeURIComponent(boardMatch[1]), boardName: '' };
+    const boardId = decodePathSegment(boardMatch[1]);
+    if (boardId !== undefined) return { level: 'board', boardId, boardName: '' };
   }
   return { level: 'overview' };
 }
