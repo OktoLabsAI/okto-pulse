@@ -12,6 +12,7 @@ warnings.filterwarnings(
 
 import argparse
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -310,7 +311,7 @@ def _json_field(record, name: str, default=None):
             return json.loads(value)
         except Exception:
             return default
-    return value
+    return copy.deepcopy(value)
 
 
 def _result_records(result):
@@ -1758,6 +1759,9 @@ def _spec_to_dict(s):
         "test_scenarios": _json_field(s, "test_scenarios"),
         "business_rules": _json_field(s, "business_rules"),
         "api_contracts": _json_field(s, "api_contracts"),
+        "project_structure_revision": _field(s, "project_structure_revision"),
+        "project_structure_digest": _field(s, "project_structure_digest"),
+        "project_structure": _json_field(s, "project_structure"),
     }
 
 

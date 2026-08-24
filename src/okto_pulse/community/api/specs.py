@@ -91,6 +91,10 @@ from okto_pulse.core.application.use_cases import (
     ExecuteTestScenarioEvidenceCommand,
     ExecuteTestScenarioEvidenceUseCase,
     GetSpecCommand,
+    GetCardProjectStructureProjectionCommand,
+    GetCardProjectStructureProjectionUseCase,
+    GetProjectStructureCommand,
+    GetProjectStructureUseCase,
     GetSpecKnowledgeCommand,
     GetSpecKnowledgeUseCase,
     GetSpecUseCase,
@@ -116,6 +120,8 @@ from okto_pulse.core.application.use_cases import (
     ListSpecDependenciesUseCase,
     MoveSpecCommand,
     MoveSpecUseCase,
+    MutateProjectStructureCommand,
+    MutateProjectStructureUseCase,
     PermissionDeniedError,
     RemoveSpecDependencyCommand,
     RemoveSpecDependencyUseCase,
@@ -625,6 +631,17 @@ class _PrevalidatedSpecWriteRoute(APIRoute):
                 try:
                     model.model_validate_json(raw_body)
                 except ValidationError as exc:
+                    if model is ProjectStructureBatchMutationRequest:
+                        return JSONResponse(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            content={
+                                "detail": {
+                                    "error": "project_structure_invalid",
+                                    "message": "Project structure request validation failed.",
+                                    "details": {"issues": exc.errors(include_url=False)},
+                                }
+                            },
+                        )
                     if model in {
                         SpecDependencyAddRequest,
                         SpecDependencyRemoveRequest,
@@ -711,6 +728,7 @@ _STRUCTURED_SPEC_ENTITY_UPDATE_FIELDS = {
     "integration_requirements",
     "observability_requirements",
     "decisions",
+    "project_structure",
 }
 
 
@@ -746,14 +764,131 @@ class StructuredSpecEntityMutationRequest(BaseModel):
     operation: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     expected_spec_version: int | None = None
+    expected_structure_revision: int | None = Field(None, ge=0)
     task_id: str | None = None
+    task_role: str | None = None
+    test_id: str | None = None
+    test_role: str | None = None
+    evidence_id: str | None = None
+    idempotency_key: str | None = Field(None, max_length=255)
     ack_token: str | None = None
+
+
+class ProjectStructureOperationRequest(BaseModel):
+    """Closed REST operation; canonical Core names plus stable UI aliases."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    operation: Literal[
+        "create",
+        "update",
+        "reparent",
+        "reorder",
+        "link",
+        "unlink",
+        "remove",
+        "revoke",
+        "restore",
+        "link_task",
+        "unlink_task",
+        "link_test",
+        "unlink_test",
+        "link_evidence",
+        "unlink_evidence",
+    ]
+    node_id: str | None = Field(None, pattern=r"^psn_[A-Za-z0-9_-]+$")
+    entity_id: str | None = Field(None, pattern=r"^psn_[A-Za-z0-9_-]+$")
+    payload: dict[str, Any] = Field(default_factory=dict)
+    position: int | None = Field(None, ge=0)
+    task_id: str | None = None
+    task_role: Literal["create", "modify", "read", "remove"] | None = None
+    test_id: str | None = None
+    test_role: Literal[
+        "target", "test_file", "fixture", "integration_point"
+    ] | None = None
+    evidence_id: str | None = None
+
+
+class ProjectStructureBatchMutationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_spec_version: int = Field(ge=1)
+    expected_structure_revision: int = Field(ge=0)
+    idempotency_key: str = Field(min_length=1, max_length=255)
+    operations: list[ProjectStructureOperationRequest] = Field(
+        min_length=1,
+        max_length=500,
+    )
+
+
+def _project_structure_core_operations(
+    operations: list[ProjectStructureOperationRequest],
+) -> list[dict[str, Any]]:
+    mapped: list[dict[str, Any]] = []
+    for item in operations:
+        operation = item.operation
+        entity_id = item.entity_id or item.node_id
+        payload = dict(item.payload)
+        item_task_id = item.task_id
+        item_task_role = item.task_role
+        item_test_id = item.test_id
+        item_test_role = item.test_role
+        item_evidence_id = item.evidence_id
+        if operation == "reparent":
+            operation = "update"
+        elif operation == "remove":
+            operation = "revoke"
+        elif operation in {"link", "unlink"}:
+            prefix = "link" if operation == "link" else "unlink"
+            reference_type = str(payload.pop("reference_type", "") or "")
+            reference_id = payload.pop("reference_id", None)
+            role = payload.pop("role", None)
+            if item.task_id or reference_type == "task":
+                operation = f"{prefix}_task"
+                item_task_id = item.task_id or reference_id
+                item_task_role = item.task_role or role
+                item_test_id = item.test_id
+                item_test_role = item.test_role
+                item_evidence_id = item.evidence_id
+            elif item.test_id or reference_type == "test":
+                operation = f"{prefix}_test"
+                item_task_id = item.task_id
+                item_task_role = item.task_role
+                item_test_id = item.test_id or reference_id
+                item_test_role = item.test_role or role
+                item_evidence_id = item.evidence_id
+            else:
+                operation = f"{prefix}_evidence"
+                item_task_id = item.task_id
+                item_task_role = item.task_role
+                item_test_id = item.test_id
+                item_test_role = item.test_role
+                item_evidence_id = item.evidence_id or reference_id
+        if operation == "create" and entity_id and "id" not in payload:
+            payload["id"] = entity_id
+        mapped.append(
+            {
+                "operation": operation,
+                "entity_id": entity_id,
+                "payload": payload,
+                "position": item.position,
+                "task_id": item_task_id,
+                "task_role": item_task_role,
+                "test_id": item_test_id,
+                "test_role": item_test_role,
+                "evidence_id": item_evidence_id,
+            }
+        )
+    return mapped
 
 
 def _structured_entity_status_code(error_code: str | None) -> int:
     return {
         StructuredSpecEntityErrorCode.AUTHORIZATION_DENIED: status.HTTP_403_FORBIDDEN,
         StructuredSpecEntityErrorCode.VERSION_CONFLICT: status.HTTP_409_CONFLICT,
+        StructuredSpecEntityErrorCode.IDEMPOTENCY_CONFLICT: status.HTTP_409_CONFLICT,
+        StructuredSpecEntityErrorCode.IDEMPOTENCY_KEY_REQUIRED: status.HTTP_400_BAD_REQUEST,
+        StructuredSpecEntityErrorCode.IDEMPOTENCY_STORE_NOT_CONFIGURED: status.HTTP_409_CONFLICT,
         StructuredSpecEntityErrorCode.IMPACT_ACK_REQUIRED: status.HTTP_409_CONFLICT,
         StructuredSpecEntityErrorCode.IMPACT_ACK_INVALID: status.HTTP_409_CONFLICT,
         StructuredSpecEntityErrorCode.ENTITY_NOT_FOUND: status.HTTP_404_NOT_FOUND,
@@ -764,6 +899,61 @@ def _structured_entity_status_code(error_code: str | None) -> int:
         StructuredSpecEntityErrorCode.VALIDATION_FAILED: status.HTTP_422_UNPROCESSABLE_CONTENT,
         StructuredSpecEntityErrorCode.LINK_TARGET_INVALID: status.HTTP_422_UNPROCESSABLE_CONTENT,
     }.get(error_code, status.HTTP_400_BAD_REQUEST)
+
+
+def _project_structure_error(
+    *,
+    error_code: str | None,
+    message: str | None = None,
+    details: dict[str, Any] | None = None,
+    impact_report: dict[str, Any] | None = None,
+) -> HTTPException:
+    if error_code == StructuredSpecEntityErrorCode.AUTHORIZATION_DENIED:
+        http_status, public_code = status.HTTP_403_FORBIDDEN, "forbidden"
+    elif error_code == "project_structure_folder_not_empty":
+        http_status, public_code = (
+            status.HTTP_409_CONFLICT,
+            "project_structure_folder_not_empty",
+        )
+    elif error_code == (
+        StructuredSpecEntityErrorCode.PROJECT_STRUCTURE_RELATION_STATUS_CONFLICT
+    ):
+        http_status, public_code = (
+            status.HTTP_409_CONFLICT,
+            "project_structure_relation_status_conflict",
+        )
+    elif error_code in {
+        StructuredSpecEntityErrorCode.VERSION_CONFLICT,
+        StructuredSpecEntityErrorCode.IDEMPOTENCY_CONFLICT,
+        StructuredSpecEntityErrorCode.SPEC_LOCKED,
+        StructuredSpecEntityErrorCode.IDEMPOTENCY_STORE_NOT_CONFIGURED,
+    }:
+        http_status = status.HTTP_409_CONFLICT
+        public_code = {
+            StructuredSpecEntityErrorCode.VERSION_CONFLICT: "version_conflict",
+            StructuredSpecEntityErrorCode.IDEMPOTENCY_CONFLICT: "idempotency_conflict",
+            StructuredSpecEntityErrorCode.SPEC_LOCKED: "spec_locked",
+            StructuredSpecEntityErrorCode.IDEMPOTENCY_STORE_NOT_CONFIGURED: "spec_locked",
+        }[error_code]
+    elif error_code in {
+        StructuredSpecEntityErrorCode.ENTITY_NOT_FOUND,
+        StructuredSpecEntityErrorCode.SPEC_NOT_FOUND,
+    }:
+        http_status, public_code = status.HTTP_404_NOT_FOUND, "spec_not_found"
+    else:
+        http_status, public_code = (
+            status.HTTP_400_BAD_REQUEST,
+            "project_structure_invalid",
+        )
+    return HTTPException(
+        status_code=http_status,
+        detail={
+            "error": public_code,
+            "message": message or public_code,
+            **({"details": details} if details else {}),
+            **({"impact_report": impact_report} if impact_report else {}),
+        },
+    )
 
 
 def _resource_gate_detail(exc: ResourceGateError) -> dict:
@@ -817,7 +1007,13 @@ async def _run_structured_spec_entity_command(
     payload: dict[str, Any] | None = None,
     entity_id: str | None = None,
     expected_spec_version: int | None = None,
+    expected_structure_revision: int | None = None,
     task_id: str | None = None,
+    task_role: str | None = None,
+    test_id: str | None = None,
+    test_role: str | None = None,
+    evidence_id: str | None = None,
+    idempotency_key: str | None = None,
     ack_token: str | None = None,
     preview_only: bool = False,
 ) -> dict[str, Any]:
@@ -835,7 +1031,13 @@ async def _run_structured_spec_entity_command(
                 payload=payload,
                 entity_id=entity_id,
                 expected_spec_version=expected_spec_version,
+                expected_structure_revision=expected_structure_revision,
                 task_id=task_id,
+                task_role=task_role,
+                test_id=test_id,
+                test_role=test_role,
+                evidence_id=evidence_id,
+                idempotency_key=idempotency_key,
                 ack_token=ack_token,
                 preview_only=preview_only,
             ),
@@ -1094,6 +1296,152 @@ async def get_spec(
     return result.spec
 
 
+@router.get("/boards/{board_id}/specs/{spec_id}/project-structure")
+async def get_project_structure(
+    board_id: str,
+    spec_id: str,
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Return the optional canonical tree without collapsing NULL into []."""
+
+    try:
+        result = await GetProjectStructureUseCase().execute(
+            GetProjectStructureCommand(board_id, spec_id),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            uow=uow,
+        )
+    except PermissionDeniedError as exc:
+        raise _project_structure_error(
+            error_code=StructuredSpecEntityErrorCode.AUTHORIZATION_DENIED,
+            message=exc.message,
+        ) from exc
+    except EntityNotFoundError as exc:
+        raise _project_structure_error(
+            error_code=StructuredSpecEntityErrorCode.SPEC_NOT_FOUND,
+            message="Spec not found.",
+        ) from exc
+    return result.structure.model_dump(mode="json")
+
+
+@router.patch("/boards/{board_id}/specs/{spec_id}/project-structure")
+@_validate_spec_write_before_dependencies(ProjectStructureBatchMutationRequest)
+async def mutate_project_structure(
+    board_id: str,
+    spec_id: str,
+    data: ProjectStructureBatchMutationRequest,
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Apply one atomic, CAS-fenced batch through the shared Core writer."""
+
+    try:
+        result = await MutateProjectStructureUseCase().execute(
+            MutateProjectStructureCommand(
+                board_id,
+                spec_id,
+                operations=_project_structure_core_operations(data.operations),
+                expected_spec_version=data.expected_spec_version,
+                expected_structure_revision=data.expected_structure_revision,
+                idempotency_key=data.idempotency_key,
+            ),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            uow=uow,
+        )
+    except PermissionDeniedError as exc:
+        raise _project_structure_error(
+            error_code=StructuredSpecEntityErrorCode.AUTHORIZATION_DENIED,
+            message=exc.message,
+        ) from exc
+    except EntityNotFoundError as exc:
+        raise _project_structure_error(
+            error_code=StructuredSpecEntityErrorCode.SPEC_NOT_FOUND,
+            message="Spec not found.",
+        ) from exc
+    except SubjectEditRequiresDraftError as exc:
+        raise _project_structure_error(
+            error_code=StructuredSpecEntityErrorCode.SPEC_LOCKED,
+            message=str(exc),
+        ) from exc
+    except (CommandValidationError, ValidationError, ValueError) as exc:
+        raise _project_structure_error(
+            error_code=StructuredSpecEntityErrorCode.VALIDATION_FAILED,
+            message=str(exc),
+        ) from exc
+    structured = result.structured_result
+    if not structured.success:
+        raise _project_structure_error(
+            error_code=structured.error_code,
+            message=structured.error_message,
+            details=structured.details,
+            impact_report=structured.impact_report,
+        )
+    detail_nodes = (
+        structured.details.get("nodes")
+        if isinstance(structured.details, dict)
+        else None
+    )
+    nodes = detail_nodes if isinstance(detail_nodes, list) else []
+    affected = [
+        node_id
+        for node_id in structured.entity_ids
+        if str(node_id).startswith("psn_")
+    ]
+    for operation in data.operations:
+        if operation.operation == "reorder":
+            affected.extend(
+                str(node_id)
+                for node_id in operation.payload.get("ordered_ids", [])
+                if str(node_id).startswith("psn_")
+            )
+    return {
+        "replayed": bool(structured.replayed),
+        "spec_version": int(structured.spec_version),
+        "structure_revision": int(structured.structure_revision),
+        "affected_node_ids": list(dict.fromkeys(affected)),
+        "nodes": nodes,
+    }
+
+
+@router.get("/boards/{board_id}/cards/{card_id}/project-structure")
+async def get_card_project_structure(
+    board_id: str,
+    card_id: str,
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Project only direct Task/Test nodes and their folder ancestors."""
+
+    try:
+        result = await GetCardProjectStructureProjectionUseCase().execute(
+            GetCardProjectStructureProjectionCommand(board_id, card_id),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            uow=uow,
+        )
+    except PermissionDeniedError as exc:
+        raise _project_structure_error(
+            error_code=StructuredSpecEntityErrorCode.AUTHORIZATION_DENIED,
+            message=exc.message,
+        ) from exc
+    except EntityNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "card_not_found",
+                "message": "Card or linked Spec not found.",
+            },
+        ) from exc
+    except CommandValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "project_structure_projection_unsupported",
+                "message": str(exc),
+            },
+        ) from exc
+    return result.projection.model_dump(mode="json")
+
+
 @router.patch("/specs/{spec_id}", response_model=SpecResponse)
 @_validate_spec_write_before_dependencies(SpecUpdate)
 async def update_spec(
@@ -1167,7 +1515,13 @@ async def create_structured_spec_entity(
         operation="create",
         payload=data.payload,
         expected_spec_version=data.expected_spec_version,
+        expected_structure_revision=data.expected_structure_revision,
         task_id=data.task_id,
+        task_role=data.task_role,
+        test_id=data.test_id,
+        test_role=data.test_role,
+        evidence_id=data.evidence_id,
+        idempotency_key=data.idempotency_key,
         ack_token=data.ack_token,
     )
 
@@ -1191,7 +1545,13 @@ async def update_structured_spec_entity(
         operation=data.operation or "update",
         payload=data.payload,
         expected_spec_version=data.expected_spec_version,
+        expected_structure_revision=data.expected_structure_revision,
         task_id=data.task_id,
+        task_role=data.task_role,
+        test_id=data.test_id,
+        test_role=data.test_role,
+        evidence_id=data.evidence_id,
+        idempotency_key=data.idempotency_key,
         ack_token=data.ack_token,
     )
 
@@ -1220,7 +1580,13 @@ async def operate_structured_spec_entity(
         operation=data.operation,
         payload=data.payload,
         expected_spec_version=data.expected_spec_version,
+        expected_structure_revision=data.expected_structure_revision,
         task_id=data.task_id,
+        task_role=data.task_role,
+        test_id=data.test_id,
+        test_role=data.test_role,
+        evidence_id=data.evidence_id,
+        idempotency_key=data.idempotency_key,
         ack_token=data.ack_token,
     )
 
@@ -1251,7 +1617,13 @@ async def preview_structured_spec_entity_impact(
         operation=data.operation,
         payload=data.payload,
         expected_spec_version=data.expected_spec_version,
+        expected_structure_revision=data.expected_structure_revision,
         task_id=data.task_id,
+        task_role=data.task_role,
+        test_id=data.test_id,
+        test_role=data.test_role,
+        evidence_id=data.evidence_id,
+        idempotency_key=data.idempotency_key,
         ack_token=data.ack_token,
         preview_only=True,
     )

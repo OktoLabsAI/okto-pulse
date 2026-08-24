@@ -4,7 +4,7 @@
 
 import React, { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import { X, HelpCircle, Trash2, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ShieldCheck, ShieldX, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History, Layers, MessageCircleQuestion, MessageSquare, ListChecks, Target } from 'lucide-react';
+import { X, HelpCircle, Trash2, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ShieldCheck, ShieldX, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History, Layers, MessageCircleQuestion, MessageSquare, ListChecks, Target, FolderTree } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { EntityExportButton } from '@/components/export';
 import { useDashboardApi, type ActivityLogEntry } from '@/services/api';
@@ -15,7 +15,7 @@ import {
   useColumns,
   useCurrentBoard,
 } from '@/store/dashboard';
-import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, Sprint, BugRegressionScenarioPreview, BugWorkflowRemediationMessage, AmendmentRevisionListResponse, ValidationEntry, ImpactEvidence } from '@/types';
+import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, Sprint, BugRegressionScenarioPreview, BugWorkflowRemediationMessage, AmendmentRevisionListResponse, ValidationEntry, ImpactEvidence, ProjectStructureProjectionResponse } from '@/types';
 import { CARD_STATUSES, STATUS_LABELS, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
 import { PathBRemediationPanel } from '@/components/kanban/PathBRemediationPanel';
 import {
@@ -67,6 +67,10 @@ import {
 } from './taskValidationThresholds';
 import { resolveCardSemanticAnchor } from './cardSemanticAnchors';
 import { ContextualHelpLink } from '@/components/help';
+import {
+  ProjectStructureErrorBoundary,
+  ProjectStructureProjectionPanel,
+} from '@/components/specs/ProjectStructureTab';
 
 /** Resolve an actor ID to a display name using the members list. */
 function resolveActorName(id: string | null | undefined, members: { id: string; name: string }[]): string {
@@ -112,7 +116,7 @@ type CardTestsTab = Extract<
 >;
 type CardReferencesTab = Extract<
   CardModalSubtab,
-  'lineage' | 'requirements' | 'dependencies'
+  'lineage' | 'requirements' | 'dependencies' | 'project-structure'
 >;
 type CardValidationTab = Extract<
   CardModalSubtab,
@@ -362,6 +366,10 @@ export function CardModal({
   const [dependents, setDependents] = useState<{ id: string; title: string; status: string }[]>([]);
   const [parentSpec, setParentSpec] = useState<{ id: string; title: string } | null>(null);
   const [fullSpec, setFullSpec] = useState<Spec | null>(null);
+  const [projectStructureProjection, setProjectStructureProjection] =
+    useState<ProjectStructureProjectionResponse | null>(null);
+  const [projectStructureLoading, setProjectStructureLoading] = useState(false);
+  const [projectStructureError, setProjectStructureError] = useState<string | null>(null);
   const [taskValidationHierarchy, setTaskValidationHierarchy] =
     useState<TaskValidationHierarchySnapshot | null>(null);
   const [taskValidationHierarchyLoading, setTaskValidationHierarchyLoading] =
@@ -379,6 +387,7 @@ export function CardModal({
   const [amendmentBusy, setAmendmentBusy] = useState(false);
   const [knowledgeMutationBusy, setKnowledgeMutationBusy] = useState(false);
   const [viewingSpecId, setViewingSpecId] = useState<string | null>(null);
+  const [viewingSpecNodeId, setViewingSpecNodeId] = useState<string | null>(null);
   const [specKBsFull, setSpecKBsFull] = useState<{ id: string; title: string; description?: string; content: string; mime_type?: string }[]>([]);
   const [showConclusionPrompt, setShowConclusionPrompt] = useState(false);
   const [showCancelDialog, setShowCancelDialog] = useState(false);
@@ -439,6 +448,18 @@ export function CardModal({
   };
   const canReadIR = perms.has('spec.integration_requirements.read');
   const canReadOR = perms.has('spec.observability_requirements.read');
+  const canReadProjectStructure = perms.has('spec.entity.read');
+  const showCardProjectStructure = Boolean(
+    canReadProjectStructure
+    && card?.spec_id
+    && ['normal', 'test'].includes(card.card_type ?? 'normal')
+    && (
+      projectStructureProjection?.authored
+      || (fullSpec
+        && fullSpec.project_structure !== null
+        && fullSpec.project_structure !== undefined)
+    ),
+  );
   const canLinkIRTasks = perms.has('spec.integration_requirements.link_task') && canMutateCard('card.link_to.ir');
   const canLinkORTasks = perms.has('spec.observability_requirements.link_task') && canMutateCard('card.link_to.or');
   const canReadTests = perms.has('card.tests.read');
@@ -482,6 +503,41 @@ export function CardModal({
     bugRegressionPreview?.semantic_gap_required
     || (amendmentRevisions?.revisions.length || 0) > 0,
   );
+
+  const loadProjectStructureProjection = useCallback(async (
+    subject: Pick<Card, 'id' | 'board_id' | 'spec_id' | 'card_type'>,
+  ) => {
+    const supportsProjection = Boolean(
+      canReadProjectStructure
+      && subject.spec_id
+      && ['normal', 'test'].includes(subject.card_type ?? 'normal'),
+    );
+    if (!supportsProjection) {
+      setProjectStructureProjection(null);
+      setProjectStructureError(null);
+      setProjectStructureLoading(false);
+      return;
+    }
+    const requestCardId = subject.id;
+    setProjectStructureLoading(true);
+    setProjectStructureError(null);
+    try {
+      const projection = await api.getCardProjectStructure(
+        subject.board_id || boardId,
+        requestCardId,
+      );
+      if (selectedCardIdRef.current !== requestCardId) return;
+      setProjectStructureProjection(projection);
+    } catch {
+      if (selectedCardIdRef.current !== requestCardId) return;
+      setProjectStructureProjection(null);
+      setProjectStructureError('The project structure projection could not be loaded.');
+    } finally {
+      if (selectedCardIdRef.current === requestCardId) {
+        setProjectStructureLoading(false);
+      }
+    }
+  }, [api, boardId, canReadProjectStructure]);
 
   const policyTransitionAuthority = usePolicyTransitionAuthority({
     boardId: card?.board_id ?? boardId,
@@ -877,6 +933,21 @@ export function CardModal({
   }, [selectedCardId, isOpen, canReadAmendmentRevisions, canReadBoardAgents]);
 
   useEffect(() => {
+    if (!card || !isOpen) {
+      setProjectStructureProjection(null);
+      setProjectStructureError(null);
+      setProjectStructureLoading(false);
+      return;
+    }
+    void loadProjectStructureProjection(card);
+  }, [
+    card,
+    fullSpec?.project_structure_revision,
+    isOpen,
+    loadProjectStructureProjection,
+  ]);
+
+  useEffect(() => {
     if (!card) return;
 
     const hasResources =
@@ -922,6 +993,12 @@ export function CardModal({
     ) {
       setTestsTab('regression');
     }
+    if (
+      referencesTab === 'project-structure'
+      && !showCardProjectStructure
+    ) {
+      setReferencesTab('lineage');
+    }
     const visibleValidationTabs: CardValidationTab[] = [
       ...(canReadConclusion ? ['execution-report' as const] : []),
       ...(card.card_type !== 'test' && canReadValidation
@@ -946,12 +1023,15 @@ export function CardModal({
     canReadKnowledge,
     canReadMockups,
     canReadPolicyCompliance,
+    canReadProjectStructure,
     canReadQA,
     canReadTests,
     canReadValidation,
     card,
     hasAmendmentWorkspace,
     testsTab,
+    referencesTab,
+    showCardProjectStructure,
     validationTab,
   ]);
 
@@ -1674,6 +1754,16 @@ export function CardModal({
                         label: 'Requirements',
                         icon: <ListChecks size={14} />,
                       },
+                      ...(
+                        showCardProjectStructure
+                          ? [{
+                              id: 'project-structure' as const,
+                              label: 'Project structure',
+                              icon: <FolderTree size={14} />,
+                              count: projectStructureProjection?.nodes.filter((item) => item.direct).length,
+                            }]
+                          : []
+                      ),
                       {
                         id: 'dependencies' as const,
                         label: 'Dependencies',
@@ -1703,6 +1793,27 @@ export function CardModal({
                       onOpenSpec={setViewingSpecId}
                     />
                   </AccessibleTabPanel>
+
+                  {showCardProjectStructure && (
+                    <AccessibleTabPanel
+                      idBase={`${tabIdBase}-card-${card.id}-references`}
+                      tabId="project-structure"
+                      value={referencesTab}
+                    >
+                      <ProjectStructureErrorBoundary>
+                        <ProjectStructureProjectionPanel
+                          projection={projectStructureProjection}
+                          loading={projectStructureLoading}
+                          error={projectStructureError}
+                          onRetry={() => void loadProjectStructureProjection(card)}
+                          onOpenFull={(nodeId) => {
+                            setViewingSpecNodeId(nodeId ?? null);
+                            setViewingSpecId(card.spec_id!);
+                          }}
+                        />
+                      </ProjectStructureErrorBoundary>
+                    </AccessibleTabPanel>
+                  )}
 
                   <AccessibleTabPanel
                     idBase={`${tabIdBase}-card-${card.id}-references`}
@@ -2457,7 +2568,12 @@ export function CardModal({
         <SpecModal
           specId={viewingSpecId}
           boardId={boardId}
-          onClose={() => setViewingSpecId(null)}
+          initialTab={viewingSpecNodeId ? 'project-structure' : undefined}
+          focusProjectNodeId={viewingSpecNodeId}
+          onClose={() => {
+            setViewingSpecId(null);
+            setViewingSpecNodeId(null);
+          }}
           onChanged={() => { if (selectedCardId) loadCard(selectedCardId); }}
         />
       )}

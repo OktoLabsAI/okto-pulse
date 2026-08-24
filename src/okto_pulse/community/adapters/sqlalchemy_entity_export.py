@@ -35,6 +35,7 @@ from okto_pulse.community.services.entity_export_rich_media import (
 )
 from okto_pulse.core.application.use_cases import EntityNotFoundError
 from okto_pulse.core.domain.checklist import SPECIFY_CHECKLIST_ITEMS_V1
+from okto_pulse.core.domain.project_structure import project_structure_export_payload
 from okto_pulse.core.domain.entity_export import (
     EntityExportBundle,
     EntityExportDisclosure,
@@ -88,6 +89,7 @@ class _SectionDefinition:
     embedded_fields: tuple[str, ...] = ()
     history_only: bool = False
     unavailable_reason: str | None = None
+    schema_version: str = _SECTION_SCHEMA_VERSION
 
 
 _MODELS: dict[EntityExportType, type[Any]] = {
@@ -245,6 +247,9 @@ _EMBEDDED_FIELD_SECTIONS: dict[EntityExportType, dict[str, str]] = {
         "api_contracts": "api_contracts",
         "integration_requirements": "integration_requirements",
         "observability_requirements": "observability_requirements",
+        "project_structure_revision": "project_structure",
+        "project_structure_digest": "project_structure",
+        "project_structure": "project_structure",
     },
     EntityExportType.SPRINT: {
         "evaluations": "evaluations",
@@ -762,6 +767,16 @@ def _definitions(entity_type: EntityExportType) -> tuple[_SectionDefinition, ...
                 "observability_requirements",
                 "spec.observability_requirements.read",
                 embedded_fields=("observability_requirements",),
+            ),
+            _SectionDefinition(
+                "project_structure",
+                "spec.entity.read",
+                embedded_fields=(
+                    "project_structure_revision",
+                    "project_structure_digest",
+                    "project_structure",
+                ),
+                schema_version="project-structure-export/v1",
             ),
             _SectionDefinition(
                 "requirement_lint",
@@ -1757,7 +1772,7 @@ class CommunitySqlAlchemyEntityExportReader:
             sections.append(
                 EntityExportSection(
                     section_key=definition.key,
-                    schema_version=_SECTION_SCHEMA_VERSION,
+                    schema_version=definition.schema_version,
                     payload=payload,
                 )
             )
@@ -1765,7 +1780,7 @@ class CommunitySqlAlchemyEntityExportReader:
                 EntityExportSectionManifestEntry(
                     section_key=definition.key,
                     status=status,
-                    schema_version=_SECTION_SCHEMA_VERSION,
+                    schema_version=definition.schema_version,
                     required_permission=definition.permission,
                     total_count=count,
                     included_count=count,
@@ -1797,6 +1812,49 @@ class CommunitySqlAlchemyEntityExportReader:
         base_row: Any,
         base_payload: Mapping[str, Any],
     ) -> tuple[dict[str, Any], int, int]:
+        if definition.key == "project_structure":
+            nodes = _json_value(getattr(base_row, "project_structure", None))
+            revision = int(
+                getattr(base_row, "project_structure_revision", None) or 0
+            )
+            exported = project_structure_export_payload(
+                nodes,
+                structure_revision=revision,
+            )
+            if exported is None:
+                return (
+                    {
+                        "manifest": {
+                            "project_structure_state": "absent",
+                            "structure_revision": None,
+                            "structure_digest": None,
+                            "active_node_count": 0,
+                        },
+                        "nodes": [],
+                    },
+                    0,
+                    0,
+                )
+            active_count = int(exported["active_node_count"])
+            if active_count > self._max_section_rows:
+                raise CommunityEntityExportLimitError(
+                    section_key=definition.key,
+                    limit=self._max_section_rows,
+                )
+            state = "populated" if active_count else "authored_empty"
+            return (
+                {
+                    "manifest": {
+                        "project_structure_state": state,
+                        "structure_revision": exported["structure_revision"],
+                        "structure_digest": exported["structure_digest"],
+                        "active_node_count": active_count,
+                    },
+                    "nodes": exported["nodes"],
+                },
+                active_count,
+                active_count,
+            )
         embedded: dict[str, Any] = {}
         reportable_count = 0
         materialized_count = 0

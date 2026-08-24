@@ -23336,6 +23336,71 @@ WHERE NOT trigger.tgisinternal
     return None if changed else "skipped"
 
 
+async def _migrate_add_project_structure_column() -> str | None:
+    """Converge nullable Spec Project structure storage without a backfill.
+
+    Fresh installations receive the physically-last column from ``create_all``.
+    Existing SQLite/PostgreSQL installations are inspected and altered once;
+    no default means historical rows remain SQL NULL and neither Spec versions
+    nor timestamps are touched. Replays are an explicit successful no-op.
+    """
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import text as sa_text
+
+    engine = get_engine()
+    async with engine.begin() as conn:
+        dialect = conn.dialect.name
+        if dialect not in {"sqlite", "postgresql"}:
+            raise RuntimeError(
+                "Project structure migration supports only SQLite and PostgreSQL"
+            )
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(sa_inspect(sync_conn).get_table_names())
+        )
+        if "specs" not in table_names:
+            # Defensive for direct/pre-boundary invocation. The canonical
+            # post-create ledger always has the table at this point.
+            return "skipped"
+        columns = await conn.run_sync(
+            lambda sync_conn: {
+                str(column["name"])
+                for column in sa_inspect(sync_conn).get_columns("specs")
+            }
+        )
+        additions = (
+            ("project_structure_revision", "INTEGER"),
+            ("project_structure_digest", "VARCHAR(64)"),
+            ("project_structure", "JSON"),
+        )
+        changed = False
+        for column_name, column_type in additions:
+            if column_name in columns:
+                continue
+            ddl = (
+                f"ALTER TABLE specs ADD COLUMN IF NOT EXISTS "
+                f"{column_name} {column_type}"
+                if dialect == "postgresql"
+                else f"ALTER TABLE specs ADD COLUMN {column_name} {column_type}"
+            )
+            await conn.execute(sa_text(ddl))
+            changed = True
+        final_columns = await conn.run_sync(
+            lambda sync_conn: {
+                str(column["name"]): column
+                for column in sa_inspect(sync_conn).get_columns("specs")
+            }
+        )
+        for column_name, _column_type in additions:
+            column = final_columns.get(column_name)
+            if column is None or column.get("nullable") is not True:
+                raise RuntimeError(
+                    "Project structure migration did not create nullable storage: "
+                    + column_name
+                )
+    return None if changed else "skipped"
+
+
 async def _migrate_spec_dependency_schema() -> str | None:
     """Converge and audit the exact SK-M relational authority.
 
@@ -25173,5 +25238,8 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
         _migrate_contextual_code_evidence_schema
     ),
     "_migrate_spec_dependency_schema": _migrate_spec_dependency_schema,
+    "_migrate_add_project_structure_column": (
+        _migrate_add_project_structure_column
+    ),
     "_migrate_agent_permissions": _migrate_agent_permissions,
 }

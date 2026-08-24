@@ -524,6 +524,13 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "edition-start marker, exact keyset indexes and immutability guards.",
     ),
     (
+        "_migrate_add_project_structure_column",
+        "post_create_all",
+        False,
+        "Add nullable, default-free Project structure JSON storage to Specs "
+        "without backfilling legacy rows.",
+    ),
+    (
         "_migrate_agent_permissions",
         "post_create_all",
         False,

@@ -32,6 +32,18 @@ def test_structured_spec_projection_preserves_null_empty_and_authored_fields() -
         integration_requirements=[],
         observability_requirements=None,
         test_scenarios=[],
+        project_structure=[
+            {
+                "id": "psn_snapshot_root",
+                "parent_id": None,
+                "position": 0,
+                "kind": "folder",
+                "name": "src",
+                "note": "Canonical root",
+                "classification": "as_is",
+                "status": "active",
+            }
+        ],
     )
 
     projected = _record(row)
@@ -47,6 +59,9 @@ def test_structured_spec_projection_preserves_null_empty_and_authored_fields() -
     assert projected.integration_requirements == []
     assert projected.observability_requirements is None
     assert projected.test_scenarios == []
+    assert projected.project_structure == row.project_structure
+    assert projected.project_structure is not row.project_structure
+    assert projected.project_structure[0] is not row.project_structure[0]
     assert projected.technical_requirements == row.technical_requirements
     assert projected.technical_requirements is not row.technical_requirements
     assert (

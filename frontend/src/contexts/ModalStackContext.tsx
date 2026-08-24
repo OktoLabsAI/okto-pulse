@@ -25,7 +25,12 @@ import type { ReactNode } from 'react';
 export type ModalStackEntry =
   | { type: 'card'; id: string }
   | { type: 'story'; id: string }
-  | { type: 'spec'; id: string; initialTab?: 'evidence-matrix' }
+  | {
+    type: 'spec';
+    id: string;
+    initialTab?: 'evidence-matrix' | 'project-structure';
+    focusProjectNodeId?: string | null;
+  }
   | { type: 'ideation'; id: string }
   | { type: 'refinement'; id: string }
   | { type: 'sprint'; id: string }

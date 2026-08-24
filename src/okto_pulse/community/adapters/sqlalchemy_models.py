@@ -1405,6 +1405,21 @@ class Spec(Base):
         default=1,
         server_default=text("1"),
     )
+    # Project-structure metadata is additive. Legacy NULL revision maps to zero
+    # at the port boundary; the canonical digest is NULL only while the tree is
+    # absent. The JSON storage stays physically last so fresh ``create_all``
+    # and legacy ALTER ADD converge to the same order. SQL NULL means the
+    # capability has never been authored; JSON [] is authored-empty.
+    project_structure_revision: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        default=0,
+    )
+    project_structure_digest: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    project_structure: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     # Relationships
     board: Mapped["Board"] = relationship("Board", back_populates="specs")
@@ -1467,6 +1482,32 @@ class SpecHistory(Base):
 
     # Relationships
     spec: Mapped["Spec"] = relationship("Spec", back_populates="history")
+
+
+class ProjectStructureMutationReceiptRow(Base):
+    """Durable exact-replay receipt for one Project structure batch."""
+
+    __tablename__ = "project_structure_mutation_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(idempotency_key)) >= 1 AND length(request_digest) = 64",
+            name="ck_project_structure_receipt_shape",
+        ),
+    )
+
+    spec_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("specs.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        primary_key=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        server_default=func.now(),
+        nullable=False,
+    )
 
 
 class SpecDependencyBoardLock(Base):

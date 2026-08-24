@@ -95,6 +95,10 @@ import type {
   SpecStructuredEntityMutationResult,
   SpecStructuredEntityOperation,
   SpecStructuredEntityType,
+  ProjectStructureMutationRequest,
+  ProjectStructureMutationResponse,
+  ProjectStructureProjectionResponse,
+  ProjectStructureSnapshot,
   SpecSummary,
   SpecValidationCurrentSummary,
   SpecValidationList,
@@ -1352,6 +1356,44 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     async getSpec(specId: string): Promise<Spec> {
       return apiClient.fetchJson<Spec>(`/specs/${specId}`);
+    },
+
+    async getProjectStructure(
+      boardId: string,
+      specId: string,
+      signal?: AbortSignal,
+    ): Promise<ProjectStructureSnapshot> {
+      return apiClient.fetchJson<ProjectStructureSnapshot>(
+        `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/project-structure`,
+        { signal },
+      );
+    },
+
+    async mutateProjectStructure(
+      boardId: string,
+      specId: string,
+      request: ProjectStructureMutationRequest,
+      signal?: AbortSignal,
+    ): Promise<ProjectStructureMutationResponse> {
+      return apiClient.fetchJson<ProjectStructureMutationResponse>(
+        `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/project-structure`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify(request),
+          signal,
+        },
+      );
+    },
+
+    async getCardProjectStructure(
+      boardId: string,
+      cardId: string,
+      signal?: AbortSignal,
+    ): Promise<ProjectStructureProjectionResponse> {
+      return apiClient.fetchJson<ProjectStructureProjectionResponse>(
+        `/boards/${encodeURIComponent(boardId)}/cards/${encodeURIComponent(cardId)}/project-structure`,
+        { signal },
+      );
     },
 
     async listSpecDependencies(

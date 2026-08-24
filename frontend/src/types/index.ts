@@ -1447,6 +1447,137 @@ export interface TechnicalRequirement {
   notes?: string | null;
 }
 
+// Optional, canonical project structure authored on a Spec. `null` means the
+// structure has never been authored; an empty array is an intentional empty
+// structure and must not be collapsed back to `null` by clients.
+export type ProjectStructureNodeKind = 'folder' | 'file' | 'artifact';
+export type ProjectStructureNodeClassification =
+  | 'as_is'
+  | 'to_be'
+  | 'reference_scaffold';
+export type ProjectStructureNodeState =
+  | 'existing'
+  | 'planned'
+  | 'modified'
+  | 'removed';
+export type ProjectStructureNodeStatus = 'active' | 'revoked';
+export type ProjectStructureState = 'not_authored' | 'authored_empty' | 'authored';
+export type ProjectStructureTaskRole = 'create' | 'modify' | 'read' | 'remove';
+export type ProjectStructureTestRole =
+  | 'target'
+  | 'test_file'
+  | 'fixture'
+  | 'integration_point';
+
+export interface ProjectStructureTaskReference {
+  task_id: string;
+  role: ProjectStructureTaskRole;
+  classification_at_link?: ProjectStructureNodeClassification | null;
+}
+
+export interface ProjectStructureTestReference {
+  test_id: string;
+  role: ProjectStructureTestRole;
+  classification_at_link?: ProjectStructureNodeClassification | null;
+}
+
+export interface ProjectStructureNode {
+  id: string;
+  parent_id: string | null;
+  position: number;
+  kind: ProjectStructureNodeKind;
+  name: string;
+  /** Exactly one canonical human-editable note/description per node. */
+  note: string;
+  classification: ProjectStructureNodeClassification;
+  state: ProjectStructureNodeState | null;
+  /** Required only for reference_scaffold; prevents AS-IS/TO-BE ambiguity. */
+  interpretation_limit: string | null;
+  status: ProjectStructureNodeStatus;
+  task_references: ProjectStructureTaskReference[];
+  test_references: ProjectStructureTestReference[];
+  evidence_ids: string[];
+}
+
+export interface ProjectStructureSnapshot {
+  contract_version: 'project-structure/v1';
+  state: ProjectStructureState;
+  spec_id: string;
+  spec_version: number;
+  authored: boolean;
+  structure_revision: number;
+  digest: string | null;
+  nodes: ProjectStructureNode[];
+}
+
+export type ProjectStructureMutationOperationKind =
+  | 'create'
+  | 'update'
+  | 'revoke'
+  | 'restore'
+  | 'reorder'
+  | 'link_task'
+  | 'unlink_task'
+  | 'link_test'
+  | 'unlink_test'
+  | 'link_evidence'
+  | 'unlink_evidence';
+
+export interface ProjectStructureMutationOperation {
+  operation: ProjectStructureMutationOperationKind;
+  entity_id?: string | null;
+  payload?: Record<string, unknown>;
+  position?: number;
+  task_id?: string;
+  task_role?: ProjectStructureTaskRole;
+  test_id?: string;
+  test_role?: ProjectStructureTestRole;
+  evidence_id?: string;
+}
+
+export interface ProjectStructureMutationRequest {
+  expected_spec_version: number;
+  /** Independent CAS fence because relation-only writes do not bump Spec.version. */
+  expected_structure_revision: number;
+  idempotency_key: string;
+  operations: ProjectStructureMutationOperation[];
+}
+
+export interface ProjectStructureMutationResponse {
+  replayed: boolean;
+  spec_version: number;
+  structure_revision: number;
+  affected_node_ids: string[];
+  nodes: ProjectStructureNode[];
+}
+
+export interface ProjectStructureProjectionNode {
+  node: ProjectStructureNode;
+  depth: number;
+  direct: boolean;
+  context_only: boolean;
+  reference_role: string | null;
+}
+
+export interface ProjectStructureProjectionResponse {
+  contract_version: 'project-structure/v1';
+  state: 'not_authored' | 'authored_empty' | 'no_direct_references' | 'projected';
+  authored: boolean;
+  structure_revision: number;
+  digest: string | null;
+  reference_type: 'task' | 'test';
+  reference_id: string;
+  nodes: ProjectStructureProjectionNode[];
+  affected_references: Array<{
+    node_id: string;
+    state: 'unavailable' | 'classification_changed';
+    reason: string;
+    classification: ProjectStructureNodeClassification | null;
+  }>;
+  spec_id: string;
+  spec_version: number;
+}
+
 // Structured spec entity editing
 export type SpecStructuredEntityType =
   | 'functional_requirement'
@@ -1456,7 +1587,8 @@ export type SpecStructuredEntityType =
   | 'api_contract'
   | 'integration_requirement'
   | 'observability_requirement'
-  | 'decision';
+  | 'decision'
+  | 'project_structure_node';
 
 export type SpecStructuredEntityOperation =
   | 'create'
@@ -1466,7 +1598,11 @@ export type SpecStructuredEntityOperation =
   | 'restore'
   | 'reorder'
   | 'link_task'
-  | 'unlink_task';
+  | 'unlink_task'
+  | 'link_test'
+  | 'unlink_test'
+  | 'link_evidence'
+  | 'unlink_evidence';
 
 export interface SpecStructuredEntityImpactRef {
   target_type: string;
@@ -1489,6 +1625,8 @@ export interface SpecStructuredEntityMutationRequest {
   payload?: Record<string, unknown>;
   expected_spec_version?: number | null;
   task_id?: string | null;
+  test_id?: string | null;
+  evidence_id?: string | null;
   ack_token?: string | null;
 }
 
@@ -2130,6 +2268,9 @@ export interface Spec extends TaskValidationGateOverride {
   integration_requirements: IntegrationRequirement[] | null;
   observability_requirements: ObservabilityRequirement[] | null;
   decisions: Decision[] | null;
+  project_structure?: ProjectStructureNode[] | null;
+  project_structure_revision?: number | null;
+  project_structure_digest?: string | null;
   screen_mockups: ScreenMockup[] | null;
   architecture_designs?: ArchitectureDesignSummary[];
   skip_test_coverage: boolean;
@@ -4171,6 +4312,7 @@ export interface UpdateSpecRequest extends TaskValidationGateOverride {
   integration_requirements?: IntegrationRequirement[];
   observability_requirements?: ObservabilityRequirement[];
   decisions?: Decision[];
+  project_structure?: ProjectStructureNode[] | null;
   screen_mockups?: ScreenMockup[];
   skip_test_coverage?: boolean;
   skip_code_evidence_coverage?: boolean;

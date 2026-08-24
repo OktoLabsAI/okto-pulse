@@ -129,10 +129,11 @@ export function ModalStackRenderer({ boardId }: Props) {
       )}
       {top.type === 'spec' && (
         <SpecModal
-          key={`spec-${top.id}-${top.initialTab ?? 'default'}`}
+          key={`spec-${top.id}-${top.initialTab ?? 'default'}-${top.focusProjectNodeId ?? 'root'}`}
           specId={top.id}
           boardId={boardId}
           initialTab={top.initialTab}
+          focusProjectNodeId={top.focusProjectNodeId}
           onClose={handleClose}
           onEscape={stack.length > 1 ? handleBack : handleClose}
           onChanged={() => {

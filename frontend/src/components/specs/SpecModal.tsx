@@ -44,6 +44,7 @@ import {
   Pencil,
   Grid3X3,
   AlertTriangle,
+  FolderTree,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { EntityExportButton } from '@/components/export';
@@ -139,11 +140,21 @@ import {
 import { SpecDependenciesTab } from './SpecDependenciesTab';
 import type { SpecDependencyDirection } from '@/types/spec-dependencies';
 import { QABadge } from '@/components/shared/QABadge';
+import {
+  ProjectStructureErrorBoundary,
+  ProjectStructureTab,
+} from './ProjectStructureTab';
+import {
+  canMutateProjectStructureInStatus,
+  canRelateProjectStructureInStatus,
+  shouldShowProjectStructureTab,
+} from './projectStructureModel';
 
 interface SpecModalProps {
   specId: string;
   boardId: string;
-  initialTab?: 'evidence-matrix';
+  initialTab?: 'evidence-matrix' | 'project-structure';
+  focusProjectNodeId?: string | null;
   onClose: () => void;
   onEscape?: () => void;
   onChanged: () => void;
@@ -152,6 +163,7 @@ interface SpecModalProps {
 type ModalTab =
   | 'details'
   | 'evidence-matrix'
+  | 'project-structure'
   | 'tests'
   | 'rules'
   | 'dependencies'
@@ -1451,6 +1463,7 @@ export function SpecModal({
   specId,
   boardId: _boardId,
   initialTab,
+  focusProjectNodeId,
   onClose,
   onEscape,
   onChanged,
@@ -1479,12 +1492,52 @@ export function SpecModal({
   const canExecuteChecklist = perms.has('spec.checklist.execute');
   const canReadSpecValidation = perms.has('spec.validation.read');
   const canReadDependencies = perms.has('spec.entity.read');
+  const canReadProjectStructure = perms.has('spec.entity.read');
   const canReadPolicyCompliance = perms.has(
     'guidelines.assessments.read',
   );
   const { canReadProjection: canReadCodeTraceability } =
     useCodeTraceabilityAuthority(_boardId || currentBoard?.id);
   const [spec, setSpec] = useState<Spec | null>(null);
+  const hasProjectStructurePermission = (operation: SpecStructuredEntityOperation) => (
+    hasPermissionWithState(
+      perms.has,
+      `spec.structured_entity.project_structure_node.${operation}`,
+      'spec',
+      spec?.status,
+    )
+  );
+  const canMutateProjectStructure = (operation: SpecStructuredEntityOperation) => (
+    canMutateProjectStructureInStatus(
+      hasProjectStructurePermission(operation),
+      spec?.status,
+    )
+  );
+  const canRelateProjectStructure = (operation: SpecStructuredEntityOperation) => (
+    canRelateProjectStructureInStatus(
+      hasProjectStructurePermission(operation),
+      spec?.status,
+    )
+  );
+  const canCreateProjectStructure = canMutateProjectStructure('create');
+  const canUpdateProjectStructure = canMutateProjectStructure('update');
+  const canRevokeProjectStructure = canMutateProjectStructure('revoke');
+  const canRestoreProjectStructure = canMutateProjectStructure('restore');
+  const canReorderProjectStructure = canMutateProjectStructure('reorder');
+  const canLinkProjectStructureTask = canRelateProjectStructure('link_task');
+  const canUnlinkProjectStructureTask = canRelateProjectStructure('unlink_task');
+  const canLinkProjectStructureTest = canRelateProjectStructure('link_test');
+  const canUnlinkProjectStructureTest = canRelateProjectStructure('unlink_test');
+  // Evidence changes alter the authored AS-IS boundary and remain Draft-only.
+  const canLinkProjectStructureEvidence = canMutateProjectStructure('link_evidence');
+  const canUnlinkProjectStructureEvidence = canMutateProjectStructure('unlink_evidence');
+  // An absent structure can only be authored by creating its first node.
+  const canAuthorProjectStructure = canCreateProjectStructure;
+  const showProjectStructure = shouldShowProjectStructureTab(
+    canReadProjectStructure,
+    canAuthorProjectStructure,
+    spec?.project_structure,
+  );
   const canEditCodeEvidenceCoverage = !spec?.archived && spec?.status === 'draft' && hasPermissionWithState(
     perms.has,
     'spec.entity.edit_coverage_flags',
@@ -1665,6 +1718,12 @@ export function SpecModal({
       setActiveTab('details');
     }
   }, [activeTab, canReadDependencies]);
+
+  useEffect(() => {
+    if (spec && activeTab === 'project-structure' && !showProjectStructure) {
+      setActiveTab('details');
+    }
+  }, [activeTab, showProjectStructure, spec]);
 
   // Build mentionables from board agents + owner
   const mentionables: Mentionable[] = [];
@@ -2295,6 +2354,14 @@ export function SpecModal({
     ...(canReadCodeTraceability
       ? [{ id: 'evidence-matrix' as ModalTab, label: 'Code Evidence Matrix', icon: <Grid3X3 size={14} /> }]
       : []),
+    ...(showProjectStructure
+      ? [{
+        id: 'project-structure' as ModalTab,
+        label: 'Project structure',
+        icon: <FolderTree size={14} />,
+        count: spec.project_structure?.filter((node) => node.status === 'active').length || undefined,
+      }]
+      : []),
     { id: 'tests', label: 'Tests', icon: <FlaskConical size={14} />, count: spec.test_scenarios?.length || 0 },
     { id: 'rules', label: 'Rules', icon: <Scale size={14} />, count: spec.business_rules?.length || 0 },
     ...(canReadDependencies
@@ -2776,6 +2843,38 @@ export function SpecModal({
                 }
               }}
             />
+          )}
+          {activeTab === 'project-structure' && spec && showProjectStructure && (
+            <ProjectStructureErrorBoundary>
+              <ProjectStructureTab
+                boardId={spec.board_id || _boardId}
+                spec={spec}
+                focusNodeId={focusProjectNodeId}
+                canCreate={canCreateProjectStructure}
+                canUpdate={canUpdateProjectStructure}
+                canRevoke={canRevokeProjectStructure}
+                canRestore={canRestoreProjectStructure}
+                canReorder={canReorderProjectStructure}
+                canLinkTask={canLinkProjectStructureTask}
+                canUnlinkTask={canUnlinkProjectStructureTask}
+                canLinkTest={canLinkProjectStructureTest}
+                canUnlinkTest={canUnlinkProjectStructureTest}
+                canLinkEvidence={canLinkProjectStructureEvidence}
+                canUnlinkEvidence={canUnlinkProjectStructureEvidence}
+                canReadEvidence={canReadCodeTraceability}
+                onStructureChange={({ nodes, specVersion, structureRevision, source }) => {
+                  setSpec((current) => current
+                    ? {
+                      ...current,
+                      project_structure: nodes,
+                      project_structure_revision: structureRevision,
+                      version: specVersion,
+                    }
+                    : current);
+                  if (source === 'mutation') onChanged();
+                }}
+              />
+            </ProjectStructureErrorBoundary>
           )}
 
           {activeTab === 'tests' && spec && (
