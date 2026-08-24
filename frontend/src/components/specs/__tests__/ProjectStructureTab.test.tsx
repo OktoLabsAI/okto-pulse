@@ -145,7 +145,7 @@ describe('ProjectStructureTab', () => {
     expect(screen.getAllByRole('treeitem')).toHaveLength(2);
   });
 
-  it('reveals mutation and link controls only after switching to Edit', async () => {
+  it('reveals mutation controls only in Edit and presents a reference boundary as the single Note / Description', async () => {
     const linkedNodes = nodes.map((item) => item.id === 'psn_entry'
       ? {
         ...item,
@@ -168,10 +168,14 @@ describe('ProjectStructureTab', () => {
     });
 
     await screen.findByRole('tree', { name: 'Project structure tree' });
+    const entry = screen.getByRole('treeitem', { name: /entry\.tsx/i });
+    expect(within(entry).getByText('Note / Description')).toBeInTheDocument();
+    expect(within(entry).getByText('Reference only; it does not prove implementation.')).toBeInTheDocument();
+    expect(within(entry).queryByText('Application entry point')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Add root' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Edit entry.tsx' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Unlink Implement entry' })).not.toBeInTheDocument();
-    expect(screen.queryByText(/Reference boundary: Reference only/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Reference boundary/i)).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
 
@@ -180,7 +184,24 @@ describe('ProjectStructureTab', () => {
     expect(screen.getByRole('button', { name: 'Edit entry.tsx' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Move entry.tsx to another folder' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Unlink Implement entry' })).toBeInTheDocument();
-    expect(screen.getByText(/Reference boundary: Reference only/)).toBeInTheDocument();
+    expect(screen.queryByText(/Reference boundary/i)).not.toBeInTheDocument();
+  });
+
+  it('uses the single Note / Description as the governed reference-scaffold boundary on write', async () => {
+    renderTab();
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add root' }));
+
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'reference.openapi.yaml' } });
+    fireEvent.change(screen.getByLabelText('Classification'), { target: { value: 'reference_scaffold' } });
+    fireEvent.change(screen.getByLabelText(/Note \/ Description/), { target: { value: 'Reference transport shape only.' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(apiMock.mutateProjectStructure).toHaveBeenCalledTimes(1));
+    expect(apiMock.mutateProjectStructure.mock.calls[0][2].operations[0].payload).toMatchObject({
+      note: 'Reference transport shape only.',
+      interpretation_limit: 'Reference transport shape only.',
+    });
   });
 
   it('does not reload when the parent recreates its change callback', async () => {

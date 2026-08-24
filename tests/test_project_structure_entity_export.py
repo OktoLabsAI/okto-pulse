@@ -178,10 +178,18 @@ def test_project_structure_whole_spec_render_is_complete_ordered_and_safe() -> N
     assert "\x00" not in html
     assert "psn_root" not in html
     assert "aaaaaaaaaa" not in html
+    assert html.count("Note / Description:") == 3
+    assert "Pattern only" in html
+    assert "Reference shape" not in html
+    assert "Interpretation limit" not in html
     assert "[Folder]" in markdown
     assert "[File]" in markdown
     assert "[Artifact]" in markdown
     assert markdown.index("src \\<script\\>") < markdown.index("api\\_\\[draft\\].py")
+    assert markdown.count("**Note / Description:**") == 3
+    assert "Pattern only" in markdown
+    assert "Reference shape" not in markdown
+    assert "Interpretation limit" not in markdown
     assert "psn_root" not in markdown
     assert "a" * 64 not in markdown
 

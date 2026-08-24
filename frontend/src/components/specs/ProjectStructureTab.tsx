@@ -97,7 +97,6 @@ interface NodeDraft {
   note: string;
   classification: ProjectStructureNodeClassification;
   state: ProjectStructureNodeState | null;
-  interpretation_limit: string;
 }
 
 interface NodeEditor {
@@ -162,8 +161,14 @@ function defaultDraft(
     note: '',
     classification: 'to_be',
     state: 'planned',
-    interpretation_limit: '',
   };
+}
+
+function noteForNode(node: ProjectStructureNode): string {
+  if (node.classification === 'reference_scaffold') {
+    return node.interpretation_limit?.trim() || node.note;
+  }
+  return node.note;
 }
 
 function draftForNode(node: ProjectStructureNode): NodeDraft {
@@ -172,10 +177,9 @@ function draftForNode(node: ProjectStructureNode): NodeDraft {
     position: node.position,
     kind: node.kind,
     name: node.name,
-    note: node.note,
+    note: noteForNode(node),
     classification: node.classification,
     state: node.state,
-    interpretation_limit: node.interpretation_limit ?? '',
   };
 }
 
@@ -627,9 +631,9 @@ export function ProjectStructureTab({
       setEditorError('Name is required.');
       return;
     }
-    if (editor.draft.classification === 'reference_scaffold'
-      && !editor.draft.interpretation_limit.trim()) {
-      setEditorError('Reference scaffold nodes require a clear interpretation limit.');
+    const note = editor.draft.note.trim();
+    if (editor.draft.classification === 'reference_scaffold' && !note) {
+      setEditorError('Reference scaffold nodes require a Note / Description that states what the scaffold does not prove.');
       return;
     }
     const existing = editor.nodeId
@@ -651,11 +655,11 @@ export function ProjectStructureTab({
       position: editor.draft.position,
       kind: editor.draft.kind,
       name,
-      note: editor.draft.note.trim(),
+      note,
       classification: editor.draft.classification,
       state: editor.draft.state,
       interpretation_limit: editor.draft.classification === 'reference_scaffold'
-        ? editor.draft.interpretation_limit.trim()
+        ? note
         : null,
     };
     if (editor.mode === 'create') {
@@ -923,6 +927,7 @@ export function ProjectStructureTab({
             ));
             const hasActiveChildren = nodes.some((candidate) => candidate.parent_id === node.id && candidate.status === 'active');
             const referenceCount = node.task_references.length + node.test_references.length + node.evidence_ids.length;
+            const note = noteForNode(node);
             return (
               <div
                 key={node.id}
@@ -966,11 +971,6 @@ export function ProjectStructureTab({
                       {node.state && <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">{STATE_LABELS[node.state]}</span>}
                       {node.status === 'revoked' && <span className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] text-red-700 dark:bg-red-950/40 dark:text-red-300">Removed</span>}
                     </div>
-                    {isEditing && node.interpretation_limit && (
-                      <p className="mt-1 rounded border-l-2 border-amber-300 pl-2 text-[11px] leading-4 text-gray-600 dark:border-amber-700 dark:text-gray-300">
-                        Reference boundary: {node.interpretation_limit}
-                      </p>
-                    )}
                   </div>
                 </div>
 
@@ -989,8 +989,8 @@ export function ProjectStructureTab({
                     <div>
                       <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Note / Description</p>
                       <div className="group/note mt-0.5 flex min-w-0 items-start gap-2">
-                        <p className={`min-w-0 flex-1 whitespace-pre-wrap break-words text-sm leading-5 ${node.note ? 'text-gray-600 dark:text-gray-300' : 'italic text-gray-400'}`}>
-                          {node.note || 'No note'}
+                        <p className={`min-w-0 flex-1 whitespace-pre-wrap break-words text-sm leading-5 ${note ? 'text-gray-600 dark:text-gray-300' : 'italic text-gray-400'}`}>
+                          {note || 'No note'}
                         </p>
                         {isEditing && node.status === 'active' && canUpdate && (
                           <button type="button" aria-label={`Edit ${node.name}`} onClick={() => openEdit(node)} disabled={busyNodeId !== null} className={`${iconButtonClassName()} opacity-70 group-hover/note:opacity-100 focus:opacity-100`} title="Edit node">
@@ -1132,7 +1132,16 @@ function NodeEditorForm({
       )}
       <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">
         Note / Description
-        <textarea value={editor.draft.note} maxLength={4000} rows={compact ? 6 : 4} onChange={(event) => onChange({ note: event.target.value })} placeholder="One concise note for this node" className={`mt-1 resize-y ${fieldClassName()}`} />
+        <textarea
+          value={editor.draft.note}
+          maxLength={4000}
+          rows={compact ? 6 : 4}
+          onChange={(event) => onChange({ note: event.target.value })}
+          placeholder={editor.draft.classification === 'reference_scaffold'
+            ? 'Describe the scaffold and what it does not prove.'
+            : 'One concise note for this node'}
+          className={`mt-1 resize-y ${fieldClassName()}`}
+        />
         <span className="mt-1 block text-right text-[10px] font-normal text-gray-400">{editor.draft.note.length}/4000</span>
       </label>
       {error && <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">{error}</div>}
@@ -1195,7 +1204,7 @@ function NodeMetadataFields({
         </label>
         <label className="text-xs font-medium text-gray-700 dark:text-gray-300">
           Classification
-          <select value={editor.draft.classification} onChange={(event) => onChange({ classification: event.target.value as ProjectStructureNodeClassification, interpretation_limit: event.target.value === 'reference_scaffold' ? editor.draft.interpretation_limit : '' })} className={`mt-1 ${fieldClassName()}`}>
+          <select value={editor.draft.classification} onChange={(event) => onChange({ classification: event.target.value as ProjectStructureNodeClassification })} className={`mt-1 ${fieldClassName()}`}>
             {Object.entries(CLASSIFICATION_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select>
         </label>
@@ -1214,12 +1223,6 @@ function NodeMetadataFields({
           </select>
         </label>
       </div>
-      {editor.draft.classification === 'reference_scaffold' && (
-        <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">
-          Reference boundary
-          <textarea value={editor.draft.interpretation_limit} maxLength={4000} rows={2} onChange={(event) => onChange({ interpretation_limit: event.target.value })} placeholder="Explain what this scaffold proves and what it must not be mistaken for." className={`mt-1 resize-y ${fieldClassName()}`} />
-        </label>
-      )}
     </div>
   );
 }
@@ -1288,7 +1291,7 @@ export function ProjectStructureProjectionPanel({
                 <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${item.direct ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300' : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}>{item.direct ? 'Direct' : 'Context only'}</span>
                 {item.reference_role && <span className="rounded bg-purple-50 px-1.5 py-0.5 text-[10px] text-purple-700 dark:bg-purple-950/40 dark:text-purple-300">{item.reference_role.replace(/_/g, ' ')}</span>}
               </div>
-              {item.node.note && <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-gray-600 dark:text-gray-300">{item.node.note}</p>}
+              {noteForNode(item.node) && <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-gray-600 dark:text-gray-300">{noteForNode(item.node)}</p>}
             </div>
             <button type="button" aria-label={`Open ${item.node.name} in the full project structure`} onClick={() => onOpenFull(item.node.id)} className={iconButtonClassName()} title="Open in full tree"><ExternalLink size={12} /></button>
           </div>

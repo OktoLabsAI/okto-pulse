@@ -939,6 +939,15 @@ def _project_structure_children(
     return children
 
 
+def _project_structure_note(node: Mapping[str, Any]) -> Any:
+    note = node.get("note")
+    if str(node.get("classification") or "") == "reference_scaffold":
+        limit = node.get("interpretation_limit")
+        if limit not in (None, ""):
+            return limit
+    return note
+
+
 def _project_structure_node_html(
     node: Mapping[str, Any],
     children: Mapping[str | None, list[Mapping[str, Any]]],
@@ -966,18 +975,13 @@ def _project_structure_node_html(
             else ""
         )
     )
-    note = node.get("note")
-    limit = node.get("interpretation_limit")
+    note = _project_structure_note(node)
     description = (
-        f'<p class="project-structure-note">{_html_text(_display_scalar("note", note))}</p>'
+        '<p class="project-structure-note"><strong>Note / Description:</strong> '
+        f'{_html_text(_display_scalar("note", note))}</p>'
         if note not in (None, "")
         else ""
     )
-    if limit not in (None, ""):
-        description += (
-            '<p class="project-structure-limit"><strong>Interpretation limit:</strong> '
-            f'{_html_text(_display_scalar("interpretation_limit", limit))}</p>'
-        )
     descendants = children.get(node_id, [])
     child_html = (
         '<ul class="project-structure-tree">'
@@ -1482,16 +1486,11 @@ def _md_section_payload(payload: Any, *, section_key: str) -> list[str]:
                 f"{indent}- **[{_md_inline(kind_label)}] {_md_inline(node.get('name') or 'Unnamed item')}** "
                 f"— {_md_inline(' · '.join(context))}"
             ]
-            note = node.get("note")
+            note = _project_structure_note(node)
             if note not in (None, ""):
                 lines.append(
-                    f"{indent}  - {_md_inline(_display_scalar('note', note))}"
-                )
-            limit = node.get("interpretation_limit")
-            if limit not in (None, ""):
-                lines.append(
-                    f"{indent}  - **Interpretation limit:** "
-                    f"{_md_inline(_display_scalar('interpretation_limit', limit))}"
+                    f"{indent}  - **Note / Description:** "
+                    f"{_md_inline(_display_scalar('note', note))}"
                 )
             for child in children.get(str(node.get("id") or ""), []):
                 lines.extend(walk(child, depth + 1))
@@ -1678,7 +1677,7 @@ def render_entity_export_html(bundle: Mapping[str, Any]) -> str:
 .prose-block {{ margin:14px 0 }} .prose-block h4 {{ color:var(--muted);font-size:.74rem;text-transform:uppercase;letter-spacing:.07em;margin:0 0 5px }} .prose-block p,.prose-value {{ white-space:pre-wrap;overflow-wrap:anywhere;margin:0 }} .fact-list {{ display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;margin:13px 0 }} .fact-row {{ background:#101a2c;border-radius:9px;padding:10px }} .fact-row dt {{ color:var(--muted);font-size:.71rem;font-weight:700;text-transform:uppercase }} .fact-row dd {{ margin:3px 0 0;overflow-wrap:anywhere }} .plain-list {{ margin:7px 0;padding-left:22px }}
 .score-grid {{ display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:11px;margin:15px 0 }} .score-card {{ background:#101a2c;border:1px solid var(--line);border-radius:11px;padding:13px }} .score-heading {{ display:flex;justify-content:space-between;gap:8px }} .score-heading>span {{ color:var(--muted);font-size:.74rem;font-weight:750;text-transform:uppercase }} .score-heading strong {{ color:var(--good);font-size:1.4rem }} .score-heading small {{ color:var(--muted);font-size:.7rem }} .score-track {{ height:5px;background:#29384e;border-radius:9px;overflow:hidden;margin:8px 0 }} .score-track span {{ display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--good)) }} .threshold {{ color:var(--muted);font-size:.72rem;margin:0 }} .score-rationale {{ margin:10px 0 0;font-size:.86rem }}
 .pinpoint-list {{ display:grid;gap:10px }} .pinpoint-card {{ background:#101a2c;border:1px solid #4c3b78;border-radius:11px;padding:14px }} .pinpoint-heading {{ display:flex;align-items:center;gap:8px;color:var(--muted);font-size:.74rem }} .metric-badge {{ background:var(--accent-soft);color:#ddd6fe }} .pinpoint-target {{ font-weight:700;margin:10px 0 5px }} .pinpoint-detail {{ margin:0;color:#d7deea }}
-.project-structure-tree {{ list-style:none;margin:0;padding-left:22px;border-left:1px solid var(--line) }} .project-structure-roots {{ padding-left:0;border-left:0 }} .project-structure-tree>li {{ margin:8px 0 }} .project-structure-folder,.project-structure-leaf {{ background:var(--panel-soft);border:1px solid var(--line);border-radius:10px;padding:10px 12px;break-inside:avoid }} .project-structure-folder>summary {{ cursor:pointer;list-style-position:outside }} .project-structure-heading {{ display:flex;align-items:center;flex-wrap:wrap;gap:7px }} .project-structure-kind,.project-structure-badge {{ border-radius:999px;padding:2px 8px;font-size:.68rem;font-weight:750;background:#334155;color:#e2e8f0 }} .project-structure-kind {{ background:var(--accent-soft);color:#ddd6fe;text-transform:uppercase;letter-spacing:.05em }} .project-structure-description {{ margin-left:2px }} .project-structure-note,.project-structure-limit {{ margin:7px 0 0;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere }}
+.project-structure-tree {{ list-style:none;margin:0;padding-left:22px;border-left:1px solid var(--line) }} .project-structure-roots {{ padding-left:0;border-left:0 }} .project-structure-tree>li {{ margin:8px 0 }} .project-structure-folder,.project-structure-leaf {{ background:var(--panel-soft);border:1px solid var(--line);border-radius:10px;padding:10px 12px;break-inside:avoid }} .project-structure-folder>summary {{ cursor:pointer;list-style-position:outside }} .project-structure-heading {{ display:flex;align-items:center;flex-wrap:wrap;gap:7px }} .project-structure-kind,.project-structure-badge {{ border-radius:999px;padding:2px 8px;font-size:.68rem;font-weight:750;background:#334155;color:#e2e8f0 }} .project-structure-kind {{ background:var(--accent-soft);color:#ddd6fe;text-transform:uppercase;letter-spacing:.05em }} .project-structure-description {{ margin-left:2px }} .project-structure-note {{ margin:7px 0 0;color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere }}
 details.technical,details.previous-results {{ margin-top:13px;border-top:1px solid var(--line);padding-top:9px }} details.technical>summary,details.previous-results>summary {{ color:var(--muted);cursor:pointer;font-size:.76rem;font-weight:700 }} .technical-grid {{ display:grid;grid-template-columns:minmax(140px,240px) 1fr;gap:0;margin-top:9px }} .technical-grid dt,.technical-grid dd {{ border-bottom:1px solid var(--line);margin:0;padding:7px;min-width:0 }} .technical-grid dt {{ color:var(--muted);font-size:.72rem }} .reference-list {{ display:flex;flex-wrap:wrap;gap:5px }} .reference {{ display:inline-block;background:#0b1424;border:1px solid var(--line);border-radius:5px;padding:2px 5px;overflow-wrap:anywhere }}
 .previous-results {{ margin-top:16px!important;border:1px solid var(--line)!important;border-radius:10px;padding:11px!important }} .previous-results>summary {{ font-size:.86rem!important }} .previous-results>summary span {{ margin-left:6px;background:#26354c;border-radius:999px;padding:2px 7px }} .previous-results>.record-list {{ margin-top:12px }} details.chapter {{ padding:0;overflow:hidden;scroll-margin-top:20px }} details.chapter>summary {{ display:flex;justify-content:space-between;cursor:pointer;font-size:1.15rem;font-weight:750;padding:20px 24px }} details.chapter .chapter-body {{ border-top:1px solid var(--line);padding:20px 24px }} .deferred-note {{ color:var(--muted);font-size:.82rem;margin:-10px 24px 18px }} details.chapter[open] .deferred-note {{ display:none }} details.resource-group,details.content-group {{ border:1px solid var(--line);border-radius:12px;margin:14px 0;overflow:hidden }} details.resource-group>summary,details.content-group>summary {{ display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;font-weight:750;padding:13px 15px;background:#101a2c }} .resource-body,.content-group-body {{ border-top:1px solid var(--line);padding:15px }}
 .empty,.muted {{ color:var(--muted) }} .appendix {{ margin-top:30px }} .appendix>summary {{ cursor:pointer;font-size:1rem;font-weight:750 }} .appendix-grid {{ display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin:16px 0 }} .appendix-fact {{ background:var(--panel-soft);border-radius:9px;padding:10px }} .appendix-fact b {{ display:block;color:var(--muted);font-size:.7rem;text-transform:uppercase }} .table-wrap {{ overflow:auto }} table {{ width:100%;border-collapse:collapse }} th,td {{ text-align:left;padding:9px;border-bottom:1px solid var(--line);vertical-align:top }} th {{ color:var(--muted) }} footer {{ color:var(--muted);font-size:.76rem;margin-top:14px;text-align:center }}
