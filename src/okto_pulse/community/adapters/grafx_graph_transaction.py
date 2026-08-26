@@ -33,16 +33,16 @@ from okto_pulse.core.kg.interfaces.graph_transaction import (
     SpecLineageReconciliationReceipt,
     is_spec_lineage_rule_id,
 )
+from okto_pulse.core.kg.relational_projection import (
+    is_relational_projection_node,
+    parse_relational_projection_ref,
+    relational_projection_rule_node_type,
+)
 from okto_pulse.core.kg.schema_contract import (
     EDGE_METADATA_COLUMNS,
     MULTI_REL_TYPES,
     NODE_TYPES,
     REL_TYPES,
-)
-from okto_pulse.core.kg.relational_projection import (
-    is_relational_projection_node,
-    parse_relational_projection_ref,
-    relational_projection_rule_node_type,
 )
 
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
