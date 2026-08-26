@@ -46,10 +46,7 @@ def _decision_ref(owner_id: str, ledger_id: str) -> str:
 
 
 def _alternative_ref(owner_id: str, ledger_id: str, marker: str) -> str:
-    return (
-        f"refinement:{owner_id}:rdl:{ledger_id}:alternative:"
-        f"{marker * 64}"
-    )
+    return f"refinement:{owner_id}:rdl:{ledger_id}:alternative:{marker * 64}"
 
 
 def _node_attrs(
@@ -87,10 +84,7 @@ def _edge_attrs(
         "created_by_session_id": f"edge-session-{marker}",
         "created_at": "2026-07-28T12:00:00.000000",
         "layer": "deterministic",
-        "rule_id": (
-            rule_id
-            or f"belongs_to/relational_rdl_{projection_kind}@v2.0"
-        ),
+        "rule_id": (rule_id or f"belongs_to/relational_rdl_{projection_kind}@v2.0"),
         "created_by": "worker_layer1",
         "fallback_reason": "",
     }
@@ -275,6 +269,16 @@ async def test_real_kuzu_projection_active_set_is_exact_and_compensable(
             root_id=ROOT_ID,
             content="stale content must remain",
         )
+        # Kuzu permits byte-identical parallel relationships.  The complete
+        # before-image and its compensation must retain both copies.
+        assert scope.create_edge(
+            "belongs_to",
+            "Alternative",
+            "Entity",
+            "alternative-stale",
+            ROOT_ID,
+            _edge_attrs("alternative-stale", node_type="Alternative"),
+        )
         _create_projection_node(
             scope,
             node_type="Alternative",
@@ -421,24 +425,27 @@ async def test_real_kuzu_projection_active_set_is_exact_and_compensable(
             _content(scope, "Alternative", "alternative-stale")
             == "stale content must remain"
         )
-        assert _incident_edge_count(
-            scope,
-            "Alternative",
-            "alternative-stale",
-        ) == 0
+        assert (
+            _incident_edge_count(
+                scope,
+                "Alternative",
+                "alternative-stale",
+            )
+            == 0
+        )
         assert _reason(scope, "Alternative", "alternative-reactivated") == ""
 
         # An active source-deletion tombstone is never reactivated by the
         # reversible projection-removal mechanism.
+        assert _reason(scope, "Decision", "decision-source-deleted") == "source_deleted"
         assert (
-            _reason(scope, "Decision", "decision-source-deleted")
-            == "source_deleted"
+            _incident_edge_count(
+                scope,
+                "Decision",
+                "decision-source-deleted",
+            )
+            == 1
         )
-        assert _incident_edge_count(
-            scope,
-            "Decision",
-            "decision-source-deleted",
-        ) == 1
 
         for node_type, node_id in (
             ("Alternative", "alternative-other-owner"),
@@ -458,11 +465,14 @@ async def test_real_kuzu_projection_active_set_is_exact_and_compensable(
             _reason(scope, "Alternative", "alternative-reactivated")
             == SOURCE_PROJECTION_REMOVED_REASON
         )
-        assert _incident_edge_count(
-            scope,
-            "Alternative",
-            "alternative-stale",
-        ) == 1
+        assert (
+            _incident_edge_count(
+                scope,
+                "Alternative",
+                "alternative-stale",
+            )
+            == 2
+        )
 
         # Empty active_nodes is a real replacement, not an early-return/no-op.
         zero_receipt = scope.reconcile_projection_active_set(
@@ -480,8 +490,7 @@ async def test_real_kuzu_projection_active_set_is_exact_and_compensable(
             ("Alternative", "alternative-zero"),
         ):
             assert (
-                _reason(scope, node_type, node_id)
-                == SOURCE_PROJECTION_REMOVED_REASON
+                _reason(scope, node_type, node_id) == SOURCE_PROJECTION_REMOVED_REASON
             )
             assert _incident_edge_count(scope, node_type, node_id) == 0
 
@@ -650,9 +659,7 @@ async def test_real_kuzu_rdl_semantic_change_updates_one_current_projection(
             session_content_hash="c8-rdl-current-state-hash",
             session_artifact_id=OWNER_ID,
             session_artifact_type="refinement",
-            relational_projection_candidate_ids=frozenset(
-                {"projection-member"}
-            ),
+            relational_projection_candidate_ids=frozenset({"projection-member"}),
             relational_projection_active_set_intent=intent,
         )
 
@@ -893,30 +900,37 @@ async def test_real_kuzu_late_projection_resolution_error_compensates_all_writes
                 session_content_hash="c8-content-hash",
                 session_artifact_id=OWNER_ID,
                 session_artifact_type="refinement",
-                relational_projection_candidate_ids=frozenset(
-                    {"projection-member"}
-                ),
+                relational_projection_candidate_ids=frozenset({"projection-member"}),
                 relational_projection_active_set_intent=intent,
             )
 
         assert excinfo.value.code == expected_code
         assert observed_before_error["owner"] is not None
         assert observed_before_error["member"] is not None
-        assert _count_nodes_by_source_ref(
-            board_id,
-            node_type="Entity",
-            source_ref=board_ref,
-        ) == 0
-        assert _count_nodes_by_source_ref(
-            board_id,
-            node_type="Entity",
-            source_ref=owner_ref,
-        ) == 0
-        assert _count_nodes_by_source_ref(
-            board_id,
-            node_type="Decision",
-            source_ref=member_ref,
-        ) == 0
+        assert (
+            _count_nodes_by_source_ref(
+                board_id,
+                node_type="Entity",
+                source_ref=board_ref,
+            )
+            == 0
+        )
+        assert (
+            _count_nodes_by_source_ref(
+                board_id,
+                node_type="Entity",
+                source_ref=owner_ref,
+            )
+            == 0
+        )
+        assert (
+            _count_nodes_by_source_ref(
+                board_id,
+                node_type="Decision",
+                source_ref=member_ref,
+            )
+            == 0
+        )
     finally:
         kg_runtime.close_all_connections(board_id)
 
@@ -972,13 +986,11 @@ async def test_real_kuzu_property_before_image_restores_apply_then_raise(
             )
 
         assert (
-            _content(scope, "Decision", "decision-before-image")
-            == "temporary content"
+            _content(scope, "Decision", "decision-before-image") == "temporary content"
         )
         await orchestrator.compensate()
         assert (
-            _content(scope, "Decision", "decision-before-image")
-            == "original content"
+            _content(scope, "Decision", "decision-before-image") == "original content"
         )
 
         await scope.commit()
@@ -1025,10 +1037,7 @@ async def test_real_kuzu_active_set_restores_after_commit_then_raise(
         def _commit_then_raise(cypher, params=None):
             nonlocal commit_raised
             result = original_execute(cypher, params)
-            if (
-                not commit_raised
-                and cypher.strip().upper() == "COMMIT"
-            ):
+            if not commit_raised and cypher.strip().upper() == "COMMIT":
                 commit_raised = True
                 raise RuntimeError("injected_driver_failure_after_commit")
             return result
@@ -1052,11 +1061,14 @@ async def test_real_kuzu_active_set_restores_after_commit_then_raise(
         assert excinfo.value.receipt is not None
         assert len(excinfo.value.receipt.before_images) == 1
         assert _reason(scope, "Decision", "decision-after-commit") == ""
-        assert _incident_edge_count(
-            scope,
-            "Decision",
-            "decision-after-commit",
-        ) == 1
+        assert (
+            _incident_edge_count(
+                scope,
+                "Decision",
+                "decision-after-commit",
+            )
+            == 1
+        )
 
         await scope.commit()
     finally:

@@ -7,6 +7,7 @@ resolver so one scope cannot accidentally close a handle shared by readers.
 
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter
 from collections.abc import Callable, Mapping
@@ -187,6 +188,16 @@ def _normalize_value(value: Any) -> Any:
     return value
 
 
+def _contains_non_finite_number(value: Any) -> bool:
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, Mapping):
+        return any(_contains_non_finite_number(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_non_finite_number(item) for item in value)
+    return False
+
+
 class _GrafxTransactionScope:
     """One staged, fenced Grafx write transaction for a Pulse board."""
 
@@ -301,8 +312,7 @@ class _GrafxTransactionScope:
     def _column_map(definition: Any) -> dict[str, Any]:
         return {column.name: column for column in definition.columns}
 
-    @staticmethod
-    def _coerce_value(column: Any, value: Any) -> Any:
+    def _coerce_value(self, column: Any, value: Any) -> Any:
         if value is None:
             return None
         if column.type.name == "TIMESTAMP" and not isinstance(value, Timestamp):
@@ -311,6 +321,23 @@ class _GrafxTransactionScope:
                     f"timestamp property {column.name!r} requires ISO text or datetime"
                 )
             return _timestamp_from_iso(value)
+        if column.is_vector and not isinstance(value, VectorValue):
+            if not isinstance(value, (list, tuple)):
+                raise ValueError(
+                    f"vector property {column.name!r} requires a numeric sequence"
+                )
+            space = self._database.catalog.catalog.space(str(column.vector_space))
+            components = tuple(float(item) for item in value)
+            if len(components) != space.dimension:
+                raise ValueError(
+                    f"vector property {column.name!r} requires {space.dimension} "
+                    f"components, got {len(components)}"
+                )
+            return VectorValue(
+                values=components,
+                space_ref=space.space_id,
+                dtype=space.storage_dtype,
+            )
         return value
 
     def _coerce_properties(
@@ -2520,10 +2547,94 @@ class _GrafxTransactionScope:
         self,
         session_id: str,
         preserved_edges: tuple[SpecLineageEdgeSnapshot, ...],
+        *,
+        preserved_projection_edges: tuple[ProjectionEdgeBeforeImage, ...] = (),
     ) -> None:
-        """Delete session edges while preserving exact lineage before-images."""
+        """Delete session edges while preserving every restored before-image."""
 
         self._fence("delete_edges_by_session_preserving_spec_lineage")
+        projection_by_pair: dict[
+            tuple[str, str, str],
+            list[tuple[ProjectionEdgeBeforeImage, dict[str, Any]]],
+        ] = {}
+        projection_by_identity: dict[
+            tuple[str, str, str, str, str, str | None],
+            list[ProjectionEdgeBeforeImage],
+        ] = {}
+        configured_pairs = set(self._relationship_pairs)
+        for edge in preserved_projection_edges:
+            pair = (edge.edge_type, edge.from_type, edge.to_type)
+            if pair not in configured_pairs:
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_cleanup_preservation_inconsistent",
+                    "A restored projection edge has no configured relationship "
+                    "mapping for session cleanup.",
+                )
+            if _contains_non_finite_number(edge.attrs):
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_cleanup_preservation_inconsistent",
+                    "A restored projection edge contains a non-finite numeric "
+                    "value that cannot be matched safely during session cleanup.",
+                )
+            _physical, definition = self._relationship_definition(
+                edge.edge_type,
+                edge.from_type,
+                edge.to_type,
+            )
+            properties = self._projection_edge_properties(definition)
+            if set(edge.attrs) != set(properties):
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_cleanup_preservation_inconsistent",
+                    "A restored projection edge is not a complete relationship "
+                    "before-image.",
+                )
+            write_attrs = self._coerce_properties(
+                definition,
+                edge.attrs,
+                forbidden=frozenset({"_from", "_to"}),
+            )
+            normalized = ProjectionEdgeBeforeImage(
+                edge_type=edge.edge_type,
+                from_type=edge.from_type,
+                to_type=edge.to_type,
+                from_id=edge.from_id,
+                to_id=edge.to_id,
+                attrs={
+                    name: _normalize_value(write_attrs[name]) for name in properties
+                },
+            )
+            projection_by_pair.setdefault(
+                pair,
+                [],
+            ).append((normalized, write_attrs))
+            projection_by_identity.setdefault(
+                (
+                    edge.edge_type,
+                    edge.from_type,
+                    edge.to_type,
+                    edge.from_id,
+                    edge.to_id,
+                    self._projection_dependency_rule_id(normalized),
+                ),
+                [],
+            ).append(normalized)
+
+        # Validate the complete preservation set before the first DELETE. Missing
+        # snapshots are legitimate after accumulated inverse receipts; an extra
+        # stored payload or multiplicity is not, because a predicate cannot choose
+        # which byte-identical parallel copy to retain.
+        for identity_edges in projection_by_identity.values():
+            desired = Counter(
+                self._projection_edge_signature(edge) for edge in identity_edges
+            )
+            actual = self._projection_matching_edges(identity_edges[0])
+            if actual - desired:
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_cleanup_preservation_inconsistent",
+                    "The restored projection edge multiset exceeds the exact "
+                    "before-images owned by the compensation receipts.",
+                )
+
         plans: list[tuple[str, str, str, dict[str, Any], str]] = []
         for edge_type, from_type, to_type in self._relationship_pairs:
             physical, definition = self._relationship_definition(
@@ -2537,7 +2648,7 @@ class _GrafxTransactionScope:
                     f"Grafx relationship table {physical!r} lacks session ownership."
                 )
             params: dict[str, Any] = {"session_id": session_id}
-            preservation = ""
+            predicates: list[str] = []
             if (
                 edge_type == "belongs_to"
                 and from_type == "Entity"
@@ -2551,6 +2662,12 @@ class _GrafxTransactionScope:
                     )
                 prepared: list[tuple[SpecLineageEdgeSnapshot, dict[str, Any]]] = []
                 for snapshot in preserved_edges:
+                    if _contains_non_finite_number(snapshot.attrs):
+                        raise SpecLineageReconciliationError(
+                            "spec_lineage_edge_metadata_inconsistent",
+                            "A preserved Spec-lineage edge contains a non-finite "
+                            "numeric value that cannot be matched safely.",
+                        )
                     if set(snapshot.attrs) != set(properties):
                         raise SpecLineageReconciliationError(
                             "spec_lineage_edge_metadata_inconsistent",
@@ -2608,7 +2725,6 @@ class _GrafxTransactionScope:
                         "multiplicity owned by the compensation receipts.",
                     )
 
-                predicates: list[str] = []
                 for index, (snapshot, write_attrs) in enumerate(prepared):
                     params[f"source_{index}"] = snapshot.source_id
                     params[f"target_{index}"] = snapshot.target_id
@@ -2624,7 +2740,29 @@ class _GrafxTransactionScope:
                         params[parameter] = write_attrs[name]
                         clauses.append(f"r.{name} = ${parameter}")
                     predicates.append("(" + " AND ".join(clauses) + ")")
-                preservation = " AND NOT (" + " OR ".join(predicates) + ")"
+
+            for index, (edge, write_attrs) in enumerate(
+                projection_by_pair.get((edge_type, from_type, to_type), ())
+            ):
+                params[f"projection_source_{index}"] = edge.from_id
+                params[f"projection_target_{index}"] = edge.to_id
+                clauses = [
+                    f"a.id = $projection_source_{index}",
+                    f"b.id = $projection_target_{index}",
+                ]
+                properties = self._projection_edge_properties(definition)
+                for property_index, name in enumerate(properties):
+                    if edge.attrs[name] is None:
+                        clauses.append(f"r.{name} IS NULL")
+                        continue
+                    parameter = f"projection_{index}_{property_index}"
+                    params[parameter] = write_attrs[name]
+                    clauses.append(f"r.{name} = ${parameter}")
+                predicates.append("(" + " AND ".join(clauses) + ")")
+
+            preservation = (
+                " AND NOT (" + " OR ".join(predicates) + ")" if predicates else ""
+            )
             plans.append((physical, from_type, to_type, params, preservation))
 
         mutation_started = False

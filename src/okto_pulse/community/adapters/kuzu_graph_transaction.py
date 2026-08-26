@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections import Counter
 import logging
+import math
 import re
 from typing import Any
 
@@ -1560,12 +1561,40 @@ class _KuzuTransactionScope:
                 {"from_id": edge.from_id, "to_id": edge.to_id},
             )
 
+    def _projection_edge_multiset(
+        self,
+        *,
+        edge_type: str,
+        from_type: str,
+        to_type: str,
+        from_id: str,
+        to_id: str,
+        dependency_rule_id: str | None,
+    ) -> Counter[Any]:
+        return Counter(
+            self._edge_state_signature(item)
+            for item in self._snapshot_incident_edges(from_type, from_id)
+            if item.edge_type == edge_type
+            and item.from_type == from_type
+            and item.to_type == to_type
+            and item.from_id == from_id
+            and item.to_id == to_id
+            and (
+                dependency_rule_id is None
+                or str(item.attrs.get("rule_id") or "") == dependency_rule_id
+            )
+        )
+
     def _restore_projection_edges(
         self,
         edges: tuple[ProjectionEdgeBeforeImage, ...],
     ) -> None:
+        wanted: dict[tuple[str, str, str, str, str, str | None], Counter[Any]] = {}
+        templates: dict[
+            tuple[str, str, str, str, str, str | None],
+            dict[Any, ProjectionEdgeBeforeImage],
+        ] = {}
         for edge in edges:
-            desired = self._edge_state_signature(edge)
             dependency_rule_id = (
                 str(edge.attrs.get("rule_id") or "")
                 if edge.edge_type == "precedes"
@@ -1576,55 +1605,57 @@ class _KuzuTransactionScope:
                 )
                 else None
             )
-            current = {
-                self._edge_state_signature(item)
-                for item in self._snapshot_incident_edges(
-                    edge.from_type,
-                    edge.from_id,
-                )
-                if (
-                    item.edge_type == edge.edge_type
-                    and item.from_type == edge.from_type
-                    and item.to_type == edge.to_type
-                    and item.from_id == edge.from_id
-                    and item.to_id == edge.to_id
-                    and (
-                        dependency_rule_id is None
-                        or str(item.attrs.get("rule_id") or "") == dependency_rule_id
-                    )
-                )
-            }
-            if desired in current:
-                continue
-            if current:
-                raise RuntimeError("projection_edge_restore_identity_conflict")
-            self.create_edge(
+            identity = (
                 edge.edge_type,
                 edge.from_type,
                 edge.to_type,
                 edge.from_id,
                 edge.to_id,
-                {key: value for key, value in edge.attrs.items() if value is not None},
+                dependency_rule_id,
             )
-            restored = {
-                self._edge_state_signature(item)
-                for item in self._snapshot_incident_edges(
-                    edge.from_type,
-                    edge.from_id,
-                )
-                if (
-                    item.edge_type == edge.edge_type
-                    and item.from_type == edge.from_type
-                    and item.to_type == edge.to_type
-                    and item.from_id == edge.from_id
-                    and item.to_id == edge.to_id
-                    and (
-                        dependency_rule_id is None
-                        or str(item.attrs.get("rule_id") or "") == dependency_rule_id
+            signature = self._edge_state_signature(edge)
+            wanted.setdefault(identity, Counter())[signature] += 1
+            templates.setdefault(identity, {})[signature] = edge
+
+        for identity, desired in wanted.items():
+            edge_type, from_type, to_type, from_id, to_id, dependency_rule_id = identity
+            current = self._projection_edge_multiset(
+                edge_type=edge_type,
+                from_type=from_type,
+                to_type=to_type,
+                from_id=from_id,
+                to_id=to_id,
+                dependency_rule_id=dependency_rule_id,
+            )
+            if current - desired:
+                raise RuntimeError("projection_edge_restore_identity_conflict")
+            missing = desired - current
+            for signature, count in missing.items():
+                edge = templates[identity][signature]
+                for _copy in range(count):
+                    self.create_edge(
+                        edge.edge_type,
+                        edge.from_type,
+                        edge.to_type,
+                        edge.from_id,
+                        edge.to_id,
+                        {
+                            key: value
+                            for key, value in edge.attrs.items()
+                            if value is not None
+                        },
                     )
+            if (
+                self._projection_edge_multiset(
+                    edge_type=edge_type,
+                    from_type=from_type,
+                    to_type=to_type,
+                    from_id=from_id,
+                    to_id=to_id,
+                    dependency_rule_id=dependency_rule_id,
                 )
-            }
-            if desired not in restored:
+                != desired
+            ):
                 raise RuntimeError("projection_edge_restore_incomplete")
 
     def _reconcile_spec_dependency_edges(
@@ -2027,8 +2058,10 @@ class _KuzuTransactionScope:
         self,
         session_id: str,
         preserved_edges: tuple[SpecLineageEdgeSnapshot, ...],
+        *,
+        preserved_projection_edges: tuple[ProjectionEdgeBeforeImage, ...] = (),
     ) -> None:
-        """Compensate a session without erasing restore-first lineage edges."""
+        """Compensate a session without erasing restored before-images."""
 
         from okto_pulse.community.adapters.kg_runtime import (
             MULTI_REL_TYPES,
@@ -2040,15 +2073,96 @@ class _KuzuTransactionScope:
             pairs.extend(
                 (rel_name, from_type, to_type) for from_type, to_type in endpoint_pairs
             )
+
+        projection_by_pair: dict[
+            tuple[str, str, str], list[ProjectionEdgeBeforeImage]
+        ] = {}
+        projection_by_identity: dict[
+            tuple[str, str, str, str, str, str | None],
+            list[ProjectionEdgeBeforeImage],
+        ] = {}
+        configured_pairs = set(pairs)
+        for edge in preserved_projection_edges:
+            pair = (edge.edge_type, edge.from_type, edge.to_type)
+            if pair not in configured_pairs:
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_cleanup_preservation_inconsistent",
+                    "A restored projection edge has no configured relationship "
+                    "mapping for session cleanup.",
+                )
+            if any(
+                isinstance(value, float) and not math.isfinite(value)
+                for value in edge.attrs.values()
+            ):
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_cleanup_preservation_inconsistent",
+                    "A restored projection edge contains a non-finite numeric "
+                    "value that cannot be matched safely during session cleanup.",
+                )
+            if set(edge.attrs) != set(_TOMBSTONE_EDGE_PROPERTIES):
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_cleanup_preservation_inconsistent",
+                    "A restored projection edge is not a complete relationship "
+                    "before-image.",
+                )
+            dependency_rule_id = (
+                str(edge.attrs.get("rule_id") or "")
+                if edge.edge_type == "precedes"
+                and edge.from_type == "Entity"
+                and edge.to_type == "Entity"
+                and str(edge.attrs.get("rule_id") or "").startswith(
+                    "precedes/spec_dependency/"
+                )
+                else None
+            )
+            projection_by_pair.setdefault(pair, []).append(edge)
+            projection_by_identity.setdefault(
+                (
+                    edge.edge_type,
+                    edge.from_type,
+                    edge.to_type,
+                    edge.from_id,
+                    edge.to_id,
+                    dependency_rule_id,
+                ),
+                [],
+            ).append(edge)
+
+        # Fail before the first DELETE if an exact predicate would preserve an
+        # unowned payload or multiplicity sharing a receipt identity.
+        for identity, identity_edges in projection_by_identity.items():
+            edge_type, from_type, to_type, from_id, to_id, dependency_rule_id = identity
+            desired = Counter(
+                self._edge_state_signature(edge) for edge in identity_edges
+            )
+            actual = Counter(
+                self._edge_state_signature(edge)
+                for edge in self._snapshot_incident_edges(from_type, from_id)
+                if edge.edge_type == edge_type
+                and edge.from_type == from_type
+                and edge.to_type == to_type
+                and edge.from_id == from_id
+                and edge.to_id == to_id
+                and (
+                    dependency_rule_id is None
+                    or str(edge.attrs.get("rule_id") or "") == dependency_rule_id
+                )
+            )
+            if actual - desired:
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_cleanup_preservation_inconsistent",
+                    "The restored projection edge multiset exceeds the exact "
+                    "before-images owned by the compensation receipts.",
+                )
+
         for rel_name, from_type, to_type in pairs:
             params: dict[str, Any] = {"session_id": session_id}
-            preservation = ""
+            predicates: list[str] = []
             if (
                 rel_name == "belongs_to"
                 and from_type == "Entity"
                 and to_type == "Entity"
             ):
-                predicates: list[str] = []
                 for index, snapshot in enumerate(preserved_edges):
                     params[f"preserved_source_{index}"] = snapshot.source_id
                     params[f"preserved_target_{index}"] = snapshot.target_id
@@ -2058,8 +2172,38 @@ class _KuzuTransactionScope:
                         f"{index} AND b.id = $preserved_target_{index} "
                         f"AND r.rule_id = $preserved_rule_{index})"
                     )
-                if predicates:
-                    preservation = " AND NOT (" + " OR ".join(predicates) + ")"
+
+            for index, edge in enumerate(
+                projection_by_pair.get((rel_name, from_type, to_type), ())
+            ):
+                params[f"projection_source_{index}"] = edge.from_id
+                params[f"projection_target_{index}"] = edge.to_id
+                clauses = [
+                    f"a.id = $projection_source_{index}",
+                    f"b.id = $projection_target_{index}",
+                ]
+                for property_index, property_name in enumerate(
+                    _TOMBSTONE_EDGE_PROPERTIES
+                ):
+                    value = edge.attrs[property_name]
+                    if value is None:
+                        clauses.append(f"r.{property_name} IS NULL")
+                        continue
+                    parameter = f"projection_{index}_{property_index}"
+                    params[parameter] = value
+                    expression = f"${parameter}"
+                    if (
+                        property_name == "created_at"
+                        and isinstance(value, str)
+                        and value
+                    ):
+                        expression = f"timestamp(${parameter})"
+                    clauses.append(f"r.{property_name} = {expression}")
+                predicates.append("(" + " AND ".join(clauses) + ")")
+
+            preservation = (
+                " AND NOT (" + " OR ".join(predicates) + ")" if predicates else ""
+            )
             self.execute(
                 f"MATCH (a:{from_type})-[r:{rel_name}]->(b:{to_type}) "
                 "WHERE r.created_by_session_id = $session_id"

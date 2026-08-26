@@ -463,7 +463,7 @@ async def test_orchestrator_replays_projection_receipt_in_a_fresh_scope(
     await _seed_nodes(harness.provider)
     old_dependency = _attrs(
         OLD_DEPENDENCY_RULE,
-        FOREIGN_SESSION_ID,
+        SESSION_ID,
         confidence=0.94,
         created_by="previous-projection",
     )
@@ -548,6 +548,7 @@ async def test_orchestrator_replays_projection_receipt_in_a_fresh_scope(
 
     compensation_scope = await harness.provider.begin(BOARD_ID)
     assert compensation_scope is not apply_scope
+    replay_fence_start = len(harness.fence.calls)
     async with compensation_scope:
         replay = TransactionOrchestrator(
             graph_scope=compensation_scope,
@@ -556,6 +557,13 @@ async def test_orchestrator_replays_projection_receipt_in_a_fresh_scope(
         )
         replay.records = records
         await replay.compensate()
+
+    replay_phases = [
+        phase for _board_id, phase in harness.fence.calls[replay_fence_start:]
+    ]
+    assert replay_phases.index(
+        "compensate_projection_active_set"
+    ) < replay_phases.index("delete_edges_by_session_preserving_spec_lineage")
 
     assert (
         _edge_rows(

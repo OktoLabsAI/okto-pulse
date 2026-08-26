@@ -90,6 +90,7 @@ async def test_real_graph_spec_precedence_converges_and_compensates(
         scope = await CommunityKuzuGraphTransaction().begin(board_id)
         dependent_id = "dependent-spec-node"
         prerequisite_id = "prerequisite-spec-node"
+        replacement_session_id = "replacement-session"
         scope.create_node(
             "Entity",
             dependent_id,
@@ -114,6 +115,7 @@ async def test_real_graph_spec_precedence_converges_and_compensates(
             dependent_id,
             {
                 "confidence": 1.0,
+                "created_by_session_id": replacement_session_id,
                 "layer": "deterministic",
                 "rule_id": rule_id,
                 "created_by": "worker_layer1",
@@ -165,7 +167,7 @@ async def test_real_graph_spec_precedence_converges_and_compensates(
         replacement_rule_id = "precedes/spec_dependency/dependency-1@v3.0"
         orchestrator = TransactionOrchestrator(
             graph_scope=scope,
-            session_id="replacement-session",
+            session_id=replacement_session_id,
             board_id=board_id,
         )
         orchestrator.create_edge(

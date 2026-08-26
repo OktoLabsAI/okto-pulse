@@ -7,6 +7,7 @@ visible after commit or none of it is, and a refusal never leaves a partial one 
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from okto_pulse.core.kg.interfaces.graph_transaction import (
     SOURCE_PROJECTION_REMOVED_REASON,
     ProjectionActiveSetIntent,
     ProjectionActiveSetReconciliationError,
+    ProjectionEdgeBeforeImage,
     ProjectionEdgeRef,
     ProjectionNodeRef,
 )
@@ -190,18 +192,22 @@ def _projection_node(
     *,
     created_by_agent: str = SYSTEM_AGENT,
     revocation_reason: str = "",
+    embedding: tuple[float, ...] | None = None,
 ) -> None:
+    attrs: dict[str, Any] = {
+        "title": f"{node_type} {node_id}",
+        "content": f"payload of {node_id}",
+        "revocation_reason": revocation_reason,
+        "source_artifact_ref": source_artifact_ref,
+        "created_by_agent": created_by_agent,
+        "relevance_score": 0.5,
+    }
+    if embedding is not None:
+        attrs["embedding"] = list(embedding)
     scope.create_node(
         node_type,
         node_id,
-        {
-            "title": f"{node_type} {node_id}",
-            "content": f"payload of {node_id}",
-            "revocation_reason": revocation_reason,
-            "source_artifact_ref": source_artifact_ref,
-            "created_by_agent": created_by_agent,
-            "relevance_score": 0.5,
-        },
+        attrs,
         source_session_id=f"session-{node_id}",
     )
 
@@ -265,7 +271,13 @@ async def _seed(provider: Any) -> None:
                 created_by_agent="human:author",
             )
         _projection_node(scope, "Decision", "dec-keep", KEEP_DECISION_REF)
-        _projection_node(scope, "Decision", "dec-stale", STALE_DECISION_REF)
+        _projection_node(
+            scope,
+            "Decision",
+            "dec-stale",
+            STALE_DECISION_REF,
+            embedding=(0.1, 0.2, 0.3, 0.4),
+        )
         _projection_node(scope, "Alternative", "alt-keep", KEEP_ALTERNATIVE_REF)
         _projection_node(scope, "Decision", "dec-foreign", FOREIGN_DECISION_REF)
 
@@ -395,6 +407,16 @@ def _revocation_reason(database: Any, node_type: str, node_id: str) -> str:
     ).rows
     assert len(rows) == 1
     return str(rows[0][0] or "")
+
+
+def _embedding(database: Any, node_type: str, node_id: str) -> tuple[float, ...] | None:
+    rows = database.execute(
+        f"MATCH (n:{node_type}) WHERE n.id = $node_id RETURN n.embedding",
+        {"node_id": node_id},
+    ).rows
+    assert len(rows) == 1
+    value = rows[0][0]
+    return None if value is None else tuple(float(item) for item in value.values)
 
 
 def _rdl_intent(
@@ -529,6 +551,35 @@ async def test_compensation_restores_the_payload_and_every_incident_edge(
         scope.compensate_projection_active_set(receipt)
 
     assert _graph(grafx_database) == before
+
+
+@pytest.mark.asyncio
+async def test_compensation_round_trips_a_non_null_projection_vector(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    provider = _provider(grafx_database, fence)
+    await _seed(provider)
+    expected = (0.1, 0.2, 0.3, 0.4)
+    assert _embedding(grafx_database, "Decision", "dec-stale") == pytest.approx(
+        expected
+    )
+
+    async with await provider.begin(BOARD_ID) as scope:
+        receipt = scope.reconcile_projection_active_set(
+            _rdl_intent(active_nodes=(KEEP_DECISION, KEEP_ALTERNATIVE))
+        )
+    assert _embedding(grafx_database, "Decision", "dec-stale") == pytest.approx(
+        expected
+    )
+
+    async with await provider.begin(BOARD_ID) as scope:
+        scope.compensate_projection_active_set(receipt)
+
+    assert _revocation_reason(grafx_database, "Decision", "dec-stale") == ""
+    assert _embedding(grafx_database, "Decision", "dec-stale") == pytest.approx(
+        expected
+    )
 
 
 @pytest.mark.asyncio
@@ -903,6 +954,71 @@ async def test_dependency_compensation_is_exact_and_repeatable_in_a_fresh_scope(
     async with await provider.begin(BOARD_ID) as scope:
         scope.compensate_projection_active_set(receipt)
     assert _graph(grafx_database) == before
+
+
+@pytest.mark.asyncio
+async def test_session_cleanup_refuses_non_finite_preservation_before_delete(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    provider = _provider(grafx_database, fence)
+    attrs = {
+        "confidence": float("nan"),
+        "created_by_session_id": "seeding-session",
+        "rule_id": DEPENDENCY_RULE_A,
+    }
+    async with await provider.begin(BOARD_ID) as scope:
+        _projection_node(
+            scope,
+            "Entity",
+            "nan-source",
+            "spec:nan-source",
+            created_by_agent="human:author",
+        )
+        _projection_node(
+            scope,
+            "Entity",
+            "nan-target",
+            "spec:nan-target",
+            created_by_agent="human:author",
+        )
+        _edge(
+            scope,
+            "precedes",
+            "Entity",
+            "Entity",
+            "nan-source",
+            "nan-target",
+            DEPENDENCY_RULE_A,
+            confidence=float("nan"),
+        )
+
+    preserved = ProjectionEdgeBeforeImage(
+        edge_type="precedes",
+        from_type="Entity",
+        to_type="Entity",
+        from_id="nan-source",
+        to_id="nan-target",
+        attrs=attrs,
+    )
+    with pytest.raises(ProjectionActiveSetReconciliationError) as refused:
+        async with await provider.begin(BOARD_ID) as scope:
+            scope.delete_edges_by_session_preserving_spec_lineage(
+                "seeding-session",
+                (),
+                preserved_projection_edges=(preserved,),
+            )
+    assert refused.value.code == (
+        "projection_active_set_cleanup_preservation_inconsistent"
+    )
+
+    rows = grafx_database.execute(
+        "MATCH (a:Entity)-[r:precedes]->(b:Entity) "
+        "WHERE a.id = $from_id AND b.id = $to_id RETURN r.confidence",
+        {"from_id": "nan-source", "to_id": "nan-target"},
+    ).rows
+    assert len(rows) == 1
+    assert math.isnan(float(rows[0][0]))
 
 
 @pytest.mark.asyncio
