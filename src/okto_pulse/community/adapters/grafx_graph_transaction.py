@@ -20,10 +20,14 @@ from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphLockContention,
 )
 from okto_pulse.core.kg.interfaces.graph_transaction import (
+    SOURCE_PROJECTION_REMOVED_REASON,
     GraphNodePropertyBeforeImage,
     GraphStatementResult,
     ProjectionActiveSetIntent,
     ProjectionActiveSetReceipt,
+    ProjectionActiveSetReconciliationError,
+    ProjectionEdgeBeforeImage,
+    ProjectionNodeBeforeImage,
     SpecLineageEdgeSnapshot,
     SpecLineageReconciliationError,
     SpecLineageReconciliationReceipt,
@@ -35,11 +39,41 @@ from okto_pulse.core.kg.schema_contract import (
     NODE_TYPES,
     REL_TYPES,
 )
+from okto_pulse.core.kg.relational_projection import (
+    is_relational_projection_node,
+    parse_relational_projection_ref,
+    relational_projection_rule_node_type,
+)
 
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _IDENTITY_PROPERTIES = frozenset({"id", "source_session_id"})
+# The relational projection materializes exactly these two node tables; naming them keeps the
+# owned-set discovery bounded to a read the provider can actually justify, rather than a sweep
+# of every node table on the board.
+_RELATIONAL_PROJECTION_NODE_TYPES = ("Decision", "Alternative")
+_PROJECTION_OWNER_NODE_TYPE = "Entity"
+_PROJECTION_OWNER_EDGE_TYPE = "belongs_to"
+_SPEC_DEPENDENCY_EDGE_TYPE = "precedes"
+_SPEC_DEPENDENCY_RULE_PREFIX = "precedes/spec_dependency/"
+_PROJECTION_EDGE_IDENTITY_CONFLICT = (
+    "Grafx projection edge identity conflicts with its before-image."
+)
+_PROJECTION_EDGE_RESTORE_INCOMPLETE = "Grafx could not confirm a restored projection edge."
+_PROJECTION_DEPENDENCY_CLEANUP_UNCONFIRMED = (
+    "Grafx could not confirm the Spec dependency edge cleanup."
+)
+_PROJECTION_MEMBER_STATE_UNEXPECTED = (
+    "Grafx projection member was not in the state its before-image recorded."
+)
+_PROJECTION_MEMBER_RESTORE_UNCONFIRMED = (
+    "Grafx could not confirm the projection member restore."
+)
+_PROJECTION_MEMBER_VANISHED = "Grafx projection member disappeared during its removal."
+_PROJECTION_MEMBER_CLEANUP_UNCONFIRMED = (
+    "Grafx could not confirm the stale projection member cleanup."
+)
 _SOURCE_DELETED_REQUIRED_PROPERTIES = frozenset(
     {
         "id",
@@ -1495,19 +1529,800 @@ class _GrafxTransactionScope:
             pass
         raise primary_error from cleanup_error
 
+    def _projection_logical_edge_type(
+        self,
+        physical: str,
+        from_type: str,
+        to_type: str,
+    ) -> str:
+        """Name a physical relationship table the way the Core contract names it.
+
+        A before-image is a promise that this exact relationship can be recreated, and the
+        contract states that promise in LOGICAL names.  The provider's resolver only maps the
+        other way and nothing declares it injective: two logical types may be configured onto
+        one table.  Picking one of them would record a before-image that restores a different
+        relationship than the one removed, so an absent or ambiguous inversion is refused
+        before anything is mutated -- a pre-mutation inability to build a compensable
+        before-image, which is what ``snapshot_failed`` means, not a defect in the intent.
+        """
+
+        candidates = sorted(
+            {
+                edge_type
+                for edge_type, source, target in self._relationship_pairs
+                if source == from_type
+                and target == to_type
+                and self._relationship_table_resolver(edge_type, source, target)
+                == physical
+            }
+        )
+        if len(candidates) != 1:
+            raise ProjectionActiveSetReconciliationError(
+                "projection_active_set_snapshot_failed",
+                f"Grafx relationship table {physical!r} has no single logical name for "
+                f"{from_type}->{to_type}; a compensable before-image cannot be built.",
+            )
+        return candidates[0]
+
+    @staticmethod
+    def _projection_edge_signature(edge: ProjectionEdgeBeforeImage) -> tuple[Any, ...]:
+        return (
+            edge.edge_type,
+            edge.from_type,
+            edge.to_type,
+            edge.from_id,
+            edge.to_id,
+            tuple(sorted((str(key), repr(value)) for key, value in edge.attrs.items())),
+        )
+
+    @staticmethod
+    def _projection_dependency_rule_id(
+        edge: ProjectionEdgeBeforeImage,
+    ) -> str | None:
+        """The rule that identifies a Spec dependency edge, or None for anything else.
+
+        One prerequisite may precede one owner under more than one rule, so for these edges
+        the endpoints alone do not name a single relationship.  Every other relationship is
+        identified by its endpoints, and asking for a ``rule_id`` it may not even declare
+        would fail for the wrong reason.
+        """
+
+        rule_id = str(edge.attrs.get("rule_id") or "")
+        if (
+            edge.edge_type == _SPEC_DEPENDENCY_EDGE_TYPE
+            and edge.from_type == _PROJECTION_OWNER_NODE_TYPE
+            and edge.to_type == _PROJECTION_OWNER_NODE_TYPE
+            and rule_id.startswith(_SPEC_DEPENDENCY_RULE_PREFIX)
+        ):
+            return rule_id
+        return None
+
+    def _projection_edge_properties(self, definition: Any) -> tuple[str, ...]:
+        del self
+        # Columns 0 and 1 of a Grafx rel table are its endpoints; the rest is the payload.
+        return tuple(column.name for column in definition.columns[2:])
+
+    def _projection_incident_edges(
+        self,
+        node_type: str,
+        node_id: str,
+    ) -> tuple[ProjectionEdgeBeforeImage, ...]:
+        """Read every relationship incident to the node, completely and by logical name.
+
+        The committed catalog is the authority here rather than the configured pairs: an
+        edge that is stored but unmapped must not be able to vanish from a before-image just
+        because the configuration forgot it.  That is also why the inversion above refuses an
+        unmapped table instead of skipping it.
+        """
+
+        edges: list[ProjectionEdgeBeforeImage] = []
+        for (
+            physical,
+            from_type,
+            to_type,
+            definition,
+        ) in self._incident_relationship_definitions(node_type):
+            properties = self._projection_edge_properties(definition)
+            projection = ["a.id", "b.id", *(f"r.{name}" for name in properties)]
+            predicate = self._incident_predicate(node_type, from_type, to_type)
+            result = self._query(
+                f"MATCH (a:{from_type})-[r:{physical}]->(b:{to_type}) "
+                f"WHERE {predicate} RETURN {', '.join(projection)}",
+                {"node_id": node_id},
+                operation="snapshot_projection_incident_edges",
+            )
+            if not result.rows:
+                # An unmapped table that holds nothing incident to this node takes nothing
+                # away from the before-image, so it is not a reason to refuse.  The naming
+                # requirement below applies to edges that actually exist.
+                continue
+            logical = self._projection_logical_edge_type(physical, from_type, to_type)
+            edges.extend(
+                ProjectionEdgeBeforeImage(
+                    edge_type=logical,
+                    from_type=from_type,
+                    to_type=to_type,
+                    from_id=str(row[0]),
+                    to_id=str(row[1]),
+                    attrs={
+                        name: _normalize_value(row[index + 2])
+                        for index, name in enumerate(properties)
+                    },
+                )
+                for row in result.rows
+            )
+        return tuple(edges)
+
+    def _projection_node_before_image(
+        self,
+        node_type: str,
+        node_id: str,
+    ) -> ProjectionNodeBeforeImage | None:
+        snapshot = self._node_snapshot(node_type, node_id)
+        if snapshot is None:
+            return None
+        return ProjectionNodeBeforeImage(
+            node_type=node_type,
+            node_id=node_id,
+            source_session_id=snapshot.get("source_session_id"),
+            attrs={
+                name: value
+                for name, value in snapshot.items()
+                if name not in _IDENTITY_PROPERTIES
+            },
+            incident_edges=self._projection_incident_edges(node_type, node_id),
+        )
+
+    def _projection_matching_edges(
+        self,
+        edge: ProjectionEdgeBeforeImage,
+    ) -> set[tuple[Any, ...]]:
+        """Signatures of every stored relationship sharing this one's identity."""
+
+        rule_id = self._projection_dependency_rule_id(edge)
+        physical, definition = self._relationship_definition(
+            edge.edge_type,
+            edge.from_type,
+            edge.to_type,
+        )
+        properties = self._projection_edge_properties(definition)
+        params: dict[str, Any] = {"from_id": edge.from_id, "to_id": edge.to_id}
+        predicate = "a.id = $from_id AND b.id = $to_id"
+        if rule_id is not None:
+            predicate += " AND r.rule_id = $rule_id"
+            params["rule_id"] = rule_id
+        projection = ", ".join(f"r.{name}" for name in properties) or "a.id"
+        result = self._query(
+            f"MATCH (a:{edge.from_type})-[r:{physical}]->(b:{edge.to_type}) "
+            f"WHERE {predicate} RETURN {projection}",
+            params,
+            operation="projection_edge_lookup",
+        )
+        return {
+            self._projection_edge_signature(
+                ProjectionEdgeBeforeImage(
+                    edge_type=edge.edge_type,
+                    from_type=edge.from_type,
+                    to_type=edge.to_type,
+                    from_id=edge.from_id,
+                    to_id=edge.to_id,
+                    attrs={
+                        name: _normalize_value(row[index])
+                        for index, name in enumerate(properties)
+                    },
+                )
+            )
+            for row in result.rows
+        }
+
+    def _projection_restore_edges(
+        self,
+        edges: tuple[ProjectionEdgeBeforeImage, ...],
+    ) -> None:
+        """Put each recorded relationship back exactly once and prove it is the one recorded.
+
+        Compensation must be repeatable, including in a fresh scope that never applied the
+        removal, so an edge already present exactly as recorded is left alone rather than
+        created a second time.  An edge present with a DIFFERENT payload is not the one that
+        was removed; recreating over it would silently pick a winner, so it is refused.
+        """
+
+        for edge in edges:
+            desired = self._projection_edge_signature(edge)
+            present = self._projection_matching_edges(edge)
+            if desired in present:
+                continue
+            if present:
+                raise GraphError(
+                    _PROJECTION_EDGE_IDENTITY_CONFLICT,
+                    details={
+                        "backend": "okto_grafx",
+                        "board_id": self._board_id,
+                        "edge_type": edge.edge_type,
+                        "code": "projection_edge_restore_identity_conflict",
+                    },
+                )
+            self.create_edge(
+                edge.edge_type,
+                edge.from_type,
+                edge.to_type,
+                edge.from_id,
+                edge.to_id,
+                {key: value for key, value in edge.attrs.items() if value is not None},
+            )
+            if desired not in self._projection_matching_edges(edge):
+                raise GraphError(
+                    _PROJECTION_EDGE_RESTORE_INCOMPLETE,
+                    details={
+                        "backend": "okto_grafx",
+                        "board_id": self._board_id,
+                        "edge_type": edge.edge_type,
+                        "code": "projection_edge_restore_incomplete",
+                    },
+                )
+
+    def _projection_delete_incident_edges(
+        self,
+        before_image: ProjectionNodeBeforeImage,
+    ) -> None:
+        seen: set[tuple[str, str, str, str, str]] = set()
+        for edge in before_image.incident_edges:
+            identity = (
+                edge.edge_type,
+                edge.from_type,
+                edge.to_type,
+                edge.from_id,
+                edge.to_id,
+            )
+            # Parallel edges between one pair are deleted by the single statement that names
+            # the pair, so issuing it once per stored edge would delete nothing the second
+            # time and read as a silent failure.
+            if identity in seen:
+                continue
+            seen.add(identity)
+            physical, _definition = self._relationship_definition(
+                edge.edge_type,
+                edge.from_type,
+                edge.to_type,
+            )
+            self._mutation(
+                f"MATCH (a:{edge.from_type})-[r:{physical}]->(b:{edge.to_type}) "
+                "WHERE a.id = $from_id AND b.id = $to_id DELETE r",
+                {"from_id": edge.from_id, "to_id": edge.to_id},
+                operation="delete_projection_incident_edge",
+            )
+
+    def _projection_apply_failure(
+        self,
+        receipt: ProjectionActiveSetReceipt,
+        apply_error: BaseException,
+        *,
+        operation: str,
+    ) -> NoReturn:
+        """Undo one failed active-set application, or refuse to let it commit.
+
+        Grafx stages the whole scope, so there is no native sub-transaction to roll back
+        around these mutations alone: the recorded before-image is the only way to undo them
+        without discarding the caller's other staged work.  When it cannot be put back, the
+        scope is poisoned instead, because a half-applied active set that reaches commit is
+        worse than a scope that refuses to commit at all.
+        """
+
+        try:
+            self.compensate_projection_active_set(receipt)
+        except BaseException as restore_error:
+            cleanup_error = self._abort_after_staged_failure(operation=operation)
+            message = (
+                "Projection reconciliation failed and its complete before-image could not "
+                "be restored; the staged scope was discarded."
+            )
+            if cleanup_error is not None:
+                message = (
+                    "Projection reconciliation failed, its complete before-image could not "
+                    "be restored, and the staged scope could not be proven discarded "
+                    f"({type(cleanup_error).__name__})."
+                )
+            # Chained from the restore failure, not from the cleanup one: why the board could
+            # not be put back is the established primary, and cleanup never displaces it.
+            raise ProjectionActiveSetReconciliationError(
+                "projection_active_set_apply_and_restore_failed",
+                message,
+                receipt=receipt,
+            ) from restore_error
+        raise ProjectionActiveSetReconciliationError(
+            "projection_active_set_apply_failed",
+            "Projection reconciliation failed and was restored.",
+            receipt=receipt,
+        ) from apply_error
+
+    def _reconcile_spec_dependency_edges(
+        self,
+        intent: ProjectionActiveSetIntent,
+    ) -> ProjectionActiveSetReceipt:
+        """Replace the exact set of Spec dependency edges pointing at one root."""
+
+        if intent.active_nodes or intent.owner_node_id is None:
+            raise ProjectionActiveSetReconciliationError(
+                "projection_active_set_member_invalid",
+                "The Spec dependency projection owns edges and requires its root.",
+            )
+        desired: set[tuple[str, str, str, str, str, str]] = set()
+        desired_endpoints: set[tuple[str, str, str, str, str]] = set()
+        for edge in intent.active_edges:
+            endpoint_identity = (
+                edge.edge_type,
+                edge.from_type,
+                edge.to_type,
+                edge.from_id,
+                edge.to_id,
+            )
+            if (
+                edge.edge_type != _SPEC_DEPENDENCY_EDGE_TYPE
+                or edge.from_type != _PROJECTION_OWNER_NODE_TYPE
+                or edge.to_type != _PROJECTION_OWNER_NODE_TYPE
+                or edge.to_id != intent.owner_node_id
+                or not edge.rule_id.startswith(_SPEC_DEPENDENCY_RULE_PREFIX)
+                # Two desired edges over one pair, even under different rules, leave the
+                # active set ambiguous about which of them is meant to survive.
+                or endpoint_identity in desired_endpoints
+            ):
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_member_invalid",
+                    "A Spec dependency edge is outside the exact projection scope.",
+                )
+            desired.add((*endpoint_identity, edge.rule_id))
+            desired_endpoints.add(endpoint_identity)
+
+        physical, definition = self._relationship_definition(
+            _SPEC_DEPENDENCY_EDGE_TYPE,
+            _PROJECTION_OWNER_NODE_TYPE,
+            _PROJECTION_OWNER_NODE_TYPE,
+        )
+        properties = self._projection_edge_properties(definition)
+        owned = self._projection_owned_dependency_edges(
+            intent,
+            physical,
+            properties,
+        )
+        owned_identities = [identity for identity, _edge in owned]
+        if len(owned_identities) != len(set(owned_identities)):
+            raise ProjectionActiveSetReconciliationError(
+                "projection_active_set_source_ref_ambiguous",
+                "A Spec dependency identity resolves to multiple edges.",
+            )
+        if desired.difference(owned_identities):
+            raise ProjectionActiveSetReconciliationError(
+                "projection_active_set_member_missing",
+                "An active Spec dependency edge is missing or untrusted.",
+            )
+
+        stale = tuple(edge for identity, edge in owned if identity not in desired)
+        receipt = ProjectionActiveSetReceipt(intent=intent, edge_before_images=stale)
+        if not stale:
+            return receipt
+
+        try:
+            for edge in stale:
+                self._mutation(
+                    f"MATCH (a:{_PROJECTION_OWNER_NODE_TYPE})-[r:{physical}]->"
+                    f"(b:{_PROJECTION_OWNER_NODE_TYPE}) "
+                    "WHERE a.id = $from_id AND b.id = $to_id "
+                    "AND r.rule_id = $rule_id DELETE r",
+                    {
+                        "from_id": edge.from_id,
+                        "to_id": edge.to_id,
+                        "rule_id": str(edge.attrs.get("rule_id") or ""),
+                    },
+                    operation="delete_projection_dependency_edge",
+                )
+            self._confirm_dependency_cleanup(intent, physical, properties, stale)
+        except BaseException as apply_error:
+            self._projection_apply_failure(
+                receipt,
+                apply_error,
+                operation="reconcile_spec_dependency_edges",
+            )
+        return receipt
+
+    def _confirm_dependency_cleanup(
+        self,
+        intent: ProjectionActiveSetIntent,
+        physical: str,
+        properties: tuple[str, ...],
+        stale: tuple[ProjectionEdgeBeforeImage, ...],
+    ) -> None:
+        """Re-read the owned set and refuse to believe a removal that did not happen."""
+
+        remaining = {
+            (identity[3], identity[5])
+            for identity, _edge in self._projection_owned_dependency_edges(
+                intent,
+                physical,
+                properties,
+            )
+        }
+        stale_pairs = {
+            (edge.from_id, str(edge.attrs.get("rule_id") or "")) for edge in stale
+        }
+        if remaining.intersection(stale_pairs):
+            raise GraphError(
+                _PROJECTION_DEPENDENCY_CLEANUP_UNCONFIRMED,
+                details={
+                    "backend": "okto_grafx",
+                    "board_id": self._board_id,
+                    "owner_node_id": intent.owner_node_id,
+                    "code": "projection_stale_edge_cleanup_unconfirmed",
+                },
+            )
+
+    def _projection_owned_dependency_edges(
+        self,
+        intent: ProjectionActiveSetIntent,
+        physical: str,
+        properties: tuple[str, ...],
+    ) -> tuple[tuple[tuple[str, str, str, str, str, str], ProjectionEdgeBeforeImage], ...]:
+        """Every Spec dependency edge this projection owns, with its complete payload.
+
+        Ownership is the rule prefix: a ``precedes`` edge into the same root that was written
+        by something else is not this projection's to remove.
+        """
+
+        projection = ", ".join(f"r.{name}" for name in properties)
+        result = self._query(
+            f"MATCH (a:{_PROJECTION_OWNER_NODE_TYPE})-[r:{physical}]->"
+            f"(b:{_PROJECTION_OWNER_NODE_TYPE}) "
+            f"WHERE b.id = $owner_id RETURN a.id, b.id, {projection}",
+            {"owner_id": intent.owner_node_id},
+            operation="projection_dependency_edges",
+        )
+        owned: list[
+            tuple[tuple[str, str, str, str, str, str], ProjectionEdgeBeforeImage]
+        ] = []
+        for row in result.rows:
+            attrs = {
+                name: _normalize_value(row[index + 2])
+                for index, name in enumerate(properties)
+            }
+            rule_id = str(attrs.get("rule_id") or "")
+            if not rule_id.startswith(_SPEC_DEPENDENCY_RULE_PREFIX):
+                continue
+            owned.append(
+                (
+                    (
+                        _SPEC_DEPENDENCY_EDGE_TYPE,
+                        _PROJECTION_OWNER_NODE_TYPE,
+                        _PROJECTION_OWNER_NODE_TYPE,
+                        str(row[0]),
+                        str(row[1]),
+                        rule_id,
+                    ),
+                    ProjectionEdgeBeforeImage(
+                        edge_type=_SPEC_DEPENDENCY_EDGE_TYPE,
+                        from_type=_PROJECTION_OWNER_NODE_TYPE,
+                        to_type=_PROJECTION_OWNER_NODE_TYPE,
+                        from_id=str(row[0]),
+                        to_id=str(row[1]),
+                        attrs=attrs,
+                    ),
+                )
+            )
+        return tuple(owned)
+
+    def _projection_owned_nodes(
+        self,
+        intent: ProjectionActiveSetIntent,
+    ) -> tuple[tuple[str, str, str, str], ...]:
+        """Read the two projected node tables, then apply the exact Core parser.
+
+        A node is this projection's either because an owner edge says so exactly -- right
+        rule, right owner, owner carrying the matching source reference -- or because it
+        already carries this projection's removal reason, which is how a member removed in an
+        earlier round stays reachable for restore.
+        """
+
+        owned: list[tuple[str, str, str, str]] = []
+        for node_type in _RELATIONAL_PROJECTION_NODE_TYPES:
+            owner_physical, _definition = self._relationship_definition(
+                _PROJECTION_OWNER_EDGE_TYPE,
+                node_type,
+                _PROJECTION_OWNER_NODE_TYPE,
+            )
+            owner_rows = self._query(
+                f"MATCH (n:{node_type})-[r:{owner_physical}]->"
+                f"(owner:{_PROJECTION_OWNER_NODE_TYPE}) "
+                "RETURN n.id, owner.id, owner.source_artifact_ref, r.rule_id",
+                operation="projection_owner_edges",
+            ).rows
+            exact_owner_node_ids = {
+                str(row[0] or "")
+                for row in owner_rows
+                if (
+                    (
+                        intent.owner_node_id is None
+                        or str(row[1] or "") == intent.owner_node_id
+                    )
+                    and str(row[2] or "") == f"refinement:{intent.owner_id}"
+                    and relational_projection_rule_node_type(str(row[3] or ""))
+                    == node_type
+                )
+            }
+            rows = self._query(
+                f"MATCH (n:{node_type}) RETURN n.id, n.source_artifact_ref, "
+                "n.created_by_agent, n.revocation_reason",
+                operation="projection_candidate_nodes",
+            ).rows
+            for row in rows:
+                node_id = str(row[0] or "")
+                source_ref = str(row[1] or "")
+                if not is_relational_projection_node(
+                    node_type=node_type,
+                    source_artifact_ref=source_ref,
+                    created_by_agent=str(row[2] or ""),
+                    owner_type=intent.owner_type,
+                    owner_id=intent.owner_id,
+                    namespace=intent.namespace,
+                ):
+                    continue
+                reason = str(row[3] or "")
+                if (
+                    node_id not in exact_owner_node_ids
+                    and reason != SOURCE_PROJECTION_REMOVED_REASON
+                ):
+                    continue
+                owned.append((node_type, node_id, source_ref, reason))
+        return tuple(owned)
+
+    def _restore_projection_member(
+        self,
+        before_image: ProjectionNodeBeforeImage,
+    ) -> None:
+        """Return one removed member to the active set without touching anything else."""
+
+        result = self._mutation(
+            f"MATCH (n:{before_image.node_type}) "
+            "WHERE n.id = $node_id AND n.revocation_reason = $reason "
+            "SET n.revocation_reason = $cleared RETURN n.id",
+            {
+                "node_id": before_image.node_id,
+                "reason": SOURCE_PROJECTION_REMOVED_REASON,
+                "cleared": "",
+            },
+            operation="restore_projection_member",
+        )
+        if not result.rows:
+            raise GraphError(
+                _PROJECTION_MEMBER_STATE_UNEXPECTED,
+                details={
+                    "backend": "okto_grafx",
+                    "board_id": self._board_id,
+                    "node_type": before_image.node_type,
+                    "code": "projection_active_member_restore_unconfirmed",
+                },
+            )
+        current = self._projection_node_before_image(
+            before_image.node_type,
+            before_image.node_id,
+        )
+        expected_edges = Counter(
+            self._projection_edge_signature(edge)
+            for edge in before_image.incident_edges
+        )
+        if (
+            current is None
+            or str(current.attrs.get("revocation_reason") or "") != ""
+            or Counter(
+                self._projection_edge_signature(edge)
+                for edge in current.incident_edges
+            )
+            != expected_edges
+        ):
+            raise GraphError(
+                _PROJECTION_MEMBER_RESTORE_UNCONFIRMED,
+                details={
+                    "backend": "okto_grafx",
+                    "board_id": self._board_id,
+                    "node_type": before_image.node_type,
+                    "code": "projection_active_member_restore_unconfirmed",
+                },
+            )
+
+    def _remove_projection_member(
+        self,
+        before_image: ProjectionNodeBeforeImage,
+    ) -> None:
+        """Take one member out of the active set: its edges go, its identity stays.
+
+        The write is not guarded on the reason it was read with, because inside one staged
+        scope nothing else can have changed it since; what proves the removal is the re-read
+        below, which can and does fail if the statement did not take.
+        """
+
+        self._projection_delete_incident_edges(before_image)
+        result = self._mutation(
+            f"MATCH (n:{before_image.node_type}) WHERE n.id = $node_id "
+            "SET n.revocation_reason = $reason RETURN n.id",
+            {
+                "node_id": before_image.node_id,
+                "reason": SOURCE_PROJECTION_REMOVED_REASON,
+            },
+            operation="remove_projection_member",
+        )
+        if not result.rows:
+            raise GraphError(
+                _PROJECTION_MEMBER_VANISHED,
+                details={
+                    "backend": "okto_grafx",
+                    "board_id": self._board_id,
+                    "node_type": before_image.node_type,
+                    "code": "projection_stale_member_tombstone_unconfirmed",
+                },
+            )
+        current = self._projection_node_before_image(
+            before_image.node_type,
+            before_image.node_id,
+        )
+        if (
+            current is None
+            or str(current.attrs.get("revocation_reason") or "")
+            != SOURCE_PROJECTION_REMOVED_REASON
+            or current.incident_edges
+        ):
+            raise GraphError(
+                _PROJECTION_MEMBER_CLEANUP_UNCONFIRMED,
+                details={
+                    "backend": "okto_grafx",
+                    "board_id": self._board_id,
+                    "node_type": before_image.node_type,
+                    "code": "projection_stale_member_cleanup_unconfirmed",
+                },
+            )
+
     def reconcile_projection_active_set(
         self,
         intent: ProjectionActiveSetIntent,
     ) -> ProjectionActiveSetReceipt:
-        del intent
-        self._unsupported("projection_active_set_reconciliation")
+        """Atomically replace one exact relational active set."""
+
+        # The whole intent is validated, and every before-image captured, before the first
+        # mutation: a refusal must not be able to leave half an active set staged.
+        self._fence("reconcile_projection_active_set")
+        if intent.owner_type == "spec" and intent.namespace == "dependencies":
+            return self._reconcile_spec_dependency_edges(intent)
+        if intent.owner_type != "refinement" or intent.namespace != "rdl":
+            raise ProjectionActiveSetReconciliationError(
+                "projection_active_set_scope_invalid",
+                "Only the exact refinement/RDL relational projection is supported.",
+            )
+        if intent.active_edges:
+            raise ProjectionActiveSetReconciliationError(
+                "projection_active_set_member_invalid",
+                "The refinement/RDL projection cannot own operational edges.",
+            )
+
+        active_by_ref: dict[str, tuple[str, str]] = {}
+        for ref in intent.active_nodes:
+            identity = parse_relational_projection_ref(ref.source_artifact_ref)
+            if (
+                identity is None
+                or identity.owner_type != intent.owner_type
+                or identity.owner_id != intent.owner_id
+                or identity.namespace != intent.namespace
+                or identity.node_type != ref.node_type
+            ):
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_member_invalid",
+                    "An active member is outside the exact projection scope.",
+                )
+            if ref.source_artifact_ref in active_by_ref:
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_member_duplicate",
+                    "The active projection contains a duplicate source reference.",
+                )
+            active_by_ref[ref.source_artifact_ref] = (ref.node_type, ref.node_id)
+
+        owned = self._projection_owned_nodes(intent)
+        owned_by_ref: dict[str, tuple[str, str, str]] = {}
+        for node_type, node_id, source_ref, reason in owned:
+            if source_ref in owned_by_ref:
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_source_ref_ambiguous",
+                    "A relational source reference resolves to multiple graph nodes.",
+                )
+            owned_by_ref[source_ref] = (node_type, node_id, reason)
+        for source_ref, expected in active_by_ref.items():
+            current = owned_by_ref.get(source_ref)
+            if current is None:
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_member_missing",
+                    "An active relational projection member is missing or has "
+                    "untrusted provenance.",
+                )
+            if current[:2] != expected:
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_identity_conflict",
+                    "An active relational source reference resolves to a "
+                    "different graph identity.",
+                )
+
+        active_refs = frozenset(active_by_ref)
+        before_images = self._projection_before_images(owned, active_refs)
+        receipt = ProjectionActiveSetReceipt(
+            intent=intent,
+            before_images=before_images,
+        )
+        if not before_images:
+            return receipt
+
+        try:
+            for before_image in before_images:
+                source_ref = str(before_image.attrs.get("source_artifact_ref") or "")
+                if source_ref in active_refs:
+                    self._restore_projection_member(before_image)
+                    continue
+                self._remove_projection_member(before_image)
+        except BaseException as apply_error:
+            self._projection_apply_failure(
+                receipt,
+                apply_error,
+                operation="reconcile_projection_active_set",
+            )
+        return receipt
+
+    def _projection_before_images(
+        self,
+        owned: tuple[tuple[str, str, str, str], ...],
+        active_refs: frozenset[str],
+    ) -> tuple[ProjectionNodeBeforeImage, ...]:
+        """Capture a complete before-image for every member this call will actually change."""
+
+        before_images: list[ProjectionNodeBeforeImage] = []
+        for node_type, node_id, source_ref, reason in owned:
+            if source_ref in active_refs:
+                needs_change = reason == SOURCE_PROJECTION_REMOVED_REASON
+            elif reason not in {"", SOURCE_PROJECTION_REMOVED_REASON}:
+                # Deletion, cancellation and supersedence are somebody else's provenance;
+                # this projection may not overwrite them with its own removal reason.
+                needs_change = False
+            else:
+                if self._node_snapshot(node_type, node_id) is None:
+                    raise ProjectionActiveSetReconciliationError(
+                        "projection_active_set_snapshot_failed",
+                        "A projection member disappeared while its before-image "
+                        "was being captured.",
+                    )
+                needs_change = reason != SOURCE_PROJECTION_REMOVED_REASON or bool(
+                    self._projection_incident_edges(node_type, node_id)
+                )
+            if not needs_change:
+                continue
+            snapshot = self._projection_node_before_image(node_type, node_id)
+            if snapshot is None:
+                raise ProjectionActiveSetReconciliationError(
+                    "projection_active_set_snapshot_failed",
+                    "A projection member disappeared while its complete "
+                    "before-image was being captured.",
+                )
+            before_images.append(snapshot)
+        return tuple(before_images)
 
     def compensate_projection_active_set(
         self,
         receipt: ProjectionActiveSetReceipt,
     ) -> None:
-        del receipt
-        self._unsupported("projection_active_set_compensation")
+        """Restore every projection node and relationship exactly as it was recorded."""
+
+        if not receipt.before_images and not receipt.edge_before_images:
+            return
+        self._fence("compensate_projection_active_set")
+        for before_image in receipt.before_images:
+            self.replace_node_payload(
+                before_image.node_type,
+                before_image.node_id,
+                dict(before_image.attrs),
+                source_session_id=before_image.source_session_id,
+            )
+            self._projection_restore_edges(before_image.incident_edges)
+        self._projection_restore_edges(receipt.edge_before_images)
 
     def find_node_types(self, node_id: str) -> tuple[str, ...]:
         found: list[str] = []
