@@ -33,6 +33,31 @@ from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _IDENTITY_PROPERTIES = frozenset({"id", "source_session_id"})
+_SOURCE_DELETED_REQUIRED_PROPERTIES = frozenset(
+    {
+        "id",
+        "source_session_id",
+        "title",
+        "content",
+        "context",
+        "justification",
+        "source_artifact_ref",
+        "graph_layer",
+        "maturity_status",
+        "created_at",
+        "created_by_agent",
+        "source_confidence",
+        "relevance_score",
+        "query_hits",
+        "priority_boost",
+        "revocation_reason",
+        "human_curated",
+        "generation",
+        "source_span_quote",
+        "source_content_hash",
+        "embedding",
+    }
+)
 
 DatabaseResolver = Callable[[str], Database]
 FenceRevalidator = Callable[[str, str], None]
@@ -356,30 +381,18 @@ class _GrafxTransactionScope:
         """
 
         snapshots: Counter[tuple[Any, ...]] = Counter()
-        try:
-            definitions = self._database.catalog.catalog.tables()
-        except Exception as exc:
-            mapped = map_grafx_error(exc, operation="snapshot_incident_schema")
-            raise mapped from exc
-        for definition in definitions:
-            if definition.kind != "rel" or node_type not in {
-                definition.from_table,
-                definition.to_table,
-            }:
-                continue
-            physical = _identifier("relationship table", definition.name)
-            from_type = _identifier("source node type", definition.from_table)
-            to_type = _identifier("target node type", definition.to_table)
+        for (
+            physical,
+            from_type,
+            to_type,
+            definition,
+        ) in self._incident_relationship_definitions(node_type):
             properties = tuple(column.name for column in definition.columns[2:])
             projection = ["a.id", "b.id", *(f"r.{name}" for name in properties)]
-            predicates: list[str] = []
-            if from_type == node_type:
-                predicates.append("a.id = $node_id")
-            if to_type == node_type:
-                predicates.append("b.id = $node_id")
+            predicate = self._incident_predicate(node_type, from_type, to_type)
             result = self._query(
                 f"MATCH (a:{from_type})-[r:{physical}]->(b:{to_type}) "
-                f"WHERE {' OR '.join(predicates)} RETURN {', '.join(projection)}",
+                f"WHERE {predicate} RETURN {', '.join(projection)}",
                 {"node_id": node_id},
                 operation="snapshot_incident_edges",
             )
@@ -393,6 +406,44 @@ class _GrafxTransactionScope:
                     )
                 ] += 1
         return snapshots
+
+    def _incident_relationship_definitions(
+        self,
+        node_type: str,
+    ) -> tuple[tuple[str, str, str, Any], ...]:
+        wanted = _identifier("node type", node_type)
+        try:
+            definitions = self._database.catalog.catalog.tables()
+        except Exception as exc:
+            mapped = map_grafx_error(exc, operation="snapshot_incident_schema")
+            raise mapped from exc
+        incident: list[tuple[str, str, str, Any]] = []
+        for definition in definitions:
+            if definition.kind != "rel" or wanted not in {
+                definition.from_table,
+                definition.to_table,
+            }:
+                continue
+            physical = _identifier("relationship table", definition.name)
+            from_type = _identifier("source node type", definition.from_table)
+            to_type = _identifier("target node type", definition.to_table)
+            incident.append((physical, from_type, to_type, definition))
+        return tuple(incident)
+
+    @staticmethod
+    def _incident_predicate(
+        node_type: str,
+        from_type: str,
+        to_type: str,
+    ) -> str:
+        predicates: list[str] = []
+        if from_type == node_type:
+            predicates.append("a.id = $node_id")
+        if to_type == node_type:
+            predicates.append("b.id = $node_id")
+        if not predicates:
+            raise AssertionError("relationship definition is not incident to node type")
+        return " OR ".join(predicates)
 
     def replace_node_payload(
         self,
@@ -459,6 +510,158 @@ class _GrafxTransactionScope:
                 },
             )
         return True
+
+    def replace_with_source_deleted_tombstone(
+        self,
+        node_type: str,
+        node_id: str,
+        *,
+        graph_layer: str,
+        maturity_status: str,
+        revocation_reason: str,
+        relevance_score: float,
+    ) -> bool:
+        """Atomically erase semantic payload and every incident relationship."""
+
+        self._fence("replace_with_source_deleted_tombstone")
+        definition = self._node_definition(node_type)
+        columns = self._column_map(definition)
+        missing = _SOURCE_DELETED_REQUIRED_PROPERTIES.difference(columns)
+        if missing:
+            raise GraphCapabilityUnavailable(
+                "Grafx node schema cannot prove source-deleted payload erasure.",
+                details={
+                    "backend": "okto_grafx",
+                    "node_type": node_type,
+                    "missing_properties": tuple(sorted(missing)),
+                },
+            )
+        before = self._node_snapshot(node_type, node_id)
+        if before is None:
+            return False
+
+        mutable_names = tuple(
+            column.name for column in definition.columns if column.name != "id"
+        )
+        desired: dict[str, Any] = {
+            "source_session_id": str(
+                before.get("source_session_id") or "source-deletion-tombstone"
+            ),
+            "title": "",
+            "content": "",
+            "context": "",
+            "justification": "",
+            "source_artifact_ref": str(before.get("source_artifact_ref") or ""),
+            "graph_layer": graph_layer,
+            "maturity_status": maturity_status,
+            "created_by_agent": str(
+                before.get("created_by_agent") or "system:source-deletion"
+            ),
+            "source_confidence": 0.0,
+            "relevance_score": relevance_score,
+            "query_hits": 0,
+            "priority_boost": 0.0,
+            "revocation_reason": revocation_reason,
+            "human_curated": False,
+            "generation": int(before.get("generation") or 0),
+            "source_span_quote": "",
+        }
+        if before.get("created_at") is not None:
+            desired["created_at"] = before["created_at"]
+        expected_raw: dict[str, Any] = {name: None for name in mutable_names}
+        expected_raw.update(
+            {
+                name: self._coerce_value(columns[name], value)
+                for name, value in desired.items()
+                if name != "id"
+            }
+        )
+        replacement_raw = {"id": node_id, **expected_raw}
+        replacement_names = tuple(replacement_raw)
+        bindings = ", ".join(
+            f"{name}: $value_{index}" for index, name in enumerate(replacement_names)
+        )
+        params = {
+            "node_id": node_id,
+            **self._assignment_params(replacement_names, replacement_raw),
+        }
+        expected = {
+            "id": _normalize_value(node_id),
+            **{name: _normalize_value(expected_raw[name]) for name in mutable_names},
+        }
+        statement = (
+            f"MATCH (n:{definition.name}) WHERE n.id = $node_id "
+            f"DETACH DELETE n CREATE (t:{definition.name} {{{bindings}}}) RETURN t.id"
+        )
+
+        # Revalidate immediately before entering the one statement that can stage effects.  From
+        # this point through both confirmations, any refusal poisons and rolls back the complete
+        # scope: the Core reconciler catches per-node errors, so leaving staged residue here would
+        # otherwise let its later context-manager commit publish a partial erasure.
+        self._fence("replace_with_source_deleted_tombstone")
+        try:
+            result = self._query(
+                statement,
+                params,
+                operation="replace_with_source_deleted_tombstone",
+            )
+            if result.rows != ((_normalize_value(node_id),),):
+                raise GraphError(
+                    "Grafx node swap was not confirmed by the mutation statement.",
+                    details={"backend": "okto_grafx", "node_type": node_type},
+                )
+            after = self._node_snapshot(node_type, node_id)
+            after_edges = self._incident_edge_snapshot(node_type, node_id)
+            if after != expected or after_edges:
+                raise GraphError(
+                    "Grafx could not confirm the source-deleted tombstone.",
+                    details={
+                        "backend": "okto_grafx",
+                        "node_type": node_type,
+                        "payload_confirmed": after == expected,
+                        "edges_removed": not after_edges,
+                    },
+                )
+        except BaseException as primary_error:
+            cleanup_error = self._abort_after_staged_failure(
+                operation="replace_with_source_deleted_tombstone"
+            )
+            if cleanup_error is not None:
+                try:
+                    primary_error.add_note(
+                        "Grafx rollback also failed while discarding a staged "
+                        "source-deleted tombstone."
+                    )
+                except BaseException:  # noqa: BLE001, S110 - diagnostic only
+                    pass
+                raise primary_error from cleanup_error
+            raise
+        return True
+
+    def _abort_after_staged_failure(
+        self,
+        *,
+        operation: str,
+    ) -> BaseException | None:
+        """Poison the scope, discard staged effects and report cleanup failure."""
+
+        self._finished = True
+        try:
+            self._transaction.rollback()
+        except BaseException as cleanup_error:  # noqa: BLE001 - preserve primary
+            return cleanup_error
+        if self._transaction.active:
+            return GraphError(
+                "Grafx transaction remained active after rollback returned.",
+                details={
+                    "backend": "okto_grafx",
+                    "board_id": self._board_id,
+                    "operation": operation,
+                    "scope_poisoned": True,
+                    "cleanup_confirmed": False,
+                },
+            )
+        return None
 
     def snapshot_node_properties(
         self,

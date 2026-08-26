@@ -44,6 +44,7 @@ from okto_pulse.core.kg.interfaces.graph_transaction import (
 from okto_pulse.community.adapters.graph_memory_pressure import GraphMemoryPressure
 
 BOARD_ID = "grafx-provider-board"
+INJECTED_POST_STAGE_FAILURE = "injected failure after staging the node swap"
 NODE_TYPES = ("Entity", "Decision")
 RELATIONSHIP_PAIRS = (("supports", "Entity", "Entity"),)
 NODE_COLUMNS = (
@@ -58,6 +59,22 @@ NODE_COLUMNS = (
     "superseded_by",
     "superseded_at",
     "revocation_reason",
+    "context",
+    "justification",
+    "source_artifact_ref",
+    "graph_layer",
+    "maturity_status",
+    "created_by_agent",
+    "source_confidence",
+    "relevance_score",
+    "query_hits",
+    "priority_boost",
+    "human_curated",
+    "generation",
+    "source_span_quote",
+    "source_content_hash",
+    "created_at",
+    "embedding",
 )
 
 
@@ -79,12 +96,23 @@ class _DeterministicFence:
             )
 
 
+class _InjectedProcessSignal(BaseException):
+    """Non-Exception control-flow signal injected after a staged mutation."""
+
+
+class _InjectedCleanupFailure(RuntimeError):
+    """Deterministic rollback refusal used to prove primary-signal identity."""
+
+
 @pytest.fixture
 def grafx_database(tmp_path: Path) -> Any:
     """Open a real durable Grafx database with only this batch's tiny schema."""
 
     database = okto_grafx.connect(tmp_path / "grafx-board")
     with database.begin("write") as schema:
+        schema.execute(
+            "CREATE VECTOR SPACE pulse_test {dimension: 4, metric: 'cosine'}"
+        )
         for node_type in NODE_TYPES:
             schema.execute(
                 f"CREATE NODE TABLE {node_type}("
@@ -92,7 +120,14 @@ def grafx_database(tmp_path: Path) -> Any:
                 "content STRING, score DOUBLE, active BOOL, "
                 "attestation_count INT64, last_attested_at TIMESTAMP, "
                 "superseded_by STRING, superseded_at TIMESTAMP, "
-                "revocation_reason STRING, PRIMARY KEY(id))"
+                "revocation_reason STRING, context STRING, justification STRING, "
+                "source_artifact_ref STRING, graph_layer STRING, "
+                "maturity_status STRING, created_by_agent STRING, "
+                "source_confidence DOUBLE, relevance_score DOUBLE, "
+                "query_hits INT64, priority_boost DOUBLE, human_curated BOOL, "
+                "generation INT64, source_span_quote STRING, "
+                "source_content_hash STRING, created_at TIMESTAMP, "
+                "embedding VECTOR(pulse_test), PRIMARY KEY(id))"
             )
         schema.execute(
             "CREATE REL TABLE supports("
@@ -253,6 +288,71 @@ async def _seed_graph(provider: Any) -> None:
                 "created_by_session_id": "edge-keep",
                 "rule_id": "rule/incoming",
             },
+        )
+
+
+async def _seed_tombstone_graph(provider: Any) -> None:
+    async with await provider.begin(BOARD_ID) as scope:
+        scope.create_node(
+            "Entity",
+            "tombstone-target",
+            {
+                "title": "Private title",
+                "content": "Private content",
+                "context": "Private context",
+                "justification": "Private justification",
+                "score": 9.0,
+                "active": True,
+                "source_artifact_ref": "spec:deleted:fr:private",
+                "graph_layer": "canonical",
+                "maturity_status": "canonical_mature",
+                "created_by_agent": "system:deterministic",
+                "source_confidence": 0.8,
+                "relevance_score": 0.9,
+                "query_hits": 12,
+                "priority_boost": 0.4,
+                "human_curated": True,
+                "generation": 7,
+                "source_span_quote": "Private source quote",
+                "source_content_hash": "private-hash",
+                "created_at": "2026-08-26T09:30:00Z",
+                "embedding": [1.0, 0.0, 0.0, 0.0],
+            },
+            source_session_id="tombstone-source-session",
+        )
+        for node_id in ("tombstone-peer", "tombstone-incoming"):
+            scope.create_node(
+                "Entity",
+                node_id,
+                {"title": node_id},
+                source_session_id="tombstone-control-session",
+            )
+        for from_id, to_id, rule_id, confidence in (
+            ("tombstone-target", "tombstone-target", "tombstone/self", 1.0),
+            ("tombstone-target", "tombstone-peer", "tombstone/out/1", 0.7),
+            ("tombstone-target", "tombstone-peer", "tombstone/out/2", 0.9),
+            ("tombstone-incoming", "tombstone-target", "tombstone/in", 0.8),
+            ("tombstone-peer", "tombstone-incoming", "tombstone/unrelated", 0.2),
+        ):
+            assert scope.create_edge(
+                "supports",
+                "Entity",
+                "Entity",
+                from_id,
+                to_id,
+                {
+                    "confidence": confidence,
+                    "created_by_session_id": "tombstone-edge-session",
+                    "rule_id": rule_id,
+                },
+            )
+        assert scope.create_edge(
+            "hidden_supports",
+            "Entity",
+            "Entity",
+            "tombstone-target",
+            "tombstone-peer",
+            {"note": "unconfigured incident edge"},
         )
 
 
@@ -555,7 +655,8 @@ async def test_replace_payload_is_exact_and_preserves_incident_edge_multiset(
             NODE_COLUMNS,
         )
         assert replaced is not None
-        assert tuple(replaced.attrs[name] for name in NODE_COLUMNS) == (
+        replaced_values = tuple(replaced.attrs[name] for name in NODE_COLUMNS)
+        assert replaced_values[:11] == (
             "entity-1",
             "replacement-session",
             "after",
@@ -568,6 +669,7 @@ async def test_replace_payload_is_exact_and_preserves_incident_edge_multiset(
             None,
             None,
         )
+        assert replaced_values[11:] == (None,) * (len(NODE_COLUMNS) - 11)
         assert scope.edge_exists(
             "supports",
             "Entity",
@@ -589,7 +691,7 @@ async def test_replace_payload_is_exact_and_preserves_incident_edge_multiset(
         assert _node(grafx_database, "entity-1") == original_node
         assert _edges(grafx_database) == original_edges
 
-    assert _node(grafx_database, "entity-1") == (
+    assert _node(grafx_database, "entity-1")[:11] == (
         "entity-1",
         "replacement-session",
         "after",
@@ -691,6 +793,536 @@ async def test_replace_payload_proves_edges_from_the_catalog_not_stale_configura
 
     assert _node(grafx_database, "catalog-proof-source")[2] == "before"
     assert len(_hidden_edges(grafx_database)) == 1
+
+
+@pytest.mark.asyncio
+async def test_source_deleted_tombstone_erases_payload_and_all_incident_edges(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    provider = _provider(grafx_database, fence)
+    await _seed_tombstone_graph(provider)
+    committed_before = _node(grafx_database, "tombstone-target")
+    edges_before = _edges(grafx_database)
+    hidden_before = _hidden_edges(grafx_database)
+    assert committed_before is not None
+    assert len(edges_before) == 5
+    assert len(hidden_before) == 1
+
+    scope = await provider.begin(BOARD_ID)
+    assert not scope.replace_with_source_deleted_tombstone(
+        "Entity",
+        "absent-tombstone",
+        graph_layer="working",
+        maturity_status="working_stale",
+        revocation_reason="source_deleted",
+        relevance_score=0.0,
+    )
+    assert scope.replace_with_source_deleted_tombstone(
+        "Entity",
+        "tombstone-target",
+        graph_layer="working",
+        maturity_status="working_stale",
+        revocation_reason="source_deleted",
+        relevance_score=0.0,
+    )
+
+    snapshot = scope.snapshot_node_properties(
+        "Entity",
+        "tombstone-target",
+        NODE_COLUMNS,
+    )
+    assert snapshot is not None
+    expected = {name: None for name in NODE_COLUMNS}
+    expected.update(
+        {
+            "id": "tombstone-target",
+            "source_session_id": "tombstone-source-session",
+            "title": "",
+            "content": "",
+            "revocation_reason": "source_deleted",
+            "context": "",
+            "justification": "",
+            "source_artifact_ref": "spec:deleted:fr:private",
+            "graph_layer": "working",
+            "maturity_status": "working_stale",
+            "created_by_agent": "system:deterministic",
+            "source_confidence": 0.0,
+            "relevance_score": 0.0,
+            "query_hits": 0,
+            "priority_boost": 0.0,
+            "human_curated": False,
+            "generation": 7,
+            "source_span_quote": "",
+            "created_at": "2026-08-26T09:30:00.000000Z",
+        }
+    )
+    assert snapshot.attrs == expected
+    assert not scope.edge_exists(
+        "supports",
+        "Entity",
+        "Entity",
+        "tombstone-target",
+        "tombstone-peer",
+    )
+    assert not scope.edge_exists(
+        "hidden_supports",
+        "Entity",
+        "Entity",
+        "tombstone-target",
+        "tombstone-peer",
+    )
+    assert scope.edge_exists(
+        "supports",
+        "Entity",
+        "Entity",
+        "tombstone-peer",
+        "tombstone-incoming",
+        "tombstone/unrelated",
+    )
+    assert _node(grafx_database, "tombstone-target") == committed_before
+    assert _edges(grafx_database) == edges_before
+    assert _hidden_edges(grafx_database) == hidden_before
+
+    await scope.commit()
+
+    assert _node(grafx_database, "tombstone-target") != committed_before
+    assert _edges(grafx_database) == (
+        (
+            "tombstone-peer",
+            "tombstone-incoming",
+            0.2,
+            "tombstone-edge-session",
+            "tombstone/unrelated",
+        ),
+    )
+    assert _hidden_edges(grafx_database) == ()
+    assert grafx_database.verify("all").findings == ()
+
+
+@pytest.mark.asyncio
+async def test_source_deleted_tombstone_rolls_back_payload_vector_and_edges(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    provider = _provider(grafx_database, fence)
+    await _seed_tombstone_graph(provider)
+    before = (
+        _node(grafx_database, "tombstone-target"),
+        _edges(grafx_database),
+        _hidden_edges(grafx_database),
+    )
+
+    scope = await provider.begin(BOARD_ID)
+    assert scope.replace_with_source_deleted_tombstone(
+        "Entity",
+        "tombstone-target",
+        graph_layer="working",
+        maturity_status="working_stale",
+        revocation_reason="source_deleted",
+        relevance_score=0.0,
+    )
+    assert (
+        scope.snapshot_node_properties(
+            "Entity",
+            "tombstone-target",
+            ("embedding",),
+        ).attrs["embedding"]
+        is None
+    )
+    await scope.rollback()
+
+    assert (
+        _node(grafx_database, "tombstone-target"),
+        _edges(grafx_database),
+        _hidden_edges(grafx_database),
+    ) == before
+    assert grafx_database.verify("all").findings == ()
+
+
+@pytest.mark.asyncio
+async def test_source_deleted_tombstone_rejects_incomplete_schema_before_mutation(
+    tmp_path: Path,
+    fence: _DeterministicFence,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = okto_grafx.connect(tmp_path / "grafx-incomplete-tombstone-schema")
+    try:
+        with database.begin("write") as schema:
+            schema.execute(
+                "CREATE NODE TABLE Entity("
+                "id STRING, source_session_id STRING, title STRING, content STRING, "
+                "context STRING, justification STRING, source_artifact_ref STRING, "
+                "graph_layer STRING, maturity_status STRING, created_at TIMESTAMP, "
+                "created_by_agent STRING, source_confidence DOUBLE, "
+                "relevance_score DOUBLE, query_hits INT64, priority_boost DOUBLE, "
+                "revocation_reason STRING, human_curated BOOL, generation INT64, "
+                "source_span_quote STRING, source_content_hash STRING, PRIMARY KEY(id))"
+            )
+        provider = _provider(database, fence)
+        async with await provider.begin(BOARD_ID) as seed:
+            seed.create_node(
+                "Entity",
+                "incomplete-schema-target",
+                {"title": "Private title", "content": "Private content"},
+                source_session_id="incomplete-schema-session",
+            )
+        before = database.execute(
+            "MATCH (n:Entity {id: $node_id}) "
+            "RETURN n.id, n.source_session_id, n.title, n.content",
+            {"node_id": "incomplete-schema-target"},
+        ).rows
+
+        scope = await provider.begin(BOARD_ID)
+        original_execute = Transaction.execute
+        mutating_statements: list[str] = []
+
+        def trace_mutations(
+            transaction: Any,
+            statement: str,
+            params: dict[str, Any] | None = None,
+        ) -> Any:
+            if any(token in statement for token in ("CREATE ", " SET ", " DELETE ")):
+                mutating_statements.append(statement)
+            return original_execute(transaction, statement, params)
+
+        monkeypatch.setattr(Transaction, "execute", trace_mutations)
+        try:
+            with pytest.raises(GraphCapabilityUnavailable) as refused:
+                scope.replace_with_source_deleted_tombstone(
+                    "Entity",
+                    "incomplete-schema-target",
+                    graph_layer="working",
+                    maturity_status="working_stale",
+                    revocation_reason="source_deleted",
+                    relevance_score=0.0,
+                )
+            assert refused.value.details["missing_properties"] == ("embedding",)
+            assert mutating_statements == []
+        finally:
+            await scope.rollback()
+
+        assert (
+            database.execute(
+                "MATCH (n:Entity {id: $node_id}) "
+                "RETURN n.id, n.source_session_id, n.title, n.content",
+                {"node_id": "incomplete-schema-target"},
+            ).rows
+            == before
+        )
+    finally:
+        database.close()
+
+
+@pytest.mark.asyncio
+async def test_source_deleted_tombstone_apply_then_raise_poison_rolls_back(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider(grafx_database, fence)
+    await _seed_tombstone_graph(provider)
+    before = (
+        _node(grafx_database, "tombstone-target"),
+        _edges(grafx_database),
+        _hidden_edges(grafx_database),
+    )
+    scope = await provider.begin(BOARD_ID)
+    original_execute = Transaction.execute
+    applied_mutations = 0
+
+    def apply_then_raise(
+        transaction: Any,
+        statement: str,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        nonlocal applied_mutations
+        result = original_execute(transaction, statement, params)
+        if "DETACH DELETE n CREATE" in statement:
+            applied_mutations += 1
+            raise GrafxStorageError(INJECTED_POST_STAGE_FAILURE)
+        return result
+
+    monkeypatch.setattr(Transaction, "execute", apply_then_raise)
+    with pytest.raises(GraphUnavailable):
+        scope.replace_with_source_deleted_tombstone(
+            "Entity",
+            "tombstone-target",
+            graph_layer="working",
+            maturity_status="working_stale",
+            revocation_reason="source_deleted",
+            relevance_score=0.0,
+        )
+
+    assert applied_mutations == 1
+    assert scope._finished is True
+    assert scope._transaction.active is False
+    await scope.commit()
+    assert (
+        _node(grafx_database, "tombstone-target"),
+        _edges(grafx_database),
+        _hidden_edges(grafx_database),
+    ) == before
+    assert grafx_database.verify("all").findings == ()
+
+
+@pytest.mark.asyncio
+async def test_source_deleted_tombstone_preserves_process_signal_identity(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider(grafx_database, fence)
+    await _seed_tombstone_graph(provider)
+    before = (
+        _node(grafx_database, "tombstone-target"),
+        _edges(grafx_database),
+        _hidden_edges(grafx_database),
+    )
+    scope = await provider.begin(BOARD_ID)
+    original_execute = Transaction.execute
+    primary_signal = _InjectedProcessSignal()
+    applied_mutations = 0
+
+    def apply_then_signal(
+        transaction: Any,
+        statement: str,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        nonlocal applied_mutations
+        result = original_execute(transaction, statement, params)
+        if "DETACH DELETE n CREATE" in statement:
+            applied_mutations += 1
+            raise primary_signal
+        return result
+
+    monkeypatch.setattr(Transaction, "execute", apply_then_signal)
+    with pytest.raises(_InjectedProcessSignal) as escaped:
+        scope.replace_with_source_deleted_tombstone(
+            "Entity",
+            "tombstone-target",
+            graph_layer="working",
+            maturity_status="working_stale",
+            revocation_reason="source_deleted",
+            relevance_score=0.0,
+        )
+
+    assert escaped.value is primary_signal
+    assert applied_mutations == 1
+    assert scope._finished is True
+    assert scope._transaction.active is False
+    await scope.commit()
+    assert (
+        _node(grafx_database, "tombstone-target"),
+        _edges(grafx_database),
+        _hidden_edges(grafx_database),
+    ) == before
+    assert grafx_database.verify("all").findings == ()
+
+
+@pytest.mark.asyncio
+async def test_source_deleted_tombstone_cleanup_failure_preserves_primary_signal(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider(grafx_database, fence)
+    await _seed_tombstone_graph(provider)
+    before = (
+        _node(grafx_database, "tombstone-target"),
+        _edges(grafx_database),
+        _hidden_edges(grafx_database),
+    )
+    scope = await provider.begin(BOARD_ID)
+    raw_transaction = scope._transaction
+    original_execute = Transaction.execute
+    original_rollback = Transaction.rollback
+    primary_signal = _InjectedProcessSignal()
+    cleanup_failure = _InjectedCleanupFailure()
+    applied_mutations = 0
+
+    def apply_then_signal(
+        transaction: Any,
+        statement: str,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        nonlocal applied_mutations
+        result = original_execute(transaction, statement, params)
+        if "DETACH DELETE n CREATE" in statement:
+            applied_mutations += 1
+            raise primary_signal
+        return result
+
+    def refuse_cleanup(transaction: Any) -> None:
+        if transaction is raw_transaction:
+            raise cleanup_failure
+        original_rollback(transaction)
+
+    monkeypatch.setattr(Transaction, "execute", apply_then_signal)
+    monkeypatch.setattr(Transaction, "rollback", refuse_cleanup)
+    try:
+        with pytest.raises(_InjectedProcessSignal) as escaped:
+            scope.replace_with_source_deleted_tombstone(
+                "Entity",
+                "tombstone-target",
+                graph_layer="working",
+                maturity_status="working_stale",
+                revocation_reason="source_deleted",
+                relevance_score=0.0,
+            )
+        await scope.commit()
+        assert scope._finished is True
+    finally:
+        monkeypatch.setattr(Transaction, "rollback", original_rollback)
+        if raw_transaction.active:
+            original_rollback(raw_transaction)
+
+    assert escaped.value is primary_signal
+    assert (
+        escaped.value.__cause__ is cleanup_failure
+        or escaped.value.__context__ is cleanup_failure
+    )
+    assert applied_mutations == 1
+    assert (
+        _node(grafx_database, "tombstone-target"),
+        _edges(grafx_database),
+        _hidden_edges(grafx_database),
+    ) == before
+    assert grafx_database.verify("all").findings == ()
+
+
+@pytest.mark.asyncio
+async def test_source_deleted_tombstone_confirmation_mismatch_poison_rolls_back(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider(grafx_database, fence)
+    await _seed_tombstone_graph(provider)
+    before = (
+        _node(grafx_database, "tombstone-target"),
+        _edges(grafx_database),
+        _hidden_edges(grafx_database),
+    )
+    scope = await provider.begin(BOARD_ID)
+    scope_type = type(scope)
+    original_snapshot = scope_type._incident_edge_snapshot
+
+    def force_confirmation_mismatch(
+        transaction_scope: Any,
+        node_type: str,
+        node_id: str,
+    ) -> Any:
+        snapshot = original_snapshot(transaction_scope, node_type, node_id)
+        if node_id == "tombstone-target":
+            return {("forced-unremoved-edge",): 1}
+        return snapshot
+
+    monkeypatch.setattr(
+        scope_type,
+        "_incident_edge_snapshot",
+        force_confirmation_mismatch,
+    )
+    with pytest.raises(GraphError) as refused:
+        scope.replace_with_source_deleted_tombstone(
+            "Entity",
+            "tombstone-target",
+            graph_layer="working",
+            maturity_status="working_stale",
+            revocation_reason="source_deleted",
+            relevance_score=0.0,
+        )
+
+    assert refused.value.details["payload_confirmed"] is True
+    assert refused.value.details["edges_removed"] is False
+    assert scope._finished is True
+    assert scope._transaction.active is False
+    await scope.commit()
+    assert (
+        _node(grafx_database, "tombstone-target"),
+        _edges(grafx_database),
+        _hidden_edges(grafx_database),
+    ) == before
+    assert grafx_database.verify("all").findings == ()
+
+
+@pytest.mark.asyncio
+async def test_source_deleted_tombstone_committed_retry_is_idempotent(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    provider = _provider(grafx_database, fence)
+    await _seed_tombstone_graph(provider)
+
+    async with await provider.begin(BOARD_ID) as scope:
+        assert scope.replace_with_source_deleted_tombstone(
+            "Entity",
+            "tombstone-target",
+            graph_layer="working",
+            maturity_status="working_stale",
+            revocation_reason="source_deleted",
+            relevance_score=0.0,
+        )
+    after_first_attempt = (
+        _node(grafx_database, "tombstone-target"),
+        _edges(grafx_database),
+        _hidden_edges(grafx_database),
+    )
+
+    async with await provider.begin(BOARD_ID) as retry:
+        assert retry.replace_with_source_deleted_tombstone(
+            "Entity",
+            "tombstone-target",
+            graph_layer="working",
+            maturity_status="working_stale",
+            revocation_reason="source_deleted",
+            relevance_score=0.0,
+        )
+
+    assert (
+        _node(grafx_database, "tombstone-target"),
+        _edges(grafx_database),
+        _hidden_edges(grafx_database),
+    ) == after_first_attempt
+    assert grafx_database.verify("all").findings == ()
+
+
+@pytest.mark.asyncio
+async def test_source_deleted_tombstone_uses_one_mutating_statement(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider(grafx_database, fence)
+    await _seed_tombstone_graph(provider)
+    scope = await provider.begin(BOARD_ID)
+    original_execute = Transaction.execute
+    mutating_statements: list[str] = []
+
+    def trace_mutations(
+        transaction: Any,
+        statement: str,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        if any(token in statement for token in ("CREATE ", " SET ", " DELETE ")):
+            mutating_statements.append(statement)
+        return original_execute(transaction, statement, params)
+
+    monkeypatch.setattr(Transaction, "execute", trace_mutations)
+    try:
+        assert scope.replace_with_source_deleted_tombstone(
+            "Entity",
+            "tombstone-target",
+            graph_layer="working",
+            maturity_status="working_stale",
+            revocation_reason="source_deleted",
+            relevance_score=0.0,
+        )
+        assert len(mutating_statements) == 1
+        assert "DETACH DELETE n CREATE (t:Entity" in mutating_statements[0]
+        assert mutating_statements[0].endswith("RETURN t.id")
+    finally:
+        await scope.rollback()
 
 
 @pytest.mark.asyncio
@@ -920,6 +1552,15 @@ def _invoke_mutation(scope: Any, operation: str) -> object:
             {"title": "blocked"},
             source_session_id="blocked-session",
         )
+    if operation == "replace_with_source_deleted_tombstone":
+        return scope.replace_with_source_deleted_tombstone(
+            "Entity",
+            "entity-1",
+            graph_layer="working",
+            maturity_status="working_stale",
+            revocation_reason="source_deleted",
+            relevance_score=0.0,
+        )
     if operation == "restore_node_properties":
         return scope.restore_node_properties(
             GraphNodePropertyBeforeImage(
@@ -968,6 +1609,7 @@ def _invoke_mutation(scope: Any, operation: str) -> object:
         "create_node",
         "update_node",
         "replace_node_payload",
+        "replace_with_source_deleted_tombstone",
         "restore_node_properties",
         "mark_superseded",
         "create_edge",
