@@ -501,29 +501,48 @@ class _GrafxTransactionScope:
             "node_id": node_id,
             **self._assignment_params(mutable_names, expected_raw),
         }
-        result = self._mutation(
-            f"MATCH (n:{definition.name}) WHERE n.id = $node_id "
-            f"SET {self._assignments('n', mutable_names)} RETURN n.id",
-            params,
-            operation="replace_node_payload",
-        )
-        if not result.rows:
-            raise GraphError(
-                "Grafx node disappeared during atomic payload replacement.",
-                details={"backend": "okto_grafx", "node_type": node_type},
+        # From the SET through both confirmations an exception is an uncertain
+        # staged outcome.  Poison and roll back the whole scope so a caller that
+        # catches the error cannot later publish an unconfirmed replacement.
+        self._fence("replace_node_payload_apply")
+        try:
+            result = self._query(
+                f"MATCH (n:{definition.name}) WHERE n.id = $node_id "
+                f"SET {self._assignments('n', mutable_names)} RETURN n.id",
+                params,
+                operation="replace_node_payload",
             )
-        after = self._node_snapshot(node_type, node_id)
-        after_edges = self._incident_edge_snapshot(node_type, node_id)
-        if after != expected or after_edges != before_edges:
-            raise GraphError(
-                "Grafx could not confirm the atomic node payload replacement.",
-                details={
-                    "backend": "okto_grafx",
-                    "node_type": node_type,
-                    "payload_confirmed": after == expected,
-                    "edges_confirmed": after_edges == before_edges,
-                },
+            if not result.rows:
+                raise GraphError(
+                    "Grafx node disappeared during atomic payload replacement.",
+                    details={"backend": "okto_grafx", "node_type": node_type},
+                )
+            after = self._node_snapshot(node_type, node_id)
+            after_edges = self._incident_edge_snapshot(node_type, node_id)
+            if after != expected or after_edges != before_edges:
+                raise GraphError(
+                    "Grafx could not confirm the atomic node payload replacement.",
+                    details={
+                        "backend": "okto_grafx",
+                        "node_type": node_type,
+                        "payload_confirmed": after == expected,
+                        "edges_confirmed": after_edges == before_edges,
+                    },
+                )
+        except BaseException as primary_error:
+            cleanup_error = self._abort_after_staged_failure(
+                operation="replace_node_payload"
             )
+            if cleanup_error is not None:
+                try:
+                    primary_error.add_note(
+                        "Grafx rollback also failed while discarding an "
+                        "unconfirmed payload replacement."
+                    )
+                except BaseException:  # noqa: BLE001, S110 - diagnostic only
+                    pass
+                raise primary_error from cleanup_error
+            raise
         return True
 
     def replace_with_source_deleted_tombstone(
@@ -1525,6 +1544,10 @@ class _GrafxTransactionScope:
         session_id: str,
         preserved_edges: tuple[SpecLineageEdgeSnapshot, ...],
     ) -> None:
+        """Delete session edges while preserving exact lineage before-images."""
+
+        self._fence("delete_edges_by_session_preserving_spec_lineage")
+        plans: list[tuple[str, str, str, dict[str, Any], str]] = []
         for edge_type, from_type, to_type in self._relationship_pairs:
             physical, definition = self._relationship_definition(
                 edge_type,
@@ -1544,27 +1567,116 @@ class _GrafxTransactionScope:
                 and to_type == "Entity"
                 and preserved_edges
             ):
-                if "rule_id" not in columns:
+                properties = tuple(column.name for column in definition.columns[2:])
+                if "rule_id" not in properties:
                     raise GraphCapabilityUnavailable(
                         f"Grafx relationship table {physical!r} lacks lineage identity."
                     )
+                prepared: list[tuple[SpecLineageEdgeSnapshot, dict[str, Any]]] = []
+                for snapshot in preserved_edges:
+                    if set(snapshot.attrs) != set(properties):
+                        raise SpecLineageReconciliationError(
+                            "spec_lineage_edge_metadata_inconsistent",
+                            "A preserved Spec-lineage edge is not a complete "
+                            "relationship before-image.",
+                        )
+                    write_attrs, normalized_attrs = (
+                        self._materialize_spec_lineage_attrs(
+                            definition,
+                            properties,
+                            snapshot.attrs,
+                        )
+                    )
+                    normalized = SpecLineageEdgeSnapshot(
+                        source_id=snapshot.source_id,
+                        target_id=snapshot.target_id,
+                        rule_id=snapshot.rule_id,
+                        attrs=normalized_attrs,
+                    )
+                    if str(normalized_attrs.get("rule_id") or "") != snapshot.rule_id:
+                        raise SpecLineageReconciliationError(
+                            "spec_lineage_edge_metadata_inconsistent",
+                            "A preserved Spec-lineage edge disagrees with its rule "
+                            "identity.",
+                        )
+                    prepared.append((normalized, write_attrs))
+
+                desired = Counter(
+                    self._spec_lineage_edge_signature(snapshot)
+                    for snapshot, _write_attrs in prepared
+                )
+                actual: Counter[tuple[tuple[str, str, str], ...]] = Counter()
+                for source_id in dict.fromkeys(
+                    snapshot.source_id for snapshot, _write_attrs in prepared
+                ):
+                    actual.update(
+                        self._spec_lineage_edge_signature(edge)
+                        for edge in self._read_spec_lineage_edges(
+                            source_id,
+                            physical=physical,
+                            properties=properties,
+                        )
+                    )
+                # Core accumulates preservation candidates across compensation
+                # records. A later inverse may legitimately remove an
+                # intermediate snapshot again, so absence is not corruption.
+                # More matching copies than the receipts own is ambiguous,
+                # because one predicate cannot preserve an exact multiplicity.
+                if any(
+                    actual[signature] > count for signature, count in desired.items()
+                ):
+                    raise SpecLineageReconciliationError(
+                        "spec_lineage_edge_metadata_inconsistent",
+                        "The restored Spec-lineage multiset exceeds the exact "
+                        "multiplicity owned by the compensation receipts.",
+                    )
+
                 predicates: list[str] = []
-                for index, snapshot in enumerate(preserved_edges):
+                for index, (snapshot, write_attrs) in enumerate(prepared):
                     params[f"source_{index}"] = snapshot.source_id
                     params[f"target_{index}"] = snapshot.target_id
-                    params[f"rule_{index}"] = snapshot.rule_id
-                    predicates.append(
-                        f"(a.id = $source_{index} AND b.id = $target_{index} "
-                        f"AND r.rule_id = $rule_{index})"
-                    )
+                    clauses = [
+                        f"a.id = $source_{index}",
+                        f"b.id = $target_{index}",
+                    ]
+                    for property_index, name in enumerate(properties):
+                        if snapshot.attrs[name] is None:
+                            clauses.append(f"r.{name} IS NULL")
+                            continue
+                        parameter = f"preserve_{index}_{property_index}"
+                        params[parameter] = write_attrs[name]
+                        clauses.append(f"r.{name} = ${parameter}")
+                    predicates.append("(" + " AND ".join(clauses) + ")")
                 preservation = " AND NOT (" + " OR ".join(predicates) + ")"
-            self._mutation(
-                f"MATCH (a:{from_type})-[r:{physical}]->(b:{to_type}) "
-                "WHERE r.created_by_session_id = $session_id"
-                f"{preservation} DELETE r",
-                params,
-                operation="delete_edges_by_session_preserving_spec_lineage",
+            plans.append((physical, from_type, to_type, params, preservation))
+
+        mutation_started = False
+        try:
+            for physical, from_type, to_type, params, preservation in plans:
+                mutation_started = True
+                self._mutation(
+                    f"MATCH (a:{from_type})-[r:{physical}]->(b:{to_type}) "
+                    "WHERE r.created_by_session_id = $session_id"
+                    f"{preservation} DELETE r",
+                    params,
+                    operation="delete_edges_by_session_preserving_spec_lineage",
+                )
+        except BaseException as primary_error:
+            if not mutation_started:
+                raise
+            cleanup_error = self._abort_after_staged_failure(
+                operation="delete_edges_by_session_preserving_spec_lineage"
             )
+            if cleanup_error is not None:
+                try:
+                    primary_error.add_note(
+                        "Grafx rollback also failed while discarding an incomplete "
+                        "session-edge cleanup."
+                    )
+                except BaseException:  # noqa: BLE001, S110 - diagnostic only
+                    pass
+                raise primary_error from cleanup_error
+            raise
 
     def delete_nodes_by_session(
         self,
