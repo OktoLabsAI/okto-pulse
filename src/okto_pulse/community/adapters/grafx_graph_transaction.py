@@ -47,6 +47,9 @@ from okto_pulse.core.kg.schema_contract import (
 )
 
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+from okto_pulse.community.adapters.grafx_relationship_layout import (
+    resolve_relationship_table,
+)
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _IDENTITY_PROPERTIES = frozenset({"id", "source_session_id"})
@@ -2915,9 +2918,7 @@ class CommunityGrafxGraphTransaction:
         *,
         node_types: tuple[str, ...] = tuple(NODE_TYPES),
         relationship_pairs: tuple[RelationshipPair, ...] | None = None,
-        relationship_table_resolver: RelationshipTableResolver = (
-            _default_relationship_table
-        ),
+        relationship_table_resolver: RelationshipTableResolver | None = None,
     ) -> None:
         self._database_resolver = database_resolver
         self._revalidate_fence = revalidate_fence
@@ -2939,7 +2940,16 @@ class CommunityGrafxGraphTransaction:
                 for edge_type, from_type, to_type in raw_pairs
             )
         )
-        self._relationship_table_resolver = relationship_table_resolver
+        if relationship_table_resolver is not None:
+            self._relationship_table_resolver = relationship_table_resolver
+        elif relationship_pairs is None:
+            # Production composition uses the complete Pulse authority and its
+            # deterministic one-table-per-pair layout.  An explicitly narrowed
+            # custom/test authority keeps the historical logical table name
+            # unless its caller also injects a resolver.
+            self._relationship_table_resolver = resolve_relationship_table
+        else:
+            self._relationship_table_resolver = _default_relationship_table
 
     async def begin(self, board_id: str) -> _GrafxTransactionScope:
         if type(board_id) is not str or not board_id:

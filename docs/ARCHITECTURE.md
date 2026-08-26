@@ -313,8 +313,11 @@ slot — and unfilled slots **fail closed** (`R-P2-03A-D`), never silently defau
 
 The inactive M-PULSE-3A helper `grafx_schema_introspection.list_node_properties()` reads one
 public, immutable Grafx catalog snapshot. It preserves the current Pulse tuple contract without
-registering a Grafx `SemanticGraphStore`; logical objects, schema versions, and composition remain
-separate milestones.
+registering a Grafx `SemanticGraphStore`. M-PULSE-3B adds the inactive
+`grafx_relationship_layout` manifest: each closed logical endpoint pair maps bijectively to one
+single-pair physical table, and read-only introspection validates that layout while returning only
+logical names and endpoint pairs. It does not run DDL, rewrite queries, or activate composition;
+schema versions, bootstrap, and the complete provider remain separate milestones.
 
 **Knowledge Graph — governance & operations**
 
