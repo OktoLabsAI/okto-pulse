@@ -124,6 +124,11 @@ _IncidentEdgeBeforeImage = ProjectionEdgeBeforeImage
 _NodeBeforeImage = ProjectionNodeBeforeImage
 
 
+_SESSION_ID_MUST_BE_A_STRING = "source_session_id must be a string"
+_RESERVED_ATTRS_REFUSED = "replacement attrs must exclude id and source_session_id"
+_UNKNOWN_ATTRS_REFUSED = "replacement attrs contain unknown node properties"
+
+
 class NodePayloadReplacementCompensationError(RuntimeError):
     """A verified node swap failed and its before-image could not be restored."""
 
@@ -706,18 +711,18 @@ class _KuzuTransactionScope:
         """
 
         if type(source_session_id) is not str:
-            raise TypeError("source_session_id must be a string")
+            raise TypeError(_SESSION_ID_MUST_BE_A_STRING)
         reserved = {"id", "source_session_id"}.intersection(attrs)
         if reserved:
-            raise ValueError(
-                "replacement attrs must exclude id and source_session_id; got "
-                f"{sorted(reserved)}"
-            )
+            # Built first and raised second: the diagnostic is the point -- a caller needs to be
+            # told WHICH key it smuggled -- and a long literal inside the raise is what the lint
+            # objects to, not the information it carries.
+            message = f"{_RESERVED_ATTRS_REFUSED}; got {sorted(reserved)}"
+            raise ValueError(message)
         unknown = set(attrs).difference(_TOMBSTONE_NODE_PROPERTIES)
         if unknown:
-            raise ValueError(
-                f"replacement attrs contain unknown node properties: {sorted(unknown)}"
-            )
+            message = f"{_UNKNOWN_ATTRS_REFUSED}: {sorted(unknown)}"
+            raise ValueError(message)
         before_image = self._snapshot_node_before_image(
             node_type,
             node_id,
@@ -846,8 +851,7 @@ class _KuzuTransactionScope:
             self._node_state_signature(before_image)
             == self._node_state_signature(expected)
             and Counter(
-                self._edge_state_signature(edge)
-                for edge in before_image.incident_edges
+                self._edge_state_signature(edge) for edge in before_image.incident_edges
             )
             == expected_edges
         ):
@@ -888,8 +892,7 @@ class _KuzuTransactionScope:
                 or self._node_state_signature(created)
                 != self._node_state_signature(expected)
                 or Counter(
-                    self._edge_state_signature(edge)
-                    for edge in created.incident_edges
+                    self._edge_state_signature(edge) for edge in created.incident_edges
                 )
                 != expected_edges
             ):

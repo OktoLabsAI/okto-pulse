@@ -11,8 +11,8 @@ import pytest
 from okto_pulse.community.adapters import kg_runtime
 from okto_pulse.community.adapters.kuzu_graph_transaction import (
     CommunityKuzuGraphTransaction,
-    _NodeBeforeImage,
     _KuzuTransactionScope,
+    _NodeBeforeImage,
 )
 from okto_pulse.core.kg.guarded_write import GuardedWriteError
 
@@ -595,8 +595,7 @@ def _expected_after_replacement(
 ) -> _NodeBeforeImage:
     """Return the node image the contract promises, with every unnamed property nulled."""
     attrs = {
-        property_name: None
-        for property_name in _TOMBSTONE_NODE_PROPERTIES_FOR_TESTS()
+        property_name: None for property_name in _TOMBSTONE_NODE_PROPERTIES_FOR_TESTS()
     }
     attrs.update(_REPLACEMENT_ATTRS)
     return _NodeBeforeImage(
@@ -936,7 +935,9 @@ async def test_replace_node_payload_refuses_a_restore_that_silently_under_delive
                 return None  # returns "successfully" having restored nothing
             return original_restore(before_image)
 
-        monkeypatch.setattr(scope, "_restore_incident_edges", restore_nothing_the_first_time)
+        monkeypatch.setattr(
+            scope, "_restore_incident_edges", restore_nothing_the_first_time
+        )
 
         with pytest.raises(RuntimeError, match="node_payload_replacement_unconfirmed"):
             scope.replace_node_payload(
