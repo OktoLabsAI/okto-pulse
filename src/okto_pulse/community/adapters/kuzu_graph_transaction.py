@@ -124,8 +124,17 @@ _IncidentEdgeBeforeImage = ProjectionEdgeBeforeImage
 _NodeBeforeImage = ProjectionNodeBeforeImage
 
 
-class TombstoneReplacementCompensationError(RuntimeError):
-    """The destructive swap failed and its before-image could not be restored."""
+class NodePayloadReplacementCompensationError(RuntimeError):
+    """A verified node swap failed and its before-image could not be restored."""
+
+
+class TombstoneReplacementCompensationError(NodePayloadReplacementCompensationError):
+    """The destructive swap failed and its before-image could not be restored.
+
+    Kept as its own name, and now a subclass, so every existing handler catches exactly what it
+    caught before while a caller that only cares that a swap could not be compensated may catch
+    the general one.
+    """
 
 
 def _statement_kind(statement: str) -> str:
@@ -674,6 +683,59 @@ class _KuzuTransactionScope:
             raise RuntimeError("source_deleted_tombstone_node_restore_incomplete")
         self._restore_incident_edges(before_image)
 
+    def replace_node_payload(
+        self,
+        node_type: str,
+        node_id: str,
+        attrs: dict[str, Any],
+        *,
+        source_session_id: str,
+    ) -> bool:
+        """Atomically replace a complete node payload, preserving identity and every edge.
+
+        The alternative this exists to prevent is a read-modify-write: between the read and the
+        write the node is half replaced, and anything observing it there sees a node that never
+        existed. Kuzu cannot SET an indexed vector property to null and the primary key forbids
+        a create-first replacement, so the supported operation is the same native swap the
+        tombstone path already uses -- with the incident edges restored rather than dropped.
+
+        ``attrs`` is the complete replacement payload. ``id`` and ``source_session_id`` are the
+        operation's to set, and any key that is not a declared node property is refused, which is
+        what keeps a structural name like ``_type`` out of a payload: in Kuzu the label IS the
+        type, so it is not a property a payload may carry at all.
+        """
+
+        if type(source_session_id) is not str:
+            raise TypeError("source_session_id must be a string")
+        reserved = {"id", "source_session_id"}.intersection(attrs)
+        if reserved:
+            raise ValueError(
+                "replacement attrs must exclude id and source_session_id; got "
+                f"{sorted(reserved)}"
+            )
+        unknown = set(attrs).difference(_TOMBSTONE_NODE_PROPERTIES)
+        if unknown:
+            raise ValueError(
+                f"replacement attrs contain unknown node properties: {sorted(unknown)}"
+            )
+        before_image = self._snapshot_node_before_image(
+            node_type,
+            node_id,
+            include_incident_edges=True,
+        )
+        if before_image is None:
+            return False
+        return self._replace_node_payload_from_before_image(
+            before_image,
+            dict(attrs),
+            source_session_id=source_session_id,
+            incident_edges=before_image.incident_edges,
+            error_prefix="node_payload",
+            event_prefix="kg.node_payload_replacement",
+            cleanup_phase="node_payload_transaction_cleanup_unconfirmed",
+            compensation_error_type=NodePayloadReplacementCompensationError,
+        )
+
     def replace_with_source_deleted_tombstone(
         self,
         node_type: str,
@@ -694,6 +756,9 @@ class _KuzuTransactionScope:
         lease rolls the uncommitted delete back without bypassing fencing.  The
         complete before-image remains a fallback for a post-commit driver
         failure while the same lease is held.
+
+        The swap itself is shared with :meth:`replace_node_payload`; what differs is that a
+        tombstone expects NO incident edges afterwards, and says so by asking for none.
         """
 
         before_image = self._snapshot_node_before_image(
@@ -729,22 +794,62 @@ class _KuzuTransactionScope:
         }
         if before_image.attrs["created_at"] is not None:
             attrs["created_at"] = before_image.attrs["created_at"]
+        return self._replace_node_payload_from_before_image(
+            before_image,
+            attrs,
+            source_session_id=source_session_id,
+            incident_edges=(),
+            error_prefix="source_deleted_tombstone",
+            event_prefix="kg.source_deleted_tombstone",
+            cleanup_phase="tombstone_transaction_cleanup_unconfirmed",
+            compensation_error_type=TombstoneReplacementCompensationError,
+        )
 
+    def _replace_node_payload_from_before_image(
+        self,
+        before_image: _NodeBeforeImage,
+        attrs: dict[str, Any],
+        *,
+        source_session_id: str,
+        incident_edges: tuple[_IncidentEdgeBeforeImage, ...],
+        error_prefix: str,
+        event_prefix: str,
+        cleanup_phase: str,
+        compensation_error_type: type[NodePayloadReplacementCompensationError],
+    ) -> bool:
+        """Perform one verified native node swap under the active write fence.
+
+        ``incident_edges`` is what the caller expects to hold AFTERWARDS, which is the only
+        difference between replacing a payload and tombstoning a node: the first asks for its
+        edges back and the second asks for none. Everything else -- the atomic unit, the
+        verification, the rollback and the compensation -- is one routine, because two copies of
+        a fail-atomic swap are two chances to drift on the path nobody exercises.
+        """
+
+        node_type = before_image.node_type
+        node_id = before_image.node_id
         expected_attrs = {
             property_name: None for property_name in _TOMBSTONE_NODE_PROPERTIES
         }
         expected_attrs.update(attrs)
-        expected_tombstone = _NodeBeforeImage(
+        expected = _NodeBeforeImage(
             node_type=node_type,
             node_id=node_id,
             source_session_id=source_session_id,
             attrs=expected_attrs,
-            incident_edges=(),
+            incident_edges=incident_edges,
+        )
+        expected_edges = Counter(
+            self._edge_state_signature(edge) for edge in incident_edges
         )
         if (
             self._node_state_signature(before_image)
-            == self._node_state_signature(expected_tombstone)
-            and not before_image.incident_edges
+            == self._node_state_signature(expected)
+            and Counter(
+                self._edge_state_signature(edge)
+                for edge in before_image.incident_edges
+            )
+            == expected_edges
         ):
             return True
 
@@ -768,18 +873,27 @@ class _KuzuTransactionScope:
                 attrs,
                 source_session_id=source_session_id,
             )
+            if incident_edges:
+                # DETACH DELETE took them with the node, so preserving them means putting them
+                # back INSIDE the same native unit -- a caller must never observe the node
+                # without the edges that belong to it.
+                self._restore_incident_edges(expected)
             created = self._snapshot_node_before_image(
                 node_type,
                 node_id,
-                include_incident_edges=False,
+                include_incident_edges=True,
             )
             if (
                 created is None
                 or self._node_state_signature(created)
-                != self._node_state_signature(expected_tombstone)
-                or self._snapshot_incident_edges(node_type, node_id)
+                != self._node_state_signature(expected)
+                or Counter(
+                    self._edge_state_signature(edge)
+                    for edge in created.incident_edges
+                )
+                != expected_edges
             ):
-                raise RuntimeError("source_deleted_tombstone_replacement_unconfirmed")
+                raise RuntimeError(f"{error_prefix}_replacement_unconfirmed")
             # execute() revalidates the active Core lease immediately before
             # the native commit.  A lost lease therefore reaches the exception
             # path while the destructive swap is still rollback-safe.
@@ -811,9 +925,9 @@ class _KuzuTransactionScope:
                     # is closed. Poison the scope so the reconciler cannot
                     # continue issuing writes that would later disappear on
                     # connection close.
-                    self._close(phase="tombstone_transaction_cleanup_unconfirmed")
-                    raise TombstoneReplacementCompensationError(
-                        "source_deleted_tombstone_transaction_cleanup_unconfirmed"
+                    self._close(phase=cleanup_phase)
+                    raise compensation_error_type(
+                        f"{error_prefix}_transaction_cleanup_unconfirmed"
                     ) from rollback_error
                 transaction_open = False
                 restored = self._snapshot_node_before_image(
@@ -835,17 +949,14 @@ class _KuzuTransactionScope:
                     )
                 ):
                     logger.warning(
-                        "kg.source_deleted_tombstone."
-                        "replacement_failed_rolled_back "
+                        "%s.replacement_failed_rolled_back "
                         "board=%s node_type=%s error_type=%s",
+                        event_prefix,
                         self._board_id,
                         node_type,
                         type(replacement_error).__name__,
                         extra={
-                            "event": (
-                                "kg.source_deleted_tombstone."
-                                "replacement_failed_rolled_back"
-                            ),
+                            "event": f"{event_prefix}.replacement_failed_rolled_back",
                             "board_id": self._board_id,
                             "node_type": node_type,
                             "error_type": type(replacement_error).__name__,
@@ -854,21 +965,22 @@ class _KuzuTransactionScope:
                     raise
                 if rollback_error is None:
                     rollback_error = RuntimeError(
-                        "source_deleted_tombstone_rollback_unconfirmed"
+                        f"{error_prefix}_rollback_unconfirmed"
                     )
             try:
                 self._restore_node_before_image(before_image)
             except BaseException as restore_error:
                 logger.error(
-                    "kg.source_deleted_tombstone.compensation_failed "
+                    "%s.compensation_failed "
                     "board=%s node_type=%s replacement_error_type=%s "
                     "restore_error_type=%s",
+                    event_prefix,
                     self._board_id,
                     node_type,
                     type(replacement_error).__name__,
                     type(restore_error).__name__,
                     extra={
-                        "event": ("kg.source_deleted_tombstone.compensation_failed"),
+                        "event": f"{event_prefix}.compensation_failed",
                         "board_id": self._board_id,
                         "node_type": node_type,
                         "replacement_error_type": type(replacement_error).__name__,
@@ -880,19 +992,17 @@ class _KuzuTransactionScope:
                         ),
                     },
                 )
-                raise TombstoneReplacementCompensationError(
-                    "source_deleted_tombstone_compensation_failed"
+                raise compensation_error_type(
+                    f"{error_prefix}_compensation_failed"
                 ) from restore_error
             logger.warning(
-                "kg.source_deleted_tombstone.replacement_failed_restored "
-                "board=%s node_type=%s error_type=%s",
+                "%s.replacement_failed_restored board=%s node_type=%s error_type=%s",
+                event_prefix,
                 self._board_id,
                 node_type,
                 type(replacement_error).__name__,
                 extra={
-                    "event": (
-                        "kg.source_deleted_tombstone.replacement_failed_restored"
-                    ),
+                    "event": f"{event_prefix}.replacement_failed_restored",
                     "board_id": self._board_id,
                     "node_type": node_type,
                     "error_type": type(replacement_error).__name__,
