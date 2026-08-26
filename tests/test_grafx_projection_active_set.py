@@ -66,6 +66,7 @@ EDGE_PROPERTIES = ("confidence", "created_by_session_id", "rule_id")
 _FENCE_LOST = "test graph write fence lost"
 _INJECTED_AFTER_EDGE_DELETION = "injected after the incident edges were deleted"
 _INJECTED_COMPENSATION_REFUSAL = "compensation refused"
+_INJECTED_SIGNAL = "injected process signal after a staged write"
 
 
 def _resolve_table(edge_type: str, from_type: str, to_type: str) -> str:
@@ -116,6 +117,10 @@ class _DeterministicFence:
 
 class _InjectedFailure(RuntimeError):
     """Deterministic failure injected after the first projection write."""
+
+
+class _InjectedProcessSignal(BaseException):
+    """Non-Exception control-flow signal injected after a staged projection write."""
 
 
 @pytest.fixture
@@ -265,43 +270,88 @@ async def _seed(provider: Any) -> None:
         _projection_node(scope, "Decision", "dec-foreign", FOREIGN_DECISION_REF)
 
         _edge(
-            scope, "belongs_to", "Decision", "Entity",
-            "dec-keep", OWNER_NODE_ID, DECISION_RULE,
+            scope,
+            "belongs_to",
+            "Decision",
+            "Entity",
+            "dec-keep",
+            OWNER_NODE_ID,
+            DECISION_RULE,
         )
         _edge(
-            scope, "belongs_to", "Decision", "Entity",
-            "dec-stale", OWNER_NODE_ID, DECISION_RULE,
+            scope,
+            "belongs_to",
+            "Decision",
+            "Entity",
+            "dec-stale",
+            OWNER_NODE_ID,
+            DECISION_RULE,
         )
         _edge(
-            scope, "belongs_to", "Alternative", "Entity",
-            "alt-keep", OWNER_NODE_ID, ALTERNATIVE_RULE,
+            scope,
+            "belongs_to",
+            "Alternative",
+            "Entity",
+            "alt-keep",
+            OWNER_NODE_ID,
+            ALTERNATIVE_RULE,
         )
         _edge(
-            scope, "belongs_to", "Decision", "Entity",
-            "dec-foreign", FOREIGN_OWNER_NODE_ID, DECISION_RULE,
+            scope,
+            "belongs_to",
+            "Decision",
+            "Entity",
+            "dec-foreign",
+            FOREIGN_OWNER_NODE_ID,
+            DECISION_RULE,
         )
         # Decision -> Alternative: distinct types on either end, so a laterality mistake in
         # the incidence match cannot hide behind a symmetric pair.
         _edge(
-            scope, "relates_to", "Decision", "Alternative",
-            "dec-stale", "alt-keep", RELATES_RULE,
+            scope,
+            "relates_to",
+            "Decision",
+            "Alternative",
+            "dec-stale",
+            "alt-keep",
+            RELATES_RULE,
         )
         _edge(
-            scope, "supports", "Entity", "Entity",
-            OWNER_NODE_ID, FOREIGN_OWNER_NODE_ID, "manual/support",
+            scope,
+            "supports",
+            "Entity",
+            "Entity",
+            OWNER_NODE_ID,
+            FOREIGN_OWNER_NODE_ID,
+            "manual/support",
         )
         _edge(
-            scope, "precedes", "Entity", "Entity",
-            "prereq-a", SPEC_ROOT_ID, DEPENDENCY_RULE_A,
+            scope,
+            "precedes",
+            "Entity",
+            "Entity",
+            "prereq-a",
+            SPEC_ROOT_ID,
+            DEPENDENCY_RULE_A,
         )
         _edge(
-            scope, "precedes", "Entity", "Entity",
-            "prereq-b", SPEC_ROOT_ID, DEPENDENCY_RULE_B,
+            scope,
+            "precedes",
+            "Entity",
+            "Entity",
+            "prereq-b",
+            SPEC_ROOT_ID,
+            DEPENDENCY_RULE_B,
         )
         # Hand-authored precedence into the same root: not this projection's to remove.
         _edge(
-            scope, "precedes", "Entity", "Entity",
-            "prereq-c", SPEC_ROOT_ID, AUTHORED_RULE,
+            scope,
+            "precedes",
+            "Entity",
+            "Entity",
+            "prereq-c",
+            SPEC_ROOT_ID,
+            AUTHORED_RULE,
         )
 
 
@@ -425,7 +475,9 @@ async def test_a_stale_member_loses_every_incident_edge_and_keeps_its_identity(
     assert not any(row[0] == "relates_to" for row in edges)
     # Everything outside the projection is untouched.
     assert any(row[0] == "supports" for row in edges)
-    assert any(row[:4] == ("belongs_to", "Decision", "Entity", "dec-keep") for row in edges)
+    assert any(
+        row[:4] == ("belongs_to", "Decision", "Entity", "dec-keep") for row in edges
+    )
     assert any(
         row[:4] == ("belongs_to", "Decision", "Entity", "dec-foreign") for row in edges
     )
@@ -533,7 +585,10 @@ async def test_a_member_with_foreign_revocation_provenance_is_left_alone(
 @pytest.mark.parametrize(
     ("intent_kwargs", "code"),
     [
-        ({"owner_type": "spec", "namespace": "rdl"}, "projection_active_set_scope_invalid"),
+        (
+            {"owner_type": "spec", "namespace": "rdl"},
+            "projection_active_set_scope_invalid",
+        ),
         (
             {"namespace": "other"},
             "projection_active_set_scope_invalid",
@@ -653,8 +708,13 @@ async def test_one_source_reference_on_two_nodes_is_ambiguous(
     async with await provider.begin(BOARD_ID) as scope:
         _projection_node(scope, "Decision", "dec-twin", KEEP_DECISION_REF)
         _edge(
-            scope, "belongs_to", "Decision", "Entity",
-            "dec-twin", OWNER_NODE_ID, DECISION_RULE,
+            scope,
+            "belongs_to",
+            "Decision",
+            "Entity",
+            "dec-twin",
+            OWNER_NODE_ID,
+            DECISION_RULE,
         )
     before = _graph(grafx_database)
 
@@ -736,7 +796,12 @@ async def test_two_desired_edges_over_one_pair_are_refused_even_under_different_
             "supports", "Entity", "Entity", "prereq-a", SPEC_ROOT_ID, DEPENDENCY_RULE_A
         ),
         ProjectionEdgeRef(
-            "precedes", "Decision", "Entity", "dec-keep", SPEC_ROOT_ID, DEPENDENCY_RULE_A
+            "precedes",
+            "Decision",
+            "Entity",
+            "dec-keep",
+            SPEC_ROOT_ID,
+            DEPENDENCY_RULE_A,
         ),
         ProjectionEdgeRef(
             "precedes", "Entity", "Entity", "prereq-a", OWNER_NODE_ID, DEPENDENCY_RULE_A
@@ -869,6 +934,301 @@ async def test_an_empty_dependency_reconciliation_removes_every_owned_edge(
 
 
 @pytest.mark.asyncio
+async def test_a_process_signal_after_a_write_keeps_its_own_identity(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An interrupt is not an outcome: reporting it as one is how it gets swallowed."""
+
+    provider = _provider(grafx_database, fence)
+    await _seed(provider)
+    before = _graph(grafx_database)
+    original = provider_module._GrafxTransactionScope._remove_projection_member
+    # Built out here so the assertion below can be about THIS object.  Matching the type
+    # only would be satisfied by a provider that raised a fresh instance of the same class,
+    # which is precisely the wrapping this test exists to forbid.
+    primary_signal = _InjectedProcessSignal(_INJECTED_SIGNAL)
+
+    def signalling_remove(self: Any, before_image: Any) -> None:
+        self._projection_delete_incident_edges(
+            before_image.node_type,
+            before_image.node_id,
+        )
+        raise primary_signal
+
+    monkeypatch.setattr(
+        provider_module._GrafxTransactionScope,
+        "_remove_projection_member",
+        signalling_remove,
+    )
+
+    async with await provider.begin(BOARD_ID) as scope:
+        # The signal itself reaches the caller, not a reconciliation error wrapping it.
+        with pytest.raises(_InjectedProcessSignal) as escaped:
+            scope.reconcile_projection_active_set(
+                _rdl_intent(active_nodes=(KEEP_DECISION, KEEP_ALTERNATIVE))
+            )
+        assert escaped.value is primary_signal
+        monkeypatch.setattr(
+            provider_module._GrafxTransactionScope,
+            "_remove_projection_member",
+            original,
+        )
+
+    # And the board it interrupted is whole.
+    assert _graph(grafx_database) == before
+
+
+class _UnwrittenResult:
+    """A mutation result that reports success for a write that never happened."""
+
+    rows = (("dec-stale",),)
+
+
+@pytest.mark.asyncio
+async def test_a_removal_the_engine_did_not_apply_fails_typed_and_leaves_nothing_behind(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The post-write confirmation is load-bearing, and it is asked to prove it here.
+
+    Everything else in this suite exercises writes that take, which is precisely why none of
+    them can tell whether the confirmation is wired up at all.  This one lets the removal
+    report success without applying, so a divergent confirmation is the only thing between a
+    silent half-removal and the caller.
+    """
+
+    provider = _provider(grafx_database, fence)
+    await _seed(provider)
+    before = _graph(grafx_database)
+    original = provider_module._GrafxTransactionScope._mutation
+
+    def unapplied_removal(
+        self: Any,
+        statement: str,
+        params: Any = None,
+        *,
+        operation: str,
+    ) -> Any:
+        if operation == "remove_projection_member":
+            # The fence is still honoured; only the write is dropped.
+            self._fence(operation)
+            return _UnwrittenResult()
+        return original(self, statement, params, operation=operation)
+
+    monkeypatch.setattr(
+        provider_module._GrafxTransactionScope, "_mutation", unapplied_removal
+    )
+
+    async with await provider.begin(BOARD_ID) as scope:
+        with pytest.raises(ProjectionActiveSetReconciliationError) as raised:
+            scope.reconcile_projection_active_set(
+                _rdl_intent(active_nodes=(KEEP_DECISION, KEEP_ALTERNATIVE))
+            )
+        assert raised.value.code == "projection_active_set_apply_failed"
+        cause = raised.value.__cause__
+        assert isinstance(cause, GraphError)
+        assert cause.details["code"] == "projection_stale_member_cleanup_unconfirmed"
+        monkeypatch.setattr(
+            provider_module._GrafxTransactionScope, "_mutation", original
+        )
+
+    # The incident edges really were deleted before the confirmation refused; the board is
+    # whole only because the before-image put them back.
+    assert _graph(grafx_database) == before
+
+
+@pytest.mark.asyncio
+async def test_restoring_parallel_edges_keeps_each_distinct_payload(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    """Two edges over one pair that differ only in payload are two different edges."""
+
+    provider = _provider(grafx_database, fence)
+    await _seed(provider)
+    async with await provider.begin(BOARD_ID) as scope:
+        _edge(
+            scope,
+            "belongs_to",
+            "Decision",
+            "Entity",
+            "dec-stale",
+            OWNER_NODE_ID,
+            DECISION_RULE,
+            confidence=0.25,
+        )
+    before = _graph(grafx_database)
+    # before is (nodes, edges); the edges are the second half of it.
+    parallel = [
+        row
+        for row in before[1]
+        if row[:4] == ("belongs_to", "Decision", "Entity", "dec-stale")
+    ]
+    assert len(parallel) == 2, parallel
+    assert len({row[5] for row in parallel}) == 2, parallel
+
+    async with await provider.begin(BOARD_ID) as scope:
+        receipt = scope.reconcile_projection_active_set(
+            _rdl_intent(active_nodes=(KEEP_DECISION, KEEP_ALTERNATIVE))
+        )
+        scope.compensate_projection_active_set(receipt)
+
+    assert _graph(grafx_database) == before
+
+
+@pytest.mark.asyncio
+async def test_compensation_refuses_to_restore_onto_a_node_that_is_gone(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    """False from a node write is an outcome, not a quieter kind of success."""
+
+    provider = _provider(grafx_database, fence)
+    await _seed(provider)
+    async with await provider.begin(BOARD_ID) as scope:
+        receipt = scope.reconcile_projection_active_set(
+            _rdl_intent(active_nodes=(KEEP_DECISION, KEEP_ALTERNATIVE))
+        )
+    with grafx_database.begin("write") as removal:
+        removal.execute(
+            "MATCH (n:Decision) WHERE n.id = $node_id DETACH DELETE n",
+            {"node_id": "dec-stale"},
+        )
+    after_removal = _graph(grafx_database)
+
+    scope = await provider.begin(BOARD_ID)
+    with pytest.raises(GraphError) as raised:
+        scope.compensate_projection_active_set(receipt)
+    assert raised.value.details["code"] == (
+        "projection_active_set_compensation_node_missing"
+    )
+    await scope.rollback()
+    assert _graph(grafx_database) == after_removal
+
+
+@pytest.mark.asyncio
+async def test_compensation_removes_an_edge_that_appeared_after_the_apply(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    """Exact means the recorded multiset and nothing else, not merely 'at least'.
+
+    The three phases are three committed scopes on purpose.  Doing them in one would let the
+    staged overlay answer the question, and the overlay is not where the audited failure
+    lives: compensation has to reach a board it did not itself put into this state.
+    """
+
+    provider = _provider(grafx_database, fence)
+    await _seed(provider)
+    before = _graph(grafx_database)
+
+    async with await provider.begin(BOARD_ID) as scope:
+        receipt = scope.reconcile_projection_active_set(
+            _rdl_intent(active_nodes=(KEEP_DECISION, KEEP_ALTERNATIVE))
+        )
+    applied = _graph(grafx_database)
+    assert applied != before
+
+    # Something else attaches an edge to the removed member, and commits it.
+    async with await provider.begin(BOARD_ID) as scope:
+        _edge(
+            scope,
+            "belongs_to",
+            "Decision",
+            "Entity",
+            "dec-stale",
+            FOREIGN_OWNER_NODE_ID,
+            DECISION_RULE,
+        )
+    assert _graph(grafx_database) != applied
+
+    async with await provider.begin(BOARD_ID) as scope:
+        scope.compensate_projection_active_set(receipt)
+
+    assert _graph(grafx_database) == before
+
+
+@pytest.mark.asyncio
+async def test_a_compensation_that_cannot_confirm_itself_poisons_the_scope(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A half-compensated board is not allowed to commit, and says so typed."""
+
+    provider = _provider(grafx_database, fence)
+    await _seed(provider)
+    async with await provider.begin(BOARD_ID) as scope:
+        receipt = scope.reconcile_projection_active_set(
+            _rdl_intent(active_nodes=(KEEP_DECISION, KEEP_ALTERNATIVE))
+        )
+    after_apply = _graph(grafx_database)
+
+    def restore_nothing(self: Any, edges: Any) -> None:
+        del edges
+
+    monkeypatch.setattr(
+        provider_module._GrafxTransactionScope,
+        "_projection_restore_edges",
+        restore_nothing,
+    )
+
+    scope = await provider.begin(BOARD_ID)
+    with pytest.raises(GraphError) as raised:
+        scope.compensate_projection_active_set(receipt)
+    assert raised.value.details["code"] == (
+        "projection_active_set_compensation_unconfirmed"
+    )
+
+    # Poisoned: the node payload it did write must not reach commit.
+    with pytest.raises(GraphError):
+        scope.update_node("Decision", "dec-keep", {"title": "should not apply"})
+    await scope.rollback()
+    assert _graph(grafx_database) == after_apply
+
+
+@pytest.mark.asyncio
+async def test_restoring_parallel_edges_does_not_collapse_their_multiplicity(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    """Two byte-identical edges are two edges; Grafx stores both, so both must come back."""
+
+    provider = _provider(grafx_database, fence)
+    await _seed(provider)
+    async with await provider.begin(BOARD_ID) as scope:
+        # A second edge indistinguishable from the seeded one: nothing but the count tells
+        # them apart, which is exactly what a set-based restore cannot preserve.
+        _edge(
+            scope,
+            "belongs_to",
+            "Decision",
+            "Entity",
+            "dec-stale",
+            OWNER_NODE_ID,
+            DECISION_RULE,
+        )
+    before = _graph(grafx_database)
+    seeded = [
+        row
+        for row in before[1]
+        if row[:4] == ("belongs_to", "Decision", "Entity", "dec-stale")
+    ]
+    assert len(seeded) == 2, seeded
+
+    async with await provider.begin(BOARD_ID) as scope:
+        receipt = scope.reconcile_projection_active_set(
+            _rdl_intent(active_nodes=(KEEP_DECISION, KEEP_ALTERNATIVE))
+        )
+        scope.compensate_projection_active_set(receipt)
+
+    assert _graph(grafx_database) == before
+
+
+@pytest.mark.asyncio
 async def test_a_lost_fence_refuses_the_reconciliation_before_any_read(
     grafx_database: Any,
     fence: _DeterministicFence,
@@ -958,7 +1318,10 @@ async def test_a_failure_after_the_first_write_restores_the_complete_before_imag
     def failing_remove(self: Any, before_image: Any) -> None:
         calls.append(before_image.node_id)
         # Delete the edges, then fail: the damage is real before the error is raised.
-        self._projection_delete_incident_edges(before_image)
+        self._projection_delete_incident_edges(
+            before_image.node_type,
+            before_image.node_id,
+        )
         raise _InjectedFailure(_INJECTED_AFTER_EDGE_DELETION)
 
     monkeypatch.setattr(
@@ -998,7 +1361,10 @@ async def test_an_unrestorable_failure_poisons_the_scope_so_nothing_commits(
     before = _graph(grafx_database)
 
     def failing_remove(self: Any, before_image: Any) -> None:
-        self._projection_delete_incident_edges(before_image)
+        self._projection_delete_incident_edges(
+            before_image.node_type,
+            before_image.node_id,
+        )
         raise _InjectedFailure(_INJECTED_AFTER_EDGE_DELETION)
 
     def failing_compensate(self: Any, receipt: Any) -> None:

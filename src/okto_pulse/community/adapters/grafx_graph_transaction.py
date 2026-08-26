@@ -53,7 +53,9 @@ _SPEC_DEPENDENCY_RULE_PREFIX = "precedes/spec_dependency/"
 _PROJECTION_EDGE_IDENTITY_CONFLICT = (
     "Grafx projection edge identity conflicts with its before-image."
 )
-_PROJECTION_EDGE_RESTORE_INCOMPLETE = "Grafx could not confirm a restored projection edge."
+_PROJECTION_EDGE_RESTORE_INCOMPLETE = (
+    "Grafx could not confirm a restored projection edge."
+)
 _PROJECTION_DEPENDENCY_CLEANUP_UNCONFIRMED = (
     "Grafx could not confirm the Spec dependency edge cleanup."
 )
@@ -66,6 +68,23 @@ _PROJECTION_MEMBER_RESTORE_UNCONFIRMED = (
 _PROJECTION_MEMBER_VANISHED = "Grafx projection member disappeared during its removal."
 _PROJECTION_MEMBER_CLEANUP_UNCONFIRMED = (
     "Grafx could not confirm the stale projection member cleanup."
+)
+_PROJECTION_RESTORE_FAILED_SCOPE_DISCARDED = (
+    "Projection reconciliation failed and its complete before-image could not be "
+    "restored; the staged scope was discarded."
+)
+_PROJECTION_SCOPE_DISCARD_UNPROVEN = (
+    "Grafx could not prove the staged projection scope was discarded."
+)
+_PROJECTION_COMPENSATION_UNCONFIRMED = (
+    "Grafx could not confirm the projection compensation restored the recorded state."
+)
+_PROJECTION_COMPENSATION_NODE_MISSING = (
+    "Grafx projection member is absent, so its before-image cannot be restored."
+)
+_PROJECTION_RESTORE_FAILED_SCOPE_UNCONFIRMED = (
+    "Projection reconciliation failed, its complete before-image could not be restored, "
+    "and the staged scope could not be proven discarded"
 )
 _SOURCE_DELETED_REQUIRED_PROPERTIES = frozenset(
     {
@@ -1035,8 +1054,13 @@ class _GrafxTransactionScope:
     def _projection_matching_edges(
         self,
         edge: ProjectionEdgeBeforeImage,
-    ) -> set[tuple[Any, ...]]:
-        """Signatures of every stored relationship sharing this one's identity."""
+    ) -> Counter[tuple[Any, ...]]:
+        """How many of each stored relationship share this one's identity.
+
+        A multiset, not a set: Grafx stores byte-identical parallel edges, so "this edge is
+        present" and "both copies of this edge are present" are different facts and a set
+        cannot tell them apart.
+        """
 
         rule_id = self._projection_dependency_rule_id(edge)
         physical, definition = self._relationship_definition(
@@ -1057,7 +1081,7 @@ class _GrafxTransactionScope:
             params,
             operation="projection_edge_lookup",
         )
-        return {
+        return Counter(
             self._projection_edge_signature(
                 ProjectionEdgeBeforeImage(
                     edge_type=edge.edge_type,
@@ -1072,7 +1096,7 @@ class _GrafxTransactionScope:
                 )
             )
             for row in result.rows
-        }
+        )
 
     def _projection_restore_edges(
         self,
@@ -1086,46 +1110,82 @@ class _GrafxTransactionScope:
         was removed; recreating over it would silently pick a winner, so it is refused.
         """
 
+        wanted: dict[tuple[Any, ...], Counter[tuple[Any, ...]]] = {}
+        templates: dict[tuple[Any, ...], dict[tuple[Any, ...], Any]] = {}
         for edge in edges:
-            desired = self._projection_edge_signature(edge)
-            present = self._projection_matching_edges(edge)
-            if desired in present:
-                continue
-            if present:
-                raise GraphError(
-                    _PROJECTION_EDGE_IDENTITY_CONFLICT,
-                    details={
-                        "backend": "okto_grafx",
-                        "board_id": self._board_id,
-                        "edge_type": edge.edge_type,
-                        "code": "projection_edge_restore_identity_conflict",
-                    },
-                )
-            self.create_edge(
+            # Group by what a single lookup can ask about, so multiplicity is compared once
+            # per identity rather than re-derived per recorded copy.
+            key = (
                 edge.edge_type,
                 edge.from_type,
                 edge.to_type,
                 edge.from_id,
                 edge.to_id,
-                {key: value for key, value in edge.attrs.items() if value is not None},
+                self._projection_dependency_rule_id(edge),
             )
-            if desired not in self._projection_matching_edges(edge):
+            signature = self._projection_edge_signature(edge)
+            wanted.setdefault(key, Counter())[signature] += 1
+            templates.setdefault(key, {})[signature] = edge
+        for key, desired in wanted.items():
+            probe = next(iter(templates[key].values()))
+            present = self._projection_matching_edges(probe)
+            if present - desired:
+                # Present but unrecorded, or present more times than recorded: whatever is
+                # there is not what was removed, and creating over it would pick a winner.
+                raise GraphError(
+                    _PROJECTION_EDGE_IDENTITY_CONFLICT,
+                    details={
+                        "backend": "okto_grafx",
+                        "board_id": self._board_id,
+                        "edge_type": probe.edge_type,
+                        "code": "projection_edge_restore_identity_conflict",
+                    },
+                )
+            missing = desired - present
+            if not missing:
+                # Already exactly as recorded: compensation must be repeatable, including in
+                # a scope that never applied the removal.
+                continue
+            for signature, count in missing.items():
+                template = templates[key][signature]
+                for _copy in range(count):
+                    self.create_edge(
+                        template.edge_type,
+                        template.from_type,
+                        template.to_type,
+                        template.from_id,
+                        template.to_id,
+                        {
+                            name: value
+                            for name, value in template.attrs.items()
+                            if value is not None
+                        },
+                    )
+            if self._projection_matching_edges(probe) != desired:
                 raise GraphError(
                     _PROJECTION_EDGE_RESTORE_INCOMPLETE,
                     details={
                         "backend": "okto_grafx",
                         "board_id": self._board_id,
-                        "edge_type": edge.edge_type,
+                        "edge_type": probe.edge_type,
                         "code": "projection_edge_restore_incomplete",
                     },
                 )
 
     def _projection_delete_incident_edges(
         self,
-        before_image: ProjectionNodeBeforeImage,
+        node_type: str,
+        node_id: str,
     ) -> None:
+        """Delete every relationship incident to the node as the engine holds it now.
+
+        Reading current state rather than replaying a recorded list matters on the
+        compensation path: an edge that appeared after the failure is not in the
+        before-image, and a restore that claims to be exact must not leave it behind.
+        """
+
         seen: set[tuple[str, str, str, str, str]] = set()
-        for edge in before_image.incident_edges:
+        for edge in self._projection_incident_edges(node_type, node_id):
             identity = (
                 edge.edge_type,
                 edge.from_type,
@@ -1167,18 +1227,27 @@ class _GrafxTransactionScope:
         worse than a scope that refuses to commit at all.
         """
 
+        if not isinstance(apply_error, Exception):
+            # A process signal is discarded first and re-raised as the SAME object.  Trying
+            # to restore would run more writes under an interrupt, and leaving the discard
+            # to __aexit__ would let a later rollback error replace the very signal the
+            # caller has to see.
+            cleanup_error = self._abort_after_staged_failure(operation=operation)
+            if cleanup_error is not None:
+                try:
+                    apply_error.add_note(_PROJECTION_SCOPE_DISCARD_UNPROVEN)
+                except BaseException:  # noqa: BLE001, S110 - diagnostic only
+                    pass
+                raise apply_error from cleanup_error
+            raise apply_error
         try:
             self.compensate_projection_active_set(receipt)
         except BaseException as restore_error:
             cleanup_error = self._abort_after_staged_failure(operation=operation)
-            message = (
-                "Projection reconciliation failed and its complete before-image could not "
-                "be restored; the staged scope was discarded."
-            )
+            message = _PROJECTION_RESTORE_FAILED_SCOPE_DISCARDED
             if cleanup_error is not None:
                 message = (
-                    "Projection reconciliation failed, its complete before-image could not "
-                    "be restored, and the staged scope could not be proven discarded "
+                    f"{_PROJECTION_RESTORE_FAILED_SCOPE_UNCONFIRMED} "
                     f"({type(cleanup_error).__name__})."
                 )
             # Chained from the restore failure, not from the cleanup one: why the board could
@@ -1275,7 +1344,10 @@ class _GrafxTransactionScope:
                     operation="delete_projection_dependency_edge",
                 )
             self._confirm_dependency_cleanup(intent, physical, properties, stale)
-        except BaseException as apply_error:
+        # Blind on purpose: a process signal raised after a staged write must reach the
+        # recovery path below.  Narrowing this to Exception is what would let an interrupt
+        # walk away from a half-applied active set and let it commit.
+        except BaseException as apply_error:  # noqa: BLE001 - signals must reach recovery
             self._projection_apply_failure(
                 receipt,
                 apply_error,
@@ -1319,7 +1391,9 @@ class _GrafxTransactionScope:
         intent: ProjectionActiveSetIntent,
         physical: str,
         properties: tuple[str, ...],
-    ) -> tuple[tuple[tuple[str, str, str, str, str, str], ProjectionEdgeBeforeImage], ...]:
+    ) -> tuple[
+        tuple[tuple[str, str, str, str, str, str], ProjectionEdgeBeforeImage], ...
+    ]:
         """Every Spec dependency edge this projection owns, with its complete payload.
 
         Ownership is the rule prefix: a ``precedes`` edge into the same root that was written
@@ -1470,8 +1544,7 @@ class _GrafxTransactionScope:
             current is None
             or str(current.attrs.get("revocation_reason") or "") != ""
             or Counter(
-                self._projection_edge_signature(edge)
-                for edge in current.incident_edges
+                self._projection_edge_signature(edge) for edge in current.incident_edges
             )
             != expected_edges
         ):
@@ -1496,7 +1569,10 @@ class _GrafxTransactionScope:
         below, which can and does fail if the statement did not take.
         """
 
-        self._projection_delete_incident_edges(before_image)
+        self._projection_delete_incident_edges(
+            before_image.node_type,
+            before_image.node_id,
+        )
         result = self._mutation(
             f"MATCH (n:{before_image.node_type}) WHERE n.id = $node_id "
             "SET n.revocation_reason = $reason RETURN n.id",
@@ -1619,7 +1695,10 @@ class _GrafxTransactionScope:
                     self._restore_projection_member(before_image)
                     continue
                 self._remove_projection_member(before_image)
-        except BaseException as apply_error:
+        # Blind on purpose: a process signal raised after a staged write must reach the
+        # recovery path below.  Narrowing this to Exception is what would let an interrupt
+        # walk away from a half-applied active set and let it commit.
+        except BaseException as apply_error:  # noqa: BLE001 - signals must reach recovery
             self._projection_apply_failure(
                 receipt,
                 apply_error,
@@ -1664,24 +1743,107 @@ class _GrafxTransactionScope:
             before_images.append(snapshot)
         return tuple(before_images)
 
+    def _restore_projection_node(
+        self,
+        before_image: ProjectionNodeBeforeImage,
+    ) -> None:
+        """Put one recorded payload back, refusing a node that is no longer there."""
+
+        if not self.replace_node_payload(
+            before_image.node_type,
+            before_image.node_id,
+            dict(before_image.attrs),
+            source_session_id=before_image.source_session_id,
+        ):
+            # False means the node is gone.  It is not a quieter kind of success: the
+            # before-image cannot be restored onto a node that is not there.
+            raise GraphError(
+                _PROJECTION_COMPENSATION_NODE_MISSING,
+                details={
+                    "backend": "okto_grafx",
+                    "board_id": self._board_id,
+                    "node_type": before_image.node_type,
+                    "code": "projection_active_set_compensation_node_missing",
+                },
+            )
+
+    def _confirm_projection_restoration(
+        self,
+        before_image: ProjectionNodeBeforeImage,
+    ) -> None:
+        """Read the node back and refuse to call it restored unless it matches exactly."""
+
+        current = self._projection_node_before_image(
+            before_image.node_type,
+            before_image.node_id,
+        )
+        recorded_edges = Counter(
+            self._projection_edge_signature(edge)
+            for edge in before_image.incident_edges
+        )
+        if (
+            current is None
+            or current.attrs != before_image.attrs
+            # attrs excludes the identity columns on purpose, so the session that owns the
+            # node is only compared if it is compared here.
+            or current.source_session_id != before_image.source_session_id
+            or Counter(
+                self._projection_edge_signature(edge) for edge in current.incident_edges
+            )
+            != recorded_edges
+        ):
+            raise GraphError(
+                _PROJECTION_COMPENSATION_UNCONFIRMED,
+                details={
+                    "backend": "okto_grafx",
+                    "board_id": self._board_id,
+                    "node_type": before_image.node_type,
+                    "code": "projection_active_set_compensation_unconfirmed",
+                },
+            )
+
     def compensate_projection_active_set(
         self,
         receipt: ProjectionActiveSetReceipt,
     ) -> None:
-        """Restore every projection node and relationship exactly as it was recorded."""
+        """Restore every projection node and relationship exactly, or discard the scope.
+
+        Exact means the recorded multiset and nothing else, so each node's incident edges are
+        cleared before the recorded ones go back: an extra edge that appeared after the
+        failure would otherwise survive a restore that reports itself complete.  Once the
+        first write lands, a failure here can no longer be reported and walked away from --
+        a partially compensated board must not be allowed to commit.
+        """
 
         if not receipt.before_images and not receipt.edge_before_images:
             return
         self._fence("compensate_projection_active_set")
-        for before_image in receipt.before_images:
-            self.replace_node_payload(
-                before_image.node_type,
-                before_image.node_id,
-                dict(before_image.attrs),
-                source_session_id=before_image.source_session_id,
-            )
-            self._projection_restore_edges(before_image.incident_edges)
-        self._projection_restore_edges(receipt.edge_before_images)
+        applied = False
+        try:
+            for before_image in receipt.before_images:
+                # Marked before the call, not after it: a write that raises may still have
+                # landed, and a flag set on the return path would never be set for exactly
+                # the failure that damages the board.
+                applied = True
+                self._restore_projection_node(before_image)
+                self._projection_delete_incident_edges(
+                    before_image.node_type,
+                    before_image.node_id,
+                )
+                self._projection_restore_edges(before_image.incident_edges)
+                self._confirm_projection_restoration(before_image)
+            if receipt.edge_before_images:
+                applied = True
+                self._projection_restore_edges(receipt.edge_before_images)
+        except BaseException as primary_error:
+            if applied:
+                cleanup_error = self._abort_after_staged_failure(
+                    operation="compensate_projection_active_set",
+                )
+                if cleanup_error is not None:
+                    # Cleanup never displaces the reason compensation failed.
+                    raise primary_error from cleanup_error
+            raise
 
     def find_node_types(self, node_id: str) -> tuple[str, ...]:
         found: list[str] = []
