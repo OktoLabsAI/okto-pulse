@@ -1,9 +1,9 @@
 """M-PULSE-1 contract tests for the real Okto Grafx transaction provider.
 
-This first batch deliberately stops at the structured ``GraphTransactionScope``
-surface.  Generic statements remain unavailable until M-PULSE-2, while schema
-bootstrap, Spec lineage and projection active-set reconciliation belong to later
-milestones.
+The structured ``GraphTransactionScope`` surface is complete in M-PULSE-1, with
+Spec lineage and projection active-set reconciliation covered by dedicated suites.
+Generic statements remain unavailable until M-PULSE-2, while schema bootstrap
+belongs to M-PULSE-3.
 """
 
 from __future__ import annotations

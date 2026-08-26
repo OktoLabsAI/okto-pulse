@@ -295,7 +295,7 @@ slot — and unfilled slots **fail closed** (`R-P2-03A-D`), never silently defau
 | Core interface | Community adapter |
 |---|---|
 | `SemanticGraphStore` | `CommunityKuzuGraphStore` |
-| `GraphTransactionScope` / `GraphTransaction` | `CommunityKuzuGraphTransaction` — owns the atomic tombstone swap and `TombstoneReplacementCompensationError` |
+| `GraphTransactionScope` / `GraphTransaction` | `CommunityKuzuGraphTransaction` — active adapter; `CommunityGrafxGraphTransaction` — complete M-PULSE-1 structured surface, not registered in production composition pending the complete provider bundle |
 | `GraphLifecycle` · `GraphRuntimeStore` · `GraphSchemaManager` | `CommunityKuzuGraphLifecycle` · `CommunityKuzuGraphRuntimeStore` · `CommunityKuzuGraphSchemaManager` |
 | `CypherExecutor` | `CommunityKuzuCypherExecutor` |
 | `GlobalDiscoveryRuntime` | `CommunityGlobalDiscoveryRuntime` |
