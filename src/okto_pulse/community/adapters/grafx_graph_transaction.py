@@ -25,9 +25,16 @@ from okto_pulse.core.kg.interfaces.graph_transaction import (
     ProjectionActiveSetIntent,
     ProjectionActiveSetReceipt,
     SpecLineageEdgeSnapshot,
+    SpecLineageReconciliationError,
     SpecLineageReconciliationReceipt,
+    is_spec_lineage_rule_id,
 )
-from okto_pulse.core.kg.schema_contract import MULTI_REL_TYPES, NODE_TYPES, REL_TYPES
+from okto_pulse.core.kg.schema_contract import (
+    EDGE_METADATA_COLUMNS,
+    MULTI_REL_TYPES,
+    NODE_TYPES,
+    REL_TYPES,
+)
 
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
 
@@ -56,6 +63,14 @@ _SOURCE_DELETED_REQUIRED_PROPERTIES = frozenset(
         "source_span_quote",
         "source_content_hash",
         "embedding",
+    }
+)
+_SPEC_LINEAGE_REQUIRED_PROPERTIES = frozenset(
+    {
+        "confidence",
+        "created_by_session_id",
+        "created_at",
+        *(name for name, _data_type in EDGE_METADATA_COLUMNS),
     }
 )
 
@@ -837,22 +852,629 @@ class _GrafxTransactionScope:
         target_id: str,
         attrs: dict[str, Any],
     ) -> SpecLineageReconciliationReceipt:
-        del source_id, target_id, attrs
-        self._unsupported("spec_lineage_reconciliation")
+        """Stage one exclusive deterministic parent or leave no staged effect."""
+
+        self._fence("reconcile_spec_lineage_parent")
+        rule_id = str(attrs.get("rule_id") or "")
+        if not is_spec_lineage_rule_id(rule_id):
+            raise SpecLineageReconciliationError(
+                "spec_lineage_rule_out_of_scope",
+                f"Rule {rule_id!r} is outside the exclusive Spec-parent family.",
+            )
+        physical, definition, properties = self._spec_lineage_schema()
+        write_attrs, normalized_target_attrs = self._materialize_spec_lineage_attrs(
+            definition,
+            properties,
+            attrs,
+        )
+        endpoints = self._query(
+            "MATCH (source:Entity), (target:Entity) "
+            "WHERE source.id = $source_id AND target.id = $target_id "
+            "RETURN source.id, target.id LIMIT 1",
+            {"source_id": source_id, "target_id": target_id},
+            operation="reconcile_spec_lineage_endpoints",
+        )
+        if not endpoints.rows:
+            raise SpecLineageReconciliationError(
+                "spec_lineage_endpoint_not_found",
+                "Both the Spec source and its new parent must exist as Entity "
+                "nodes before lineage reconciliation.",
+            )
+
+        existing = self._spec_lineage_edges(
+            source_id,
+            physical=physical,
+            properties=properties,
+        )
+        exact_exists = any(
+            edge.target_id == target_id and edge.rule_id == rule_id for edge in existing
+        )
+        old_edges = tuple(
+            edge
+            for edge in existing
+            if is_spec_lineage_rule_id(edge.rule_id)
+            and not (edge.target_id == target_id and edge.rule_id == rule_id)
+        )
+        ambiguous_legacy_edges = self._ambiguous_spec_lineage_edges(existing)
+        receipt = SpecLineageReconciliationReceipt(
+            source_id=source_id,
+            target_id=target_id,
+            target_rule_id=rule_id,
+            target_attrs=dict(attrs),
+            new_edge_created=False,
+            removed_edges=old_edges,
+            ambiguous_legacy_edges=ambiguous_legacy_edges,
+        )
+        mutation_started = False
+        try:
+            if not exact_exists:
+                self._fence("create_spec_lineage_parent")
+                mutation_started = True
+                created = self._create_spec_lineage_edge(
+                    source_id,
+                    target_id,
+                    write_attrs,
+                    physical=physical,
+                )
+                receipt = SpecLineageReconciliationReceipt(
+                    source_id=source_id,
+                    target_id=target_id,
+                    target_rule_id=rule_id,
+                    target_attrs=dict(attrs),
+                    new_edge_created=created,
+                    removed_edges=old_edges,
+                    ambiguous_legacy_edges=ambiguous_legacy_edges,
+                )
+                expected = SpecLineageEdgeSnapshot(
+                    source_id=source_id,
+                    target_id=target_id,
+                    rule_id=rule_id,
+                    attrs=normalized_target_attrs,
+                )
+                replacement = tuple(
+                    edge
+                    for edge in self._spec_lineage_edges(
+                        source_id,
+                        physical=physical,
+                        properties=properties,
+                    )
+                    if edge.target_id == target_id and edge.rule_id == rule_id
+                )
+                if (
+                    not created
+                    or len(replacement) != 1
+                    or self._spec_lineage_edge_signature(replacement[0])
+                    != self._spec_lineage_edge_signature(expected)
+                ):
+                    raise SpecLineageReconciliationError(
+                        "spec_lineage_new_parent_create_failed",
+                        "The new Spec-parent edge could not be confirmed exactly; "
+                        "the Grafx transaction was discarded.",
+                        receipt=receipt,
+                    )
+
+            for snapshot in old_edges:
+                self._fence("delete_spec_lineage_edge")
+                mutation_started = True
+                self._delete_spec_lineage_edge(
+                    snapshot,
+                    physical=physical,
+                    properties=properties,
+                )
+
+            remaining_old = tuple(
+                edge
+                for edge in self._spec_lineage_edges(
+                    source_id,
+                    physical=physical,
+                    properties=properties,
+                )
+                if is_spec_lineage_rule_id(edge.rule_id)
+                and not (edge.target_id == target_id and edge.rule_id == rule_id)
+            )
+            if remaining_old:
+                raise SpecLineageReconciliationError(
+                    "spec_lineage_old_parent_cleanup_failed",
+                    "Grafx could not confirm removal of every old Spec parent; "
+                    "the transaction was discarded.",
+                    receipt=receipt,
+                )
+        except BaseException as primary_error:
+            if mutation_started:
+                self._abort_spec_lineage_failure(
+                    primary_error,
+                    receipt=receipt,
+                    operation="reconcile_spec_lineage_parent",
+                )
+            raise
+        return receipt
 
     def compensate_spec_lineage_parent(
         self,
         receipt: SpecLineageReconciliationReceipt,
     ) -> None:
-        del receipt
-        self._unsupported("spec_lineage_compensation")
+        """Restore every before-image before removing this attempt's replacement."""
+
+        self._fence("compensate_spec_lineage_parent")
+        physical, definition, properties = self._spec_lineage_schema()
+        normalized_removed = tuple(
+            self._normalize_spec_lineage_snapshot(
+                snapshot,
+                definition=definition,
+                properties=properties,
+            )
+            for snapshot in receipt.removed_edges
+        )
+        identities = [self._spec_lineage_identity(edge) for edge in normalized_removed]
+        if (
+            any(edge.source_id != receipt.source_id for edge in normalized_removed)
+            or any(
+                not is_spec_lineage_rule_id(edge.rule_id) for edge in normalized_removed
+            )
+            or len(identities) != len(set(identities))
+        ):
+            raise SpecLineageReconciliationError(
+                "spec_lineage_edge_metadata_inconsistent",
+                "The Spec-lineage receipt contains an ambiguous before-image.",
+                receipt=receipt,
+            )
+
+        replacement: SpecLineageEdgeSnapshot | None = None
+        if receipt.new_edge_created:
+            if receipt.target_id is None or receipt.target_rule_id is None:
+                raise SpecLineageReconciliationError(
+                    "spec_lineage_edge_metadata_inconsistent",
+                    "The Spec-lineage receipt omits its created replacement identity.",
+                    receipt=receipt,
+                )
+            replacement = self._normalize_spec_lineage_snapshot(
+                SpecLineageEdgeSnapshot(
+                    source_id=receipt.source_id,
+                    target_id=receipt.target_id,
+                    rule_id=receipt.target_rule_id,
+                    attrs=dict(receipt.target_attrs),
+                ),
+                definition=definition,
+                properties=properties,
+            )
+            if not is_spec_lineage_rule_id(
+                replacement.rule_id
+            ) or self._spec_lineage_identity(replacement) in set(identities):
+                raise SpecLineageReconciliationError(
+                    "spec_lineage_edge_metadata_inconsistent",
+                    "The Spec-lineage replacement identity conflicts with its "
+                    "before-image.",
+                    receipt=receipt,
+                )
+
+        current = self._spec_lineage_edges(
+            receipt.source_id,
+            physical=physical,
+            properties=properties,
+        )
+        current_by_identity = {
+            self._spec_lineage_identity(edge): edge for edge in current
+        }
+        missing: list[SpecLineageEdgeSnapshot] = []
+        for snapshot in normalized_removed:
+            existing = current_by_identity.get(self._spec_lineage_identity(snapshot))
+            if existing is None:
+                missing.append(snapshot)
+            elif self._spec_lineage_edge_signature(existing) != (
+                self._spec_lineage_edge_signature(snapshot)
+            ):
+                raise SpecLineageReconciliationError(
+                    "spec_lineage_edge_metadata_inconsistent",
+                    "An old Spec parent exists with different metadata; "
+                    "automatic compensation was refused.",
+                    receipt=receipt,
+                )
+
+        replacement_exists = False
+        if replacement is not None:
+            existing_replacement = current_by_identity.get(
+                self._spec_lineage_identity(replacement)
+            )
+            if existing_replacement is not None:
+                if self._spec_lineage_edge_signature(existing_replacement) != (
+                    self._spec_lineage_edge_signature(replacement)
+                ):
+                    raise SpecLineageReconciliationError(
+                        "spec_lineage_edge_metadata_inconsistent",
+                        "The replacement Spec parent exists with different metadata; "
+                        "automatic compensation was refused.",
+                        receipt=receipt,
+                    )
+                replacement_exists = True
+
+        for node_id in dict.fromkeys(
+            node_id
+            for snapshot in missing
+            for node_id in (snapshot.source_id, snapshot.target_id)
+        ):
+            if not self._entity_exists(node_id):
+                raise SpecLineageReconciliationError(
+                    "spec_lineage_old_parent_restore_failed",
+                    f"Entity {node_id!r} required by the before-image is missing.",
+                    receipt=receipt,
+                )
+
+        mutation_started = False
+        try:
+            for snapshot in missing:
+                write_attrs, _normalized = self._materialize_spec_lineage_attrs(
+                    definition,
+                    properties,
+                    snapshot.attrs,
+                )
+                self._fence("restore_spec_lineage_edge")
+                mutation_started = True
+                created = self._create_spec_lineage_edge(
+                    snapshot.source_id,
+                    snapshot.target_id,
+                    write_attrs,
+                    physical=physical,
+                )
+                restored = tuple(
+                    edge
+                    for edge in self._spec_lineage_edges(
+                        snapshot.source_id,
+                        physical=physical,
+                        properties=properties,
+                    )
+                    if self._spec_lineage_identity(edge)
+                    == self._spec_lineage_identity(snapshot)
+                )
+                if (
+                    not created
+                    or len(restored) != 1
+                    or self._spec_lineage_edge_signature(restored[0])
+                    != self._spec_lineage_edge_signature(snapshot)
+                ):
+                    raise SpecLineageReconciliationError(
+                        "spec_lineage_old_parent_restore_failed",
+                        "An old Spec parent could not be restored exactly; the "
+                        "Grafx transaction was discarded.",
+                        receipt=receipt,
+                    )
+
+            if replacement is not None and replacement_exists:
+                self._fence("remove_compensated_spec_lineage_replacement")
+                mutation_started = True
+                try:
+                    self._delete_spec_lineage_edge(
+                        replacement,
+                        physical=physical,
+                        properties=properties,
+                    )
+                except SpecLineageReconciliationError as exc:
+                    raise SpecLineageReconciliationError(
+                        "spec_lineage_replacement_remove_failed",
+                        "The replacement Spec parent could not be removed exactly; "
+                        "the Grafx transaction was discarded.",
+                        receipt=receipt,
+                    ) from exc
+        except BaseException as primary_error:
+            if mutation_started:
+                self._abort_spec_lineage_failure(
+                    primary_error,
+                    receipt=receipt,
+                    operation="compensate_spec_lineage_parent",
+                )
+            raise
 
     def clear_spec_lineage_parent(
         self,
         source_id: str,
     ) -> SpecLineageReconciliationReceipt:
-        del source_id
-        self._unsupported("spec_lineage_clear")
+        """Stage removal of explicit deterministic parents, preserving all others."""
+
+        self._fence("clear_spec_lineage_parent")
+        physical, _definition, properties = self._spec_lineage_schema()
+        source = self._query(
+            "MATCH (source:Entity) WHERE source.id = $source_id "
+            "RETURN source.id LIMIT 1",
+            {"source_id": source_id},
+            operation="clear_spec_lineage_source",
+        )
+        if not source.rows:
+            raise SpecLineageReconciliationError(
+                "spec_lineage_source_not_found",
+                "The Spec source must exist as an Entity node before lineage "
+                "can be cleared.",
+            )
+
+        existing = self._spec_lineage_edges(
+            source_id,
+            physical=physical,
+            properties=properties,
+        )
+        old_edges = tuple(
+            edge for edge in existing if is_spec_lineage_rule_id(edge.rule_id)
+        )
+        receipt = SpecLineageReconciliationReceipt(
+            source_id=source_id,
+            target_id=None,
+            target_rule_id=None,
+            target_attrs={},
+            new_edge_created=False,
+            removed_edges=old_edges,
+            ambiguous_legacy_edges=self._ambiguous_spec_lineage_edges(existing),
+        )
+        mutation_started = False
+        try:
+            for snapshot in old_edges:
+                self._fence("delete_spec_lineage_edge")
+                mutation_started = True
+                self._delete_spec_lineage_edge(
+                    snapshot,
+                    physical=physical,
+                    properties=properties,
+                )
+            if any(
+                is_spec_lineage_rule_id(edge.rule_id)
+                for edge in self._spec_lineage_edges(
+                    source_id,
+                    physical=physical,
+                    properties=properties,
+                )
+            ):
+                raise SpecLineageReconciliationError(
+                    "spec_lineage_clear_failed",
+                    "Grafx could not confirm removal of every deterministic "
+                    "Spec parent; the transaction was discarded.",
+                    receipt=receipt,
+                )
+        except BaseException as primary_error:
+            if mutation_started:
+                self._abort_spec_lineage_failure(
+                    primary_error,
+                    receipt=receipt,
+                    operation="clear_spec_lineage_parent",
+                )
+            raise
+        return receipt
+
+    def _spec_lineage_schema(self) -> tuple[str, Any, tuple[str, ...]]:
+        physical, definition = self._relationship_definition(
+            "belongs_to",
+            "Entity",
+            "Entity",
+        )
+        properties = tuple(column.name for column in definition.columns[2:])
+        missing = _SPEC_LINEAGE_REQUIRED_PROPERTIES.difference(properties)
+        if missing:
+            raise GraphCapabilityUnavailable(
+                f"Grafx relationship table {physical!r} lacks required Spec-lineage "
+                f"properties: {sorted(missing)!r}."
+            )
+        return physical, definition, properties
+
+    def _materialize_spec_lineage_attrs(
+        self,
+        definition: Any,
+        properties: tuple[str, ...],
+        attrs: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        write_attrs = self._coerce_properties(
+            definition,
+            attrs,
+            forbidden=frozenset({"_from", "_to"}),
+        )
+        normalized = {
+            name: _normalize_value(write_attrs.get(name)) for name in properties
+        }
+        return write_attrs, normalized
+
+    def _normalize_spec_lineage_snapshot(
+        self,
+        snapshot: SpecLineageEdgeSnapshot,
+        *,
+        definition: Any,
+        properties: tuple[str, ...],
+    ) -> SpecLineageEdgeSnapshot:
+        _write_attrs, normalized = self._materialize_spec_lineage_attrs(
+            definition,
+            properties,
+            snapshot.attrs,
+        )
+        if str(normalized.get("rule_id") or "") != snapshot.rule_id:
+            raise SpecLineageReconciliationError(
+                "spec_lineage_edge_metadata_inconsistent",
+                "A Spec-lineage before-image disagrees with its rule identity.",
+            )
+        return SpecLineageEdgeSnapshot(
+            source_id=snapshot.source_id,
+            target_id=snapshot.target_id,
+            rule_id=snapshot.rule_id,
+            attrs=normalized,
+        )
+
+    @staticmethod
+    def _ambiguous_spec_lineage_edges(
+        edges: tuple[SpecLineageEdgeSnapshot, ...],
+    ) -> int:
+        return sum(
+            1
+            for edge in edges
+            if str(edge.attrs.get("layer") or "") == "legacy"
+            or edge.rule_id in {"", "legacy_pre_v2"}
+        )
+
+    def _entity_exists(self, node_id: str) -> bool:
+        result = self._query(
+            "MATCH (node:Entity) WHERE node.id = $node_id RETURN node.id LIMIT 1",
+            {"node_id": node_id},
+            operation="read_spec_lineage_endpoint",
+        )
+        return bool(result.rows)
+
+    def _create_spec_lineage_edge(
+        self,
+        source_id: str,
+        target_id: str,
+        attrs: Mapping[str, Any],
+        *,
+        physical: str,
+    ) -> bool:
+        bindings = ", ".join(
+            f"{name}: $value_{index}" for index, name in enumerate(attrs)
+        )
+        properties = f" {{{bindings}}}" if bindings else ""
+        params = {
+            "source_id": source_id,
+            "target_id": target_id,
+            **{f"value_{index}": value for index, value in enumerate(attrs.values())},
+        }
+        result = self._query(
+            "MATCH (source:Entity), (target:Entity) "
+            "WHERE source.id = $source_id AND target.id = $target_id "
+            f"CREATE (source)-[:{physical}{properties}]->(target) "
+            "RETURN source.id, target.id",
+            params,
+            operation="create_spec_lineage_edge",
+        )
+        return bool(result.rows)
+
+    def _read_spec_lineage_edges(
+        self,
+        source_id: str,
+        *,
+        physical: str,
+        properties: tuple[str, ...],
+    ) -> tuple[SpecLineageEdgeSnapshot, ...]:
+        projection = ["target.id", *(f"r.{name}" for name in properties)]
+        result = self._query(
+            f"MATCH (source:Entity)-[r:{physical}]->(target:Entity) "
+            "WHERE source.id = $source_id "
+            f"RETURN {', '.join(projection)}",
+            {"source_id": source_id},
+            operation="read_spec_lineage_edges",
+        )
+        snapshots: list[SpecLineageEdgeSnapshot] = []
+        for row in result.rows:
+            values = {
+                name: _normalize_value(row[index + 1])
+                for index, name in enumerate(properties)
+            }
+            rule_id = str(values.get("rule_id") or "")
+            snapshots.append(
+                SpecLineageEdgeSnapshot(
+                    source_id=source_id,
+                    target_id=str(row[0]),
+                    rule_id=rule_id,
+                    attrs=values,
+                )
+            )
+        return tuple(snapshots)
+
+    def _spec_lineage_edges(
+        self,
+        source_id: str,
+        *,
+        physical: str,
+        properties: tuple[str, ...],
+    ) -> tuple[SpecLineageEdgeSnapshot, ...]:
+        edges = self._read_spec_lineage_edges(
+            source_id,
+            physical=physical,
+            properties=properties,
+        )
+        identities = Counter(
+            (edge.source_id, edge.target_id, edge.rule_id)
+            for edge in edges
+            if is_spec_lineage_rule_id(edge.rule_id)
+        )
+        if any(count != 1 for count in identities.values()):
+            raise SpecLineageReconciliationError(
+                "spec_lineage_edge_metadata_inconsistent",
+                "The canonical Spec-parent scan exposes more than one edge for "
+                "a deterministic lineage identity; graph repair is required.",
+            )
+        return edges
+
+    @staticmethod
+    def _spec_lineage_identity(
+        snapshot: SpecLineageEdgeSnapshot,
+    ) -> tuple[str, str, str]:
+        return snapshot.source_id, snapshot.target_id, snapshot.rule_id
+
+    @staticmethod
+    def _spec_lineage_edge_signature(
+        snapshot: SpecLineageEdgeSnapshot,
+    ) -> tuple[tuple[str, str, str], ...]:
+        values = {
+            "source_id": snapshot.source_id,
+            "target_id": snapshot.target_id,
+            **snapshot.attrs,
+        }
+        return tuple(
+            (name, type(value).__name__, repr(_normalize_value(value)))
+            for name, value in sorted(values.items())
+        )
+
+    def _delete_spec_lineage_edge(
+        self,
+        snapshot: SpecLineageEdgeSnapshot,
+        *,
+        physical: str,
+        properties: tuple[str, ...],
+    ) -> None:
+        self._query(
+            f"MATCH (source:Entity)-[r:{physical}]->(target:Entity) "
+            "WHERE source.id = $source_id AND target.id = $target_id "
+            "AND r.rule_id = $rule_id DELETE r",
+            {
+                "source_id": snapshot.source_id,
+                "target_id": snapshot.target_id,
+                "rule_id": snapshot.rule_id,
+            },
+            operation="delete_spec_lineage_edge",
+        )
+        if any(
+            self._spec_lineage_identity(edge) == self._spec_lineage_identity(snapshot)
+            for edge in self._spec_lineage_edges(
+                snapshot.source_id,
+                physical=physical,
+                properties=properties,
+            )
+        ):
+            raise SpecLineageReconciliationError(
+                "spec_lineage_edge_delete_unconfirmed",
+                "The exact Spec-parent relationship remained visible after "
+                "DELETE; its replacement was preserved for bounded recovery.",
+            )
+
+    def _abort_spec_lineage_failure(
+        self,
+        primary_error: BaseException,
+        *,
+        receipt: SpecLineageReconciliationReceipt,
+        operation: str,
+    ) -> NoReturn:
+        cleanup_error = self._abort_after_staged_failure(operation=operation)
+        if cleanup_error is None:
+            if isinstance(primary_error, SpecLineageReconciliationError):
+                if primary_error.receipt is None:
+                    primary_error.receipt = receipt
+                primary_error.compensation_applied = True
+                primary_error.preserve_progress = False
+                primary_error.details.update(
+                    {
+                        "backend": "okto_grafx",
+                        "scope_poisoned": True,
+                        "transaction_rolled_back": True,
+                    }
+                )
+            raise primary_error
+        try:
+            primary_error.add_note(
+                "Grafx rollback also failed while discarding staged Spec-lineage "
+                "effects."
+            )
+        except BaseException:  # noqa: BLE001, S110 - diagnostic only
+            pass
+        raise primary_error from cleanup_error
 
     def reconcile_projection_active_set(
         self,
