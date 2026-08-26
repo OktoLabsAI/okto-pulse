@@ -11,6 +11,8 @@ import okto_grafx
 import pytest
 from okto_grafx import Timestamp
 from okto_pulse.core.kg.interfaces.graph_transaction import (
+    ProjectionActiveSetIntent,
+    ProjectionEdgeRef,
     SpecLineageEdgeSnapshot,
 )
 from okto_pulse.core.kg.transaction import TransactionOrchestrator
@@ -31,9 +33,13 @@ OTHER_SOURCE_ID = "other-source"
 IDEATION_RULE = "belongs_to/spec_to_ideation@1.0"
 REFINEMENT_RULE = "belongs_to/spec_to_refinement@1.0"
 REFERENCE_RULE = "belongs_to/spec_reference@1.0"
+OLD_DEPENDENCY_RULE = "precedes/spec_dependency/old"
+NEW_DEPENDENCY_RULE = "precedes/spec_dependency/new"
 
 LOGICAL_RELATIONSHIP = "belongs_to"
 PHYSICAL_RELATIONSHIP = "belongs_to__entity__entity"
+PRECEDES_RELATIONSHIP = "precedes"
+PRECEDES_PHYSICAL_RELATIONSHIP = "precedes__entity__entity"
 CREATED_AT = "2026-08-26T12:00:00.000000Z"
 
 
@@ -54,12 +60,14 @@ class _Harness:
 
 
 def _relationship_table(edge_type: str, from_type: str, to_type: str) -> str:
-    assert (edge_type, from_type, to_type) == (
-        LOGICAL_RELATIONSHIP,
-        "Entity",
-        "Entity",
-    )
-    return PHYSICAL_RELATIONSHIP
+    return {
+        (LOGICAL_RELATIONSHIP, "Entity", "Entity"): PHYSICAL_RELATIONSHIP,
+        (
+            PRECEDES_RELATIONSHIP,
+            "Entity",
+            "Entity",
+        ): PRECEDES_PHYSICAL_RELATIONSHIP,
+    }[(edge_type, from_type, to_type)]
 
 
 @pytest.fixture
@@ -77,6 +85,13 @@ def harness(tmp_path: Path) -> Any:
             "layer STRING, rule_id STRING, created_by STRING, "
             "fallback_reason STRING)"
         )
+        schema.execute(
+            f"CREATE REL TABLE {PRECEDES_PHYSICAL_RELATIONSHIP}("
+            "FROM Entity TO Entity, confidence DOUBLE, "
+            "created_by_session_id STRING, created_at TIMESTAMP, "
+            "layer STRING, rule_id STRING, created_by STRING, "
+            "fallback_reason STRING)"
+        )
 
     fence = _Fence()
 
@@ -89,7 +104,10 @@ def harness(tmp_path: Path) -> Any:
         database_resolver=resolve_database,
         revalidate_fence=fence,
         node_types=("Entity",),
-        relationship_pairs=((LOGICAL_RELATIONSHIP, "Entity", "Entity"),),
+        relationship_pairs=(
+            (LOGICAL_RELATIONSHIP, "Entity", "Entity"),
+            (PRECEDES_RELATIONSHIP, "Entity", "Entity"),
+        ),
         relationship_table_resolver=_relationship_table,
     )
     try:
@@ -126,9 +144,13 @@ def _normalize(value: object) -> object:
     return value
 
 
-def _edge_rows(database: Any) -> tuple[tuple[object, ...], ...]:
+def _edge_rows(
+    database: Any,
+    *,
+    physical_relationship: str = PHYSICAL_RELATIONSHIP,
+) -> tuple[tuple[object, ...], ...]:
     rows = database.execute(
-        f"MATCH (source:Entity)-[r:{PHYSICAL_RELATIONSHIP}]->(target:Entity) "
+        f"MATCH (source:Entity)-[r:{physical_relationship}]->(target:Entity) "
         "RETURN source.id, target.id, r.confidence, "
         "r.created_by_session_id, r.created_at, r.layer, r.rule_id, "
         "r.created_by, r.fallback_reason"
@@ -429,4 +451,116 @@ async def test_orchestrator_compensates_two_lineage_swaps_before_cleanup(
 
     assert _edge_rows(harness.database) == (
         _expected_row(SPEC_ID, OLD_PARENT_ID, old_parent),
+    )
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_replays_projection_receipt_in_a_fresh_scope(
+    harness: _Harness,
+) -> None:
+    """G4-active-set: receipt replay precedes generic session cleanup."""
+
+    await _seed_nodes(harness.provider)
+    old_dependency = _attrs(
+        OLD_DEPENDENCY_RULE,
+        FOREIGN_SESSION_ID,
+        confidence=0.94,
+        created_by="previous-projection",
+    )
+    async with await harness.provider.begin(BOARD_ID) as seed_scope:
+        assert seed_scope.create_edge(
+            PRECEDES_RELATIONSHIP,
+            "Entity",
+            "Entity",
+            OLD_PARENT_ID,
+            SPEC_ID,
+            old_dependency,
+        )
+    before = _edge_rows(
+        harness.database,
+        physical_relationship=PRECEDES_PHYSICAL_RELATIONSHIP,
+    )
+    assert before == (_expected_row(OLD_PARENT_ID, SPEC_ID, old_dependency),)
+
+    new_dependency = _attrs(
+        NEW_DEPENDENCY_RULE,
+        SESSION_ID,
+        confidence=0.95,
+        created_by="current-projection",
+    )
+    apply_scope = await harness.provider.begin(BOARD_ID)
+    async with apply_scope:
+        orchestrator = TransactionOrchestrator(
+            graph_scope=apply_scope,
+            session_id=SESSION_ID,
+            board_id=BOARD_ID,
+        )
+        orchestrator.create_edge(
+            PRECEDES_RELATIONSHIP,
+            OLD_PARENT_ID,
+            SPEC_ID,
+            attrs={
+                key: value
+                for key, value in new_dependency.items()
+                if key != "created_by_session_id"
+            },
+            from_type="Entity",
+            to_type="Entity",
+        )
+        orchestrator.reconcile_projection_active_set(
+            ProjectionActiveSetIntent(
+                owner_type="spec",
+                owner_id=SPEC_ID,
+                namespace="dependencies",
+                owner_node_id=SPEC_ID,
+                active_edges=(
+                    ProjectionEdgeRef(
+                        PRECEDES_RELATIONSHIP,
+                        "Entity",
+                        "Entity",
+                        OLD_PARENT_ID,
+                        SPEC_ID,
+                        NEW_DEPENDENCY_RULE,
+                    ),
+                ),
+            )
+        )
+        records = list(orchestrator.records)
+
+    projection_records = [
+        record for record in records if record.projection_receipt is not None
+    ]
+    assert len(projection_records) == 1
+    receipt = projection_records[0].projection_receipt
+    assert receipt is not None
+    assert len(receipt.edge_before_images) == 1
+    old_before_image = receipt.edge_before_images[0]
+    assert (
+        old_before_image.edge_type,
+        old_before_image.from_id,
+        old_before_image.to_id,
+    ) == (PRECEDES_RELATIONSHIP, OLD_PARENT_ID, SPEC_ID)
+    assert old_before_image.attrs == old_dependency
+    assert _edge_rows(
+        harness.database,
+        physical_relationship=PRECEDES_PHYSICAL_RELATIONSHIP,
+    ) == (_expected_row(OLD_PARENT_ID, SPEC_ID, new_dependency),)
+
+    compensation_scope = await harness.provider.begin(BOARD_ID)
+    assert compensation_scope is not apply_scope
+    async with compensation_scope:
+        replay = TransactionOrchestrator(
+            graph_scope=compensation_scope,
+            session_id=SESSION_ID,
+            board_id=BOARD_ID,
+        )
+        replay.records = records
+        await replay.compensate()
+
+    assert (
+        _edge_rows(
+            harness.database,
+            physical_relationship=PRECEDES_PHYSICAL_RELATIONSHIP,
+        )
+        == before
     )
