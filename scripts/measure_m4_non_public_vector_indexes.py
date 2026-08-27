@@ -33,7 +33,7 @@ _INSERT = (
 )
 
 
-def _load_dependencies(grafx_repo: Path, core_repo: Path) -> None:
+def _load_dependencies(grafx_repo: Path, core_repo: Path) -> dict[str, str]:
     """Load the exact source trees named on the command line, or refuse."""
 
     pulse_repo = Path(__file__).resolve().parents[1]
@@ -64,6 +64,7 @@ def _load_dependencies(grafx_repo: Path, core_repo: Path) -> None:
     global vector_bytes_f64
 
     import okto_grafx as loaded_grafx  # noqa: PLC0415
+    import bench.recall_corpus as loaded_recall_corpus  # noqa: PLC0415
     from bench.recall_corpus import (  # noqa: PLC0415
         generate_vectors as loaded_generate_vectors,
     )
@@ -76,16 +77,33 @@ def _load_dependencies(grafx_repo: Path, core_repo: Path) -> None:
         vector_bytes_f64 as loaded_bytes_f64,
     )  # noqa: PLC0415
     from okto_grafx import Timestamp as LoadedTimestamp  # noqa: PLC0415
+    from okto_pulse.core.kg import (
+        schema_contract as loaded_core_contract,
+    )  # noqa: PLC0415
     from okto_pulse.community.adapters.grafx_schema_bootstrap import (  # noqa: PLC0415
         ensure_current_grafx_board_schema as loaded_bootstrap,
     )
 
     loaded_grafx_path = Path(loaded_grafx.__file__).resolve()
+    loaded_corpus_path = Path(loaded_recall_corpus.__file__).resolve()
+    loaded_core_path = Path(loaded_core_contract.__file__).resolve()
+    loaded_bootstrap_path = Path(
+        sys.modules[loaded_bootstrap.__module__].__file__
+    ).resolve()
     expected_grafx_src = (grafx_repo / "src").resolve()
-    if expected_grafx_src not in loaded_grafx_path.parents:
-        raise RuntimeError(
-            "okto_grafx resolved outside --grafx-repo: " f"{loaded_grafx_path}"
-        )
+    expected_core_src = (core_repo / "src").resolve()
+    expected_pulse_src = (pulse_repo / "src").resolve()
+    expected_grafx_root = grafx_repo.resolve()
+    for label, observed, expected in (
+        ("okto_grafx", loaded_grafx_path, expected_grafx_src),
+        ("bench.recall_corpus", loaded_corpus_path, expected_grafx_root),
+        ("okto_pulse.core", loaded_core_path, expected_core_src),
+        ("okto_pulse.community", loaded_bootstrap_path, expected_pulse_src),
+    ):
+        if expected not in observed.parents:
+            raise RuntimeError(
+                f"{label} resolved outside its explicit source tree: {observed}"
+            )
 
     okto_grafx = loaded_grafx
     Timestamp = LoadedTimestamp
@@ -95,6 +113,12 @@ def _load_dependencies(grafx_repo: Path, core_repo: Path) -> None:
     sha256_hex = loaded_sha256_hex
     vector_bytes_f32 = loaded_bytes_f32
     vector_bytes_f64 = loaded_bytes_f64
+    return {
+        "okto_grafx": str(loaded_grafx_path),
+        "recall_corpus": str(loaded_corpus_path),
+        "pulse_core": str(loaded_core_path),
+        "pulse_community": str(loaded_bootstrap_path),
+    }
 
 
 def _git_state(root: Path) -> dict[str, object]:
@@ -259,7 +283,14 @@ def _measure_one(
     }
 
 
-def run(database_path: Path, *, rows: int, seed: int, batch_size: int) -> dict:
+def run(
+    database_path: Path,
+    *,
+    rows: int,
+    seed: int,
+    batch_size: int,
+    dependency_paths: dict[str, str],
+) -> dict:
     root = database_path.resolve()
     if root.exists():
         raise ValueError(f"database path already exists; refusing overwrite: {root}")
@@ -352,7 +383,7 @@ def run(database_path: Path, *, rows: int, seed: int, batch_size: int) -> dict:
         "source": {
             "pulse": _git_state(pulse_root),
             "grafx": _git_state(grafx_root),
-            "okto_grafx_module": str(Path(okto_grafx.__file__).resolve()),
+            "resolved_dependencies": dependency_paths,
         },
         "runtime": {
             "python": sys.version,
@@ -366,14 +397,28 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--grafx-repo", required=True, type=Path)
     parser.add_argument("--core-repo", required=True, type=Path)
-    parser.add_argument("--database", required=True, type=Path)
-    parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--database", type=Path)
+    parser.add_argument("--out", type=Path)
     parser.add_argument("--rows", type=int, default=DEFAULT_ROWS)
     parser.add_argument("--seed", type=int, default=CORPUS_SEED)
     parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="validate explicit source-tree resolution without creating a database",
+    )
     arguments = parser.parse_args(argv)
     if arguments.rows < 1 or arguments.batch_size < 1:
         parser.error("--rows and --batch-size must be positive")
+
+    grafx_repo = arguments.grafx_repo.resolve()
+    core_repo = arguments.core_repo.resolve()
+    dependency_paths = _load_dependencies(grafx_repo, core_repo)
+    if arguments.check_only:
+        print(json.dumps(dependency_paths, indent=2, sort_keys=True))
+        return 0
+    if arguments.database is None or arguments.out is None:
+        parser.error("--database and --out are required unless --check-only is used")
 
     output = arguments.out.resolve()
     database = arguments.database.resolve()
@@ -382,15 +427,12 @@ def main(argv: list[str] | None = None) -> int:
     if output == database or database in output.parents:
         parser.error("--out must be outside --database")
 
-    grafx_repo = arguments.grafx_repo.resolve()
-    core_repo = arguments.core_repo.resolve()
-    _load_dependencies(grafx_repo, core_repo)
-
     evidence = run(
         database,
         rows=arguments.rows,
         seed=arguments.seed,
         batch_size=arguments.batch_size,
+        dependency_paths=dependency_paths,
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
