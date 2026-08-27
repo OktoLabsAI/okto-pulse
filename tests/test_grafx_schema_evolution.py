@@ -1252,6 +1252,141 @@ def test_error_boundary_always_has_stable_bounded_context() -> None:
     assert "secret payload" not in repr(mapped.details)
 
 
+def test_path_exists_permission_failure_is_typed_before_candidate_access(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "source"
+    candidate_path = tmp_path / "candidate"
+    lock_path = candidate_path.with_name(candidate_path.name + ".rebuild.lock")
+    source = okto_grafx.connect(source_path)
+    opened: list[Path] = []
+
+    def denied_exists(_path: Path) -> bool:
+        raise PermissionError("injected path probe refusal")
+
+    def unexpected_open(
+        path: Path,
+        _identity: Any,
+        *,
+        read_only: bool,
+        phase: str = "candidate_open",
+    ) -> Database:
+        del read_only, phase
+        opened.append(path)
+        raise AssertionError("candidate must not be opened after path validation fails")
+
+    try:
+        monkeypatch.setattr(Path, "exists", denied_exists)
+        monkeypatch.setattr(evolution, "_open", unexpected_open)
+        with pytest.raises(GraphError) as captured:
+            evolution.rebuild_grafx_schema_candidate(source, candidate_path)
+    finally:
+        source.close()
+        monkeypatch.undo()
+
+    assert captured.value.details["phase"] == "path_validation"
+    assert captured.value.details["reason"] == "backend_failure_path_validation"
+    assert "injected path probe refusal" not in repr(captured.value.details)
+    assert opened == []
+    assert not candidate_path.exists()
+    assert not lock_path.exists()
+
+
+PAGE_FAULT_CASES: tuple[tuple[str, str], ...] = (
+    *(("node", node) for node, _space, _searchable in SOURCE_NODE_SPACES),
+    *(("relationship", table) for table in SOURCE_RELATIONSHIP_TABLES),
+)
+
+
+class _PageCommitFaultTransaction:
+    def __init__(self, owner: _PageCommitFaultCandidate) -> None:
+        self.owner = owner
+        self.active = True
+        self.table = ""
+
+    def execute(self, text: str, _parameters: dict[str, Any]) -> SimpleNamespace:
+        if self.owner.kind == "node":
+            self.table = text.split("CREATE (n:", 1)[1].split(" ", 1)[0]
+            statistics = {"rows_created": 1}
+        else:
+            self.table = text.split("-[r:", 1)[1].split("]", 1)[0].split(" ", 1)[0]
+            statistics = {"relationships_created": 1}
+        self.owner.executed.append(self.table)
+        return SimpleNamespace(rows=(("created",),), statistics=statistics)
+
+    def commit(self) -> SimpleNamespace:
+        if self.table == self.owner.fault_table:
+            raise RuntimeError("injected page commit failure")
+        self.active = False
+        self.owner.committed.append(self.table)
+        return SimpleNamespace(durable=True, wrote=True)
+
+    def rollback(self) -> None:
+        self.active = False
+        self.owner.rolled_back.append(self.table)
+
+
+class _PageCommitFaultCandidate:
+    def __init__(self, kind: str, fault_table: str) -> None:
+        self.kind = kind
+        self.fault_table = fault_table
+        self.executed: list[str] = []
+        self.committed: list[str] = []
+        self.rolled_back: list[str] = []
+
+    def begin(self, _mode: str) -> _PageCommitFaultTransaction:
+        return _PageCommitFaultTransaction(self)
+
+
+@pytest.mark.parametrize(("kind", "fault_table"), PAGE_FAULT_CASES)
+def test_every_node_and_relationship_page_commit_fault_stops_the_prefix(
+    kind: str,
+    fault_table: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = _PageCommitFaultCandidate(kind, fault_table)
+    if kind == "node":
+        ordered_tables = tuple(node for node, _space, _searchable in SOURCE_NODE_SPACES)
+        plans = tuple(
+            evolution._NodePlan(table, ("id",), (f"{table}-id",))
+            for table in ordered_tables
+        )
+        monkeypatch.setattr(evolution, "_space_id", lambda *_args, **_kwargs: 1)
+        operation = lambda: evolution._write_nodes(  # noqa: E731
+            candidate,
+            plans,
+            batch_size=1,  # type: ignore[arg-type]
+        )
+    else:
+        tables = evolution.PREDECESSOR_RELATIONSHIP_TABLES
+        ordered_tables = SOURCE_RELATIONSHIP_TABLES
+        plans = tuple(
+            evolution._RelationshipPlan(
+                table=table,
+                from_key=_fixture_node_id(str(table.from_table), "vector"),
+                to_key=_fixture_node_id(str(table.to_table), "vector"),
+                properties=(),
+            )
+            for table in tables
+        )
+        operation = lambda: evolution._write_relationships(  # noqa: E731
+            candidate,
+            plans,
+            batch_size=1,  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(GraphError) as captured:
+        operation()
+
+    position = ordered_tables.index(fault_table)
+    assert candidate.executed == [*ordered_tables[:position], fault_table]
+    assert candidate.committed == list(ordered_tables[:position])
+    assert candidate.rolled_back == [fault_table]
+    assert captured.value.details["phase"] == "candidate_batch_commit"
+    assert captured.value.details["table"] == fault_table
+
+
 class _FakeLock:
     instances: list[_FakeLock] = []
 
@@ -1295,6 +1430,164 @@ def _patch_public_flow(
     monkeypatch.setattr(evolution, "_read_snapshot", lambda *_args, **_kwargs: snapshot)
     monkeypatch.setattr(evolution, "_require_indexes", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(evolution, "_verify_clean", lambda *_args, **_kwargs: None)
+
+
+PUBLIC_FAULT_SITES: tuple[str, ...] = (
+    "before_initialization",
+    "after_initialization",
+    "hot_checkpoint",
+    "hot_verify",
+    "terminal_rescan",
+    "stamp_commit",
+    "terminal_checkpoint",
+    "cold_reopen",
+    "cold_verify",
+)
+
+
+@pytest.mark.parametrize("fault_site", PUBLIC_FAULT_SITES)
+def test_each_non_page_fault_boundary_never_returns_a_partial_candidate(
+    fault_site: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    snapshot = _snapshot()
+    target_counts = evolution._expected_relationship_counts(
+        snapshot.relationship_counts
+    )
+    _patch_public_flow(monkeypatch, snapshot)
+    database_uuid = b"f" * 16
+    build = _FakeCandidate(database_uuid, empty=True)
+    recovery = _FakeCandidate(database_uuid, empty=False)
+    cold = _FakeCandidate(database_uuid, empty=False)
+    returned_handles: list[_FakeCandidate] = []
+    needs_recovery = fault_site in {"stamp_commit", "terminal_checkpoint"}
+
+    def open_candidate(
+        _path: Path,
+        _identity: Any,
+        *,
+        read_only: bool,
+        phase: str = "candidate_open",
+    ) -> _FakeCandidate:
+        del read_only
+        if phase == "candidate_build_open":
+            returned_handles.append(build)
+            return build
+        if phase == "candidate_ambiguous_recovery_open" and needs_recovery:
+            returned_handles.append(recovery)
+            return recovery
+        if phase == "candidate_cold_open":
+            if fault_site == "cold_reopen":
+                raise evolution._divergence(
+                    "injected_cold_reopen", phase="candidate_cold_open"
+                )
+            returned_handles.append(cold)
+            return cold
+        raise AssertionError(f"unexpected open phase {phase}")
+
+    monkeypatch.setattr(evolution, "_open", open_candidate)
+    initialized: list[str] = []
+
+    def initialize(*_args: object) -> None:
+        if fault_site == "before_initialization":
+            raise evolution._divergence(
+                "injected_before_initialization",
+                phase="candidate_initialize_begin",
+            )
+        initialized.append(evolution.BUILD_MARKER)
+        build.state = evolution.BUILD_MARKER
+
+    def write_nodes(*_args: object) -> None:
+        if fault_site == "after_initialization":
+            raise evolution._divergence(
+                "injected_after_initialization",
+                phase="candidate_write_nodes",
+            )
+
+    monkeypatch.setattr(evolution, "_initialise_candidate", initialize)
+    monkeypatch.setattr(evolution, "_write_nodes", write_nodes)
+    monkeypatch.setattr(evolution, "_write_relationships", lambda *_args: None)
+    monkeypatch.setattr(
+        evolution,
+        "_certify",
+        lambda *_args, **_kwargs: target_counts,
+    )
+
+    original_checkpoint = build.checkpoint
+
+    def build_checkpoint() -> None:
+        original_checkpoint()
+        if fault_site == "hot_checkpoint" and build.checkpoint_calls == 1:
+            raise evolution._divergence(
+                "injected_hot_checkpoint", phase="candidate_hot_checkpoint"
+            )
+        if fault_site == "terminal_checkpoint" and build.checkpoint_calls == 2:
+            raise evolution._divergence(
+                "injected_terminal_checkpoint",
+                phase="candidate_terminal_checkpoint",
+            )
+
+    build.checkpoint = build_checkpoint  # type: ignore[method-assign]
+    verify_calls = 0
+
+    def verify(*_args: object, **_kwargs: object) -> None:
+        nonlocal verify_calls
+        verify_calls += 1
+        if fault_site == "hot_verify" and verify_calls == 1:
+            raise evolution._divergence(
+                "injected_hot_verify", phase="candidate_hot_verify"
+            )
+        if fault_site == "cold_verify" and verify_calls == 2:
+            raise evolution._divergence(
+                "injected_cold_verify", phase="candidate_cold_verify"
+            )
+
+    monkeypatch.setattr(evolution, "_verify_clean", verify)
+
+    def stamp(*_args: object, **_kwargs: object) -> None:
+        if fault_site == "terminal_rescan":
+            raise evolution._divergence(
+                "injected_terminal_rescan", phase="candidate_terminal_certify"
+            )
+        if fault_site == "stamp_commit":
+            raise evolution._StampOutcomeAmbiguous("injected stamp ambiguity")
+        build.state = evolution.TARGET_SCHEMA_VERSION
+
+    monkeypatch.setattr(evolution, "_rescan_and_stamp", stamp)
+
+    def cold_metadata(_handle: object) -> evolution._BoardMeta:
+        version = (
+            evolution.BUILD_MARKER
+            if fault_site in {"stamp_commit", "terminal_checkpoint"}
+            else evolution.TARGET_SCHEMA_VERSION
+        )
+        return evolution._BoardMeta(
+            snapshot.meta.board_id,
+            version,
+            snapshot.meta.bootstrapped_at,
+            None,
+            None,
+        )
+
+    monkeypatch.setattr(evolution, "_read_board_meta", cold_metadata)
+    source = okto_grafx.connect(":memory:")
+    try:
+        with pytest.raises(GraphError):
+            evolution.rebuild_grafx_schema_candidate(
+                source, tmp_path / f"candidate-{fault_site}"
+            )
+    finally:
+        source.close()
+
+    if fault_site == "before_initialization":
+        assert initialized == []
+        assert not hasattr(build, "state")
+    else:
+        assert initialized == [evolution.BUILD_MARKER]
+    assert build.close_calls == 1
+    assert all(handle.close_calls == 1 for handle in returned_handles)
+    assert _FakeLock.instances[-1].released is True
 
 
 def test_noop_return_closes_probe_and_releases_path_lock(
@@ -1351,6 +1644,38 @@ def test_noop_return_closes_probe_and_releases_path_lock(
     assert probe.close_complete is True
     assert _FakeLock.instances[-1].acquired is True
     assert _FakeLock.instances[-1].released is True
+
+
+def test_unproved_probe_close_retains_the_candidate_path_lock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    snapshot = _snapshot()
+    _patch_public_flow(monkeypatch, snapshot)
+    candidate_path = tmp_path / "existing-incomplete-close"
+    candidate_path.mkdir()
+    (candidate_path / "grafx.meta").write_bytes(b"observational sentinel")
+    probe = _FakeCandidate(b"q" * 16, empty=True)
+
+    def incomplete_close() -> None:
+        probe.close_calls += 1
+
+    probe.close = incomplete_close  # type: ignore[method-assign]
+    monkeypatch.setattr(evolution, "_open", lambda *_args, **_kwargs: probe)
+    retained_before = len(evolution._RETAINED_CANDIDATE_LOCKS)
+    source = okto_grafx.connect(":memory:")
+    try:
+        with pytest.raises(GraphCapabilityUnavailable) as captured:
+            evolution.rebuild_grafx_schema_candidate(source, candidate_path)
+        retained = evolution._RETAINED_CANDIDATE_LOCKS[retained_before:]
+        assert captured.value.details["phase"] == "close_probe"
+        assert captured.value.details["reason"] == "candidate_close_incomplete_probe"
+        assert probe.close_calls == 1
+        assert retained == [_FakeLock.instances[-1]]
+        assert _FakeLock.instances[-1].acquired is True
+        assert _FakeLock.instances[-1].released is False
+    finally:
+        source.close()
+        del evolution._RETAINED_CANDIDATE_LOCKS[retained_before:]
 
 
 def test_ambiguous_stamp_uses_same_invocation_writable_recovery_then_cold_proof(
@@ -1444,6 +1769,96 @@ def test_lexical_aliases_contend_on_the_same_kernel_lock(tmp_path: Path) -> None
         "phase": "lock_acquire",
         "reason": "candidate_locked",
     }
+
+
+def test_concurrent_writer_does_not_enter_the_fixed_source_snapshot_or_gain_reader_writes(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "concurrent-source"
+    reader = okto_grafx.connect(
+        source_path,
+        page_size=512,
+        partitions_per_table=1,
+    )
+    writer: Database | None = None
+    transaction: Any | None = None
+    try:
+        with reader.begin("write") as schema:
+            schema.execute("CREATE NODE TABLE Entity(id STRING, PRIMARY KEY(id))")
+        with reader.begin("write") as seed:
+            seed.execute("CREATE (n:Entity {id: 'e1'})")
+            seed.execute("CREATE (n:Entity {id: 'e2'})")
+        reader.checkpoint()
+        writer = okto_grafx.connect(
+            source_path,
+            page_size=512,
+            partitions_per_table=1,
+        )
+        transaction = reader.begin("read")
+        snapshot_lsn = transaction.snapshot.read_lsn
+        bytes_before_writer = _durable_bytes(source_path)
+        writer_report: Any | None = None
+        bytes_after_writer: tuple[tuple[str, bytes], ...] | None = None
+        writer_published_lsn: int | None = None
+
+        class CommitWriterAfterFirstPage:
+            calls = 0
+
+            def execute(self, text: str, parameters: dict[str, Any]) -> Any:
+                nonlocal writer_report, bytes_after_writer, writer_published_lsn
+                result = transaction.execute(text, parameters)
+                self.calls += 1
+                if self.calls == 1:
+                    concurrent = writer.begin("write")
+                    try:
+                        concurrent.execute("CREATE (n:Entity {id: 'e0'})")
+                        writer_report = concurrent.commit()
+                    except BaseException:
+                        if concurrent.active:
+                            concurrent.rollback()
+                        raise
+                    writer_published_lsn = writer.transactions.published_lsn()
+                    bytes_after_writer = _durable_bytes(source_path)
+                return result
+
+        table = SimpleNamespace(
+            name="Entity",
+            primary_key="id",
+            columns=(SimpleNamespace(name="id"),),
+        )
+        wrapped = CommitWriterAfterFirstPage()
+        plans, counts = evolution._read_nodes(
+            wrapped,
+            1,
+            (table,),  # type: ignore[arg-type]
+        )
+        assert transaction.active
+        transaction.rollback()
+
+        assert wrapped.calls == 3
+        assert counts == (("Entity", 2),)
+        assert tuple(plan.values[0] for plan in plans) == ("e1", "e2")
+        assert writer_report is not None
+        assert writer_report.durable is True and writer_report.wrote is True
+        assert writer_published_lsn is not None
+        assert snapshot_lsn < writer_published_lsn
+        assert writer.execute("MATCH (n:Entity) RETURN n.id ORDER BY n.id").rows == (
+            ("e0",),
+            ("e1",),
+            ("e2",),
+        )
+        assert bytes_after_writer is not None
+        assert bytes_after_writer != bytes_before_writer
+        # Everything after this baseline was the migrator's remaining page reads
+        # and snapshot rollback. Reader/control files are intentionally excluded.
+        assert _durable_bytes(source_path) == bytes_after_writer
+        assert writer.transactions.published_lsn() == writer_published_lsn
+    finally:
+        if transaction is not None and transaction.active:
+            transaction.rollback()
+        if writer is not None:
+            writer.close()
+        reader.close()
 
 
 def _source_node_ddl(node: str, space: str) -> str:

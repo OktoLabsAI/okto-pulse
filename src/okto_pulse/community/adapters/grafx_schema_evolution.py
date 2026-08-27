@@ -1633,7 +1633,11 @@ def rebuild_grafx_schema_candidate(
         source_root = _canonical_path(source_path, "source")
         if _overlaps(source_root, candidate_root):
             raise _divergence("candidate_overlaps_source", phase="path_validation")
-        if candidate_root.exists() and source_root.exists():
+        paths_exist = _backend_call(
+            lambda: candidate_root.exists() and source_root.exists(),
+            "path_validation",
+        )
+        if paths_exist:
             try:
                 if os.path.samefile(candidate_root, source_root):
                     raise _divergence("candidate_is_source", phase="path_validation")
