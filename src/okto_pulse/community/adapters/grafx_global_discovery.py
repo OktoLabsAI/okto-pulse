@@ -801,7 +801,12 @@ def search_grafx_decision_digests(
                 exact=False,
                 min_similarity=threshold,
             )
-            falls_back = len(rows) < wanted_k + 1 or len(approximate) < wanted_k
+            # The bounded result needs one *unique eligible* witness beyond the
+            # public cutoff.  A full physical page can still collapse to exactly
+            # ``top_k`` identities after relationship-join deduplication or
+            # thresholding; accepting it would leave the logical-id tie winner
+            # unproved.
+            falls_back = len(rows) < wanted_k + 1 or len(approximate) <= wanted_k
             if len(approximate) > wanted_k:
                 falls_back = falls_back or math.isclose(
                     float(approximate[wanted_k - 1]["similarity"]),

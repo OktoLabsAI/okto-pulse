@@ -231,6 +231,15 @@ def test_global_bounded_search_falls_back_on_zero_tail_tie() -> None:
             digest_id="a-first",
             embedding=_vector(-1.0),
         )
+        # Fill the physical top_k+1 page with the same digest twice.  After
+        # logical identity deduplication there is no unique cutoff witness, so
+        # the bounded path must use the complete exact order.
+        with database.begin("write") as transaction:
+            transaction.execute(
+                "MATCH (b:Board {board_id: 'board'}), "
+                "(d:DecisionDigest {id: 'z-last'}) "
+                "CREATE (b)-[:CONTAINS_DECISION]->(d)"
+            )
 
         result = search_grafx_decision_digests(
             database,
@@ -242,6 +251,17 @@ def test_global_bounded_search_falls_back_on_zero_tail_tie() -> None:
         )
 
         assert [(row["digest_id"], row["similarity"]) for row in result] == [
+            ("a-first", 0.0)
+        ]
+        zero_query = search_grafx_decision_digests(
+            database,
+            _vector(0.0),
+            board_ids=("board",),
+            graph_layer="canonical",
+            top_k=1,
+            min_similarity=0.0,
+        )
+        assert [(row["digest_id"], row["similarity"]) for row in zero_query] == [
             ("a-first", 0.0)
         ]
 
