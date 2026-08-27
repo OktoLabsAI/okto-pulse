@@ -1,0 +1,31 @@
+{
+  "artifact": "docs/evidence/m4-grafx-full-recall.verdict.json",
+  "artifact_bytes": 965,
+  "command": "python -m bench.harness.recall_worker --profile full --gt auto --out D:\\Projetos\\Techridy\\okto-pulse-grafx-mpulse4-recall\\docs\\evidence\\m4-grafx-full-recall.verdict.json",
+  "duration_seconds": 2793.110294,
+  "ended_at_utc": "2026-08-27T21:19:13.7570366Z",
+  "grafx": {
+    "blobs": {
+      "bench/harness/recall_worker.py": "07c37ab27ff2fad7b6c0856262734f1e4b26ed88",
+      "bench/recall_corpus.py": "8f27c09e8ce907061770dd645ce51ac501adf6a3",
+      "src/okto_grafx/domain/vector/hnsw.py": "6bc68bcfa81e6203a1fa2bc0f75af2d84f68cef9",
+      "src/okto_grafx/engine/vector_engine.py": "cc49436d159ee2223c4879d860a1654913ebd88c"
+    },
+    "clean": true,
+    "path": "D:\\Projetos\\Techridy\\okto-grafx-mpulse4-rebuild",
+    "sha": "caa1f869e9c6840f2f4cfc288c4e98eacfa0ba69",
+    "upstream": "origin/milestone/mpulse4-vector-rebuild",
+    "upstream_sha": "caa1f869e9c6840f2f4cfc288c4e98eacfa0ba69"
+  },
+  "measurement_gaps": {
+    "exact_fallback_count": "not recorded by the frozen verdict schema",
+    "underfill_count": "not recorded by the frozen verdict schema"
+  },
+  "pulse": {
+    "origin": "https://github.com/OktoLabsAI/okto-pulse.git",
+    "publication_branch": "milestone/grafx-mpulse4-vector-recall",
+    "sha_before_evidence": "2c2ced79cfe3e8135808dd7cf21615b977f79439"
+  },
+  "started_at_utc": "2026-08-27T20:32:40.6467428Z",
+  "status": "PASS"
+}
