@@ -8,8 +8,10 @@ production default for single-node / community deployments.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
+from okto_pulse.community.adapters.graph_error_mapping import map_graph_error
 from okto_pulse.core.kg.interfaces.graph_store import GraphCapabilities, QueryFilters
 from okto_pulse.community.adapters.kg_runtime import (
     MULTI_REL_TYPES,
@@ -28,6 +30,8 @@ from okto_pulse.core.kg import cypher_templates as tpl
 logger = logging.getLogger("okto_pulse.kg.kuzu_graph_store")
 
 _TEMPORAL_PROPERTIES = frozenset({"created_at", "last_attested_at", "superseded_at"})
+_VECTOR_SCORE_ABS_TOL = 1e-9
+_VECTOR_SCORE_REL_TOL = 1e-9
 
 
 def _property_binding(name: str, value: Any) -> str:
@@ -45,6 +49,28 @@ def _cosine_similarity(left: list[float], right: list[float]) -> float:
     if left_norm == 0.0 or right_norm == 0.0:
         return 0.0
     return dot / (left_norm * right_norm)
+
+
+def _normalized_vector_score(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _vector_scores_tied(left: float, right: float) -> bool:
+    return math.isclose(
+        left,
+        right,
+        abs_tol=_VECTOR_SCORE_ABS_TOL,
+        rel_tol=_VECTOR_SCORE_REL_TOL,
+    )
+
+
+def _sort_board_vector_hits(hits: list[dict[str, Any]]) -> None:
+    hits.sort(
+        key=lambda item: (
+            -float(item["similarity"]),
+            str(item["node_id"]),
+        )
+    )
 
 
 def _materialize_native_rows(result: Any) -> list[list[Any]]:
@@ -634,6 +660,8 @@ class CommunityKuzuGraphStore:
             return []
         if graph_layer not in {"canonical", "working", "all"}:
             raise ValueError("invalid_graph_layer")
+        if top_k <= 0:
+            return []
         # Tombstones are excluded even when historical superseded nodes are
         # requested, so always over-fetch enough candidates to backfill rows
         # removed by either visibility rule.
@@ -664,7 +692,7 @@ class CommunityKuzuGraphStore:
                 exc,
             )
 
-        hits: list[dict[str, Any]] = []
+        indexed_hits: list[dict[str, Any]] = []
         for row in indexed_rows:
             if not _row_is_visible_in_active_reads(
                 row,
@@ -675,10 +703,10 @@ class CommunityKuzuGraphStore:
                 continue
             if graph_layer != "all" and row[5] != graph_layer:
                 continue
-            similarity = max(0.0, min(1.0, 1.0 - float(row[3])))
+            similarity = _normalized_vector_score(1.0 - float(row[3]))
             if similarity < min_similarity:
                 continue
-            hits.append(
+            indexed_hits.append(
                 {
                     "node_id": row[0],
                     "node_type": node_type,
@@ -691,11 +719,29 @@ class CommunityKuzuGraphStore:
                     "similarity": similarity,
                 }
             )
-            if len(hits) >= top_k:
-                return hits
 
-        if hits:
-            return hits
+        _sort_board_vector_hits(indexed_hits)
+        page_underfilled = len(indexed_rows) < fetch_k
+        cutoff_tie = len(indexed_hits) > top_k and _vector_scores_tied(
+            float(indexed_hits[top_k - 1]["similarity"]),
+            float(indexed_hits[top_k]["similarity"]),
+        )
+        page_boundary_tie = False
+        if len(indexed_rows) >= fetch_k and len(indexed_hits) >= top_k:
+            page_boundary_score = min(
+                _normalized_vector_score(1.0 - float(row[3])) for row in indexed_rows
+            )
+            page_boundary_tie = _vector_scores_tied(
+                float(indexed_hits[top_k - 1]["similarity"]),
+                page_boundary_score,
+            )
+        if (
+            len(indexed_hits) >= top_k
+            and not page_underfilled
+            and not cutoff_tie
+            and not page_boundary_tie
+        ):
+            return indexed_hits[:top_k]
 
         logger.info(
             "kg.vector_index.fallback board=%s type=%s",
@@ -706,10 +752,16 @@ class CommunityKuzuGraphStore:
             with open_board_connection(board_id) as (_db, conn):
                 result = conn.execute(
                     f"MATCH (n:{node_type}) WHERE n.embedding IS NOT NULL "
+                    f"AND {tpl.superseded_filter_clause('n')} "
                     f"AND {tpl.active_read_filter_clause('n')} "
+                    f"AND {tpl.layer_filter_clause('n')} "
                     "RETURN n.id, n.title, n.source_artifact_ref, n.embedding, "
                     "n.superseded_by, n.graph_layer, n.content, n.context, "
-                    "n.justification, n.revocation_reason, n.kind_of LIMIT 500"
+                    "n.justification, n.revocation_reason, n.kind_of",
+                    {
+                        "include_superseded": include_superseded,
+                        "graph_layer": graph_layer,
+                    },
                 )
                 fallback_rows = _materialize_native_rows(result)
         except Exception as exc:
@@ -721,8 +773,9 @@ class CommunityKuzuGraphStore:
                 node_type,
                 exc,
             )
-            return []
+            raise map_graph_error(exc, operation="board_vector_exact_search") from exc
 
+        exact_hits: list[dict[str, Any]] = []
         for row in fallback_rows:
             if not _row_is_visible_in_active_reads(
                 row,
@@ -736,12 +789,11 @@ class CommunityKuzuGraphStore:
             embedding = row[3]
             if not embedding or len(embedding) != len(query_vec):
                 continue
-            similarity = max(
-                0.0,
-                min(1.0, _cosine_similarity(query_vec, embedding)),
+            similarity = _normalized_vector_score(
+                _cosine_similarity(query_vec, embedding)
             )
             if similarity >= min_similarity:
-                hits.append(
+                exact_hits.append(
                     {
                         "node_id": row[0],
                         "node_type": node_type,
@@ -754,8 +806,8 @@ class CommunityKuzuGraphStore:
                         "similarity": similarity,
                     }
                 )
-        hits.sort(key=lambda item: item["similarity"], reverse=True)
-        return hits[:top_k]
+        _sort_board_vector_hits(exact_hits)
+        return exact_hits[:top_k]
 
     def find_active_by_source_ref(
         self,

@@ -10,6 +10,7 @@ import gc
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -67,6 +68,8 @@ _VECTOR_USE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _DIGEST_REPAIR_MAX_PRIMARY_DRAINS = 32
+_VECTOR_SCORE_ABS_TOL = 1e-9
+_VECTOR_SCORE_REL_TOL = 1e-9
 _PRIVACY_SNAPSHOT_VERSION = 3
 _PRIVACY_ROW_WIDTHS = {
     "boards": 8,
@@ -106,6 +109,53 @@ def _vector_index_already_exists_error(exc: BaseException) -> bool:
 
     normalized = str(exc).lower()
     return "already exists" in normalized and "index" in normalized
+
+
+def _normalized_vector_score(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _vector_scores_tied(left: float, right: float) -> bool:
+    return math.isclose(
+        left,
+        right,
+        abs_tol=_VECTOR_SCORE_ABS_TOL,
+        rel_tol=_VECTOR_SCORE_REL_TOL,
+    )
+
+
+def _sort_global_vector_hits(hits: list[dict[str, Any]]) -> None:
+    hits.sort(
+        key=lambda item: (
+            -float(item["similarity"]),
+            str(item["board_id"]),
+            str(item["digest_id"]),
+        )
+    )
+
+
+def _vectors_equal(stored: Any, replacement: list[float]) -> bool:
+    if stored is None:
+        return False
+    try:
+        return tuple(float(value) for value in stored) == tuple(
+            float(value) for value in replacement
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _native_rows(
+    connection: Any,
+    statement: str,
+    params: dict[str, Any] | None = None,
+) -> tuple[tuple[Any, ...], ...]:
+    native_result = (
+        connection.execute(statement, params)
+        if params
+        else connection.execute(statement)
+    )
+    return _materialize(native_result).rows
 
 
 class _LifecycleReadWriteGate:
@@ -1265,6 +1315,47 @@ class CommunityGlobalDiscoveryRuntime:
                 except Exception:
                     pass
 
+    def _run_indexed_vector_replacement(
+        self,
+        *,
+        operation: str,
+        mutation: Callable[[Any], None],
+    ) -> None:
+        """Run one delete+insert vector replacement as an atomic native UoW."""
+
+        self.require_write_token(operation=operation)
+        with ladybug_writer_scope(scope="_global", phase=operation):
+            with self._lifecycle.exclusive():
+                self._ensure_database_open_with_writer_lease()
+            with self._lifecycle.shared():
+                native_scope = None
+                transaction_open = False
+                try:
+                    _db, native_scope = self._open_native(load_vector_extension=True)
+                    _native_rows(native_scope, "BEGIN TRANSACTION")
+                    transaction_open = True
+                    mutation(native_scope)
+                    _native_rows(native_scope, "COMMIT")
+                    transaction_open = False
+                except Exception as exc:
+                    if native_scope is not None and transaction_open:
+                        try:
+                            _native_rows(native_scope, "ROLLBACK")
+                        except Exception as rollback_exc:
+                            logger.error(
+                                "global_discovery.vector_replacement_rollback_failed "
+                                "operation=%s err=%s",
+                                operation,
+                                rollback_exc,
+                            )
+                    raise map_graph_error(exc, operation=operation) from exc
+                finally:
+                    if native_scope is not None:
+                        try:
+                            native_scope.close()
+                        except Exception:
+                            pass
+
     def search_decision_digests(
         self,
         query_vector: list[float],
@@ -1277,10 +1368,18 @@ class CommunityGlobalDiscoveryRuntime:
     ) -> list[dict[str, Any]]:
         """Run indexed or exhaustive semantic search behind the graph port."""
 
+        if graph_layer not in {"canonical", "working", "all"}:
+            raise ValueError("invalid_graph_layer")
         if not board_ids or top_k <= 0:
             return []
 
         if not exhaustive:
+            from okto_pulse.core.kg.scoring import DECAY_REORDER_POOL_MULTIPLIER
+
+            search_k = max(
+                top_k + 1,
+                top_k * DECAY_REORDER_POOL_MULTIPLIER,
+            )
             try:
                 result = self.execute(
                     "CALL QUERY_VECTOR_INDEX("
@@ -1297,14 +1396,14 @@ class CommunityGlobalDiscoveryRuntime:
                     "ORDER BY distance ASC LIMIT $search_k",
                     {
                         "vec": query_vector,
-                        "search_k": top_k,
+                        "search_k": search_k,
                         "boards": list(board_ids),
                         "graph_layer": graph_layer,
                     },
                 )
                 hits: list[dict[str, Any]] = []
                 for row in result.rows:
-                    similarity = max(0.0, min(1.0, 1.0 - float(row[7])))
+                    similarity = _normalized_vector_score(1.0 - float(row[7]))
                     if similarity >= min_similarity:
                         hits.append(
                             {
@@ -1318,7 +1417,28 @@ class CommunityGlobalDiscoveryRuntime:
                                 "similarity": similarity,
                             }
                         )
-                if hits:
+                _sort_global_vector_hits(hits)
+                page_underfilled = len(result.rows) < search_k
+                cutoff_tie = len(hits) > top_k and _vector_scores_tied(
+                    float(hits[top_k - 1]["similarity"]),
+                    float(hits[top_k]["similarity"]),
+                )
+                page_boundary_tie = False
+                if len(result.rows) >= search_k and len(hits) >= top_k:
+                    page_boundary_score = min(
+                        _normalized_vector_score(1.0 - float(row[7]))
+                        for row in result.rows
+                    )
+                    page_boundary_tie = _vector_scores_tied(
+                        float(hits[top_k - 1]["similarity"]),
+                        page_boundary_score,
+                    )
+                if (
+                    len(hits) >= top_k
+                    and not page_underfilled
+                    and not cutoff_tie
+                    and not page_boundary_tie
+                ):
                     return hits[:top_k]
             except Exception as exc:
                 logger.debug("global_discovery.index_search_failed err=%s", exc)
@@ -1331,12 +1451,12 @@ class CommunityGlobalDiscoveryRuntime:
                 f"AND {tpl.layer_filter_clause('d')} "
                 "RETURN b.board_id, d.id, d.original_node_id, d.title, "
                 "d.one_line_summary, d.node_type, "
-                f"{tpl.layer_label_projection('d')}, d.embedding LIMIT 500",
+                f"{tpl.layer_label_projection('d')}, d.embedding",
                 {"boards": list(board_ids), "graph_layer": graph_layer},
             )
         except Exception as exc:
-            logger.debug("global_discovery.exhaustive_search_failed err=%s", exc)
-            return []
+            logger.warning("global_discovery.exact_search_failed err=%s", exc)
+            raise
 
         query_norm = sum(value * value for value in query_vector) ** 0.5 or 1.0
         scored: list[dict[str, Any]] = []
@@ -1346,7 +1466,7 @@ class CommunityGlobalDiscoveryRuntime:
                 continue
             dot = sum(a * b for a, b in zip(query_vector, embedding))
             embedding_norm = sum(value * value for value in embedding) ** 0.5 or 1.0
-            similarity = max(0.0, min(1.0, dot / (query_norm * embedding_norm)))
+            similarity = _normalized_vector_score(dot / (query_norm * embedding_norm))
             if similarity < min_similarity:
                 continue
             scored.append(
@@ -1361,7 +1481,7 @@ class CommunityGlobalDiscoveryRuntime:
                     "similarity": similarity,
                 }
             )
-        scored.sort(key=lambda item: item["similarity"], reverse=True)
+        _sort_global_vector_hits(scored)
         return scored[:top_k]
 
     def list_schema_objects(self) -> tuple[str, ...]:
@@ -1405,20 +1525,53 @@ class CommunityGlobalDiscoveryRuntime:
         synced_at: str,
     ) -> None:
         existing = self.execute(
-            "MATCH (b:Board {board_id: $board_id}) RETURN b.board_id",
+            "MATCH (b:Board {board_id: $board_id}) "
+            "RETURN b.board_id, b.name, b.summary, "
+            "b.topic_count, b.entity_count",
             {"board_id": board_id},
         )
         if existing.rows:
-            self.execute(
-                "MATCH (b:Board {board_id: $board_id}) "
-                "SET b.decision_count = $decision_count, "
-                "b.last_sync_at = timestamp($synced_at)",
-                {
-                    "board_id": board_id,
-                    "decision_count": decision_count,
-                    "synced_at": synced_at,
-                },
+            stored_vector = self.execute(
+                "MATCH (b:Board {board_id: $board_id}) " "RETURN b.summary_embedding",
+                {"board_id": board_id},
             )
+            stored_embedding = stored_vector.rows[0][0] if stored_vector.rows else None
+            if _vectors_equal(stored_embedding, summary_embedding):
+                self.execute(
+                    "MATCH (b:Board {board_id: $board_id}) "
+                    "SET b.decision_count = $decision_count, "
+                    "b.last_sync_at = timestamp($synced_at)",
+                    {
+                        "board_id": board_id,
+                        "decision_count": decision_count,
+                        "synced_at": synced_at,
+                    },
+                )
+            else:
+                topic_count = (
+                    int(existing.rows[0][3] or 0) if len(existing.rows[0]) > 3 else 0
+                )
+                entity_count = (
+                    int(existing.rows[0][4] or 0) if len(existing.rows[0]) > 4 else 0
+                )
+                self._replace_indexed_board_summary(
+                    board_id=board_id,
+                    name=(
+                        str(existing.rows[0][1] or "")
+                        if len(existing.rows[0]) > 1
+                        else name
+                    ),
+                    summary=(
+                        str(existing.rows[0][2] or "")
+                        if len(existing.rows[0]) > 2
+                        else summary
+                    ),
+                    summary_embedding=summary_embedding,
+                    topic_count=topic_count,
+                    entity_count=entity_count,
+                    decision_count=decision_count,
+                    synced_at=synced_at,
+                )
             return
         self.execute(
             "CREATE (b:Board {"
@@ -1434,6 +1587,102 @@ class CommunityGlobalDiscoveryRuntime:
                 "decision_count": decision_count,
                 "synced_at": synced_at,
             },
+        )
+
+    def _replace_indexed_board_summary(
+        self,
+        *,
+        board_id: str,
+        name: str,
+        summary: str,
+        summary_embedding: list[float],
+        topic_count: int,
+        entity_count: int,
+        decision_count: int,
+        synced_at: str,
+    ) -> None:
+        params = {
+            "board_id": board_id,
+            "name": name,
+            "summary": summary,
+            "embedding": summary_embedding,
+            "topic_count": topic_count,
+            "entity_count": entity_count,
+            "decision_count": decision_count,
+            "synced_at": synced_at,
+        }
+
+        def _mutation(native_scope: Any) -> None:
+            relation_targets = {
+                "HAS_TOPIC": (
+                    "Topic",
+                    _native_rows(
+                        native_scope,
+                        "MATCH (b:Board {board_id: $board_id})-"
+                        "[:HAS_TOPIC]->(target:Topic) RETURN target.id",
+                        params,
+                    ),
+                ),
+                "MENTIONS_ENTITY": (
+                    "Entity",
+                    _native_rows(
+                        native_scope,
+                        "MATCH (b:Board {board_id: $board_id})-"
+                        "[:MENTIONS_ENTITY]->(target:Entity) RETURN target.id",
+                        params,
+                    ),
+                ),
+                "CONTAINS_DECISION": (
+                    "DecisionDigest",
+                    _native_rows(
+                        native_scope,
+                        "MATCH (b:Board {board_id: $board_id})-"
+                        "[:CONTAINS_DECISION]->(target:DecisionDigest) "
+                        "RETURN target.id",
+                        params,
+                    ),
+                ),
+            }
+            _native_rows(
+                native_scope,
+                "MATCH (b:Board {board_id: $board_id}) DETACH DELETE b",
+                params,
+            )
+            created = _native_rows(
+                native_scope,
+                "CREATE (b:Board {"
+                "board_id: $board_id, name: $name, summary: $summary, "
+                "summary_embedding: $embedding, topic_count: $topic_count, "
+                "entity_count: $entity_count, decision_count: $decision_count, "
+                "last_sync_at: timestamp($synced_at)}) "
+                "RETURN b.summary_embedding",
+                params,
+            )
+            if not created or not _vectors_equal(created[0][0], summary_embedding):
+                raise RuntimeError(
+                    "global_discovery.board_vector_replacement_unverified"
+                )
+            for relation, (target_type, rows) in relation_targets.items():
+                for row in rows:
+                    if not row or row[0] is None:
+                        continue
+                    linked = _native_rows(
+                        native_scope,
+                        "MATCH (b:Board {board_id: $board_id}), "
+                        f"(target:{target_type} {{id: $target_id}}) "
+                        f"CREATE (b)-[link:{relation}]->(target) "
+                        "RETURN count(link)",
+                        {**params, "target_id": row[0]},
+                    )
+                    if linked != ((1,),):
+                        raise RuntimeError(
+                            "global_discovery.board_vector_relationship_restore_"
+                            f"failed:{relation}:{row[0]}"
+                        )
+
+        self._run_indexed_vector_replacement(
+            operation="replace_indexed_board_summary",
+            mutation=_mutation,
         )
 
     def upsert_decision_digest(
@@ -1506,6 +1755,7 @@ class CommunityGlobalDiscoveryRuntime:
             "summary": summary,
             "node_type": node_type,
             "graph_layer": graph_layer,
+            "embedding": embedding,
         }
         existing_ids = [str(row[0]) for row in existing.rows if row and row[0]]
         canonical_identity_is_unique = (
@@ -1534,21 +1784,50 @@ class CommunityGlobalDiscoveryRuntime:
             )
             return "updated"
         if existing.rows:
-            try:
-                self.execute(
-                    "MATCH (d:DecisionDigest) "
-                    "WHERE d.board_id = $board_id "
-                    "AND d.original_node_id = $original_node_id "
-                    "SET d.board_id = $board_id, "
-                    "d.original_node_id = $original_node_id, d.title = $title, "
-                    "d.one_line_summary = $summary, d.node_type = $node_type, "
-                    "d.graph_layer = $graph_layer, d.source_revoked = false",
-                    values,
-                )
-            except Exception as exc:
-                if not _is_duplicate_primary_key_error(exc):
-                    raise
-                self._replace_and_verify_decision_digest_identity(
+            stored_vector = self.execute(
+                "MATCH (d:DecisionDigest) "
+                "WHERE d.board_id = $board_id "
+                "AND d.original_node_id = $original_node_id "
+                "RETURN d.embedding",
+                {
+                    "board_id": board_id,
+                    "original_node_id": original_node_id,
+                },
+            )
+            stored_embedding = stored_vector.rows[0][0] if stored_vector.rows else None
+            if _vectors_equal(stored_embedding, embedding):
+                try:
+                    self.execute(
+                        "MATCH (d:DecisionDigest) "
+                        "WHERE d.board_id = $board_id "
+                        "AND d.original_node_id = $original_node_id "
+                        "SET d.board_id = $board_id, "
+                        "d.original_node_id = $original_node_id, "
+                        "d.title = $title, "
+                        "d.one_line_summary = $summary, "
+                        "d.node_type = $node_type, "
+                        "d.graph_layer = $graph_layer, "
+                        "d.source_revoked = false",
+                        values,
+                    )
+                except Exception as exc:
+                    if not _is_duplicate_primary_key_error(exc):
+                        raise
+                    self._replace_and_verify_decision_digest_identity(
+                        digest_id=digest_id,
+                        board_id=board_id,
+                        original_node_id=original_node_id,
+                        title=title,
+                        summary=summary,
+                        node_type=node_type,
+                        graph_layer=graph_layer,
+                        embedding=embedding,
+                        created_at=created_at,
+                        _allow_missing_duplicate_pk_recovery=True,
+                    )
+                    return "updated"
+            else:
+                self._replace_indexed_decision_digest(
                     digest_id=digest_id,
                     board_id=board_id,
                     original_node_id=original_node_id,
@@ -1558,9 +1837,7 @@ class CommunityGlobalDiscoveryRuntime:
                     graph_layer=graph_layer,
                     embedding=embedding,
                     created_at=created_at,
-                    _allow_missing_duplicate_pk_recovery=True,
                 )
-                return "updated"
             self._verify_decision_digest_identity(
                 digest_id=digest_id,
                 board_id=board_id,
@@ -1602,6 +1879,126 @@ class CommunityGlobalDiscoveryRuntime:
             graph_layer=graph_layer,
         )
         return "created"
+
+    def _replace_indexed_decision_digest(
+        self,
+        *,
+        digest_id: str,
+        board_id: str,
+        original_node_id: str,
+        title: str,
+        summary: str,
+        node_type: str,
+        graph_layer: str,
+        embedding: list[float],
+        created_at: str,
+    ) -> None:
+        params = {
+            "digest_id": digest_id,
+            "board_id": board_id,
+            "original_node_id": original_node_id,
+            "title": title,
+            "summary": summary,
+            "node_type": node_type,
+            "graph_layer": graph_layer,
+            "embedding": embedding,
+            "created_at": created_at,
+        }
+
+        def _mutation(native_scope: Any) -> None:
+            board_links = _native_rows(
+                native_scope,
+                "MATCH (b:Board)-[:CONTAINS_DECISION]->"
+                "(d:DecisionDigest {id: $digest_id}) RETURN b.board_id",
+                params,
+            )
+            entity_links = _native_rows(
+                native_scope,
+                "MATCH (d:DecisionDigest {id: $digest_id})-"
+                "[:DECISION_MENTIONS_ENTITY]->(e:Entity) RETURN e.id",
+                params,
+            )
+            derivation_links = _native_rows(
+                native_scope,
+                "MATCH (source:DecisionDigest)-[:DECISION_DERIVES_FROM]->"
+                "(target:DecisionDigest) WHERE source.id = $digest_id "
+                "OR target.id = $digest_id RETURN source.id, target.id",
+                params,
+            )
+            _native_rows(
+                native_scope,
+                "MATCH (d:DecisionDigest {id: $digest_id}) DETACH DELETE d",
+                params,
+            )
+            created = _native_rows(
+                native_scope,
+                "CREATE (d:DecisionDigest {"
+                "id: $digest_id, board_id: $board_id, "
+                "original_node_id: $original_node_id, title: $title, "
+                "one_line_summary: $summary, node_type: $node_type, "
+                "graph_layer: $graph_layer, source_revoked: false, "
+                "embedding: $embedding, "
+                "created_at: timestamp($created_at)}) "
+                "RETURN d.embedding",
+                params,
+            )
+            if not created or not _vectors_equal(created[0][0], embedding):
+                raise RuntimeError(
+                    "global_discovery.digest_vector_replacement_unverified"
+                )
+            for row in board_links:
+                if not row or row[0] is None:
+                    continue
+                linked = _native_rows(
+                    native_scope,
+                    "MATCH (b:Board {board_id: $linked_board_id}), "
+                    "(d:DecisionDigest {id: $digest_id}) "
+                    "CREATE (b)-[link:CONTAINS_DECISION]->(d) "
+                    "RETURN count(link)",
+                    {**params, "linked_board_id": row[0]},
+                )
+                if linked != ((1,),):
+                    raise RuntimeError(
+                        "global_discovery.digest_vector_board_link_restore_failed:"
+                        f"{row[0]}"
+                    )
+            for row in entity_links:
+                if not row or row[0] is None:
+                    continue
+                linked = _native_rows(
+                    native_scope,
+                    "MATCH (d:DecisionDigest {id: $digest_id}), "
+                    "(e:Entity {id: $entity_id}) "
+                    "CREATE (d)-[link:DECISION_MENTIONS_ENTITY]->(e) "
+                    "RETURN count(link)",
+                    {**params, "entity_id": row[0]},
+                )
+                if linked != ((1,),):
+                    raise RuntimeError(
+                        "global_discovery.digest_vector_entity_link_restore_failed:"
+                        f"{row[0]}"
+                    )
+            for row in derivation_links:
+                if len(row) < 2 or row[0] is None or row[1] is None:
+                    continue
+                linked = _native_rows(
+                    native_scope,
+                    "MATCH (source:DecisionDigest {id: $source_id}), "
+                    "(target:DecisionDigest {id: $target_id}) "
+                    "CREATE (source)-[link:DECISION_DERIVES_FROM]->(target) "
+                    "RETURN count(link)",
+                    {**params, "source_id": row[0], "target_id": row[1]},
+                )
+                if linked != ((1,),):
+                    raise RuntimeError(
+                        "global_discovery.digest_vector_derivation_restore_failed:"
+                        f"{row[0]}:{row[1]}"
+                    )
+
+        self._run_indexed_vector_replacement(
+            operation="replace_indexed_decision_digest",
+            mutation=_mutation,
+        )
 
     def _replace_and_verify_decision_digest_identity(
         self,
