@@ -633,3 +633,122 @@ def test_real_global_vector_upserts_replace_atomically_and_preserve_relations(
         assert relation_counts == (1, 1, 1, 1, 1, 1)
     finally:
         runtime.close()
+
+
+def test_real_digest_same_pk_replaces_divergent_identity_vector_and_relations(
+    tmp_path: Path,
+) -> None:
+    graph_path = tmp_path / "global" / "discovery.lbug"
+    runtime = CommunityGlobalDiscoveryRuntime(
+        graph_path_provider=lambda: graph_path,
+    )
+    zero = [0.0] * 384
+    replacement = [1.0, *([0.0] * 383)]
+    old_board_id = "board-old-identity"
+    board_id = "board-new-identity"
+    digest_id = "digest-same-pk"
+    peer_id = "digest-identity-peer"
+    try:
+        with _global_safe_write("bootstrap", "same-pk-identity-bootstrap"):
+            runtime.bootstrap()
+        with _global_safe_write("mutate", "same-pk-identity-mutate"):
+            for current_board_id in (old_board_id, board_id):
+                runtime.upsert_board_summary(
+                    board_id=current_board_id,
+                    name=current_board_id,
+                    summary=current_board_id,
+                    summary_embedding=zero,
+                    decision_count=1,
+                    synced_at="2026-08-27T12:00:00",
+                )
+            runtime.execute(
+                "CREATE (:Entity {id: 'entity-identity', "
+                "canonical_name: 'entity', aliases: '', "
+                "embedding: $embedding, mention_count: 1})",
+                {"embedding": zero},
+            )
+            for current_id, current_board_id, original_id in (
+                (digest_id, old_board_id, "source-old"),
+                (peer_id, old_board_id, "source-peer"),
+            ):
+                runtime.upsert_decision_digest(
+                    digest_id=current_id,
+                    board_id=current_board_id,
+                    original_node_id=original_id,
+                    title=current_id,
+                    summary=current_id,
+                    node_type="Decision",
+                    graph_layer="canonical",
+                    embedding=zero,
+                    created_at="2026-08-27T12:00:00",
+                )
+            runtime.link_board_digest(board_id=old_board_id, digest_id=digest_id)
+            runtime.execute(
+                "MATCH (d:DecisionDigest {id: $digest_id}) "
+                "SET d.source_revoked = true",
+                {"digest_id": digest_id},
+            )
+            for statement in (
+                "MATCH (d:DecisionDigest {id: $digest_id}), "
+                "(e:Entity {id: 'entity-identity'}) "
+                "CREATE (d)-[:DECISION_MENTIONS_ENTITY]->(e)",
+                "MATCH (d:DecisionDigest {id: $digest_id}), "
+                "(p:DecisionDigest {id: $peer_id}) "
+                "CREATE (d)-[:DECISION_DERIVES_FROM]->(p)",
+                "MATCH (d:DecisionDigest {id: $digest_id}), "
+                "(p:DecisionDigest {id: $peer_id}) "
+                "CREATE (p)-[:DECISION_DERIVES_FROM]->(d)",
+            ):
+                runtime.execute(
+                    statement,
+                    {"digest_id": digest_id, "peer_id": peer_id},
+                )
+
+            outcome = runtime.upsert_decision_digest(
+                digest_id=digest_id,
+                board_id=board_id,
+                original_node_id="source-new",
+                title="after",
+                summary="after",
+                node_type="Decision",
+                graph_layer="canonical",
+                embedding=replacement,
+                created_at="2026-08-27T13:00:00",
+            )
+
+            digest = runtime.execute(
+                "MATCH (d:DecisionDigest {id: $digest_id}) "
+                "RETURN d.board_id, d.original_node_id, d.embedding, "
+                "d.source_revoked",
+                {"digest_id": digest_id},
+            ).rows
+            relation_counts = tuple(
+                runtime.execute(
+                    statement,
+                    {
+                        "board_id": board_id,
+                        "old_board_id": old_board_id,
+                        "digest_id": digest_id,
+                    },
+                ).rows[0][0]
+                for statement in (
+                    "MATCH (b:Board {board_id: $board_id})-"
+                    "[r:CONTAINS_DECISION]->"
+                    "(d:DecisionDigest {id: $digest_id}) RETURN count(r)",
+                    "MATCH (b:Board {board_id: $old_board_id})-"
+                    "[r:CONTAINS_DECISION]->"
+                    "(d:DecisionDigest {id: $digest_id}) RETURN count(r)",
+                    "MATCH (d:DecisionDigest {id: $digest_id})-"
+                    "[r:DECISION_MENTIONS_ENTITY]->(:Entity) RETURN count(r)",
+                    "MATCH (d:DecisionDigest {id: $digest_id})-"
+                    "[r:DECISION_DERIVES_FROM]->(:DecisionDigest) RETURN count(r)",
+                    "MATCH (:DecisionDigest)-[r:DECISION_DERIVES_FROM]->"
+                    "(d:DecisionDigest {id: $digest_id}) RETURN count(r)",
+                )
+            )
+
+        assert outcome == "updated"
+        assert digest == ((board_id, "source-new", replacement, False),)
+        assert relation_counts == (1, 0, 1, 1, 1)
+    finally:
+        runtime.close()

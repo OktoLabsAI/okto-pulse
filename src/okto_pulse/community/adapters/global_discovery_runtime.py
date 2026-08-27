@@ -1892,6 +1892,7 @@ class CommunityGlobalDiscoveryRuntime:
         graph_layer: str,
         embedding: list[float],
         created_at: str,
+        _canonicalize_board_link: bool = False,
     ) -> None:
         params = {
             "digest_id": digest_id,
@@ -1906,11 +1907,17 @@ class CommunityGlobalDiscoveryRuntime:
         }
 
         def _mutation(native_scope: Any) -> None:
-            board_links = _native_rows(
-                native_scope,
-                "MATCH (b:Board)-[:CONTAINS_DECISION]->"
-                "(d:DecisionDigest {id: $digest_id}) RETURN b.board_id",
-                params,
+            # Identity repair rehomes the digest to its canonical board;
+            # vector-only replacement retains the already published link.
+            board_links = (
+                ((board_id,),)
+                if _canonicalize_board_link
+                else _native_rows(
+                    native_scope,
+                    "MATCH (b:Board)-[:CONTAINS_DECISION]->"
+                    "(d:DecisionDigest {id: $digest_id}) RETURN b.board_id",
+                    params,
+                )
             )
             entity_links = _native_rows(
                 native_scope,
@@ -2155,6 +2162,20 @@ class CommunityGlobalDiscoveryRuntime:
                     "global_discovery.digest_replace_failed: board or digest "
                     "identity was not found"
                 )
+            if len(canonical_rows.rows) == 1 and not semantic_rows.rows:
+                self._replace_indexed_decision_digest(
+                    digest_id=digest_id,
+                    board_id=board_id,
+                    original_node_id=original_node_id,
+                    title=title,
+                    summary=summary,
+                    node_type=node_type,
+                    graph_layer=graph_layer,
+                    embedding=embedding,
+                    created_at=created_at,
+                    _canonicalize_board_link=True,
+                )
+                return 1
             relationship_queries = (
                 "MATCH (d:DecisionDigest)-[r:DECISION_MENTIONS_ENTITY]->"
                 "(other:Entity) WHERE ((d.board_id = $board_id AND "
