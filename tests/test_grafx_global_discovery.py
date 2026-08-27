@@ -338,3 +338,97 @@ def test_global_vector_replacements_survive_reopen(tmp_path: Path) -> None:
             reopened, "board_summary_idx", _vector(0.0, 1.0)
         )
         assert reopened.verify("all").findings == ()
+
+
+def test_global_ann_is_stable_cold_warm_after_reopen_and_never_leaks(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "global-ann"
+    database = connect(root, vector_exact_scan_threshold=0)
+    ensure_current_grafx_global_schema(database)
+    for board_id in ("allowed", "denied"):
+        _upsert_board(database, board_id)
+    _upsert_digest(
+        database,
+        board_id="allowed",
+        digest_id="best",
+        embedding=_vector(1.0),
+    )
+    _upsert_digest(
+        database,
+        board_id="allowed",
+        digest_id="second",
+        embedding=_vector(0.8, 0.6),
+    )
+    _upsert_digest(
+        database,
+        board_id="allowed",
+        digest_id="third",
+        embedding=_vector(0.0, 1.0),
+    )
+    _upsert_digest(
+        database,
+        board_id="allowed",
+        digest_id="opposite",
+        embedding=_vector(-1.0),
+    )
+    _upsert_digest(
+        database,
+        board_id="allowed",
+        digest_id="ineligible-working",
+        graph_layer="working",
+    )
+    _upsert_digest(
+        database,
+        board_id="allowed",
+        digest_id="ineligible-revoked",
+    )
+    _upsert_digest(
+        database,
+        board_id="denied",
+        digest_id="ineligible-board",
+    )
+    with database.begin("write") as transaction:
+        transaction.execute(
+            "MATCH (d:DecisionDigest {id: 'ineligible-revoked'}) "
+            "SET d.source_revoked = true"
+        )
+        transaction.execute(
+            "CREATE (:DecisionDigest {id: 'ineligible-null', board_id: 'allowed', "
+            "original_node_id: 'node-ineligible-null', title: 'nullable', "
+            "one_line_summary: 'nullable', node_type: 'Decision', "
+            "graph_layer: 'canonical', source_revoked: false, "
+            "created_at: timestamp('2026-08-27T12:00:00Z')})"
+        )
+        transaction.execute(
+            "MATCH (b:Board {board_id: 'allowed'}), "
+            "(d:DecisionDigest {id: 'ineligible-null'}) "
+            "CREATE (b)-[:CONTAINS_DECISION]->(d)"
+        )
+
+    def search(handle) -> list[dict]:
+        return search_grafx_decision_digests(
+            handle,
+            _vector(1.0),
+            board_ids=("allowed",),
+            graph_layer="canonical",
+            top_k=2,
+            min_similarity=0.0,
+        )
+
+    cold = search(database)
+    warm = search(database)
+    database.close()
+
+    with connect(root, vector_exact_scan_threshold=0) as reopened:
+        cold_reopen = search(reopened)
+
+    assert [hit["digest_id"] for hit in cold] == ["best", "second"]
+    assert warm == cold
+    assert cold_reopen == cold
+    assert not {
+        "ineligible-working",
+        "ineligible-revoked",
+        "ineligible-board",
+        "ineligible-null",
+    }.intersection(hit["digest_id"] for hit in (*cold, *warm, *cold_reopen))

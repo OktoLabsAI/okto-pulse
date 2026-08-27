@@ -399,20 +399,48 @@ def test_real_grafx_ann_is_stable_cold_warm_and_after_reopen(tmp_path: Path) -> 
     _insert_decision(database, "second", _vector(0.8, 0.6))
     _insert_decision(database, "third", _vector(0.0, 1.0))
     _insert_decision(database, "opposite", _vector(-1.0))
+    _insert_decision(
+        database, "ineligible-working", _vector(1.0), graph_layer="working"
+    )
+    _insert_decision(
+        database, "ineligible-superseded", _vector(1.0), superseded_by="best"
+    )
+    _insert_decision(
+        database,
+        "ineligible-tombstone",
+        _vector(1.0),
+        revocation_reason=next(iter(sorted(tpl.ACTIVE_READ_TOMBSTONE_REASONS))),
+    )
+    _insert_decision(database, "ineligible-null", None)
     adapter = CommunityGrafxBoardVectorSearch(lambda _board_id: database)
-    cold = adapter.vector_search("board-1", "Decision", _vector(1.0), 2, 0.0)
-    warm = adapter.vector_search("board-1", "Decision", _vector(1.0), 2, 0.0)
+    cold = adapter.vector_search(
+        "board-1", "Decision", _vector(1.0), 2, 0.0, graph_layer="canonical"
+    )
+    warm = adapter.vector_search(
+        "board-1", "Decision", _vector(1.0), 2, 0.0, graph_layer="canonical"
+    )
     database.close()
 
     with okto_grafx.connect(root, vector_exact_scan_threshold=0) as reopened:
         reopened_adapter = CommunityGrafxBoardVectorSearch(lambda _board_id: reopened)
         cold_reopen = reopened_adapter.vector_search(
-            "board-1", "Decision", _vector(1.0), 2, 0.0
+            "board-1",
+            "Decision",
+            _vector(1.0),
+            2,
+            0.0,
+            graph_layer="canonical",
         )
 
     assert [hit["node_id"] for hit in cold] == ["best", "second"]
     assert warm == cold
     assert cold_reopen == cold
+    assert not {
+        "ineligible-working",
+        "ineligible-superseded",
+        "ineligible-tombstone",
+        "ineligible-null",
+    }.intersection(hit["node_id"] for hit in (*cold, *warm, *cold_reopen))
 
 
 def test_grafx_failures_map_to_core_without_leaking_backend_errors() -> None:
