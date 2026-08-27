@@ -1440,6 +1440,7 @@ PUBLIC_FAULT_SITES: tuple[str, ...] = (
     "terminal_rescan",
     "stamp_commit",
     "terminal_checkpoint",
+    "recovery_checkpoint",
     "cold_reopen",
     "cold_verify",
 )
@@ -1461,7 +1462,11 @@ def test_each_non_page_fault_boundary_never_returns_a_partial_candidate(
     recovery = _FakeCandidate(database_uuid, empty=False)
     cold = _FakeCandidate(database_uuid, empty=False)
     returned_handles: list[_FakeCandidate] = []
-    needs_recovery = fault_site in {"stamp_commit", "terminal_checkpoint"}
+    needs_recovery = fault_site in {
+        "stamp_commit",
+        "terminal_checkpoint",
+        "recovery_checkpoint",
+    }
 
     def open_candidate(
         _path: Path,
@@ -1529,6 +1534,17 @@ def test_each_non_page_fault_boundary_never_returns_a_partial_candidate(
             )
 
     build.checkpoint = build_checkpoint  # type: ignore[method-assign]
+    original_recovery_checkpoint = recovery.checkpoint
+
+    def recovery_checkpoint() -> None:
+        original_recovery_checkpoint()
+        if fault_site == "recovery_checkpoint":
+            raise evolution._divergence(
+                "injected_recovery_checkpoint",
+                phase="candidate_ambiguous_recovery_checkpoint",
+            )
+
+    recovery.checkpoint = recovery_checkpoint  # type: ignore[method-assign]
     verify_calls = 0
 
     def verify(*_args: object, **_kwargs: object) -> None:
@@ -1550,7 +1566,7 @@ def test_each_non_page_fault_boundary_never_returns_a_partial_candidate(
             raise evolution._divergence(
                 "injected_terminal_rescan", phase="candidate_terminal_certify"
             )
-        if fault_site == "stamp_commit":
+        if fault_site in {"stamp_commit", "recovery_checkpoint"}:
             raise evolution._StampOutcomeAmbiguous("injected stamp ambiguity")
         build.state = evolution.TARGET_SCHEMA_VERSION
 
