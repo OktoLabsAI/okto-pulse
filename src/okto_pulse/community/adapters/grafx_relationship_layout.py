@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Iterable
 
 from okto_grafx import Database
@@ -49,12 +50,30 @@ class RelationshipLayout:
     __slots__ = ("_by_key", "_entries", "_logical_definitions")
 
     def __init__(self, pairs: Iterable[tuple[str, str, str]]) -> None:
+        try:
+            raw_pairs = tuple(pairs)
+        except Exception as exc:
+            raise _layout_failure(
+                "The logical relationship layout is not a valid iterable.",
+                reason="invalid_layout_iterable",
+                value=_safe_repr(pairs),
+                error_type=type(exc).__name__,
+            ) from exc
+
         entries: list[RelationshipLayoutEntry] = []
         by_key: dict[tuple[str, str, str], RelationshipLayoutEntry] = {}
         by_physical: dict[str, tuple[str, str, str]] = {}
         logical_pairs: dict[str, list[tuple[str, str]]] = {}
 
-        for raw_logical, raw_source, raw_target in pairs:
+        for index, raw_pair in enumerate(raw_pairs):
+            if type(raw_pair) is not tuple or len(raw_pair) != 3:
+                raise _layout_failure(
+                    "A logical relationship layout entry is not an exact triple.",
+                    reason="invalid_endpoint_pair",
+                    index=index,
+                    value=_safe_repr(raw_pair),
+                )
+            raw_logical, raw_source, raw_target = raw_pair
             logical = _require_identifier("logical_type", raw_logical)
             source = _require_identifier("from_type", raw_source)
             target = _require_identifier("to_type", raw_target)
@@ -88,12 +107,22 @@ class RelationshipLayout:
             by_physical[physical] = key
             logical_pairs.setdefault(logical, []).append((source, target))
 
-        self._entries = tuple(entries)
-        self._by_key = by_key
-        self._logical_definitions = tuple(
-            LogicalRelationshipDefinition(name, tuple(endpoint_pairs))
-            for name, endpoint_pairs in logical_pairs.items()
+        object.__setattr__(self, "_entries", tuple(entries))
+        object.__setattr__(self, "_by_key", MappingProxyType(by_key))
+        object.__setattr__(
+            self,
+            "_logical_definitions",
+            tuple(
+                LogicalRelationshipDefinition(name, tuple(endpoint_pairs))
+                for name, endpoint_pairs in logical_pairs.items()
+            ),
         )
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("RelationshipLayout is immutable")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError("RelationshipLayout is immutable")
 
     @property
     def entries(self) -> tuple[RelationshipLayoutEntry, ...]:
@@ -131,9 +160,16 @@ def _require_identifier(field: str, value: object) -> str:
             "A logical relationship layout name is not a safe identifier.",
             reason="invalid_identifier",
             field=field,
-            value=repr(value),
+            value=_safe_repr(value),
         )
     return value
+
+
+def _safe_repr(value: object) -> str:
+    try:
+        return repr(value)
+    except Exception:
+        return f"<unrepresentable {type(value).__name__}>"
 
 
 def _layout_failure(

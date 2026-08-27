@@ -88,6 +88,52 @@ def test_unknown_pair_and_unsafe_identifier_fail_in_the_core_taxonomy() -> None:
     assert unsafe.value.details["field"] == "logical_type"
 
 
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        (("a", "b"),),
+        (("a", "b", "c", "d"),),
+        ((123,),),
+        ("abc",),
+    ],
+)
+def test_malformed_endpoint_pairs_fail_in_the_core_taxonomy(malformed) -> None:
+    with pytest.raises(GraphCapabilityUnavailable) as captured:
+        RelationshipLayout(malformed)
+
+    assert captured.value.details["reason"] == "invalid_endpoint_pair"
+
+
+def test_hostile_repr_does_not_escape_the_core_error_taxonomy() -> None:
+    class Hostile:
+        def __repr__(self) -> str:
+            raise RuntimeError("repr must not escape")
+
+    with pytest.raises(GraphCapabilityUnavailable) as constructor:
+        RelationshipLayout(((Hostile(), "A", "B"),))
+    assert constructor.value.details["reason"] == "invalid_identifier"
+    assert constructor.value.details["value"] == "<unrepresentable Hostile>"
+
+    layout = RelationshipLayout((("edge", "A", "B"),))
+    with pytest.raises(GraphCapabilityUnavailable) as resolver:
+        layout.resolve(Hostile(), "A", "B")  # type: ignore[arg-type]
+    assert resolver.value.details["reason"] == "invalid_identifier"
+    assert resolver.value.details["value"] == "<unrepresentable Hostile>"
+
+
+def test_layout_manifest_cannot_be_mutated_after_validation() -> None:
+    layout = RelationshipLayout((("edge", "A", "B"),))
+
+    with pytest.raises(TypeError):
+        layout._by_key[("other", "A", "B")] = layout.entries[0]  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        layout._entries = ()  # type: ignore[misc]
+    with pytest.raises(AttributeError):
+        del layout._logical_definitions  # type: ignore[misc]
+
+    assert layout.resolve("edge", "A", "B") == "edge__A__B"
+
+
 def test_physical_name_collision_is_refused_instead_of_being_overwritten() -> None:
     with pytest.raises(GraphCapabilityUnavailable) as captured:
         RelationshipLayout(
