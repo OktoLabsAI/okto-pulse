@@ -165,7 +165,13 @@ def test_inspect_install_does_not_touch_data_home_or_execute(
         distributions=(),
         runtime=(("python_version", "test"),),
     )
-    monkeypatch.setattr(recovery, "_install_evidence", lambda **_kwargs: evidence)
+    install_kwargs: dict[str, str] = {}
+
+    def installed_evidence(**kwargs: str) -> recovery.InstallEvidence:
+        install_kwargs.update(kwargs)
+        return evidence
+
+    monkeypatch.setattr(recovery, "_install_evidence", installed_evidence)
     monkeypatch.setattr(recovery, "_hash_executor_file", lambda: EXECUTOR_HASH)
     monkeypatch.setattr(
         recovery,
@@ -195,6 +201,8 @@ def test_inspect_install_does_not_touch_data_home_or_execute(
     assert payload["install_fingerprint"] == INSTALL_HASH
     assert payload["executor_sha256"] == EXECUTOR_HASH
     assert payload["entrypoints_sha256"] == ENTRYPOINT_HASH
+    assert install_kwargs["grafx_version"] == recovery.EXPECTED_GRAFX_VERSION
+    assert "kuzu_version" not in install_kwargs
 
 
 def test_recovery_defaults_match_the_pinned_release_dependencies() -> None:
@@ -203,13 +211,97 @@ def test_recovery_defaults_match_the_pinned_release_dependencies() -> None:
     lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
 
     assert recovery.EXPECTED_LADYBUG_VERSION == "0.16.0"
+    assert recovery.EXPECTED_GRAFX_VERSION == "0.0.1"
     assert recovery.EXPECTED_SQLALCHEMY_VERSION == "2.0.49"
     assert "ladybug==0.16.0" in dependencies
+    assert "okto-grafx[accel]==0.0.1" in dependencies
     assert "sqlalchemy[asyncio]==2.0.49" in dependencies
     assert '{ name = "ladybug", specifier = "==0.16.0" }' in lock
+    assert '{ name = "okto-grafx", extras = ["accel"], specifier = "==0.0.1" }' in lock
     assert (
         '{ name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.49" }' in lock
     )
+
+
+def test_install_evidence_authenticates_grafx_without_kuzu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[str, str, bool, bool]] = []
+
+    def distribution_evidence(
+        name: str,
+        version: str,
+        *,
+        include_python: bool,
+        require_native: bool = False,
+    ) -> recovery.DistributionEvidence:
+        observed.append((name, version, include_python, require_native))
+        return recovery.DistributionEvidence(
+            name=name,
+            version=version,
+            fingerprint="a" * 64,
+            file_count=1,
+            editable=False,
+        )
+
+    monkeypatch.setattr(recovery, "_distribution_evidence", distribution_evidence)
+
+    evidence = recovery._install_evidence(
+        core_version="0.3.3",
+        community_version="0.3.3",
+        ladybug_version="0.16.0",
+        grafx_version="0.0.1",
+        sqlalchemy_version="2.0.49",
+        aiosqlite_version="0.22.1",
+    )
+
+    assert [item[0] for item in observed] == [
+        recovery.CORE_DISTRIBUTION,
+        recovery.COMMUNITY_DISTRIBUTION,
+        recovery.LADYBUG_DISTRIBUTION,
+        recovery.GRAFX_DISTRIBUTION,
+        recovery.SQLALCHEMY_DISTRIBUTION,
+        recovery.AIOSQLITE_DISTRIBUTION,
+    ]
+    assert all(item[0].casefold() != "kuzu" for item in observed)
+    assert observed[2] == ("ladybug", "0.16.0", True, True)
+    assert observed[3] == ("okto-grafx", "0.0.1", True, False)
+    assert len(evidence.fingerprint) == 64
+
+
+def test_kuzu_version_option_aliases_the_effective_ladybug_version() -> None:
+    args = recovery._parse_args(
+        [
+            "--data-home",
+            "C:/pulse",
+            "--board-id",
+            BOARD_ID,
+            "--inspect-install",
+            "--expected-kuzu-version",
+            "0.11.3",
+        ]
+    )
+
+    assert args.expected_kuzu_version == "0.11.3"
+    assert args.expected_ladybug_version == "0.11.3"
+    assert args.expected_grafx_version == recovery.EXPECTED_GRAFX_VERSION
+
+
+def test_kuzu_version_alias_refuses_a_nondefault_ladybug_conflict() -> None:
+    with pytest.raises(SystemExit):
+        recovery._parse_args(
+            [
+                "--data-home",
+                "C:/pulse",
+                "--board-id",
+                BOARD_ID,
+                "--inspect-install",
+                "--expected-ladybug-version",
+                "0.15.0",
+                "--expected-kuzu-version",
+                "0.16.0",
+            ]
+        )
 
 
 def test_process_oracle_detects_real_launchers_but_not_ancestor_shells() -> None:
@@ -1632,6 +1724,9 @@ def test_real_ladybug_close_releases_hash_handle_and_allows_explicit_reopen(
             from okto_pulse.community.adapters.kuzu_graph_store import (
                 CommunityKuzuGraphStore,
             )
+            from okto_pulse.community.adapters.composition import (
+                require_community_routed_graph_composition,
+            )
             from okto_pulse.core.application.kg_runtime_access import (
                 resolve_graph_lifecycle,
             )
@@ -1643,6 +1738,16 @@ def test_real_ladybug_close_releases_hash_handle_and_allows_explicit_reopen(
             board_id = '11111111-1111-4111-8111-111111111111'
             try:
                 with runtime_composition_scope(composition):
+                    routed_graph = require_community_routed_graph_composition()
+                    route = routed_graph.initialize_board_route(board_id)
+                    assert route.backend == 'ladybug'
+                    decision = recovery._require_authenticated_recoverable_backend(
+                        home,
+                        board_id,
+                    )
+                    assert decision.binding is not None
+                    binding = decision.binding
+                    assert binding.backend == 'ladybug'
                     lifecycle = resolve_graph_lifecycle()
                     store = CommunityKuzuGraphStore()
                     assert (await lifecycle.open(board_id)).opened
@@ -1658,6 +1763,8 @@ def test_real_ladybug_close_releases_hash_handle_and_allows_explicit_reopen(
                                 board_storage_root=home / 'boards' / board_id,
                                 phase='native-proof-held-reader',
                                 drain_timeout_seconds=0.05,
+                                expected_binding=binding,
+                                graph_lifecycle=lifecycle,
                             )
                         except recovery.RecoveryRefused as exc:
                             assert 'board_graph_close_before_snapshot_failed' in str(exc)
@@ -1668,17 +1775,27 @@ def test_real_ladybug_close_releases_hash_handle_and_allows_explicit_reopen(
                     first = await recovery._snapshot_closed_board_storage(
                         board_id=board_id,
                         board_storage_root=home / 'boards' / board_id,
-                        phase='native-proof-first'
+                        phase='native-proof-first',
+                        expected_binding=binding,
+                        graph_lifecycle=lifecycle,
                     )
-                    assert set(first) == {'graph.lbug'}
+                    assert set(first) == {
+                        'graph_backend_binding.json',
+                        'graph.lbug',
+                    }
                     assert (await lifecycle.open(board_id)).opened
                     assert store.get_schema_version(board_id)
                     second = await recovery._snapshot_closed_board_storage(
                         board_id=board_id,
                         board_storage_root=home / 'boards' / board_id,
-                        phase='native-proof-second'
+                        phase='native-proof-second',
+                        expected_binding=binding,
+                        graph_lifecycle=lifecycle,
                     )
-                    assert set(second) == {'graph.lbug'}
+                    assert set(second) == {
+                        'graph_backend_binding.json',
+                        'graph.lbug',
+                    }
             finally:
                 with runtime_composition_scope(composition):
                     await recovery._shutdown_composed_runtime(composition, None)
@@ -1686,7 +1803,10 @@ def test_real_ladybug_close_releases_hash_handle_and_allows_explicit_reopen(
             post_teardown = recovery._snapshot_tree_hashes(
                 home / 'boards' / board_id
             )
-            assert set(post_teardown) == {'graph.lbug'}
+            assert set(post_teardown) == {
+                'graph_backend_binding.json',
+                'graph.lbug',
+            }
             print('native_close_hash_reopen_teardown_ok')
 
         asyncio.run(main())
@@ -8504,50 +8624,98 @@ def test_installed_wheel_launcher_allows_self_and_denies_second_launcher(
     dist_dir = tmp_path / "dist"
     venv_dir = tmp_path / "venv"
     data_home = tmp_path / "copy"
+    core_repo_raw = os.environ.get("OKTO_PULSE_CORE_REPO", "").strip()
+    grafx_repo_raw = (
+        os.environ.get("OKTO_E2E_GRAFX_REPO", "").strip()
+        or os.environ.get("OKTO_PULSE_GRAFX_REPO", "").strip()
+    )
+    assert core_repo_raw, "OKTO_PULSE_CORE_REPO must select the Core checkout"
+    assert grafx_repo_raw, (
+        "OKTO_E2E_GRAFX_REPO or OKTO_PULSE_GRAFX_REPO must select the Grafx checkout"
+    )
+    core_repo = Path(core_repo_raw).expanduser().resolve()
+    grafx_repo = Path(grafx_repo_raw).expanduser().resolve()
+    assert (core_repo / "src" / "okto_pulse" / "core").is_dir(), core_repo
+    assert (grafx_repo / "src" / "okto_grafx").is_dir(), grafx_repo
+
+    isolated_env = os.environ.copy()
+    isolated_env.pop("PYTHONPATH", None)
+    isolated_env.pop("PYTHONHOME", None)
+    isolated_env["UV_NO_PROGRESS"] = "1"
+    isolated_env["UV_OFFLINE"] = "1"
+    isolated_env["UV_PYTHON_DOWNLOADS"] = "never"
     dist_dir.mkdir()
     data_home.mkdir()
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "build",
-            "--wheel",
-            "--no-isolation",
-            "--outdir",
-            str(dist_dir),
-            ".",
-        ],
-        cwd=project_root,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=120,
+    uv = shutil.which("uv")
+    assert uv is not None, "uv is required to build the installed-wheel fixture"
+
+    def run_checked(command: list[str], *, timeout: float = 240) -> None:
+        completed = subprocess.run(
+            command,
+            cwd=tmp_path,
+            env=isolated_env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+
+    def build_wheel(repo: Path, directory: Path, prefix: str) -> Path:
+        directory.mkdir(parents=True)
+        run_checked(
+            [
+                uv,
+                "build",
+                "--wheel",
+                "--offline",
+                "--no-python-downloads",
+                "--out-dir",
+                str(directory),
+                str(repo),
+            ]
+        )
+        wheels = sorted(directory.glob(f"{prefix}-*.whl"))
+        assert len(wheels) == 1, wheels
+        return wheels[0]
+
+    core_wheel = build_wheel(core_repo, dist_dir / "core", "okto_pulse_core")
+    grafx_wheel = build_wheel(grafx_repo, dist_dir / "grafx", "okto_grafx")
+    community_wheel = build_wheel(
+        project_root,
+        dist_dir / "community",
+        "okto_pulse",
     )
-    subprocess.run(
-        [sys.executable, "-m", "venv", "--system-site-packages", str(venv_dir)],
-        check=True,
-        capture_output=True,
-        text=True,
+    run_checked(
+        [
+            uv,
+            "venv",
+            "--no-project",
+            "--offline",
+            "--no-python-downloads",
+            "--python",
+            sys.executable,
+            str(venv_dir),
+        ],
         timeout=60,
     )
     venv_python = venv_dir / "Scripts" / "python.exe"
     launcher = venv_dir / "Scripts" / "okto-pulse-kg-recovery-only.exe"
-    wheel = next(dist_dir.glob("*.whl"))
-    subprocess.run(
+    run_checked(
         [
-            str(venv_python),
-            "-m",
+            uv,
             "pip",
             "install",
-            "--no-deps",
-            "--force-reinstall",
-            "--disable-pip-version-check",
-            str(wheel),
+            "--offline",
+            "--no-python-downloads",
+            "--strict",
+            "--python",
+            str(venv_python),
+            str(core_wheel),
+            str(grafx_wheel),
+            str(community_wheel),
         ],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=60,
+        timeout=180,
     )
     assert launcher.is_file()
     common = [
@@ -8563,8 +8731,18 @@ def test_installed_wheel_launcher_allows_self_and_denies_second_launcher(
         capture_output=True,
         text=True,
         timeout=60,
+        env=isolated_env,
     )
-    fingerprint = str(json.loads(inspected.stdout)["install_fingerprint"])
+    installed_payload = json.loads(inspected.stdout)
+    fingerprint = str(installed_payload["install_fingerprint"])
+    assert [item["name"] for item in installed_payload["distributions"]] == [
+        "okto-pulse-core",
+        "okto-pulse",
+        "ladybug",
+        "okto-grafx",
+        "SQLAlchemy",
+        "aiosqlite",
+    ]
     receipt_path = tmp_path / "receipt.json"
     safe_rehearsal = [
         *common,
@@ -8584,6 +8762,7 @@ def test_installed_wheel_launcher_allows_self_and_denies_second_launcher(
         capture_output=True,
         text=True,
         timeout=60,
+        env=isolated_env,
     )
     assert self_only.returncode == 2
     assert "rehearsal_source_equals_target" in self_only.stdout
@@ -8595,6 +8774,7 @@ def test_installed_wheel_launcher_allows_self_and_denies_second_launcher(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=0x08000000 | 0x00000004,  # NO_WINDOW | CREATE_SUSPENDED
+        env=isolated_env,
     )
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     ntdll = ctypes.WinDLL("ntdll")
@@ -8614,6 +8794,7 @@ def test_installed_wheel_launcher_allows_self_and_denies_second_launcher(
             capture_output=True,
             text=True,
             timeout=60,
+            env=isolated_env,
         )
         assert denied.returncode == 2
         assert "offline_pulse_process_detected" in denied.stdout

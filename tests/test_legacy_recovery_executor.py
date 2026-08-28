@@ -18,6 +18,9 @@ from okto_pulse.community.adapters.board_rebuild_ingestion import (
     CommunityBoardRebuildIngestionAdapter,
     read_legacy_source_revision_state,
 )
+from okto_pulse.community.adapters.graph_backend_binding import (
+    CommunityGraphBackendBindingStore,
+)
 from okto_pulse.community.adapters.legacy_rebuild_reconciliation import (
     LEGACY_DEAD_LETTER_COLUMNS,
     LEGACY_QUEUE_COLUMNS,
@@ -1215,6 +1218,12 @@ def _create_legacy_artifacts(
     board = data_home / "boards" / BOARD_ID
     board.mkdir(parents=True)
     (board / "graph.lbug").write_bytes(b"current-restored-graph")
+    CommunityGraphBackendBindingStore(data_home).initialize_board_binding(
+        board_id=BOARD_ID,
+        backend="ladybug",
+        generation="legacy-restored",
+        physical_path=board / "graph.lbug",
+    )
 
     source_rows = [_source_payload(index) for index in range(source_count)]
     snapshot_key = f"{F06_RUN_ID}:snapshot"
@@ -1437,6 +1446,28 @@ def _create_legacy_artifacts(
         },
     )
     return rebuild, quarantine, checkpoint_relative
+
+
+def _legacy_graph_binding(data_home: Path) -> recovery.OfflineBoardGraphBinding:
+    decision = recovery._require_authenticated_recoverable_backend(data_home, BOARD_ID)
+    assert decision.binding is not None
+    return decision.binding
+
+
+def _legacy_discovery_bundle(
+    data_home: Path,
+    *,
+    artifact_store: CommunityFileSystemRebuildAuditArtifactStore | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        artifact_store=(
+            artifact_store
+            if artifact_store is not None
+            else CommunityFileSystemRebuildAuditArtifactStore(data_home)
+        ),
+        manifest_store=_manifest_store(data_home),
+        graph_binding=_legacy_graph_binding(data_home),
+    )
 
 
 def test_legacy_predigest_real_manifest_store_uses_historical_cognitive_cut(
@@ -1725,10 +1756,7 @@ def test_legacy_predigest_discovery_refuses_manifest_envelope_or_cut_drift(
     else:
         manifest["created_at"] = "2026-08-15T02:32:00+00:00"
     _write_json(manifest_path, manifest)
-    bundle = SimpleNamespace(
-        artifact_store=CommunityFileSystemRebuildAuditArtifactStore(data_home),
-        manifest_store=_manifest_store(data_home),
-    )
+    bundle = _legacy_discovery_bundle(data_home)
     monkeypatch.setattr(
         rebuild_service,
         "load_verified_rebuild_confirmation_receipt",
@@ -1900,10 +1928,7 @@ def test_legacy_discovery_selects_active_run_and_normalizes_exact_old_shape(
     )
 
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
-    bundle = SimpleNamespace(
-        artifact_store=store,
-        manifest_store=_manifest_store(data_home),
-    )
+    bundle = _legacy_discovery_bundle(data_home, artifact_store=store)
     monkeypatch.setattr(
         rebuild_service,
         "load_verified_rebuild_confirmation_receipt",
@@ -2154,10 +2179,7 @@ def test_legacy_executor_discovers_reconciles_and_rediscovers_adoption(
     rebuild, quarantine, checkpoint_relative = _create_legacy_artifacts(data_home)
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
 
-    bundle = SimpleNamespace(
-        artifact_store=store,
-        manifest_store=_manifest_store(data_home),
-    )
+    bundle = _legacy_discovery_bundle(data_home, artifact_store=store)
     monkeypatch.setattr(
         rebuild_service,
         "load_verified_rebuild_confirmation_receipt",
@@ -2289,10 +2311,7 @@ def test_legacy_executor_refuses_physical_evidence_drift(
     _create_queue_database(db_path)
     rebuild, quarantine, _checkpoint_relative = _create_legacy_artifacts(data_home)
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
-    bundle = SimpleNamespace(
-        artifact_store=store,
-        manifest_store=_manifest_store(data_home),
-    )
+    bundle = _legacy_discovery_bundle(data_home, artifact_store=store)
     monkeypatch.setattr(
         rebuild_service,
         "load_verified_rebuild_confirmation_receipt",
@@ -2343,10 +2362,7 @@ def test_legacy_executor_refuses_standalone_mutating_f06_effect(
         _receipt(promote_key, "promote", details={"candidate": CANDIDATE_ID}),
     )
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
-    bundle = SimpleNamespace(
-        artifact_store=store,
-        manifest_store=_manifest_store(data_home),
-    )
+    bundle = _legacy_discovery_bundle(data_home, artifact_store=store)
     monkeypatch.setattr(
         rebuild_service,
         "load_verified_rebuild_confirmation_receipt",
@@ -2395,10 +2411,7 @@ def test_legacy_executor_binds_copied_report_ref_to_explicit_source_root(
     )
     _write_json(audit_path, audit)
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
-    bundle = SimpleNamespace(
-        artifact_store=store,
-        manifest_store=_manifest_store(data_home),
-    )
+    bundle = _legacy_discovery_bundle(data_home, artifact_store=store)
     monkeypatch.setattr(
         rebuild_service,
         "load_verified_rebuild_confirmation_receipt",
@@ -2462,6 +2475,10 @@ def test_legacy_executor_binds_copied_report_ref_to_explicit_source_root(
             "legacy_queue_only_original_quarantine_invalid",
         ),
         (
+            "original_manifest_unsupported_version",
+            "legacy_queue_only_original_quarantine_invalid",
+        ),
+        (
             "journal_reversed",
             "legacy_queue_only_manual_restore_invalid",
         ),
@@ -2471,6 +2488,10 @@ def test_legacy_executor_binds_copied_report_ref_to_explicit_source_root(
         ),
         (
             "manual_manifest_files_moved_string",
+            "legacy_queue_only_manual_restore_invalid",
+        ),
+        (
+            "manual_manifest_version_mismatch",
             "legacy_queue_only_manual_restore_invalid",
         ),
         (
@@ -2523,8 +2544,10 @@ def test_legacy_executor_refuses_impossible_historical_serializer_shapes(
                 .decode("ascii")
                 .rstrip("=")
             )
-        else:
+        elif tamper == "original_manifest_missing_generation":
             payload.pop("kg_generation_id")
+        else:
+            payload["software_version"] = "0.3.1"
         _write_json(path, payload)
     elif tamper.startswith("journal_"):
         path = quarantine / MANUAL_QUARANTINE_ID / "restore_operation.json"
@@ -2539,6 +2562,8 @@ def test_legacy_executor_refuses_impossible_historical_serializer_shapes(
         payload = json.loads(path.read_bytes())
         if tamper == "manual_manifest_files_moved_string":
             payload["files_moved"] = "2"
+        elif tamper == "manual_manifest_version_mismatch":
+            payload["software_version"] = recovery.EXPECTED_VERSION
         else:
             payload["retention_until"] = "2026-08-15T02:42:00+00:00"
         _write_json(path, payload)
@@ -2556,10 +2581,7 @@ def test_legacy_executor_refuses_impossible_historical_serializer_shapes(
         _write_json(audit_path, audit)
 
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
-    bundle = SimpleNamespace(
-        artifact_store=store,
-        manifest_store=_manifest_store(data_home),
-    )
+    bundle = _legacy_discovery_bundle(data_home, artifact_store=store)
     monkeypatch.setattr(
         rebuild_service,
         "load_verified_rebuild_confirmation_receipt",
@@ -2625,10 +2647,7 @@ def test_legacy_executor_refuses_semantically_invalid_prefix_receipt(
     _write_json(checkpoint_path, checkpoint)
     _write_json(rebuild / _effect_relative(effect_key), receipt)
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
-    bundle = SimpleNamespace(
-        artifact_store=store,
-        manifest_store=_manifest_store(data_home),
-    )
+    bundle = _legacy_discovery_bundle(data_home, artifact_store=store)
     monkeypatch.setattr(
         rebuild_service,
         "load_verified_rebuild_confirmation_receipt",
@@ -2668,10 +2687,7 @@ def test_legacy_executor_refuses_checkpoint_manifest_projection_mismatch(
     checkpoint["command"]["source_rows"][0]["content_hash"] = "f" * 64
     _write_json(checkpoint_path, checkpoint)
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
-    bundle = SimpleNamespace(
-        artifact_store=store,
-        manifest_store=_manifest_store(data_home),
-    )
+    bundle = _legacy_discovery_bundle(data_home, artifact_store=store)
     monkeypatch.setattr(
         rebuild_service,
         "load_verified_rebuild_confirmation_receipt",
@@ -2720,10 +2736,7 @@ def test_legacy_executor_reconstructs_semantics_of_existing_intent(
     _create_queue_database(db_path)
     rebuild, quarantine, _checkpoint_relative = _create_legacy_artifacts(data_home)
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
-    bundle = SimpleNamespace(
-        artifact_store=store,
-        manifest_store=_manifest_store(data_home),
-    )
+    bundle = _legacy_discovery_bundle(data_home, artifact_store=store)
     monkeypatch.setattr(
         rebuild_service,
         "load_verified_rebuild_confirmation_receipt",
@@ -2804,10 +2817,7 @@ def test_legacy_executor_refuses_persisted_v3_intent_without_guard(
     _create_queue_database(db_path)
     rebuild, quarantine, _checkpoint_relative = _create_legacy_artifacts(data_home)
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
-    bundle = SimpleNamespace(
-        artifact_store=store,
-        manifest_store=_manifest_store(data_home),
-    )
+    bundle = _legacy_discovery_bundle(data_home, artifact_store=store)
     monkeypatch.setattr(
         rebuild_service,
         "load_verified_rebuild_confirmation_receipt",
@@ -2891,10 +2901,7 @@ def test_legacy_executor_accepts_realistic_large_checkpoint_but_bounds_artifacts
     checkpoint_path = rebuild / checkpoint_relative
     assert checkpoint_path.stat().st_size > recovery.REHEARSAL_RECEIPT_MAX_BYTES
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
-    bundle = SimpleNamespace(
-        artifact_store=store,
-        manifest_store=_manifest_store(data_home),
-    )
+    bundle = _legacy_discovery_bundle(data_home, artifact_store=store)
     monkeypatch.setattr(
         rebuild_service,
         "load_verified_rebuild_confirmation_receipt",
@@ -2943,10 +2950,7 @@ def test_legacy_executor_refuses_terminal_checkpoint_artifact_queue_split_brain(
     _create_queue_database(db_path)
     rebuild, quarantine, _checkpoint_relative = _create_legacy_artifacts(data_home)
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
-    bundle = SimpleNamespace(
-        artifact_store=store,
-        manifest_store=_manifest_store(data_home),
-    )
+    bundle = _legacy_discovery_bundle(data_home, artifact_store=store)
     monkeypatch.setattr(
         rebuild_service,
         "load_verified_rebuild_confirmation_receipt",
@@ -3052,10 +3056,7 @@ def test_legacy_executor_retries_exact_compensation_failed_phase(
     _create_queue_database(db_path)
     rebuild, quarantine, _checkpoint_relative = _create_legacy_artifacts(data_home)
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
-    bundle = SimpleNamespace(
-        artifact_store=store,
-        manifest_store=_manifest_store(data_home),
-    )
+    bundle = _legacy_discovery_bundle(data_home, artifact_store=store)
     monkeypatch.setattr(
         rebuild_service,
         "load_verified_rebuild_confirmation_receipt",
@@ -3306,10 +3307,7 @@ async def test_root_bound_service_retries_copy_like_mid_cas_fence_loss(
         source_count=2,
     )
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
-    discovery_bundle = SimpleNamespace(
-        artifact_store=store,
-        manifest_store=_manifest_store(data_home),
-    )
+    discovery_bundle = _legacy_discovery_bundle(data_home, artifact_store=store)
     monkeypatch.setattr(
         rebuild_service,
         "load_verified_rebuild_confirmation_receipt",
@@ -3493,10 +3491,13 @@ async def test_root_bound_service_retries_copy_like_mid_cas_fence_loss(
         def start_count(_family: object) -> int:
             return 0
 
+    async def snapshot_closed_board_storage(**kwargs):  # noqa: ANN003, ANN202
+        return recovery._snapshot_tree_hashes(kwargs["board_storage_root"])
+
     monkeypatch.setattr(
         recovery,
         "_snapshot_closed_board_storage",
-        lambda **kwargs: recovery._snapshot_tree_hashes(kwargs["board_storage_root"]),
+        snapshot_closed_board_storage,
     )
     result = await recovery._run_legacy_queue_only_lane(
         retry_plan,
@@ -3504,6 +3505,7 @@ async def test_root_bound_service_retries_copy_like_mid_cas_fence_loss(
             service=service,
             single_writer_lock=writer,
             operation_reservation=reservation,
+            graph_binding=_legacy_graph_binding(data_home),
         ),
         composition=SimpleNamespace(worker_registry=Workers()),
         db_path=db_path,
@@ -3557,10 +3559,7 @@ async def test_legacy_lane_validates_source_guard_before_logical_exclusion(
     _create_queue_database(db_path)
     rebuild, quarantine, _checkpoint_relative = _create_legacy_artifacts(data_home)
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
-    discovery_bundle = SimpleNamespace(
-        artifact_store=store,
-        manifest_store=_manifest_store(data_home),
-    )
+    discovery_bundle = _legacy_discovery_bundle(data_home, artifact_store=store)
     monkeypatch.setattr(
         rebuild_service,
         "load_verified_rebuild_confirmation_receipt",
@@ -3612,7 +3611,10 @@ async def test_legacy_lane_validates_source_guard_before_logical_exclusion(
     ):
         await recovery._run_legacy_queue_only_lane(
             plan,
-            bundle=SimpleNamespace(service=Service()),
+            bundle=SimpleNamespace(
+                service=Service(),
+                graph_binding=_legacy_graph_binding(data_home),
+            ),
             composition=SimpleNamespace(),
             db_path=db_path,
             schema_fingerprint="unused",
@@ -3663,10 +3665,7 @@ async def test_legacy_executor_lane_uses_real_core_service_and_releases_fences(
     )
     store = CommunityFileSystemRebuildAuditArtifactStore(data_home)
 
-    discovery_bundle = SimpleNamespace(
-        artifact_store=store,
-        manifest_store=_manifest_store(data_home),
-    )
+    discovery_bundle = _legacy_discovery_bundle(data_home, artifact_store=store)
     monkeypatch.setattr(
         rebuild_service,
         "load_verified_rebuild_confirmation_receipt",
@@ -3841,10 +3840,14 @@ async def test_legacy_executor_lane_uses_real_core_service_and_releases_fences(
         legacy_manual_restore_queue_only_adapter=adapter,
         lock_ttl_seconds=60,
     )
+
+    async def snapshot_closed_board_storage(**kwargs):  # noqa: ANN003, ANN202
+        return recovery._snapshot_tree_hashes(kwargs["board_storage_root"])
+
     monkeypatch.setattr(
         recovery,
         "_snapshot_closed_board_storage",
-        lambda **kwargs: recovery._snapshot_tree_hashes(kwargs["board_storage_root"]),
+        snapshot_closed_board_storage,
     )
 
     class Workers:
@@ -3862,6 +3865,7 @@ async def test_legacy_executor_lane_uses_real_core_service_and_releases_fences(
             service=service,
             single_writer_lock=writer,
             operation_reservation=reservation,
+            graph_binding=_legacy_graph_binding(data_home),
         ),
         composition=SimpleNamespace(worker_registry=Workers()),
         db_path=db_path,
@@ -3923,9 +3927,13 @@ def test_real_service_bundle_heartbeats_keep_root_without_runtime_context(
 
     source_root = Path(recovery.__file__).resolve().parents[2]
     workspace_root = source_root.parent.parent
-    core_source_root = workspace_root / "okto_labs_pulse_core" / "src"
-    if not core_source_root.is_dir():
-        core_source_root = workspace_root / "okto-pulse-core" / "src"
+    configured_core_repo = os.environ.get("OKTO_PULSE_CORE_REPO")
+    if configured_core_repo:
+        core_source_root = Path(configured_core_repo).resolve() / "src"
+    else:
+        core_source_root = workspace_root / "okto_labs_pulse_core" / "src"
+        if not core_source_root.is_dir():
+            core_source_root = workspace_root / "okto-pulse-core" / "src"
     child_home = tmp_path / "bundle-heartbeat-child"
     script = textwrap.dedent(
         """

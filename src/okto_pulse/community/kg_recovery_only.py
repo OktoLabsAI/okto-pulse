@@ -56,10 +56,11 @@ from uuid import RFC_4122, UUID
 CORE_DISTRIBUTION = "okto-pulse-core"
 COMMUNITY_DISTRIBUTION = "okto-pulse"
 EXPECTED_VERSION = "0.3.3"
+LEGACY_QUEUE_ONLY_SUPPORTED_SOFTWARE_VERSIONS = frozenset({"0.3.2", EXPECTED_VERSION})
 LADYBUG_DISTRIBUTION = "ladybug"
 EXPECTED_LADYBUG_VERSION = "0.16.0"
-KUZU_DISTRIBUTION = "kuzu"
-EXPECTED_KUZU_VERSION = "0.11.3"
+GRAFX_DISTRIBUTION = "okto-grafx"
+EXPECTED_GRAFX_VERSION = "0.0.1"
 SQLALCHEMY_DISTRIBUTION = "SQLAlchemy"
 EXPECTED_SQLALCHEMY_VERSION = "2.0.49"
 AIOSQLITE_DISTRIBUTION = "aiosqlite"
@@ -594,7 +595,18 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--expected-ladybug-version",
         default=EXPECTED_LADYBUG_VERSION,
     )
-    parser.add_argument("--expected-kuzu-version", default=EXPECTED_KUZU_VERSION)
+    parser.add_argument(
+        "--expected-grafx-version",
+        default=EXPECTED_GRAFX_VERSION,
+    )
+    parser.add_argument(
+        "--expected-kuzu-version",
+        default=None,
+        help=(
+            "Deprecated alias for --expected-ladybug-version; no Kuzu "
+            "distribution is required."
+        ),
+    )
     parser.add_argument(
         "--expected-sqlalchemy-version",
         default=EXPECTED_SQLALCHEMY_VERSION,
@@ -619,6 +631,16 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--poll-seconds", type=float, default=0.10)
     parser.add_argument("--batch-size", type=int, default=5)
     args = parser.parse_args(argv)
+    if args.expected_kuzu_version is not None:
+        if (
+            args.expected_ladybug_version != EXPECTED_LADYBUG_VERSION
+            and args.expected_ladybug_version != args.expected_kuzu_version
+        ):
+            parser.error(
+                "--expected-kuzu-version aliases --expected-ladybug-version; "
+                "conflicting expected versions were supplied"
+            )
+        args.expected_ladybug_version = args.expected_kuzu_version
     if not args.inspect_install and not args.expected_install_fingerprint:
         parser.error(
             "--execute/--rehearsal-copy-of requires --expected-install-fingerprint"
@@ -745,7 +767,7 @@ def _install_evidence(
     core_version: str,
     community_version: str,
     ladybug_version: str,
-    kuzu_version: str,
+    grafx_version: str,
     sqlalchemy_version: str,
     aiosqlite_version: str,
 ) -> InstallEvidence:
@@ -767,8 +789,8 @@ def _install_evidence(
             require_native=True,
         ),
         _distribution_evidence(
-            KUZU_DISTRIBUTION,
-            kuzu_version,
+            GRAFX_DISTRIBUTION,
+            grafx_version,
             include_python=True,
         ),
         _distribution_evidence(
@@ -8841,6 +8863,7 @@ def _legacy_quarantine_evidence(
     assert isinstance(original_refs, list)
     original_ref = original_refs[0]
     assert isinstance(original_ref, Mapping)
+    original_software_version = original_manifest.get("software_version")
     original_quarantined_at = _parse_utc_timestamp(
         original_manifest.get("quarantined_at"),
         code="legacy_queue_only_original_quarantine_invalid",
@@ -8871,7 +8894,7 @@ def _legacy_quarantine_evidence(
             expected=historical_data_home / "boards" / board_id / "graph.lbug",
             code="legacy_queue_only_original_quarantine_storage_ref_invalid",
         )
-        and original_manifest.get("software_version") == EXPECTED_VERSION,
+        and original_software_version in LEGACY_QUEUE_ONLY_SUPPORTED_SOFTWARE_VERSIONS,
         "legacy_queue_only_original_quarantine_invalid",
     )
     _require(
@@ -9016,7 +9039,9 @@ def _legacy_quarantine_evidence(
         and manual_manifest.get("kg_generation_id") is None
         and type(manual_manifest.get("files_moved")) is int
         and manual_manifest.get("files_moved") == 2
-        and manual_manifest.get("software_version") == EXPECTED_VERSION,
+        and manual_manifest.get("software_version") == original_software_version
+        and manual_manifest.get("software_version")
+        in LEGACY_QUEUE_ONLY_SUPPORTED_SOFTWARE_VERSIONS,
         "legacy_queue_only_manual_restore_invalid",
     )
     _require(
@@ -16726,7 +16751,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         core_version=args.expected_core_version,
         community_version=args.expected_community_version,
         ladybug_version=args.expected_ladybug_version,
-        kuzu_version=args.expected_kuzu_version,
+        grafx_version=args.expected_grafx_version,
         sqlalchemy_version=args.expected_sqlalchemy_version,
         aiosqlite_version=args.expected_aiosqlite_version,
     )
