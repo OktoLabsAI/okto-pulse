@@ -81,6 +81,7 @@ _CROSS_EDITION_CONTRACT_EXPECTATION: tuple[str, ...] = (
     "okto_pulse.core.kg.hybrid_search.hybrid",
     "okto_pulse.core.kg.interfaces",
     "okto_pulse.core.kg.kg_service",
+    "okto_pulse.core.kg.logical_transfer",
     "okto_pulse.core.kg.orphan_integrity",
     "okto_pulse.core.kg.primitives",
     "okto_pulse.core.kg.quarantine",
