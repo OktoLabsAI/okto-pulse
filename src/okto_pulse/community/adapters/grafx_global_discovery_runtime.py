@@ -25,8 +25,8 @@ from okto_pulse.core.kg.tier_power import validate_cypher_read_only
 
 from okto_pulse.community.adapters.filesystem_erasure import (
     fsync_directory,
-    remove_contained_tree,
     reject_filesystem_alias_ancestry,
+    remove_contained_tree,
     validate_scope_id,
 )
 from okto_pulse.community.adapters.global_discovery_layout import (

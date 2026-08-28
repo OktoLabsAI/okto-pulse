@@ -19,19 +19,19 @@ from okto_pulse.core.kg.interfaces.global_discovery_recovery import (
 from okto_pulse.core.kg.interfaces.graph_errors import GraphCapabilityUnavailable
 from okto_pulse.core.kg.interfaces.storage_ref import StorageRef
 
+from okto_pulse.community.adapters.filesystem_erasure import (
+    is_filesystem_alias,
+    reject_filesystem_alias_ancestry,
+)
 from okto_pulse.community.adapters.global_discovery_layout import (
+    GENERATION_MANIFEST_FILENAME,
     LAYOUT_VERSION,
     ActiveGeneration,
-    GENERATION_MANIFEST_FILENAME,
     GlobalDiscoveryLayoutError,
     active_pointer_path,
     canonical_sha256,
     generations_root,
     validate_generation_id,
-)
-from okto_pulse.community.adapters.filesystem_erasure import (
-    is_filesystem_alias,
-    reject_filesystem_alias_ancestry,
 )
 
 GLOBAL_SCOPE = "_global"

@@ -7,7 +7,6 @@ import stat
 from collections.abc import Callable
 from pathlib import Path
 
-
 _FILE_ATTRIBUTE_DIRECTORY = int(getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0x10))
 _FILE_ATTRIBUTE_REPARSE_POINT = int(
     getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
