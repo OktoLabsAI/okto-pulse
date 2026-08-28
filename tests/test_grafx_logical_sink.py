@@ -1,0 +1,308 @@
+"""Grafx candidate import, cold certification and finite failure contract."""
+
+from __future__ import annotations
+
+from collections.abc import Iterator, Sequence
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+from okto_grafx import Database, Transaction, connect
+from okto_pulse.core.kg.logical_transfer import (
+    LOGICAL_NULL,
+    LogicalCounts,
+    LogicalNode,
+    LogicalNodeType,
+    LogicalPropertyDef,
+    LogicalRelation,
+    LogicalRelationLayout,
+    LogicalSchema,
+    LogicalSchemaError,
+    LogicalTimestamp,
+    LogicalVector,
+    LogicalVectorSpace,
+    PhasedTransferError,
+    count_graph,
+    fingerprint_graph,
+    transfer_logical_graph,
+)
+
+from okto_pulse.community.adapters.grafx_logical_sink import (
+    CommunityGrafxLogicalCandidateSink,
+)
+from okto_pulse.community.adapters.logical_transfer_grafx import (
+    CommunityGrafxLogicalSnapshotSource,
+)
+
+_RELATIONSHIP_TABLES = {("links", "A", "B"): "A_links_B"}
+
+
+def _schema() -> LogicalSchema:
+    return LogicalSchema(
+        scope="board",
+        node_types=(
+            LogicalNodeType(
+                "A",
+                "id",
+                (
+                    LogicalPropertyDef("id", "string", nullable=False),
+                    LogicalPropertyDef("note", "string"),
+                    LogicalPropertyDef("at", "timestamp_us"),
+                    LogicalPropertyDef("embedding", "vector", vector_space="semantic"),
+                ),
+            ),
+            LogicalNodeType(
+                "B",
+                "id",
+                (
+                    LogicalPropertyDef("id", "string", nullable=False),
+                    LogicalPropertyDef("note", "string"),
+                ),
+            ),
+        ),
+        relation_layouts=(
+            LogicalRelationLayout(
+                "links",
+                "A",
+                "B",
+                (
+                    LogicalPropertyDef("note", "string"),
+                    LogicalPropertyDef("score", "float64"),
+                ),
+            ),
+        ),
+        vector_spaces=(LogicalVectorSpace("semantic", "float64", 3, "cosine", False),),
+    )
+
+
+def _nodes(*, absent: bool = False) -> tuple[LogicalNode, ...]:
+    second_properties = {"id": "b1"}
+    if not absent:
+        second_properties["note"] = LOGICAL_NULL
+    return (
+        LogicalNode(
+            "A",
+            "a1",
+            {
+                "id": "a1",
+                "note": "",
+                "at": LogicalTimestamp(1_234_567),
+                "embedding": LogicalVector("semantic", "float64", (1.0, 0.0, -0.0)),
+            },
+        ),
+        LogicalNode("B", "b1", second_properties),
+    )
+
+
+def _relations() -> tuple[LogicalRelation, ...]:
+    return (
+        LogicalRelation(
+            "links",
+            "A",
+            "B",
+            "a1",
+            "b1",
+            {"note": LOGICAL_NULL, "score": -0.0},
+        ),
+    )
+
+
+class _Snapshot:
+    def __init__(
+        self,
+        schema: LogicalSchema,
+        nodes: tuple[LogicalNode, ...],
+        relations: tuple[LogicalRelation, ...],
+    ) -> None:
+        self._schema = schema
+        self._nodes = nodes
+        self._relations = relations
+        self.closed = False
+
+    def schema(self) -> LogicalSchema:
+        return self._schema
+
+    def counts(self) -> LogicalCounts:
+        return count_graph(self._nodes, self._relations)
+
+    def iter_nodes(self, *, batch_size: int) -> Iterator[Sequence[LogicalNode]]:
+        for start in range(0, len(self._nodes), batch_size):
+            yield self._nodes[start : start + batch_size]
+
+    def iter_relations(self, *, batch_size: int) -> Iterator[Sequence[LogicalRelation]]:
+        for start in range(0, len(self._relations), batch_size):
+            yield self._relations[start : start + batch_size]
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _Source:
+    def __init__(self, snapshot: _Snapshot) -> None:
+        self.snapshot = snapshot
+        self.opens = 0
+
+    def open_snapshot(self) -> _Snapshot:
+        self.opens += 1
+        return self.snapshot
+
+
+class _ObservedSink(CommunityGrafxLogicalCandidateSink):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.abort_calls = 0
+
+    def abort(self) -> None:
+        self.abort_calls += 1
+        super().abort()
+
+
+def _source(*, absent: bool = False) -> _Source:
+    return _Source(_Snapshot(_schema(), _nodes(absent=absent), _relations()))
+
+
+def _sink(path: Path, **overrides) -> _ObservedSink:
+    return _ObservedSink(
+        path,
+        expected_schema=_schema(),
+        relationship_tables=_RELATIONSHIP_TABLES,
+        max_batch_size=1,
+        temporary_parent=path.parent,
+        **overrides,
+    )
+
+
+def test_grafx_candidate_roundtrip_is_cold_certified_and_unbound(
+    tmp_path: Path,
+) -> None:
+    candidate = tmp_path / "candidate"
+    schema = _schema()
+    nodes = _nodes()
+    relations = _relations()
+    source = _source()
+    sink = _sink(candidate)
+
+    report = transfer_logical_graph(source, sink, batch_size=1)
+
+    assert report.counts == count_graph(nodes, relations)
+    assert report.fingerprint == fingerprint_graph(schema, nodes, relations)
+    assert source.opens == 1
+    assert source.snapshot.closed is True
+    assert sink.abort_calls == 0
+    assert candidate.is_dir()
+
+    database = connect(candidate, page_size=8192, read_only=True)
+    snapshot = CommunityGrafxLogicalSnapshotSource(
+        database,
+        schema=schema,
+        relationship_tables=_RELATIONSHIP_TABLES,
+        scan_batch_size=1,
+        temporary_parent=tmp_path,
+    ).open_snapshot()
+    try:
+        restored_nodes = tuple(
+            node for batch in snapshot.iter_nodes(batch_size=1) for node in batch
+        )
+        restored_relations = tuple(
+            relation
+            for batch in snapshot.iter_relations(batch_size=1)
+            for relation in batch
+        )
+        assert restored_nodes == nodes
+        assert restored_relations == relations
+        assert database.verify("all").clean is True
+    finally:
+        snapshot.close()
+        database.close()
+    assert database.close_complete is True
+
+    # Finalize accepts an unbound path; a later defensive abort must not erase it.
+    sink.abort()
+    assert sink.abort_calls == 1
+    assert candidate.is_dir()
+
+
+def test_grafx_candidate_refuses_absent_property_and_preserves_previous(
+    tmp_path: Path,
+) -> None:
+    previous = tmp_path / "previous"
+    previous.mkdir()
+    sentinel = previous / "generation.bin"
+    sentinel.write_bytes(b"previous-generation")
+    candidate = tmp_path / "candidate"
+    source = _source(absent=True)
+    sink = _sink(candidate)
+
+    with pytest.raises(PhasedTransferError) as caught:
+        transfer_logical_graph(source, sink, batch_size=1)
+
+    assert caught.value.phase == "import"
+    assert "absent logical property" in str(caught.value.__cause__)
+    assert sink.abort_calls == 1
+    assert not candidate.exists()
+    assert sentinel.read_bytes() == b"previous-generation"
+
+
+def test_grafx_candidate_refuses_unexpected_schema_before_owning_path(
+    tmp_path: Path,
+) -> None:
+    candidate = tmp_path / "candidate"
+    sink = _sink(candidate)
+
+    with pytest.raises(LogicalSchemaError, match="fixed Pulse schema"):
+        sink.begin_candidate(replace(_schema(), scope="global_discovery"))
+
+    assert not candidate.exists()
+    assert sink._owns_path is False
+
+
+@pytest.mark.parametrize("fault", ["import", "checkpoint", "reopen"])
+def test_grafx_candidate_failure_matrix_preserves_previous(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: str,
+) -> None:
+    previous = tmp_path / "previous"
+    previous.mkdir()
+    sentinel = previous / "generation.bin"
+    sentinel.write_bytes(b"previous-generation")
+    candidate = tmp_path / f"candidate-{fault}"
+    source = _source()
+    sink_options = {}
+
+    if fault == "import":
+        original_execute = Transaction.execute
+
+        def failing_execute(transaction, text, parameters=None):
+            if text.startswith("CREATE (n:"):
+                raise OSError("injected import failure")
+            return original_execute(transaction, text, parameters)
+
+        monkeypatch.setattr(Transaction, "execute", failing_execute)
+    elif fault == "checkpoint":
+        monkeypatch.setattr(
+            Database,
+            "checkpoint",
+            lambda _database: (_ for _ in ()).throw(
+                OSError("injected checkpoint failure")
+            ),
+        )
+    else:
+
+        def failing_reopen(path, **options):
+            if options.get("read_only") is True:
+                raise OSError("injected reopen failure")
+            return connect(path, **options)
+
+        sink_options["connect_factory"] = failing_reopen
+
+    sink = _sink(candidate, **sink_options)
+    with pytest.raises(PhasedTransferError) as caught:
+        transfer_logical_graph(source, sink, batch_size=1)
+
+    assert caught.value.phase == fault
+    assert f"injected {fault} failure" in str(caught.value.__cause__)
+    assert sink.abort_calls == 1
+    assert sink._finalized is False
+    assert not candidate.exists()
+    assert sentinel.read_bytes() == b"previous-generation"
