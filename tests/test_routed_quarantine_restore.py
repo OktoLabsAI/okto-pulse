@@ -39,6 +39,8 @@ from okto_pulse.community.adapters.routed_quarantine_restore import (
 
 BOARD_ID = "board-routed-restore"
 PAGE_SIZE = 8192
+LEGACY_BOARD_ID = "11111111-1111-4111-8111-111111111111"
+OTHER_LEGACY_BOARD_ID = "22222222-2222-4222-8222-222222222222"
 
 
 class _FakeGrafxDatabase:
@@ -262,6 +264,30 @@ def _produced_ladybug_wal_quarantine(root: Path) -> tuple[Path, Path, str]:
     return graph_path, root / "quarantine" / result.quarantine_id, result.quarantine_id
 
 
+def _legacy_interrupted_quarantine(
+    root: Path,
+    *,
+    quarantine_board_id: str = LEGACY_BOARD_ID,
+    manifest_board_id: str = LEGACY_BOARD_ID,
+    declared_files: tuple[str, ...] = ("graph.lbug.shadow",),
+    payload_files: tuple[str, ...] = ("graph.lbug.shadow",),
+) -> tuple[Path, str]:
+    graph_path = root / "boards" / manifest_board_id / "graph.lbug"
+    quarantine_id = f"interrupted-checkpoint-{quarantine_board_id}-20260828T000000"
+    directory = root / "quarantine" / quarantine_id
+    directory.mkdir(parents=True)
+    for name in payload_files:
+        (directory / name).write_bytes(f"payload:{name}".encode())
+    (directory / "manifest.txt").write_text(
+        "Sidecars orfaos de checkpoint interrompido movidos automaticamente "
+        f"para destravar a abertura de {graph_path}. "
+        "Main file preservado no lugar. "
+        f"Arquivos: {', '.join(declared_files)}.",
+        encoding="utf-8",
+    )
+    return graph_path, quarantine_id
+
+
 def _routed(
     root: Path,
     resolver: CommunityGraphRouteResolver,
@@ -326,6 +352,73 @@ def test_real_ladybug_wal_producer_routes_with_authenticated_inventory(
         "graph.lbug.shadow",
         "graph.lbug.wal",
     ]
+
+
+@pytest.mark.parametrize(
+    ("declared_files", "payload_files"),
+    [
+        (("graph.lbug.shadow",), ("graph.lbug",)),
+        (("graph.lbug",), ("graph.lbug",)),
+        (("graph.lbug.wal",), ("graph.lbug.wal",)),
+    ],
+)
+def test_legacy_interrupted_checkpoint_never_routes_main_or_primary_wal(
+    tmp_path: Path,
+    declared_files: tuple[str, ...],
+    payload_files: tuple[str, ...],
+) -> None:
+    graph_path, quarantine_id = _legacy_interrupted_quarantine(
+        tmp_path,
+        declared_files=declared_files,
+        payload_files=payload_files,
+    )
+    graph_path.parent.mkdir(parents=True)
+    graph_path.write_bytes(b"live-board-must-survive")
+    _store, resolver = _resolver(tmp_path)
+    ladybug = _RecordingRestore(board_id=LEGACY_BOARD_ID, board_dir=graph_path.parent)
+
+    with pytest.raises(QuarantineRestoreError):
+        _routed(tmp_path, resolver, ladybug).apply(quarantine_id)
+
+    assert ladybug.apply_calls == []
+    assert graph_path.read_bytes() == b"live-board-must-survive"
+
+
+def test_legacy_interrupted_checkpoint_refuses_conflicting_board_identities(
+    tmp_path: Path,
+) -> None:
+    graph_path, quarantine_id = _legacy_interrupted_quarantine(
+        tmp_path,
+        quarantine_board_id=LEGACY_BOARD_ID,
+        manifest_board_id=OTHER_LEGACY_BOARD_ID,
+    )
+    graph_path.parent.mkdir(parents=True)
+    graph_path.write_bytes(b"other-live-board-must-survive")
+    _store, resolver = _resolver(tmp_path)
+    ladybug = _RecordingRestore(board_id=LEGACY_BOARD_ID, board_dir=graph_path.parent)
+
+    with pytest.raises(QuarantineRestoreError, match="inconsistent board identity"):
+        _routed(tmp_path, resolver, ladybug).apply(quarantine_id)
+
+    assert ladybug.apply_calls == []
+    assert graph_path.read_bytes() == b"other-live-board-must-survive"
+
+
+def test_legacy_interrupted_checkpoint_routes_exact_producer_sidecars(
+    tmp_path: Path,
+) -> None:
+    graph_path, quarantine_id = _legacy_interrupted_quarantine(
+        tmp_path,
+        declared_files=("graph.lbug.shadow", "graph.lbug.wal.checkpoint"),
+        payload_files=("graph.lbug.shadow", "graph.lbug.wal.checkpoint"),
+    )
+    _store, resolver = _resolver(tmp_path)
+    ladybug = _RecordingRestore(board_id=LEGACY_BOARD_ID, board_dir=graph_path.parent)
+
+    plan = _routed(tmp_path, resolver, ladybug).plan(quarantine_id)
+
+    assert plan.board_id == LEGACY_BOARD_ID
+    assert ladybug.plan_calls == [quarantine_id]
 
 
 @pytest.mark.parametrize(

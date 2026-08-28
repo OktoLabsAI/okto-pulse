@@ -72,6 +72,15 @@ _LADYBUG_FILE_NAMES = frozenset(
     }
 )
 _LADYBUG_WAL_FILE_NAMES = _LADYBUG_FILE_NAMES - {"graph.lbug"}
+_LADYBUG_INTERRUPTED_KIND = "legacy_interrupted_checkpoint"
+_LADYBUG_INTERRUPTED_FILE_NAMES = frozenset(
+    {"graph.lbug.shadow", "graph.lbug.wal.checkpoint"}
+)
+_LADYBUG_INTERRUPTED_TEXT_RE = re.compile(
+    r"\ASidecars orfaos de checkpoint interrompido movidos automaticamente "
+    r"para destravar a abertura de (?P<graph_path>.+)\. "
+    r"Main file preservado no lugar\. Arquivos: (?P<files>.+)\.\Z"
+)
 _GRAFX_EXCLUSIVE_MARKERS = frozenset(
     {
         "format",
@@ -501,7 +510,10 @@ class CommunityRoutedQuarantineRestore:
         quarantine_id: str,
     ) -> None:
         document = classification.document
-        if document is None or document.get("kind") != _LADYBUG_WAL_KIND:
+        if document is None or document.get("kind") not in {
+            _LADYBUG_WAL_KIND,
+            _LADYBUG_INTERRUPTED_KIND,
+        }:
             return
         recorded_path = _required_absolute_path(
             document.get("graph_path"),
@@ -575,7 +587,10 @@ class CommunityRoutedQuarantineRestore:
         if document is None:
             return
         if classification.backend == "ladybug":
-            if document.get("kind") != _LADYBUG_WAL_KIND:
+            if document.get("kind") not in {
+                _LADYBUG_WAL_KIND,
+                _LADYBUG_INTERRUPTED_KIND,
+            }:
                 return
             recorded_path = _required_absolute_path(
                 document.get("graph_path"),
@@ -1146,23 +1161,64 @@ class CommunityRoutedQuarantineRestore:
                 "legacy Ladybug manifest is not UTF-8",
                 quarantine_id=quarantine_id,
             ) from failure
-        if (
-            not quarantine_id.startswith("interrupted-checkpoint-")
-            or "Sidecars orfaos de checkpoint interrompido" not in text
-            or "Main file preservado no lugar." not in text
-            or not any(name in text for name in _LADYBUG_FILE_NAMES - {"graph.lbug"})
-        ):
+        match = _LADYBUG_INTERRUPTED_TEXT_RE.fullmatch(text)
+        if match is None or not quarantine_id.startswith("interrupted-checkpoint-"):
             raise _refused(
                 "legacy Ladybug text manifest is not recognised",
                 quarantine_id=quarantine_id,
             )
-        match = _UUID_RE.search(quarantine_id) or _UUID_RE.search(text)
-        if match is None:
+
+        declared_files = tuple(match.group("files").split(", "))
+        if (
+            not declared_files
+            or len(declared_files) != len(set(declared_files))
+            or not set(declared_files).issubset(_LADYBUG_INTERRUPTED_FILE_NAMES)
+        ):
             raise _refused(
-                "legacy Ladybug text manifest has no board identity",
+                "legacy Ladybug text manifest declares an invalid sidecar inventory",
                 quarantine_id=quarantine_id,
             )
-        return _ManifestRoute("ladybug", match.group(0), _MANIFEST_TEXT, None)
+
+        graph_path = _required_absolute_path(
+            match.group("graph_path"),
+            quarantine_id=quarantine_id,
+            label="legacy Ladybug text manifest graph_path",
+        )
+        quarantine_identities = {
+            value.lower() for value in _UUID_RE.findall(quarantine_id)
+        }
+        text_identities = {value.lower() for value in _UUID_RE.findall(text)}
+        path_board_id = graph_path.parent.name
+        if (
+            graph_path.name != "graph.lbug"
+            or _UUID_RE.fullmatch(path_board_id) is None
+            or quarantine_identities != {path_board_id.lower()}
+            or text_identities != {path_board_id.lower()}
+            or not quarantine_id.startswith(
+                f"interrupted-checkpoint-{path_board_id}-"
+            )
+        ):
+            raise _refused(
+                "legacy Ladybug text manifest has an inconsistent board identity",
+                quarantine_id=quarantine_id,
+            )
+        try:
+            reject_filesystem_alias_ancestry(graph_path)
+        except (OSError, ValueError) as failure:
+            raise _refused(
+                "legacy Ladybug text manifest graph_path crosses a filesystem alias",
+                quarantine_id=quarantine_id,
+            ) from failure
+        return _ManifestRoute(
+            "ladybug",
+            path_board_id,
+            _MANIFEST_TEXT,
+            {
+                "kind": _LADYBUG_INTERRUPTED_KIND,
+                "graph_path": str(graph_path),
+                "files": declared_files,
+            },
+        )
 
     @staticmethod
     def _validate_backend_namespace(
@@ -1187,6 +1243,16 @@ class CommunityRoutedQuarantineRestore:
                 if payload_names != expected:
                     raise _refused(
                         "Ladybug WAL quarantine payload does not match its moved inventory",
+                        quarantine_id=quarantine_id,
+                    )
+            elif (
+                document is not None
+                and document.get("kind") == _LADYBUG_INTERRUPTED_KIND
+            ):
+                expected = set(document.get("files", []))
+                if payload_names != expected:
+                    raise _refused(
+                        "legacy Ladybug sidecar payload does not match its declared inventory",
                         quarantine_id=quarantine_id,
                     )
             if not payload_names or not payload_names.issubset(_LADYBUG_FILE_NAMES):
