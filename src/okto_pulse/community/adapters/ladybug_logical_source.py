@@ -33,7 +33,7 @@ endpoint map; that is a Grafx-side concern, not a shared one.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime, timezone
 from typing import Any, Final
 
@@ -51,6 +51,9 @@ from okto_pulse.core.kg.logical_transfer import (
     LogicalVector,
 )
 
+from okto_pulse.community.adapters.logical_transfer_schema import (
+    index_gate_failures,
+)
 from okto_pulse.community.adapters.logical_transfer_values import (
     require_projected_columns,
     scalar_to_logical,
@@ -59,6 +62,35 @@ from okto_pulse.community.adapters.logical_transfer_values import (
 
 DEFAULT_BATCH_SIZE: Final[int] = 500
 _EPOCH: Final[datetime] = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _note_cleanup(
+    action: Callable[[], object], primary: BaseException, what: str
+) -> None:
+    """Run a cleanup step, attaching its failure to the error already in flight.
+
+    A cleanup that raises must never replace the failure that caused it. The
+    caller would then be told only that a handle would not close, and never
+    told why the operation failed in the first place -- which is exactly the
+    signal a leaked handle needs in order to be diagnosed.
+    """
+
+    try:
+        action()
+    except Exception as failure:  # noqa: BLE001 - attached, never substituted
+        primary.add_note(f"{what} also failed: {failure}")
+
+
+def _close_or_raise(handle: object, what: str) -> None:
+    """Close one handle, reporting failure rather than hiding it."""
+
+    closer = getattr(handle, "close", None)
+    if not callable(closer):
+        return
+    try:
+        closer()
+    except Exception as failure:
+        raise LadybugSourceError(f"closing the {what} failed: {failure}") from failure
 
 
 class LadybugSourceError(RuntimeError):
@@ -150,10 +182,15 @@ class LadybugLogicalSnapshot:
         self._schema = schema
         self._owns_transaction = owns_transaction
         self._closed = False
+        self._cleanup_complete = False
         self._ended = False
         self._space_dtypes = {s.name: s.storage_dtype for s in schema.vector_spaces}
 
     def schema(self) -> LogicalSchema:
+        # Guarded like every other reader: a snapshot that has begun closing is
+        # not a snapshot any more, and handing back its schema would suggest it
+        # could still be read.
+        self._require_open()
         return self._schema
 
     def validate_physical_schema(self) -> None:
@@ -219,10 +256,51 @@ class LadybugLogicalSnapshot:
                     "relation table columns do not match the expected schema",
                     detail=f"{name}: {columns} != {wanted}",
                 )
+            # TABLE_INFO omits endpoints, but SHOW_CONNECTION reports them, so
+            # an extra FROM/TO pair on a relation table IS observable after all
+            # -- and an undeclared pair means rows this reader would drop.
+            # All four columns are compared: the endpoint primary keys are
+            # what this reader joins on, so a pair that agreed on the tables
+            # while keying off a different column is still the wrong database.
+            pairs = {
+                (str(row[0]), str(row[1]), str(row[2]), str(row[3]))
+                for row in self._rows(f"CALL SHOW_CONNECTION('{name}') RETURN *", {})
+            }
+            declared = {
+                (
+                    lay.source_type,
+                    lay.target_type,
+                    self._schema.node_type(lay.source_type).key,
+                    self._schema.node_type(lay.target_type).key,
+                )
+                for lay in self._schema.relation_layouts
+                if lay.name == name
+            }
+            if pairs != declared:
+                raise LogicalSchemaError(
+                    "relation endpoint pairs do not match the expected schema",
+                    detail=(
+                        f"{name}: unexpected={sorted(pairs - declared)} "
+                        f"missing={sorted(declared - pairs)}"
+                    ),
+                )
+
+        # The scope's searchable authority, judged by the same gate the sink
+        # certifies with. SHOW_INDEXES reads the catalog: no INSTALL and no
+        # LOAD, so validating a snapshot never writes to what it is reading.
+        faults = index_gate_failures(
+            self._schema, self._rows("CALL SHOW_INDEXES() RETURN *", {})
+        )
+        if faults:
+            raise LogicalSchemaError(
+                "vector indexes do not match the expected schema",
+                detail="; ".join(faults),
+            )
 
     def counts(self) -> LogicalCounts:
         """Census the snapshot with aggregate queries, not by walking it."""
 
+        self._require_open()
         nodes = 0
         relations = 0
         properties = 0
@@ -268,12 +346,23 @@ class LadybugLogicalSnapshot:
     def iter_nodes(
         self, *, batch_size: int = DEFAULT_BATCH_SIZE
     ) -> Iterator[Sequence[LogicalNode]]:
+        # Checked here rather than in the generator body: a generator defers
+        # everything to the first next(), so a closed snapshot would hand back
+        # a healthy-looking iterator and only refuse once someone read it.
+        self._require_open()
+        return self._iter_nodes(batch_size)
+
+    def _iter_nodes(self, batch_size: int) -> Iterator[Sequence[LogicalNode]]:
         for node_type in self._schema.node_types:
             yield from self._page_nodes(node_type, batch_size)
 
     def iter_relations(
         self, *, batch_size: int = DEFAULT_BATCH_SIZE
     ) -> Iterator[Sequence[LogicalRelation]]:
+        self._require_open()
+        return self._iter_relations(batch_size)
+
+    def _iter_relations(self, batch_size: int) -> Iterator[Sequence[LogicalRelation]]:
         for layout in self._schema.relation_layouts:
             yield from self._page_relations(layout, batch_size)
 
@@ -420,13 +509,16 @@ class LadybugLogicalSnapshot:
             rows: list[Sequence[Any]] = []
             while result.has_next():
                 rows.append(result.get_next())
-            return rows
         except Exception as failure:
-            raise LadybugSourceError(f"reading a page failed: {failure}") from failure
-        finally:
-            with_close = getattr(result, "close", None)
-            if callable(with_close):
-                with_close()
+            primary = LadybugSourceError(f"reading a page failed: {failure}")
+            # The read failure is the report; a result that also refuses to
+            # close is appended to it rather than posted in its place.
+            _note_cleanup(
+                lambda: _close_or_raise(result, "result"), primary, "closing the result"
+            )
+            raise primary from failure
+        _close_or_raise(result, "result")
+        return rows
 
     def _scalar(self, query: str) -> int:
         rows = self._rows(query, {})
@@ -447,8 +539,14 @@ class LadybugLogicalSnapshot:
         cold.
         """
 
-        if self._closed:
+        if self._cleanup_complete:
             return
+        # Unusable from the first attempt onwards, before anything is tried.
+        # Once COMMIT lands the transaction is gone, so a reader that came back
+        # after a failed close would be reading live data under a snapshot's
+        # name -- far worse than a handle that needs closing again. A retry may
+        # still reclaim the handle; it never reopens the read.
+        self._closed = True
         connection = self._connection
         failures: list[str] = []
         if self._owns_transaction and connection is not None and not self._ended:
@@ -469,10 +567,10 @@ class LadybugLogicalSnapshot:
             else:
                 self._connection = None
         if failures:
-            # The reference is kept so a caller can retry; marking the snapshot
-            # closed here would strand an open handle nobody can reach.
+            # The reference is kept so a caller can retry; dropping it here
+            # would strand an open handle nobody can reach.
             raise LadybugSourceError("; ".join(failures))
-        self._closed = True
+        self._cleanup_complete = True
 
 
 class LadybugLogicalSnapshotSource:
@@ -490,25 +588,37 @@ class LadybugLogicalSnapshotSource:
         connection = None
         try:
             connection = ladybug.Connection(self._database)
+            if getattr(self._database, "read_only", False):
+                # Measured on Ladybug 0.16: on a read_only handle, LOAD VECTOR
+                # exposes index_definition -- and with it the metric -- while
+                # leaving the file set and every byte identical. INSTALL is
+                # never issued, and a read-write handle is never loaded here:
+                # there LOAD is an engine write, so a warm caller must have
+                # loaded it already or the index gate will refuse, below.
+                connection.execute("LOAD VECTOR")
             connection.execute("BEGIN TRANSACTION READ ONLY")
         except Exception as failure:
             # A connection opened but never handed to a snapshot has no owner,
             # so it is released here rather than left dangling.
-            closer = getattr(connection, "close", None)
-            if callable(closer):
-                try:
-                    closer()
-                except Exception:  # noqa: S110 - the open failure is the report
-                    pass
-            raise LadybugSourceError(
-                f"opening the snapshot failed: {failure}"
-            ) from failure
+            primary = LadybugSourceError(f"opening the snapshot failed: {failure}")
+            # A connection opened but never handed to a snapshot has no owner,
+            # so it is released here -- and if that release fails, the leak is
+            # attached to the open failure instead of being swallowed whole.
+            _note_cleanup(
+                lambda: _close_or_raise(connection, "connection"),
+                primary,
+                "closing the connection",
+            )
+            raise primary from failure
         snapshot = LadybugLogicalSnapshot(connection, self._schema)
         try:
             # Inside the snapshot, so what is validated is what will be read.
             snapshot.validate_physical_schema()
-        except BaseException:
-            snapshot.close()
+        except BaseException as invalid:
+            # The validation failure is why the caller is here. A close that
+            # also fails is a second fact about the same event, not a
+            # replacement for the first.
+            _note_cleanup(snapshot.close, invalid, "closing the snapshot")
             raise
         return snapshot
 

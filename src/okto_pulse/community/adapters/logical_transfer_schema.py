@@ -30,6 +30,7 @@ Pulse column     logical property
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Final
 
@@ -41,7 +42,11 @@ from okto_pulse.core.kg.logical_transfer import (
     LogicalSchema,
     LogicalVectorSpace,
 )
-from okto_pulse.core.kg.schema_contract import NODE_TYPES, vector_index_name
+from okto_pulse.core.kg.schema_contract import (
+    NODE_TYPES,
+    VECTOR_INDEX_TYPES,
+    vector_index_name,
+)
 
 from okto_pulse.community.adapters.global_discovery_schema import (
     NODE_DDL,
@@ -142,6 +147,144 @@ GLOBAL_CENSUS: Final[SchemaCensus] = SchemaCensus(
     node_property_defs=30,
     relation_property_defs=2,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class SearchableIndex:
+    """One vector index the scope's authority says must physically exist."""
+
+    table: str
+    index_name: str
+    column: str
+    metric: str
+
+
+# Board declares 11 embedding spaces but only 9 of them are searchable: the
+# authority is VECTOR_INDEX_TYPES, and Alternative and Assumption are not in it.
+# A space is a column with a geometry; an index is a searchable structure over
+# it, and inferring one from the other would silently give two Board types an
+# HNSW the product never asked for.
+BOARD_SEARCHABLE_TYPES: Final[tuple[str, ...]] = tuple(VECTOR_INDEX_TYPES)
+
+
+def searchable_indexes(schema: LogicalSchema) -> tuple[SearchableIndex, ...]:
+    """Return exactly the indexes this scope's authority requires."""
+
+    metrics = {space.name: space.metric for space in schema.vector_spaces}
+    if schema.scope == "board":
+        entries = tuple(
+            SearchableIndex(
+                table=node_type,
+                index_name=vector_index_name(node_type),
+                column="embedding",
+                metric=metrics[vector_index_name(node_type)],
+            )
+            for node_type in BOARD_SEARCHABLE_TYPES
+        )
+        if len(entries) != 9:
+            raise SchemaDerivationError(
+                f"Board expects 9 searchable indexes, derived {len(entries)}"
+            )
+        return entries
+    entries = tuple(
+        SearchableIndex(
+            table=table, index_name=index, column=column, metric=metrics[index]
+        )
+        for table, index, column in VECTOR_INDEXES
+    )
+    if len(entries) != 4:
+        raise SchemaDerivationError(
+            f"Global expects 4 searchable indexes, derived {len(entries)}"
+        )
+    return entries
+
+
+# SHOW_INDEXES row: table_name, index_name, index_type, property_names,
+# extension_loaded, index_definition. The definition inlines the metric, which
+# is the only topology parameter that belongs to the logical artefact.
+_INDEX_METRIC: Final[re.Pattern[str]] = re.compile(r"metric\s*:=\s*'([^']*)'")
+
+
+def index_gate_failures(
+    schema: LogicalSchema, rows: Iterable[Sequence[object]]
+) -> tuple[str, ...]:
+    """Judge SHOW_INDEXES output against this scope's searchable authority.
+
+    Returns every disagreement rather than the first, so a caller reports what
+    is actually wrong with the database instead of one arbitrary symptom.
+    Comparing only (table, index_name) would accept an HNSW built over the
+    wrong column, or with a metric the schema never declared, under a name that
+    happens to match -- so type, indexed property and metric are all checked.
+    `extension_loaded` and the HNSW topology knobs (mu, ml, pu, alpha, efc) are
+    deliberately ignored: the first is false on a cold database that was never
+    loaded, and the rest are engine tuning, not part of the transferred graph.
+    """
+
+    expected = {
+        (entry.table, entry.index_name): entry for entry in searchable_indexes(schema)
+    }
+    if not expected:
+        return ()
+    observed: dict[tuple[str, str], tuple[str, tuple[str, ...], str, bool]] = {}
+    for row in rows:
+        cells = list(row)
+        if len(cells) < 6:
+            continue
+        names = cells[3]
+        properties = (
+            tuple(str(name) for name in names)
+            if isinstance(names, (list, tuple))
+            else (str(names),)
+        )
+        found = _INDEX_METRIC.search(str(cells[5]))
+        observed[(str(cells[0]), str(cells[1]))] = (
+            str(cells[2]),
+            properties,
+            found.group(1) if found else "",
+            bool(cells[4]),
+        )
+    failures: list[str] = []
+    # An index the authority never asked for is as wrong as a missing one: it
+    # is a searchable structure the scope does not declare, and walking only
+    # `expected` would let a tenth Board HNSW ride along unnoticed. Only HNSW
+    # rows are judged -- whatever else the engine keeps in its catalog is not
+    # part of the transferred artefact.
+    for key, (index_type, _properties, _metric, _loaded) in sorted(observed.items()):
+        if index_type == "HNSW" and key not in expected:
+            failures.append(f"{key[0]}.{key[1]}: index is not declared by this scope")
+    for key, entry in sorted(expected.items()):
+        seen = observed.get(key)
+        if seen is None:
+            failures.append(f"{key[0]}.{key[1]}: no such index")
+            continue
+        index_type, properties, metric, loaded = seen
+        if index_type != "HNSW":
+            failures.append(
+                f"{key[0]}.{key[1]}: type is {index_type!r}, expected 'HNSW'"
+            )
+        if properties != (entry.column,):
+            failures.append(
+                f"{key[0]}.{key[1]}: indexes {list(properties)}, expected [{entry.column!r}]"
+            )
+        if not loaded:
+            # Measured on Ladybug 0.16: without the vector extension loaded,
+            # SHOW_INDEXES reports extension_loaded False and index_definition
+            # as the empty string. The metric is not absent from the database
+            # then -- it is merely invisible from this handle, and certifying
+            # would claim a geometry nobody read. The flag is checked as well
+            # as the metric, so a blank definition can never be mistaken for
+            # agreement with a scope that happened to declare no metric.
+            failures.append(
+                f"{key[0]}.{key[1]}: the vector extension is not loaded on this "
+                "handle, so its metric is not proved"
+            )
+        elif not metric:
+            failures.append(f"{key[0]}.{key[1]}: the index definition names no metric")
+        elif metric != entry.metric:
+            failures.append(
+                f"{key[0]}.{key[1]}: metric is {metric!r}, expected {entry.metric!r}"
+            )
+    return tuple(failures)
 
 
 def _embedding_space(name: str) -> LogicalVectorSpace:
@@ -405,8 +548,12 @@ __all__ = [
     "BOARD_CENSUS",
     "BOARD_META_TABLE",
     "GLOBAL_CENSUS",
+    "BOARD_SEARCHABLE_TYPES",
     "SchemaCensus",
     "SchemaDerivationError",
+    "SearchableIndex",
+    "index_gate_failures",
+    "searchable_indexes",
     "board_logical_schema",
     "global_logical_schema",
     "require_no_schema_drift",
