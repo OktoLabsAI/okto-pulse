@@ -436,8 +436,7 @@ class CommunityGrafxGraphStore:
                 database,
                 board_id=wanted,
                 bootstrapped_at=stamp,
-                before_write=lambda: self._fence(wanted, "bootstrap"),
-                before_commit=lambda: self._fence(wanted, "commit"),
+                revalidate_fence=lambda phase: self._fence(wanted, phase),
             )
         except GraphError:
             raise

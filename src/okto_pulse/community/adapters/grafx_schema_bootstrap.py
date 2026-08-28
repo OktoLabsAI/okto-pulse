@@ -29,6 +29,8 @@ from okto_pulse.community.adapters.grafx_schema_manifest import (
 _OPERATION = "ensure_current_grafx_board_schema"
 _VALIDATE_OPERATION = "validate_current_grafx_schema"
 
+BootstrapFence = Callable[[str], None]
+
 
 @dataclass(frozen=True, slots=True)
 class GrafxSchemaBootstrapResult:
@@ -335,17 +337,16 @@ def _commit_statements(
     database: Database,
     statements: tuple[tuple[str, dict], ...],
     *,
-    before_write: Callable[[], None] | None = None,
-    before_commit: Callable[[], None] | None = None,
+    revalidate_fence: BootstrapFence | None = None,
 ) -> None:
     transaction = database.begin("write")
     try:
         for text, parameters in statements:
-            if before_write is not None:
-                before_write()
+            if revalidate_fence is not None:
+                revalidate_fence("bootstrap")
             transaction.execute(text, parameters)
-        if before_commit is not None:
-            before_commit()
+        if revalidate_fence is not None:
+            revalidate_fence("commit")
         report = transaction.commit()
     except BaseException as failure:
         if transaction.active:
@@ -369,8 +370,7 @@ def _create_missing_schema(
     database: Database,
     preflight: _CatalogPreflight,
     *,
-    before_write: Callable[[], None] | None = None,
-    before_commit: Callable[[], None] | None = None,
+    revalidate_fence: BootstrapFence | None = None,
 ) -> None:
     missing_space_names = {space.name for space in preflight.missing_spaces}
     missing_table_names = {table.name for table in preflight.missing_tables}
@@ -388,8 +388,7 @@ def _create_missing_schema(
         _commit_statements(
             database,
             statements,
-            before_write=before_write,
-            before_commit=before_commit,
+            revalidate_fence=revalidate_fence,
         )
 
 
@@ -401,8 +400,7 @@ def _stamp_board_meta(
     embedding_model: str | None,
     embedding_dimension: int | None,
     enrich: bool,
-    before_write: Callable[[], None] | None = None,
-    before_commit: Callable[[], None] | None = None,
+    revalidate_fence: BootstrapFence | None = None,
 ) -> None:
     if enrich:
         statement = (
@@ -432,9 +430,25 @@ def _stamp_board_meta(
     _commit_statements(
         database,
         ((statement, parameters),),
-        before_write=before_write,
-        before_commit=before_commit,
+        revalidate_fence=revalidate_fence,
     )
+
+
+def read_current_grafx_schema_version(database: Database) -> str | None:
+    """Return the persisted BoardMeta version without mutating the catalog."""
+
+    try:
+        preflight = _catalog_preflight(database, operation=_VALIDATE_OPERATION)
+        table_exists = all(
+            table.name != "BoardMeta" for table in preflight.missing_tables
+        )
+        observed = _read_board_meta(database, table_exists=table_exists)
+        return None if observed is None else observed.schema_version
+    except GraphError:
+        raise
+    except Exception as exc:
+        mapped = map_grafx_error(exc, operation=_VALIDATE_OPERATION)
+        raise mapped from exc
 
 
 def validate_current_grafx_schema(database: Database) -> str:
@@ -464,8 +478,7 @@ def ensure_current_grafx_board_schema(
     bootstrapped_at: Timestamp,
     embedding_model: str | None = None,
     embedding_dimension: int | None = None,
-    before_write: Callable[[], None] | None = None,
-    before_commit: Callable[[], None] | None = None,
+    revalidate_fence: BootstrapFence | None = None,
 ) -> GrafxSchemaBootstrapResult:
     """Ensure exactly the current schema and BoardMeta singleton, or fail closed."""
 
@@ -505,8 +518,7 @@ def ensure_current_grafx_board_schema(
             _create_missing_schema(
                 database,
                 preflight,
-                before_write=before_write,
-                before_commit=before_commit,
+                revalidate_fence=revalidate_fence,
             )
             changed = True
 
@@ -522,8 +534,7 @@ def ensure_current_grafx_board_schema(
                 embedding_model=embedding_model,
                 embedding_dimension=embedding_dimension,
                 enrich=False,
-                before_write=before_write,
-                before_commit=before_commit,
+                revalidate_fence=revalidate_fence,
             )
             changed = True
         else:
@@ -541,8 +552,7 @@ def ensure_current_grafx_board_schema(
                     embedding_model=embedding_model,
                     embedding_dimension=embedding_dimension,
                     enrich=True,
-                    before_write=before_write,
-                    before_commit=before_commit,
+                    revalidate_fence=revalidate_fence,
                 )
                 changed = True
 
@@ -569,7 +579,9 @@ def ensure_current_grafx_board_schema(
 
 
 __all__ = [
+    "BootstrapFence",
     "GrafxSchemaBootstrapResult",
     "ensure_current_grafx_board_schema",
+    "read_current_grafx_schema_version",
     "validate_current_grafx_schema",
 ]
