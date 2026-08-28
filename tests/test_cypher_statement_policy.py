@@ -46,6 +46,8 @@ POLICY_CASES: tuple[tuple[str, bool], ...] = (
     ("CALL SHOW_TABLES()", False),
     ("CALL SHOW_INDEXES()", False),
     ("CALL SHOW_CONNECTION('x')", False),
+    ("CALL SHOW_CONNECTION('http://example.invalid/path')", False),
+    ("CALL TABLE_INFO('value /* remains literal */')", False),
     ("CALL TABLE_INFO('Decision')", False),
     ("CALL QUERY_VECTOR_INDEX('Decision', 'idx', $vector, 8)", False),
     # writes
@@ -65,6 +67,8 @@ POLICY_CASES: tuple[tuple[str, bool], ...] = (
     # fail-closed: a second statement, however it is hidden
     ("MATCH (n) RETURN n; CREATE (m:Decision)", True),
     ("MATCH (n) RETURN n ; DROP TABLE Decision", True),
+    ("CALL SHOW_TABLES('http://x'); CREATE (n)", True),
+    ("CALL SHOW_TABLES('/*'); CREATE (n); RETURN '*/')", True),
     # fail-closed: procedures outside the allowlist
     ("CALL db.awaitIndexes()", True),
     ("CALL CREATE_VECTOR_INDEX('Decision', 'idx', 'embedding')", True),
@@ -75,6 +79,8 @@ POLICY_CASES: tuple[tuple[str, bool], ...] = (
     ("", True),
     ("   ", True),
     ("// only a comment", True),
+    ("CALL SHOW_TABLES('unterminated // literal)", True),
+    ("CALL SHOW_TABLES() /* unterminated comment", True),
 )
 
 
@@ -96,6 +102,31 @@ class TestNothingSlipsPastTheFence:
         assert strip_comments_and_literals("RETURN 'CREATE (x)'").strip() == "RETURN"
         assert statement_is_write("MATCH (n) WHERE n.t = 'DROP TABLE x' RETURN n") is (
             False
+        )
+
+    def test_comment_markers_inside_literals_cannot_hide_later_grammar(self) -> None:
+        statement = "CALL SHOW_TABLES('http://x'); CREATE (n)"
+        stripped = strip_comments_and_literals(statement)
+        assert "; CREATE (n)" in stripped
+        assert statement_is_write(statement) is True
+
+        block = "CALL SHOW_TABLES('/*'); CREATE (n); RETURN '*/')"
+        stripped_block = strip_comments_and_literals(block)
+        assert stripped_block.count(";") == 2
+        assert statement_is_write(block) is True
+
+    def test_escaped_and_doubled_quotes_stay_inside_the_literal(self) -> None:
+        assert (
+            statement_is_write(
+                "MATCH (n) WHERE n.t = 'http://x''/*still literal*/' RETURN n"
+            )
+            is False
+        )
+        assert (
+            statement_is_write(
+                'MATCH (n) WHERE n.t = "http://x\\"/*still literal*/" RETURN n'
+            )
+            is False
         )
 
     def test_an_unknown_procedure_is_a_write_even_beside_an_allowlisted_one(

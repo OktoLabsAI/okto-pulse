@@ -61,9 +61,82 @@ POTENTIALLY_MUTATING_TOKENS = frozenset(
 )
 
 _LEADING_TOKEN = re.compile(r"(?:EXPLAIN\s+|PROFILE\s+)?([A-Z_]+)")
-_COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.DOTALL)
-_LITERAL = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"")
 _VECTOR_USE = re.compile(r"(?:VECTOR_INDEX|EMBEDDING)", re.IGNORECASE)
+
+
+def _strip_comments_and_literals(statement: str) -> tuple[str, bool]:
+    """Blank comments/literals in one lexical pass and report completeness.
+
+    Comment markers only have meaning in normal code.  In particular, ``//``
+    and ``/*`` inside a quoted value must not hide a real separator or mutation
+    later in the statement.  Keeping the output the same length also preserves
+    every separator outside the blanked regions for the defence-in-depth scan.
+    """
+
+    normal = 0
+    single_quote = 1
+    double_quote = 2
+    line_comment = 3
+    block_comment = 4
+    state = normal
+    output: list[str] = []
+    index = 0
+    length = len(statement)
+
+    def blank(character: str) -> str:
+        # Retaining newlines makes ``//`` termination explicit and prevents
+        # tokens on adjacent source lines from being joined accidentally.
+        return character if character in "\r\n" else " "
+
+    while index < length:
+        character = statement[index]
+        following = statement[index + 1] if index + 1 < length else ""
+
+        if state == normal:
+            if character == "'":
+                state = single_quote
+                output.append(" ")
+            elif character == '"':
+                state = double_quote
+                output.append(" ")
+            elif character == "/" and following == "/":
+                state = line_comment
+                output.extend((" ", " "))
+                index += 1
+            elif character == "/" and following == "*":
+                state = block_comment
+                output.extend((" ", " "))
+                index += 1
+            else:
+                output.append(character)
+        elif state in {single_quote, double_quote}:
+            quote = "'" if state == single_quote else '"'
+            output.append(blank(character))
+            if character == "\\" and following:
+                output.append(blank(following))
+                index += 1
+            elif character == quote and following == quote:
+                # Cypher/SQL-style doubled quote inside the same literal.
+                output.append(" ")
+                index += 1
+            elif character == quote:
+                state = normal
+        elif state == line_comment:
+            output.append(blank(character))
+            if character in "\r\n":
+                state = normal
+        else:
+            output.append(blank(character))
+            if character == "*" and following == "/":
+                output.append(" ")
+                index += 1
+                state = normal
+        index += 1
+
+    # A line comment is complete at EOF. Unterminated strings/block comments
+    # are syntactically ambiguous and therefore cannot prove read-only safety.
+    complete = state in {normal, line_comment}
+    return "".join(output), complete
 
 
 def strip_comments_and_literals(statement: str) -> str:
@@ -74,7 +147,8 @@ def strip_comments_and_literals(statement: str) -> str:
     inspects the statement.
     """
 
-    return _LITERAL.sub(" ", _COMMENT.sub(" ", statement))
+    stripped, _complete = _strip_comments_and_literals(statement)
+    return stripped
 
 
 def statement_is_write(statement: str) -> bool:
@@ -91,7 +165,10 @@ def statement_is_write(statement: str) -> bool:
     ever widens, this fence does not widen with it silently.
     """
 
-    normalized = strip_comments_and_literals(statement).strip()
+    normalized, lexically_complete = _strip_comments_and_literals(statement)
+    if not lexically_complete:
+        return True
+    normalized = normalized.strip()
     if normalized.endswith(";"):
         normalized = normalized[:-1].rstrip()
     if not normalized or ";" in normalized:
