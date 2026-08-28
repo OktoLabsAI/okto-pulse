@@ -147,7 +147,10 @@ def erase_grafx_board_privacy_storage(
             pass
         else:
             _revalidate_privacy_scope(scope)
-            before_mutation()
+            # The binding is the terminal authority artifact and has already
+            # been removed under the immediately preceding fence validation.
+            # Durability publication must not reacquire authority through a
+            # binding which intentionally no longer exists.
             fsync_directory(scope.board_root)
     return removed
 

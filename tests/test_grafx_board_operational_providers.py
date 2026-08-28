@@ -495,7 +495,7 @@ def test_runtime_graph_state_covers_all_four_non_opening_states(tmp_path) -> Non
         lambda _board_id: path,
         lambda _board_id: None,
         lambda _board_id, _phase: None,
-        board_storage_root_resolver=lambda _board_id: (tmp_path / "boards" / "board-1"),
+        board_storage_root_resolver=lambda _board_id: tmp_path / "boards" / "board-1",
     )
     absent = store.graph_state("board-1", generation="g1")
     assert absent.normalized_state is GraphRuntimeObservationState.CONFIRMED_ABSENT
@@ -667,6 +667,85 @@ def test_privacy_erase_retry_does_not_depend_on_the_deleted_active_generation(
     assert not binding.exists()
 
 
+def test_privacy_erase_never_reacquires_the_terminally_deleted_binding(
+    tmp_path,
+) -> None:
+    board_root = tmp_path / "boards" / "board-1"
+    active = board_root / "grafx" / "generation-1"
+    active.mkdir(parents=True)
+    (active / "grafx.meta").write_bytes(b"private")
+    binding = _write_foundation_binding(board_root, generation="generation-1")
+    fence_calls: list[tuple[str, str]] = []
+
+    def binding_backed_fence(board_id: str, phase: str) -> None:
+        if not binding.exists():
+            raise RuntimeError("binding_reacquired_after_terminal_erasure")
+        fence_calls.append((board_id, phase))
+
+    store = CommunityGrafxGraphRuntimeStore(
+        lambda _board_id: _foundation_bound_path(board_root),
+        lambda _board_id: None,
+        binding_backed_fence,
+        board_storage_root_resolver=lambda _board_id: board_root,
+    )
+
+    erased = store.erase_board_graph("board-1", reason="right_to_erasure")
+
+    assert erased.status == "erased"
+    assert erased.removed is True
+    assert not binding.exists()
+    assert not active.parent.exists()
+    assert fence_calls
+    calls_after_erasure = tuple(fence_calls)
+
+    retry = store.erase_board_graph("board-1", reason="right_to_erasure_retry")
+
+    assert retry.status == "not_found"
+    assert retry.not_found is True
+    assert retry.removed is False
+    assert tuple(fence_calls) == calls_after_erasure
+
+
+def test_privacy_erase_receipt_fails_closed_when_absence_is_unverified(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    board_root = tmp_path / "boards" / "board-1"
+    active = board_root / "grafx" / "generation-1"
+    active.mkdir(parents=True)
+    (active / "grafx.meta").write_bytes(b"private")
+    _write_foundation_binding(board_root, generation="generation-1")
+    real_present = runtime_module.grafx_board_privacy_storage_present
+    observations = 0
+
+    def absence_unverified(scope) -> bool:
+        nonlocal observations
+        observations += 1
+        if observations == 1:
+            return real_present(scope)
+        return True
+
+    monkeypatch.setattr(
+        runtime_module,
+        "grafx_board_privacy_storage_present",
+        absence_unverified,
+    )
+    store = CommunityGrafxGraphRuntimeStore(
+        lambda _board_id: active,
+        lambda _board_id: None,
+        lambda _board_id, _phase: None,
+        board_storage_root_resolver=lambda _board_id: board_root,
+    )
+
+    result = store.erase_board_graph("board-1", reason="right_to_erasure")
+
+    assert result.status == "failed"
+    assert result.removed is False
+    assert result.not_found is False
+    assert result.error_code == "physical_erasure_absence_unverified"
+    assert observations == 2
+
+
 def test_privacy_erase_revalidates_fence_before_each_filesystem_mutation(
     tmp_path,
     monkeypatch,
@@ -794,7 +873,7 @@ def test_runtime_purge_failure_preserves_primary_storage(
         lambda _board_id: path,
         lambda _board_id: None,
         lambda _board_id, _phase: None,
-        board_storage_root_resolver=lambda _board_id: (tmp_path / "boards" / "board-1"),
+        board_storage_root_resolver=lambda _board_id: tmp_path / "boards" / "board-1",
     )
 
     result = store.purge_board_graph("board-1", reason="manual")

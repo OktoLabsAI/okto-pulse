@@ -333,10 +333,6 @@ class CommunityGrafxGraphRuntimeStore:
             scope = self._privacy_scope(board_id)
             present = grafx_board_privacy_storage_present(scope)
             if not present:
-                self._revalidate_fence(board_id, "privacy_erase")
-                if grafx_board_privacy_storage_present(scope):
-                    present = True
-            if not present:
                 return GraphPurgeResult(
                     board_id=board_id,
                     removed=False,
@@ -353,7 +349,9 @@ class CommunityGrafxGraphRuntimeStore:
                     board_id, "privacy_erase"
                 ),
             )
-            self._revalidate_fence(board_id, "privacy_erase")
+            # The terminal binding no longer exists, so a binding-backed fence
+            # cannot be reacquired.  Complete the receipt only from a fresh,
+            # fail-closed observation of the full canonical physical scope.
             if grafx_board_privacy_storage_present(scope):
                 return GraphPurgeResult(
                     board_id=board_id,
