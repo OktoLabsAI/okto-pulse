@@ -437,9 +437,7 @@ def test_restore_fails_closed_while_serve_lock_takeover_is_in_progress(
             )
 
     assert exc_info.value.code is QuarantineRestoreErrorCode.BOARD_LOCKED
-    assert exc_info.value.details["serve_lock"]["state"] == (
-        "acquisition_in_progress"
-    )
+    assert exc_info.value.details["serve_lock"]["state"] == ("acquisition_in_progress")
 
 
 def test_restore_holds_serve_lock_fence_through_backup_swap(
@@ -500,9 +498,7 @@ def test_restore_maps_mutex_io_failure_to_board_locked(
             pytest.fail("restore body must not run without the startup fence")
 
     assert exc_info.value.code is QuarantineRestoreErrorCode.BOARD_LOCKED
-    assert exc_info.value.details["serve_lock"]["state"] == (
-        "acquisition_unavailable"
-    )
+    assert exc_info.value.details["serve_lock"]["state"] == ("acquisition_unavailable")
     assert exc_info.value.details["serve_lock"]["error_type"] == "PermissionError"
 
 
@@ -724,7 +720,6 @@ def test_cli_restore_dry_run_json(restore_env, monkeypatch, capsys):
 
     from okto_pulse.core import configure_settings, get_settings
     from okto_pulse.core.infra.config import reset_settings_for_tests
-    from okto_pulse.core.services import application_kg
 
     from okto_pulse.community import cli as community_cli
 
@@ -737,7 +732,11 @@ def test_cli_restore_dry_run_json(restore_env, monkeypatch, capsys):
         def require_quarantine_restore():
             return restore_env["adapter"]
 
-    monkeypatch.setattr(application_kg, "get_current_provider_registry", _Registry)
+    monkeypatch.setattr(
+        community_cli,
+        "_configure_kg_restore_cold_registry",
+        _Registry,
+    )
 
     monkeypatch.setattr(
         sys, "argv", ["okto-pulse", "kg", "restore", QUARANTINE_ID, "--json"]

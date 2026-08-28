@@ -158,7 +158,7 @@ StandaloneGlobalPrivacy = Callable[
 
 
 def _default_fence_revalidator(_phase: str) -> None:
-    from okto_pulse.core.kg.global_discovery_writer import (
+    from okto_pulse.core.ports.global_discovery_recovery_control import (
         assert_global_discovery_writer_fence,
     )
 

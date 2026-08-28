@@ -370,6 +370,7 @@ def _configure_community_relational_runtime(settings, *, echo: bool = False) -> 
     from okto_pulse.community.adapters.relational_effects import (
         register_community_relational_effects,
     )
+
     # CLI commands run outside the FastAPI composition root.  Register the
     # same relational ports required by seeds, health reads and governed
     # writes so `init` and offline maintenance fail closed only for genuine
@@ -458,7 +459,14 @@ async def _bootstrap_board_graph(board_id: str) -> tuple[str, str]:
         get_current_provider_registry,
     )
 
+    from okto_pulse.community.adapters.composition import (
+        require_community_routed_graph_composition,
+    )
+
     registry = get_current_provider_registry()
+    require_community_routed_graph_composition(registry).initialize_board_route(
+        board_id
+    )
     await registry.graph_schema_manager.ensure_bootstrapped(board_id)
 
     # ``getattr`` rather than attribute access: a registry that does not carry
@@ -510,7 +518,9 @@ def _bootstrap_global_discovery_graph() -> str:
       migrates existing Global Discovery; schema migration has its own owner.
     - ``PRESENT_UNREADABLE_OR_ERROR`` (including residue): typed refusal naming
       the recovery ceremony, zero mutation.
-    - ``PROVIDER_UNAVAILABLE``: typed failure, zero mutation.
+    - ``PROVIDER_UNAVAILABLE``: the exact missing-binding reason enters the
+      composition-owned initializer under this lease; every other reason is a
+      typed failure with zero mutation.
 
     On a mid-DDL failure the lease is released and handles are closed by the
     caller's shutdown barrier, and the partial graph is preserved (never
@@ -521,17 +531,18 @@ def _bootstrap_global_discovery_graph() -> str:
     only its heartbeat runs in a context-propagating helper thread. Returns the
     typed outcome code.
     """
-    from okto_pulse.core.services.application_kg import (
-        get_current_provider_registry,
+    from okto_pulse.core.kg.interfaces.graph_runtime_store import (
+        GraphRuntimeObservationState,
     )
     from okto_pulse.core.ports.global_discovery_recovery_control import (
         GlobalDiscoveryWriterLease,
     )
-    from okto_pulse.core.kg.interfaces.graph_runtime_store import (
-        GraphRuntimeObservationState,
+    from okto_pulse.core.services.application_kg import (
+        get_current_provider_registry,
     )
 
-    runtime = get_current_provider_registry().require_global_discovery_runtime()
+    registry = get_current_provider_registry()
+    runtime = registry.require_global_discovery_runtime()
 
     lease = GlobalDiscoveryWriterLease.acquire(
         operation="init_global_discovery",
@@ -551,16 +562,30 @@ def _bootstrap_global_discovery_graph() -> str:
                 # readable Global Discovery graph. Zero physical mutation.
                 outcome = "global_discovery_already_present"
             elif obs_state == GraphRuntimeObservationState.PROVIDER_UNAVAILABLE:
-                reason = (
-                    f" reason={observation.reason_code}"
-                    if observation.reason_code
-                    else ""
-                )
-                raise GlobalDiscoveryInitError(
-                    "global_discovery_provider_unavailable: Global Discovery "
-                    f"runtime is unavailable{reason}; init made zero mutation",
-                    code="global_discovery_provider_unavailable",
-                )
+                if observation.reason_code == "graph_route_binding_missing":
+                    from okto_pulse.community.adapters.composition import (
+                        require_community_routed_graph_composition,
+                    )
+
+                    # The routed initializer owns both durable binding publication
+                    # and physical bootstrap.  Calling it only under the active
+                    # writer lease avoids an unfenced first materialization; do
+                    # not call runtime.bootstrap() again after it returns.
+                    require_community_routed_graph_composition(
+                        registry
+                    ).initialize_global_route()
+                    outcome = "global_discovery_materialized"
+                else:
+                    reason = (
+                        f" reason={observation.reason_code}"
+                        if observation.reason_code
+                        else ""
+                    )
+                    raise GlobalDiscoveryInitError(
+                        "global_discovery_provider_unavailable: Global Discovery "
+                        f"runtime is unavailable{reason}; init made zero mutation",
+                        code="global_discovery_provider_unavailable",
+                    )
             else:
                 # PRESENT_UNREADABLE_OR_ERROR, including
                 # global_discovery_residue_without_primary and the durable
@@ -2240,6 +2265,28 @@ def cmd_kg_subtype_declare(args):
     sys.exit(0)
 
 
+def _configure_kg_restore_cold_registry():
+    """Compose the offline restore registry without migrating relational data."""
+    from okto_pulse.core import configure_settings
+    from okto_pulse.core.services.application_kg import (
+        get_current_provider_registry,
+    )
+
+    from okto_pulse.community.adapters.composition import (
+        configure_community_kg_registry,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_database import (
+        get_session_factory,
+    )
+    from okto_pulse.community.config import CommunitySettings
+
+    settings = CommunitySettings()
+    configure_settings(settings)
+    _configure_community_relational_runtime(settings, echo=False)
+    configure_community_kg_registry(get_session_factory(), settings=settings)
+    return get_current_provider_registry()
+
+
 def cmd_kg_restore(args):
     """KGD-01 FR4 — `okto-pulse kg restore <quarantine_id> [--apply]`.
 
@@ -2254,9 +2301,6 @@ def cmd_kg_restore(args):
     from okto_pulse.core.kg.interfaces.quarantine_restore import (
         QuarantineRestoreError,
     )
-    from okto_pulse.core.services.application_kg import (
-        get_current_provider_registry,
-    )
 
     quarantine_id: str = args.quarantine_id
     apply_restore: bool = bool(getattr(args, "apply", False))
@@ -2265,7 +2309,7 @@ def cmd_kg_restore(args):
     # The composition-owned slot is the only CLI factory.  In particular, the
     # command must not reconstruct the Ladybug adapter from settings: doing so
     # would bypass persisted Board routing and silently misroute Grafx data.
-    service = get_current_provider_registry().require_quarantine_restore()
+    service = _configure_kg_restore_cold_registry().require_quarantine_restore()
 
     def _emit_restore_error(exc: QuarantineRestoreError) -> None:
         payload = exc.to_payload()

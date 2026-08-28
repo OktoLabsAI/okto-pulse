@@ -43,6 +43,7 @@ class CommunityKgComposition:
     storage: CommunityFileSystemStorage
     embedding: Any
     base_registry: Any
+    routed_graph: Any | None = None
 
 
 def community_storage_provider(upload_dir: str) -> CommunityFileSystemStorage:
@@ -80,15 +81,29 @@ def build_community_base_registry(
     )
 
 
-def _apply_graph_providers(base: Any) -> None:
-    """(R05-C) Fill the base registry's six #06 graph slots with the Community
-    Kùzu adapters. Lazy-imported so importing this module never eager-loads
-    Ladybug; loaded only when the KG registry is actually configured (the same
-    point the core already loaded it)."""
-    from okto_pulse.community.adapters.kg import build_community_graph_providers
+def _apply_graph_providers(
+    base: Any,
+    *,
+    settings: Any | None = None,
+    routed_graph: Any | None = None,
+) -> Any:
+    """Install one coherent routed Board+Global graph composition.
 
-    for key, value in build_community_graph_providers().items():
+    No concrete backend is registered independently: all Core graph slots,
+    restore and lifecycle share the exact same binding store, resolver and
+    Grafx pool.  Construction stays lazy at the Community composition root.
+    """
+    from okto_pulse.community.adapters.routed_graph_composition import (
+        build_community_routed_graph_composition,
+    )
+
+    effective_settings = _community_settings_snapshot(settings)
+    bundle = routed_graph or build_community_routed_graph_composition(
+        settings=effective_settings,
+    )
+    for key, value in bundle.registry_providers().items():
         setattr(base, key, value)
+    base._community_routed_graph_composition = bundle
     from okto_pulse.community.adapters.reflective_query import (
         build_community_reflective_providers,
     )
@@ -99,6 +114,27 @@ def _apply_graph_providers(base: Any) -> None:
         cypher_executor=base.cypher_executor,
     ).items():
         setattr(base, key, value)
+    return bundle
+
+
+def _validate_shared_graph_overrides(
+    routed_graph: Any,
+    *,
+    graph_route_resolver: Any | None,
+    grafx_restore_factory: Any | None,
+) -> None:
+    """Accept legacy injection names only when they name the shared objects."""
+
+    if (
+        graph_route_resolver is not None
+        and graph_route_resolver is not routed_graph.resolver
+    ):
+        raise ValueError("graph_route_resolver must be the composed shared resolver")
+    if (
+        grafx_restore_factory is not None
+        and grafx_restore_factory is not routed_graph.grafx_restore_factory
+    ):
+        raise ValueError("grafx_restore_factory must be the composed shared factory")
 
 
 def _apply_data_providers(
@@ -276,21 +312,29 @@ def build_community_kg_composition(
     base = build_community_base_registry(embedding=embedding, settings=s)
     _apply_source_reader(base)
     _apply_rebuild_audit_storage(base, kg_base_dir=str(s.kg_base_dir))
-    _apply_quarantine_restore(
-        base,
-        kg_base_dir=str(s.kg_base_dir),
-        data_dir=str(getattr(s, "data_dir", s.kg_base_dir)),
-        graph_route_resolver=graph_route_resolver,
-        grafx_restore_factory=grafx_restore_factory,
-    )
-    _apply_rebuild_ingestion(base)
+    routed_graph = None
     if include_graph:
-        _apply_graph_providers(base)
+        routed_graph = _apply_graph_providers(base, settings=s)
+        _validate_shared_graph_overrides(
+            routed_graph,
+            graph_route_resolver=graph_route_resolver,
+            grafx_restore_factory=grafx_restore_factory,
+        )
+    else:
+        _apply_quarantine_restore(
+            base,
+            kg_base_dir=str(s.kg_base_dir),
+            data_dir=str(getattr(s, "data_dir", s.kg_base_dir)),
+            graph_route_resolver=graph_route_resolver,
+            grafx_restore_factory=grafx_restore_factory,
+        )
+    _apply_rebuild_ingestion(base)
     register_community_reranker()
     return CommunityKgComposition(
         storage=community_storage_provider(upload_dir),
         embedding=embedding,
         base_registry=base,
+        routed_graph=routed_graph,
     )
 
 
@@ -391,22 +435,29 @@ def configure_community_kg_registry(
         base,
         kg_base_dir=str(effective_settings.kg_base_dir),
     )
-    _apply_quarantine_restore(
-        base,
-        kg_base_dir=str(effective_settings.kg_base_dir),
-        data_dir=str(
-            getattr(
-                effective_settings,
-                "data_dir",
-                effective_settings.kg_base_dir,
-            )
-        ),
-        graph_route_resolver=graph_route_resolver,
-        grafx_restore_factory=grafx_restore_factory,
-    )
-    _apply_rebuild_ingestion(base, session_factory)
+    routed_graph = None
     if include_graph:
-        _apply_graph_providers(base)
+        routed_graph = _apply_graph_providers(base, settings=effective_settings)
+        _validate_shared_graph_overrides(
+            routed_graph,
+            graph_route_resolver=graph_route_resolver,
+            grafx_restore_factory=grafx_restore_factory,
+        )
+    else:
+        _apply_quarantine_restore(
+            base,
+            kg_base_dir=str(effective_settings.kg_base_dir),
+            data_dir=str(
+                getattr(
+                    effective_settings,
+                    "data_dir",
+                    effective_settings.kg_base_dir,
+                )
+            ),
+            graph_route_resolver=graph_route_resolver,
+            grafx_restore_factory=grafx_restore_factory,
+        )
+    _apply_rebuild_ingestion(base, session_factory)
     # R05-D/R-P2-02: supply event_bus / audit_repo / config from the Community
     # adapters EXPLICITLY so the core fail-closed registry validation can pass
     # without any relational fallback.
@@ -469,6 +520,21 @@ def _community_settings_snapshot(settings: Any | None = None) -> Any:
     return snapshot
 
 
+def require_community_routed_graph_composition(registry: Any | None = None) -> Any:
+    """Return the graph bundle attached to the active Community registry."""
+
+    if registry is None:
+        from okto_pulse.core.services.application_kg import (
+            get_current_provider_registry,
+        )
+
+        registry = get_current_provider_registry()
+    bundle = getattr(registry, "_community_routed_graph_composition", None)
+    if bundle is None:
+        raise RuntimeError("community_routed_graph_composition_unavailable")
+    return bundle
+
+
 __all__ = [
     "CommunityKgComposition",
     "build_community_base_registry",
@@ -477,4 +543,5 @@ __all__ = [
     "build_community_routed_quarantine_restore",
     "community_storage_provider",
     "configure_community_kg_registry",
+    "require_community_routed_graph_composition",
 ]

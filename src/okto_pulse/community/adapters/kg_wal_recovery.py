@@ -198,7 +198,10 @@ def wal_only_quarantine(
         logger.error(
             "kg.recovery.wal_quarantine_failed board=%s quarantine_id=%s "
             "moved=%s err=%s",
-            board_id, quarantine_id, moved, failure,
+            board_id,
+            quarantine_id,
+            moved,
+            failure,
             extra={
                 "event": "kg.recovery.wal_quarantine_failed",
                 "board_id": board_id,
@@ -218,7 +221,10 @@ def wal_only_quarantine(
     logger.warning(
         "kg.recovery.wal_quarantined board=%s quarantine_id=%s files=%s "
         "main_untouched=True reason=%s",
-        board_id, quarantine_id, moved, reason,
+        board_id,
+        quarantine_id,
+        moved,
+        reason,
         extra={
             "event": "kg.recovery.wal_quarantined",
             "board_id": board_id,

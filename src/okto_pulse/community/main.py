@@ -36,6 +36,9 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
     get_session_factory,
     init_db,
 )
+from okto_pulse.community.adapters.startup_graph_routes import (
+    adopt_existing_board_routes_before_schema_sweep,
+)
 from okto_pulse.core.services.application_kg import get_current_provider_registry
 
 # NOTE: MCP server is imported lazily inside create_community_app (after
@@ -965,6 +968,10 @@ def create_community_app():
         # every worker and the decay scheduler so they never observe a
         # pre-migration board graph.
         try:
+            await adopt_existing_board_routes_before_schema_sweep(
+                uow_factory=app_instance.state.runtime_composition.uow_factory,
+                logger=_STARTUP_LOGGER,
+            )
             await run_startup_schema_sweep(
                 uow_factory=app_instance.state.runtime_composition.uow_factory,
                 logger=_STARTUP_LOGGER,

@@ -985,15 +985,13 @@ def test_cli_uses_composed_restore_slot_without_constructing_ladybug(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from okto_pulse.core.services import application_kg
-
     from okto_pulse.community import cli
 
     service = _RecordingRestore(board_id=BOARD_ID, board_dir=Path("board"))
     registry = SimpleNamespace(require_quarantine_restore=lambda: service)
     monkeypatch.setattr(
-        application_kg,
-        "get_current_provider_registry",
+        cli,
+        "_configure_kg_restore_cold_registry",
         lambda: registry,
     )
     args = SimpleNamespace(
@@ -1008,3 +1006,81 @@ def test_cli_uses_composed_restore_slot_without_constructing_ladybug(
     assert captured.value.code == 0
     assert service.plan_calls == ["q_cli"]
     assert json.loads(capsys.readouterr().out)["board_id"] == BOARD_ID
+
+
+def test_restore_cold_registry_configures_runtime_without_initializing_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from okto_pulse.core.services import application_kg
+
+    import okto_pulse.community.adapters.sqlalchemy_database as database
+    import okto_pulse.community.config as community_config
+    from okto_pulse import core
+    from okto_pulse.community import cli
+    from okto_pulse.community.adapters import composition
+
+    events: list[str] = []
+    factory = object()
+    registry = object()
+
+    class Settings:
+        database_url = "sqlite+aiosqlite:///restore.db"
+        port = 8100
+
+        def __init__(self) -> None:
+            events.append("settings")
+
+    def configure_settings(settings) -> None:
+        assert isinstance(settings, Settings)
+        events.append("configure_settings")
+
+    def configure_relational(settings, *, echo: bool) -> None:
+        assert isinstance(settings, Settings)
+        assert echo is False
+        events.append("configure_relational")
+
+    def get_session_factory():
+        events.append("get_session_factory")
+        return factory
+
+    def configure_registry(received_factory, *, settings) -> None:
+        assert received_factory is factory
+        assert isinstance(settings, Settings)
+        events.append("configure_registry")
+
+    async def forbidden_init_db() -> None:
+        events.append("init_db")
+
+    def get_registry():
+        events.append("get_registry")
+        return registry
+
+    monkeypatch.setattr(community_config, "CommunitySettings", Settings)
+    monkeypatch.setattr(core, "configure_settings", configure_settings)
+    monkeypatch.setattr(
+        cli,
+        "_configure_community_relational_runtime",
+        configure_relational,
+    )
+    monkeypatch.setattr(database, "get_session_factory", get_session_factory)
+    monkeypatch.setattr(database, "init_db", forbidden_init_db)
+    monkeypatch.setattr(
+        composition,
+        "configure_community_kg_registry",
+        configure_registry,
+    )
+    monkeypatch.setattr(
+        application_kg,
+        "get_current_provider_registry",
+        get_registry,
+    )
+
+    assert cli._configure_kg_restore_cold_registry() is registry
+    assert events == [
+        "settings",
+        "configure_settings",
+        "configure_relational",
+        "get_session_factory",
+        "configure_registry",
+        "get_registry",
+    ]

@@ -160,6 +160,10 @@ def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
             events.append("bootstrap")
             raise RuntimeError("kg bootstrap failed")
 
+    def initialize_board_route(board_id):
+        assert board_id == "board-1"
+        events.append("initialize_board_route")
+
     monkeypatch.setenv(community_seed.DEMO_SKIP_ENV, "1")
     monkeypatch.setattr(cli, "_fail_fast_if_server_running", lambda _op: None)
     monkeypatch.setattr(community_config, "CommunitySettings", Settings)
@@ -192,7 +196,12 @@ def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
     monkeypatch.setattr(
         application_kg,
         "get_current_provider_registry",
-        lambda: SimpleNamespace(graph_schema_manager=FailingGraphSchema()),
+        lambda: SimpleNamespace(
+            graph_schema_manager=FailingGraphSchema(),
+            _community_routed_graph_composition=SimpleNamespace(
+                initialize_board_route=initialize_board_route,
+            ),
+        ),
     )
 
     handoff_path = tmp_path / "bootstrap-api-key"
@@ -209,6 +218,7 @@ def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
         "init_db",
         "configure_community_kg",
         "seed_demo_skipped",
+        "initialize_board_route",
         "bootstrap",
         "kg_shutdown",
         "close_db",
@@ -708,9 +718,7 @@ def _expected_init_message(observation, code: str) -> str:
             "global_discovery_init_release_failed: writer lease release"
             " returned false (fence loss); init fails closed"
         )
-    reason = (
-        f" reason={observation.reason_code}" if observation.reason_code else ""
-    )
+    reason = f" reason={observation.reason_code}" if observation.reason_code else ""
     if code == "global_discovery_provider_unavailable":
         return (
             "global_discovery_provider_unavailable: Global Discovery "
@@ -794,6 +802,7 @@ def _a5_fingerprint(root: Path) -> tuple:
     root_abs = Path(_os.path.abspath(str(root)))
     if not root_abs.exists():
         return ("absent", str(root_abs))
+
     # Root metadata is part of the fingerprint (exists + kind + identity).  A
     # reparse/junction/symlink root is described WITHOUT recursing into it.
     def _is_reparse_dir(path: Path) -> bool:
@@ -806,11 +815,7 @@ def _a5_fingerprint(root: Path) -> tuple:
         # (unlike ``rglob``, which would follow a junction into its target).
         for child in sorted(base.iterdir(), key=lambda p: p.name):
             yield child
-            if (
-                child.is_dir()
-                and not child.is_symlink()
-                and not _is_reparse_dir(child)
-            ):
+            if child.is_dir() and not child.is_symlink() and not _is_reparse_dir(child):
                 yield from _walk(child)
 
     # describe() layout: (st_mode, masked_attrs, identity, reparse_tag, KIND, ...)
@@ -826,7 +831,7 @@ def _a5_fingerprint(root: Path) -> tuple:
     return ("present", str(root_abs), tuple(entries))
 
 
-def _a5_install(monkeypatch, runtime, *, lease):
+def _a5_install(monkeypatch, runtime, *, lease, routed_graph=None):
     """Wire the CLI to ``runtime`` + ``lease``; record acquire kwargs, the
     require/acquire order, and the exact runtime returned by the registry."""
 
@@ -837,14 +842,17 @@ def _a5_install(monkeypatch, runtime, *, lease):
         rec["runtime"] = runtime
         return runtime
 
+    registry = SimpleNamespace(
+        require_global_discovery_runtime=_require,
+        graph_schema_manager=_PassiveGraphSchema(),
+        graph_runtime_store=_ReadableBoardGraphRuntime(),
+    )
+    if routed_graph is not None:
+        registry._community_routed_graph_composition = routed_graph
     monkeypatch.setattr(
         _application_kg,
         "get_current_provider_registry",
-        lambda: SimpleNamespace(
-            require_global_discovery_runtime=_require,
-            graph_schema_manager=_PassiveGraphSchema(),
-            graph_runtime_store=_ReadableBoardGraphRuntime(),
-        ),
+        lambda: registry,
     )
 
     def _fake_acquire(cls, **kwargs):
@@ -924,6 +932,7 @@ def test_a5_four_state_two_invocation_matrix(tmp_path, monkeypatch, state_name):
     root = legacy.parent
 
     if state_name == "PROVIDER_UNAVAILABLE":
+
         def _raise() -> Path:
             raise RuntimeError("provider unavailable")
 
@@ -996,6 +1005,54 @@ def test_a5_four_state_two_invocation_matrix(tmp_path, monkeypatch, state_name):
     else:
         # Zero-mutation states: PRE-call baseline == after-1 == after-2.
         assert baseline == fingerprints[0] == fingerprints[1]
+
+
+def test_global_missing_binding_is_initialized_once_inside_writer_guard(
+    monkeypatch,
+):
+    class _BindingMissingRuntime:
+        def __init__(self):
+            self.state_calls = 0
+            self.bootstrap_calls = 0
+
+        def state(self):
+            self.state_calls += 1
+            return SimpleNamespace(
+                state=_ObsState.PROVIDER_UNAVAILABLE,
+                reason_code="graph_route_binding_missing",
+                details={},
+            )
+
+        def bootstrap(self):
+            self.bootstrap_calls += 1
+
+    runtime = _BindingMissingRuntime()
+    lease = _make_recording_lease()
+    initialization_calls: list[str] = []
+
+    def initialize_global_route():
+        lease.events.append("initialize_global_route")
+        initialization_calls.append("initialize_global_route")
+
+    _a5_install(
+        monkeypatch,
+        runtime,
+        lease=lease,
+        routed_graph=SimpleNamespace(
+            initialize_global_route=initialize_global_route,
+        ),
+    )
+
+    assert _cli._bootstrap_global_discovery_graph() == "global_discovery_materialized"
+    assert runtime.state_calls == 1
+    assert runtime.bootstrap_calls == 0
+    assert initialization_calls == ["initialize_global_route"]
+    assert lease.events == [
+        "guard_enter",
+        "initialize_global_route",
+        "guard_exit",
+        "release",
+    ]
 
 
 # --- C3: physical fingerprint classification ------------------------------
@@ -1100,7 +1157,9 @@ def test_a5_marker_absent_primary_retries_once_then_noop(tmp_path, monkeypatch):
 
     lease2 = _make_recording_lease()
     _a5_install(monkeypatch, runtime, lease=lease2)
-    assert _cli._bootstrap_global_discovery_graph() == "global_discovery_already_present"
+    assert (
+        _cli._bootstrap_global_discovery_graph() == "global_discovery_already_present"
+    )
     assert runtime.bootstrap_calls == 1
 
 
@@ -1224,8 +1283,7 @@ def test_a5_configure_installs_runtime_causally_then_cli_resolves_it(
         monkeypatch.setattr(_WriterLease, "acquire", classmethod(_fake_acquire))
 
         assert (
-            _cli._bootstrap_global_discovery_graph()
-            == "global_discovery_materialized"
+            _cli._bootstrap_global_discovery_graph() == "global_discovery_materialized"
         )
         # The CLI drove bootstrap on the exact registry-installed runtime object.
         assert runtime.bootstrap_calls == 1
@@ -1502,6 +1560,10 @@ def _cmd_init_order_harness(
         events.append("require_runtime")
         return gd_runtime
 
+    def _initialize_board_route(board_id):
+        assert board_id == "board-1"
+        events.append("kg_board_route_initialize")
+
     registry = SimpleNamespace(
         graph_schema_manager=_GSM(),
         # The board diagnosis reads this port as well: init proves the graph is
@@ -1509,6 +1571,9 @@ def _cmd_init_order_harness(
         graph_runtime_store=_ReadableBoardGraphRuntime(),
         require_global_discovery_runtime=_require_gd,
         config=SimpleNamespace(kg_base_dir=str(tmp_path / "kgbase")),
+        _community_routed_graph_composition=SimpleNamespace(
+            initialize_board_route=_initialize_board_route,
+        ),
     )
 
     class _Lease:
@@ -1597,6 +1662,7 @@ _A5_CMD_INIT_FULL_TRACE = [
     "configure_kg",
     "register_coordination",
     "seed",
+    "kg_board_route_initialize",
     "kg_board_bootstrap",
     "require_runtime",
     "acquire",
@@ -1675,9 +1741,7 @@ def test_a5_cmd_init_event_order_global_ceremony_failure(tmp_path, monkeypatch):
 def test_a5_cmd_init_event_order_partial_init_db_failure(tmp_path, monkeypatch):
     events: list[str] = []
     original = RuntimeError("init boom")
-    _cmd_init_order_harness(
-        tmp_path, monkeypatch, events, init_db_error=original
-    )
+    _cmd_init_order_harness(tmp_path, monkeypatch, events, init_db_error=original)
     with pytest.raises(RuntimeError) as exc_info:
         _cli.cmd_init(SimpleNamespace(mcp_port=8101, agents=None))
 
@@ -1813,9 +1877,15 @@ def _install_registry(monkeypatch, *, schema_manager, runtime_store):
 
     from okto_pulse.community import cli as community_cli
 
+    def initialize_board_route(board_id: str) -> None:
+        schema_manager._calls.append(f"initialize_board_route:{board_id}")
+
     registry = SimpleNamespace(
         graph_schema_manager=schema_manager,
         graph_runtime_store=runtime_store,
+        _community_routed_graph_composition=SimpleNamespace(
+            initialize_board_route=initialize_board_route,
+        ),
     )
 
     def _resolve():
@@ -1865,6 +1935,7 @@ def test_a_readable_board_graph_is_reported_by_its_shared_storage_reference(
     # The bootstrap has to happen before the proof, and the version is only
     # asked for once the graph is known to be there.
     assert calls == [
+        f"initialize_board_route:{BOARD}",
         f"ensure_bootstrapped:{BOARD}",
         f"graph_state:{BOARD}",
         f"current_version:{BOARD}",
@@ -1910,7 +1981,11 @@ def test_a_board_graph_that_is_not_readable_ends_init_before_it_claims_success(
     assert "board_graph_unreadable" in str(refused.value)
     # It stopped at the proof: no schema version was fetched, so nothing was
     # ever in a position to be announced as a successful graph.
-    assert calls == [f"ensure_bootstrapped:{BOARD}", f"graph_state:{BOARD}"]
+    assert calls == [
+        f"initialize_board_route:{BOARD}",
+        f"ensure_bootstrapped:{BOARD}",
+        f"graph_state:{BOARD}",
+    ]
 
 
 def test_a_legacy_adapter_reporting_only_absence_is_not_upgraded_to_a_failure_free_init(
@@ -1940,7 +2015,11 @@ def test_a_legacy_adapter_reporting_only_absence_is_not_upgraded_to_a_failure_fr
         asyncio.run(cli._bootstrap_board_graph(BOARD))
 
     assert refused.value.code == "board_graph_init_refused"
-    assert calls == [f"ensure_bootstrapped:{BOARD}", f"graph_state:{BOARD}"]
+    assert calls == [
+        f"initialize_board_route:{BOARD}",
+        f"ensure_bootstrapped:{BOARD}",
+        f"graph_state:{BOARD}",
+    ]
 
 
 def test_a_legacy_adapter_reporting_presence_still_completes(
@@ -1983,7 +2062,10 @@ def test_a_missing_runtime_store_fails_closed_rather_than_skipping_the_proof(
         asyncio.run(cli._bootstrap_board_graph(BOARD))
 
     assert refused.value.code == "board_graph_provider_unavailable"
-    assert calls == [f"ensure_bootstrapped:{BOARD}"]
+    assert calls == [
+        f"initialize_board_route:{BOARD}",
+        f"ensure_bootstrapped:{BOARD}",
+    ]
 
 
 def test_a_backend_error_during_the_diagnosis_is_not_turned_into_success(
@@ -2007,7 +2089,11 @@ def test_a_backend_error_during_the_diagnosis_is_not_turned_into_success(
     with pytest.raises(GraphUnavailable):
         asyncio.run(cli._bootstrap_board_graph(BOARD))
 
-    assert calls == [f"ensure_bootstrapped:{BOARD}", f"graph_state:{BOARD}"]
+    assert calls == [
+        f"initialize_board_route:{BOARD}",
+        f"ensure_bootstrapped:{BOARD}",
+        f"graph_state:{BOARD}",
+    ]
 
 
 def test_the_init_board_graph_path_names_no_concrete_backend() -> None:

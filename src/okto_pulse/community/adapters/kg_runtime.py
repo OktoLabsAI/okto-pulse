@@ -500,9 +500,7 @@ def build_native_runtime_budget_snapshot(
         settings = get_settings()
 
     requested_board_mb = int(settings.kg_kuzu_buffer_pool_mb)
-    requested_global_mb = int(
-        getattr(settings, "kg_global_kuzu_buffer_pool_mb", 128)
-    )
+    requested_global_mb = int(getattr(settings, "kg_global_kuzu_buffer_pool_mb", 128))
     requested_max_db_gb = int(settings.kg_kuzu_max_db_size_gb)
     requested_pool_size = max(1, int(settings.kg_connection_pool_size))
 
@@ -522,9 +520,7 @@ def build_native_runtime_budget_snapshot(
     with _board_db_cache_lock:
         resident_board_count = min(len(_board_db_cache), resident_slots.value)
     board_buffer_pool_total_mb = effective_board_mb * resident_slots.value
-    max_derived_buffer_envelope_mb = (
-        board_buffer_pool_total_mb + requested_global_mb
-    )
+    max_derived_buffer_envelope_mb = board_buffer_pool_total_mb + requested_global_mb
 
     return GraphRuntimeBudgetSnapshot(
         source="runtime_capability",
@@ -1162,8 +1158,7 @@ class BoardConnection:
             self.conn = kuzu.Connection(db)
             initialized = True
             logger.debug(
-                "[KG] cached non-vector reader opened without writer lease "
-                "board_id=%s",
+                "[KG] cached non-vector reader opened without writer lease board_id=%s",
                 board_id,
             )
             return True
@@ -1876,7 +1871,9 @@ def apply_ladybug_lifecycle_step_unguarded(
         if step == STEP_FLUSH:
             return LifecycleStepResult(
                 ok=path.exists(),
-                detail=None if path.exists() else f"{GRAPH_DB_FILENAME} missing at {path}",
+                detail=None
+                if path.exists()
+                else f"{GRAPH_DB_FILENAME} missing at {path}",
             )
         if step == STEP_FSYNC:
             if not path.exists():
@@ -4289,8 +4286,7 @@ def migrate_schema_for_board(board_id: str) -> dict[str, Any]:
                 _assert_code_traceability_columns_complete(conn)
             except Exception as traceability_exc:
                 errors.append(
-                    "code_traceability_columns_incomplete: "
-                    f"{traceability_exc}"
+                    f"code_traceability_columns_incomplete: {traceability_exc}"
                 )
             for rel_name, from_type, to_type in REL_TYPES:
                 try:

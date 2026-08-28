@@ -19,6 +19,7 @@ hexagonal do board.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from pathlib import Path
@@ -111,6 +112,29 @@ def _close_all_graphs_with_writer_lease(
     if runtime is None:
         from okto_pulse.community.adapters import kg_runtime as runtime
 
+    registry = None
+    routed_graph = None
+    try:
+        from okto_pulse.core.services.application_kg import (
+            get_current_provider_registry,
+        )
+
+        registry = get_current_provider_registry()
+        routed_graph = getattr(
+            registry,
+            "_community_routed_graph_composition",
+            None,
+        )
+    except Exception as exc:  # noqa: BLE001 - legacy/partial teardown remains safe
+        logger.warning(
+            "kg.shutdown.graph_registry_unavailable err=%s",
+            exc,
+            extra={
+                "event": "kg.shutdown.graph_registry_unavailable",
+                "error": str(exc),
+            },
+        )
+
     with runtime._board_db_cache_lock:
         open_dbs: list[tuple[str, Any]] = list(runtime._board_db_cache.items())
 
@@ -162,24 +186,65 @@ def _close_all_graphs_with_writer_lease(
             extra={"event": "kg.shutdown.graph_close_failed", "error": str(exc)},
         )
 
+    # The routed Board lifecycle is the only complete close door: its Ladybug
+    # half is idempotent after the checkpoint/cache close above, while its
+    # Grafx half closes every Board handle in the shared pool without touching
+    # Global. Account exact Board Grafx paths before/after so a partial pool
+    # close remains observable rather than being reported as total success.
+    if routed_graph is not None:
+        board_root = routed_graph.binding_store.root / "boards"
+
+        def pooled_board_paths() -> set[Path]:
+            paths: set[Path] = set()
+            for raw_path in routed_graph.grafx_pool.pooled_paths():
+                path = Path(raw_path)
+                try:
+                    path.relative_to(board_root)
+                except ValueError:
+                    continue
+                paths.add(path)
+            return paths
+
+        before = pooled_board_paths()
+        try:
+            asyncio.run(routed_graph.board.graph_lifecycle.close(None))
+        except Exception as exc:  # noqa: BLE001 - Global close must still run
+            after = pooled_board_paths()
+            boards_closed += len(before - after)
+            boards_failed += max(1, len(before & after))
+            logger.warning(
+                "kg.shutdown.routed_board_close_failed err=%s",
+                exc,
+                extra={
+                    "event": "kg.shutdown.routed_board_close_failed",
+                    "error": str(exc),
+                    "grafx_remaining": len(before & after),
+                },
+            )
+        else:
+            boards_closed += len(before)
+
     # O Global Discovery usa um Database persistente próprio, fora de
     # ``_board_db_cache``. ``Database.close()`` executa o checkpoint final do
     # Ladybug e remove o WAL; apenas fechar os boards deixa esse handle vivo.
     # Resolver pelo port mantém o adapter independente da implementação
     # concreta e torna o close idempotente quando o global nunca foi aberto.
+    global_close_attempted = False
     try:
-        from okto_pulse.core.services.application_kg import (
-            get_current_provider_registry,
-        )
-        from okto_pulse.community.adapters.coordination import (
-            community_global_discovery_writer_fence,
-        )
+        if routed_graph is not None:
+            global_close_attempted = True
+            routed_graph.global_graph.close_all_on_shutdown()
+        elif registry is not None:
+            # Legacy/non-routed registry compatibility. Productive Community
+            # composition always takes the branch above.
+            from okto_pulse.community.adapters.coordination import (
+                community_global_discovery_writer_fence,
+            )
 
-        global_runtime = (
-            get_current_provider_registry().require_global_discovery_runtime()
-        )
-        with community_global_discovery_writer_fence("shutdown_global_close"):
-            global_runtime.close()
+            global_runtime = registry.require_global_discovery_runtime()
+            global_close_attempted = True
+            with community_global_discovery_writer_fence("shutdown_global_close"):
+                global_runtime.close()
     except Exception as exc:  # noqa: BLE001 — teardown nunca propaga
         logger.warning(
             "kg.shutdown.global_graph_close_failed err=%s",
@@ -190,10 +255,11 @@ def _close_all_graphs_with_writer_lease(
             },
         )
     else:
-        logger.info(
-            "kg.shutdown.global_graph_closed",
-            extra={"event": "kg.shutdown.global_graph_closed"},
-        )
+        if global_close_attempted:
+            logger.info(
+                "kg.shutdown.global_graph_closed",
+                extra={"event": "kg.shutdown.global_graph_closed"},
+            )
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     summary = {

@@ -601,7 +601,9 @@ def _recovery(
     def wrong_backend(_snapshot: CommunityGraphRouteSnapshot):
         raise AssertionError("fallback provider called")
 
-    factory = lambda _snapshot: provider
+    def factory(_snapshot):
+        return provider
+
     return CommunityRoutedGlobalDiscoveryRecovery(
         resolver,  # type: ignore[arg-type]
         global_lock=lock or _TracingRLock(),

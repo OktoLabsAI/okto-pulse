@@ -183,3 +183,44 @@ def test_rebuild_storage_preparation_propagates_routed_lifecycle_failure(
         )
 
     assert lifecycle.calls == [("board-grafx", "rebuild")]
+
+
+def test_rebuild_storage_preparation_propagates_post_purge_rematerialization_failure(
+    monkeypatch,
+) -> None:
+    from okto_pulse.core.services import application_kg
+
+    events: list[str] = []
+
+    class _Lifecycle:
+        async def purge(self, board_id: str, *, reason: str) -> PurgeReport:
+            events.append(f"purge:{board_id}:{reason}")
+            return PurgeReport(board_id=board_id, status="purged", reason=reason)
+
+    class _RoutedGraph:
+        def rematerialize_board_route(self, board_id: str) -> None:
+            events.append(f"rematerialize:{board_id}")
+            if events.count(f"rematerialize:{board_id}") == 2:
+                raise RuntimeError("post_purge_rematerialization_failed")
+
+    registry = SimpleNamespace(
+        graph_lifecycle=_Lifecycle(),
+        _community_routed_graph_composition=_RoutedGraph(),
+    )
+    monkeypatch.setattr(
+        application_kg,
+        "get_current_provider_registry",
+        lambda: registry,
+    )
+
+    with pytest.raises(RuntimeError, match="post_purge_rematerialization_failed"):
+        CommunityBoardRebuildIngestionAdapter().prepare_board_graph_storage_report(
+            board_id="board-grafx",
+            reason="explicit_rebuild:test",
+        )
+
+    assert events == [
+        "rematerialize:board-grafx",
+        "purge:board-grafx:explicit_rebuild:test",
+        "rematerialize:board-grafx",
+    ]

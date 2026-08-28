@@ -173,17 +173,19 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
     base = build_community_base_registry()
     from okto_pulse.community.adapters.composition import _apply_graph_providers
 
-    _apply_graph_providers(base)
-    assert type(base.graph_store).__name__ == "CommunityKuzuGraphStore"
-    assert type(base.cypher_executor).__name__ == "CommunityKuzuCypherExecutor"
+    routed = _apply_graph_providers(base)
+    assert type(base.graph_store).__name__ == "CommunityRoutedSemanticGraphStore"
+    assert type(base.cypher_executor).__name__ == "CommunityRoutedCypherExecutor"
     assert (
         type(base.global_discovery_runtime).__name__
-        == "CommunityGlobalDiscoveryRuntime"
+        == "CommunityRoutedGlobalDiscoveryRuntime"
     )
-    assert (
-        type(base.require_global_discovery_recovery()).__name__
-        == "CommunityGlobalDiscoveryRecovery"
-    )
+    assert base.require_global_discovery_recovery() is routed.global_graph.recovery
+    assert base._community_routed_graph_composition is routed
+    assert routed.board.binding_store is routed.global_graph.binding_store
+    assert routed.board.resolver is routed.global_graph.resolver
+    assert routed.board.grafx_pool is routed.global_graph.grafx_pool
+    assert base.quarantine_restore is routed.quarantine_restore
 
 
 def test_fcc03c_kg_runtime_closes_global_discovery_through_runtime_port():
@@ -245,6 +247,9 @@ def test_ts_f7b7374d_graph_transaction_scope_uses_community_runtime(monkeypatch)
 # ts_7413e7b2 — rebuild lifecycle preserves structured errors.
 # ===========================================================================
 def test_ts_7413e7b2_lifecycle_returns_structured_reports(_isolated_kg):
+    from okto_pulse.community.adapters.composition import (
+        require_community_routed_graph_composition,
+    )
     from okto_pulse.core.kg.interfaces.graph_lifecycle import (
         PurgeReport,
         RebuildReport,
@@ -252,6 +257,9 @@ def test_ts_7413e7b2_lifecycle_returns_structured_reports(_isolated_kg):
 
     lifecycle = _isolated_kg.graph_lifecycle
     board_id = "r05c-rebuild-board"
+    require_community_routed_graph_composition(_isolated_kg).initialize_board_route(
+        board_id
+    )
 
     async def drive():
         rebuild = await lifecycle.rebuild(board_id)

@@ -870,9 +870,33 @@ class CommunityBoardRebuildIngestionAdapter:
         )
 
         registry = get_current_provider_registry()
+        routed_graph = getattr(
+            registry,
+            "_community_routed_graph_composition",
+            None,
+        )
+        # A rebuild is the sole administrative lane allowed to recreate a
+        # physical target whose immutable binding survived an earlier purge.
+        # Do this once before dispatch so a retry after a crash between purge
+        # and rematerialization can resume, and once after dispatch so the
+        # consolidation/schema lane never observes the bound route as absent.
+        # Ordinary reads, startup adoption and lifecycle open remain strictly
+        # non-creating.
+        if routed_graph is not None:
+            routed_graph.rematerialize_board_route(board_id)
         report = run_async_blocking(
             registry.graph_lifecycle.purge(board_id, reason=reason)
         )
+        if routed_graph is not None:
+            routed_graph.rematerialize_board_route(board_id)
+            # Rematerialization restores only the authenticated physical
+            # target.  Rebuild workers require the complete Pulse schema
+            # before their first transaction; performing that materialization
+            # here keeps it inside the explicit rebuild lane and ensures a
+            # schema failure aborts before any source row can be enqueued.
+            run_async_blocking(
+                registry.graph_schema_manager.ensure_bootstrapped(board_id)
+            )
         return report
 
     def enqueue_sources(

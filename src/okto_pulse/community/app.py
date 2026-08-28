@@ -31,6 +31,9 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
 from okto_pulse.community.adapters.sprint_origin_integrity import (
     inspect_sprint_origin_integrity,
 )
+from okto_pulse.community.adapters.startup_graph_routes import (
+    adopt_existing_board_routes_before_schema_sweep,
+)
 from okto_pulse.core import StorageProvider, configure_storage
 from okto_pulse.core.composition import (
     STRICT_RUNTIME_REQUIRED_PROVIDERS,
@@ -157,16 +160,68 @@ async def shutdown_kg_then_db(
     ``close_db()`` ALWAYS runs afterwards. ``graph_lifecycle_provider`` /
     ``run_blocking`` are injectable for deterministic tests.
     """
-    try:
-        if graph_lifecycle_provider is None:
-            graph_lifecycle = resolve_graph_lifecycle()
-        else:
-            graph_lifecycle = graph_lifecycle_provider()
-        if run_blocking is None:
-            await asyncio.to_thread(lambda: asyncio.run(graph_lifecycle.close(None)))
-        else:
-            await run_blocking(lambda: graph_lifecycle.close(None))
-    except Exception as exc:  # noqa: BLE001 — never block the DB close
+    failures: list[BaseException] = []
+    complete_routed_shutdown = False
+    if graph_lifecycle_provider is None and run_blocking is None:
+        try:
+            from okto_pulse.community.adapters.kg_shutdown import (
+                close_all_graphs_on_shutdown,
+            )
+
+            await asyncio.to_thread(close_all_graphs_on_shutdown)
+            complete_routed_shutdown = True
+        except Exception as exc:  # noqa: BLE001 - DB close remains unconditional
+            failures.append(exc)
+    else:
+        try:
+            graph_lifecycle = (
+                resolve_graph_lifecycle()
+                if graph_lifecycle_provider is None
+                else graph_lifecycle_provider()
+            )
+            if run_blocking is None:
+                await asyncio.to_thread(
+                    lambda: asyncio.run(graph_lifecycle.close(None))
+                )
+            else:
+                await run_blocking(lambda: graph_lifecycle.close(None))
+        except Exception as exc:  # noqa: BLE001 - Global must still be attempted
+            failures.append(exc)
+
+    # Board ``close(None)`` is intentionally Board-only.  The routed Global
+    # lifecycle owns separate Ladybug/Grafx handles and must be attempted even
+    # when Board cleanup failed.  Legacy/non-composed test shells have no
+    # bundle and retain the historical Board-only behaviour.
+    routed_graph = None
+    if not complete_routed_shutdown:
+        try:
+            from okto_pulse.community.adapters.composition import (
+                require_community_routed_graph_composition,
+            )
+
+            routed_graph = require_community_routed_graph_composition()
+        except RuntimeError:
+            pass
+        except Exception as exc:  # noqa: BLE001 - DB close remains unconditional
+            failures.append(exc)
+        if routed_graph is not None:
+            try:
+                if run_blocking is None:
+                    await asyncio.to_thread(
+                        routed_graph.global_graph.close_all_on_shutdown
+                    )
+                else:
+                    await run_blocking(routed_graph.global_graph.close_all_on_shutdown)
+            except Exception as exc:  # noqa: BLE001 - DB close remains unconditional
+                failures.append(exc)
+
+    if failures:
+        exc = failures[0]
+        for secondary in failures[1:]:
+            exc.add_note(
+                "another routed graph shutdown operation failed: "
+                f"{type(secondary).__name__}: {secondary}"
+            )
         logger.warning(
             "kg.shutdown.close_connections_failed err=%s",
             exc,
@@ -426,9 +481,36 @@ def create_app(
 
         _afg_task = asyncio.create_task(_afg_backfill_task())
 
-        # R08C: core.app no longer constructs or starts local runtime workers by
-        # default. Edition composition roots own concrete worker decisions and
-        # may inject an explicit registry through the public runtime contract.
+        # NC-10 fix: migrate per-board KG schemas idempotently on boot.
+        # Boards created before SCHEMA_VERSION 0.3.3 lack the
+        # ``last_recomputed_at`` column on every node type, which floods
+        # the daily tick with ``Cannot find property last_recomputed_at``
+        # warnings and silently skips those boards' decay recompute.
+        # ``apply_schema_to_connection`` is idempotent (CREATE NODE TABLE
+        # IF NOT EXISTS, ALTER TABLE ADD COLUMN IF NOT EXISTS) so this is
+        # safe to run on every startup; soft-fail per board so a single
+        # broken Kùzu file does not block the app from booting.
+        try:
+            await adopt_existing_board_routes_before_schema_sweep(
+                uow_factory=composition.uow_factory,
+                logger=logger,
+            )
+            await run_startup_schema_sweep(
+                uow_factory=composition.uow_factory,
+                logger=logger,
+            )
+        except Exception as _exc:
+            # Tabela ainda não existe em fresh install ou Kùzu não
+            # instalado — não bloqueia boot.
+            logger.debug(
+                "kg.schema.migration_skipped err=%s",
+                _exc,
+                extra={"event": "kg.schema.migration_skipped"},
+            )
+
+        # R08C: start graph-consuming workers only after legacy route adoption
+        # and the schema sweep. Otherwise a worker can observe an existing
+        # unbound database as absent, or race a pre-migration schema.
         if runtime_worker_registry is not None:
             await runtime_worker_registry.start_all()
             for failure in runtime_worker_registry.start_failures:
@@ -446,28 +528,6 @@ def create_app(
                     extra={"event": _event, "error": failure.message},
                 )
 
-        # NC-10 fix: migrate per-board KG schemas idempotently on boot.
-        # Boards created before SCHEMA_VERSION 0.3.3 lack the
-        # ``last_recomputed_at`` column on every node type, which floods
-        # the daily tick with ``Cannot find property last_recomputed_at``
-        # warnings and silently skips those boards' decay recompute.
-        # ``apply_schema_to_connection`` is idempotent (CREATE NODE TABLE
-        # IF NOT EXISTS, ALTER TABLE ADD COLUMN IF NOT EXISTS) so this is
-        # safe to run on every startup; soft-fail per board so a single
-        # broken Kùzu file does not block the app from booting.
-        try:
-            await run_startup_schema_sweep(
-                uow_factory=composition.uow_factory,
-                logger=logger,
-            )
-        except Exception as _exc:
-            # Tabela ainda não existe em fresh install ou Kùzu não
-            # instalado — não bloqueia boot.
-            logger.debug(
-                "kg.schema.migration_skipped err=%s",
-                _exc,
-                extra={"event": "kg.schema.migration_skipped"},
-            )
         # Core owns the KG decay job policy through JobSpec; editions own the
         # concrete scheduler runtime and inject it as SchedulerControl.
         scheduler_control = (
@@ -504,8 +564,7 @@ def create_app(
                         },
                     )
             native_drain_incomplete = any(
-                failure.resource_close_unsafe
-                for failure in worker_stop_failures
+                failure.resource_close_unsafe for failure in worker_stop_failures
             )
             if native_drain_incomplete:
                 blocked_families = sorted(
