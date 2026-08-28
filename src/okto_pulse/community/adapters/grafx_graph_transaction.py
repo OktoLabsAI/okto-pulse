@@ -381,18 +381,45 @@ class _GrafxTransactionScope:
         statement: str,
         params: dict[str, Any] | None = None,
     ) -> GraphStatementResult:
-        """Fail closed until M-PULSE-2 exposes a backend-neutral query subset."""
+        """Run one statement on THIS scope's transaction, fencing any write.
 
-        del statement, params
-        self._require_active()
-        raise GraphCapabilityUnavailable(
-            "Generic graph statements are unavailable on the Grafx transaction provider.",
-            details={
-                "backend": "okto_grafx",
-                "capability": "generic_execute",
-                "milestone": "M-PULSE-2",
-            },
+        Reads go through the scope rather than a fresh snapshot so a caller
+        sees its own uncommitted writes, which is what makes read-your-own-
+        writes hold inside a unit of work.  A statement that Core cannot prove
+        read-only is treated as a write and revalidates the fence first: losing
+        authority mid-transaction must stop the statement, not be discovered at
+        commit.  The grammar is Core's; nothing is widened here.
+        """
+
+        from okto_pulse.community.adapters.grafx_cypher_executor import (
+            pulse_value,
+            statement_is_write,
+            statement_kind,
         )
+
+        self._require_active()
+        if statement_is_write(statement):
+            self._fence("graph_statement_precommit")
+        try:
+            result = self._transaction.execute(statement, dict(params or {}))
+        except Exception as exc:
+            mapped = map_grafx_error(exc, operation="graph_statement")
+            kind = statement_kind(statement)
+            mapped.details.setdefault("phase", "execute")
+            mapped.details.setdefault("statement_kind", kind)
+            mapped.details.setdefault("error_code", mapped.code)
+            mapped.details.setdefault("retryable", mapped.retryable)
+            if mapped is exc:
+                raise
+            raise mapped from exc
+        if result is None:
+            return GraphStatementResult()
+        columns = tuple(str(name) for name in getattr(result, "columns", ()) or ())
+        rows = tuple(
+            tuple(pulse_value(cell) for cell in row)
+            for row in getattr(result, "rows", ()) or ()
+        )
+        return GraphStatementResult(rows=rows, columns=columns)
 
     def create_node(
         self,

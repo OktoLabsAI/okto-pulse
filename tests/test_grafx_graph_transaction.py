@@ -1484,24 +1484,26 @@ async def test_mark_superseded_converts_iso_timestamp_and_round_trips(
 
 
 @pytest.mark.asyncio
-async def test_generic_execute_fails_closed_without_touching_grafx(
+async def test_a_read_runs_on_the_scope_without_spending_a_fence(
     grafx_database: Any,
     fence: _DeterministicFence,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """M-PULSE-6 activates execute; a read still costs no fence revalidation.
+
+    This replaces the M-PULSE-2 fail-closed check. The capability is now open,
+    so what has to stay true is narrower and more useful: the statement runs on
+    THIS scope's transaction, and only a write revalidates the lease.
+    """
+
     scope = await _provider(grafx_database, fence).begin(BOARD_ID)
     fence_calls_before = len(fence.calls)
-
-    def forbidden_execute(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("Grafx execute was reached behind the M-PULSE-2 fence")
-
-    monkeypatch.setattr(Transaction, "execute", forbidden_execute)
     try:
-        with pytest.raises(GraphCapabilityUnavailable) as refused:
-            scope.execute("MATCH (n:Entity) RETURN n.id")
-        assert refused.value.code == "graph_capability_unavailable"
-        assert refused.value.details.get("capability")
+        result = scope.execute("MATCH (n:Entity) RETURN n.id")
+        assert result.columns == ("n.id",)
         assert len(fence.calls) == fence_calls_before
+
+        scope.execute("CREATE (:Entity {id: 'fenced-write', source_session_id: 's'})")
+        assert len(fence.calls) == fence_calls_before + 1
     finally:
         await scope.rollback()
 
