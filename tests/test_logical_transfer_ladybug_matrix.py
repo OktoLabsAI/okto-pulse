@@ -36,6 +36,7 @@ from okto_pulse.community.adapters.logical_transfer_schema import (
 )
 from okto_pulse.core.kg.logical_transfer import (
     LOGICAL_NULL,
+    LogicalCounts,
     LogicalNode,
     LogicalRelation,
     LogicalSchema,
@@ -561,3 +562,82 @@ class TestThePhysicalSchemaIsValidatedNotTrusted:
         database = populate(workspace / "origin", schema, nodes, relations)
         counts, exported, _ = export(database, schema)
         assert counts.nodes == len(exported)
+
+
+class TestTheFinalizeGateIsTheWholeCertificate:
+    """A weaker internal flag would let finalize pass what the caller was refused."""
+
+    def test_a_divergent_cold_census_blocks_finalize(
+        self, workspace: Path, monkeypatch
+    ) -> None:
+        from okto_pulse.community.adapters import ladybug_logical_source as src
+
+        schema = global_logical_schema()
+        nodes, relations = tiny_global(schema)
+        sink = LadybugLogicalCandidateSink(workspace / "candidate", schema)
+        sink.begin_candidate(schema)
+        sink.write_nodes(nodes)
+        sink.write_relations(relations)
+        sink.checkpoint()
+
+        # Records and fingerprint stay real; only the census disagrees. The
+        # earlier gate ignored counts, so this certified False and finalized.
+        real_counts = src.LadybugLogicalSnapshot.counts
+
+        def lying_counts(self):
+            actual = real_counts(self)
+            return LogicalCounts(
+                nodes=actual.nodes + 1,
+                relations=actual.relations,
+                properties=actual.properties,
+                vectors=actual.vectors,
+            )
+
+        monkeypatch.setattr(src.LadybugLogicalSnapshot, "counts", lying_counts)
+        certificate = sink.certify()
+        assert certificate.verify_succeeded is False
+        with pytest.raises(LadybugSinkError) as caught:
+            sink.finalize()
+        assert "not certified" in str(caught.value)
+        monkeypatch.undo()
+        sink.abort()
+
+
+class TestCleanupStaysRetryable:
+    """A close that failed must leave something for the retry to close."""
+
+    def test_a_failing_close_is_reported_and_the_handle_is_kept(
+        self, workspace: Path
+    ) -> None:
+        schema = global_logical_schema()
+        sink = LadybugLogicalCandidateSink(workspace / "candidate", schema)
+        sink.begin_candidate(schema)
+
+        attempts: list[str] = []
+        real_connection = sink._connection
+
+        class BrittleConnection:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def close(self) -> None:
+                self.calls += 1
+                attempts.append("connection")
+                if self.calls == 1:
+                    raise RuntimeError("close refused once")
+                real_connection.close()
+
+        sink._connection = BrittleConnection()
+
+        with pytest.raises(LadybugSinkError):
+            sink.abort()
+        # Not released, and the handle it could not close is still held.
+        assert sink._connection is not None
+        assert sink._released is False
+
+        sink.abort()
+        assert sink._connection is None
+        assert sink._released is True
+        assert not (workspace / "candidate").exists()
+        # Both attempts happened, so the retry really did retry.
+        assert attempts == ["connection", "connection"]

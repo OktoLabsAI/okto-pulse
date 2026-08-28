@@ -150,6 +150,7 @@ class LadybugLogicalSnapshot:
         self._schema = schema
         self._owns_transaction = owns_transaction
         self._closed = False
+        self._ended = False
         self._space_dtypes = {s.name: s.storage_dtype for s in schema.vector_spaces}
 
     def schema(self) -> LogicalSchema:
@@ -448,25 +449,30 @@ class LadybugLogicalSnapshot:
 
         if self._closed:
             return
-        self._closed = True
-        connection, self._connection = self._connection, None
-        ending: BaseException | None = None
-        if self._owns_transaction and connection is not None:
+        connection = self._connection
+        failures: list[str] = []
+        if self._owns_transaction and connection is not None and not self._ended:
             try:
                 connection.execute("COMMIT")
-            except Exception as failure:  # noqa: BLE001 - re-raised below
-                ending = failure
-        closer = getattr(connection, "close", None)
-        if callable(closer):
-            try:
-                closer()
-            except Exception as failure:
-                if ending is None:
-                    ending = failure
-        if ending is not None:
-            raise LadybugSourceError(
-                f"ending the snapshot failed: {ending}"
-            ) from ending
+                self._ended = True
+            except Exception as failure:  # noqa: BLE001 - aggregated below
+                failures.append(f"ending the transaction failed: {failure}")
+        if connection is not None:
+            closer = getattr(connection, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception as failure:  # noqa: BLE001 - aggregated below
+                    failures.append(f"closing the connection failed: {failure}")
+                else:
+                    self._connection = None
+            else:
+                self._connection = None
+        if failures:
+            # The reference is kept so a caller can retry; marking the snapshot
+            # closed here would strand an open handle nobody can reach.
+            raise LadybugSourceError("; ".join(failures))
+        self._closed = True
 
 
 class LadybugLogicalSnapshotSource:

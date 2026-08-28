@@ -120,13 +120,17 @@ class SchemaCensus:
 
 # Board: 11 typed nodes of 44 columns each, plus BoardMeta's 5, over 69 concrete
 # endpoint triples of 7 columns each, against 11 embedding spaces.
+#
+# Written as literals, deliberately. Computing them from the same authorities
+# the derivation reads would make expectation and authority move together, so a
+# column added upstream would satisfy a census that had silently followed it --
+# which is precisely the drift this is here to catch.
 BOARD_CENSUS: Final[SchemaCensus] = SchemaCensus(
-    node_types=len(NODE_TYPES) + 1,
+    node_types=12,
     relation_layouts=69,
-    vector_spaces=len(NODE_TYPES),
-    node_property_defs=len(NODE_TYPES) * len(COMMON_NODE_COLUMNS)
-    + len(BOARD_META_COLUMNS),
-    relation_property_defs=69 * len(COMMON_REL_COLUMNS),
+    vector_spaces=11,
+    node_property_defs=489,
+    relation_property_defs=483,
 )
 
 # Global Discovery: 4 nodes of 8/6/6/10 columns, 7 layouts carrying `weight`

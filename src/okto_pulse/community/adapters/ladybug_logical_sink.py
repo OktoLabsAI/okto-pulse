@@ -209,9 +209,10 @@ def _vector_indexes_present(database: Any, schema: LogicalSchema) -> bool:
 
     connection = ladybug.Connection(database)
     try:
-        from okto_pulse.community.adapters.kg_runtime import load_vector_extension
-
-        load_vector_extension(connection, install=False)
+        # No INSTALL and no LOAD here. kg_runtime records that both are engine
+        # writes in Ladybug 0.16, so loading would mutate and warm the very
+        # candidate this is supposed to inspect cold. SHOW_INDEXES reads the
+        # catalog and needs neither.
         result = connection.execute("CALL SHOW_INDEXES() RETURN *")
         observed: set[tuple[str, str]] = set()
         while result.has_next():
@@ -243,7 +244,7 @@ class LadybugLogicalCandidateSink:
         self._owns_path = False
         self._released = False
         self._finalized = False
-        self._certified = False
+        self._certificate: CandidateCertificate | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -265,7 +266,9 @@ class LadybugLogicalCandidateSink:
         import ladybug
 
         try:
-            self._path.mkdir(parents=True, exist_ok=False)
+            # parents=False: the candidate is created, its surroundings are
+            # somebody else's and must already exist.
+            self._path.mkdir(parents=False, exist_ok=False)
         except OSError as failure:
             raise LadybugSinkError(
                 f"creating the candidate directory failed: {failure}"
@@ -370,30 +373,36 @@ class LadybugLogicalCandidateSink:
         finally:
             _close(cold, "cold database")
         fingerprint = observed.digest()
-        self._certified = indexes_present and fingerprint == self._written.digest()
-        return CandidateCertificate(
+        # ONE verdict, used for both the certificate and the finalize gate. Two
+        # expressions drift: the earlier gate omitted the census, so a cold
+        # count that disagreed produced verify_succeeded=False and still let
+        # finalize through.
+        verified = (
+            indexes_present
+            and fingerprint == self._written.digest()
+            and counts == observed.counts()
+            and counts == self._written.counts()
+        )
+        certificate = CandidateCertificate(
             cold_reopen_completed=True,
-            # What came back equals what went in, compared as digests and
-            # censuses rather than by holding either graph in memory.
-            verify_succeeded=(
-                indexes_present
-                and fingerprint == self._written.digest()
-                and counts == observed.counts()
-                and counts == self._written.counts()
-            ),
+            verify_succeeded=verified,
             schema=schema,
             counts=counts,
             vector_spaces=tuple(space.name for space in schema.vector_spaces),
             fingerprint=fingerprint,
         )
+        # The accepted certificate itself is the gate, so finalize cannot pass
+        # on a weaker fact than the one the caller was shown.
+        self._certificate = certificate if verified else None
+        return certificate
 
     def finalize(self) -> None:
         """Accept the candidate. Only ever called after certification passed."""
 
         if self._finalized:
             return
-        if not self._certified:
-            # Accepting without a passing certificate would make the whole
+        if self._certificate is None or not self._certificate.verify_succeeded:
+            # Accepting without the passing certificate would make the whole
             # cold-reopen check advisory.
             raise LadybugSinkError(
                 "the candidate was not certified; refusing to finalize"
@@ -479,12 +488,29 @@ class LadybugLogicalCandidateSink:
         return self._schema
 
     def _close_handles(self) -> None:
-        """Close both handles, reporting the first failure rather than hiding it."""
+        """Close both handles, keeping whichever one is still open.
 
-        connection, self._connection = self._connection, None
-        database, self._database = self._database, None
-        _close(connection, "candidate connection")
-        _close(database, "candidate database")
+        A reference is cleared only after that handle actually closed. Zeroing
+        both first meant a connection that failed to close was forgotten, the
+        database was never attempted, and a retry had nothing left to try.
+        """
+
+        failures: list[str] = []
+        for attribute, what in (
+            ("_connection", "candidate connection"),
+            ("_database", "candidate database"),
+        ):
+            handle = getattr(self, attribute)
+            if handle is None:
+                continue
+            try:
+                _close(handle, what)
+            except LadybugSinkError as failure:
+                failures.append(str(failure))
+                continue
+            setattr(self, attribute, None)
+        if failures:
+            raise LadybugSinkError("; ".join(failures))
 
 
 __all__ = [
