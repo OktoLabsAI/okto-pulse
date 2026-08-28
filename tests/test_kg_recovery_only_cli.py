@@ -8254,3 +8254,681 @@ def test_installed_wheel_launcher_allows_self_and_denies_second_launcher(
         except subprocess.TimeoutExpired:
             blocker.kill()
             blocker.wait(timeout=10)
+
+
+# --- the board's backend gate ------------------------------------------------------------------
+#
+# The legacy offline recovery is Ladybug/Kuzu specific end to end.  Run against a
+# Grafx board it would consume the single-use rehearsal receipt, take the serve
+# lock and install a schema before discovering it cannot finish, so it has to
+# decide first.  Every test below drives the real CLI and asserts on what did
+# NOT happen: the seams stand in for each durable step, and an empty effect log
+# is the proof that none of them ran.
+
+
+GUARD_GENERATION = "generation-0001"
+GRAFX_PAGE_SIZE = 8192
+
+
+class _ReachedTheLegacyPath(RuntimeError):
+    """Raised by the first post-guard step so passing the gate is observable."""
+
+
+def _binding_store(data_home: Path):
+    from okto_pulse.community.adapters import graph_backend_binding as store_module
+
+    return store_module, store_module.CommunityGraphBackendBindingStore(data_home)
+
+
+def _board_root(data_home: Path, board_id: str = BOARD_ID) -> Path:
+    return data_home / "boards" / board_id
+
+
+def _write_binding(
+    data_home: Path,
+    *,
+    backend: str,
+    board_id: str = BOARD_ID,
+    generation: str = GUARD_GENERATION,
+    physical_path: Path | None = None,
+    page_size: int | None = None,
+    body_edit: Mapping[str, object] | None = None,
+    document_edit: Mapping[str, object] | None = None,
+    drop_keys: tuple[str, ...] = (),
+) -> Path:
+    """Publish a binding through the store's own body/digest/writer code.
+
+    Going through the real store is the point: it makes these documents the ones
+    Pulse actually writes, so the executor's mirrored reader is tested against
+    the original rather than against my reading of it.  ``body_edit`` changes the
+    body BEFORE the digest (hash-consistent but possibly meaningless), while
+    ``document_edit`` changes it after (the digest no longer matches).
+    """
+
+    store_module, store = _binding_store(data_home)
+    root = store.root
+    if physical_path is None:
+        physical_path = (
+            root / "boards" / board_id / "grafx" / generation
+            if backend == "grafx"
+            else root / "boards" / board_id / "graph.lbug"
+        )
+    body = store._body(
+        scope="board",
+        scope_id=board_id,
+        backend=backend,
+        generation=generation,
+        physical_path=Path(physical_path),
+        page_size=page_size,
+    )
+    if body_edit:
+        body = {**body, **body_edit}
+    document = {**body, "binding_sha256": store_module._binding_sha256(body)}
+    if document_edit:
+        document = {**document, **document_edit}
+    for key in drop_keys:
+        document.pop(key, None)
+    path = root / "boards" / board_id / store_module.BOARD_BINDING_FILENAME
+    store._publish_initial(path, body=document)
+    return path
+
+
+def _write_binding_bytes(
+    data_home: Path, content: bytes, board_id: str = BOARD_ID
+) -> Path:
+    from okto_pulse.community.adapters import graph_backend_binding as store_module
+
+    path = _board_root(data_home, board_id) / store_module.BOARD_BINDING_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return path
+
+
+def _make_junction(link: Path, target: Path) -> bool:
+    """Create a directory junction, or report that this platform cannot."""
+
+    if os.name != "nt":
+        return False
+    target.mkdir(parents=True, exist_ok=True)
+    link.parent.mkdir(parents=True, exist_ok=True)
+    completed = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed.returncode == 0 and recovery._is_filesystem_alias(link)
+
+
+def _drive_execute(
+    monkeypatch: pytest.MonkeyPatch,
+    data_home: Path,
+    *,
+    effects: list[str],
+    rehearsal_copy_of: Path | None = None,
+) -> int:
+    """Run the real CLI with every step after the guard replaced by a seam.
+
+    Nothing downstream of the gate is allowed to run for real.  Each seam
+    appends its own name and then raises, so a refusal that reaches the caller
+    with an empty ``effects`` list is a positive statement that no receipt was
+    consumed, no serve lock taken, no schema installed and no runtime opened.
+    """
+
+    evidence = recovery.InstallEvidence(
+        fingerprint=INSTALL_HASH,
+        distributions=(),
+        runtime=(("python_version", "test"),),
+    )
+    monkeypatch.setattr(recovery, "_install_evidence", lambda **_kwargs: evidence)
+    # The read-only offline gates run before the guard and must not make these
+    # tests depend on the ports and processes of the machine running them.
+    monkeypatch.setattr(recovery, "_assert_ports_offline", lambda *_a, **_k: None)
+    monkeypatch.setattr(recovery, "_assert_no_pulse_processes", lambda *_a, **_k: None)
+
+    def _seam(name: str):
+        def _record(*_args: object, **_kwargs: object) -> object:
+            effects.append(name)
+            raise _ReachedTheLegacyPath(name)
+
+        return _record
+
+    for name in (
+        "_resolve_external_existing_file",
+        "_assert_rehearsal_copy",
+        "_validate_rehearsal_attestation",
+        "_register_live_consumption",
+        "_configure_explicit_environment",
+        "_execute_under_serve_lock",
+    ):
+        monkeypatch.setattr(recovery, name, _seam(name))
+
+    argv = [
+        "--data-home",
+        str(data_home),
+        "--board-id",
+        BOARD_ID,
+        "--expected-install-fingerprint",
+        INSTALL_HASH,
+    ]
+    if rehearsal_copy_of is None:
+        argv += ["--execute", "--rehearsal-receipt", str(data_home.parent / "r.json")]
+    else:
+        argv += [
+            "--rehearsal-copy-of",
+            str(rehearsal_copy_of),
+            "--rehearsal-receipt-out",
+            str(data_home.parent / "out.json"),
+        ]
+    return recovery.main(argv)
+
+
+def _refusal(capsys: pytest.CaptureFixture[str]) -> str:
+    payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["event"] == "offline_recovery_refused"
+    return str(payload["error"])
+
+
+@pytest.fixture
+def guard_home(tmp_path: Path) -> Path:
+    home = tmp_path / "pulse-home"
+    (home / "data").mkdir(parents=True)
+    (home / "boards" / BOARD_ID).mkdir(parents=True)
+    return home.resolve()
+
+
+def test_an_authentic_grafx_binding_refuses_before_any_durable_effect(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (guard_home / "boards" / BOARD_ID / "grafx" / GUARD_GENERATION).mkdir(parents=True)
+    _write_binding(guard_home, backend="grafx", page_size=GRAFX_PAGE_SIZE)
+    effects: list[str] = []
+
+    exit_code = _drive_execute(monkeypatch, guard_home, effects=effects)
+
+    assert exit_code == 2
+    assert _refusal(capsys) == "offline_recovery_grafx_backend_unsupported"
+    # Nothing downstream ran: no receipt resolved or consumed, no serve lock, no
+    # schema install, no runtime open.
+    assert effects == []
+
+
+def test_a_grafx_board_is_refused_in_rehearsal_copy_mode_too(
+    guard_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    (guard_home / "boards" / BOARD_ID / "grafx" / GUARD_GENERATION).mkdir(parents=True)
+    _write_binding(guard_home, backend="grafx", page_size=GRAFX_PAGE_SIZE)
+    source = tmp_path / "live-home"
+    (source / "data").mkdir(parents=True)
+    effects: list[str] = []
+
+    exit_code = _drive_execute(
+        monkeypatch, guard_home, effects=effects, rehearsal_copy_of=source.resolve()
+    )
+
+    assert exit_code == 2
+    assert _refusal(capsys) == "offline_recovery_grafx_backend_unsupported"
+    assert effects == []
+
+
+def test_grafx_storage_without_a_binding_refuses_before_any_durable_effect(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Canonical Grafx storage with no binding means a decision was made somewhere
+    # this executor cannot see; assuming Ladybug would recover the wrong database.
+    (guard_home / "boards" / BOARD_ID / "grafx" / GUARD_GENERATION).mkdir(parents=True)
+    effects: list[str] = []
+
+    exit_code = _drive_execute(monkeypatch, guard_home, effects=effects)
+
+    assert exit_code == 2
+    assert _refusal(capsys) == "offline_recovery_grafx_storage_present"
+    assert effects == []
+    # And the guard did not adopt or initialize a binding to settle the question.
+    from okto_pulse.community.adapters import graph_backend_binding as store_module
+
+    assert not (_board_root(guard_home) / store_module.BOARD_BINDING_FILENAME).exists()
+
+
+def test_an_empty_grafx_directory_is_still_refused(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Isolated or coexisting, present is present: the guard does not try to judge
+    # whether the storage is usable, only whether it exists.
+    (guard_home / "boards" / BOARD_ID / "grafx").mkdir(parents=True)
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert _refusal(capsys) == "offline_recovery_grafx_storage_present"
+    assert effects == []
+
+
+def test_a_board_with_no_binding_and_no_grafx_storage_runs_the_legacy_path(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The discriminating half: same instrumentation, opposite outcome.  The guard
+    # allows the run and the very next legacy step is reached.
+    effects: list[str] = []
+
+    with pytest.raises(_ReachedTheLegacyPath):
+        _drive_execute(monkeypatch, guard_home, effects=effects)
+
+    assert effects == ["_resolve_external_existing_file"]
+
+
+def test_an_authentic_ladybug_binding_written_by_the_store_runs_the_legacy_path(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Published by the real initializer, physical database and all, so this is
+    # the exact document Pulse writes for a Ladybug board.
+    (guard_home / "boards" / BOARD_ID / "graph.lbug").write_bytes(b"")
+    _store_module, store = _binding_store(guard_home)
+    store.initialize_board_binding(
+        board_id=BOARD_ID,
+        backend="ladybug",
+        generation=GUARD_GENERATION,
+        physical_path=guard_home / "boards" / BOARD_ID / "graph.lbug",
+    )
+    effects: list[str] = []
+
+    with pytest.raises(_ReachedTheLegacyPath):
+        _drive_execute(monkeypatch, guard_home, effects=effects)
+
+    assert effects == ["_resolve_external_existing_file"]
+
+
+def test_an_authentic_ladybug_binding_decides_even_beside_grafx_storage(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The storage probe exists only to cover the case where nothing recorded a
+    # decision.  An authentic binding IS that record, so it wins.
+    (guard_home / "boards" / BOARD_ID / "grafx" / GUARD_GENERATION).mkdir(parents=True)
+    _write_binding(guard_home, backend="ladybug")
+    effects: list[str] = []
+
+    with pytest.raises(_ReachedTheLegacyPath):
+        _drive_execute(monkeypatch, guard_home, effects=effects)
+
+    assert effects == ["_resolve_external_existing_file"]
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (b"{ not json", "offline_recovery_backend_binding_invalid_json"),
+        (b"[]", "offline_recovery_backend_binding_not_object"),
+        (b"\xff\xfe binary", "offline_recovery_backend_binding_invalid_json"),
+        (
+            b'{"backend": "ladybug", "backend": "grafx"}',
+            "offline_recovery_backend_binding_duplicate_key:backend",
+        ),
+        (b"{}", "offline_recovery_backend_binding_shape_invalid"),
+    ],
+)
+def test_a_malformed_binding_fails_closed_without_any_durable_effect(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    content: bytes,
+    expected: str,
+) -> None:
+    _write_binding_bytes(guard_home, content)
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert _refusal(capsys) == expected
+    assert effects == []
+
+
+def test_an_oversized_binding_is_refused_without_reading_it_whole(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_binding_bytes(guard_home, b"{" + b" " * (16 * 1024 + 1) + b"}")
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert _refusal(capsys).startswith("offline_recovery_backend_binding_too_large")
+    assert effects == []
+
+
+def test_a_tampered_binding_is_refused_rather_than_read_for_its_backend(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Ladybug document, digest left behind, backend rewritten to grafx.  An
+    # unauthentic document is not evidence of anything, so it is not consulted.
+    _write_binding(guard_home, backend="ladybug", document_edit={"backend": "grafx"})
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert _refusal(capsys) == "offline_recovery_backend_binding_digest_mismatch"
+    assert effects == []
+
+
+@pytest.mark.parametrize(
+    ("document_edit", "expected"),
+    [
+        (
+            {"binding_sha256": "not-a-digest"},
+            "offline_recovery_backend_binding_digest_invalid",
+        ),
+        (
+            {"binding_sha256": None},
+            "offline_recovery_backend_binding_digest_invalid",
+        ),
+        (
+            {"unexpected": "extra"},
+            "offline_recovery_backend_binding_shape_invalid",
+        ),
+    ],
+)
+def test_a_binding_of_the_wrong_shape_fails_closed(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    document_edit: dict[str, object],
+    expected: str,
+) -> None:
+    _write_binding(guard_home, backend="ladybug", document_edit=document_edit)
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert _refusal(capsys) == expected
+    assert effects == []
+
+
+def test_a_binding_missing_a_key_fails_closed(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_binding(guard_home, backend="ladybug", drop_keys=("page_size",))
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert _refusal(capsys) == "offline_recovery_backend_binding_shape_invalid"
+    assert effects == []
+
+
+# The digest is self-contained rather than a signature, so every one of these
+# documents hashes correctly and is still refused on its meaning.
+@pytest.mark.parametrize(
+    ("backend", "body_edit", "expected"),
+    [
+        (
+            "ladybug",
+            {"page_size": 8192},
+            "offline_recovery_backend_binding_page_size_not_null",
+        ),
+        (
+            "grafx",
+            {"page_size": None},
+            "offline_recovery_backend_binding_page_size_invalid",
+        ),
+        (
+            "grafx",
+            {"page_size": 5000},
+            "offline_recovery_backend_binding_page_size_invalid",
+        ),
+        (
+            "grafx",
+            {"page_size": 1024},
+            "offline_recovery_backend_binding_page_size_invalid",
+        ),
+        (
+            "ladybug",
+            {"backend": "kuzu"},
+            "offline_recovery_backend_binding_backend_invalid",
+        ),
+        (
+            "ladybug",
+            {"binding_format": "okto-pulse-community-graph-binding/2"},
+            "offline_recovery_backend_binding_format_unsupported",
+        ),
+        (
+            "ladybug",
+            {"scope": "global"},
+            "offline_recovery_backend_binding_scope_mismatch",
+        ),
+        (
+            "ladybug",
+            {"scope_id": "00000000-0000-4000-8000-000000000000"},
+            "offline_recovery_backend_binding_scope_mismatch",
+        ),
+        (
+            "ladybug",
+            {"generation": "con"},
+            "offline_recovery_backend_binding_generation_not_portable",
+        ),
+        (
+            "ladybug",
+            {"generation": ".."},
+            "offline_recovery_backend_binding_generation_invalid",
+        ),
+        (
+            "ladybug",
+            {"generation": 7},
+            "offline_recovery_backend_binding_generation_invalid",
+        ),
+        (
+            "ladybug",
+            {"physical_path": f"boards/{BOARD_ID}/grafx/{GUARD_GENERATION}"},
+            "offline_recovery_backend_binding_physical_path_not_canonical",
+        ),
+        (
+            "ladybug",
+            {"physical_path": f"boards/{BOARD_ID}/graph.kuzu"},
+            "offline_recovery_backend_binding_physical_path_not_canonical",
+        ),
+        (
+            "ladybug",
+            {"physical_path": "../outside/graph.lbug"},
+            "offline_recovery_backend_binding_physical_path_invalid",
+        ),
+        (
+            "ladybug",
+            {"physical_path": "/absolute/graph.lbug"},
+            "offline_recovery_backend_binding_physical_path_invalid",
+        ),
+        (
+            "ladybug",
+            {"physical_path": f"boards\\{BOARD_ID}\\graph.lbug"},
+            "offline_recovery_backend_binding_physical_path_invalid",
+        ),
+        (
+            "ladybug",
+            {"physical_path": "global/graph.lbug"},
+            "offline_recovery_backend_binding_physical_path_scope_mismatch",
+        ),
+        (
+            "grafx",
+            {"physical_path": f"boards/{BOARD_ID}/grafx/other-generation"},
+            "offline_recovery_backend_binding_physical_path_not_canonical",
+        ),
+    ],
+)
+def test_a_hash_consistent_but_meaningless_binding_still_fails_closed(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    backend: str,
+    body_edit: dict[str, object],
+    expected: str,
+) -> None:
+    page_size = GRAFX_PAGE_SIZE if backend == "grafx" else None
+    _write_binding(
+        guard_home, backend=backend, page_size=page_size, body_edit=body_edit
+    )
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert _refusal(capsys).startswith(expected)
+    assert effects == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="directory junctions are Windows-only")
+def test_a_junctioned_board_directory_is_refused_without_reading_it(
+    guard_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A junction must be refused, not followed out of the data home.
+
+    The junction target holds a perfectly valid Ladybug binding.  If the guard
+    followed the reparse point it would read that document and let the run
+    proceed, so the refusal -- and the empty effect log -- is the proof that it
+    never left the data home.
+    """
+
+    external = tmp_path / "external-board"
+    outside_home = tmp_path / "outside-home"
+    (outside_home / "boards" / BOARD_ID).mkdir(parents=True)
+    (outside_home / "boards" / BOARD_ID / "graph.lbug").write_bytes(b"")
+    _write_binding(outside_home.resolve(), backend="ladybug")
+    external.mkdir()
+    shutil.copy2(
+        outside_home / "boards" / BOARD_ID / "graph_backend_binding.json",
+        external / "graph_backend_binding.json",
+    )
+
+    board_root = _board_root(guard_home)
+    shutil.rmtree(board_root)
+    if not _make_junction(board_root, external):
+        pytest.skip("this environment cannot create a directory junction")
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert _refusal(capsys).startswith("offline_recovery_backend_binding_alias_refused")
+    assert effects == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="directory junctions are Windows-only")
+def test_a_junctioned_grafx_directory_is_refused_rather_than_followed(
+    guard_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # No binding, and the Grafx storage probe meets a junction.  Following it
+    # would answer a question about a directory outside the data home.
+    if not _make_junction(
+        _board_root(guard_home) / "grafx", tmp_path / "external-grafx"
+    ):
+        pytest.skip("this environment cannot create a directory junction")
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert _refusal(capsys).startswith("offline_recovery_grafx_storage_alias")
+    assert effects == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="directory junctions are Windows-only")
+def test_a_binding_whose_physical_path_crosses_a_junction_is_refused(
+    guard_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The document is authentic and lexically canonical, but the path it names
+    # only reaches its target through a reparse point.
+    board_root = _board_root(guard_home)
+    _write_binding(guard_home, backend="ladybug")
+    (board_root / "graph.lbug").unlink(missing_ok=True)
+    if not _make_junction(board_root / "graph.lbug", tmp_path / "external-lbug"):
+        pytest.skip("this environment cannot create a directory junction")
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert (
+        _refusal(capsys)
+        == "offline_recovery_backend_binding_physical_path_alias_refused"
+    )
+    assert effects == []
+
+
+def test_the_mirrored_binding_rules_match_the_binding_store(tmp_path: Path) -> None:
+    """Pin the executor's mirror to the module it deliberately duplicates.
+
+    The guard cannot import the binding store: the store imports
+    ``okto_pulse.community.config``, and the guard runs before the explicit
+    environment is frozen.  This test carries the coupling instead, so the two
+    cannot drift apart silently.
+    """
+
+    from okto_pulse.community import config as community_config
+    from okto_pulse.community.adapters import graph_backend_binding as store_module
+
+    assert recovery._BOARD_BINDING_FILENAME == store_module.BOARD_BINDING_FILENAME
+    assert recovery._BINDING_FORMAT == store_module.BINDING_FORMAT
+    assert recovery._BINDING_MAX_BYTES == store_module.MAX_BINDING_BYTES
+    assert recovery._BINDING_KEYS == store_module._BINDING_KEYS
+    assert recovery._BINDING_BACKENDS == store_module._BACKENDS
+    assert recovery._BINDING_PORTABLE_FORBIDDEN == (
+        store_module._PORTABLE_SEGMENT_FORBIDDEN
+    )
+    assert recovery._BINDING_WINDOWS_RESERVED == store_module._WINDOWS_RESERVED_SEGMENTS
+    assert recovery._BINDING_GRAFX_MIN_PAGE_SIZE == (
+        community_config.PULSE_GRAFX_MIN_PAGE_SIZE
+    )
+    assert recovery._BINDING_GRAFX_MAX_PAGE_SIZE == (
+        community_config.PULSE_GRAFX_MAX_PAGE_SIZE
+    )
+
+    home = (tmp_path / "digest-home").resolve()
+    (home / "boards" / BOARD_ID).mkdir(parents=True)
+    _store_module, store = _binding_store(home)
+    body = store._body(
+        scope="board",
+        scope_id=BOARD_ID,
+        backend="grafx",
+        generation=GUARD_GENERATION,
+        physical_path=home / "boards" / BOARD_ID / "grafx" / GUARD_GENERATION,
+        page_size=GRAFX_PAGE_SIZE,
+    )
+    # Same body, same digest -- computed by two independent implementations.
+    assert recovery._binding_digest(body) == store_module._binding_sha256(body)
+
+
+def test_the_backend_guard_precedes_every_durable_step_in_execute() -> None:
+    # A source-order check to complement the behavioural proofs above: the
+    # seams show that nothing ran, this shows there is no later path that could.
+    source = inspect.getsource(recovery._execute)
+    guard = source.index("_require_legacy_recoverable_backend(")
+    for later in (
+        "if args.rehearsal_copy_of:",
+        "_register_live_consumption(",
+        "_configure_explicit_environment(",
+        "    acquire_serve_lock,",
+        "with acquire_serve_lock(settings) as serve_lock:",
+    ):
+        assert guard < source.index(later), later
+
+
+def test_the_backend_decision_opens_nothing_and_writes_nothing(
+    guard_home: Path,
+) -> None:
+    """The decision must leave the board exactly as it found it."""
+
+    (guard_home / "boards" / BOARD_ID / "grafx" / GUARD_GENERATION).mkdir(parents=True)
+    before = recovery._snapshot_tree_hashes(guard_home)
+
+    with pytest.raises(recovery.RecoveryRefused):
+        recovery._require_legacy_recoverable_backend(guard_home, BOARD_ID)
+
+    assert recovery._snapshot_tree_hashes(guard_home) == before

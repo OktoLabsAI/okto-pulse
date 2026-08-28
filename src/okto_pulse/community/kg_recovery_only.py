@@ -37,7 +37,7 @@ import hashlib
 from importlib import metadata
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import re
 import signal
@@ -15436,6 +15436,268 @@ def _run_bounded_recovery_lanes(
     return second
 
 
+# --- the board's backend decides whether this executor may run at all ---------------------------
+
+_BINDING_CODE = "offline_recovery_backend_binding"
+_BOARD_BINDING_FILENAME = "graph_backend_binding.json"
+_BINDING_FORMAT = "okto-pulse-community-graph-binding/1"
+_BINDING_MAX_BYTES = 16 * 1024
+_BINDING_GRAFX_DIRNAME = "grafx"
+_BINDING_LADYBUG_FILENAME = "graph.lbug"
+_BINDING_GRAFX_MIN_PAGE_SIZE = 4096
+_BINDING_GRAFX_MAX_PAGE_SIZE = 32768
+_BINDING_KEYS = frozenset(
+    {
+        "binding_format",
+        "scope",
+        "scope_id",
+        "backend",
+        "generation",
+        "physical_path",
+        "page_size",
+        "binding_sha256",
+    }
+)
+_BINDING_BACKENDS = frozenset({"ladybug", "grafx"})
+_BINDING_PORTABLE_FORBIDDEN = frozenset('<>:"|?*')
+_BINDING_WINDOWS_RESERVED = frozenset(
+    {
+        "aux",
+        "con",
+        "nul",
+        "prn",
+        *(f"com{number}" for number in range(1, 10)),
+        *(f"lpt{number}" for number in range(1, 10)),
+    }
+)
+"""A deliberate mirror of ``adapters.graph_backend_binding``.
+
+These rules are duplicated rather than imported, and the duplication is not an
+oversight.  The binding store imports ``okto_pulse.community.config``, and this
+check has to run BEFORE the explicit environment is frozen -- so importing it
+here would both violate the executor's import discipline and settle the very
+question the check exists to answer.  The mirror is held to the original by
+tests that build documents with the real store and read them back through here.
+"""
+
+
+def _binding_digest(body: Mapping[str, Any]) -> str:
+    """The binding digest, byte-for-byte as the binding writer computes it."""
+
+    return hashlib.sha256(
+        json.dumps(
+            dict(body),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _binding_portable_segment(value: Any, *, field: str) -> str:
+    """Mirror the store's portable-segment rule for one path component."""
+
+    _require(type(value) is str, f"{_BINDING_CODE}_{field}_invalid")
+    _require(
+        bool(value)
+        and value not in {".", ".."}
+        and "/" not in value
+        and "\\" not in value
+        and "\x00" not in value,
+        f"{_BINDING_CODE}_{field}_invalid",
+    )
+    _require(
+        len(value) <= 128
+        and value[-1:] not in {".", " "}
+        and value.split(".", 1)[0].casefold() not in _BINDING_WINDOWS_RESERVED
+        and not any(character in _BINDING_PORTABLE_FORBIDDEN for character in value)
+        and not any(ord(character) < 32 for character in value),
+        f"{_BINDING_CODE}_{field}_not_portable",
+    )
+    return value
+
+
+def _binding_grafx_page_size(value: Any) -> int:
+    """Mirror validate_grafx_page_size without importing the settings module."""
+
+    _require(
+        type(value) is int
+        and _BINDING_GRAFX_MIN_PAGE_SIZE <= value <= _BINDING_GRAFX_MAX_PAGE_SIZE
+        and not value & (value - 1),
+        f"{_BINDING_CODE}_page_size_invalid",
+        str(value),
+    )
+    return value
+
+
+def _binding_physical_path(
+    root: Path,
+    value: Any,
+    *,
+    board_id: str,
+    backend: str,
+    generation: str,
+) -> Path:
+    """Mirror the store's canonical physical-path rule, following no alias."""
+
+    _require(
+        type(value) is str and "\\" not in value,
+        f"{_BINDING_CODE}_physical_path_invalid",
+    )
+    relative = PurePosixPath(value)
+    _require(
+        not relative.is_absolute() and ".." not in relative.parts,
+        f"{_BINDING_CODE}_physical_path_invalid",
+    )
+    candidate = root.joinpath(*relative.parts)
+    lexical = Path(os.path.abspath(candidate))
+    absolute_root = Path(os.path.abspath(root))
+    try:
+        parts = lexical.relative_to(absolute_root).parts
+    except ValueError as exc:
+        raise RecoveryRefused(
+            f"{_BINDING_CODE}_physical_path_escapes_data_home"
+        ) from exc
+    # A physical path whose lexical and resolved forms disagree is reached
+    # through a junction or symlink somewhere, so it is refused rather than
+    # followed out of the data home.
+    _require(
+        os.path.normcase(str(lexical))
+        == os.path.normcase(str(candidate.resolve(strict=False))),
+        f"{_BINDING_CODE}_physical_path_alias_refused",
+    )
+    _require(
+        tuple(parts[:2]) == ("boards", board_id),
+        f"{_BINDING_CODE}_physical_path_scope_mismatch",
+    )
+    board_root = root / "boards" / board_id
+    if backend == "grafx":
+        expected = board_root / _BINDING_GRAFX_DIRNAME / generation
+    else:
+        _require(
+            _BINDING_GRAFX_DIRNAME not in tuple(part.casefold() for part in parts)
+            and lexical.suffix.casefold() == ".lbug",
+            f"{_BINDING_CODE}_physical_path_not_canonical",
+        )
+        expected = board_root / _BINDING_LADYBUG_FILENAME
+    _require(
+        os.path.normcase(str(lexical))
+        == os.path.normcase(str(Path(os.path.abspath(expected)))),
+        f"{_BINDING_CODE}_physical_path_not_canonical",
+    )
+    return lexical
+
+
+def _persisted_board_backend(binding_path: Path, root: Path, board_id: str) -> str:
+    """Read one persisted binding and return its backend, or refuse.
+
+    The document is accepted only if it is exactly what the store would accept.
+    The digest is self-contained rather than a signature, so a hash-consistent
+    document that is semantically wrong is still refused.
+    """
+
+    content = _read_bounded_stable_file(
+        binding_path,
+        code=_BINDING_CODE,
+        max_bytes=_BINDING_MAX_BYTES,
+    )
+    document = _strict_json_mapping(content, code=_BINDING_CODE)
+    _require(set(document) == _BINDING_KEYS, f"{_BINDING_CODE}_shape_invalid")
+    supplied = document["binding_sha256"]
+    _require(_is_sha256(supplied), f"{_BINDING_CODE}_digest_invalid")
+    body = {key: value for key, value in document.items() if key != "binding_sha256"}
+    _require(_binding_digest(body) == supplied, f"{_BINDING_CODE}_digest_mismatch")
+    _require(
+        document["binding_format"] == _BINDING_FORMAT,
+        f"{_BINDING_CODE}_format_unsupported",
+    )
+    _require(
+        document["scope"] == "board" and document["scope_id"] == board_id,
+        f"{_BINDING_CODE}_scope_mismatch",
+    )
+    backend = document["backend"]
+    _require(
+        type(backend) is str and backend in _BINDING_BACKENDS,
+        f"{_BINDING_CODE}_backend_invalid",
+    )
+    generation = _binding_portable_segment(document["generation"], field="generation")
+    _binding_physical_path(
+        root,
+        document["physical_path"],
+        board_id=board_id,
+        backend=backend,
+        generation=generation,
+    )
+    if backend == "grafx":
+        _binding_grafx_page_size(document["page_size"])
+    else:
+        _require(
+            document["page_size"] is None,
+            f"{_BINDING_CODE}_page_size_not_null",
+        )
+    return backend
+
+
+def _board_grafx_storage_present(board_root: Path) -> bool:
+    """Answer whether canonical Grafx storage exists, following no alias."""
+
+    grafx_root = board_root / _BINDING_GRAFX_DIRNAME
+    _assert_no_symlink_components(grafx_root, "offline_recovery_grafx_storage_alias")
+    try:
+        grafx_root.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise RecoveryRefused(
+            f"offline_recovery_grafx_storage_unverifiable:{grafx_root}"
+        ) from exc
+    return True
+
+
+def _board_backend_decision(data_home: Path, board_id: str) -> str:
+    """Return the board's backend without opening or adopting anything.
+
+    Read-only by construction: it reads one JSON file and asks whether one
+    directory entry exists, both through ``lstat`` so a junction is refused
+    rather than followed.  It never initializes a binding, never opens a
+    database and never writes -- it runs before this executor has earned the
+    right to mutate anything.
+    """
+
+    board_root = data_home / "boards" / board_id
+    binding_path = board_root / _BOARD_BINDING_FILENAME
+    _assert_no_symlink_components(binding_path, f"{_BINDING_CODE}_alias_refused")
+    try:
+        binding_path.lstat()
+    except FileNotFoundError:
+        # No binding at all.  The legacy path is safe only if this board has no
+        # Grafx storage: storage without a binding means a decision was made
+        # somewhere this executor cannot see, and assuming Ladybug would recover
+        # the wrong database.
+        if _board_grafx_storage_present(board_root):
+            raise RecoveryRefused("offline_recovery_grafx_storage_present") from None
+        return "ladybug"
+    except OSError as exc:
+        raise RecoveryRefused(f"{_BINDING_CODE}_unverifiable:{binding_path}") from exc
+    return _persisted_board_backend(binding_path, data_home, board_id)
+
+
+def _require_legacy_recoverable_backend(data_home: Path, board_id: str) -> str:
+    """Refuse before any durable effect when this board is not Ladybug.
+
+    This executor is Ladybug-specific end to end: its schema install, its
+    post-conditions and its recovery semantics all assume that engine.  Run
+    against a Grafx board it would consume a single-use rehearsal receipt, take
+    the serve lock and install a schema before discovering it cannot finish --
+    so the decision is made here, first, while nothing has happened yet.
+    """
+
+    backend = _board_backend_decision(data_home, board_id)
+    if backend != "ladybug":
+        raise RecoveryRefused("offline_recovery_grafx_backend_unsupported")
+    return backend
+
+
 def _execute(args: argparse.Namespace, evidence: InstallEvidence) -> int:
     data_home = _resolve_explicit_data_home(args.data_home, require_existing=True)
     db_path = (data_home / "data" / "pulse.db").resolve()
@@ -15448,6 +15710,10 @@ def _execute(args: argparse.Namespace, evidence: InstallEvidence) -> int:
     )
     _assert_ports_offline(args.offline_ports)
     _assert_no_pulse_processes()
+    # Before ANY durable effect -- receipt consumption, serve lock, schema
+    # install, runtime open -- decide whether this Ladybug-only executor is
+    # allowed to touch this board at all.
+    _require_legacy_recoverable_backend(data_home, str(args.board_id))
     rehearsal_source_home: Path | None = None
     rehearsal_source_snapshot: dict[str, str] | None = None
     rehearsal_source_schema: str | None = None
