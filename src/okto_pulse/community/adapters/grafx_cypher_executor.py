@@ -44,33 +44,6 @@ _PATH_SEQUENCE_KEYS = ("_NODES", "_RELS")
 
 _STATEMENT_KIND = re.compile(r"(?:EXPLAIN\s+|PROFILE\s+)?([A-Z_]+)")
 
-# Measured on Grafx main@228e5f2: the M-PULSE-2O projection is admitted as
-# `MATCH path = (a:Decision)-[r:supersedes]->(b:Decision) RETURN path`, and a
-# terminal LIMIT after it is refused with plan_error "the path 'path' is
-# written and never read in this subset". Core always appends `LIMIT <max_rows>`
-# when the caller wrote none, so the only path statement that ever reaches this
-# adapter is the refused one. M-PULSE-6 says this layer TRANSLATES the injected
-# LIMIT rather than passing the clause through, so that is what happens here:
-# the terminal bound is lifted out of the statement and enforced on the rows.
-_NAMED_PATH = re.compile(r"\bMATCH\s+[A-Za-z_]\w*\s*=", re.IGNORECASE)
-_TERMINAL_LIMIT = re.compile(r"\s+LIMIT\s+(\d+)\s*;?\s*\Z", re.IGNORECASE)
-
-
-def translate_terminal_limit(statement: str) -> tuple[str, int | None]:
-    """Lift a terminal LIMIT off a named-path projection.
-
-    Only named-path projections are touched. Anywhere else the engine applies
-    LIMIT itself and must keep doing so, because a bound this layer imposed
-    after the fact would read the same but cost a full scan.
-    """
-
-    if not _NAMED_PATH.search(statement):
-        return statement, None
-    match = _TERMINAL_LIMIT.search(statement)
-    if match is None:
-        return statement, None
-    return statement[: match.start()], int(match.group(1))
-
 
 def statement_kind(statement: str) -> str:
     """A low-cardinality class for telemetry that never echoes the query text."""
@@ -148,24 +121,18 @@ class CommunityGrafxCypherExecutor:
         *,
         max_rows: int,
         started: float,
-        applied_limit: int | None = None,
     ) -> dict[str, Any]:
         columns = [str(name) for name in getattr(result, "columns", ()) or ()]
         raw_rows = list(getattr(result, "rows", ()) or ())
-        bound = max_rows if applied_limit is None else min(applied_limit, max_rows)
-        overrun = len(raw_rows) > bound
+        overrun = len(raw_rows) > max_rows
         if overrun:
-            raw_rows = raw_rows[:bound]
-        # A bound this layer lifted out of the statement is the same bound the
-        # engine would have applied, so satisfying it is not truncation. Only an
-        # overrun the statement did not ask for is reported as one.
-        truncated = overrun and applied_limit is None
+            raw_rows = raw_rows[:max_rows]
         rows = [[pulse_value(cell) for cell in row] for row in raw_rows]
         return {
             "rows": rows,
             "columns": columns,
             "row_count": len(rows),
-            "truncated": truncated,
+            "truncated": overrun,
             "execution_time_ms": round((time.monotonic() - started) * 1000, 1),
         }
 
@@ -178,7 +145,6 @@ class CommunityGrafxCypherExecutor:
         max_rows: int = 1000,
     ) -> dict:
         cleaned = self._prepare(cypher, max_rows=max_rows)
-        cleaned, applied_limit = translate_terminal_limit(cleaned)
         database = self._database_resolver(board_id)
         started = time.monotonic()
         try:
@@ -188,7 +154,6 @@ class CommunityGrafxCypherExecutor:
                     result,
                     max_rows=max_rows,
                     started=started,
-                    applied_limit=applied_limit,
                 )
         except Exception as exc:
             mapped = map_grafx_error(exc, operation="read_only_query")
@@ -213,12 +178,8 @@ class CommunityGrafxCypherExecutor:
         difference that has to come from the layer filter, never from time.
         """
 
-        primary, primary_limit = translate_terminal_limit(
-            self._prepare(primary_cypher, max_rows=max_rows)
-        )
-        comparison, comparison_limit = translate_terminal_limit(
-            self._prepare(comparison_cypher, max_rows=max_rows)
-        )
+        primary = self._prepare(primary_cypher, max_rows=max_rows)
+        comparison = self._prepare(comparison_cypher, max_rows=max_rows)
         database = self._database_resolver(board_id)
         try:
             with database.begin("read") as reader:
@@ -228,7 +189,6 @@ class CommunityGrafxCypherExecutor:
                     primary_result,
                     max_rows=max_rows,
                     started=primary_started,
-                    applied_limit=primary_limit,
                 )
                 comparison_started = time.monotonic()
                 comparison_result = reader.execute(comparison, dict(params or {}))
@@ -236,7 +196,6 @@ class CommunityGrafxCypherExecutor:
                     comparison_result,
                     max_rows=max_rows,
                     started=comparison_started,
-                    applied_limit=comparison_limit,
                 )
         except Exception as exc:
             mapped = map_grafx_error(exc, operation="read_only_query")
@@ -251,7 +210,6 @@ class CommunityGrafxCypherExecutor:
 
 __all__ = [
     "CommunityGrafxCypherExecutor",
-    "translate_terminal_limit",
     "project_path_sequences",
     "pulse_value",
     "statement_is_write",

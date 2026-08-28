@@ -143,6 +143,35 @@ class TestTheTwoOPathConversion:
         # The opaque identities inside stay exactly as the engine gave them.
         assert set(path["_NODES"][0]["_ID"]) == {"offset", "table"}
 
+    def test_the_injected_limit_stays_engine_side(self, tmp_path: Path) -> None:
+        database = okto_grafx.connect(
+            tmp_path / "bounded-path",
+            page_size=8192,
+            max_result_rows=1,
+        )
+        try:
+            with database.begin("write") as schema:
+                schema.execute("CREATE NODE TABLE Decision(id STRING, PRIMARY KEY(id))")
+                schema.execute("CREATE REL TABLE supersedes(FROM Decision TO Decision)")
+            with database.begin("write") as writer:
+                for value in ("d1", "d2", "d3"):
+                    writer.execute(f"CREATE (:Decision {{id: '{value}'}})")
+                for source, target in (("d1", "d2"), ("d2", "d3")):
+                    writer.execute(
+                        f"MATCH (a:Decision {{id: '{source}'}}), "
+                        f"(b:Decision {{id: '{target}'}}) "
+                        "CREATE (a)-[:supersedes]->(b)"
+                    )
+
+            bounded = CommunityGrafxCypherExecutor(
+                lambda _board_id: database
+            ).execute_read_only(BOARD_ID, PATH_QUERY, max_rows=1)
+
+            assert bounded["row_count"] == 1
+            assert bounded["truncated"] is False
+        finally:
+            database.close()
+
     def test_only_those_two_keys_change_shape(self) -> None:
         value = {
             "_NODES": (1, 2),
