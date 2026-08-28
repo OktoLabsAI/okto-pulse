@@ -33,6 +33,9 @@ from okto_pulse.community.adapters.graph_memory_pressure import (
     reset_graph_open_memory_circuit_for_tests,
     run_graph_database_open,
 )
+from okto_pulse.community.adapters.cypher_statement_policy import (
+    statement_uses_vector,
+)
 from okto_pulse.community.adapters.kuzu_graph_transaction import (
     _materialize,
     _statement_is_write,
@@ -266,20 +269,7 @@ def _statement_requires_vector_extension(statement: str) -> bool:
     pay that mutation on every fresh connection.
     """
 
-    without_comments = re.sub(
-        r"//[^\n]*|/\*.*?\*/",
-        " ",
-        statement,
-        flags=re.DOTALL,
-    )
-    without_literals = re.sub(
-        r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"",
-        " ",
-        without_comments,
-    )
-    return _statement_is_write(without_literals) or (
-        _VECTOR_USE_PATTERN.search(without_literals) is not None
-    )
+    return _statement_is_write(statement) or statement_uses_vector(statement)
 
 
 class CommunityGlobalDiscoveryRuntime:

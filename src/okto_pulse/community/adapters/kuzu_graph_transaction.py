@@ -53,7 +53,12 @@ from okto_pulse.core.kg.schema_contract import (
     REL_TYPES,
     STABLE_NODE_PROPERTIES,
 )
-from okto_pulse.core.kg.tier_power import validate_cypher_read_only
+from okto_pulse.community.adapters.cypher_statement_policy import (
+    POTENTIALLY_MUTATING_TOKENS,
+    PROVEN_READ_ONLY_CALLS,
+    statement_is_write,
+    statement_kind,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,42 +88,10 @@ _TOMBSTONE_RELATIONSHIP_PAIRS = tuple(
     )
 )
 _TOMBSTONE_COMPENSATION_ATTEMPTS = 2
-_PROVEN_READ_ONLY_CALLS = frozenset(
-    {
-        "QUERY_VECTOR_INDEX",
-        "SHOW_CONNECTION",
-        "SHOW_INDEXES",
-        "SHOW_TABLES",
-        "TABLE_INFO",
-    }
-)
-_POTENTIALLY_MUTATING_TOKENS = frozenset(
-    {
-        "ALTER",
-        "ATTACH",
-        "BEGIN",
-        "CHECKPOINT",
-        "COMMIT",
-        "COMMENT",
-        "COPY",
-        "CREATE",
-        "DELETE",
-        "DETACH",
-        "DROP",
-        "EXPORT",
-        "IMPORT",
-        "INSTALL",
-        "LOAD",
-        "MERGE",
-        "REMOVE",
-        "RENAME",
-        "ROLLBACK",
-        "SET",
-        "TRUNCATE",
-        "USE",
-        "VACUUM",
-    }
-)
+# Kept as aliases: the classification moved to a shared module so Grafx
+# answers the same question the same way, and these names are still read here.
+_PROVEN_READ_ONLY_CALLS = PROVEN_READ_ONLY_CALLS
+_POTENTIALLY_MUTATING_TOKENS = POTENTIALLY_MUTATING_TOKENS
 
 
 _IncidentEdgeBeforeImage = ProjectionEdgeBeforeImage
@@ -143,92 +116,10 @@ class TombstoneReplacementCompensationError(NodePayloadReplacementCompensationEr
     """
 
 
-def _statement_kind(statement: str) -> str:
-    """Return a low-cardinality statement class without exposing its text."""
-
-    normalized = statement.lstrip().upper()
-    match = re.match(r"(?:EXPLAIN\s+|PROFILE\s+)?([A-Z_]+)", normalized)
-    if match is None:
-        return "UNKNOWN"
-    first = match.group(1)
-    if first == "CALL":
-        for operation in (
-            "CREATE_VECTOR_INDEX",
-            "DROP_VECTOR_INDEX",
-        ):
-            if operation in normalized:
-                return f"CALL_{operation}"
-        return "CALL"
-    if first != "MATCH":
-        return (
-            first
-            if first
-            in {
-                "ALTER",
-                "BEGIN",
-                "CHECKPOINT",
-                "COMMIT",
-                "CREATE",
-                "DROP",
-                "INSTALL",
-                "LOAD",
-                "MERGE",
-                "ROLLBACK",
-            }
-            else "OTHER"
-        )
-    for keyword in _MUTATING_MATCH_KEYWORDS:
-        if re.search(rf"\b{keyword}\b", normalized):
-            return f"MATCH_{keyword}"
-    return "MATCH_READ"
-
-
-def _statement_is_write(statement: str) -> bool:
-    """Fail closed unless the statement is proven to be read-only.
-
-    ``GraphTransactionScope.execute`` is a generic backend contract, so a
-    leading-token denylist is not a sufficient final writer fence: comments,
-    ``WITH``/``UNWIND`` pipelines and newly-supported backend statements can
-    all hide mutations behind a token the adapter does not know yet.
-    """
-
-    without_comments = re.sub(
-        r"//[^\n]*|/\*.*?\*/",
-        " ",
-        statement,
-        flags=re.DOTALL,
-    )
-    without_literals = re.sub(
-        r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"",
-        " ",
-        without_comments,
-    )
-    normalized = without_literals.strip()
-    if normalized.endswith(";"):
-        normalized = normalized[:-1].rstrip()
-    if not normalized or ";" in normalized:
-        return True
-
-    tokens = re.findall(r"[A-Z_]+", normalized.upper())
-    if any(token in _POTENTIALLY_MUTATING_TOKENS for token in tokens):
-        return True
-
-    # CALL is outside Core's general read-only grammar because procedures can
-    # mutate. Keep a deliberately small allowlist for the introspection/vector
-    # readers used by the embedded adapters, and fence every other procedure.
-    if "CALL" in tokens:
-        call_match = re.match(r"(?is)^\s*CALL\s+([A-Z_]+)", normalized)
-        return not (
-            call_match is not None
-            and tokens.count("CALL") == 1
-            and call_match.group(1).upper() in _PROVEN_READ_ONLY_CALLS
-        )
-
-    try:
-        validate_cypher_read_only(statement)
-    except Exception:
-        return True
-    return False
+# The policy is shared; these names stay so every existing caller and test
+# keeps importing them from here.
+_statement_kind = statement_kind
+_statement_is_write = statement_is_write
 
 
 def _materialize(result: Any) -> GraphStatementResult:

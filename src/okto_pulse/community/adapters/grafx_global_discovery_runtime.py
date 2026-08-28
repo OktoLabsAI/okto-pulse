@@ -21,7 +21,6 @@ from okto_pulse.core.kg.interfaces.graph_runtime_store import (
 )
 from okto_pulse.core.kg.interfaces.graph_transaction import GraphStatementResult
 from okto_pulse.core.kg.quarantine import KGQuarantineService
-from okto_pulse.core.kg.tier_power import validate_cypher_read_only
 
 from okto_pulse.community.adapters.filesystem_erasure import (
     fsync_directory,
@@ -59,6 +58,9 @@ from okto_pulse.community.adapters.grafx_global_operational import (
     validate_plain_global_artifact,
 )
 from okto_pulse.community.adapters.local_storage_ref import local_storage_ref
+from okto_pulse.community.adapters.cypher_statement_policy import (
+    statement_is_write,
+)
 
 PrivacyArtifactResolver = Callable[[str], tuple[Path, ...]]
 
@@ -82,13 +84,17 @@ def _capability(reason: str, *, operation: str) -> GraphCapabilityUnavailable:
 
 
 def _statement_is_write(statement: str) -> bool:
+    """Reject unusable input, then defer to the shared policy.
+
+    The type/emptiness refusal is this runtime's own contract and stays; what
+    counts as a write is not, and used to be answered here by Core's validator
+    alone -- which fenced the read-only introspection/vector CALL allowlist the
+    Ladybug side has always accepted.
+    """
+
     if type(statement) is not str or not statement.strip():
         raise ValueError("statement must be non-empty text")
-    try:
-        validate_cypher_read_only(statement)
-    except Exception:
-        return True
-    return False
+    return statement_is_write(statement)
 
 
 def _affected_count(statistics: object) -> int | None:

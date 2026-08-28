@@ -18,7 +18,6 @@ in the engine is a tuple in the contract.
 
 from __future__ import annotations
 
-import re
 import time
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -32,6 +31,12 @@ from okto_pulse.core.kg.tier_power import (
     validate_cypher_read_only,
 )
 
+from okto_pulse.community.adapters.cypher_statement_policy import (
+    leading_statement_token,
+)
+from okto_pulse.community.adapters.cypher_statement_policy import (
+    statement_is_write as _statement_is_write,
+)
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
 from okto_pulse.community.adapters.grafx_graph_transaction import _normalize_value
 
@@ -42,30 +47,13 @@ DatabaseResolver = Callable[[str], Database]
 # contract says are tuples, and matching by heuristic would drift.
 _PATH_SEQUENCE_KEYS = ("_NODES", "_RELS")
 
-_STATEMENT_KIND = re.compile(r"(?:EXPLAIN\s+|PROFILE\s+)?([A-Z_]+)")
 
-
-def statement_kind(statement: str) -> str:
-    """A low-cardinality class for telemetry that never echoes the query text."""
-
-    match = _STATEMENT_KIND.match(statement.lstrip().upper())
-    return match.group(1) if match else "UNKNOWN"
-
-
-def statement_is_write(statement: str) -> bool:
-    """Fail closed: a statement is a write unless Core proves it read-only.
-
-    The authority is Core's own validator rather than a denylist maintained
-    here.  A leading-token check cannot see mutations hidden behind comments,
-    literals or a pipeline, and a second copy of that reasoning would drift
-    away from the contract it is meant to enforce.
-    """
-
-    try:
-        validate_cypher_read_only(statement)
-    except Exception:  # noqa: BLE001 - anything unproven is treated as a write
-        return True
-    return False
+# Both published names now resolve to the shared policy.  Delegating rather
+# than re-deriving is the point of the module: this executor used to fence the
+# read-only introspection/vector CALL allowlist that the Ladybug side has
+# always treated as readable, which is a policy difference no engine should own.
+statement_kind = leading_statement_token
+statement_is_write = _statement_is_write
 
 
 def project_path_sequences(value: Any) -> Any:
