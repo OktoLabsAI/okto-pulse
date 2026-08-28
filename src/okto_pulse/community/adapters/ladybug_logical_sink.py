@@ -1,41 +1,48 @@
 """Write a logical graph into a NEW Ladybug generation, and certify it cold.
 
-The sink only ever writes out of place, into a candidate directory that must
-not already hold a database.  Nothing here binds, activates or retires a
-generation: a previous generation is untouched because this never opens it, not
-because it is careful around it.
+The sink writes out of place only.  It creates the candidate directory itself
+and refuses one that already exists, so it never adopts a directory somebody
+else owns -- and therefore never deletes one either.  Nothing here binds,
+activates or retires a generation.
 
-Two rules shape the lifecycle, and both exist because of a way an import can
-look finished while being wrong:
+Three rules shape it, and each exists because of a way an import can look
+finished while being wrong:
+
+nothing is retained
+    Writing accumulates a fingerprint and counters, never the records.  A sink
+    that kept the graph in order to check itself later would hold the whole
+    import in memory, which is exactly the bound the transfer promises not to
+    break.
 
 certify from cold
-    ``certify`` closes the writing handles and reopens the candidate from
-    scratch before reporting anything.  A certificate answered from the warm
-    writer would prove the process still remembers what it wrote, which is not
-    the question -- the question is what survived to disk.
+    ``certify`` closes the writing handles, reopens the candidate from scratch,
+    and streams it back through an accumulator.  A certificate answered from
+    the warm writer would prove the process still remembers what it wrote,
+    which is not the question.  If the handles cannot be closed, nothing is
+    certified: an unflushed writer would make the reopen a lie.
 
 absent is refused, never softened
-    A logical record that omits a declared property cannot be represented in a
-    fixed-schema table, because the table has a slot for every column and no
-    state meaning "never set".  Writing NULL instead would silently promote
-    "never set" into "set to null".  So the import refuses, the candidate is
+    A fixed-schema table has a slot for every declared column and no state
+    meaning "never set", so writing NULL for an omitted property would promote
+    "never set" into "set to null".  The import refuses, the candidate is
     abandoned, and finalize never runs.
 
-Cleanup happens exactly once on either path: ``abort`` and ``finalize`` are
-both idempotent, and both release the same handles.
+Cleanup can fail, and when it does it says so.  ``abort`` records itself as
+done only once the handles closed and the tree was actually removed, so a
+caller can retry instead of inheriting an orphaned directory it was told was
+gone.
 """
 
 from __future__ import annotations
 
-import shutil
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Final
 
 from okto_pulse.core.kg.logical_transfer import (
     CandidateCertificate,
-    LogicalCounts,
+    LogicalFingerprintAccumulator,
     LogicalNode,
     LogicalNodeType,
     LogicalNull,
@@ -47,9 +54,9 @@ from okto_pulse.core.kg.logical_transfer import (
     LogicalTimestamp,
     LogicalValue,
     LogicalVector,
-    fingerprint_graph,
 )
 
+from okto_pulse.community.adapters.filesystem_erasure import remove_contained_tree
 from okto_pulse.community.adapters.logical_transfer_values import require_representable
 
 _EPOCH: Final[datetime] = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -74,16 +81,12 @@ def _quote(identifier: str) -> str:
 
 
 def logical_to_native(value: LogicalValue, declared: LogicalPropertyDef) -> Any:
-    """Convert one logical value into the native Ladybug parameter.
-
-    Adapter-local, like its inverse: Grafx wants entirely different objects for
-    timestamps and vectors, so a shared converter would serve neither.
-    """
+    """Convert one logical value into the native Ladybug parameter."""
 
     if isinstance(value, LogicalNull):
         return None
     if isinstance(value, LogicalTimestamp):
-        return _EPOCH + _micros(value.micros)
+        return _EPOCH + timedelta(microseconds=value.micros)
     if isinstance(value, LogicalVector):
         if value.space_name != declared.vector_space:
             raise LogicalSchemaError(
@@ -92,12 +95,6 @@ def logical_to_native(value: LogicalValue, declared: LogicalPropertyDef) -> Any:
             )
         return [float(component) for component in value.components]
     return value
-
-
-def _micros(count: int):
-    from datetime import timedelta
-
-    return timedelta(microseconds=count)
 
 
 def schema_ddl(schema: LogicalSchema) -> list[str]:
@@ -124,8 +121,6 @@ def schema_ddl(schema: LogicalSchema) -> list[str]:
         first = layouts[0]
         for other in layouts[1:]:
             if [p.name for p in other.properties] != [p.name for p in first.properties]:
-                # One table cannot hold two different column sets, so a name
-                # whose layouts disagree is not physically representable.
                 raise LogicalSchemaError(
                     "layouts sharing a name declare different properties",
                     detail=name,
@@ -158,38 +153,151 @@ def _physical_type(prop: LogicalPropertyDef, dimensions: dict[str, int]) -> str:
     return physical
 
 
+def expected_vector_indexes(
+    schema: LogicalSchema,
+) -> tuple[tuple[str, str, str, str], ...]:
+    """Return (table, index_name, column, metric) for every vector property.
+
+    Derived from the schema's own property->space mapping, so the indexes that
+    must exist are exactly the ones the scope declares -- not a count.
+    """
+
+    metrics = {space.name: space.metric for space in schema.vector_spaces}
+    entries: list[tuple[str, str, str, str]] = []
+    for node_type in schema.node_types:
+        for prop in node_type.properties:
+            if prop.type != "vector":
+                continue
+            space = prop.vector_space or ""
+            if space not in metrics:
+                raise LogicalSchemaError(
+                    "vector property names an undeclared space", detail=prop.name
+                )
+            entries.append((node_type.name, space, prop.name, metrics[space]))
+    return tuple(entries)
+
+
+def _vector_index_already_exists(failure: BaseException) -> bool:
+    normalized = str(failure).lower()
+    return "already exists" in normalized and "index" in normalized
+
+
+def _close(handle: Any, what: str) -> None:
+    """Close one handle, reporting failure instead of hiding it."""
+
+    if handle is None:
+        return
+    closer = getattr(handle, "close", None)
+    if not callable(closer):
+        return
+    try:
+        closer()
+    except Exception as failure:
+        raise LadybugSinkError(f"closing the {what} failed: {failure}") from failure
+
+
+def _vector_indexes_present(database: Any, schema: LogicalSchema) -> bool:
+    """Ask the REOPENED database which vector indexes it actually has."""
+
+    expected = {
+        (table, index)
+        for table, index, _column, _metric in expected_vector_indexes(schema)
+    }
+    if not expected:
+        return True
+    import ladybug
+
+    connection = ladybug.Connection(database)
+    try:
+        from okto_pulse.community.adapters.kg_runtime import load_vector_extension
+
+        load_vector_extension(connection, install=False)
+        result = connection.execute("CALL SHOW_INDEXES() RETURN *")
+        observed: set[tuple[str, str]] = set()
+        while result.has_next():
+            row = result.get_next()
+            if len(row) >= 2:
+                observed.add((str(row[0]), str(row[1])))
+    except Exception as failure:
+        raise LadybugSinkError(
+            f"reading the candidate indexes failed: {failure}"
+        ) from failure
+    finally:
+        _close(connection, "index probe connection")
+    return expected <= observed
+
+
 class LadybugLogicalCandidateSink:
     """Accepts a logical graph into a new, empty, unbound Ladybug generation."""
 
-    def __init__(self, candidate_path: str | Path) -> None:
+    def __init__(
+        self, candidate_path: str | Path, expected_schema: LogicalSchema
+    ) -> None:
         self._path = Path(candidate_path)
+        self._base = self._path.parent
+        self._expected_schema = expected_schema
         self._database: Any = None
         self._connection: Any = None
         self._schema: LogicalSchema | None = None
-        self._nodes: list[LogicalNode] = []
-        self._relations: list[LogicalRelation] = []
+        self._written = LogicalFingerprintAccumulator.for_schema(expected_schema)
+        self._owns_path = False
         self._released = False
         self._finalized = False
+        self._certified = False
 
     # -- lifecycle ---------------------------------------------------------
 
     def begin_candidate(self, schema: LogicalSchema) -> None:
-        """Create the candidate and apply its schema BEFORE any data."""
+        """Validate the schema, create the candidate, apply DDL before any data."""
 
         if self._database is not None:
             raise LadybugSinkError("the candidate is already open")
-        if self._path.exists() and any(self._path.iterdir()):
-            # Out-of-place only: writing into an existing generation is the one
-            # thing this must never do.
-            raise LadybugSinkError(f"candidate path is not empty: {self._path}")
+        # Checked BEFORE anything exists on disk: a schema this sink was not
+        # built for must not leave a directory behind.
+        if schema != self._expected_schema:
+            raise LadybugSinkError(
+                "candidate schema does not match the expected schema"
+            )
+        if self._path.exists():
+            # Out of place means this sink creates the directory. Adopting one
+            # that already exists would make abort delete somebody else's tree.
+            raise LadybugSinkError(f"candidate path already exists: {self._path}")
         import ladybug
 
         try:
-            self._path.mkdir(parents=True, exist_ok=True)
+            self._path.mkdir(parents=True, exist_ok=False)
+        except OSError as failure:
+            raise LadybugSinkError(
+                f"creating the candidate directory failed: {failure}"
+            ) from failure
+        # Ownership only after the directory is ours, so abort never removes a
+        # tree this sink did not create.
+        self._owns_path = True
+        try:
             self._database = ladybug.Database(str(self._path / "db"))
             self._connection = ladybug.Connection(self._database)
             for statement in schema_ddl(schema):
                 self._connection.execute(statement)
+            # A DOUBLE[n] column is storage, not a searchable space. Without
+            # the index the candidate would certify while answering no vector
+            # query, and the cosine semantics would exist only on paper.
+            from okto_pulse.community.adapters.kg_runtime import (
+                load_vector_extension,
+            )
+
+            load_vector_extension(self._connection, install=True)
+            for table, index, column, metric in expected_vector_indexes(schema):
+                try:
+                    self._connection.execute(
+                        f"CALL CREATE_VECTOR_INDEX("
+                        f"'{table}', '{index}', '{column}', "
+                        f"metric := '{metric}')"
+                    )
+                except Exception as failure:
+                    # Only a proven already-exists outcome may pass; anything
+                    # else must reach the caller so the candidate is abandoned.
+                    if not _vector_index_already_exists(failure):
+                        raise
         except LogicalSchemaError:
             raise
         except Exception as failure:
@@ -202,14 +310,14 @@ class LadybugLogicalCandidateSink:
         schema = self._require_open()
         for node in nodes:
             node_type = schema.node_type(node.type_name)
-            # Refuses an absent property rather than writing NULL for it.
             require_representable(
                 node_type.properties,
                 node.properties,
                 owner=f"{node.type_name}:{node.key}",
             )
             self._create_node(node_type, node)
-            self._nodes.append(node)
+            # Accumulated, not retained: the sink never holds the graph.
+            self._written.add_node(node)
 
     def write_relations(self, relations: Sequence[LogicalRelation]) -> None:
         schema = self._require_open()
@@ -219,7 +327,7 @@ class LadybugLogicalCandidateSink:
                 layout.properties, relation.properties, owner=layout.name
             )
             self._create_relation(schema, layout, relation)
-            self._relations.append(relation)
+            self._written.add_relation(relation)
 
     def checkpoint(self) -> None:
         """Make everything written so far durable."""
@@ -228,9 +336,11 @@ class LadybugLogicalCandidateSink:
         self._run("CHECKPOINT", {})
 
     def certify(self) -> CandidateCertificate:
-        """Close the writer, reopen the candidate COLD, and report what is there."""
+        """Close the writer, reopen the candidate COLD, and stream it back."""
 
         schema = self._require_open()
+        # A close that fails means the reopen would not be cold, so nothing is
+        # certified: this raises rather than reporting on a half-flushed file.
         self._close_handles()
         from okto_pulse.community.adapters.ladybug_logical_source import (
             LadybugLogicalSnapshotSource,
@@ -242,37 +352,39 @@ class LadybugLogicalCandidateSink:
             cold = ladybug.Database(str(self._path / "db"))
         except Exception as failure:
             raise LadybugSinkError(f"cold reopen failed: {failure}") from failure
-        snapshot = LadybugLogicalSnapshotSource(cold, schema).open_snapshot()
+        observed = LogicalFingerprintAccumulator.for_schema(schema)
+        indexes_present = False
         try:
-            counts = snapshot.counts()
-            nodes = [n for batch in snapshot.iter_nodes(batch_size=500) for n in batch]
-            relations = [
-                r for batch in snapshot.iter_relations(batch_size=500) for r in batch
-            ]
+            indexes_present = _vector_indexes_present(cold, schema)
+            snapshot = LadybugLogicalSnapshotSource(cold, schema).open_snapshot()
+            try:
+                counts = snapshot.counts()
+                for batch in snapshot.iter_nodes(batch_size=500):
+                    for node in batch:
+                        observed.add_node(node)
+                for batch in snapshot.iter_relations(batch_size=500):
+                    for relation in batch:
+                        observed.add_relation(relation)
+            finally:
+                snapshot.close()
         finally:
-            snapshot.close()
+            _close(cold, "cold database")
+        fingerprint = observed.digest()
+        self._certified = indexes_present and fingerprint == self._written.digest()
         return CandidateCertificate(
             cold_reopen_completed=True,
-            verify_succeeded=self._verify(counts, nodes, relations),
+            # What came back equals what went in, compared as digests and
+            # censuses rather than by holding either graph in memory.
+            verify_succeeded=(
+                indexes_present
+                and fingerprint == self._written.digest()
+                and counts == observed.counts()
+                and counts == self._written.counts()
+            ),
             schema=schema,
             counts=counts,
             vector_spaces=tuple(space.name for space in schema.vector_spaces),
-            fingerprint=fingerprint_graph(schema, nodes, relations),
-        )
-
-    def _verify(
-        self,
-        counts: LogicalCounts,
-        nodes: Sequence[LogicalNode],
-        relations: Sequence[LogicalRelation],
-    ) -> bool:
-        """The candidate's own check: what was re-read equals what was written."""
-
-        return (
-            counts.nodes == len(nodes)
-            and counts.relations == len(relations)
-            and sorted(n.key for n in nodes) == sorted(n.key for n in self._nodes)
-            and len(relations) == len(self._relations)
+            fingerprint=fingerprint,
         )
 
     def finalize(self) -> None:
@@ -280,18 +392,36 @@ class LadybugLogicalCandidateSink:
 
         if self._finalized:
             return
+        if not self._certified:
+            # Accepting without a passing certificate would make the whole
+            # cold-reopen check advisory.
+            raise LadybugSinkError(
+                "the candidate was not certified; refusing to finalize"
+            )
         self._close_handles()
         self._finalized = True
         self._released = True
 
     def abort(self) -> None:
-        """Abandon the candidate. Idempotent, and never touches anything else."""
+        """Abandon the candidate, and only claim to have done so if it worked.
+
+        A cleanup that failed must stay retryable.  Swallowing the error and
+        recording success would hand the caller an orphaned directory it has
+        been told is gone.
+        """
 
         if self._released:
             return
-        self._released = True
         self._close_handles()
-        shutil.rmtree(self._path, ignore_errors=True)
+        if self._owns_path and self._path.exists():
+            try:
+                remove_contained_tree(self._path, base_dir=self._base)
+            except Exception as failure:
+                raise LadybugSinkError(
+                    f"abandoning the candidate failed: {failure}"
+                ) from failure
+        self._owns_path = False
+        self._released = True
 
     # -- internals ---------------------------------------------------------
 
@@ -349,15 +479,12 @@ class LadybugLogicalCandidateSink:
         return self._schema
 
     def _close_handles(self) -> None:
+        """Close both handles, reporting the first failure rather than hiding it."""
+
         connection, self._connection = self._connection, None
         database, self._database = self._database, None
-        for handle in (connection, database):
-            closer = getattr(handle, "close", None)
-            if callable(closer):
-                try:
-                    closer()
-                except Exception:  # noqa: S110 - closing must not mask the outcome
-                    pass
+        _close(connection, "candidate connection")
+        _close(database, "candidate database")
 
 
 __all__ = [

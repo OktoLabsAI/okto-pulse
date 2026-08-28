@@ -88,6 +88,15 @@ _REL_TABLE = re.compile(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class _Column:
+    """One parsed DDL column, including whether it carries the key marker."""
+
+    name: str
+    pulse_type: str
+    primary_key: bool
+
+
 class SchemaDerivationError(RuntimeError):
     """A Community authority no longer matches what the transfer expects."""
 
@@ -231,25 +240,54 @@ def global_logical_schema() -> LogicalSchema:
     spaces_by_type = {
         node_type: (space, prop) for node_type, space, prop in VECTOR_INDEXES
     }
+    if len(spaces_by_type) != len(VECTOR_INDEXES):
+        raise SchemaDerivationError("VECTOR_INDEXES declares a node type twice")
+    unused = set(spaces_by_type)
     node_types: list[LogicalNodeType] = []
     for ddl in NODE_DDL:
         name, columns = _parse_node_table(ddl)
-        space = spaces_by_type.get(name)
+        declared = spaces_by_type.get(name)
+        unused.discard(name)
         key = _primary_key(columns, name)
+        # The declared property name is the authority for WHICH column is the
+        # vector, not "whichever column happens to be DOUBLE[384]". Ignoring it
+        # would silently accept a renamed column, or map a second vector onto
+        # the first one's space.
+        vector_columns = [
+            column.name
+            for column in columns
+            if column.pulse_type == _VECTOR_COLUMN_TYPE
+        ]
+        expected = declared[1] if declared else None
+        if expected is None:
+            if vector_columns:
+                raise SchemaDerivationError(
+                    f"{name} has vector columns but no VECTOR_INDEXES entry: "
+                    f"{','.join(vector_columns)}"
+                )
+        elif vector_columns != [expected]:
+            raise SchemaDerivationError(
+                f"{name} declares vector columns {vector_columns} but "
+                f"VECTOR_INDEXES names {expected!r}"
+            )
         node_types.append(
             LogicalNodeType(
                 name=name,
                 key=key,
                 properties=tuple(
                     _property(
-                        column,
-                        pulse_type,
+                        column.name,
+                        column.pulse_type,
                         key=key,
-                        vector_space=space[0] if space else None,
+                        vector_space=declared[0] if declared else None,
                     )
-                    for column, pulse_type in columns
+                    for column in columns
                 ),
             )
+        )
+    if unused:
+        raise SchemaDerivationError(
+            f"VECTOR_INDEXES names node types with no DDL: {','.join(sorted(unused))}"
         )
 
     layouts = tuple(_parse_rel_table(ddl) for ddl in REL_DDL)
@@ -265,14 +303,23 @@ def global_logical_schema() -> LogicalSchema:
     return schema
 
 
-def _parse_node_table(ddl: str) -> tuple[str, tuple[tuple[str, str], ...]]:
+def _parse_node_table(ddl: str) -> tuple[str, tuple[_Column, ...]]:
+    """Parse one node DDL, KEEPING the inline PRIMARY KEY marker.
+
+    The marker is the whole point.  Dropping it and taking the first column
+    would mean the derived key is "whichever column happens to be written
+    first", so an authority that moved or removed its PRIMARY KEY while keeping
+    the column count would still satisfy the census and derive a schema keyed
+    on the wrong column.
+    """
+
     match = _NODE_TABLE.search(ddl)
     if match is None:
         raise SchemaDerivationError("node DDL is not in the expected shape")
     name = match.group(1)
-    columns: list[tuple[str, str]] = []
+    columns: list[_Column] = []
     for raw in match.group(2).split(","):
-        column = raw.strip()
+        column = " ".join(raw.split())
         if not column:
             continue
         parts = column.split()
@@ -280,17 +327,24 @@ def _parse_node_table(ddl: str) -> tuple[str, tuple[tuple[str, str], ...]]:
             raise SchemaDerivationError(
                 f"column {column!r} of {name} is not in the expected shape"
             )
-        columns.append((parts[0], parts[1]))
+        modifiers = " ".join(parts[2:]).upper()
+        columns.append(_Column(parts[0], parts[1], "PRIMARY KEY" in modifiers))
     return name, tuple(columns)
 
 
-def _primary_key(columns: tuple[tuple[str, str], ...], table: str) -> str:
-    # The DDL marks it inline; the first column is the key in every Global
-    # table, but that is an observation, not a licence to assume it.
-    for ddl_name, _ in columns:
-        if ddl_name:
-            return columns[0][0]
-    raise SchemaDerivationError(f"{table} declares no columns")
+def _primary_key(columns: tuple[_Column, ...], table: str) -> str:
+    """Return the column the DDL actually marks PRIMARY KEY, and only that."""
+
+    if not columns:
+        raise SchemaDerivationError(f"{table} declares no columns")
+    keys = [column.name for column in columns if column.primary_key]
+    if not keys:
+        raise SchemaDerivationError(f"{table} declares no PRIMARY KEY")
+    if len(keys) > 1:
+        raise SchemaDerivationError(
+            f"{table} declares more than one PRIMARY KEY: {','.join(keys)}"
+        )
+    return keys[0]
 
 
 def _parse_rel_table(ddl: str) -> LogicalRelationLayout:

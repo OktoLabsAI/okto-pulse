@@ -114,3 +114,154 @@ class TestAbsentIsUnrepresentableOnImport:
         require_representable(
             [STRING, INT64], {"title": LOGICAL_NULL, "rank": 1}, owner="T:1"
         )
+
+
+class TestDerivationRefusesAMissingPrimaryKey:
+    """The PRIMARY KEY marker is derived, never guessed from column order."""
+
+    def parse(self, ddl: str):
+        from okto_pulse.community.adapters.logical_transfer_schema import (
+            _parse_node_table,
+            _primary_key,
+        )
+
+        name, columns = _parse_node_table(ddl)
+        return _primary_key(columns, name)
+
+    def test_the_marked_column_is_the_key_even_when_it_is_not_first(self) -> None:
+        # Taking columns[0] would answer 'name' here.
+        assert (
+            self.parse(
+                "CREATE NODE TABLE T (name STRING, id STRING PRIMARY KEY, n INT64)"
+            )
+            == "id"
+        )
+
+    def test_a_ddl_without_a_primary_key_is_refused(self) -> None:
+        from okto_pulse.community.adapters.logical_transfer_schema import (
+            SchemaDerivationError,
+        )
+
+        with pytest.raises(SchemaDerivationError) as caught:
+            self.parse("CREATE NODE TABLE T (id STRING, name STRING)")
+        assert "PRIMARY KEY" in str(caught.value)
+
+    def test_two_primary_keys_are_refused(self) -> None:
+        from okto_pulse.community.adapters.logical_transfer_schema import (
+            SchemaDerivationError,
+        )
+
+        with pytest.raises(SchemaDerivationError):
+            self.parse(
+                "CREATE NODE TABLE T (id STRING PRIMARY KEY, b STRING PRIMARY KEY)"
+            )
+
+
+class TestTimestampConversionIsExact:
+    """A float multiply loses a microsecond at the far end of the range."""
+
+    def convert(self, moment):
+        from okto_pulse.community.adapters.ladybug_logical_source import (
+            timestamp_to_logical,
+        )
+
+        return timestamp_to_logical(moment, owner="T.when").micros
+
+    def test_the_last_representable_instant_keeps_its_microsecond(self) -> None:
+        import datetime as dt
+
+        moment = dt.datetime(9999, 12, 31, 23, 59, 59, 999999, tzinfo=dt.timezone.utc)
+        # int(total_seconds() * 1e6) answers 253402300800000000 here: one micro
+        # too many, because the product exceeds 2**53.
+        assert self.convert(moment) == 253402300799999999
+
+    def test_a_pre_epoch_instant_is_exact(self) -> None:
+        import datetime as dt
+
+        moment = dt.datetime(1900, 1, 1, 0, 0, 0, 1, tzinfo=dt.timezone.utc)
+        assert self.convert(moment) == -2208988799999999
+
+    def test_the_ordinary_case_is_unchanged(self) -> None:
+        import datetime as dt
+
+        moment = dt.datetime(2026, 8, 28, 1, 2, 3, 456789, tzinfo=dt.timezone.utc)
+        assert self.convert(moment) == 1787878923456789
+
+
+class TestVectorPropertyToSpaceIsDerivedNotGuessed:
+    """VECTOR_INDEXES names WHICH column is the vector; the type does not."""
+
+    def derive(self, monkeypatch, node_ddl=None, vector_indexes=None):
+        from okto_pulse.community.adapters import logical_transfer_schema as mod
+
+        if node_ddl is not None:
+            monkeypatch.setattr(mod, "NODE_DDL", node_ddl)
+        if vector_indexes is not None:
+            monkeypatch.setattr(mod, "VECTOR_INDEXES", vector_indexes)
+        return mod.global_logical_schema()
+
+    def test_a_renamed_vector_column_is_refused(self, monkeypatch) -> None:
+        from okto_pulse.community.adapters.logical_transfer_schema import (
+            SchemaDerivationError,
+        )
+
+        # The DDL calls it `other_embedding`; VECTOR_INDEXES still says
+        # `embedding`. Trusting the type alone would map it anyway.
+        ddl = [
+            "CREATE NODE TABLE Entity (id STRING PRIMARY KEY,"
+            " other_embedding DOUBLE[384])"
+        ]
+        with pytest.raises(SchemaDerivationError) as caught:
+            self.derive(
+                monkeypatch,
+                node_ddl=ddl,
+                vector_indexes=[("Entity", "entity_embedding_idx", "embedding")],
+            )
+        assert "embedding" in str(caught.value)
+
+    def test_a_second_vector_column_is_refused(self, monkeypatch) -> None:
+        from okto_pulse.community.adapters.logical_transfer_schema import (
+            SchemaDerivationError,
+        )
+
+        ddl = [
+            "CREATE NODE TABLE Entity (id STRING PRIMARY KEY,"
+            " embedding DOUBLE[384], extra DOUBLE[384])"
+        ]
+        with pytest.raises(SchemaDerivationError):
+            self.derive(
+                monkeypatch,
+                node_ddl=ddl,
+                vector_indexes=[("Entity", "entity_embedding_idx", "embedding")],
+            )
+
+    def test_a_vector_column_with_no_entry_is_refused(self, monkeypatch) -> None:
+        from okto_pulse.community.adapters.logical_transfer_schema import (
+            SchemaDerivationError,
+        )
+
+        ddl = [
+            "CREATE NODE TABLE Entity (id STRING PRIMARY KEY, embedding DOUBLE[384])"
+        ]
+        with pytest.raises(SchemaDerivationError) as caught:
+            self.derive(monkeypatch, node_ddl=ddl, vector_indexes=[])
+        assert "no VECTOR_INDEXES entry" in str(caught.value)
+
+    def test_an_entry_with_no_ddl_is_refused(self, monkeypatch) -> None:
+        from okto_pulse.community.adapters.logical_transfer_schema import (
+            SchemaDerivationError,
+        )
+
+        ddl = [
+            "CREATE NODE TABLE Entity (id STRING PRIMARY KEY, embedding DOUBLE[384])"
+        ]
+        with pytest.raises(SchemaDerivationError) as caught:
+            self.derive(
+                monkeypatch,
+                node_ddl=ddl,
+                vector_indexes=[
+                    ("Entity", "entity_embedding_idx", "embedding"),
+                    ("Ghost", "ghost_idx", "embedding"),
+                ],
+            )
+        assert "Ghost" in str(caught.value)

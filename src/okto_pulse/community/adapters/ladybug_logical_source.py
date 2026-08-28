@@ -84,7 +84,15 @@ def timestamp_to_logical(native: object, *, owner: str) -> LogicalTimestamp:
             detail=f"{owner}: {type(native).__name__}",
         )
     moment = native if native.tzinfo else native.replace(tzinfo=timezone.utc)
-    return LogicalTimestamp(int((moment - _EPOCH).total_seconds() * 1_000_000))
+    delta = moment - _EPOCH
+    # Integer arithmetic on the timedelta's own components. total_seconds()
+    # returns a float, and multiplying it by a million silently loses a
+    # microsecond once the product passes 2**53 -- measured, the last
+    # representable instant came back one microsecond early. The round trip has
+    # to be exact, so nothing here may pass through a float.
+    return LogicalTimestamp(
+        delta.days * 86_400_000_000 + delta.seconds * 1_000_000 + delta.microseconds
+    )
 
 
 def vector_to_logical(
@@ -108,6 +116,30 @@ def vector_to_logical(
     )
 
 
+_LOGICAL_TO_PULSE: Final[dict[str, str]] = {
+    "string": "STRING",
+    "int64": "INT64",
+    "float64": "DOUBLE",
+    "timestamp_us": "TIMESTAMP",
+    "bool": "BOOLEAN",
+}
+
+
+# Ladybug reports BOOLEAN columns as BOOL, so the two spellings name the same
+# physical type and comparing them literally would fail on a correct schema.
+_TYPE_ALIASES: Final[dict[str, str]] = {"BOOLEAN": "BOOL"}
+
+
+def _normalize_type(rendered: str) -> str:
+    return _TYPE_ALIASES.get(rendered.upper(), rendered.upper())
+
+
+def _expected_column(prop: LogicalPropertyDef, dimensions: dict[str, int]) -> str:
+    if prop.type == "vector":
+        return _normalize_type(f"DOUBLE[{dimensions[prop.vector_space or '']}]")
+    return _normalize_type(_LOGICAL_TO_PULSE[prop.type])
+
+
 class LadybugLogicalSnapshot:
     """One fixed read-only view of a Ladybug database."""
 
@@ -122,6 +154,70 @@ class LadybugLogicalSnapshot:
 
     def schema(self) -> LogicalSchema:
         return self._schema
+
+    def validate_physical_schema(self) -> None:
+        """Check the DATABASE against the expected schema, inside this snapshot.
+
+        Trusting the LogicalSchema alone would make a physically extra table or
+        column invisible: the source only ever queries what the schema declares,
+        so the census, the checksum and the fingerprint would all agree happily
+        about a truncated graph.  The database is asked what it actually has.
+
+        What Ladybug exposes is what is checked. ``TABLE_INFO`` lists a relation
+        table's properties but not its endpoint pairs, so endpoint validation is
+        not available here and is not claimed.
+        """
+
+        dimensions = {s.name: s.dimension for s in self._schema.vector_spaces}
+        expected_tables = {n.name: "NODE" for n in self._schema.node_types}
+        for layout in self._schema.relation_layouts:
+            expected_tables[layout.name] = "REL"
+
+        observed: dict[str, str] = {}
+        for row in self._rows("CALL SHOW_TABLES() RETURN *", {}):
+            observed[str(row[1])] = str(row[2]).upper()
+        if observed != expected_tables:
+            missing = sorted(set(expected_tables) - set(observed))
+            extra = sorted(set(observed) - set(expected_tables))
+            raise LogicalSchemaError(
+                "the database tables do not match the expected schema",
+                detail=f"missing={missing} unexpected={extra}",
+            )
+
+        for node_type in self._schema.node_types:
+            rows = self._rows(f"CALL TABLE_INFO('{node_type.name}') RETURN *", {})
+            columns = [
+                (str(r[1]), _normalize_type(str(r[2])), bool(r[4])) for r in rows
+            ]
+            wanted = [
+                (
+                    prop.name,
+                    _expected_column(prop, dimensions),
+                    prop.name == node_type.key,
+                )
+                for prop in node_type.properties
+            ]
+            if columns != wanted:
+                raise LogicalSchemaError(
+                    "node table columns do not match the expected schema",
+                    detail=f"{node_type.name}: {columns} != {wanted}",
+                )
+
+        for name in {layout.name for layout in self._schema.relation_layouts}:
+            layout = next(
+                lay for lay in self._schema.relation_layouts if lay.name == name
+            )
+            rows = self._rows(f"CALL TABLE_INFO('{name}') RETURN *", {})
+            columns = [(str(r[1]), _normalize_type(str(r[2]))) for r in rows]
+            wanted = [
+                (prop.name, _expected_column(prop, dimensions))
+                for prop in layout.properties
+            ]
+            if columns != wanted:
+                raise LogicalSchemaError(
+                    "relation table columns do not match the expected schema",
+                    detail=f"{name}: {columns} != {wanted}",
+                )
 
     def counts(self) -> LogicalCounts:
         """Census the snapshot with aggregate queries, not by walking it."""
@@ -342,19 +438,35 @@ class LadybugLogicalSnapshot:
             raise LadybugSourceError("the snapshot is closed")
 
     def close(self) -> None:
-        """End the read-only transaction exactly once, success or failure."""
+        """End the transaction AND release the connection, exactly once.
+
+        Ending the transaction is not the same as releasing the handle. A
+        snapshot that committed but left its connection open would leak one per
+        transfer, and the candidate it was reading could never be reopened
+        cold.
+        """
 
         if self._closed:
             return
         self._closed = True
-        if not self._owns_transaction:
-            return
-        try:
-            self._connection.execute("COMMIT")
-        except Exception as failure:
+        connection, self._connection = self._connection, None
+        ending: BaseException | None = None
+        if self._owns_transaction and connection is not None:
+            try:
+                connection.execute("COMMIT")
+            except Exception as failure:  # noqa: BLE001 - re-raised below
+                ending = failure
+        closer = getattr(connection, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception as failure:
+                if ending is None:
+                    ending = failure
+        if ending is not None:
             raise LadybugSourceError(
-                f"ending the snapshot failed: {failure}"
-            ) from failure
+                f"ending the snapshot failed: {ending}"
+            ) from ending
 
 
 class LadybugLogicalSnapshotSource:
@@ -369,14 +481,30 @@ class LadybugLogicalSnapshotSource:
 
         import ladybug
 
+        connection = None
         try:
             connection = ladybug.Connection(self._database)
             connection.execute("BEGIN TRANSACTION READ ONLY")
         except Exception as failure:
+            # A connection opened but never handed to a snapshot has no owner,
+            # so it is released here rather than left dangling.
+            closer = getattr(connection, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception:  # noqa: S110 - the open failure is the report
+                    pass
             raise LadybugSourceError(
                 f"opening the snapshot failed: {failure}"
             ) from failure
-        return LadybugLogicalSnapshot(connection, self._schema)
+        snapshot = LadybugLogicalSnapshot(connection, self._schema)
+        try:
+            # Inside the snapshot, so what is validated is what will be read.
+            snapshot.validate_physical_schema()
+        except BaseException:
+            snapshot.close()
+            raise
+        return snapshot
 
 
 __all__ = [
