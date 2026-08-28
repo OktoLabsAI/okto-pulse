@@ -246,6 +246,27 @@ def _get_close_guard(board_id: str) -> _BoardCloseGuard:
 
 
 @contextmanager
+def board_graph_operation_window(board_id: str):
+    """Pin one board operation against lifecycle close and storage mutation.
+
+    This is the backend-neutral reader side of :func:`board_storage_mutation_window`.
+    Providers whose native handles do not use :class:`BoardConnection` (for
+    example Grafx) enter here for the complete period in which the handle may
+    be observed.  A closing window therefore drains both Ladybug connections
+    and other routed graph operations before any physical storage mutation.
+    """
+
+    if type(board_id) is not str or not board_id:
+        raise ValueError("board_graph_operation_window_invalid")
+    guard = _get_close_guard(board_id)
+    guard.reader_enter()
+    try:
+        yield
+    finally:
+        guard.reader_exit()
+
+
+@contextmanager
 def registered_raw_connection(board_id: str, *, within_close_window: bool = False):
     """Conexão ``kuzu.Connection`` crua REGISTRADA no close guard (KGD-01 C6).
 

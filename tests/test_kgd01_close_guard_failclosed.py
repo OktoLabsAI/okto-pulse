@@ -193,6 +193,43 @@ def test_board_storage_mutation_window_drains_or_fails_closed(kg_env):
         assert kg_runtime._get_close_guard(board_id).readers == 0
 
 
+def test_board_graph_operation_window_pins_and_releases_on_failure(kg_env):
+    board_id = "kgd01-routed-reader-window"
+    guard = kg_runtime._get_close_guard(board_id)
+
+    with pytest.raises(RuntimeError, match="operation_failed"):
+        with kg_runtime.board_graph_operation_window(board_id):
+            assert guard.readers == 1
+            raise RuntimeError("operation_failed")
+
+    assert guard.readers == 0
+
+
+def test_board_graph_operation_window_blocks_storage_mutation(kg_env):
+    board_id = "kgd01-routed-reader-drain"
+    entered = False
+
+    with kg_runtime.board_graph_operation_window(board_id):
+        with pytest.raises(GraphLockContention) as exc_info:
+            with kg_runtime.board_storage_mutation_window(
+                board_id,
+                phase="test_grafx_restore",
+                drain_timeout=0.02,
+            ):
+                entered = True
+
+    assert entered is False
+    assert exc_info.value.details["stuck_readers"] == 1
+    assert kg_runtime._get_close_guard(board_id).readers == 0
+
+
+@pytest.mark.parametrize("board_id", ["", None, 7])
+def test_board_graph_operation_window_rejects_invalid_scope(kg_env, board_id):
+    with pytest.raises(ValueError, match="board_graph_operation_window_invalid"):
+        with kg_runtime.board_graph_operation_window(board_id):
+            raise AssertionError("invalid board must never enter")
+
+
 # ---------------------------------------------------------------------------
 # S9 — ts_0393503b: stress concorrente, zero close com leitor registrado
 # ---------------------------------------------------------------------------
