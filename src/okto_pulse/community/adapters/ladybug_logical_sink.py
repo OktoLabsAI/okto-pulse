@@ -114,16 +114,31 @@ def schema_ddl(schema: LogicalSchema) -> list[str]:
             f"CREATE NODE TABLE {_quote(node_type.name)} "
             f"({columns}, PRIMARY KEY({_quote(node_type.key)}))"
         )
+    # One physical table per relation NAME, carrying every endpoint pair that
+    # name spans. Board has 69 concrete layouts over only 16 names, so emitting
+    # one table per layout would try to create `supersedes` eleven times.
+    by_name: dict[str, list[LogicalRelationLayout]] = {}
     for layout in schema.relation_layouts:
+        by_name.setdefault(layout.name, []).append(layout)
+    for name, layouts in by_name.items():
+        first = layouts[0]
+        for other in layouts[1:]:
+            if [p.name for p in other.properties] != [p.name for p in first.properties]:
+                # One table cannot hold two different column sets, so a name
+                # whose layouts disagree is not physically representable.
+                raise LogicalSchemaError(
+                    "layouts sharing a name declare different properties",
+                    detail=name,
+                )
+        pairs = ", ".join(
+            f"FROM {_quote(layout.source_type)} TO {_quote(layout.target_type)}"
+            for layout in layouts
+        )
         columns = "".join(
             f", {_quote(prop.name)} {_physical_type(prop, dimensions)}"
-            for prop in layout.properties
+            for prop in first.properties
         )
-        statements.append(
-            f"CREATE REL TABLE {_quote(layout.name)} "
-            f"(FROM {_quote(layout.source_type)} TO {_quote(layout.target_type)}"
-            f"{columns})"
-        )
+        statements.append(f"CREATE REL TABLE {_quote(name)} ({pairs}{columns})")
     return statements
 
 
