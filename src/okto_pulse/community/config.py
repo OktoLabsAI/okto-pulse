@@ -4,10 +4,11 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator, model_validator
+from okto_pulse.core import CoreSettings
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import DotEnvSettingsSource
-from okto_pulse.core import CoreSettings
+
 from okto_pulse.community.adapters.embedding import (
     COMMUNITY_DEFAULT_EMBEDDING_DIM,
     COMMUNITY_DEFAULT_EMBEDDING_MODE,
@@ -19,6 +20,82 @@ from okto_pulse.community.adapters.telemetry_effect_config import (
 
 GRAPH_DB_MAX_SIZE_GB_VALUES: tuple[int, ...] = (2, 4, 8, 16, 32, 64)
 DataDirOrigin = Literal["explicit", "DATA_DIR", "OKTO_PULSE_HOME", "default"]
+GraphBackend = Literal["ladybug", "grafx"]
+
+PULSE_GRAFX_DEFAULT_PAGE_SIZE = 8192
+PULSE_GRAFX_MIN_PAGE_SIZE = 4096
+PULSE_GRAFX_MAX_PAGE_SIZE = 32768
+
+_LADYBUG_SETTING_ALIASES: tuple[tuple[str, str], ...] = (
+    ("kg_ladybug_buffer_pool_mb", "kg_kuzu_buffer_pool_mb"),
+    ("kg_global_ladybug_buffer_pool_mb", "kg_global_kuzu_buffer_pool_mb"),
+    ("kg_ladybug_max_db_size_gb", "kg_kuzu_max_db_size_gb"),
+)
+
+
+class CommunitySettingsAliasConflict(ValueError):
+    """A canonical Ladybug setting disagrees with its compatibility name."""
+
+    code = "community_settings_alias_conflict"
+
+    def __init__(self, canonical_name: str, legacy_name: str, *, source: str) -> None:
+        self.canonical_name = canonical_name
+        self.legacy_name = legacy_name
+        self.source = source
+        super().__init__(
+            f"{canonical_name} conflicts with compatibility setting "
+            f"{legacy_name} in {source}"
+        )
+
+
+def validate_grafx_page_size(value: int) -> int:
+    """Validate the persisted page geometry required by the Pulse schema."""
+
+    if type(value) is not int:
+        raise ValueError("kg_grafx_page_size must be an integer")
+    if not PULSE_GRAFX_MIN_PAGE_SIZE <= value <= PULSE_GRAFX_MAX_PAGE_SIZE:
+        raise ValueError("kg_grafx_page_size must be between 4096 and 32768 bytes")
+    if value & (value - 1):
+        raise ValueError("kg_grafx_page_size must be a power of two")
+    return value
+
+
+def _equivalent_setting_values(left: object, right: object) -> bool:
+    """Compare settings as integers while leaving invalid input to Pydantic."""
+
+    try:
+        return int(str(left).strip()) == int(str(right).strip())
+    except (TypeError, ValueError):
+        return left == right
+
+
+def _reject_alias_conflicts(
+    values: dict[str, object],
+    *,
+    environment: dict[str, object],
+    dotenv: dict[str, object],
+) -> None:
+    """Reject ambiguous aliases within each settings-precedence source."""
+
+    sources = (
+        ("init", {str(key).casefold(): value for key, value in values.items()}),
+        ("environment", environment),
+        ("dotenv", dotenv),
+    )
+    for canonical_name, legacy_name in _LADYBUG_SETTING_ALIASES:
+        for source_name, source_values in sources:
+            canonical = canonical_name.casefold()
+            legacy = legacy_name.casefold()
+            if canonical not in source_values or legacy not in source_values:
+                continue
+            if not _equivalent_setting_values(
+                source_values[canonical], source_values[legacy]
+            ):
+                raise CommunitySettingsAliasConflict(
+                    canonical_name,
+                    legacy_name,
+                    source=source_name,
+                )
 
 
 def validate_graph_db_max_size_gb(value: int) -> int:
@@ -67,6 +144,12 @@ class CommunitySettings(CoreSettings, BaseSettings):
     mcp_admission_retry_after_ms: int = Field(500, ge=1, le=60_000)
     cors_origins: str = "*"
     kg_base_dir: str = "~/.okto-pulse"
+    # Backend selection is explicit for both routing domains.  The defaults
+    # preserve the installed Community behavior; a persisted per-scope binding
+    # remains authoritative once the M-PULSE-6 router acquires it.
+    kg_graph_backend: GraphBackend = "ladybug"
+    kg_global_graph_backend: GraphBackend = "ladybug"
+    kg_grafx_page_size: int = PULSE_GRAFX_DEFAULT_PAGE_SIZE
 
     # Community ships sentence-transformers as a mandatory dep (pyproject.toml),
     # so override the core default of "stub" — semantic KG search needs real
@@ -77,12 +160,36 @@ class CommunitySettings(CoreSettings, BaseSettings):
     # Each open Ladybug Database owns its own native buffer pool.  Conservative
     # defaults keep a local multi-board process below the former 4 x 512 MB
     # baseline while persisted/operator overrides remain backwards compatible.
-    kg_kuzu_buffer_pool_mb: int = Field(256, ge=128, le=512)
+    kg_kuzu_buffer_pool_mb: int = Field(
+        256,
+        ge=128,
+        le=512,
+        validation_alias=AliasChoices(
+            "kg_kuzu_buffer_pool_mb",
+            "kg_ladybug_buffer_pool_mb",
+        ),
+    )
     # Global Discovery is a separate Database and does not need the full board
     # write budget.  It is intentionally environment/config-only for now; the
     # legacy runtime-settings API continues to govern the board pool unchanged.
-    kg_global_kuzu_buffer_pool_mb: int = Field(128, ge=128, le=512)
-    kg_kuzu_max_db_size_gb: int = Field(2, ge=2, le=64)
+    kg_global_kuzu_buffer_pool_mb: int = Field(
+        128,
+        ge=128,
+        le=512,
+        validation_alias=AliasChoices(
+            "kg_global_kuzu_buffer_pool_mb",
+            "kg_global_ladybug_buffer_pool_mb",
+        ),
+    )
+    kg_kuzu_max_db_size_gb: int = Field(
+        2,
+        ge=2,
+        le=64,
+        validation_alias=AliasChoices(
+            "kg_kuzu_max_db_size_gb",
+            "kg_ladybug_max_db_size_gb",
+        ),
+    )
     kg_connection_pool_size: int = Field(2, ge=1, le=32)
     kg_wal_salvage_enabled: bool = True
     kg_wal_only_recovery_enabled: bool = True
@@ -118,14 +225,25 @@ class CommunitySettings(CoreSettings, BaseSettings):
             "_env_file_encoding",
             self.model_config.get("env_file_encoding"),
         )
-        dotenv_values = (
+        dotenv_source = (
             DotEnvSettingsSource(
                 type(self),
                 env_file=env_file,
                 env_file_encoding=env_file_encoding,
-            )()
+            )
             if env_file is not None
+            else None
+        )
+        dotenv_values = dotenv_source() if dotenv_source is not None else {}
+        raw_dotenv_values = (
+            dict(getattr(dotenv_source, "env_vars", {}))
+            if dotenv_source is not None
             else {}
+        )
+        _reject_alias_conflicts(
+            prepared,
+            environment={key.casefold(): value for key, value in os.environ.items()},
+            dotenv={key.casefold(): value for key, value in raw_dotenv_values.items()},
         )
         dotenv_data_dir = str(dotenv_values.get("data_dir") or "").strip()
 
@@ -153,6 +271,29 @@ class CommunitySettings(CoreSettings, BaseSettings):
     @classmethod
     def _validate_graph_db_max_size_gb(cls, value: int) -> int:
         return validate_graph_db_max_size_gb(value)
+
+    @field_validator("kg_grafx_page_size")
+    @classmethod
+    def _validate_grafx_page_size(cls, value: int) -> int:
+        return validate_grafx_page_size(value)
+
+    @property
+    def kg_ladybug_buffer_pool_mb(self) -> int:
+        """Provider-neutral spelling of the legacy board pool setting."""
+
+        return self.kg_kuzu_buffer_pool_mb
+
+    @property
+    def kg_global_ladybug_buffer_pool_mb(self) -> int:
+        """Provider-neutral spelling of the legacy Global pool setting."""
+
+        return self.kg_global_kuzu_buffer_pool_mb
+
+    @property
+    def kg_ladybug_max_db_size_gb(self) -> int:
+        """Provider-neutral spelling of the legacy storage-limit setting."""
+
+        return self.kg_kuzu_max_db_size_gb
 
     @property
     def cors_origins_list(self) -> list[str]:
