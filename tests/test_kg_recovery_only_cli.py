@@ -208,8 +208,7 @@ def test_recovery_defaults_match_the_pinned_release_dependencies() -> None:
     assert "sqlalchemy[asyncio]==2.0.49" in dependencies
     assert '{ name = "ladybug", specifier = "==0.16.0" }' in lock
     assert (
-        '{ name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.49" }'
-        in lock
+        '{ name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.49" }' in lock
     )
 
 
@@ -905,10 +904,10 @@ async def test_dangling_rebuild_root_is_refused_before_composition_or_read(
         recovery.RecoveryRefused,
         match="recovery_artifact_alias_refused",
     ):
-            await recovery._execute_under_serve_lock(
-                SimpleNamespace(board_id=BOARD_ID),
-                graph_binding=object(),
-                data_home=data_home,
+        await recovery._execute_under_serve_lock(
+            SimpleNamespace(board_id=BOARD_ID),
+            graph_binding=object(),
+            data_home=data_home,
             db_path=data_home / "data" / "pulse.db",
             owner_id="owner-1",
             schema_fingerprint="schema-test",
@@ -1162,7 +1161,7 @@ def test_offline_cold_health_is_conservative_and_snapshot_bound(
         graph_binding=binding,
         generation_repository=SimpleNamespace(
             get_current=lambda _board_id: "generation-current"
-        )
+        ),
     )
     snapshot = recovery._snapshot_tree_hashes(root)
 
@@ -1319,9 +1318,10 @@ def test_ladybug_compensation_storage_keeps_the_authenticated_binding(
     )
 
     assert expected == recovery._snapshot_board_storage_hashes(board_root)
-    assert expected["graph_backend_binding.json"] == hashlib.sha256(
-        binding_path.read_bytes()
-    ).hexdigest()
+    assert (
+        expected["graph_backend_binding.json"]
+        == hashlib.sha256(binding_path.read_bytes()).hexdigest()
+    )
 
 
 def test_grafx_compensation_maps_the_opaque_receipt_to_the_directory_payload(
@@ -1588,11 +1588,14 @@ async def test_closed_board_snapshot_drains_the_composed_provider_for_real_grafx
     )
 
     assert close_calls == [None]
-    assert recovery._validate_board_storage_hashes(
-        snapshot,
-        code="grafx_real_snapshot_invalid",
-        binding=binding,
-    ) == snapshot
+    assert (
+        recovery._validate_board_storage_hashes(
+            snapshot,
+            code="grafx_real_snapshot_invalid",
+            binding=binding,
+        )
+        == snapshot
+    )
     assert "graph.lbug" not in snapshot
 
 
@@ -3893,6 +3896,7 @@ async def test_exact_post_commit_blocker_passes_full_compensation_gate(
         "_quarantine_ids",
         lambda *_a, **_k: {"q_original", "q_backup"},
     )
+
     async def closed_board_storage(**_kwargs):  # noqa: ANN003, ANN202
         return {"graph.lbug": "a" * 64}
 
@@ -9355,9 +9359,7 @@ def test_the_backend_decision_opens_nothing_and_writes_nothing(
 ) -> None:
     """The decision must leave the board exactly as it found it."""
 
-    (guard_home / "boards" / BOARD_ID / "grafx" / GUARD_GENERATION).mkdir(
-        parents=True
-    )
+    (guard_home / "boards" / BOARD_ID / "grafx" / GUARD_GENERATION).mkdir(parents=True)
     _write_binding(guard_home, backend="grafx", page_size=GRAFX_PAGE_SIZE)
     before = recovery._snapshot_tree_hashes(guard_home)
 
@@ -9419,9 +9421,7 @@ def test_unbound_route_is_published_only_inside_the_administrative_lane(
         BOARD_ID,
     )
     assert decision.binding is None
-    assert decision.legacy_state == (
-        "ladybug_present" if legacy_primary else "empty"
-    )
+    assert decision.legacy_state == ("ladybug_present" if legacy_primary else "empty")
     events: list[tuple[str, object]] = []
     reservation = _RouteAdministrativeLock("reservation", events)
     writer = _RouteAdministrativeLock("writer", events)
@@ -9480,11 +9480,14 @@ def test_unbound_route_is_published_only_inside_the_administrative_lane(
         if event.endswith(".acquire")
     )
     route_index = events.index(("route.publish", expected_method))
-    assert next(
-        index
-        for index, (event, _details) in enumerate(events)
-        if event == "writer.acquire"
-    ) < route_index
+    assert (
+        next(
+            index
+            for index, (event, _details) in enumerate(events)
+            if event == "writer.acquire"
+        )
+        < route_index
+    )
     assert route_index < next(
         index
         for index, (event, _details) in enumerate(events)

@@ -5413,8 +5413,7 @@ def _expected_compensation_board_storage(
             ),
         }
         current_receipt_tokens = tuple(
-            f"board:{board_id}:artifact:{index}"
-            for index in range(len(manifest_paths))
+            f"board:{board_id}:artifact:{index}" for index in range(len(manifest_paths))
         )
         _require(
             affected in {manifest_paths, current_receipt_tokens}
@@ -5455,8 +5454,7 @@ def _expected_compensation_board_storage(
         and manifest.get("kind") == "grafx_board_directory"
         and manifest.get("generation") == binding.generation
         and manifest.get("binding_sha256") == binding.binding_sha256
-        and Path(str(manifest.get("database_path") or ""))
-        == binding.physical_path
+        and Path(str(manifest.get("database_path") or "")) == binding.physical_path
         and manifest.get("payload_relative") == "payload/database"
         and manifest.get("source_removed") is True
         and manifest.get("complete") is True
@@ -5531,9 +5529,7 @@ def _expected_compensation_board_storage(
     payload_root = quarantine_dir / "payload" / "database"
     payload_hashes = _snapshot_tree_hashes(payload_root)
     payload_identities = _snapshot_tree_identities(payload_root)
-    actual_directories = tuple(
-        sorted(set(payload_identities) - set(payload_hashes))
-    )
+    actual_directories = tuple(sorted(set(payload_identities) - set(payload_hashes)))
     _require(
         payload_hashes == expected_payload_hashes
         and actual_directories == directories
@@ -6818,8 +6814,7 @@ def _offline_cold_graph_health(
         "cold_graph_storage_scope_mismatch",
     )
     _require(
-        board_storage_snapshot.get(_BOARD_BINDING_FILENAME)
-        == binding.document_sha256,
+        board_storage_snapshot.get(_BOARD_BINDING_FILENAME) == binding.document_sha256,
         "cold_graph_binding_snapshot_drift",
     )
     if binding.backend == "ladybug":
@@ -11086,9 +11081,7 @@ def _assert_closed_operation_baseline_safe(
         "terminal_reconciliation_required:closed_compensation_pointer_mismatch",
         run_id,
     )
-    expected_physical_storage = set(expected_board_storage) - {
-        _BOARD_BINDING_FILENAME
-    }
+    expected_physical_storage = set(expected_board_storage) - {_BOARD_BINDING_FILENAME}
     if expected_physical_storage:
         _require(
             bool(raw_health.get("graph_storage_exists")),
@@ -16160,9 +16153,7 @@ def _board_backend_decision(
         try:
             names = {entry.name for entry in os.scandir(board_root)}
         except OSError as exc:
-            raise RecoveryRefused(
-                f"{_BINDING_CODE}_unverifiable:{board_root}"
-            ) from exc
+            raise RecoveryRefused(f"{_BINDING_CODE}_unverifiable:{board_root}") from exc
 
     allowed = {
         _BINDING_LADYBUG_FILENAME,
@@ -16379,8 +16370,7 @@ def _publish_recovery_board_route(
         and str(getattr(snapshot, "generation", "")) == observed.generation
         and Path(getattr(snapshot, "binding_path", "")) == observed.physical_path
         and getattr(snapshot, "page_size", None) == observed.page_size
-        and str(getattr(snapshot, "binding_sha256", ""))
-        == observed.binding_sha256,
+        and str(getattr(snapshot, "binding_sha256", "")) == observed.binding_sha256,
         "offline_route_adoption_binding_mismatch",
     )
     _require(lifetime_probe(), "offline_route_adoption_lifetime_lost")
