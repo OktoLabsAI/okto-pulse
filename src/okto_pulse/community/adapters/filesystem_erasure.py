@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -108,7 +109,12 @@ def _reject_linked_parents(path: Path, *, base_dir: Path) -> None:
             )
 
 
-def remove_contained_tree(path: Path, *, base_dir: Path) -> tuple[int, int]:
+def remove_contained_tree(
+    path: Path,
+    *,
+    base_dir: Path,
+    before_mutation: Callable[[], None] | None = None,
+) -> tuple[int, int]:
     """Remove one file/tree without following links outside ``base_dir``.
 
     Returns ``(files_removed, directories_removed)``. Every recursive child is
@@ -127,12 +133,18 @@ def remove_contained_tree(path: Path, *, base_dir: Path) -> tuple[int, int]:
         return 0, 0
 
     if target.is_symlink():
+        if before_mutation is not None:
+            before_mutation()
         target.unlink()
         return 1, 0
     if _is_junction(target):
+        if before_mutation is not None:
+            before_mutation()
         target.rmdir()
         return 0, 1
     if not target.is_dir():
+        if before_mutation is not None:
+            before_mutation()
         target.unlink()
         return 1, 0
 
@@ -142,9 +154,12 @@ def remove_contained_tree(path: Path, *, base_dir: Path) -> tuple[int, int]:
         child_files, child_directories = remove_contained_tree(
             child,
             base_dir=base,
+            before_mutation=before_mutation,
         )
         files_removed += child_files
         directories_removed += child_directories
+    if before_mutation is not None:
+        before_mutation()
     target.rmdir()
     return files_removed, directories_removed + 1
 

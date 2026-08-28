@@ -19,6 +19,7 @@ from okto_pulse.core.kg.interfaces.graph_errors import GraphCapabilityUnavailabl
 MINIMUM_PULSE_GRAFX_PAGE_SIZE = 4096
 
 AdmissionValidator = Callable[[str, Database], None]
+BoardStorageRootResolver = Callable[[str], Path]
 CloseCallback = Callable[[str | None], None]
 DatabaseResolver = Callable[[str], Database]
 FenceRevalidator = Callable[[str, str], None]
@@ -75,6 +76,7 @@ def core_error_code(failure: BaseException) -> str:
 
 __all__ = [
     "AdmissionValidator",
+    "BoardStorageRootResolver",
     "CloseCallback",
     "DatabaseResolver",
     "FenceRevalidator",

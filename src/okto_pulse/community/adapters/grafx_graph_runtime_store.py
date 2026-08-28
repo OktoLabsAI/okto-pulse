@@ -17,14 +17,18 @@ from okto_pulse.core.kg.interfaces.graph_runtime_store import (
 )
 
 from okto_pulse.community.adapters.grafx_board_operational import (
+    BoardStorageRootResolver,
     CloseCallback,
     FenceRevalidator,
     PathResolver,
     core_error_code,
 )
 from okto_pulse.community.adapters.grafx_board_storage import (
-    erase_grafx_board_storage,
+    GrafxBoardPrivacyScope,
+    erase_grafx_board_privacy_storage,
     grafx_board_storage_ref,
+    grafx_board_privacy_scope,
+    grafx_board_privacy_storage_present,
     grafx_directory_size,
     quarantine_grafx_board_storage,
     storage_residues,
@@ -56,14 +60,55 @@ class CommunityGrafxGraphRuntimeStore:
         close_callback: CloseCallback,
         revalidate_fence: FenceRevalidator,
         *,
+        board_storage_root_resolver: BoardStorageRootResolver,
         configured_max_bytes: ConfiguredMaxBytes | None = None,
         budget_snapshot_provider: BudgetSnapshotProvider | None = None,
     ) -> None:
         self._path_resolver = path_resolver
         self._close_callback = close_callback
         self._revalidate_fence = revalidate_fence
+        self._board_storage_root_resolver = board_storage_root_resolver
         self._configured_max_bytes_provider = configured_max_bytes
         self._budget_snapshot_provider = budget_snapshot_provider
+
+    def _privacy_scope(
+        self,
+        board_id: str,
+    ) -> GrafxBoardPrivacyScope:
+        return grafx_board_privacy_scope(
+            board_id,
+            Path(self._board_storage_root_resolver(board_id)),
+        )
+
+    def _state_when_binding_resolution_fails(
+        self,
+        board_id: str,
+        *,
+        generation: str | None,
+        observed_at: datetime,
+    ) -> GraphRuntimeState | None:
+        """Prove strict absence from the board root without reopening Grafx."""
+
+        try:
+            scope = self._privacy_scope(board_id)
+            present = grafx_board_privacy_storage_present(scope)
+        except Exception:
+            return None
+        if present:
+            return self._state(
+                board_id,
+                GraphRuntimeObservationState.PRESENT_UNREADABLE_OR_ERROR,
+                generation=generation,
+                reason_code="board_graph_unresolved_storage_present",
+                observed_at=observed_at,
+            )
+        return self._state(
+            board_id,
+            GraphRuntimeObservationState.CONFIRMED_ABSENT,
+            generation=generation,
+            reason_code="board_graph_canonical_storage_absent",
+            observed_at=observed_at,
+        )
 
     @staticmethod
     def _state(
@@ -105,6 +150,13 @@ class CommunityGrafxGraphRuntimeStore:
         try:
             path = Path(self._path_resolver(board_id))
         except Exception:
+            fallback = self._state_when_binding_resolution_fails(
+                board_id,
+                generation=generation,
+                observed_at=observed_at,
+            )
+            if fallback is not None:
+                return fallback
             return self._state(
                 board_id,
                 GraphRuntimeObservationState.PROVIDER_UNAVAILABLE,
@@ -136,6 +188,13 @@ class CommunityGrafxGraphRuntimeStore:
                     quarantined=True,
                     details={"residue_count": len(residues)},
                 )
+            fallback = self._state_when_binding_resolution_fails(
+                board_id,
+                generation=generation,
+                observed_at=observed_at,
+            )
+            if fallback is not None:
+                return fallback
             return self._state(
                 board_id,
                 GraphRuntimeObservationState.CONFIRMED_ABSENT,
@@ -271,8 +330,12 @@ class CommunityGrafxGraphRuntimeStore:
 
     def erase_board_graph(self, board_id: str, *, reason: str) -> GraphPurgeResult:
         try:
-            path = Path(self._path_resolver(board_id))
-            present = _lexically_exists(path) or bool(storage_residues(path))
+            scope = self._privacy_scope(board_id)
+            present = grafx_board_privacy_storage_present(scope)
+            if not present:
+                self._revalidate_fence(board_id, "privacy_erase")
+                if grafx_board_privacy_storage_present(scope):
+                    present = True
             if not present:
                 return GraphPurgeResult(
                     board_id=board_id,
@@ -284,13 +347,14 @@ class CommunityGrafxGraphRuntimeStore:
                 )
             self._revalidate_fence(board_id, "privacy_erase")
             self._close_callback(board_id)
-            removed = erase_grafx_board_storage(
-                path,
+            removed = erase_grafx_board_privacy_storage(
+                scope,
                 before_mutation=lambda: self._revalidate_fence(
                     board_id, "privacy_erase"
                 ),
             )
-            if _lexically_exists(path) or storage_residues(path):
+            self._revalidate_fence(board_id, "privacy_erase")
+            if grafx_board_privacy_storage_present(scope):
                 return GraphPurgeResult(
                     board_id=board_id,
                     removed=False,

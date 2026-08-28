@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -58,6 +62,52 @@ class _Database:
         self.events.append("flush")
 
 
+def _write_foundation_binding(
+    board_root: Path,
+    *,
+    generation: str,
+) -> Path:
+    """Write the exact format persisted by the M6 Foundation binding store."""
+
+    data_root = board_root.parents[1]
+    physical_path = board_root / "grafx" / generation
+    body = {
+        "binding_format": "okto-pulse-community-graph-binding/1",
+        "scope": "board",
+        "scope_id": board_root.name,
+        "backend": "grafx",
+        "generation": generation,
+        "physical_path": physical_path.relative_to(data_root).as_posix(),
+        "page_size": 8192,
+    }
+    encoded = json.dumps(
+        body,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    binding = board_root / "graph_backend_binding.json"
+    binding.write_text(
+        json.dumps(
+            {**body, "binding_sha256": hashlib.sha256(encoded).hexdigest()},
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return binding
+
+
+def _foundation_bound_path(board_root: Path) -> Path:
+    binding = json.loads(
+        (board_root / "graph_backend_binding.json").read_text(encoding="utf-8")
+    )
+    data_root = board_root.parents[1]
+    physical_path = data_root.joinpath(*binding["physical_path"].split("/"))
+    if not physical_path.is_dir():
+        raise RuntimeError("physical_database_missing")
+    return physical_path
+
+
 def _candidate() -> GrafxSchemaCandidateResult:
     return GrafxSchemaCandidateResult(
         source_schema_version="0.3.12",
@@ -99,7 +149,14 @@ def test_grafx_operational_providers_satisfy_all_three_core_ports(tmp_path) -> N
         GraphLifecycle,
     )
     assert isinstance(
-        CommunityGrafxGraphRuntimeStore(path, close, fence),
+        CommunityGrafxGraphRuntimeStore(
+            path,
+            close,
+            fence,
+            board_storage_root_resolver=lambda _board_id: (
+                tmp_path / "boards" / "board-1"
+            ),
+        ),
         GraphRuntimeStore,
     )
 
@@ -422,6 +479,9 @@ def test_runtime_graph_state_covers_all_four_non_opening_states(tmp_path) -> Non
         lambda _board_id: (_ for _ in ()).throw(RuntimeError("no provider")),
         lambda _board_id: None,
         lambda _board_id, _phase: None,
+        board_storage_root_resolver=lambda _board_id: (_ for _ in ()).throw(
+            RuntimeError("no storage root")
+        ),
     ).graph_state("board-1")
     assert (
         unavailable.normalized_state
@@ -433,6 +493,7 @@ def test_runtime_graph_state_covers_all_four_non_opening_states(tmp_path) -> Non
         lambda _board_id: path,
         lambda _board_id: None,
         lambda _board_id, _phase: None,
+        board_storage_root_resolver=lambda _board_id: (tmp_path / "boards" / "board-1"),
     )
     absent = store.graph_state("board-1", generation="g1")
     assert absent.normalized_state is GraphRuntimeObservationState.CONFIRMED_ABSENT
@@ -456,16 +517,22 @@ def test_runtime_graph_state_covers_all_four_non_opening_states(tmp_path) -> Non
 
 
 def test_runtime_purge_erase_footprint_and_budget(tmp_path, monkeypatch) -> None:
-    path = tmp_path / "graph.grafx"
-    path.mkdir()
+    board_root = tmp_path / "boards" / "board-1"
+    path = board_root / "grafx" / "generation-2"
+    path.mkdir(parents=True)
     (path / "grafx.meta").write_bytes(b"meta")
     (path / "heap.dat").write_bytes(b"123456")
+    previous = path.parent / "generation-1"
+    previous.mkdir()
+    (previous / "grafx.meta").write_bytes(b"previous")
+    binding = _write_foundation_binding(board_root, generation="generation-2")
     closes: list[str | None] = []
     fences: list[str] = []
     store = CommunityGrafxGraphRuntimeStore(
         lambda _board_id: path,
         lambda board_id: closes.append(board_id),
         lambda _board_id, phase: fences.append(phase),
+        board_storage_root_resolver=lambda _board_id: board_root,
         configured_max_bytes=lambda: 100,
     )
 
@@ -490,19 +557,211 @@ def test_runtime_purge_erase_footprint_and_budget(tmp_path, monkeypatch) -> None
     )
     purged = store.purge_board_graph("board-1", reason="manual")
     assert purged.status == "purged"
+    assert previous.exists()
+    assert binding.exists()
 
     path.mkdir()
     (path / "grafx.meta").write_bytes(b"private")
     residue = path.with_name(f"{path.name}.candidate")
     residue.mkdir()
     (residue / "heap.dat").write_bytes(b"candidate")
+    binding.with_name(f"{binding.name}.lock").write_bytes(b"lock")
+    binding.with_name(f".{binding.name}.stale.tmp").write_bytes(b"temp")
+    unrelated = board_root / "keep.txt"
+    unrelated.write_bytes(b"not Grafx storage")
     erased = store.erase_board_graph("board-1", reason="right_to_erasure")
     assert erased.status == "erased"
-    assert not path.exists()
-    assert not residue.exists()
+    assert not path.parent.exists()
+    assert not binding.exists()
+    assert not binding.with_name(f"{binding.name}.lock").exists()
+    assert not binding.with_name(f".{binding.name}.stale.tmp").exists()
+    assert unrelated.read_bytes() == b"not Grafx storage"
     assert closes == ["board-1", "board-1"]
     assert fences.count("purge") == 2
-    assert fences.count("privacy_erase") >= 3
+    assert fences.count("privacy_erase") >= 10
+
+
+def test_privacy_erase_removes_all_foundation_generations_and_reacquires(
+    tmp_path,
+) -> None:
+    board_root = tmp_path / "boards" / "board-1"
+    generation_1 = board_root / "grafx" / "generation-1"
+    generation_2 = board_root / "grafx" / "generation-2"
+    generation_1.mkdir(parents=True)
+    generation_2.mkdir()
+    (generation_1 / "grafx.meta").write_bytes(b"old-private-data")
+    (generation_2 / "grafx.meta").write_bytes(b"active-private-data")
+    _write_foundation_binding(board_root, generation="generation-2")
+
+    store = CommunityGrafxGraphRuntimeStore(
+        lambda _board_id: _foundation_bound_path(board_root),
+        lambda _board_id: None,
+        lambda _board_id, _phase: None,
+        board_storage_root_resolver=lambda _board_id: board_root,
+    )
+
+    result = store.erase_board_graph("board-1", reason="right_to_erasure")
+
+    assert result.status == "erased"
+    assert not generation_1.exists()
+    assert not generation_2.exists()
+    assert not (board_root / "graph_backend_binding.json").exists()
+    absent = store.graph_state("board-1")
+    assert absent.normalized_state is GraphRuntimeObservationState.CONFIRMED_ABSENT
+    assert absent.reason_code == "board_graph_canonical_storage_absent"
+
+    generation_3 = board_root / "grafx" / "generation-3"
+    generation_3.mkdir(parents=True)
+    (generation_3 / "grafx.meta").write_bytes(b"new-board-data")
+    _write_foundation_binding(board_root, generation="generation-3")
+    reacquired = store.graph_state("board-1")
+    assert (
+        reacquired.normalized_state
+        is GraphRuntimeObservationState.PRESENT_READABLE_CANDIDATE
+    )
+
+
+def test_privacy_erase_retry_does_not_depend_on_the_deleted_active_generation(
+    tmp_path,
+) -> None:
+    board_root = tmp_path / "boards" / "board-1"
+    active = board_root / "grafx" / "generation-2"
+    active.mkdir(parents=True)
+    (active / "grafx.meta").write_bytes(b"private")
+    binding = _write_foundation_binding(board_root, generation="generation-2")
+
+    def expire_after_graph_bytes_are_gone(_board_id: str, _phase: str) -> None:
+        if not active.parent.exists() and binding.exists():
+            raise RuntimeError("writer_fence_expired")
+
+    store = CommunityGrafxGraphRuntimeStore(
+        lambda _board_id: _foundation_bound_path(board_root),
+        lambda _board_id: None,
+        expire_after_graph_bytes_are_gone,
+        board_storage_root_resolver=lambda _board_id: board_root,
+    )
+    interrupted = store.erase_board_graph("board-1", reason="right_to_erasure")
+    assert interrupted.status == "failed"
+    assert not active.parent.exists()
+    assert binding.exists()
+    unresolved = CommunityGrafxGraphRuntimeStore(
+        lambda _board_id: active,
+        lambda _board_id: None,
+        lambda _board_id, _phase: None,
+        board_storage_root_resolver=lambda _board_id: board_root,
+    ).graph_state("board-1")
+    assert (
+        unresolved.normalized_state
+        is GraphRuntimeObservationState.PRESENT_UNREADABLE_OR_ERROR
+    )
+
+    retry = CommunityGrafxGraphRuntimeStore(
+        lambda _board_id: _foundation_bound_path(board_root),
+        lambda _board_id: None,
+        lambda _board_id, _phase: None,
+        board_storage_root_resolver=lambda _board_id: board_root,
+    ).erase_board_graph("board-1", reason="right_to_erasure_retry")
+    assert retry.status == "erased"
+    assert not binding.exists()
+
+
+def test_privacy_erase_revalidates_fence_before_each_filesystem_mutation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    board_root = tmp_path / "boards" / "board-1"
+    active = board_root / "grafx" / "generation-1"
+    active.mkdir(parents=True)
+    (active / "grafx.meta").write_bytes(b"private")
+    _write_foundation_binding(board_root, generation="generation-1")
+    events: list[str] = []
+    real_unlink = Path.unlink
+    real_rmdir = Path.rmdir
+
+    def observed_unlink(path: Path, *args, **kwargs):
+        assert events[-1] == "fence"
+        events.append("unlink")
+        return real_unlink(path, *args, **kwargs)
+
+    def observed_rmdir(path: Path, *args, **kwargs):
+        assert events[-1] == "fence"
+        events.append("rmdir")
+        return real_rmdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", observed_unlink)
+    monkeypatch.setattr(Path, "rmdir", observed_rmdir)
+    store = CommunityGrafxGraphRuntimeStore(
+        lambda _board_id: active,
+        lambda _board_id: None,
+        lambda _board_id, _phase: events.append("fence"),
+        board_storage_root_resolver=lambda _board_id: board_root,
+    )
+
+    result = store.erase_board_graph("board-1", reason="right_to_erasure")
+
+    assert result.status == "erased"
+    assert "unlink" in events
+    assert "rmdir" in events
+
+
+def test_privacy_erase_unlinks_aliases_without_traversing_them(tmp_path) -> None:
+    board_root = tmp_path / "boards" / "board-1"
+    active = board_root / "grafx" / "generation-1"
+    active.mkdir(parents=True)
+    (active / "grafx.meta").write_bytes(b"private")
+    external = tmp_path / "outside"
+    external.mkdir()
+    sentinel = external / "must-remain.txt"
+    sentinel.write_bytes(b"outside")
+    try:
+        (active / "linked-copy").symlink_to(external, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable on this host")
+    _write_foundation_binding(board_root, generation="generation-1")
+    store = CommunityGrafxGraphRuntimeStore(
+        lambda _board_id: active,
+        lambda _board_id: None,
+        lambda _board_id, _phase: None,
+        board_storage_root_resolver=lambda _board_id: board_root,
+    )
+
+    result = store.erase_board_graph("board-1", reason="right_to_erasure")
+
+    assert result.status == "erased"
+    assert sentinel.read_bytes() == b"outside"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction probe requires nt")
+def test_privacy_erase_unlinks_junction_without_traversing_it(tmp_path) -> None:
+    board_root = tmp_path / "boards" / "board-1"
+    active = board_root / "grafx" / "generation-1"
+    active.mkdir(parents=True)
+    (active / "grafx.meta").write_bytes(b"private")
+    external = tmp_path / "junction-target"
+    external.mkdir()
+    sentinel = external / "must-remain.txt"
+    sentinel.write_bytes(b"outside")
+    junction = active / "linked-copy"
+    made = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(external)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if made.returncode != 0 or not junction.exists():
+        pytest.skip(f"junction unavailable: {made.stderr.strip()!r}")
+    _write_foundation_binding(board_root, generation="generation-1")
+    store = CommunityGrafxGraphRuntimeStore(
+        lambda _board_id: active,
+        lambda _board_id: None,
+        lambda _board_id, _phase: None,
+        board_storage_root_resolver=lambda _board_id: board_root,
+    )
+
+    result = store.erase_board_graph("board-1", reason="right_to_erasure")
+
+    assert result.status == "erased"
+    assert sentinel.read_bytes() == b"outside"
 
 
 def test_runtime_purge_failure_preserves_primary_storage(
@@ -522,6 +781,7 @@ def test_runtime_purge_failure_preserves_primary_storage(
         lambda _board_id: path,
         lambda _board_id: None,
         lambda _board_id, _phase: None,
+        board_storage_root_resolver=lambda _board_id: (tmp_path / "boards" / "board-1"),
     )
 
     result = store.purge_board_graph("board-1", reason="manual")
