@@ -1,0 +1,1033 @@
+"""The Ladybug cells of the frozen M-PULSE-5 matrix.
+
+Only the cells this lot owns: A1[ladybug], the Ladybug half of B1, C1[ladybug] x
+[board, global], C2[ladybug], and D1 source[ladybug/write] plus
+sink[ladybug/import|checkpoint|reopen].  A2, D2 and D3 belong elsewhere and are
+not here.
+
+Fault injection is done by subclassing inside this file rather than by adding
+seams to the adapters, so the production path carries nothing that exists only
+for a test.
+"""
+
+from __future__ import annotations
+
+import shutil
+import tempfile
+from collections.abc import Iterator, Sequence
+from pathlib import Path
+
+import ladybug
+import pytest
+
+from okto_pulse.community.adapters.ladybug_logical_sink import (
+    LadybugLogicalCandidateSink,
+    LadybugSinkError,
+    board_candidate_sink,
+    global_candidate_sink,
+    logical_to_native,
+    schema_ddl,
+)
+from okto_pulse.community.adapters.ladybug_logical_source import (
+    LadybugLogicalSnapshotSource,
+)
+from okto_pulse.community.adapters.kg_runtime import (
+    GRAPH_DB_FILENAME,
+    load_vector_extension,
+)
+from okto_pulse.community.adapters.logical_transfer_schema import (
+    board_logical_schema,
+    global_logical_schema,
+    searchable_indexes,
+)
+from okto_pulse.community.adapters.ladybug_logical_source import LadybugSourceError
+from okto_pulse.core.kg.logical_transfer import (
+    LOGICAL_NULL,
+    LogicalCounts,
+    LogicalNode,
+    LogicalRelation,
+    LogicalSchema,
+    LogicalSchemaError,
+    LogicalTimestamp,
+    LogicalVector,
+    PhasedTransferError,
+    fingerprint_graph,
+    transfer_logical_graph,
+)
+
+SAMPLE_MICROS = 1787878923456789
+
+
+@pytest.fixture
+def workspace() -> Iterator[Path]:
+    root = Path(tempfile.mkdtemp(prefix="m5_matrix_"))
+    try:
+        yield root
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def sample_value(prop, schema: LogicalSchema, seed: int):
+    if prop.type == "string":
+        return f"s{seed}"
+    if prop.type == "int64":
+        return seed
+    if prop.type == "float64":
+        return float(seed) / 4
+    if prop.type == "bool":
+        return seed % 2 == 0
+    if prop.type == "timestamp_us":
+        return LogicalTimestamp(SAMPLE_MICROS + seed)
+    space = schema.vector_space(prop.vector_space or "")
+    return LogicalVector(
+        space_name=space.name,
+        dtype=space.storage_dtype,
+        components=tuple(float(seed) for _ in range(space.dimension)),
+    )
+
+
+def make_node(
+    schema: LogicalSchema, type_name: str, key: str, seed: int
+) -> LogicalNode:
+    node_type = schema.node_type(type_name)
+    properties = {}
+    for index, prop in enumerate(node_type.properties):
+        properties[prop.name] = (
+            key
+            if prop.name == node_type.key
+            else sample_value(prop, schema, seed + index)
+        )
+    return LogicalNode(type_name=type_name, key=key, properties=properties)
+
+
+def make_relation(schema: LogicalSchema, layout, src: str, dst: str, seed: int):
+    properties = {
+        prop.name: sample_value(prop, schema, seed + index)
+        for index, prop in enumerate(layout.properties)
+    }
+    return LogicalRelation(
+        layout_name=layout.name,
+        source_type=layout.source_type,
+        target_type=layout.target_type,
+        source_key=src,
+        target_key=dst,
+        properties=properties,
+    )
+
+
+def warm(database):
+    """Open a database the way the runtime does, with the extension loaded.
+
+    LOAD is per-database rather than per-connection, so one warming connection
+    is what makes SHOW_INDEXES report a definition at all -- and a source that
+    cannot read the metric refuses the handle instead of guessing it.
+    """
+
+    connection = ladybug.Connection(database)
+    try:
+        load_vector_extension(connection, install=False)
+    finally:
+        connection.close()
+    return database
+
+
+def raw_database(path: Path, schema: LogicalSchema):
+    """Build a physical database by hand, in the order the sink builds one."""
+
+    path.mkdir(parents=True, exist_ok=True)
+    database = ladybug.Database(str(path / GRAPH_DB_FILENAME))
+    connection = ladybug.Connection(database)
+    for statement in schema_ddl(schema):
+        connection.execute(statement)
+    load_vector_extension(connection, install=True)
+    for entry in searchable_indexes(schema):
+        connection.execute(
+            f"CALL CREATE_VECTOR_INDEX('{entry.table}', '{entry.index_name}', "
+            f"'{entry.column}', metric := '{entry.metric}')"
+        )
+    return database, connection
+
+
+def hnsw_tables(database) -> set[str]:
+    """Every table that actually carries a vector index, read from the catalog."""
+
+    connection = ladybug.Connection(database)
+    try:
+        result = connection.execute("CALL SHOW_INDEXES() RETURN *")
+        tables = set()
+        while result.has_next():
+            row = result.get_next()
+            if str(row[2]) == "HNSW":
+                tables.add(str(row[0]))
+        result.close()
+        return tables
+    finally:
+        connection.close()
+
+
+def populate(path: Path, schema: LogicalSchema, nodes, relations):
+    """Create a physical database and fill it through the sink."""
+
+    sink = LadybugLogicalCandidateSink(
+        path, schema, database_filename=GRAPH_DB_FILENAME
+    )
+    sink.begin_candidate(schema)
+    sink.write_nodes(nodes)
+    sink.write_relations(relations)
+    sink.checkpoint()
+    # finalize refuses without a passing certificate, so the helper certifies
+    # too -- the same order a real transfer uses.
+    certificate = sink.certify()
+    assert certificate.verify_succeeded is True
+    sink.finalize()
+    return warm(ladybug.Database(str(sink.database_path)))
+
+
+def tiny_global(schema: LogicalSchema):
+    """Two Topics, identical parallel relations and a self-loop."""
+
+    nodes = [
+        make_node(schema, "Topic", "t1", 1),
+        make_node(schema, "Topic", "t2", 2),
+    ]
+    layout = schema.relation_layout("TOPIC_RELATES_TO", "Topic", "Topic")
+    relations = [
+        make_relation(schema, layout, "t1", "t2", 5),
+        make_relation(schema, layout, "t1", "t2", 5),  # byte-identical parallel
+        make_relation(schema, layout, "t1", "t1", 7),  # self-loop
+    ]
+    return nodes, relations
+
+
+def tiny_board(schema: LogicalSchema):
+    """One Decision and one Alternative, plus the two `supersedes` layouts."""
+
+    nodes = [
+        make_node(schema, "Decision", "d1", 1),
+        make_node(schema, "Decision", "d2", 2),
+        make_node(schema, "Alternative", "a1", 3),
+        make_node(schema, "Alternative", "a2", 4),
+    ]
+    decision = schema.relation_layout("supersedes", "Decision", "Decision")
+    alternative = schema.relation_layout("supersedes", "Alternative", "Alternative")
+    relations = [
+        make_relation(schema, decision, "d1", "d2", 9),
+        # Same layout NAME, different endpoint types, same keys shape: these two
+        # must stay distinct occurrences.
+        make_relation(schema, alternative, "a1", "a2", 9),
+    ]
+    return nodes, relations
+
+
+def export(database, schema: LogicalSchema, batch_size: int = 2):
+    source = LadybugLogicalSnapshotSource(database, schema)
+    snapshot = source.open_snapshot()
+    try:
+        counts = snapshot.counts()
+        nodes = [n for b in snapshot.iter_nodes(batch_size=batch_size) for n in b]
+        rels = [r for b in snapshot.iter_relations(batch_size=batch_size) for r in b]
+    finally:
+        snapshot.close()
+    return counts, nodes, rels
+
+
+class TestA1PhysicalNullAndUnrepresentableAbsent:
+    """A1[ladybug]: NULL and omitted both export as present LOGICAL_NULL."""
+
+    def test_omitted_and_explicit_null_both_export_as_logical_null(
+        self, workspace: Path
+    ) -> None:
+        schema = global_logical_schema()
+        database, conn = raw_database(workspace / "origin", schema)
+        # 'omitted' leaves every non-key column unset; 'explicit' sets one to NULL.
+        conn.execute("CREATE (:Topic {id: 'omitted'})")
+        conn.execute("CREATE (:Topic {id: 'explicit', name: NULL})")
+
+        _, nodes, _ = export(database, schema)
+        omitted = next(n for n in nodes if n.key == "omitted")
+        explicit = next(n for n in nodes if n.key == "explicit")
+
+        assert omitted.properties["name"] is LOGICAL_NULL
+        assert explicit.properties["name"] is LOGICAL_NULL
+        # Both still project every declared column: a fixed-schema row has them.
+        declared = len(schema.node_type("Topic").properties)
+        assert len(omitted.properties) == declared
+        assert len(explicit.properties) == declared
+
+    def test_an_absent_property_is_refused_and_the_candidate_abandoned(
+        self, workspace: Path
+    ) -> None:
+        schema = global_logical_schema()
+        previous = workspace / "previous"
+        nodes, relations = tiny_global(schema)
+        populate(previous, schema, nodes, relations)
+        before = sorted(p.name for p in previous.iterdir())
+
+        # A logical record with a property genuinely OMITTED, which a
+        # fixed-schema table has no state to represent.
+        incomplete = LogicalNode(type_name="Topic", key="t9", properties={"id": "t9"})
+        candidate = workspace / "candidate"
+        sink = LadybugLogicalCandidateSink(
+            candidate, schema, database_filename=GRAPH_DB_FILENAME
+        )
+        sink.begin_candidate(schema)
+        with pytest.raises(LogicalSchemaError) as caught:
+            sink.write_nodes([incomplete])
+        assert "absent" in str(caught.value)
+        sink.abort()
+
+        assert not candidate.exists()
+        assert sorted(p.name for p in previous.iterdir()) == before
+
+
+class TestB1CanonicalRoundTripLadybugHalf:
+    """B1: schema, data and fingerprint exact after a cold reopen."""
+
+    @pytest.mark.parametrize(
+        ("builder", "content"),
+        [(global_logical_schema, tiny_global), (board_logical_schema, tiny_board)],
+        ids=["global", "board"],
+    )
+    def test_a_scope_round_trips_exactly(
+        self, workspace: Path, builder, content
+    ) -> None:
+        schema = builder()
+        nodes, relations = content(schema)
+        origin = populate(workspace / "origin", schema, nodes, relations)
+        source_counts, exported_nodes, exported_rels = export(origin, schema)
+        source_fingerprint = fingerprint_graph(schema, exported_nodes, exported_rels)
+
+        sink = LadybugLogicalCandidateSink(
+            workspace / "candidate", schema, database_filename=GRAPH_DB_FILENAME
+        )
+        sink.begin_candidate(schema)
+        sink.write_nodes(exported_nodes)
+        sink.write_relations(exported_rels)
+        sink.checkpoint()
+        certificate = sink.certify()
+
+        assert certificate.cold_reopen_completed is True
+        assert certificate.verify_succeeded is True
+        assert certificate.schema == schema
+        assert certificate.counts == source_counts
+        assert certificate.fingerprint == source_fingerprint
+        sink.finalize()
+
+    def test_identical_parallels_and_self_loops_survive(self, workspace: Path) -> None:
+        schema = global_logical_schema()
+        nodes, relations = tiny_global(schema)
+        origin = populate(workspace / "origin", schema, nodes, relations)
+        _, _, exported = export(origin, schema)
+
+        parallels = [
+            r for r in exported if r.source_key == "t1" and r.target_key == "t2"
+        ]
+        loops = [r for r in exported if r.source_key == r.target_key]
+        assert len(parallels) == 2
+        assert parallels[0] == parallels[1]
+        assert len(loops) == 1
+
+
+class TestC1SnapshotIsStableDuringConcurrentWrite:
+    """C1[ladybug] x [board, global]: one snapshot; the writer lands after."""
+
+    @pytest.mark.parametrize(
+        ("builder", "content", "type_name"),
+        [
+            (global_logical_schema, tiny_global, "Topic"),
+            (board_logical_schema, tiny_board, "Decision"),
+        ],
+        ids=["global", "board"],
+    )
+    def test_a_concurrent_writer_is_absent_then_visible(
+        self, workspace: Path, builder, content, type_name: str
+    ) -> None:
+        schema = builder()
+        nodes, relations = content(schema)
+        database = populate(workspace / "origin", schema, nodes, relations)
+
+        snapshot = LadybugLogicalSnapshotSource(database, schema).open_snapshot()
+        try:
+            baseline = snapshot.counts()
+            first = [n for b in snapshot.iter_nodes(batch_size=1) for n in b]
+
+            # A genuinely concurrent writer on its own connection.
+            intruder = make_node(schema, type_name, "intruder", 99)
+            declared = schema.node_type(type_name)
+            assignments = ", ".join(
+                f"{prop.name}: $p{index}"
+                for index, prop in enumerate(declared.properties)
+            )
+            parameters = {
+                f"p{index}": logical_to_native(intruder.properties[prop.name], prop)
+                for index, prop in enumerate(declared.properties)
+            }
+            writer = ladybug.Connection(database)
+            # The table now carries a vector index, so a writer must load the
+            # extension exactly as the real runtime does.
+            load_vector_extension(writer, install=False)
+            writer.execute(f"CREATE (:{type_name} {{{assignments}}})", parameters)
+
+            during = snapshot.counts()
+            still = [n for b in snapshot.iter_nodes(batch_size=1) for n in b]
+        finally:
+            snapshot.close()
+
+        assert during == baseline
+        assert len(still) == len(first)
+        assert all(n.key != "intruder" for n in still)
+
+        after_counts, after_nodes, _ = export(database, schema)
+        assert after_counts.nodes == baseline.nodes + 1
+        assert any(n.key == "intruder" for n in after_nodes)
+
+
+class TestC2BatchesAreBoundedAndCleanupIsTotal:
+    """C2[ladybug]: nothing exceeds the limit; nothing is left behind."""
+
+    def test_no_batch_exceeds_the_limit_and_nothing_materializes(
+        self, workspace: Path
+    ) -> None:
+        schema = global_logical_schema()
+        nodes = [make_node(schema, "Topic", f"t{i:03d}", i) for i in range(25)]
+        layout = schema.relation_layout("TOPIC_RELATES_TO", "Topic", "Topic")
+        relations = [
+            make_relation(schema, layout, "t000", "t001", i) for i in range(25)
+        ]
+        database = populate(workspace / "origin", schema, nodes, relations)
+
+        limit = 4
+        snapshot = LadybugLogicalSnapshotSource(database, schema).open_snapshot()
+        try:
+            node_batches = [len(b) for b in snapshot.iter_nodes(batch_size=limit)]
+            rel_batches = [len(b) for b in snapshot.iter_relations(batch_size=limit)]
+        finally:
+            snapshot.close()
+
+        assert node_batches and max(node_batches) <= limit
+        assert rel_batches and max(rel_batches) <= limit
+        # More than one page each, so the bound is actually exercised.
+        assert len(node_batches) > 1
+        assert len(rel_batches) > 1
+        assert sum(node_batches) == 25
+        assert sum(rel_batches) == 25
+
+    def test_an_abandoned_candidate_leaves_nothing_behind(
+        self, workspace: Path
+    ) -> None:
+        schema = global_logical_schema()
+        candidate = workspace / "candidate"
+        sink = LadybugLogicalCandidateSink(
+            candidate, schema, database_filename=GRAPH_DB_FILENAME
+        )
+        sink.begin_candidate(schema)
+        sink.write_nodes([make_node(schema, "Topic", "t1", 1)])
+        assert candidate.exists()
+        sink.abort()
+        assert not candidate.exists()
+        # Idempotent: a second abort is a no-op, not a second cleanup.
+        sink.abort()
+        assert not candidate.exists()
+
+
+class TestD1TransferFailureMatrix:
+    """D1: exact phase, abort exactly once, never finalize, previous intact."""
+
+    def build(self, workspace: Path):
+        schema = global_logical_schema()
+        nodes, relations = tiny_global(schema)
+        database = populate(workspace / "origin", schema, nodes, relations)
+        return schema, database
+
+    def test_a_source_failure_is_the_write_phase(self, workspace: Path) -> None:
+        schema, database = self.build(workspace)
+
+        class BrokenSource(LadybugLogicalSnapshotSource):
+            def open_snapshot(self):
+                snapshot = super().open_snapshot()
+
+                def explode(*_args, **_kwargs):
+                    raise RuntimeError("ladybug read failed")
+
+                snapshot.iter_nodes = explode  # type: ignore[method-assign]
+                return snapshot
+
+        sink = _RecordingSink(workspace / "candidate", schema)
+        with pytest.raises(PhasedTransferError) as caught:
+            transfer_logical_graph(BrokenSource(database, schema), sink, batch_size=2)
+        assert caught.value.phase == "write"
+        assert sink.aborts == 1
+        assert sink.finalized == 0
+
+    @pytest.mark.parametrize(
+        ("step", "phase"),
+        [
+            ("write_nodes", "import"),
+            ("checkpoint", "checkpoint"),
+            ("certify", "reopen"),
+        ],
+    )
+    def test_a_sink_failure_carries_its_phase(
+        self, workspace: Path, step: str, phase: str
+    ) -> None:
+        schema, database = self.build(workspace)
+        previous = workspace / "origin"
+        before = sorted(p.name for p in previous.iterdir())
+
+        sink = _RecordingSink(workspace / "candidate", schema, fail_on=step)
+        with pytest.raises(PhasedTransferError) as caught:
+            transfer_logical_graph(
+                LadybugLogicalSnapshotSource(database, schema), sink, batch_size=2
+            )
+        assert caught.value.phase == phase
+        assert sink.aborts == 1
+        assert sink.finalized == 0
+        # The generation the transfer read from is untouched.
+        assert sorted(p.name for p in previous.iterdir()) == before
+
+
+class _RecordingSink(LadybugLogicalCandidateSink):
+    """A sink that counts its lifecycle calls and can fail in exactly one step."""
+
+    def __init__(
+        self, path: Path, schema: LogicalSchema, *, fail_on: str | None = None
+    ) -> None:
+        super().__init__(path, schema, database_filename=GRAPH_DB_FILENAME)
+        self.fail_on = fail_on
+        self.aborts = 0
+        self.finalized = 0
+
+    def _maybe_fail(self, step: str) -> None:
+        if self.fail_on == step:
+            raise RuntimeError(f"injected ladybug failure in {step}")
+
+    def write_nodes(self, nodes: Sequence[LogicalNode]) -> None:
+        self._maybe_fail("write_nodes")
+        super().write_nodes(nodes)
+
+    def write_relations(self, relations: Sequence[LogicalRelation]) -> None:
+        self._maybe_fail("write_relations")
+        super().write_relations(relations)
+
+    def checkpoint(self) -> None:
+        self._maybe_fail("checkpoint")
+        super().checkpoint()
+
+    def certify(self):
+        self._maybe_fail("certify")
+        return super().certify()
+
+    def finalize(self) -> None:
+        self.finalized += 1
+        super().finalize()
+
+    def abort(self) -> None:
+        self.aborts += 1
+        super().abort()
+
+
+class TestTheSinkRetainsNothingAndOwnsWhatItCreates:
+    """C2's sink half: bounded state, handles released, cleanup honest."""
+
+    def test_the_sink_never_holds_the_records_it_wrote(self, workspace: Path) -> None:
+        schema = global_logical_schema()
+        sink = LadybugLogicalCandidateSink(
+            workspace / "candidate", schema, database_filename=GRAPH_DB_FILENAME
+        )
+        sink.begin_candidate(schema)
+        sink.write_nodes(
+            [make_node(schema, "Topic", f"t{i:03d}", i) for i in range(40)]
+        )
+
+        # State is counters and a digest, never the graph. Anything that stored
+        # the records would hold the whole import in memory.
+        retained = [
+            name
+            for name, value in vars(sink).items()
+            if isinstance(value, (list, tuple, dict, set)) and len(value) > 0
+        ]
+        assert retained == [], f"sink retained {retained}"
+        assert sink._written.counts().nodes == 40
+        sink.abort()
+
+    def test_certify_releases_its_handles_so_the_tree_can_be_removed(
+        self, workspace: Path
+    ) -> None:
+        # On Windows an unreleased database handle blocks removal, so a
+        # successful abort after certify is real evidence the cold reopen and
+        # the writer were both closed.
+        schema = global_logical_schema()
+        nodes, relations = tiny_global(schema)
+        sink = LadybugLogicalCandidateSink(
+            workspace / "candidate", schema, database_filename=GRAPH_DB_FILENAME
+        )
+        sink.begin_candidate(schema)
+        sink.write_nodes(nodes)
+        sink.write_relations(relations)
+        sink.checkpoint()
+        certificate = sink.certify()
+        assert certificate.verify_succeeded is True
+
+        sink.abort()
+        assert not (workspace / "candidate").exists()
+
+    def test_a_candidate_path_that_already_exists_is_refused(
+        self, workspace: Path
+    ) -> None:
+        schema = global_logical_schema()
+        candidate = workspace / "candidate"
+        candidate.mkdir(parents=True)
+        sink = LadybugLogicalCandidateSink(
+            candidate, schema, database_filename=GRAPH_DB_FILENAME
+        )
+        with pytest.raises(LadybugSinkError) as caught:
+            sink.begin_candidate(schema)
+        assert "already exists" in str(caught.value)
+        # It refused, so it never owned the directory and must not remove it.
+        sink.abort()
+        assert candidate.exists()
+
+    def test_a_mismatched_schema_is_refused_before_anything_is_created(
+        self, workspace: Path
+    ) -> None:
+        candidate = workspace / "candidate"
+        sink = LadybugLogicalCandidateSink(
+            candidate, global_logical_schema(), database_filename=GRAPH_DB_FILENAME
+        )
+        with pytest.raises(LadybugSinkError) as caught:
+            sink.begin_candidate(board_logical_schema())
+        assert "expected schema" in str(caught.value)
+        assert not candidate.exists()
+
+
+class TestThePhysicalSchemaIsValidatedNotTrusted:
+    """A source that queried only what the schema declares would miss the rest."""
+
+    def test_an_extra_physical_table_is_refused(self, workspace: Path) -> None:
+        schema = global_logical_schema()
+        nodes, relations = tiny_global(schema)
+        database = populate(workspace / "origin", schema, nodes, relations)
+        # A table nobody declared. Querying only declared tables would export a
+        # truncated graph whose counts and fingerprint agreed with themselves.
+        ladybug.Connection(database).execute(
+            "CREATE NODE TABLE Stowaway(id STRING, PRIMARY KEY(id))"
+        )
+        with pytest.raises(LogicalSchemaError) as caught:
+            export(database, schema)
+        assert "Stowaway" in str(caught.value)
+
+    def test_an_extra_physical_column_is_refused(self, workspace: Path) -> None:
+        schema = global_logical_schema()
+        nodes, relations = tiny_global(schema)
+        database = populate(workspace / "origin", schema, nodes, relations)
+        ladybug.Connection(database).execute("ALTER TABLE Topic ADD extra STRING")
+        with pytest.raises(LogicalSchemaError) as caught:
+            export(database, schema)
+        assert "columns do not match" in str(caught.value)
+
+    def test_a_matching_database_validates(self, workspace: Path) -> None:
+        schema = global_logical_schema()
+        nodes, relations = tiny_global(schema)
+        database = populate(workspace / "origin", schema, nodes, relations)
+        counts, exported, _ = export(database, schema)
+        assert counts.nodes == len(exported)
+
+
+class TestTheFinalizeGateIsTheWholeCertificate:
+    """A weaker internal flag would let finalize pass what the caller was refused."""
+
+    def test_a_divergent_cold_census_blocks_finalize(
+        self, workspace: Path, monkeypatch
+    ) -> None:
+        from okto_pulse.community.adapters import ladybug_logical_source as src
+
+        schema = global_logical_schema()
+        nodes, relations = tiny_global(schema)
+        sink = LadybugLogicalCandidateSink(
+            workspace / "candidate", schema, database_filename=GRAPH_DB_FILENAME
+        )
+        sink.begin_candidate(schema)
+        sink.write_nodes(nodes)
+        sink.write_relations(relations)
+        sink.checkpoint()
+
+        # Records and fingerprint stay real; only the census disagrees. The
+        # earlier gate ignored counts, so this certified False and finalized.
+        real_counts = src.LadybugLogicalSnapshot.counts
+
+        def lying_counts(self):
+            actual = real_counts(self)
+            return LogicalCounts(
+                nodes=actual.nodes + 1,
+                relations=actual.relations,
+                properties=actual.properties,
+                vectors=actual.vectors,
+            )
+
+        monkeypatch.setattr(src.LadybugLogicalSnapshot, "counts", lying_counts)
+        certificate = sink.certify()
+        assert certificate.verify_succeeded is False
+        with pytest.raises(LadybugSinkError) as caught:
+            sink.finalize()
+        assert "not certified" in str(caught.value)
+        monkeypatch.undo()
+        sink.abort()
+
+
+class TestCleanupStaysRetryable:
+    """A close that failed must leave something for the retry to close."""
+
+    def test_a_failing_close_is_reported_and_the_handle_is_kept(
+        self, workspace: Path
+    ) -> None:
+        schema = global_logical_schema()
+        sink = LadybugLogicalCandidateSink(
+            workspace / "candidate", schema, database_filename=GRAPH_DB_FILENAME
+        )
+        sink.begin_candidate(schema)
+
+        attempts: list[str] = []
+        real_connection = sink._connection
+
+        class BrittleConnection:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def close(self) -> None:
+                self.calls += 1
+                attempts.append("connection")
+                if self.calls == 1:
+                    raise RuntimeError("close refused once")
+                real_connection.close()
+
+        sink._connection = BrittleConnection()
+
+        with pytest.raises(LadybugSinkError):
+            sink.abort()
+        # Not released, and the handle it could not close is still held.
+        assert sink._connection is not None
+        assert sink._released is False
+
+        sink.abort()
+        assert sink._connection is None
+        assert sink._released is True
+        assert not (workspace / "candidate").exists()
+        # Both attempts happened, so the retry really did retry.
+        assert attempts == ["connection", "connection"]
+
+
+class TestTheDatabaseFileIsNamedByTheCaller:
+    """A candidate the runtime cannot find is a candidate nobody can promote."""
+
+    def test_each_scope_gets_the_name_its_runtime_resolves(
+        self, workspace: Path
+    ) -> None:
+        board = board_candidate_sink(workspace / "b", board_logical_schema())
+        discovery = global_candidate_sink(workspace / "g", global_logical_schema())
+        assert board.database_path.name == "graph.lbug"
+        assert discovery.database_path.name == "discovery.lbug"
+
+    def test_a_filename_that_is_really_a_path_is_refused(self, workspace: Path) -> None:
+        schema = global_logical_schema()
+        for name in ("sub/db.lbug", "../escape.lbug", "", ".", ".."):
+            with pytest.raises(LadybugSinkError) as caught:
+                LadybugLogicalCandidateSink(
+                    workspace / "c", schema, database_filename=name
+                )
+            assert "single name" in str(caught.value)
+
+    def test_the_named_file_is_what_lands_on_disk(self, workspace: Path) -> None:
+        schema = global_logical_schema()
+        nodes, relations = tiny_global(schema)
+        sink = global_candidate_sink(workspace / "candidate", schema)
+        sink.begin_candidate(schema)
+        sink.write_nodes(nodes)
+        sink.write_relations(relations)
+        sink.checkpoint()
+        assert sink.certify().verify_succeeded is True
+        sink.finalize()
+
+        assert (workspace / "candidate" / "discovery.lbug").exists()
+        assert not (workspace / "candidate" / "db").exists()
+
+
+class TestTheSearchableAuthorityIsTheScopesNotTheSpaces:
+    """Eleven spaces, nine searchable: a space is storage, an index is search."""
+
+    def test_board_indexes_nine_of_its_eleven_spaces(self) -> None:
+        schema = board_logical_schema()
+        entries = searchable_indexes(schema)
+        assert len(schema.vector_spaces) == 11
+        assert len(entries) == 9
+        assert {"Alternative", "Assumption"}.isdisjoint({e.table for e in entries})
+
+    def test_global_indexes_all_four(self) -> None:
+        assert len(searchable_indexes(global_logical_schema())) == 4
+
+    def test_the_two_unsearchable_board_types_get_no_hnsw(
+        self, workspace: Path
+    ) -> None:
+        schema = board_logical_schema()
+        nodes, relations = tiny_board(schema)
+        database = populate(workspace / "origin", schema, nodes, relations)
+        assert hnsw_tables(database) == {e.table for e in searchable_indexes(schema)}
+        assert "Alternative" not in hnsw_tables(database)
+        assert "Assumption" not in hnsw_tables(database)
+
+
+class TestThePhysicalIndexGateIsExact:
+    """A name that matches is not the same as an index that matches."""
+
+    def prepared(self, workspace: Path):
+        schema = global_logical_schema()
+        nodes, relations = tiny_global(schema)
+        database = populate(workspace / "origin", schema, nodes, relations)
+        return schema, database, ladybug.Connection(database)
+
+    def test_a_dropped_index_is_refused(self, workspace: Path) -> None:
+        schema, database, conn = self.prepared(workspace)
+        conn.execute("CALL DROP_VECTOR_INDEX('Board', 'board_summary_idx')")
+        conn.close()
+        with pytest.raises(LogicalSchemaError) as caught:
+            export(database, schema)
+        assert "board_summary_idx" in str(caught.value)
+
+    def test_an_index_the_scope_never_declared_is_refused(
+        self, workspace: Path
+    ) -> None:
+        schema, database, conn = self.prepared(workspace)
+        conn.execute(
+            "CALL CREATE_VECTOR_INDEX('Board', 'stowaway_idx', "
+            "'summary_embedding', metric := 'cosine')"
+        )
+        conn.close()
+        with pytest.raises(LogicalSchemaError) as caught:
+            export(database, schema)
+        assert "stowaway_idx" in str(caught.value)
+        assert "not declared" in str(caught.value)
+
+    def test_the_declared_metric_is_the_one_that_must_be_there(
+        self, workspace: Path
+    ) -> None:
+        schema, database, conn = self.prepared(workspace)
+        # Same table, same name, same column -- a different geometry.
+        conn.execute("CALL DROP_VECTOR_INDEX('Board', 'board_summary_idx')")
+        conn.execute(
+            "CALL CREATE_VECTOR_INDEX('Board', 'board_summary_idx', "
+            "'summary_embedding', metric := 'l2')"
+        )
+        conn.close()
+        with pytest.raises(LogicalSchemaError) as caught:
+            export(database, schema)
+        assert "metric" in str(caught.value)
+
+    def test_a_handle_that_cannot_prove_the_metric_is_refused(
+        self, workspace: Path
+    ) -> None:
+        schema = global_logical_schema()
+        nodes, relations = tiny_global(schema)
+        origin = workspace / "origin"
+        populate(origin, schema, nodes, relations).close()
+
+        # A read-write handle nobody warmed. SHOW_INDEXES reports the index but
+        # no definition, so the metric is unread rather than wrong -- and an
+        # unread metric is refused instead of assumed.
+        unwarmed = ladybug.Database(str(origin / GRAPH_DB_FILENAME))
+        with pytest.raises(LogicalSchemaError) as caught:
+            export(unwarmed, schema)
+        assert "not loaded" in str(caught.value)
+        unwarmed.close()
+
+    def test_certify_refuses_a_candidate_whose_index_vanished(
+        self, workspace: Path
+    ) -> None:
+        schema = global_logical_schema()
+        nodes, relations = tiny_global(schema)
+        sink = global_candidate_sink(workspace / "candidate", schema)
+        sink.begin_candidate(schema)
+        sink.write_nodes(nodes)
+        sink.write_relations(relations)
+        # Dropped behind the sink's back, through its own live connection.
+        sink._connection.execute("CALL DROP_VECTOR_INDEX('Board', 'board_summary_idx')")
+        sink.checkpoint()
+
+        # The source is the one authority on the physical shape, so the
+        # refusal is its typed schema error rather than a second opinion.
+        with pytest.raises(LogicalSchemaError) as caught:
+            sink.certify()
+        assert "board_summary_idx" in str(caught.value)
+        with pytest.raises(LadybugSinkError):
+            sink.finalize()
+        sink.abort()
+
+
+class TestTheEndpointSetIsValidated:
+    """TABLE_INFO cannot see endpoints; SHOW_CONNECTION can, so they are checked."""
+
+    def test_an_extra_endpoint_pair_is_refused(self, workspace: Path) -> None:
+        schema = global_logical_schema()
+        nodes, relations = tiny_global(schema)
+        database = populate(workspace / "origin", schema, nodes, relations)
+        conn = ladybug.Connection(database)
+        # A pair the schema never declared: rows on it would be read by nobody.
+        conn.execute("ALTER TABLE TOPIC_RELATES_TO ADD FROM Board TO Topic")
+        conn.close()
+
+        with pytest.raises(LogicalSchemaError) as caught:
+            export(database, schema)
+        assert "endpoint" in str(caught.value)
+        assert "Board" in str(caught.value)
+
+    def test_a_matching_database_agrees_on_every_pair(self, workspace: Path) -> None:
+        for builder, content, expected in (
+            (global_logical_schema, tiny_global, 7),
+            (board_logical_schema, tiny_board, 69),
+        ):
+            schema = builder()
+            nodes, relations = content(schema)
+            database = populate(
+                workspace / f"origin_{schema.scope}", schema, nodes, relations
+            )
+            assert len(schema.relation_layouts) == expected
+            # Exports at all, which means every pair matched.
+            counts, exported, _ = export(database, schema)
+            assert counts.nodes == len(exported)
+            database.close()
+
+
+class TestASnapshotThatBeganClosingStaysUnusable:
+    """Ending the transaction is irreversible; releasing the handle is not."""
+
+    def test_a_partial_close_refuses_every_read_but_retries_the_handle(
+        self, workspace: Path
+    ) -> None:
+        schema = global_logical_schema()
+        nodes, relations = tiny_global(schema)
+        database = populate(workspace / "origin", schema, nodes, relations)
+        snapshot = LadybugLogicalSnapshotSource(database, schema).open_snapshot()
+        real = snapshot._connection
+
+        class BrittleConnection:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def execute(self, *args, **kwargs):
+                return real.execute(*args, **kwargs)
+
+            def close(self) -> None:
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("close refused once")
+                real.close()
+
+        brittle = BrittleConnection()
+        snapshot._connection = brittle
+        with pytest.raises(LadybugSourceError):
+            snapshot.close()
+
+        # COMMIT landed, so the snapshot is gone even though the handle is not.
+        with pytest.raises(LadybugSourceError):
+            snapshot.schema()
+        with pytest.raises(LadybugSourceError):
+            snapshot.counts()
+        with pytest.raises(LadybugSourceError):
+            snapshot.iter_nodes(batch_size=1)
+        with pytest.raises(LadybugSourceError):
+            snapshot.iter_relations(batch_size=1)
+
+        snapshot.close()
+        assert brittle.calls == 2
+
+
+class TestCleanupFailuresAreNotedNotSubstituted:
+    """The reason the caller is here must survive the tidying up."""
+
+    def test_a_close_that_fails_after_a_failed_begin_is_attached_to_it(
+        self, workspace: Path, monkeypatch
+    ) -> None:
+        schema = global_logical_schema()
+        nodes, relations = tiny_global(schema)
+        database = populate(workspace / "origin", schema, nodes, relations)
+
+        class HostileConnection:
+            def __init__(self, _database) -> None:
+                pass
+
+            def execute(self, *_args, **_kwargs):
+                raise RuntimeError("BEGIN refused")
+
+            def close(self) -> None:
+                raise RuntimeError("close refused too")
+
+        monkeypatch.setattr(ladybug, "Connection", HostileConnection)
+        with pytest.raises(LadybugSourceError) as caught:
+            LadybugLogicalSnapshotSource(database, schema).open_snapshot()
+
+        assert "BEGIN refused" in str(caught.value)
+        assert any("close refused too" in note for note in caught.value.__notes__)
+
+    def test_a_failed_validation_outranks_a_failed_close(
+        self, workspace: Path, monkeypatch
+    ) -> None:
+        from okto_pulse.community.adapters import ladybug_logical_source as src
+
+        schema = global_logical_schema()
+        nodes, relations = tiny_global(schema)
+        database = populate(workspace / "origin", schema, nodes, relations)
+        conn = ladybug.Connection(database)
+        conn.execute("CREATE NODE TABLE Stowaway(id STRING, PRIMARY KEY(id))")
+        conn.close()
+
+        def refuse(self) -> None:
+            raise RuntimeError("close refused")
+
+        monkeypatch.setattr(src.LadybugLogicalSnapshot, "close", refuse)
+        with pytest.raises(LogicalSchemaError) as caught:
+            LadybugLogicalSnapshotSource(database, schema).open_snapshot()
+
+        # The validation failure is the report; the leak is a note on it.
+        assert "Stowaway" in str(caught.value)
+        assert any("close refused" in note for note in caught.value.__notes__)
+
+
+class TestTheColdHandlesBelongToTheSink:
+    """Handles held only as locals in certify were unreachable after a failure."""
+
+    def test_abort_retries_a_cold_handle_certify_could_not_close(
+        self, workspace: Path
+    ) -> None:
+        schema = global_logical_schema()
+        nodes, relations = tiny_global(schema)
+        sink = global_candidate_sink(workspace / "candidate", schema)
+        sink.begin_candidate(schema)
+        sink.write_nodes(nodes)
+        sink.write_relations(relations)
+        sink.checkpoint()
+
+        from okto_pulse.community.adapters import ladybug_logical_source as src
+
+        real_close = src.LadybugLogicalSnapshot.close
+        attempts: list[str] = []
+
+        def brittle_close(self) -> None:
+            attempts.append("snapshot")
+            if len(attempts) == 1:
+                raise RuntimeError("cold close refused once")
+            real_close(self)
+
+        src.LadybugLogicalSnapshot.close = brittle_close
+        try:
+            with pytest.raises(LadybugSinkError) as caught:
+                sink.certify()
+            assert "cold snapshot" in str(caught.value)
+            # Kept, so there is something left for the retry to close.
+            assert sink._snapshot is not None
+
+            sink.abort()
+        finally:
+            src.LadybugLogicalSnapshot.close = real_close
+
+        assert attempts == ["snapshot", "snapshot"]
+        assert sink._snapshot is None
+        assert sink._cold is None
+        assert not (workspace / "candidate").exists()
