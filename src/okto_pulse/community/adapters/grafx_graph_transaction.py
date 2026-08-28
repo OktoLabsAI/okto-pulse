@@ -134,7 +134,9 @@ _SPEC_LINEAGE_REQUIRED_PROPERTIES = frozenset(
     }
 )
 
-DatabaseResolver = Callable[[str], Database]
+DatabaseResolver = Callable[
+    [str], "Database | tuple[Database, ScopeTerminalCallback | None]"
+]
 """Resolve a board's database.
 
 May return the ``Database`` alone, as it always has, or a ``(database, release)``
@@ -3168,8 +3170,20 @@ class CommunityGrafxGraphTransaction:
                     exc.add_note(
                         f"rolling back the unopened Grafx scope also failed: {cleanup}"
                     )
+                # The pin goes back only if the transaction is genuinely over.
+                # A rollback that failed can leave it OPEN, and releasing then
+                # would hand the handle to the pool while writes can still reach
+                # it -- the exact use-after-close this pinning exists to stop.
+                # Holding the pin leaks one entry; releasing it corrupts a
+                # database, so the leak is the better failure and is reported.
                 if release is not None:
-                    _release_quietly(release, exc)
+                    if getattr(transaction, "active", False):
+                        exc.add_note(
+                            "the Grafx transaction is still active, so its database "
+                            "pin was retained rather than released"
+                        )
+                    else:
+                        _release_quietly(release, exc)
                 mapped = map_grafx_error(exc, operation="begin")
                 if mapped is exc:
                     raise

@@ -2164,3 +2164,138 @@ async def test_a_release_failure_after_a_durable_commit_is_not_a_failed_commit(
     # And it is not retried on a later terminal path.
     await scope.rollback()
     assert attempts == [BOARD_ID]
+
+
+class _StubTransaction:
+    """A transaction whose rollback outcome and liveness a test decides."""
+
+    def __init__(self, *, rollback_fails: bool, stays_active: bool) -> None:
+        self._rollback_fails = rollback_fails
+        self.active = True
+        self._stays_active = stays_active
+        self.rollback_calls = 0
+
+    def rollback(self) -> None:
+        self.rollback_calls += 1
+        if self._rollback_fails:
+            self.active = self._stays_active
+            raise OSError("injected rollback failure")
+        self.active = False
+
+
+class _StubDatabase:
+    def __init__(self, transaction: _StubTransaction) -> None:
+        self.transaction = transaction
+
+    def begin(self, *_args: Any, **_kwargs: Any) -> _StubTransaction:
+        return self.transaction
+
+
+@pytest.mark.asyncio
+async def test_a_factory_failure_keeps_the_pin_when_rollback_leaves_it_active(
+    fence: _DeterministicFence,
+) -> None:
+    """A pin must never go back while the transaction can still write.
+
+    If the scope factory fails, begin rolls the transaction back and returns the
+    pin it took. But a rollback can itself fail and leave the transaction OPEN,
+    and releasing then hands the handle to the pool while writes can still reach
+    it. Retaining the pin leaks one entry; releasing it corrupts a database, so
+    the leak is the better failure and the evidence says so.
+    """
+
+    from okto_pulse.community.adapters.grafx_graph_transaction import (
+        CommunityGrafxGraphTransaction,
+    )
+
+    transaction = _StubTransaction(rollback_fails=True, stays_active=True)
+    released: list[str] = []
+
+    provider = CommunityGrafxGraphTransaction(
+        database_resolver=lambda _board: (
+            _StubDatabase(transaction),
+            lambda: released.append("released"),
+        ),
+        revalidate_fence=fence,
+        node_types=NODE_TYPES,
+        relationship_pairs=RELATIONSHIP_PAIRS,
+        on_scope_end=lambda _board: (_ for _ in ()).throw(
+            RuntimeError("injected scope factory failure")
+        ),
+    )
+
+    with pytest.raises(GraphError) as refused:
+        await provider.begin(BOARD_ID)
+
+    assert transaction.rollback_calls == 1
+    assert transaction.active is True
+    # The pin was NOT returned, and the reason is attached to the failure.
+    assert released == []
+    notes = getattr(refused.value, "__notes__", []) or []
+    cause_notes = getattr(refused.value.__cause__, "__notes__", []) or []
+    assert any("still active" in note for note in [*notes, *cause_notes])
+
+
+@pytest.mark.asyncio
+async def test_a_factory_failure_returns_the_pin_when_rollback_ends_the_transaction(
+    fence: _DeterministicFence,
+) -> None:
+    from okto_pulse.community.adapters.grafx_graph_transaction import (
+        CommunityGrafxGraphTransaction,
+    )
+
+    transaction = _StubTransaction(rollback_fails=True, stays_active=False)
+    released: list[str] = []
+
+    provider = CommunityGrafxGraphTransaction(
+        database_resolver=lambda _board: (
+            _StubDatabase(transaction),
+            lambda: released.append("released"),
+        ),
+        revalidate_fence=fence,
+        node_types=NODE_TYPES,
+        relationship_pairs=RELATIONSHIP_PAIRS,
+        on_scope_end=lambda _board: (_ for _ in ()).throw(
+            RuntimeError("injected scope factory failure")
+        ),
+    )
+
+    with pytest.raises(GraphError):
+        await provider.begin(BOARD_ID)
+
+    assert transaction.rollback_calls == 1
+    # The rollback failed but the transaction is over, so the pin goes back --
+    # exactly once.
+    assert transaction.active is False
+    assert released == ["released"]
+
+
+@pytest.mark.asyncio
+async def test_a_factory_failure_returns_the_pin_after_a_clean_rollback(
+    fence: _DeterministicFence,
+) -> None:
+    from okto_pulse.community.adapters.grafx_graph_transaction import (
+        CommunityGrafxGraphTransaction,
+    )
+
+    transaction = _StubTransaction(rollback_fails=False, stays_active=False)
+    released: list[str] = []
+
+    provider = CommunityGrafxGraphTransaction(
+        database_resolver=lambda _board: (
+            _StubDatabase(transaction),
+            lambda: released.append("released"),
+        ),
+        revalidate_fence=fence,
+        node_types=NODE_TYPES,
+        relationship_pairs=RELATIONSHIP_PAIRS,
+        on_scope_end=lambda _board: (_ for _ in ()).throw(
+            RuntimeError("injected scope factory failure")
+        ),
+    )
+
+    with pytest.raises(GraphError):
+        await provider.begin(BOARD_ID)
+
+    assert transaction.active is False
+    assert released == ["released"]
