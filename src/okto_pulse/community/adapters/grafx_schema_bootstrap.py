@@ -8,6 +8,7 @@ objects and stamps BoardMeta only after the committed catalog validates.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from okto_grafx import Database, Timestamp
@@ -331,12 +332,20 @@ def _validate_board_meta(
 
 
 def _commit_statements(
-    database: Database, statements: tuple[tuple[str, dict], ...]
+    database: Database,
+    statements: tuple[tuple[str, dict], ...],
+    *,
+    before_write: Callable[[], None] | None = None,
+    before_commit: Callable[[], None] | None = None,
 ) -> None:
     transaction = database.begin("write")
     try:
         for text, parameters in statements:
+            if before_write is not None:
+                before_write()
             transaction.execute(text, parameters)
+        if before_commit is not None:
+            before_commit()
         report = transaction.commit()
     except BaseException as failure:
         if transaction.active:
@@ -359,6 +368,9 @@ def _commit_statements(
 def _create_missing_schema(
     database: Database,
     preflight: _CatalogPreflight,
+    *,
+    before_write: Callable[[], None] | None = None,
+    before_commit: Callable[[], None] | None = None,
 ) -> None:
     missing_space_names = {space.name for space in preflight.missing_spaces}
     missing_table_names = {table.name for table in preflight.missing_tables}
@@ -373,7 +385,12 @@ def _create_missing_schema(
         if table.name in missing_table_names
     )
     if statements:
-        _commit_statements(database, statements)
+        _commit_statements(
+            database,
+            statements,
+            before_write=before_write,
+            before_commit=before_commit,
+        )
 
 
 def _stamp_board_meta(
@@ -384,6 +401,8 @@ def _stamp_board_meta(
     embedding_model: str | None,
     embedding_dimension: int | None,
     enrich: bool,
+    before_write: Callable[[], None] | None = None,
+    before_commit: Callable[[], None] | None = None,
 ) -> None:
     if enrich:
         statement = (
@@ -410,7 +429,12 @@ def _stamp_board_meta(
             "embedding_model": embedding_model,
             "embedding_dimension": embedding_dimension,
         }
-    _commit_statements(database, ((statement, parameters),))
+    _commit_statements(
+        database,
+        ((statement, parameters),),
+        before_write=before_write,
+        before_commit=before_commit,
+    )
 
 
 def validate_current_grafx_schema(database: Database) -> str:
@@ -440,6 +464,8 @@ def ensure_current_grafx_board_schema(
     bootstrapped_at: Timestamp,
     embedding_model: str | None = None,
     embedding_dimension: int | None = None,
+    before_write: Callable[[], None] | None = None,
+    before_commit: Callable[[], None] | None = None,
 ) -> GrafxSchemaBootstrapResult:
     """Ensure exactly the current schema and BoardMeta singleton, or fail closed."""
 
@@ -476,7 +502,12 @@ def ensure_current_grafx_board_schema(
         )
 
         if not preflight.complete:
-            _create_missing_schema(database, preflight)
+            _create_missing_schema(
+                database,
+                preflight,
+                before_write=before_write,
+                before_commit=before_commit,
+            )
             changed = True
 
         # This is intentionally a fresh public snapshot after schema commit.  BoardMeta is not
@@ -491,6 +522,8 @@ def ensure_current_grafx_board_schema(
                 embedding_model=embedding_model,
                 embedding_dimension=embedding_dimension,
                 enrich=False,
+                before_write=before_write,
+                before_commit=before_commit,
             )
             changed = True
         else:
@@ -508,6 +541,8 @@ def ensure_current_grafx_board_schema(
                     embedding_model=embedding_model,
                     embedding_dimension=embedding_dimension,
                     enrich=True,
+                    before_write=before_write,
+                    before_commit=before_commit,
                 )
                 changed = True
 
