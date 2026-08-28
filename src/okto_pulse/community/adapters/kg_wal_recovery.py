@@ -246,6 +246,19 @@ class CommunityGraphRecovery:
     """
 
     async def recover_wal_only(self, board_id: str) -> WalRecoveryReport:
+        return await self._recover_wal_only(board_id, close_window_owned=False)
+
+    async def recover_wal_only_unguarded(self, board_id: str) -> WalRecoveryReport:
+        """Recover while the routed facade owns the exclusive close window."""
+
+        return await self._recover_wal_only(board_id, close_window_owned=True)
+
+    async def _recover_wal_only(
+        self,
+        board_id: str,
+        *,
+        close_window_owned: bool,
+    ) -> WalRecoveryReport:
         # Lazy import: mesmo padrão de CommunityKuzuGraphLifecycle — importar
         # este módulo nunca eager-carrega Ladybug.
         from okto_pulse.community.adapters import kg_runtime
@@ -260,7 +273,10 @@ class CommunityGraphRecovery:
             )
 
         # Solta o Database cacheado (e o file lock) antes de mover sidecars.
-        kg_runtime.close_board_db_cache(board_id)
+        if close_window_owned:
+            kg_runtime._close_cached_db_unguarded(board_id)
+        else:
+            kg_runtime.close_board_db_cache(board_id)
 
         result = wal_only_quarantine(
             board_id, "graph_recovery.recover_wal_only", graph_path=path
@@ -297,7 +313,10 @@ class CommunityGraphRecovery:
                 reason=f"reopen_failed: {type(exc).__name__}: {exc}",
             )
         finally:
-            kg_runtime.close_board_db_cache(board_id)
+            if close_window_owned:
+                kg_runtime._close_cached_db_unguarded(board_id)
+            else:
+                kg_runtime.close_board_db_cache(board_id)
 
         return WalRecoveryReport(
             board_id=board_id,

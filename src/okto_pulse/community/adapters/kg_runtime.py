@@ -753,13 +753,62 @@ def _close_cached_db_unguarded(board_id: str) -> None:
 
 
 @contextmanager
+def board_storage_mutation_window_unguarded(
+    board_id: str,
+    *,
+    phase: str,
+    drain_timeout: float = 30.0,
+):
+    """Hold only the exclusive close guard across a filesystem mutation.
+
+    The caller must already own whichever writer authority governs the public
+    operation.  This is the physical half of :func:`board_storage_mutation_window`
+    used by routed lifecycle callbacks after Core has acquired and revalidated
+    its writer lease.  It deliberately does not enter ``ladybug_writer_scope``:
+    doing so would nest a second writer under the routed boundary.
+
+    Idle pooled connections are evicted before the guard starts draining and
+    the cached Ladybug database is closed only after the reader count reaches
+    zero.  The window is backend-neutral, so it also protects Grafx handles
+    whose callers participate through :func:`board_graph_operation_window`.
+    """
+    if not board_id or not phase or drain_timeout <= 0:
+        raise ValueError("board_storage_mutation_window_invalid")
+
+    from okto_pulse.community.adapters.graph_connection_pool import (
+        close_board_connection,
+    )
+
+    # Idle pooled BoardConnections are registered readers. Evict them before
+    # opening the exclusive window so they cannot pin their own drain.
+    close_board_connection(board_id)
+    guard = _get_close_guard(board_id)
+    with guard.closing(timeout=drain_timeout) as (drained, stuck):
+        if not drained:
+            raise GraphLockContention(
+                "board storage mutation timed out draining graph readers",
+                details={
+                    "board_id": board_id,
+                    "phase": phase,
+                    "stuck_readers": stuck,
+                    "timeout_ms": int(drain_timeout * 1000),
+                    "error_code": GraphLockContention.code,
+                    "retryable": GraphLockContention.retryable,
+                },
+            )
+        _close_cached_db_unguarded(board_id)
+        gc.collect()
+        yield
+
+
+@contextmanager
 def board_storage_mutation_window(
     board_id: str,
     *,
     phase: str,
     drain_timeout: float = 30.0,
 ):
-    """Hold the writer fence and close guard across a filesystem mutation.
+    """Hold the Ladybug writer fence and close guard across a mutation.
 
     This is stricter than ``try_close_board_db``: new graph connections stay
     fenced for the entire caller-controlled swap, rather than only while the
@@ -769,33 +818,16 @@ def board_storage_mutation_window(
     if not board_id or not phase or drain_timeout <= 0:
         raise ValueError("board_storage_mutation_window_invalid")
 
-    from okto_pulse.community.adapters.graph_connection_pool import (
-        close_board_connection,
-    )
     from okto_pulse.community.adapters.ladybug_writer import (
         ladybug_writer_scope,
     )
 
     with ladybug_writer_scope(scope=board_id, phase=phase):
-        # Idle pooled BoardConnections are registered readers. Evict them
-        # before opening the exclusive close window so they cannot pin it.
-        close_board_connection(board_id)
-        guard = _get_close_guard(board_id)
-        with guard.closing(timeout=drain_timeout) as (drained, stuck):
-            if not drained:
-                raise GraphLockContention(
-                    "board storage mutation timed out draining graph readers",
-                    details={
-                        "board_id": board_id,
-                        "phase": phase,
-                        "stuck_readers": stuck,
-                        "timeout_ms": int(drain_timeout * 1000),
-                        "error_code": GraphLockContention.code,
-                        "retryable": GraphLockContention.retryable,
-                    },
-                )
-            _close_cached_db_unguarded(board_id)
-            gc.collect()
+        with board_storage_mutation_window_unguarded(
+            board_id,
+            phase=phase,
+            drain_timeout=drain_timeout,
+        ):
             yield
 
 
@@ -1435,10 +1467,28 @@ def purge_board_graph_storage_with_receipt(
     quarantine, kept for backward compatibility with callers that
     counted removed entries.
     """
+    close_board_db_cache(board_id)
+    return purge_board_graph_storage_with_receipt_unguarded(
+        board_id,
+        reason=reason,
+    )
+
+
+def purge_board_graph_storage_with_receipt_unguarded(
+    board_id: str, *, reason: str = "manual"
+) -> tuple[list[str], str | None]:
+    """Quarantine Ladybug files while an outer mutation window owns handles.
+
+    This is intentionally a private composition seam despite its descriptive
+    name: unlike :func:`purge_board_graph_storage_with_receipt`, it does not
+    close a cache or acquire a close guard.  Routed providers call it only
+    after ``board_storage_mutation_window[_unguarded]`` has drained readers and
+    closed the cached database.
+    """
+
     from okto_pulse.core.kg.quarantine import QuarantineError
 
     path = board_kuzu_path(board_id)
-    close_board_db_cache(board_id)
     targets: list[Path] = []
     if path.exists():
         targets.append(path)
@@ -1528,32 +1578,45 @@ def erase_board_graph_storage_for_privacy(
 ) -> list[str]:
     """Irreversibly remove active graph files under an exclusive close window."""
 
-    path = board_kuzu_path(board_id)
-    removed: list[str] = []
     with board_storage_mutation_window(
         board_id,
         phase=f"privacy_erasure:{reason}",
     ):
-        targets: list[Path] = []
-        if path.exists():
-            targets.append(path)
-        if path.parent.exists():
-            targets.extend(
-                candidate
-                for candidate in sorted(path.parent.glob(path.name + ".*"))
-                if candidate not in targets
-            )
-        for target in targets:
-            if target.is_dir():
-                shutil.rmtree(target)
-            else:
-                target.unlink()
-            removed.append(str(target))
-        if path.parent.exists() and not any(path.parent.iterdir()):
-            path.parent.rmdir()
-            fsync_directory(path.parent.parent)
-        elif path.parent.exists():
-            fsync_directory(path.parent)
+        return erase_board_graph_storage_for_privacy_unguarded(
+            board_id,
+            reason=reason,
+        )
+
+
+def erase_board_graph_storage_for_privacy_unguarded(
+    board_id: str,
+    *,
+    reason: str = "right_to_erasure",
+) -> list[str]:
+    """Erase Ladybug Board artifacts under an already-owned mutation window."""
+
+    path = board_kuzu_path(board_id)
+    removed: list[str] = []
+    targets: list[Path] = []
+    if path.exists():
+        targets.append(path)
+    if path.parent.exists():
+        targets.extend(
+            candidate
+            for candidate in sorted(path.parent.glob(path.name + ".*"))
+            if candidate not in targets
+        )
+    for target in targets:
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+        removed.append(str(target))
+    if path.parent.exists() and not any(path.parent.iterdir()):
+        path.parent.rmdir()
+        fsync_directory(path.parent.parent)
+    elif path.parent.exists():
+        fsync_directory(path.parent)
 
     if path.exists() or (
         path.parent.exists() and any(path.parent.glob(path.name + ".*"))
@@ -1672,6 +1735,128 @@ def _close_reopen_probe_existing_board_graph(board_id: str) -> tuple[bool, str |
         close_board_db_cache(board_id)
         if "_BOOTSTRAPPED_BOARDS" in globals():
             _BOOTSTRAPPED_BOARDS.discard(board_id)
+
+
+def close_reopen_probe_existing_board_graph_unguarded(
+    board_id: str,
+) -> tuple[bool, str | None]:
+    """Cold-probe Ladybug while the caller owns the exclusive close window.
+
+    The guarded probe above must drain readers itself and is therefore unsafe
+    to call from the routed lifecycle, which has already completed that drain.
+    This primitive registers its temporary connection as the window owner and
+    uses only ``_close_cached_db_unguarded`` on both sides of the probe.
+    """
+
+    path = board_kuzu_path(board_id)
+    if not path.exists():
+        return False, f"{GRAPH_DB_FILENAME} missing at {path}"
+    try:
+        _close_cached_db_unguarded(board_id)
+        with registered_raw_connection(
+            board_id,
+            within_close_window=True,
+        ) as (_db, conn):
+            result = conn.execute(
+                "CALL SHOW_TABLES() WHERE name = 'BoardMeta' RETURN name"
+            )
+            try:
+                has_meta_table = result.has_next()
+            finally:
+                result.close()
+            if not has_meta_table:
+                return False, "BoardMeta table missing after reopen"
+
+            result = conn.execute(
+                "MATCH (m:BoardMeta {board_id: $bid}) RETURN m.schema_version",
+                {"bid": board_id},
+            )
+            try:
+                if not result.has_next():
+                    return False, "BoardMeta row missing after reopen"
+                row = result.get_next()
+                schema_version = row[0] if row else None
+            finally:
+                result.close()
+            if not schema_version:
+                return False, "BoardMeta schema_version empty after reopen"
+            return True, None
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    finally:
+        _close_cached_db_unguarded(board_id)
+        if "_BOOTSTRAPPED_BOARDS" in globals():
+            _BOOTSTRAPPED_BOARDS.discard(board_id)
+
+
+def apply_ladybug_lifecycle_step_unguarded(
+    board_id: str,
+    graph_type: str,
+    step: str,
+):
+    """Apply a lifecycle step without acquiring another Board close guard.
+
+    ``CHECKPOINT`` and ``CLOSE_REOPEN_PROBE`` are called only from the routed
+    exclusive window. ``FLUSH`` and ``FSYNC`` are called from its shared
+    operation window.  The public guarded adapter remains unchanged for legacy
+    composition.
+    """
+
+    from okto_pulse.core.kg.safe_write_lifecycle import (
+        LifecycleStepResult,
+        STEP_CHECKPOINT,
+        STEP_CLOSE_REOPEN_PROBE,
+        STEP_FLUSH,
+        STEP_FSYNC,
+    )
+
+    if graph_type != "board_graph":
+        return LifecycleStepResult(
+            ok=False,
+            detail=f"unsupported_graph_type={graph_type}",
+        )
+    path = board_kuzu_path(board_id)
+    try:
+        if step == STEP_CHECKPOINT:
+            if not path.exists():
+                return LifecycleStepResult(
+                    ok=False,
+                    detail=f"{GRAPH_DB_FILENAME} missing at {path}",
+                )
+            try:
+                _execute_checkpoint_unguarded(path)
+            except Exception:
+                # Closing an already-drained cached handle remains the safe
+                # durability fallback used by the guarded implementation.
+                _close_cached_db_unguarded(board_id)
+                if not path.exists():
+                    return LifecycleStepResult(
+                        ok=False,
+                        detail=f"{GRAPH_DB_FILENAME} missing at {path}",
+                    )
+            return LifecycleStepResult(ok=True)
+        if step == STEP_FLUSH:
+            return LifecycleStepResult(
+                ok=path.exists(),
+                detail=None if path.exists() else f"{GRAPH_DB_FILENAME} missing at {path}",
+            )
+        if step == STEP_FSYNC:
+            if not path.exists():
+                return LifecycleStepResult(
+                    ok=False,
+                    detail=f"{GRAPH_DB_FILENAME} missing at {path}",
+                )
+            _fsync_board_graph_files(board_id)
+            return LifecycleStepResult(ok=True)
+        if step == STEP_CLOSE_REOPEN_PROBE:
+            ok, detail = close_reopen_probe_existing_board_graph_unguarded(board_id)
+            return LifecycleStepResult(ok=ok, detail=detail)
+        return LifecycleStepResult(ok=False, detail=f"unknown_step={step}")
+    except Exception as exc:
+        return LifecycleStepResult(
+            ok=False,
+            detail=f"{type(exc).__name__}: {exc}",
+        )
 
 
 def apply_ladybug_lifecycle_step(
@@ -2906,15 +3091,9 @@ def _read_board_meta_embedding(conn, board_id: str) -> tuple[str | None, int | N
             pass
 
 
-def _enforce_embedding_guard(board_id: str) -> None:
-    """Open-time embedding compatibility guard (spec MKG-D-S1 FR2/FR3).
+def _enforce_embedding_guard_on_connection(conn, board_id: str) -> None:
+    """Apply the embedding compatibility guard on an already-owned handle."""
 
-    Runs inside ``ensure_board_graph_bootstrapped`` — the one choke point
-    every opener (CLI, API, worker, MCP, search, health) passes through
-    (decision D1). ``mismatch`` refuses the open fail-closed; ``stamp``
-    persists the effective metadata; ``indeterminate`` logs and proceeds
-    without ever dirtying a valid stamp (decision D2).
-    """
     from okto_pulse.core.application.embedding_compatibility import (
         VERDICT_INDETERMINATE,
         VERDICT_MISMATCH,
@@ -2925,36 +3104,35 @@ def _enforce_embedding_guard(board_id: str) -> None:
 
     effective = _effective_embedding_meta()
     try:
-        with registered_raw_connection(board_id) as (_db, conn):
-            persisted_model, persisted_dim = _read_board_meta_embedding(conn, board_id)
-            verdict = compare_embedding_compat(
-                persisted_model,
-                persisted_dim,
+        persisted_model, persisted_dim = _read_board_meta_embedding(conn, board_id)
+        verdict = compare_embedding_compat(
+            persisted_model,
+            persisted_dim,
+            effective.get("model_name"),
+            effective.get("embedding_dimension"),
+            effective_is_stub=bool(effective.get("is_stub")),
+        )
+        if verdict == VERDICT_STAMP:
+            conn.execute(
+                "MATCH (m:BoardMeta {board_id: $bid}) "
+                "SET m.embedding_model = $model, "
+                "m.embedding_dimension = $dim",
+                {
+                    "bid": board_id,
+                    "model": effective.get("model_name"),
+                    "dim": int(effective.get("embedding_dimension") or 0),
+                },
+            )
+            logger.info(
+                "kg.embedding_guard.stamped board=%s model=%s dim=%s",
+                board_id,
                 effective.get("model_name"),
                 effective.get("embedding_dimension"),
-                effective_is_stub=bool(effective.get("is_stub")),
+                extra={
+                    "event": "kg.embedding_guard.stamped",
+                    "board_id": board_id,
+                },
             )
-            if verdict == VERDICT_STAMP:
-                conn.execute(
-                    "MATCH (m:BoardMeta {board_id: $bid}) "
-                    "SET m.embedding_model = $model, "
-                    "m.embedding_dimension = $dim",
-                    {
-                        "bid": board_id,
-                        "model": effective.get("model_name"),
-                        "dim": int(effective.get("embedding_dimension") or 0),
-                    },
-                )
-                logger.info(
-                    "kg.embedding_guard.stamped board=%s model=%s dim=%s",
-                    board_id,
-                    effective.get("model_name"),
-                    effective.get("embedding_dimension"),
-                    extra={
-                        "event": "kg.embedding_guard.stamped",
-                        "board_id": board_id,
-                    },
-                )
     except EmbeddingIncompatibleError:
         raise
     except Exception as exc:
@@ -3002,6 +3180,33 @@ def _enforce_embedding_guard(board_id: str) -> None:
                 "event": "kg.embedding_guard.indeterminate",
                 "board_id": board_id,
             },
+        )
+
+
+def _enforce_embedding_guard(board_id: str) -> None:
+    """Open-time embedding compatibility guard (spec MKG-D-S1 FR2/FR3).
+
+    Runs inside ``ensure_board_graph_bootstrapped`` — the one choke point
+    every opener (CLI, API, worker, MCP, search, health) passes through
+    (decision D1). ``mismatch`` refuses the open fail-closed; ``stamp``
+    persists the effective metadata; ``indeterminate`` logs and proceeds
+    without ever dirtying a valid stamp (decision D2).
+    """
+
+    from okto_pulse.core.application.embedding_compatibility import (
+        EmbeddingIncompatibleError,
+    )
+
+    try:
+        with registered_raw_connection(board_id) as (_db, conn):
+            _enforce_embedding_guard_on_connection(conn, board_id)
+    except EmbeddingIncompatibleError:
+        raise
+    except Exception as exc:
+        logger.warning(
+            "kg.embedding_guard.probe_failed board=%s err=%s",
+            board_id,
+            exc,
         )
 
 
@@ -4252,6 +4457,50 @@ def apply_schema_to_connection(conn) -> None:
     _ensure_vector_indexes(conn)
 
 
+def _apply_board_schema_and_stamp_meta(conn, board_id: str) -> None:
+    """Apply current Board DDL and persist the authoritative metadata row."""
+
+    apply_schema_to_connection(conn)
+
+    # Vector indexes: one HNSW index per searchable node type. Kùzu 0.11
+    # CREATE_VECTOR_INDEX takes (table, idx_name, col_name) positional +
+    # named metric. We declare `cosine` explicitly so the `1 - distance`
+    # conversion in search.py stays correct even if Kùzu's default metric
+    # changes across versions.
+    _ensure_vector_indexes(conn)
+
+    # Record schema version on the BoardMeta singleton. Use DELETE+CREATE
+    # so a re-bootstrap updates the version if the schema has evolved.
+    # Spec MKG-D-S1 (FR1): preserve/stamp the embedding metadata across
+    # the DELETE+CREATE (risk R4 — fields must survive re-bootstrap).
+    prior_model, prior_dim = _read_board_meta_embedding(conn, board_id)
+    _meta = _effective_embedding_meta()
+    if (
+        not _meta.get("is_stub")
+        and _meta.get("model_name")
+        and int(_meta.get("embedding_dimension") or 0) > 0
+        and not prior_model
+    ):
+        prior_model = _meta.get("model_name")
+        prior_dim = int(_meta.get("embedding_dimension") or 0)
+    conn.execute(
+        "MATCH (m:BoardMeta {board_id: $bid}) DELETE m",
+        {"bid": board_id},
+    )
+    conn.execute(
+        "CREATE (m:BoardMeta {board_id: $bid, schema_version: $v, "
+        "bootstrapped_at: timestamp($ts), "
+        "embedding_model: $emodel, embedding_dimension: $edim})",
+        {
+            "bid": board_id,
+            "v": SCHEMA_VERSION,
+            "ts": _now_iso(),
+            "emodel": prior_model,
+            "edim": prior_dim,
+        },
+    )
+
+
 def bootstrap_board_graph(board_id: str) -> BoardGraphHandle:
     """Create or open a per-board Kùzu graph with the full MVP schema.
 
@@ -4285,45 +4534,7 @@ def bootstrap_board_graph(board_id: str) -> BoardGraphHandle:
     raw_ctx = registered_raw_connection(board_id)
     _db, conn = raw_ctx.__enter__()
     try:
-        apply_schema_to_connection(conn)
-
-        # Vector indexes: one HNSW index per searchable node type. Kùzu 0.11
-        # CREATE_VECTOR_INDEX takes (table, idx_name, col_name) positional +
-        # named metric. We declare `cosine` explicitly so the `1 - distance`
-        # conversion in search.py stays correct even if Kùzu's default metric
-        # changes across versions.
-        _ensure_vector_indexes(conn)
-
-        # Record schema version on the BoardMeta singleton. Use DELETE+CREATE
-        # so a re-bootstrap updates the version if the schema has evolved.
-        # Spec MKG-D-S1 (FR1): preserve/stamp the embedding metadata across
-        # the DELETE+CREATE (risk R4 — fields must survive re-bootstrap).
-        prior_model, prior_dim = _read_board_meta_embedding(conn, board_id)
-        _meta = _effective_embedding_meta()
-        if (
-            not _meta.get("is_stub")
-            and _meta.get("model_name")
-            and int(_meta.get("embedding_dimension") or 0) > 0
-            and not prior_model
-        ):
-            prior_model = _meta.get("model_name")
-            prior_dim = int(_meta.get("embedding_dimension") or 0)
-        conn.execute(
-            "MATCH (m:BoardMeta {board_id: $bid}) DELETE m",
-            {"bid": board_id},
-        )
-        conn.execute(
-            "CREATE (m:BoardMeta {board_id: $bid, schema_version: $v, "
-            "bootstrapped_at: timestamp($ts), "
-            "embedding_model: $emodel, embedding_dimension: $edim})",
-            {
-                "bid": board_id,
-                "v": SCHEMA_VERSION,
-                "ts": _now_iso(),
-                "emodel": prior_model,
-                "edim": prior_dim,
-            },
-        )
+        _apply_board_schema_and_stamp_meta(conn, board_id)
     finally:
         # Bug d0f6bab2: db is now process-cached (_board_db_cache); do NOT
         # close it here or concurrent BoardConnections lose the lock.
@@ -4444,6 +4655,52 @@ def ensure_board_graph_bootstrapped(board_id: str) -> None:
         _enforce_embedding_guard(board_id)
         if bootstrapped:
             _BOOTSTRAPPED_BOARDS.add(board_id)
+
+
+def ensure_board_graph_bootstrapped_unguarded(board_id: str) -> BoardGraphHandle:
+    """Re-ensure one existing Board schema under an owned close window.
+
+    Routed lifecycle owns both the Core write lease and the exclusive Board
+    close guard before calling this primitive.  It therefore opens its raw
+    connection as the window owner and never enters ``ladybug_writer_scope``
+    or a second close guard.  Unlike first boot, rebuild must not recreate a
+    missing bound target: physical route revalidation and this explicit check
+    fail closed before any directory is made.
+    """
+
+    path = board_kuzu_path(board_id)
+    if not path.exists():
+        raise GraphUnavailable(
+            "The routed Ladybug Board graph disappeared before schema ensure.",
+            details={
+                "operation": "ensure_board_graph_bootstrapped_unguarded",
+                "reason": "bound_ladybug_graph_missing",
+                "board_id": board_id,
+                "path": str(path),
+            },
+        )
+
+    lock = _get_bootstrap_lock(board_id)
+    with lock:
+        try:
+            with registered_raw_connection(
+                board_id,
+                within_close_window=True,
+            ) as (_db, conn):
+                _apply_board_schema_and_stamp_meta(conn, board_id)
+                _enforce_embedding_guard_on_connection(conn, board_id)
+        except Exception:
+            _MIGRATED_BOARDS.discard(board_id)
+            _BOOTSTRAPPED_BOARDS.discard(board_id)
+            raise
+        _MIGRATED_BOARDS.add(board_id)
+        _BOOTSTRAPPED_BOARDS.add(board_id)
+
+    return BoardGraphHandle(
+        board_id=board_id,
+        path=path,
+        schema_version=SCHEMA_VERSION,
+    )
 
 
 def reset_bootstrap_cache_for_tests() -> None:
