@@ -383,9 +383,37 @@ def test_binding_rejects_tampering_and_missing_physical_database(
         physical_path=ladybug_path,
     )
     ladybug_path.unlink()
+    inspected = store.inspect_board_binding("board-1")
+    assert inspected.backend == "ladybug"
+    assert inspected.physical_path == ladybug_path
     with pytest.raises(GraphUnavailable) as missing:
         store.acquire_board_binding("board-1")
     assert missing.value.details["reason"] == "physical_database_missing"
+
+
+def test_global_binding_inspection_survives_missing_database_but_not_tampering(
+    tmp_path: Path,
+) -> None:
+    store = CommunityGraphBackendBindingStore(tmp_path)
+    global_path = _ladybug_database(store.global_ladybug_path())
+    expected = store.initialize_global_binding(
+        backend="ladybug",
+        generation="generation-1",
+        physical_path=global_path,
+    )
+    global_path.unlink()
+
+    assert store.inspect_global_binding() == expected
+    with pytest.raises(GraphUnavailable) as missing:
+        store.acquire_global_binding()
+    assert missing.value.details["reason"] == "physical_database_missing"
+
+    binding_path = global_path.parent / "graph_backend_binding.json"
+    document = json.loads(binding_path.read_text(encoding="utf-8"))
+    document["generation"] = "tampered"
+    binding_path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(GraphCorruption):
+        store.inspect_global_binding()
 
 
 def test_binding_rejects_unsafe_ids_and_cross_backend_paths(tmp_path: Path) -> None:

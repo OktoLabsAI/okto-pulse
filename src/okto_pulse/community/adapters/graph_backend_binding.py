@@ -13,9 +13,10 @@ import json
 import os
 import re
 import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, Mapping
+from typing import Any, Literal
 
 from filelock import FileLock
 from filelock import Timeout as FileLockTimeout
@@ -29,6 +30,7 @@ from okto_pulse.core.kg.interfaces.graph_errors import (
 from okto_pulse.community.adapters.filesystem_erasure import (
     contained_lexical_path,
     fsync_directory,
+    is_filesystem_alias,
     validate_scope_id,
 )
 from okto_pulse.community.config import (
@@ -492,6 +494,30 @@ class CommunityGraphBackendBindingStore:
             scope_id="global",
         )
 
+    def inspect_board_binding(self, board_id: str) -> CommunityGraphBackendBinding:
+        """Authenticate one board binding without requiring its database to exist.
+
+        Runtime diagnosis, privacy erasure and recovery still need the persisted
+        backend decision when the physical database is precisely what is absent
+        or damaged. Normal acquisition remains strict and verifies the database.
+        """
+
+        safe_board_id = self._validated_segment(board_id, field_name="board_id")
+        return self._inspect(
+            self._board_binding_path(safe_board_id),
+            scope="board",
+            scope_id=safe_board_id,
+        )
+
+    def inspect_global_binding(self) -> CommunityGraphBackendBinding:
+        """Authenticate the global binding without probing physical storage."""
+
+        return self._inspect(
+            self._global_binding_path(),
+            scope="global",
+            scope_id="global",
+        )
+
     @staticmethod
     def admit_database(
         binding: CommunityGraphBackendBinding,
@@ -723,10 +749,25 @@ class CommunityGraphBackendBindingStore:
         scope: GraphBindingScope,
         scope_id: str,
     ) -> CommunityGraphBackendBinding:
+        binding = self._inspect(path, scope=scope, scope_id=scope_id)
+        _require_physical_database(
+            binding.physical_path,
+            backend=binding.backend,
+            scope=scope,
+            scope_id=scope_id,
+        )
+        return binding
+
+    def _inspect(
+        self,
+        path: Path,
+        *,
+        scope: GraphBindingScope,
+        scope_id: str,
+    ) -> CommunityGraphBackendBinding:
         try:
             path.lstat()
-            junction_check = getattr(path, "is_junction", None)
-            if path.is_symlink() or (junction_check is not None and junction_check()):
+            if is_filesystem_alias(path):
                 raise ValueError("binding_path_alias_refused")
             lexical_path = Path(os.path.abspath(path))
             if os.path.normcase(str(lexical_path)) != os.path.normcase(
@@ -811,12 +852,6 @@ class CommunityGraphBackendBindingStore:
                 scope_id=scope_id,
             ) from exc
 
-        _require_physical_database(
-            physical_path,
-            backend=backend,
-            scope=scope,
-            scope_id=scope_id,
-        )
         return CommunityGraphBackendBinding(
             scope=scope,
             scope_id=scope_id,
@@ -831,9 +866,9 @@ class CommunityGraphBackendBindingStore:
 __all__ = [
     "BINDING_FORMAT",
     "BOARD_BINDING_FILENAME",
+    "GLOBAL_BINDING_FILENAME",
     "CommunityGraphBackendBinding",
     "CommunityGraphBackendBindingStore",
-    "GLOBAL_BINDING_FILENAME",
     "GrafxDatabaseAdmission",
     "GraphBackend",
     "GraphBindingScope",
