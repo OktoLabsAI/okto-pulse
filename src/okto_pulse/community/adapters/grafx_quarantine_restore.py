@@ -837,20 +837,73 @@ class CommunityGrafxQuarantineRestore:
             return None
 
     @staticmethod
-    def _published_operation_inventory(
-        state: Mapping[str, object],
+    def _validated_operation_inventory(
+        raw_directories: object,
+        raw_files: object,
+        raw_sha256: object,
+        *,
+        label: str,
     ) -> GrafxDirectoryInventory:
-        raw_directories = state.get("published_directories")
-        raw_files = state.get("published_files")
         if type(raw_directories) is not list or type(raw_files) is not list:
-            raise OSError("Grafx directory restore journal has no published inventory")
+            raise OSError(f"Grafx directory restore {label} inventory is missing")
+        directories: list[str] = []
+        for relative in raw_directories:
+            if type(relative) is not str:
+                raise OSError(f"Grafx directory restore {label} directory is invalid")
+            normalized = Path(relative)
+            if (
+                normalized.is_absolute()
+                or not normalized.parts
+                or ".." in normalized.parts
+                or normalized.as_posix() != relative
+            ):
+                raise OSError(f"Grafx directory restore {label} directory is unsafe")
+            directories.append(relative)
+        if directories != sorted(set(directories)):
+            raise OSError(
+                f"Grafx directory restore {label} directories are not canonical"
+            )
+        files: list[dict[str, object]] = []
+        for raw in raw_files:
+            if type(raw) is not dict or set(raw) != {
+                "relative_path",
+                "size_bytes",
+                "sha256",
+            }:
+                raise OSError(f"Grafx directory restore {label} file is invalid")
+            relative = raw.get("relative_path")
+            size = raw.get("size_bytes")
+            digest = raw.get("sha256")
+            if type(relative) is not str:
+                raise OSError(f"Grafx directory restore {label} file path is invalid")
+            normalized = Path(relative)
+            if (
+                normalized.is_absolute()
+                or not normalized.parts
+                or ".." in normalized.parts
+                or normalized.as_posix() != relative
+                or type(size) is not int
+                or size < 0
+                or type(digest) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            ):
+                raise OSError(f"Grafx directory restore {label} file is unsafe")
+            files.append(
+                {
+                    "relative_path": relative,
+                    "size_bytes": size,
+                    "sha256": digest,
+                }
+            )
+        if files != sorted(files, key=lambda item: str(item["relative_path"])) or len(
+            {str(item["relative_path"]) for item in files}
+        ) != len(files):
+            raise OSError(f"Grafx directory restore {label} files are not canonical")
         inventory = GrafxDirectoryInventory(
-            directories=tuple(str(item) for item in raw_directories),
-            files=tuple(dict(item) for item in raw_files if type(item) is dict),
-            sha256=str(state.get("published_inventory_sha256") or ""),
+            directories=tuple(directories),
+            files=tuple(files),
+            sha256=str(raw_sha256 or ""),
         )
-        if len(inventory.files) != len(raw_files):
-            raise OSError("Grafx directory restore journal file inventory is invalid")
         expected = _canonical_sha256(
             {
                 "directories": list(inventory.directories),
@@ -858,8 +911,32 @@ class CommunityGrafxQuarantineRestore:
             }
         )
         if inventory.sha256 != expected:
-            raise OSError("Grafx directory restore journal inventory hash mismatch")
+            raise OSError(f"Grafx directory restore {label} inventory hash mismatch")
         return inventory
+
+    @classmethod
+    def _published_operation_inventory(
+        cls,
+        state: Mapping[str, object],
+    ) -> GrafxDirectoryInventory:
+        return cls._validated_operation_inventory(
+            state.get("published_directories"),
+            state.get("published_files"),
+            state.get("published_inventory_sha256"),
+            label="published",
+        )
+
+    @classmethod
+    def _terminal_operation_inventory(
+        cls,
+        state: Mapping[str, object],
+    ) -> GrafxDirectoryInventory:
+        return cls._validated_operation_inventory(
+            state.get("terminal_directories"),
+            state.get("terminal_files"),
+            state.get("terminal_inventory_sha256"),
+            label="terminal",
+        )
 
     @staticmethod
     def _inventory_document(
@@ -873,8 +950,9 @@ class CommunityGrafxQuarantineRestore:
             "sha256": inventory.sha256,
         }
 
-    @staticmethod
+    @classmethod
     def _operation_original_inventory(
+        cls,
         state: Mapping[str, object],
     ) -> GrafxDirectoryInventory | None:
         raw = state.get("original_inventory")
@@ -882,28 +960,12 @@ class CommunityGrafxQuarantineRestore:
             return None
         if type(raw) is not dict or set(raw) != {"directories", "files", "sha256"}:
             raise OSError("Grafx directory restore original inventory is invalid")
-        raw_directories = raw.get("directories")
-        raw_files = raw.get("files")
-        if type(raw_directories) is not list or type(raw_files) is not list:
-            raise OSError("Grafx directory restore original inventory is invalid")
-        if any(type(item) is not str for item in raw_directories) or any(
-            type(item) is not dict for item in raw_files
-        ):
-            raise OSError("Grafx directory restore original inventory is invalid")
-        inventory = GrafxDirectoryInventory(
-            directories=tuple(raw_directories),
-            files=tuple(dict(item) for item in raw_files),
-            sha256=str(raw.get("sha256") or ""),
+        return cls._validated_operation_inventory(
+            raw.get("directories"),
+            raw.get("files"),
+            raw.get("sha256"),
+            label="original",
         )
-        expected = _canonical_sha256(
-            {
-                "directories": list(inventory.directories),
-                "files": [dict(item) for item in inventory.files],
-            }
-        )
-        if inventory.sha256 != expected:
-            raise OSError("Grafx directory restore original inventory hash mismatch")
-        return inventory
 
     @staticmethod
     def _operation_restore_paths(
@@ -998,13 +1060,56 @@ class CommunityGrafxQuarantineRestore:
         board_dir = Path(plan.board_dir)
         try:
             self._published_operation_inventory(state)
-            self._probe_directory(board_dir)
+            terminal_inventory = self._terminal_operation_inventory(state)
+            if state.get("open_validated") is not True:
+                raise OSError("completed Grafx restore lacks open validation")
+            if grafx_directory_inventory(board_dir) != terminal_inventory:
+                raise OSError("completed Grafx restore terminal inventory changed")
         except BaseException as failure:
             raise QuarantineRestoreError(
                 QuarantineRestoreErrorCode.PARTIAL_RESTORE,
                 reason="completed Grafx directory restore no longer validates",
                 details={"operation_manifest": str(operation_path)},
             ) from failure
+        return RestoreReport(
+            quarantine_id=plan.quarantine_id,
+            board_id=plan.board_id,
+            applied=True,
+            backup_quarantine_id=(
+                str(state["backup_quarantine_id"])
+                if state.get("backup_quarantine_id")
+                else None
+            ),
+            restored_files=tuple(entry.name for entry in plan.files),
+            open_validated=True,
+        )
+
+    def _accept_terminal_reconciled_publication(
+        self,
+        plan: RestorePlan,
+        operation_path: Path,
+        state: dict[str, object],
+        *,
+        fenced: Callable[[str], None],
+    ) -> RestoreReport:
+        board_dir = Path(plan.board_dir)
+        self._published_operation_inventory(state)
+        terminal_inventory = self._terminal_operation_inventory(state)
+        if grafx_directory_inventory(board_dir) != terminal_inventory:
+            raise OSError("interrupted Grafx restore terminal inventory changed")
+        fenced("quarantine_restore_directory_reconcile_complete")
+        state.update(
+            {
+                "phase": "done",
+                "open_validated": True,
+                "reconciled_as": "published_terminal",
+                "finished_at": _utc_now().isoformat(),
+            }
+        )
+        _write_directory_json_atomic(
+            operation_path,
+            _authenticated_manifest(state),
+        )
         return RestoreReport(
             quarantine_id=plan.quarantine_id,
             board_id=plan.board_id,
@@ -1043,6 +1148,7 @@ class CommunityGrafxQuarantineRestore:
             if phase not in {
                 "copy_candidate",
                 "publish_pending",
+                "terminal_validated",
                 "failed",
                 "reconciling",
                 "reconciled",
@@ -1096,6 +1202,13 @@ class CommunityGrafxQuarantineRestore:
                         "interrupted Grafx restore has three live directory copies"
                     )
                 if live_present:
+                    if "terminal_inventory_sha256" not in state:
+                        raise OSError(
+                            "interrupted Grafx restore cannot authenticate live publish"
+                        )
+                    terminal_inventory = self._terminal_operation_inventory(state)
+                    if grafx_directory_inventory(board_dir) != terminal_inventory:
+                        raise OSError("interrupted Grafx restore live publish changed")
                     fenced("quarantine_restore_directory_reconcile_failed_publish")
                     os.replace(board_dir, candidate)
                     fsync_directory(board_parent)
@@ -1119,71 +1232,35 @@ class CommunityGrafxQuarantineRestore:
                 live_is_original = (
                     grafx_directory_inventory(board_dir) == original_inventory
                 )
-                completion_possible = (
-                    interrupted_phase == "publish_pending"
-                    or state.get("published_before_failure") is True
+                terminal_authorized = interrupted_phase == "terminal_validated" or (
+                    state.get("published_before_failure") is True
+                    and "terminal_inventory_sha256" in state
                 )
                 if not rolled_back and not live_is_original:
-                    if candidate_present or not completion_possible:
+                    if candidate_present or not terminal_authorized:
                         raise OSError(
                             "interrupted Grafx restore live directory is ambiguous"
                         )
-                    self._published_operation_inventory(state)
-                    fenced("quarantine_restore_directory_reconcile_cold_open")
-                    self._probe_directory(board_dir)
-                    fenced("quarantine_restore_directory_reconcile_complete")
-                    state.update(
-                        {
-                            "phase": "done",
-                            "open_validated": True,
-                            "reconciled_as": "published",
-                            "finished_at": _utc_now().isoformat(),
-                        }
-                    )
-                    _write_directory_json_atomic(
+                    return self._accept_terminal_reconciled_publication(
+                        plan,
                         operation_path,
-                        _authenticated_manifest(state),
-                    )
-                    return RestoreReport(
-                        quarantine_id=plan.quarantine_id,
-                        board_id=plan.board_id,
-                        applied=True,
-                        backup_quarantine_id=(
-                            str(state["backup_quarantine_id"])
-                            if state.get("backup_quarantine_id")
-                            else None
-                        ),
-                        restored_files=tuple(entry.name for entry in plan.files),
-                        open_validated=True,
+                        state,
+                        fenced=fenced,
                     )
             elif live_present:
-                if candidate_present or interrupted_phase != "publish_pending":
+                terminal_authorized = interrupted_phase == "terminal_validated" or (
+                    state.get("published_before_failure") is True
+                    and "terminal_inventory_sha256" in state
+                )
+                if candidate_present or not terminal_authorized:
                     raise OSError(
                         "interrupted fresh Grafx restore live directory is ambiguous"
                     )
-                self._published_operation_inventory(state)
-                fenced("quarantine_restore_directory_reconcile_cold_open")
-                self._probe_directory(board_dir)
-                fenced("quarantine_restore_directory_reconcile_complete")
-                state.update(
-                    {
-                        "phase": "done",
-                        "open_validated": True,
-                        "reconciled_as": "published",
-                        "finished_at": _utc_now().isoformat(),
-                    }
-                )
-                _write_directory_json_atomic(
+                return self._accept_terminal_reconciled_publication(
+                    plan,
                     operation_path,
-                    _authenticated_manifest(state),
-                )
-                return RestoreReport(
-                    quarantine_id=plan.quarantine_id,
-                    board_id=plan.board_id,
-                    applied=True,
-                    backup_quarantine_id=None,
-                    restored_files=tuple(entry.name for entry in plan.files),
-                    open_validated=True,
+                    state,
+                    fenced=fenced,
                 )
 
             if candidate_present:
@@ -1445,6 +1522,22 @@ class CommunityGrafxQuarantineRestore:
                 raise OSError("published Grafx directory inventory mismatch")
             fenced("quarantine_restore_directory_cold_open")
             self._probe_directory(board_dir)
+            terminal_inventory = grafx_directory_inventory(board_dir)
+            fenced("quarantine_restore_directory_terminal_inventory")
+            state.update(
+                {
+                    "terminal_directories": list(terminal_inventory.directories),
+                    "terminal_files": [dict(item) for item in terminal_inventory.files],
+                    "terminal_inventory_sha256": terminal_inventory.sha256,
+                    "terminal_recorded_at": _utc_now().isoformat(),
+                    "phase": "terminal_validated",
+                    "open_validated": True,
+                }
+            )
+            _write_directory_json_atomic(
+                operation_path,
+                _authenticated_manifest(state),
+            )
             if displaced.exists():
                 self._remove_restore_tree(
                     displaced,
@@ -1454,6 +1547,8 @@ class CommunityGrafxQuarantineRestore:
                     ),
                 )
             fenced("quarantine_restore_directory_complete")
+            if grafx_directory_inventory(board_dir) != terminal_inventory:
+                raise OSError("Grafx terminal inventory changed before completion")
             state.update(
                 {
                     "phase": "done",

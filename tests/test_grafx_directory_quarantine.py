@@ -119,6 +119,14 @@ def _restore_residues(path: Path) -> tuple[Path, ...]:
     return tuple(path.parent.glob(f".{path.name}.*.restore.*"))
 
 
+def _swap_live_database(path: Path, value: str = "foreign") -> Path:
+    saved = path.with_name(f".{path.name}.test.saved")
+    os.replace(path, saved)
+    foreign = _create_database(path, value)
+    foreign.close()
+    return saved
+
+
 def _quarantine(root: Path, path: Path) -> tuple[int, str]:
     moved, quarantine_id = quarantine_grafx_board_storage(
         BOARD_ID,
@@ -371,7 +379,7 @@ def test_directory_restore_published_cold_open_failure_rolls_back_and_retries(
 
 
 @pytest.mark.parametrize("boundary", ("after_displace", "after_publish"))
-def test_directory_restore_retry_reconciles_interrupted_rename_boundaries(
+def test_directory_restore_retry_handles_interrupted_rename_boundaries(
     tmp_path: Path,
     monkeypatch,
     boundary: str,
@@ -404,6 +412,14 @@ def test_directory_restore_retry_reconciles_interrupted_rename_boundaries(
             adapter.apply(quarantine_id)
 
     assert _restore_residues(path)
+    if boundary == "after_publish":
+        with pytest.raises(QuarantineRestoreError) as captured:
+            adapter.apply(quarantine_id)
+        assert captured.value.code is QuarantineRestoreErrorCode.PARTIAL_RESTORE
+        assert _query_ids(path) == ("original",)
+        assert _restore_residues(path)
+        assert _tree_hashes(source_payload) == source_before
+        return
     report = adapter.apply(quarantine_id)
 
     assert report.open_validated is True
@@ -429,7 +445,7 @@ def test_directory_restore_retry_completes_publish_after_cleanup_crash(
         if target.parent.name == ".grafx_directory_restore_operations" and payload.get(
             "phase"
         ) in {"done", "failed"}:
-            raise PermissionError("simulated crash before terminal journal")
+            raise PermissionError("simulated crash before done journal")
         original_write(target, payload)
 
     with monkeypatch.context() as crash:
@@ -441,7 +457,7 @@ def test_directory_restore_retry_completes_publish_after_cleanup_crash(
         with pytest.raises(QuarantineRestoreError):
             adapter.apply(quarantine_id)
 
-    assert _query_ids(path) == ("original",)
+    assert path.is_dir()
     assert not _restore_residues(path)
     quarantine_count = len(tuple((tmp_path / "quarantine").glob("grafx-board-*")))
 
@@ -454,6 +470,129 @@ def test_directory_restore_retry_completes_publish_after_cleanup_crash(
         len(tuple((tmp_path / "quarantine").glob("grafx-board-*"))) == quarantine_count
     )
     assert _tree_hashes(source_payload) == source_before
+
+
+def test_directory_restore_done_rejects_valid_foreign_database_swap(
+    tmp_path: Path,
+) -> None:
+    path = _bound_database(tmp_path)
+    _, quarantine_id = _quarantine(tmp_path, path)
+    adapter = _restore(tmp_path, path)
+    assert adapter.apply(quarantine_id).open_validated is True
+    saved = _swap_live_database(path)
+
+    with pytest.raises(QuarantineRestoreError) as captured:
+        adapter.apply(quarantine_id)
+
+    assert captured.value.code is QuarantineRestoreErrorCode.PARTIAL_RESTORE
+    assert _query_ids(path) == ("foreign",)
+    assert saved.is_dir()
+
+
+def test_directory_restore_done_rejects_authenticated_terminal_type_confusion(
+    tmp_path: Path,
+) -> None:
+    path = _bound_database(tmp_path)
+    _, quarantine_id = _quarantine(tmp_path, path)
+    adapter = _restore(tmp_path, path)
+    assert adapter.apply(quarantine_id).open_validated is True
+    operation = next(
+        (path.parent / ".grafx_directory_restore_operations").glob("*.json")
+    )
+    state = json.loads(operation.read_text(encoding="utf-8"))
+    terminal_files = state["terminal_files"]
+    assert type(terminal_files) is list and terminal_files
+    assert type(terminal_files[0]) is dict
+    terminal_files[0]["size_bytes"] = str(terminal_files[0]["size_bytes"])
+    authenticated = storage_module._authenticated_manifest(state)
+    operation.write_text(
+        json.dumps(authenticated, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(QuarantineRestoreError) as captured:
+        adapter.apply(quarantine_id)
+
+    assert captured.value.code is QuarantineRestoreErrorCode.PARTIAL_RESTORE
+    assert _query_ids(path) == ("original",)
+
+
+@pytest.mark.parametrize("existing_live", (False, True))
+def test_directory_crash_reconcile_rejects_valid_foreign_live_database(
+    tmp_path: Path,
+    monkeypatch,
+    existing_live: bool,
+) -> None:
+    path = _bound_database(tmp_path)
+    _, quarantine_id = _quarantine(tmp_path, path)
+    if existing_live:
+        candidate = _create_database(path, "candidate")
+        candidate.close()
+    adapter = _restore(tmp_path, path)
+    original_write = restore_module._write_directory_json_atomic
+
+    def interrupt_terminal_journal(target: Path, payload: dict[str, object]) -> None:
+        if target.parent.name == ".grafx_directory_restore_operations" and payload.get(
+            "phase"
+        ) in {"done", "failed"}:
+            raise PermissionError("simulated process exit after terminal inventory")
+        original_write(target, payload)
+
+    with monkeypatch.context() as crash:
+        crash.setattr(
+            restore_module,
+            "_write_directory_json_atomic",
+            interrupt_terminal_journal,
+        )
+        crash.setattr(
+            adapter,
+            "_rollback_directory_publication",
+            lambda **_kwargs: "simulated_process_exit",
+        )
+        with pytest.raises(QuarantineRestoreError):
+            adapter.apply(quarantine_id)
+
+    saved = _swap_live_database(path)
+    with pytest.raises(QuarantineRestoreError) as captured:
+        adapter.apply(quarantine_id)
+
+    assert captured.value.code is QuarantineRestoreErrorCode.PARTIAL_RESTORE
+    assert _query_ids(path) == ("foreign",)
+    assert saved.is_dir()
+
+
+def test_fresh_restore_crash_before_terminal_inventory_fails_closed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = _bound_database(tmp_path)
+    _, quarantine_id = _quarantine(tmp_path, path)
+
+    def fail_published_open(candidate_path: Path):
+        if candidate_path == path:
+            raise RuntimeError("simulated exit before terminal inventory")
+        return connect(candidate_path, page_size=PAGE_SIZE)
+
+    interrupted = _restore(tmp_path, path, open_database=fail_published_open)
+    with monkeypatch.context() as crash:
+        crash.setattr(
+            interrupted,
+            "_rollback_directory_publication",
+            lambda **_kwargs: "simulated_process_exit",
+        )
+        with pytest.raises(QuarantineRestoreError):
+            interrupted.apply(quarantine_id)
+
+    operation = next(
+        (path.parent / ".grafx_directory_restore_operations").glob("*.json")
+    )
+    state = json.loads(operation.read_text(encoding="utf-8"))
+    assert "terminal_inventory_sha256" not in state
+    with pytest.raises(QuarantineRestoreError) as captured:
+        _restore(tmp_path, path).apply(quarantine_id)
+
+    assert captured.value.code is QuarantineRestoreErrorCode.PARTIAL_RESTORE
+    assert _query_ids(path) == ("original",)
 
 
 def test_privacy_erase_reaches_interrupted_restore_and_final_snapshots(
