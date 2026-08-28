@@ -1830,3 +1830,337 @@ async def test_provider_raises_normalized_error_chained_from_real_grafx_failure(
         "original-session",
         "original",
     )
+
+
+# --- the terminal callback: once, and never while the transaction is open -----------------------
+#
+# The callback is what lets the owner of a database handle know the scope is done
+# with it. Firing it twice would release a lease somebody else now holds; firing
+# it while the transaction is still active would hand back a handle that writes
+# can still reach. Both are covered, along with every path that ends a scope.
+
+
+def _scope_provider(database: object, fence: object, released: list[str]) -> object:
+    from okto_pulse.community.adapters.grafx_graph_transaction import (
+        CommunityGrafxGraphTransaction,
+    )
+
+    def resolve_database(board_id: str) -> object:
+        if board_id != BOARD_ID:
+            raise KeyError(board_id)
+        return database
+
+    def on_scope_end(board_id: str):
+        def release() -> None:
+            released.append(board_id)
+
+        return release
+
+    return CommunityGrafxGraphTransaction(
+        database_resolver=resolve_database,
+        revalidate_fence=fence,
+        node_types=NODE_TYPES,
+        relationship_pairs=RELATIONSHIP_PAIRS,
+        on_scope_end=on_scope_end,
+    )
+
+
+@pytest.mark.asyncio
+async def test_commit_releases_the_scope_exactly_once(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    released: list[str] = []
+    scope = await _scope_provider(grafx_database, fence, released).begin(BOARD_ID)
+
+    await scope.commit()
+
+    assert released == [BOARD_ID]
+    # A second commit is already a no-op; it must not release again.
+    await scope.commit()
+    await scope.rollback()
+    assert released == [BOARD_ID]
+
+
+@pytest.mark.asyncio
+async def test_rollback_releases_the_scope_exactly_once(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    released: list[str] = []
+    scope = await _scope_provider(grafx_database, fence, released).begin(BOARD_ID)
+
+    await scope.rollback()
+
+    assert released == [BOARD_ID]
+    await scope.rollback()
+    assert released == [BOARD_ID]
+
+
+@pytest.mark.asyncio
+async def test_aexit_releases_on_the_success_path(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    released: list[str] = []
+    provider = _scope_provider(grafx_database, fence, released)
+
+    async with await provider.begin(BOARD_ID) as scope:
+        assert scope is not None
+        assert released == []
+
+    assert released == [BOARD_ID]
+
+
+@pytest.mark.asyncio
+async def test_aexit_releases_when_the_body_raises(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    released: list[str] = []
+    provider = _scope_provider(grafx_database, fence, released)
+
+    with pytest.raises(RuntimeError):
+        async with await provider.begin(BOARD_ID):
+            raise RuntimeError("injected body failure")
+
+    assert released == [BOARD_ID]
+
+
+@pytest.mark.asyncio
+async def test_a_commit_failure_that_ends_the_transaction_still_releases(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    released: list[str] = []
+    scope = await _scope_provider(grafx_database, fence, released).begin(BOARD_ID)
+
+    def failing_commit(transaction: Any) -> None:
+        transaction.rollback()
+        raise OSError("injected commit failure")
+
+    monkeypatch.setattr(Transaction, "commit", failing_commit)
+
+    with pytest.raises(GraphError):
+        await scope.commit()
+
+    # The engine ended the transaction, so the handle is free to go back.
+    assert scope._transaction.active is False
+    assert released == [BOARD_ID]
+
+
+@pytest.mark.asyncio
+async def test_a_failure_that_leaves_the_transaction_open_does_not_release(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    released: list[str] = []
+    scope = await _scope_provider(grafx_database, fence, released).begin(BOARD_ID)
+
+    def failing_commit(_transaction: Any) -> None:
+        raise OSError("injected commit failure that leaves the transaction open")
+
+    monkeypatch.setattr(Transaction, "commit", failing_commit)
+
+    with pytest.raises(GraphError):
+        await scope.commit()
+
+    # Still open, so releasing now would hand back a handle writes can reach.
+    assert scope._transaction.active is True
+    assert released == []
+
+    monkeypatch.undo()
+    await scope.rollback()
+    assert released == [BOARD_ID]
+
+
+@pytest.mark.asyncio
+async def test_a_scope_without_a_callback_still_ends_normally(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    # The callback is optional, so the provider without one must behave exactly
+    # as it did before this milestone.
+    scope = await _provider(grafx_database, fence).begin(BOARD_ID)
+    await scope.commit()
+    assert scope._transaction.active is False
+
+
+@pytest.mark.asyncio
+async def test_a_callback_that_raises_is_not_retried(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    from okto_pulse.community.adapters.grafx_graph_transaction import (
+        CommunityGrafxGraphTransaction,
+    )
+
+    attempts: list[str] = []
+
+    def on_scope_end(board_id: str):
+        def release() -> None:
+            attempts.append(board_id)
+            raise RuntimeError("injected release failure")
+
+        return release
+
+    provider = CommunityGrafxGraphTransaction(
+        database_resolver=lambda _board: grafx_database,
+        revalidate_fence=fence,
+        node_types=NODE_TYPES,
+        relationship_pairs=RELATIONSHIP_PAIRS,
+        on_scope_end=on_scope_end,
+    )
+    scope = await provider.begin(BOARD_ID)
+
+    # The commit is durable, so a release that raises afterwards must not be
+    # presented as a commit failure; it is recorded on the scope instead.
+    await scope.commit()
+
+    assert attempts == [BOARD_ID]
+    assert isinstance(scope.terminal_release_error, RuntimeError)
+    # Marked settled before the call, so the broken release is not retried into
+    # a second attempt on a later terminal path.
+    await scope.rollback()
+    assert attempts == [BOARD_ID]
+
+
+# --- the pin has to exist before begin -----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_begin_pins_the_database_before_opening_the_transaction(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    """A handle resolved but not yet pinned can be closed before begin runs.
+
+    The resolver returns ``(database, release)`` so the pin is already held when
+    begin executes. This records the ORDER, which is the part that closes the
+    window: anything that pins after begin leaves a gap where an eviction can
+    take the handle out from under the scope.
+    """
+
+    from okto_pulse.community.adapters.grafx_graph_transaction import (
+        CommunityGrafxGraphTransaction,
+    )
+
+    events: list[str] = []
+
+    class _OrderedDatabase:
+        def __init__(self, delegate: Any) -> None:
+            self._delegate = delegate
+
+        def begin(self, mode: str, *args: Any, **kwargs: Any) -> Any:
+            events.append("begin")
+            return self._delegate.begin(mode, *args, **kwargs)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._delegate, name)
+
+    def resolve(board_id: str):
+        events.append("pin")
+        return _OrderedDatabase(grafx_database), lambda: events.append("release")
+
+    provider = CommunityGrafxGraphTransaction(
+        database_resolver=resolve,
+        revalidate_fence=fence,
+        node_types=NODE_TYPES,
+        relationship_pairs=RELATIONSHIP_PAIRS,
+    )
+    scope = await provider.begin(BOARD_ID)
+
+    assert events == ["pin", "begin"]
+    await scope.commit()
+    assert events == ["pin", "begin", "release"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_begin_gives_the_pin_back(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    from okto_pulse.community.adapters.grafx_graph_transaction import (
+        CommunityGrafxGraphTransaction,
+    )
+
+    released: list[str] = []
+
+    class _RefusingDatabase:
+        def __init__(self, delegate: Any) -> None:
+            self._delegate = delegate
+
+        def begin(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise OSError("injected begin failure")
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._delegate, name)
+
+    provider = CommunityGrafxGraphTransaction(
+        database_resolver=lambda _board: (
+            _RefusingDatabase(grafx_database),
+            lambda: released.append("released"),
+        ),
+        revalidate_fence=fence,
+        node_types=NODE_TYPES,
+        relationship_pairs=RELATIONSHIP_PAIRS,
+    )
+
+    with pytest.raises(GraphError):
+        await provider.begin(BOARD_ID)
+
+    # No transaction survived, so the pin taken for it must go back.
+    assert released == ["released"]
+
+
+@pytest.mark.asyncio
+async def test_a_bare_resolver_still_works(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    # Compatibility: a resolver that returns only a Database is unchanged.
+    scope = await _provider(grafx_database, fence).begin(BOARD_ID)
+    await scope.commit()
+    assert scope._transaction.active is False
+
+
+@pytest.mark.asyncio
+async def test_a_release_failure_after_a_durable_commit_is_not_a_failed_commit(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+) -> None:
+    """A committed write must not be presented as retryable or indeterminate."""
+
+    from okto_pulse.community.adapters.grafx_graph_transaction import (
+        CommunityGrafxGraphTransaction,
+    )
+
+    attempts: list[str] = []
+
+    def resolve(board_id: str):
+        def release() -> None:
+            attempts.append(board_id)
+            raise OSError("injected release failure after commit")
+
+        return grafx_database, release
+
+    provider = CommunityGrafxGraphTransaction(
+        database_resolver=resolve,
+        revalidate_fence=fence,
+        node_types=NODE_TYPES,
+        relationship_pairs=RELATIONSHIP_PAIRS,
+    )
+    scope = await provider.begin(BOARD_ID)
+
+    # The commit succeeds. The release does not, and that must not surface as a
+    # commit failure the caller might retry.
+    await scope.commit()
+
+    assert scope._transaction.active is False
+    assert attempts == [BOARD_ID]
+    assert isinstance(scope.terminal_release_error, OSError)
+    # And it is not retried on a later terminal path.
+    await scope.rollback()
+    assert attempts == [BOARD_ID]

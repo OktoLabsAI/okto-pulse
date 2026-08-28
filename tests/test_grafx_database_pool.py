@@ -21,6 +21,7 @@ from okto_pulse.core.kg.interfaces.graph_errors import (
 
 from okto_pulse.community.adapters.grafx_database_pool import (
     CommunityGrafxDatabasePool,
+    GrafxDatabaseLease,
     GrafxDatabasePoolError,
 )
 
@@ -463,3 +464,375 @@ class TestIntrospection:
         assert borrowed.closed is False
         assert len(pool) == 1
         assert len(connector.calls) == 1
+
+
+# --- the bound, and what may be closed to honour it ----------------------------------------------
+
+
+class TestTheBoundIsEnforcedBeforeOpening:
+    @pytest.mark.parametrize("max_entries", [0, -1, 1.5, "2", None.__class__])
+    def test_an_invalid_bound_refuses_to_build_the_pool(
+        self, root: Path, max_entries: object
+    ) -> None:
+        with pytest.raises(GrafxDatabasePoolError) as refused:
+            CommunityGrafxDatabasePool(
+                root, connect=_Connector(), max_entries=max_entries
+            )
+
+        assert refused.value.reason == "pool_max_entries_invalid"
+
+    def test_an_unbounded_pool_keeps_every_handle(self, root: Path) -> None:
+        connector = _Connector()
+        pool = _pool(root, connector)
+
+        for index in range(5):
+            pool.get(root / f"board-{index}", page_size=PAGE_SIZE)
+
+        assert len(pool) == 5
+
+    def test_the_bound_is_never_exceeded(self, root: Path) -> None:
+        connector = _Connector()
+        pool = CommunityGrafxDatabasePool(root, connect=connector, max_entries=2)
+
+        for index in range(5):
+            pool.get(root / f"board-{index}", page_size=PAGE_SIZE)
+            assert len(pool) <= 2
+
+        assert len(pool) == 2
+
+    def test_the_coldest_unpinned_entry_is_the_one_evicted(self, root: Path) -> None:
+        connector = _Connector()
+        pool = CommunityGrafxDatabasePool(root, connect=connector, max_entries=2)
+        first = pool.get(root / "board-a", page_size=PAGE_SIZE)
+        pool.get(root / "board-b", page_size=PAGE_SIZE)
+        # Touching board-a makes board-b the coldest.
+        assert pool.get(root / "board-a", page_size=PAGE_SIZE) is first
+
+        pool.get(root / "board-c", page_size=PAGE_SIZE)
+
+        pooled = pool.pooled_paths()
+        assert any("board-a" in entry for entry in pooled)
+        assert any("board-c" in entry for entry in pooled)
+        assert not any("board-b" in entry for entry in pooled)
+        assert first.closed is False
+
+    def test_a_leased_entry_is_never_the_victim(self, root: Path) -> None:
+        connector = _Connector()
+        pool = CommunityGrafxDatabasePool(root, connect=connector, max_entries=2)
+        lease = pool.acquire(root / "board-a", page_size=PAGE_SIZE)
+        pool.get(root / "board-b", page_size=PAGE_SIZE)
+
+        pool.get(root / "board-c", page_size=PAGE_SIZE)
+
+        # board-a is the coldest but it is leased, so board-b goes instead.
+        assert any("board-a" in entry for entry in pool.pooled_paths())
+        assert not any("board-b" in entry for entry in pool.pooled_paths())
+        assert lease.database.closed is False
+        lease.release()
+
+    def test_a_full_pool_of_leases_refuses_rather_than_evicting(
+        self, root: Path
+    ) -> None:
+        connector = _Connector()
+        pool = CommunityGrafxDatabasePool(root, connect=connector, max_entries=2)
+        leases = [
+            pool.acquire(root / "board-a", page_size=PAGE_SIZE),
+            pool.acquire(root / "board-b", page_size=PAGE_SIZE),
+        ]
+        opens_before = len(connector.calls)
+
+        with pytest.raises(GrafxDatabasePoolError) as refused:
+            pool.get(root / "board-c", page_size=PAGE_SIZE)
+
+        assert refused.value.reason == "pool_exhausted_all_pinned"
+        # Nothing was opened and nothing was closed to try to make room.
+        assert len(connector.calls) == opens_before
+        assert all(lease.database.closed is False for lease in leases)
+        assert len(pool) == 2
+
+        leases[0].release()
+        pool.get(root / "board-c", page_size=PAGE_SIZE)
+        assert len(pool) == 2
+
+    def test_an_eviction_that_cannot_close_opens_nothing(self, root: Path) -> None:
+        connector = _Connector()
+        pool = CommunityGrafxDatabasePool(root, connect=connector, max_entries=1)
+        stubborn = pool.get(root / "board-a", page_size=PAGE_SIZE)
+        stubborn.close_failures = 1
+        opens_before = len(connector.calls)
+
+        with pytest.raises(GrafxDatabasePoolError) as refused:
+            pool.get(root / "board-b", page_size=PAGE_SIZE)
+
+        assert refused.value.reason == "pool_eviction_close_failed"
+        # No new handle, and the victim is still tracked rather than orphaned.
+        assert len(connector.calls) == opens_before
+        assert len(pool) == 1
+        assert pool.get(root / "board-a", page_size=PAGE_SIZE) is stubborn
+
+
+class TestLeases:
+    def test_a_lease_exposes_the_pooled_handle(self, root: Path) -> None:
+        connector = _Connector()
+        pool = _pool(root, connector)
+
+        lease = pool.acquire(root / "board-a", page_size=PAGE_SIZE)
+
+        assert isinstance(lease, GrafxDatabaseLease)
+        assert lease.database is pool.get(root / "board-a", page_size=PAGE_SIZE)
+        assert pool.pin_count(root / "board-a") == 1
+        assert len(connector.calls) == 1
+        lease.release()
+
+    def test_release_is_idempotent_and_counts_once(self, root: Path) -> None:
+        pool = _pool(root, _Connector())
+        lease = pool.acquire(root / "board-a", page_size=PAGE_SIZE)
+
+        assert lease.release() is True
+        assert lease.released is True
+        # Every later release is a no-op, not a second decrement that would
+        # free an entry somebody else still holds.
+        assert lease.release() is False
+        assert lease.release() is False
+        assert pool.pin_count(root / "board-a") == 0
+
+    def test_two_leases_on_one_database_both_have_to_be_released(
+        self, root: Path
+    ) -> None:
+        pool = _pool(root, _Connector())
+        first = pool.acquire(root / "board-a", page_size=PAGE_SIZE)
+        second = pool.acquire(root / "board-a", page_size=PAGE_SIZE)
+
+        assert pool.pin_count(root / "board-a") == 2
+        first.release()
+        assert pool.pin_count(root / "board-a") == 1
+        with pytest.raises(GrafxDatabasePoolError):
+            pool.close(root / "board-a")
+
+        second.release()
+        assert pool.pin_count(root / "board-a") == 0
+        assert pool.close(root / "board-a") is True
+
+    def test_a_lease_is_a_context_manager(self, root: Path) -> None:
+        pool = _pool(root, _Connector())
+
+        with pool.acquire(root / "board-a", page_size=PAGE_SIZE) as lease:
+            assert pool.pin_count(root / "board-a") == 1
+            assert lease.database is not None
+
+        assert pool.pin_count(root / "board-a") == 0
+
+    def test_borrow_pins_and_releases_even_when_the_body_raises(
+        self, root: Path
+    ) -> None:
+        pool = _pool(root, _Connector())
+
+        with (
+            pytest.raises(RuntimeError),
+            pool.borrow(root / "board-a", page_size=PAGE_SIZE) as database,
+        ):
+            assert pool.pin_count(root / "board-a") == 1
+            assert database is not None
+            raise RuntimeError("injected body failure")
+
+        assert pool.pin_count(root / "board-a") == 0
+        assert len(pool) == 1
+
+
+class TestLeasedEntriesAreNotClosed:
+    def test_close_refuses_a_leased_entry_without_closing_it(self, root: Path) -> None:
+        pool = _pool(root, _Connector())
+        lease = pool.acquire(root / "board-a", page_size=PAGE_SIZE)
+
+        with pytest.raises(GrafxDatabasePoolError) as refused:
+            pool.close(root / "board-a")
+
+        assert refused.value.reason == "pool_close_refused_pinned"
+        assert refused.value.details["pins"] == 1
+        assert lease.database.close_calls == 0
+        assert len(pool) == 1
+
+        lease.release()
+        assert pool.close(root / "board-a") is True
+
+    def test_close_all_closes_the_free_ones_and_keeps_the_leased(
+        self, root: Path
+    ) -> None:
+        pool = _pool(root, _Connector())
+        free = pool.get(root / "board-a", page_size=PAGE_SIZE)
+        lease = pool.acquire(root / "board-b", page_size=PAGE_SIZE)
+        other = pool.get(root / "board-c", page_size=PAGE_SIZE)
+
+        with pytest.raises(GrafxDatabasePoolError) as refused:
+            pool.close_all()
+
+        assert refused.value.reason == "pool_close_all_partial"
+        assert refused.value.details["closed"] == 2
+        assert refused.value.details["remaining"] == 1
+        assert len(refused.value.details["pinned"]) == 1
+        assert free.closed is True
+        assert other.closed is True
+        # The leased handle is untouched: closing it would be a use-after-close.
+        assert lease.database.close_calls == 0
+
+        lease.release()
+        assert pool.close_all() == 1
+        assert lease.database.closed is True
+
+    def test_close_all_reports_leases_and_failures_together(self, root: Path) -> None:
+        pool = _pool(root, _Connector())
+        pool.get(root / "board-a", page_size=PAGE_SIZE)
+        stubborn = pool.get(root / "board-b", page_size=PAGE_SIZE)
+        stubborn.close_failures = 1
+        lease = pool.acquire(root / "board-c", page_size=PAGE_SIZE)
+
+        with pytest.raises(GrafxDatabasePoolError) as refused:
+            pool.close_all()
+
+        details = refused.value.details
+        assert details["closed"] == 1
+        assert details["remaining"] == 2
+        assert len(details["failures"]) == 1
+        assert len(details["pinned"]) == 1
+        lease.release()
+
+
+class TestConcurrencyNeverClosesAHandleInUse:
+    def test_close_all_races_against_leases_without_closing_a_leased_handle(
+        self, root: Path
+    ) -> None:
+        pool = _pool(root, _Connector())
+        paths = [root / f"board-{index}" for index in range(6)]
+        for path in paths:
+            pool.get(path, page_size=PAGE_SIZE)
+        observed: list[bool] = []
+        errors: list[BaseException] = []
+        stop = threading.Event()
+
+        def hold() -> None:
+            try:
+                while not stop.is_set():
+                    with pool.borrow(paths[0], page_size=PAGE_SIZE) as database:
+                        # While the lease is held the handle must be usable, so
+                        # a close that slipped through would be visible here.
+                        observed.append(database.closed)
+            except BaseException as failure:  # noqa: BLE001 - surfaced below
+                errors.append(failure)
+
+        def sweep() -> None:
+            for _ in range(40):
+                try:
+                    pool.close_all()
+                except GrafxDatabasePoolError:
+                    pass
+                except BaseException as failure:  # noqa: BLE001 - surfaced below
+                    errors.append(failure)
+
+        holder = threading.Thread(target=hold)
+        sweeper = threading.Thread(target=sweep)
+        holder.start()
+        sweeper.start()
+        sweeper.join(timeout=30)
+        stop.set()
+        holder.join(timeout=30)
+
+        assert errors == []
+        assert observed
+        # Not one observation saw a closed database through a live lease.
+        assert not any(observed)
+
+
+class TestReleaseIsExactlyOnceUnderContention:
+    """Two threads releasing one lease must decrement exactly one pin.
+
+    The check and the set are separate bytecodes, so a flag tested outside the
+    pool's lock lets both threads observe "not released" and both decrement --
+    freeing an entry a third caller still holds. The claim therefore happens
+    inside the lock, and this test is what proves it rather than the GIL.
+    """
+
+    def test_release_claims_nothing_until_it_holds_the_pool_lock(
+        self, root: Path
+    ) -> None:
+        """The deterministic form of the race, rather than hoping to hit it.
+
+        Racing two threads does not expose this: the window between testing the
+        flag and setting it is a couple of bytecodes and the GIL almost never
+        switches inside it -- I measured 200 contended releases with the old
+        implementation and saw zero bad outcomes. What IS decidable is WHERE the
+        claim happens. Holding the pool's lock from here freezes any correct
+        release before it can claim anything; an implementation that sets its
+        flag first would show the claim already taken while still blocked.
+        """
+
+        pool = _pool(root, _Connector())
+        lease = pool.acquire(root / "board-a", page_size=PAGE_SIZE)
+        started = threading.Event()
+        finished = threading.Event()
+
+        def release_from_another_thread() -> None:
+            started.set()
+            lease.release()
+            finished.set()
+
+        thread = threading.Thread(target=release_from_another_thread)
+        with pool._lock:
+            thread.start()
+            assert started.wait(timeout=5)
+            time.sleep(0.25)
+            # Blocked on the lock, so nothing may have been claimed yet.
+            assert lease.released is False
+            assert finished.is_set() is False
+        thread.join(timeout=5)
+
+        assert lease.released is True
+        assert pool.pin_count(root / "board-a") == 0
+
+    def test_contended_releases_free_exactly_one_pin(self, root: Path) -> None:
+        pool = _pool(root, _Connector())
+
+        for attempt in range(25):
+            path = root / f"board-{attempt}"
+            keeper = pool.acquire(path, page_size=PAGE_SIZE)
+            doomed = pool.acquire(path, page_size=PAGE_SIZE)
+            start = threading.Barrier(2)
+            winners: list[bool] = []
+            lock = threading.Lock()
+
+            def race(
+                lease: GrafxDatabaseLease = doomed,
+                guard: threading.Lock = lock,
+                results: list[bool] = winners,
+                gate: threading.Barrier = start,
+            ) -> None:
+                gate.wait(timeout=10)
+                won = lease.release()
+                with guard:
+                    results.append(won)
+
+            threads = [threading.Thread(target=race) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+
+            assert winners.count(True) == 1
+            assert pool.pin_count(path) == 1
+            keeper.release()
+
+    def test_a_lost_release_cannot_free_another_holders_pin(self, root: Path) -> None:
+        pool = _pool(root, _Connector())
+        path = root / "board-a"
+        first = pool.acquire(path, page_size=PAGE_SIZE)
+        second = pool.acquire(path, page_size=PAGE_SIZE)
+
+        first.release()
+        # Repeated releases of a spent lease must never touch the other pin.
+        for _ in range(10):
+            assert first.release() is False
+        assert pool.pin_count(path) == 1
+
+        with pytest.raises(GrafxDatabasePoolError):
+            pool.close(path)
+        second.release()
+        assert pool.close(path) is True

@@ -25,6 +25,14 @@ under the configured root, and neither the root, nor any parent between them,
 nor the leaf may be a symlink, junction or other reparse point -- checked with
 the shared primitive so the answer holds on Python 3.11, where pathlib alone
 reports a junction as an ordinary directory.
+
+A bounded pool has to answer one more question: what may be closed to make room.
+Only an entry nobody is using may go, so callers that hold a handle across work
+take a lease, and a leased entry is neither evicted nor closed.  Without that,
+"the pool is full" and "someone is mid-transaction" resolve to the same handle
+and the caller reads through a database that was closed underneath it.  When
+every entry is leased the pool refuses rather than evicting anyway: a bound that
+yields under pressure is not a bound.
 """
 
 from __future__ import annotations
@@ -35,7 +43,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 from okto_pulse.community.adapters.filesystem_erasure import (
     contained_lexical_path,
@@ -58,10 +66,64 @@ class GrafxDatabasePoolError(RuntimeError):
 
 @dataclass(slots=True)
 class _Entry:
-    """One admitted handle and the geometry it was admitted under."""
+    """One admitted handle, its geometry, and who is currently using it."""
 
     database: Any
     page_size: int
+    # Leases outstanding. An entry with pins is in use: it cannot be evicted to
+    # make room and close() refuses it rather than pulling it out from under a
+    # caller that is still reading through it.
+    pins: int = 0
+    # Monotonic order of last acquisition, so eviction can pick the coldest
+    # unpinned entry rather than an arbitrary one.
+    used_at: int = 0
+
+
+class GrafxDatabaseLease:
+    """One caller's claim on a pooled handle, released exactly once.
+
+    The lease exists so the pool can tell "still in use" from "merely cached".
+    Release is idempotent because the natural callers -- a context manager and a
+    transaction that also ends on its own failure path -- will both try, and the
+    second attempt must be a no-op rather than a double decrement that frees an
+    entry somebody else still holds.
+    """
+
+    __slots__ = ("_database", "_key", "_pool", "_released")
+
+    def __init__(self, pool: CommunityGrafxDatabasePool, key: str, database: Any):
+        self._pool = pool
+        self._key = key
+        self._database = database
+        self._released = False
+
+    @property
+    def database(self) -> Any:
+        """The pooled handle. Valid until this lease is released."""
+
+        return self._database
+
+    @property
+    def released(self) -> bool:
+        return self._released
+
+    def release(self) -> bool:
+        """Give the handle back. True the first time, False afterwards.
+
+        The claim is taken inside the pool's lock rather than by testing a flag
+        here. Two threads releasing the same lease could both read ``False`` and
+        both decrement, freeing an entry a third caller is still using -- a race
+        the GIL narrows but does not close, because the read and the write are
+        separate bytecodes.
+        """
+
+        return self._pool._release_lease(self)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.release()
 
 
 def _canonical(path: Path) -> str:
@@ -78,6 +140,7 @@ class CommunityGrafxDatabasePool:
         kg_base_dir: str | os.PathLike[str],
         *,
         connect: Any = None,
+        max_entries: int | None = None,
     ) -> None:
         root = Path(os.path.abspath(Path(os.fspath(kg_base_dir)).expanduser()))
         if not root.is_absolute():
@@ -85,8 +148,21 @@ class CommunityGrafxDatabasePool:
                 "The Grafx pool root must be an absolute path.",
                 reason="pool_root_not_absolute",
             )
+        if max_entries is not None and (
+            type(max_entries) is not int or max_entries < 1
+        ):
+            # Optional so existing callers and tests keep working unbounded, but
+            # never approximate: a bound that was asked for is enforced or the
+            # pool refuses to be built.
+            raise GrafxDatabasePoolError(
+                "The Grafx pool bound must be a positive integer.",
+                reason="pool_max_entries_invalid",
+                max_entries=max_entries,
+            )
         self._root = root
         self._connect = connect
+        self._max_entries = max_entries
+        self._clock = 0
         # One lock for the map and one condition per key would let two callers
         # open the same database at once. A single lock held across open is the
         # simpler correct thing: opening is rare, and a duplicate open is the
@@ -173,10 +249,98 @@ class CommunityGrafxDatabasePool:
                         pooled_page_size=entry.page_size,
                         requested_page_size=configured,
                     )
+                entry.used_at = self._tick()
                 return entry.database
+            # Room is made BEFORE opening, so the bound is never briefly
+            # exceeded and a failed eviction costs no new handle.
+            self._make_room_for(contained)
             database = self._open_admitted(contained, page_size=configured)
-            self._entries[key] = _Entry(database=database, page_size=configured)
+            self._entries[key] = _Entry(
+                database=database, page_size=configured, used_at=self._tick()
+            )
             return database
+
+    def _tick(self) -> int:
+        self._clock += 1
+        return self._clock
+
+    def _make_room_for(self, path: Path) -> None:
+        """Evict the coldest unpinned entry until one more handle fits.
+
+        Called with the lock held and before any connect. Eviction only ever
+        takes an entry nobody leased; when every entry is leased the pool
+        refuses, because closing a handle in use is the failure this class was
+        built to prevent.
+        """
+
+        if self._max_entries is None:
+            return
+        while len(self._entries) >= self._max_entries:
+            candidates = [
+                (entry.used_at, key)
+                for key, entry in self._entries.items()
+                if entry.pins == 0
+            ]
+            if not candidates:
+                raise GrafxDatabasePoolError(
+                    "The Grafx pool is full and every handle is leased.",
+                    reason="pool_exhausted_all_pinned",
+                    path=str(path),
+                    max_entries=self._max_entries,
+                    pooled=len(self._entries),
+                )
+            candidates.sort()
+            key = candidates[0][1]
+            entry = self._entries[key]
+            closer = getattr(entry.database, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except Exception as failure:
+                    # The victim stays pooled and tracked. Opening a new handle
+                    # now would push the pool over its bound while leaving a
+                    # handle nobody can name still holding the old database.
+                    raise GrafxDatabasePoolError(
+                        "Evicting a pooled Grafx database failed.",
+                        reason="pool_eviction_close_failed",
+                        evicted_path=key,
+                        requested_path=str(path),
+                        error_type=type(failure).__name__,
+                    ) from failure
+            del self._entries[key]
+
+    def _release_lease(self, lease: GrafxDatabaseLease) -> bool:
+        """Claim and apply one release atomically. True only for the winner."""
+
+        with self._lock:
+            if lease._released:
+                return False
+            lease._released = True
+            entry = self._entries.get(lease._key)
+            if entry is not None and entry.pins > 0:
+                entry.pins -= 1
+            return True
+
+    def acquire(
+        self, path: str | os.PathLike[str], *, page_size: int
+    ) -> GrafxDatabaseLease:
+        """Take a lease on the shared handle: it cannot be evicted or closed."""
+
+        with self._lock:
+            database = self.get(path, page_size=page_size)
+            key = _canonical(Path(os.path.abspath(Path(os.fspath(path)).expanduser())))
+            entry = self._entries[key]
+            entry.pins += 1
+            entry.used_at = self._tick()
+            return GrafxDatabaseLease(self, key, database)
+
+    def pin_count(self, path: str | os.PathLike[str]) -> int:
+        """How many leases are outstanding on one database."""
+
+        key = _canonical(Path(os.path.abspath(Path(os.fspath(path)).expanduser())))
+        with self._lock:
+            entry = self._entries.get(key)
+            return 0 if entry is None else entry.pins
 
     def _open_admitted(self, path: Path, *, page_size: int) -> Any:
         """Open and fully admit one database, or leave nothing behind."""
@@ -230,9 +394,13 @@ class CommunityGrafxDatabasePool:
 
     @contextmanager
     def borrow(self, path: str | os.PathLike[str], *, page_size: int) -> Iterator[Any]:
-        """Use the shared handle without owning it: the pool still closes it."""
+        """Use the shared handle under a lease, released even if the body raises."""
 
-        yield self.get(path, page_size=page_size)
+        lease = self.acquire(path, page_size=page_size)
+        try:
+            yield lease.database
+        finally:
+            lease.release()
 
     # -- release -----------------------------------------------------------
 
@@ -245,6 +413,15 @@ class CommunityGrafxDatabasePool:
             entry = self._entries.get(key)
             if entry is None:
                 return False
+            if entry.pins > 0:
+                # Refused, not deferred: a caller holding this handle would
+                # otherwise read through a closed database.
+                raise GrafxDatabasePoolError(
+                    "The Grafx database is leased and cannot be closed.",
+                    reason="pool_close_refused_pinned",
+                    path=str(candidate),
+                    pins=entry.pins,
+                )
             closer = getattr(entry.database, "close", None)
             if callable(closer):
                 try:
@@ -263,14 +440,20 @@ class CommunityGrafxDatabasePool:
             return True
 
     def close_all(self) -> int:
-        """Close every pooled handle, attempting all of them before failing."""
+        """Close every unleased handle, attempting all of them before failing."""
 
         with self._lock:
             keys = list(self._entries)
             closed = 0
             failures: list[str] = []
+            pinned: list[str] = []
             for key in keys:
                 entry = self._entries[key]
+                if entry.pins > 0:
+                    # Left alone and reported. Closing it would be a
+                    # use-after-close for whoever holds the lease.
+                    pinned.append(f"{key}: {entry.pins} lease(s)")
+                    continue
                 closer = getattr(entry.database, "close", None)
                 if callable(closer):
                     try:
@@ -282,13 +465,14 @@ class CommunityGrafxDatabasePool:
                         continue
                 del self._entries[key]
                 closed += 1
-            if failures:
+            if failures or pinned:
                 raise GrafxDatabasePoolError(
                     "Closing every pooled Grafx database did not fully succeed.",
                     reason="pool_close_all_partial",
                     closed=closed,
                     remaining=len(self._entries),
                     failures=tuple(failures),
+                    pinned=tuple(pinned),
                 )
             return closed
 
@@ -307,5 +491,6 @@ class CommunityGrafxDatabasePool:
 
 __all__ = [
     "CommunityGrafxDatabasePool",
+    "GrafxDatabaseLease",
     "GrafxDatabasePoolError",
 ]

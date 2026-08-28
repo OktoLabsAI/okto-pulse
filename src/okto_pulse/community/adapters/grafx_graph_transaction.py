@@ -7,6 +7,7 @@ resolver so one scope cannot accidentally close a handle shared by readers.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from collections import Counter
@@ -50,6 +51,8 @@ from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
 from okto_pulse.community.adapters.grafx_relationship_layout import (
     resolve_relationship_table,
 )
+
+logger = logging.getLogger(__name__)
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _IDENTITY_PROPERTIES = frozenset({"id", "source_session_id"})
@@ -132,7 +135,23 @@ _SPEC_LINEAGE_REQUIRED_PROPERTIES = frozenset(
 )
 
 DatabaseResolver = Callable[[str], Database]
+"""Resolve a board's database.
+
+May return the ``Database`` alone, as it always has, or a ``(database, release)``
+pair. The pair form is what lets a pooled resolver hand over a handle it has
+ALREADY pinned: the pin has to exist before ``database.begin`` runs, because a
+handle that is merely resolved can still be evicted or closed in the window
+before the scope owns it.
+"""
 FenceRevalidator = Callable[[str, str], None]
+ScopeTerminalCallback = Callable[[], None]
+"""Told once, after the engine agrees the transaction is over.
+
+The owner of the database handle needs to know when a scope is finished so it can
+stop keeping the handle alive.  It must not be told while the transaction is
+still active, and it must not be told twice, because on the other side of this
+callback is a lease whose second release would free a handle somebody else holds.
+"""
 RelationshipTableResolver = Callable[[str, str, str], str]
 RelationshipPair = tuple[str, str, str]
 
@@ -152,6 +171,59 @@ def _default_relationship_table(
     _to_type: str,
 ) -> str:
     return edge_type
+
+
+def _resolved_database(
+    resolved: object,
+) -> tuple[Database, ScopeTerminalCallback | None]:
+    """Accept either a bare database or a ``(database, release)`` pair.
+
+    Keeping both shapes is what lets a pooled resolver pin before ``begin``
+    without breaking every existing caller that returns only a handle.
+    """
+
+    if isinstance(resolved, tuple):
+        if len(resolved) != 2:
+            raise ValueError(
+                "a Grafx database resolver returns a database or (database, release)"
+            )
+        database, release = resolved
+        if release is not None and not callable(release):
+            raise ValueError("a Grafx database release must be callable")
+        return database, release
+    return resolved, None  # type: ignore[return-value]
+
+
+def _release_quietly(release: ScopeTerminalCallback, primary: BaseException) -> None:
+    """Give a pin back while an error is in flight, without replacing it."""
+
+    try:
+        release()
+    except Exception as failure:  # noqa: BLE001 - attached, never substituted
+        primary.add_note(f"releasing the Grafx database also failed: {failure}")
+
+
+def _chain_releases(
+    first: ScopeTerminalCallback | None,
+    second: ScopeTerminalCallback,
+) -> ScopeTerminalCallback:
+    """Run both terminal callbacks, and both even if the first one raises."""
+
+    if first is None:
+        return second
+
+    def release_both() -> None:
+        try:
+            first()
+        except BaseException as failure:
+            try:
+                second()
+            except Exception as also:  # noqa: BLE001 - attached, never substituted
+                failure.add_note(f"the second Grafx release also failed: {also}")
+            raise
+        second()
+
+    return release_both
 
 
 def _identifier(kind: str, value: object) -> str:
@@ -214,6 +286,7 @@ class _GrafxTransactionScope:
         node_types: tuple[str, ...],
         relationship_pairs: tuple[RelationshipPair, ...],
         relationship_table_resolver: RelationshipTableResolver,
+        on_terminal: ScopeTerminalCallback | None = None,
     ) -> None:
         self._board_id = board_id
         self._database = database
@@ -222,7 +295,66 @@ class _GrafxTransactionScope:
         self._node_types = node_types
         self._relationship_pairs = relationship_pairs
         self._relationship_table_resolver = relationship_table_resolver
+        self._on_terminal = on_terminal
+        self._settled = False
+        # Set when a release failed after a durable commit, so the fault is
+        # findable without pretending the commit did not happen.
+        self.terminal_release_error: BaseException | None = None
         self._finished = False
+
+    def _settle(self) -> None:
+        """Tell the owner the transaction is over -- once, and never too early.
+
+        Gated on the ENGINE rather than on this object's own flag. A scope can
+        consider itself finished while the transaction is still open (a commit
+        that raised without closing it), and releasing then would hand the
+        handle back while writes can still reach it.
+        """
+
+        if self._settled or self._on_terminal is None:
+            return
+        if self._transaction.active:
+            return
+        # Marked before the call, so a callback that raises is not retried into
+        # a second release.
+        self._settled = True
+        self._on_terminal()
+
+    def _settle_quietly(self, primary: BaseException) -> None:
+        """Settle while an error is in flight, without replacing it."""
+
+        try:
+            self._settle()
+        except Exception as failure:  # noqa: BLE001 - attached, never substituted
+            primary.add_note(f"releasing the Grafx scope also failed: {failure}")
+
+    def _settle_after_durable_commit(self) -> None:
+        """Settle a committed scope without turning a release fault into a retry.
+
+        The write is already durable. Raising here would present a completed
+        commit as failed, and a caller acting on that would redo work the
+        database has kept. The fault is recorded on the scope instead, where an
+        operator can find it, and the commit stands.
+        """
+
+        try:
+            self._settle()
+        except Exception as failure:  # noqa: BLE001 - the commit is durable
+            self.terminal_release_error = failure
+            logger.warning(
+                "kg.graph_transaction.release_failed board=%s phase=commit "
+                "commit_durable=True error_type=%s",
+                self._board_id,
+                type(failure).__name__,
+                extra={
+                    "event": "kg.graph_transaction.release_failed",
+                    "board_id": self._board_id,
+                    "phase": "commit",
+                    "commit_durable": True,
+                    "write_may_be_applied": True,
+                    "error_type": type(failure).__name__,
+                },
+            )
 
     def _require_active(self) -> None:
         if self._finished or not self._transaction.active:
@@ -793,7 +925,11 @@ class _GrafxTransactionScope:
         try:
             self._transaction.rollback()
         except BaseException as cleanup_error:  # noqa: BLE001 - preserve primary
+            # The rollback failed, so the engine decides whether the transaction
+            # is over; _settle asks it rather than assuming.
+            self._settle_quietly(cleanup_error)
             return cleanup_error
+        self._settle()
         if self._transaction.active:
             return GraphError(
                 "Grafx transaction remained active after rollback returned.",
@@ -2882,6 +3018,7 @@ class _GrafxTransactionScope:
             self._transaction.commit()
         except Exception as exc:
             self._finished = not self._transaction.active
+            self._settle_quietly(exc)
             mapped = map_grafx_error(exc, operation="commit")
             report = self._transaction.report
             if report is not None and report.durable:
@@ -2900,6 +3037,11 @@ class _GrafxTransactionScope:
                 raise
             raise mapped from exc
         self._finished = True
+        # The commit is durable at this point. A release that fails afterwards
+        # is a resource problem, not a commit problem, and must not reach the
+        # caller as an ambiguous write: it would invite a retry of something
+        # already applied.
+        self._settle_after_durable_commit()
 
     async def rollback(self) -> None:
         if self._finished:
@@ -2908,11 +3050,13 @@ class _GrafxTransactionScope:
             self._transaction.rollback()
         except Exception as exc:
             self._finished = not self._transaction.active
+            self._settle_quietly(exc)
             mapped = map_grafx_error(exc, operation="rollback")
             if mapped is exc:
                 raise
             raise mapped from exc
         self._finished = True
+        self._settle()
 
     async def __aenter__(self) -> Self:
         self._require_active()
@@ -2946,9 +3090,13 @@ class CommunityGrafxGraphTransaction:
         node_types: tuple[str, ...] = tuple(NODE_TYPES),
         relationship_pairs: tuple[RelationshipPair, ...] | None = None,
         relationship_table_resolver: RelationshipTableResolver | None = None,
+        on_scope_end: Callable[[str], ScopeTerminalCallback | None] | None = None,
     ) -> None:
         self._database_resolver = database_resolver
         self._revalidate_fence = revalidate_fence
+        # Given a board, return the callback that scope should fire when it
+        # ends -- typically releasing the lease its database came from.
+        self._on_scope_end = on_scope_end
         self._node_types = tuple(
             dict.fromkeys(_identifier("node type", item) for item in node_types)
         )
@@ -2983,13 +3131,51 @@ class CommunityGrafxGraphTransaction:
             raise ValueError("board_id must be non-empty text")
         self._revalidate_fence(board_id, "begin")
         try:
-            database = self._database_resolver(board_id)
-            transaction = database.begin("write")
+            resolved = self._database_resolver(board_id)
         except Exception as exc:
             mapped = map_grafx_error(exc, operation="begin")
             if mapped is exc:
                 raise
             raise mapped from exc
+        database, release = _resolved_database(resolved)
+        transaction = None
+        try:
+            transaction = database.begin("write")
+        except Exception as exc:
+            # The pin was taken before this ran, so it is this path's job to
+            # give it back -- but only if the engine left no transaction behind.
+            # A transaction that somehow survived still owns the handle.
+            if release is not None and (
+                transaction is None or not getattr(transaction, "active", False)
+            ):
+                _release_quietly(release, exc)
+            mapped = map_grafx_error(exc, operation="begin")
+            if mapped is exc:
+                raise
+            raise mapped from exc
+        on_terminal = release
+        if self._on_scope_end is not None:
+            try:
+                supplied = self._on_scope_end(board_id)
+            except Exception as exc:
+                # The scope would otherwise start with no way to release what
+                # begin already took, so this fails before the scope exists.
+                try:
+                    transaction.rollback()
+                except Exception as cleanup:  # noqa: BLE001 - attached below
+                    # The factory failure is the report; a transaction that also
+                    # refuses to roll back rides along rather than vanishing.
+                    exc.add_note(
+                        f"rolling back the unopened Grafx scope also failed: {cleanup}"
+                    )
+                if release is not None:
+                    _release_quietly(release, exc)
+                mapped = map_grafx_error(exc, operation="begin")
+                if mapped is exc:
+                    raise
+                raise mapped from exc
+            if supplied is not None:
+                on_terminal = _chain_releases(release, supplied)
         return _GrafxTransactionScope(
             board_id,
             database,
@@ -2998,6 +3184,7 @@ class CommunityGrafxGraphTransaction:
             node_types=self._node_types,
             relationship_pairs=self._relationship_pairs,
             relationship_table_resolver=self._relationship_table_resolver,
+            on_terminal=on_terminal,
         )
 
 
