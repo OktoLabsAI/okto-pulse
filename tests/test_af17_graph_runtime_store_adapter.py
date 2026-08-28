@@ -138,8 +138,9 @@ def test_af17_privacy_erasure_holds_storage_mutation_window(
     tmp_path,
     monkeypatch,
 ) -> None:
-    graph_file = tmp_path / "graph.lbug"
-    wal_file = tmp_path / "graph.lbug.wal"
+    graph_file = tmp_path / "boards" / "board-privacy" / "graph.lbug"
+    wal_file = graph_file.with_name("graph.lbug.wal")
+    graph_file.parent.mkdir(parents=True)
     graph_file.write_bytes(b"private graph")
     wal_file.write_bytes(b"private wal")
     events: list[str] = []
@@ -155,6 +156,7 @@ def test_af17_privacy_erasure_holds_storage_mutation_window(
         events.append("exit")
 
     monkeypatch.setattr(kg_runtime, "board_kuzu_path", lambda _board_id: graph_file)
+    monkeypatch.setattr(kg_runtime, "_kg_base_dir", lambda: tmp_path)
     monkeypatch.setattr(kg_runtime, "board_storage_mutation_window", _window)
 
     removed = kg_runtime.erase_board_graph_storage_for_privacy(

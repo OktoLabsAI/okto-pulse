@@ -308,6 +308,7 @@ async def test_community_registry_mcp_real_retrieval_reaches_rejected_terminal(
     from okto_pulse.community.adapters import kg_runtime
     from okto_pulse.community.adapters.composition import (
         configure_community_kg_registry,
+        require_community_routed_graph_composition,
     )
     from okto_pulse.community.adapters.mcp_host import CommunityMcpHostProvider
     from okto_pulse.community.config import CommunitySettings
@@ -356,8 +357,11 @@ async def test_community_registry_mcp_real_retrieval_reaches_rejected_terminal(
             include_graph=True,
             auth_context_factory=_AuthContext,
         )
-        kg_runtime.bootstrap_board_graph(board_id)
         registry = get_kg_registry()
+        require_community_routed_graph_composition(registry).initialize_board_route(
+            board_id
+        )
+        await registry.graph_schema_manager.ensure_bootstrapped(board_id)
         assert registry.require_reflective_retrieval().identity == (
             "community-kuzu-reflective-retrieval"
         )

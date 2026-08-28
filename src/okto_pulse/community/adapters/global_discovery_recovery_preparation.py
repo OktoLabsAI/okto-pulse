@@ -787,11 +787,21 @@ class CommunityGlobalDiscoveryRecoveryPreparationOperation:
                 )
                 checkpoint(progress)
                 fence_check()
-        except BaseException:
+        except BaseException as exc:
             await self._cancel_tasks_within_attempt(
                 tasks,
                 deadline_at_monotonic=deadline_at_monotonic,
             )
+            # ``asyncio.as_completed(..., timeout=...)`` may wake a fraction
+            # before the independently sampled monotonic clock reaches the
+            # same absolute deadline.  Do not leak its implementation-level
+            # TimeoutError merely because that final sample is still positive;
+            # this timeout is the attempt budget expiring by construction.
+            if isinstance(exc, TimeoutError):
+                fence_check()
+                raise RecoveryPreparationTerminalError(
+                    _ATTEMPT_BUDGET_EXHAUSTED
+                ) from exc
             if self._remaining_attempt_seconds(deadline_at_monotonic) <= 0:
                 self._require_attempt_time(
                     deadline_at_monotonic,

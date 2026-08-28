@@ -192,6 +192,11 @@ def test_hnd2_init_reveals_returned_key_but_not_persisted_marker(
         lambda _board_id: tmp_path / "graph",
     )
 
+    async def fake_bootstrap_board_graph(_board_id: str) -> tuple[str, str]:
+        return "board:board-1", "v1"
+
+    monkeypatch.setattr(cli, "_bootstrap_board_graph", fake_bootstrap_board_graph)
+
     cmd_init(SimpleNamespace(mcp_port=8101, agents=None))
 
     captured = capsys.readouterr()

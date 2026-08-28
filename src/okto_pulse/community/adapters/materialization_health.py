@@ -581,8 +581,8 @@ class CommunityMaterializationEvidenceProbe:
             reason_code="global_discovery_probe_timeout",
         )
 
-        async def board_probe() -> GraphRuntimeState:
-            result = await run_bounded_health_probe(
+        async def board_probe() -> Any:
+            return await run_bounded_health_probe(
                 name=_BOARD_STAT_PROBE,
                 board_id=request.board_id,
                 generation_id=generation,
@@ -593,10 +593,9 @@ class CommunityMaterializationEvidenceProbe:
                 fallback=board_fallback,
                 deadline_at=request.deadline.deadline_at,
             )
-            return result.value
 
-        async def discovery_probe() -> GraphRuntimeState:
-            result = await run_bounded_health_probe(
+        async def discovery_probe() -> Any:
+            return await run_bounded_health_probe(
                 name=_DISCOVERY_STAT_PROBE,
                 board_id=request.board_id,
                 generation_id=generation,
@@ -604,9 +603,8 @@ class CommunityMaterializationEvidenceProbe:
                 fallback=discovery_fallback,
                 deadline_at=request.deadline.deadline_at,
             )
-            return result.value
 
-        board_store, census, discovery_store = await asyncio.gather(
+        board_result, census, discovery_result = await asyncio.gather(
             board_probe(),
             self._census.snapshot(
                 request.board_id,
@@ -615,9 +613,17 @@ class CommunityMaterializationEvidenceProbe:
             ),
             discovery_probe(),
         )
+        board_store = board_result.value
+        discovery_store = discovery_result.value
+        shared_probe_deadline_exhausted = any(
+            str(result.reason).startswith(
+                ("probe_budget_exceeded", "probe_deadline_exhausted")
+            )
+            for result in (board_result, discovery_result)
+        )
 
         remaining = request.deadline.remaining_seconds(now=time.monotonic())
-        if remaining <= 0.0:
+        if remaining <= 0.0 or shared_probe_deadline_exhausted:
             census = _unavailable_census(
                 generation=None,
                 reason_code="materialization_generation_check_timeout",

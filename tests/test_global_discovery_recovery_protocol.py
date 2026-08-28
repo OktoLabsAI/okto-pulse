@@ -9,6 +9,8 @@ from __future__ import annotations
 from okto_pulse.core.kg.interfaces.global_discovery_recovery import (
     GlobalDiscoveryRecovery,
 )
+from typing_extensions import get_protocol_members
+
 from okto_pulse.community.adapters.global_discovery_recovery import (
     CommunityGlobalDiscoveryRecovery,
 )
@@ -33,7 +35,7 @@ class _CompleteProvider(_OldOnlyProvider):
 
 
 def test_recover_and_cutover_is_in_the_core_protocol():
-    assert "recover_and_cutover" in GlobalDiscoveryRecovery.__protocol_attrs__
+    assert "recover_and_cutover" in get_protocol_members(GlobalDiscoveryRecovery)
 
 
 def test_old_only_provider_is_rejected_by_isinstance():
