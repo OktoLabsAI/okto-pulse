@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import stat
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -27,13 +26,11 @@ from okto_pulse.core.kg.tier_power import validate_cypher_read_only
 from okto_pulse.community.adapters.filesystem_erasure import (
     fsync_directory,
     remove_contained_tree,
+    reject_filesystem_alias_ancestry,
     validate_scope_id,
 )
 from okto_pulse.community.adapters.global_discovery_layout import (
     GlobalDiscoveryLayoutError,
-    active_pointer_path,
-    generations_root,
-    read_active_generation,
 )
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
 from okto_pulse.community.adapters.grafx_global_discovery import (
@@ -56,8 +53,10 @@ from okto_pulse.community.adapters.grafx_global_operational import (
     global_layout_targets,
     has_grafx_identity,
     normalize_grafx_value,
+    read_safe_active_generation,
     require_global_grafx_admission,
     resolved_global_graph_path,
+    validate_plain_global_artifact,
 )
 from okto_pulse.community.adapters.local_storage_ref import local_storage_ref
 
@@ -171,25 +170,10 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                 reason_code="global_discovery_provider_unavailable",
                 observed_at=observed_at,
             )
-        pointer = active_pointer_path(legacy)
-        generation_root = generations_root(legacy)
         try:
-            pointer_meta = pointer.lstat()
-        except FileNotFoundError:
-            pointer_meta = None
-        except OSError:
-            return self._state_value(
-                GraphRuntimeObservationState.PRESENT_UNREADABLE_OR_ERROR,
-                generation=generation,
-                reason_code="global_discovery_pointer_stat_failed",
-                observed_at=observed_at,
-            )
-        try:
-            if pointer_meta is not None:
-                if not stat.S_ISREG(pointer_meta.st_mode):
-                    raise GlobalDiscoveryLayoutError("active_pointer_not_regular_file")
-                active = read_active_generation(legacy)
-                if active is None or not has_grafx_identity(active.graph_path):
+            active = read_safe_active_generation(legacy)
+            if active is not None:
+                if not has_grafx_identity(active.graph_path):
                     raise GlobalDiscoveryLayoutError(
                         "active_generation_identity_missing"
                     )
@@ -211,7 +195,7 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                     observed_at=observed_at,
                 )
             residues = global_layout_targets(legacy)
-            if residues or generation_root.exists():
+            if residues:
                 return self._state_value(
                     GraphRuntimeObservationState.PRESENT_UNREADABLE_OR_ERROR,
                     generation=generation,
@@ -225,7 +209,7 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                 reason_code="global_discovery_confirmed_absent",
                 observed_at=observed_at,
             )
-        except (GlobalDiscoveryLayoutError, OSError) as exc:
+        except (GlobalDiscoveryLayoutError, OSError, ValueError) as exc:
             return self._state_value(
                 GraphRuntimeObservationState.PRESENT_UNREADABLE_OR_ERROR,
                 generation=generation,
@@ -907,6 +891,8 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                     )
                 self._fence("purge_global_discovery")
                 self._close_callback()
+                for target in targets:
+                    validate_plain_global_artifact(target)
                 self._fence("purge_global_discovery")
                 moved = self._quarantine(legacy, targets, reason=reason)
                 remaining = global_layout_targets(legacy)
@@ -1030,10 +1016,22 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                         and target.parent != base
                     ):
                         base = target.parent
-                    files, directories = remove_contained_tree(target, base_dir=base)
+                    files, directories = remove_contained_tree(
+                        target,
+                        base_dir=base,
+                        before_mutation=lambda: self._fence(
+                            "privacy_erase_global_discovery"
+                        ),
+                    )
                     files_removed += files
                     directories_removed += directories
-                if legacy.parent.exists():
+                reject_filesystem_alias_ancestry(legacy.parent.parent)
+                try:
+                    legacy.parent.lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    reject_filesystem_alias_ancestry(legacy.parent)
                     fsync_directory(legacy.parent)
                 if global_layout_targets(legacy):
                     raise _capability(

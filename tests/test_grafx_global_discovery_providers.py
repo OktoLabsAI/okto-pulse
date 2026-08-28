@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -20,6 +23,8 @@ from okto_pulse.core.kg.interfaces.graph_runtime_store import (
 
 from okto_pulse.community.adapters.global_discovery_layout import (
     GENERATION_MANIFEST_FILENAME,
+    active_pointer_path,
+    generations_root,
     read_active_generation,
 )
 from okto_pulse.community.adapters.grafx_global_discovery_recovery import (
@@ -28,6 +33,9 @@ from okto_pulse.community.adapters.grafx_global_discovery_recovery import (
 )
 from okto_pulse.community.adapters.grafx_global_discovery_runtime import (
     CommunityGrafxGlobalDiscoveryRuntime,
+)
+from okto_pulse.community.adapters.grafx_global_operational import (
+    snapshot_global_artifact,
 )
 
 
@@ -125,6 +133,22 @@ def _tree_bytes(root: Path) -> dict[str, bytes]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+def _windows_junction(link: Path, target: Path) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows junction semantics are required")
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        pytest.skip(f"junction creation unavailable: {completed.stderr.strip()}")
+    metadata = link.lstat()
+    reparse_attribute = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    assert int(getattr(metadata, "st_file_attributes", 0)) & reparse_attribute
 
 
 def test_grafx_global_providers_cover_exact_core_protocols(tmp_path: Path) -> None:
@@ -327,6 +351,104 @@ def test_runtime_privacy_rebuild_preserves_survivors_and_erases_target(
         exhaustive=True,
     )
     assert [row["digest_id"] for row in hits] == ["survivor-d"]
+    slot.close()
+
+
+def test_windows_reparse_points_fail_closed_without_path_is_junction(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows junction semantics are required")
+    slot = _DatabaseSlot(tmp_path / "global.grafx")
+    runtime = _runtime(slot)
+    runtime.bootstrap()
+    _seed(runtime, board_id="old", digest_id="old-d", source_id="old-s")
+    slot.close()
+    external = tmp_path / "external"
+    external.mkdir()
+    sentinel = external / "sentinel.txt"
+    sentinel.write_text("must-stay-private", encoding="utf-8")
+    sidecar_link = slot.legacy.with_name(f"{slot.legacy.name}.escape")
+    _windows_junction(sidecar_link, external)
+    monkeypatch.setattr(Path, "is_junction", lambda _path: False, raising=False)
+
+    recovery = CommunityGrafxGlobalDiscoveryRecovery(
+        lambda: slot.legacy,
+        lambda path: connect(path, vector_exact_scan_threshold=4096),
+        slot.close,
+        lambda _phase: None,
+        snapshot_fingerprint_provider=lambda: "source-fingerprint",
+    )
+    try:
+        with pytest.raises(OSError, match="linked_global_discovery_artifact"):
+            snapshot_global_artifact(slot.legacy)
+        with pytest.raises(CommunityGrafxGlobalDiscoveryRecoveryError) as inspected:
+            recovery.inspect_live_artifact()
+        assert inspected.value.code == "global_discovery_artifact_snapshot_failed"
+        assert sentinel.read_text(encoding="utf-8") == "must-stay-private"
+    finally:
+        sidecar_link.rmdir()
+
+    before = recovery.inspect_live_artifact()
+    generations_link = generations_root(slot.legacy)
+    _windows_junction(generations_link, external)
+    try:
+        with pytest.raises(
+            OSError,
+            match="linked_global_discovery_generations_root",
+        ):
+            recovery.recover_and_cutover(
+                run_id="run-reparse",
+                epoch=1,
+                attempt_id="attempt-reparse",
+                expected_live_sha256=before.sha256,
+                boards=(_board_seed("replacement", "replacement-source"),),
+                fence_check=lambda: None,
+            )
+        assert not active_pointer_path(slot.legacy).exists()
+        assert sentinel.read_text(encoding="utf-8") == "must-stay-private"
+        assert {path.name for path in external.iterdir()} == {"sentinel.txt"}
+    finally:
+        generations_link.rmdir()
+
+
+def test_privacy_erase_removes_junction_only_and_preserves_external_sentinel(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows junction semantics are required")
+    slot = _DatabaseSlot(tmp_path / "global.grafx")
+    external = tmp_path / "external-privacy"
+    external.mkdir()
+    sentinel = external / "sentinel.txt"
+    sentinel.write_text("outside-global", encoding="utf-8")
+    external_link = tmp_path / "privacy-copy"
+    _windows_junction(external_link, external)
+    monkeypatch.setattr(Path, "is_junction", lambda _path: False, raising=False)
+    runtime = CommunityGrafxGlobalDiscoveryRuntime(
+        slot.resolve,
+        lambda: slot.legacy,
+        slot.close,
+        lambda _phase: None,
+        privacy_artifact_resolver=lambda _board_id: (external_link,),
+    )
+    runtime.bootstrap()
+    _seed(runtime, board_id="delete-me", digest_id="delete-d", source_id="delete-s")
+    _seed(runtime, board_id="survivor", digest_id="survivor-d", source_id="survivor-s")
+
+    receipt = runtime.erase_storage_for_privacy(
+        board_id="delete-me",
+        reason="privacy-reparse",
+        survivor_board_ids=("survivor",),
+    )
+
+    assert receipt["verified_absent"] is True
+    with pytest.raises(FileNotFoundError):
+        external_link.lstat()
+    assert sentinel.read_text(encoding="utf-8") == "outside-global"
+    assert {path.name for path in external.iterdir()} == {"sentinel.txt"}
     slot.close()
 
 

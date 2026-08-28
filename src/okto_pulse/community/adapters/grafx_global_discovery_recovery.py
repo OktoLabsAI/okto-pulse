@@ -21,16 +21,15 @@ from okto_pulse.core.kg.interfaces.global_discovery_recovery import (
 from okto_pulse.core.kg.interfaces.graph_errors import GraphError
 
 from okto_pulse.community.adapters.filesystem_erasure import (
+    is_filesystem_alias,
     remove_contained_tree,
+    reject_filesystem_alias_ancestry,
     validate_scope_id,
 )
 from okto_pulse.community.adapters.global_discovery_layout import (
     GENERATION_MANIFEST_FILENAME,
     active_pointer_path,
     canonical_sha256,
-    generation_dir,
-    generation_graph_path,
-    read_active_generation,
     restore_legacy_generation,
     switch_active_generation,
     write_generation_manifest,
@@ -51,9 +50,13 @@ from okto_pulse.community.adapters.grafx_global_operational import (
     GlobalFenceRevalidator,
     GlobalPathResolver,
     normalize_grafx_value,
+    read_safe_active_generation,
     require_global_grafx_admission,
     resolved_global_graph_path,
+    safe_global_generation_dir,
+    safe_global_generation_graph_path,
     snapshot_global_artifact,
+    validate_plain_global_artifact,
 )
 from okto_pulse.community.adapters.grafx_schema_manifest import EMBEDDING_DIMENSION
 
@@ -101,11 +104,6 @@ def _adoption_generation_id(*, run_id: str, epoch: int, attempt_id: str) -> str:
         epoch=epoch,
         attempt_id=f"{attempt_id}\0adoption",
     )
-
-
-def _is_junction(path: Path) -> bool:
-    checker = getattr(path, "is_junction", None)
-    return bool(checker is not None and checker())
 
 
 def _digest_id(board_id: str, original_node_id: str) -> str:
@@ -298,6 +296,15 @@ class CommunityGrafxGlobalDiscoveryRecovery:
         except Exception as exc:
             raise CommunityGrafxGlobalDiscoveryRecoveryError(error_code) from exc
 
+    @staticmethod
+    def _assert_database_path_safe(path: Path) -> None:
+        reject_filesystem_alias_ancestry(path.parent)
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return
+        validate_plain_global_artifact(path)
+
     def inspect_live_artifact(self) -> GlobalDiscoveryArtifactSnapshot:
         try:
             legacy = Path(self._path_resolver())
@@ -415,14 +422,25 @@ class CommunityGrafxGlobalDiscoveryRecovery:
         destination: Path,
         fence_check: Callable[[], None],
     ) -> None:
+        reject_filesystem_alias_ancestry(source.parent)
         metadata = source.lstat()
-        if stat.S_ISLNK(metadata.st_mode) or _is_junction(source):
+        if is_filesystem_alias(source):
             raise CommunityGrafxGlobalDiscoveryRecoveryError(
                 "global_discovery_adoption_linked_artifact"
             )
         if stat.S_ISDIR(metadata.st_mode):
             fence_check()
+            reject_filesystem_alias_ancestry(destination.parent)
+            if is_filesystem_alias(destination):
+                raise CommunityGrafxGlobalDiscoveryRecoveryError(
+                    "global_discovery_adoption_linked_destination"
+                )
             destination.mkdir(exist_ok=False)
+            reject_filesystem_alias_ancestry(source.parent)
+            if is_filesystem_alias(source):
+                raise CommunityGrafxGlobalDiscoveryRecoveryError(
+                    "global_discovery_adoption_linked_artifact"
+                )
             with os.scandir(source) as entries:
                 children = sorted(entries, key=lambda item: item.name)
             for child in children:
@@ -436,8 +454,22 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             raise CommunityGrafxGlobalDiscoveryRecoveryError(
                 "global_discovery_adoption_artifact_kind_unsupported"
             )
-        before = source.stat()
+        reject_filesystem_alias_ancestry(source.parent)
+        if is_filesystem_alias(source):
+            raise CommunityGrafxGlobalDiscoveryRecoveryError(
+                "global_discovery_adoption_linked_artifact"
+            )
+        before = source.lstat()
         fence_check()
+        reject_filesystem_alias_ancestry(destination.parent)
+        if is_filesystem_alias(destination):
+            raise CommunityGrafxGlobalDiscoveryRecoveryError(
+                "global_discovery_adoption_linked_destination"
+            )
+        if is_filesystem_alias(source):
+            raise CommunityGrafxGlobalDiscoveryRecoveryError(
+                "global_discovery_adoption_linked_artifact"
+            )
         with source.open("rb") as reader, destination.open("xb") as writer:
             while True:
                 fence_check()
@@ -447,7 +479,11 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 writer.write(chunk)
             writer.flush()
             os.fsync(writer.fileno())
-        after = source.stat()
+        if is_filesystem_alias(source):
+            raise CommunityGrafxGlobalDiscoveryRecoveryError(
+                "global_discovery_adoption_linked_artifact"
+            )
+        after = source.lstat()
         if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns:
             raise CommunityGrafxGlobalDiscoveryRecoveryError(
                 "global_discovery_adoption_source_changed"
@@ -460,8 +496,8 @@ class CommunityGrafxGlobalDiscoveryRecovery:
         candidate_graph: Path,
         call_fence: Callable[[], None],
     ) -> None:
-        parent_metadata = source_graph.parent.lstat()
-        if stat.S_ISLNK(parent_metadata.st_mode) or _is_junction(source_graph.parent):
+        reject_filesystem_alias_ancestry(source_graph.parent)
+        if is_filesystem_alias(source_graph.parent):
             raise CommunityGrafxGlobalDiscoveryRecoveryError(
                 "global_discovery_adoption_linked_parent"
             )
@@ -495,7 +531,13 @@ class CommunityGrafxGlobalDiscoveryRecovery:
     ) -> None:
         self._fence("recovery_adoption_cleanup", call_fence)
         try:
-            remove_contained_tree(candidate_root, base_dir=candidate_root.parent)
+            remove_contained_tree(
+                candidate_root,
+                base_dir=candidate_root.parent,
+                before_mutation=lambda: self._fence(
+                    "recovery_adoption_cleanup", call_fence
+                ),
+            )
         except Exception as exc:
             raise CommunityGrafxGlobalDiscoveryRecoveryError(
                 "global_discovery_adoption_cleanup_failed"
@@ -512,7 +554,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
         expected_live_sha256: str,
         call_fence: Callable[[], None],
     ) -> GlobalDiscoveryCutoverResult | None:
-        active = read_active_generation(legacy)
+        active = read_safe_active_generation(legacy)
         if active is None or active.generation_id != generation_id:
             return None
         document = self._manifest_document(
@@ -540,6 +582,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 "global_discovery_adoption_manifest_evidence_invalid"
             )
         self._fence("recovery_adoption_retry_open", call_fence)
+        self._assert_database_path_safe(active.graph_path)
         try:
             database = self._candidate_database_factory(active.graph_path)
         except Exception as exc:
@@ -619,8 +662,9 @@ class CommunityGrafxGlobalDiscoveryRecovery:
         )
         if not source_snapshot.exists:
             return None
-        candidate_root = generation_dir(legacy, generation_id)
-        candidate_path = generation_graph_path(legacy, generation_id)
+        candidate_root = safe_global_generation_dir(legacy, generation_id)
+        candidate_path = safe_global_generation_graph_path(legacy, generation_id)
+        reject_filesystem_alias_ancestry(candidate_root.parent)
         try:
             candidate_root.lstat()
         except FileNotFoundError:
@@ -630,6 +674,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 "global_discovery_candidate_generation_already_exists"
             )
         self._fence("recovery_adoption_candidate", call_fence)
+        reject_filesystem_alias_ancestry(candidate_root.parent)
         candidate_root.mkdir(parents=True, exist_ok=False)
         try:
             self._copy_live_graph_set(
@@ -669,6 +714,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
 
         try:
             self._fence("recovery_adoption_open", call_fence)
+            self._assert_database_path_safe(candidate_path)
             database = self._candidate_database_factory(candidate_path)
         except CommunityGrafxGlobalDiscoveryFenceError:
             raise
@@ -743,16 +789,19 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 "global_discovery_live_snapshot_changed"
             )
         self._fence("recovery_adoption_manifest", call_fence)
+        reject_filesystem_alias_ancestry(candidate_root)
+        manifest_path = candidate_root / GENERATION_MANIFEST_FILENAME
+        if is_filesystem_alias(manifest_path):
+            raise CommunityGrafxGlobalDiscoveryRecoveryError(
+                "global_discovery_generation_manifest_unsafe"
+            )
         manifest_sha, _manifest_fsync = write_generation_manifest(
             legacy,
             generation_id,
             manifest_payload,
         )
         pointer = active_pointer_path(legacy)
-        try:
-            previous_pointer = pointer.read_bytes()
-        except FileNotFoundError:
-            previous_pointer = None
+        previous_pointer = self._optional_plain_bytes(pointer)
         self._fence("recovery_adoption_close_live", call_fence)
         try:
             self._close_callback()
@@ -771,18 +820,24 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 "global_discovery_live_snapshot_changed"
             )
         self._fence("recovery_adoption_cutover", call_fence)
+        reject_filesystem_alias_ancestry(pointer.parent)
+        if is_filesystem_alias(pointer):
+            raise CommunityGrafxGlobalDiscoveryRecoveryError(
+                "global_discovery_active_pointer_unsafe"
+            )
         switch_active_generation(
             legacy,
             generation_id=generation_id,
             manifest_sha256=manifest_sha,
         )
         try:
-            active = read_active_generation(legacy)
+            active = read_safe_active_generation(legacy)
             if active is None or active.generation_id != generation_id:
                 raise CommunityGrafxGlobalDiscoveryRecoveryError(
                     "global_discovery_cutover_readback_mismatch"
                 )
             self._fence("recovery_adoption_readback", call_fence)
+            self._assert_database_path_safe(active.graph_path)
             try:
                 readback = self._candidate_database_factory(active.graph_path)
             except Exception as exc:
@@ -818,6 +873,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
         except Exception as failure:
             self._fence("recovery_adoption_rollback", call_fence)
             if previous_pointer is None:
+                reject_filesystem_alias_ancestry(pointer.parent)
                 restore_legacy_generation(legacy)
             else:
                 try:
@@ -826,6 +882,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                     raise CommunityGrafxGlobalDiscoveryRecoveryError(
                         "global_discovery_previous_pointer_unrestorable"
                     ) from exc
+                reject_filesystem_alias_ancestry(pointer.parent)
                 write_json_atomic(pointer, document)
             raise failure
 
@@ -895,6 +952,10 @@ class CommunityGrafxGlobalDiscoveryRecovery:
     @staticmethod
     def _manifest_document(path: Path) -> dict[str, object]:
         try:
+            reject_filesystem_alias_ancestry(path.parent)
+            metadata = path.lstat()
+            if is_filesystem_alias(path) or not stat.S_ISREG(metadata.st_mode):
+                raise OSError("linked_generation_manifest")
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError) as exc:
             raise CommunityGrafxGlobalDiscoveryRecoveryError(
@@ -905,6 +966,24 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 "global_discovery_generation_manifest_unreadable"
             )
         return raw
+
+    @staticmethod
+    def _optional_plain_bytes(path: Path) -> bytes | None:
+        reject_filesystem_alias_ancestry(path.parent)
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            return None
+        if is_filesystem_alias(path) or not stat.S_ISREG(metadata.st_mode):
+            raise CommunityGrafxGlobalDiscoveryRecoveryError(
+                "global_discovery_active_pointer_unsafe"
+            )
+        try:
+            return path.read_bytes()
+        except OSError as exc:
+            raise CommunityGrafxGlobalDiscoveryRecoveryError(
+                "global_discovery_active_pointer_unreadable"
+            ) from exc
 
     def _completed_retry(
         self,
@@ -919,7 +998,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
         expected: dict[str, object],
         call_fence: Callable[[], None],
     ) -> GlobalDiscoveryCutoverResult | None:
-        active = read_active_generation(legacy)
+        active = read_safe_active_generation(legacy)
         if active is None or active.generation_id != generation_id:
             return None
         document = self._manifest_document(
@@ -938,6 +1017,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 "global_discovery_completed_generation_binding_mismatch"
             )
         self._fence("recovery_readback", call_fence)
+        self._assert_database_path_safe(active.graph_path)
         try:
             database = self._candidate_database_factory(active.graph_path)
         except Exception as exc:
@@ -1034,8 +1114,9 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             raise CommunityGrafxGlobalDiscoveryRecoveryError(
                 "global_discovery_live_snapshot_changed"
             )
-        candidate_root = generation_dir(legacy, generation_id)
-        candidate_path = generation_graph_path(legacy, generation_id)
+        candidate_root = safe_global_generation_dir(legacy, generation_id)
+        candidate_path = safe_global_generation_graph_path(legacy, generation_id)
+        reject_filesystem_alias_ancestry(candidate_root.parent)
         try:
             candidate_root.lstat()
         except FileNotFoundError:
@@ -1046,7 +1127,9 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             )
 
         self._fence("recovery_candidate", fence_check)
+        reject_filesystem_alias_ancestry(candidate_root.parent)
         candidate_root.mkdir(parents=True, exist_ok=False)
+        self._assert_database_path_safe(candidate_path)
         try:
             candidate = self._candidate_database_factory(candidate_path)
         except Exception as exc:
@@ -1113,6 +1196,12 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             "directory_fsync_supported": False,
         }
         self._fence("recovery_manifest", fence_check)
+        reject_filesystem_alias_ancestry(candidate_root)
+        manifest_path = candidate_root / GENERATION_MANIFEST_FILENAME
+        if is_filesystem_alias(manifest_path):
+            raise CommunityGrafxGlobalDiscoveryRecoveryError(
+                "global_discovery_generation_manifest_unsafe"
+            )
         manifest_sha, _manifest_fsync = write_generation_manifest(
             legacy,
             generation_id,
@@ -1128,10 +1217,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             )
 
         pointer = active_pointer_path(legacy)
-        try:
-            previous_pointer = pointer.read_bytes()
-        except FileNotFoundError:
-            previous_pointer = None
+        previous_pointer = self._optional_plain_bytes(pointer)
         self._fence("recovery_close_live", fence_check)
         try:
             self._close_callback()
@@ -1140,6 +1226,11 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 "global_discovery_live_close_failed"
             ) from exc
         self._fence("recovery_cutover", fence_check)
+        reject_filesystem_alias_ancestry(pointer.parent)
+        if is_filesystem_alias(pointer):
+            raise CommunityGrafxGlobalDiscoveryRecoveryError(
+                "global_discovery_active_pointer_unsafe"
+            )
         _pointer_fsync = switch_active_generation(
             legacy,
             generation_id=generation_id,
@@ -1147,12 +1238,13 @@ class CommunityGrafxGlobalDiscoveryRecovery:
         )
         switched = True
         try:
-            active = read_active_generation(legacy)
+            active = read_safe_active_generation(legacy)
             if active is None or active.generation_id != generation_id:
                 raise CommunityGrafxGlobalDiscoveryRecoveryError(
                     "global_discovery_cutover_readback_mismatch"
                 )
             self._fence("recovery_readback", fence_check)
+            self._assert_database_path_safe(active.graph_path)
             try:
                 readback = self._candidate_database_factory(active.graph_path)
             except Exception as exc:
@@ -1180,6 +1272,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
             if switched:
                 self._fence("recovery_rollback", fence_check)
                 if previous_pointer is None:
+                    reject_filesystem_alias_ancestry(pointer.parent)
                     restore_legacy_generation(legacy)
                 else:
                     try:
@@ -1188,6 +1281,7 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                         raise CommunityGrafxGlobalDiscoveryRecoveryError(
                             "global_discovery_previous_pointer_unrestorable"
                         ) from exc
+                    reject_filesystem_alias_ancestry(pointer.parent)
                     write_json_atomic(pointer, document)
             raise failure
 

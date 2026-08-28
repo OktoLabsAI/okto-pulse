@@ -118,6 +118,15 @@ def is_filesystem_alias(path: Path) -> bool:
     return _stat_is_filesystem_alias(metadata) or _path_reports_junction(path)
 
 
+def reject_filesystem_alias_ancestry(path: Path) -> None:
+    """Refuse an existing symlink/reparse point at or above one lexical path."""
+
+    lexical = Path(os.path.abspath(path))
+    for candidate in reversed((lexical, *lexical.parents)):
+        if is_filesystem_alias(candidate):
+            raise ValueError(f"refusing filesystem alias traversal: {candidate}")
+
+
 def _reject_linked_parents(path: Path, *, base_dir: Path) -> None:
     relative = path.relative_to(base_dir)
     current = base_dir
@@ -142,11 +151,12 @@ def remove_contained_tree(
     """Remove one file/tree without following links outside ``base_dir``.
 
     Returns ``(files_removed, directories_removed)``. Every recursive child is
-    revalidated lexically and symlinks/Windows reparse points are removed as
-    links, never traversed.
+    revalidated lexically; symlinks and Windows reparse points are removed as
+    aliases, never traversed.
     """
 
-    base = Path(base_dir).resolve(strict=False)
+    base = Path(os.path.abspath(base_dir))
+    reject_filesystem_alias_ancestry(base)
     target = contained_lexical_path(base, path)
     if target == base:
         raise ValueError("refusing to erase the configured storage root")
@@ -197,6 +207,7 @@ __all__ = [
     "contained_resolved_path",
     "fsync_directory",
     "is_filesystem_alias",
+    "reject_filesystem_alias_ancestry",
     "remove_contained_tree",
     "validate_scope_id",
 ]
