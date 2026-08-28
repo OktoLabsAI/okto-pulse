@@ -421,6 +421,78 @@ class GlobalDiscoveryInitError(RuntimeError):
         self.code = code
 
 
+class BoardGraphInitError(RuntimeError):
+    """Typed ``okto-pulse init`` board Knowledge Graph failure/refusal.
+
+    Same contract as :class:`GlobalDiscoveryInitError`: a stable ``.code`` so
+    callers and tests key off the typed outcome instead of message text.
+    """
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+async def _bootstrap_board_graph(board_id: str) -> tuple[str, str]:
+    """Bootstrap a board's Knowledge Graph and prove it is really there.
+
+    Returns the ``(storage token, schema version)`` pair that ``init`` reports.
+
+    Fail-closed, and deliberately backend-neutral.  ``init`` used to name the
+    board's graph by resolving a Community-local file path, which quietly
+    assumed one storage engine: where a board uses a different one that path
+    describes nothing, so the operator-facing line could name a file that does
+    not exist while init still claimed success.  The board's own runtime is
+    asked instead, through the registered port, and it answers the same way
+    whichever engine is behind it.
+
+    The diagnosis is non-opening -- the runtime reports from metadata alone, so
+    proving the graph exists costs no handle and cannot itself fail the boot it
+    is checking.
+    """
+
+    from okto_pulse.core.kg.interfaces.graph_runtime_store import (
+        GraphRuntimeObservationState,
+    )
+    from okto_pulse.core.services.application_kg import (
+        get_current_provider_registry,
+    )
+
+    registry = get_current_provider_registry()
+    await registry.graph_schema_manager.ensure_bootstrapped(board_id)
+
+    # ``getattr`` rather than attribute access: a registry that does not carry
+    # the slot at all must reach the typed refusal below, not raise an
+    # AttributeError that reads like a crash instead of a fail-closed decision.
+    runtime = getattr(registry, "graph_runtime_store", None)
+    if runtime is None:
+        raise BoardGraphInitError(
+            "board_graph_provider_unavailable: no graph runtime store is "
+            "registered, so init cannot prove the board graph exists after "
+            "bootstrap",
+            code="board_graph_provider_unavailable",
+        )
+
+    observation = runtime.graph_state(board_id)
+    # ``normalized_state`` is the fail-closed reading: a legacy adapter that
+    # only reports a negative ``exists`` is treated as unavailable rather than
+    # promoted to a confirmed absence.
+    observed = observation.normalized_state
+    if observed is not GraphRuntimeObservationState.PRESENT_READABLE_CANDIDATE:
+        reason = f" reason={observation.reason_code}" if observation.reason_code else ""
+        raise BoardGraphInitError(
+            "board_graph_init_refused: bootstrap did not leave a readable board "
+            f"graph (state={observed.value}{reason}); refusing to report a "
+            "successful init",
+            code="board_graph_init_refused",
+        )
+
+    version = await registry.graph_schema_manager.current_version(board_id)
+    # The shared ``board:<id>`` storage reference identifies the graph without
+    # naming a backend, a file or a path.
+    return observation.storage_ref.token, str(version)
+
+
 def _bootstrap_global_discovery_graph() -> str:
     """Materialize the Global Discovery graph during ``okto-pulse init``.
 
@@ -749,23 +821,13 @@ def cmd_init(args, *, owned_serve_lock: object | None = None):
                     if board_row:
                         board_id = board_row["id"]
 
-            # Bootstrap Knowledge Graph (Kuzu) for the board so the graph
-            # schema and vector indexes are ready before the first agent call.
-            # This is intentionally fail-closed: a broken first-boot graph is
-            # an initialization failure, not a successful "bootstrap skipped".
+            # Bootstrap the board Knowledge Graph so the graph schema and
+            # vector indexes are ready before the first agent call.  Both the
+            # bootstrap and the proof that it worked cross registered ports, so
+            # this says nothing about which engine stores the board.
             if board_id:
-                # Schema lifecycle crosses the Core port; the CLI resolves the
-                # Community-local path only for operator-facing diagnostics.
-                from okto_pulse.community.adapters.kg_runtime import board_kuzu_path
-                from okto_pulse.core.services.application_kg import (
-                    get_current_provider_registry,
-                )
-
-                _kg_reg = get_current_provider_registry()
-                await _kg_reg.graph_schema_manager.ensure_bootstrapped(board_id)
-                _kg_path = board_kuzu_path(board_id)
-                _kg_ver = await _kg_reg.graph_schema_manager.current_version(board_id)
-                print(f"  Knowledge Graph: {_kg_path} (schema {_kg_ver})")
+                _kg_token, _kg_ver = await _bootstrap_board_graph(board_id)
+                print(f"  Knowledge Graph: {_kg_token} (schema {_kg_ver})")
 
             # Materialize the Global Discovery graph (``global/discovery.lbug``)
             # under the public writer-lease fence so cross-board discovery is

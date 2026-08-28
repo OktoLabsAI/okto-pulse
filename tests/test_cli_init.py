@@ -16,6 +16,7 @@ import os as _os
 import sqlite3
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -282,6 +283,19 @@ def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
     output = result.stdout + result.stderr
     assert "community.seed.demo_failed" not in output
     assert "Knowledge Graph:" in output
+    # A real Ladybug first boot reports the board by its shared storage
+    # reference. The line must not carry a filesystem path or a backend name,
+    # because on a board stored by the other engine that text described a file
+    # that does not exist while init still claimed success.
+    kg_lines = [line for line in output.splitlines() if "Knowledge Graph:" in line]
+    assert len(kg_lines) == 1, kg_lines
+    kg_line = kg_lines[0]
+    assert "Knowledge Graph: board:" in kg_line, kg_line
+    assert "(schema " in kg_line, kg_line
+    assert str(pulse_home) not in kg_line, kg_line
+    assert ".lbug" not in kg_line.casefold(), kg_line
+    assert "kuzu" not in kg_line.casefold(), kg_line
+    assert "grafx" not in kg_line.casefold(), kg_line
     assert handoff_path.exists()
     assert "API Key: reserved for one-time automation handoff" in result.stdout
     assert "kg.bootstrap.fresh_graph_created" in result.stderr
@@ -826,7 +840,11 @@ def _a5_install(monkeypatch, runtime, *, lease):
     monkeypatch.setattr(
         _application_kg,
         "get_current_provider_registry",
-        lambda: SimpleNamespace(require_global_discovery_runtime=_require),
+        lambda: SimpleNamespace(
+            require_global_discovery_runtime=_require,
+            graph_schema_manager=_PassiveGraphSchema(),
+            graph_runtime_store=_ReadableBoardGraphRuntime(),
+        ),
     )
 
     def _fake_acquire(cls, **kwargs):
@@ -1486,6 +1504,9 @@ def _cmd_init_order_harness(
 
     registry = SimpleNamespace(
         graph_schema_manager=_GSM(),
+        # The board diagnosis reads this port as well: init proves the graph is
+        # there before it reports success, so a registry double has to answer.
+        graph_runtime_store=_ReadableBoardGraphRuntime(),
         require_global_discovery_runtime=_require_gd,
         config=SimpleNamespace(kg_base_dir=str(tmp_path / "kgbase")),
     )
@@ -1665,3 +1686,397 @@ def test_a5_cmd_init_event_order_partial_init_db_failure(tmp_path, monkeypatch):
     # graph-runtime -> DB -> post-async cleanup barriers, in full.
     assert exc_info.value is original
     assert events == ["init_db", "graph_shutdown", "close_db", "graph_shutdown"]
+
+
+# --- the board graph diagnosis ------------------------------------------------------------------
+#
+# ``init`` used to name the board's graph by resolving a Community-local file
+# path, which assumed one storage engine.  On a board backed by the other engine
+# that path describes nothing, so init could print a filename that does not exist
+# and still report success.  The runtime now answers through the registered port,
+# identically for either engine, without opening anything.
+
+
+class _RecordingSchemaManager:
+    """Records the order of the schema-lifecycle calls init makes."""
+
+    def __init__(self, calls: list[str], version: object = "7") -> None:
+        self._calls = calls
+        self._version = version
+
+    async def ensure_bootstrapped(self, board_id: str) -> None:
+        self._calls.append(f"ensure_bootstrapped:{board_id}")
+
+    async def current_version(self, board_id: str) -> object:
+        self._calls.append(f"current_version:{board_id}")
+        return self._version
+
+
+class _RecordingRuntimeStore:
+    """A graph runtime store that answers from metadata and nothing else.
+
+    Every method of the port is present, but only ``graph_state`` is allowed to
+    be used by init.  Anything that would open, purge or measure storage records
+    itself and fails the test, which is what makes "non-opening" a measured
+    property rather than a claim about the source.
+    """
+
+    def __init__(self, calls: list[str], observation: object) -> None:
+        self._calls = calls
+        self._observation = observation
+
+    def graph_state(self, board_id: str, *, generation: object = None) -> object:
+        self._calls.append(f"graph_state:{board_id}")
+        if isinstance(self._observation, BaseException):
+            raise self._observation
+        return self._observation
+
+    def exists(self, board_id: str) -> bool:
+        self._calls.append("exists")
+        raise AssertionError("init must not probe existence by opening the graph")
+
+    def purge_board_graph(self, board_id: str, *, reason: str) -> object:
+        self._calls.append("purge_board_graph")
+        raise AssertionError("init must never purge a board graph")
+
+    def erase_board_graph(self, board_id: str, *, reason: str) -> object:
+        self._calls.append("erase_board_graph")
+        raise AssertionError("init must never erase a board graph")
+
+    def footprint(self, board_id: str) -> object:
+        self._calls.append("footprint")
+        raise AssertionError("init must not measure storage to diagnose a board")
+
+    def budget_snapshot(self) -> object:
+        self._calls.append("budget_snapshot")
+        raise AssertionError("init must not ask for a runtime budget")
+
+
+def _board_observation(
+    board_id: str,
+    state: object,
+    *,
+    backend: str,
+    reason_code: str = "board_graph_observed",
+    schema_version: object = None,
+):
+    from datetime import UTC, datetime
+
+    from okto_pulse.core.kg.interfaces.graph_runtime_store import GraphRuntimeState
+    from okto_pulse.core.kg.interfaces.storage_ref import StorageRef
+
+    return GraphRuntimeState.from_observation(
+        board_id=board_id,
+        storage_ref=StorageRef(f"board:{board_id}", "community_local_graph"),
+        state=state,
+        generation=None,
+        reason_code=reason_code,
+        observed_at=datetime.now(UTC),
+        backend=backend,
+        schema_version=schema_version,
+    )
+
+
+class _ReadableBoardGraphRuntime:
+    """A graph runtime store reporting a present, readable board graph.
+
+    Used by tests whose subject is something else entirely: init now proves the
+    board graph exists before announcing success, so every registry double has
+    to answer that question, and answering "it is there" keeps those tests
+    testing what they were written to test.
+    """
+
+    def graph_state(self, board_id: str, *, generation: object = None) -> object:
+        from okto_pulse.core.kg.interfaces.graph_runtime_store import (
+            GraphRuntimeObservationState,
+        )
+
+        return _board_observation(
+            board_id,
+            GraphRuntimeObservationState.PRESENT_READABLE_CANDIDATE,
+            backend="community_local_graph",
+        )
+
+
+class _PassiveGraphSchema:
+    """A schema manager that bootstraps without incident."""
+
+    async def ensure_bootstrapped(self, board_id: str) -> None:
+        return None
+
+    async def current_version(self, board_id: str) -> str:
+        return "1"
+
+
+def _install_registry(monkeypatch, *, schema_manager, runtime_store):
+    """Point the init diagnosis at doubles through the registered ports."""
+
+    from okto_pulse.community import cli as community_cli
+
+    registry = SimpleNamespace(
+        graph_schema_manager=schema_manager,
+        graph_runtime_store=runtime_store,
+    )
+
+    def _resolve():
+        return registry
+
+    from okto_pulse.core.services import application_kg
+
+    monkeypatch.setattr(
+        application_kg, "get_current_provider_registry", _resolve, raising=True
+    )
+    return community_cli
+
+
+BOARD = "board-42"
+
+
+@pytest.mark.parametrize("backend", ["community_local_graph", "grafx"])
+def test_a_readable_board_graph_is_reported_by_its_shared_storage_reference(
+    monkeypatch: pytest.MonkeyPatch, backend: str
+) -> None:
+    """The same DTO carries either engine, and the report names neither."""
+
+    import asyncio
+
+    from okto_pulse.core.kg.interfaces.graph_runtime_store import (
+        GraphRuntimeObservationState,
+    )
+
+    calls: list[str] = []
+    cli = _install_registry(
+        monkeypatch,
+        schema_manager=_RecordingSchemaManager(calls, version="9"),
+        runtime_store=_RecordingRuntimeStore(
+            calls,
+            _board_observation(
+                BOARD,
+                GraphRuntimeObservationState.PRESENT_READABLE_CANDIDATE,
+                backend=backend,
+            ),
+        ),
+    )
+
+    token, version = asyncio.run(cli._bootstrap_board_graph(BOARD))
+
+    assert token == f"board:{BOARD}"
+    assert version == "9"
+    # The bootstrap has to happen before the proof, and the version is only
+    # asked for once the graph is known to be there.
+    assert calls == [
+        f"ensure_bootstrapped:{BOARD}",
+        f"graph_state:{BOARD}",
+        f"current_version:{BOARD}",
+    ]
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "CONFIRMED_ABSENT",
+        "PRESENT_UNREADABLE_OR_ERROR",
+        "PROVIDER_UNAVAILABLE",
+    ],
+)
+def test_a_board_graph_that_is_not_readable_ends_init_before_it_claims_success(
+    monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    import asyncio
+
+    from okto_pulse.core.kg.interfaces.graph_runtime_store import (
+        GraphRuntimeObservationState,
+    )
+
+    calls: list[str] = []
+    cli = _install_registry(
+        monkeypatch,
+        schema_manager=_RecordingSchemaManager(calls),
+        runtime_store=_RecordingRuntimeStore(
+            calls,
+            _board_observation(
+                BOARD,
+                getattr(GraphRuntimeObservationState, state),
+                backend="grafx",
+                reason_code="board_graph_unreadable",
+            ),
+        ),
+    )
+
+    with pytest.raises(cli.BoardGraphInitError) as refused:
+        asyncio.run(cli._bootstrap_board_graph(BOARD))
+
+    assert refused.value.code == "board_graph_init_refused"
+    assert "board_graph_unreadable" in str(refused.value)
+    # It stopped at the proof: no schema version was fetched, so nothing was
+    # ever in a position to be announced as a successful graph.
+    assert calls == [f"ensure_bootstrapped:{BOARD}", f"graph_state:{BOARD}"]
+
+
+def test_a_legacy_adapter_reporting_only_absence_is_not_upgraded_to_a_failure_free_init(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Legacy negative existence is unavailable, not a confirmed absence."""
+
+    import asyncio
+
+    from okto_pulse.core.kg.interfaces.graph_runtime_store import GraphRuntimeState
+    from okto_pulse.core.kg.interfaces.storage_ref import StorageRef
+
+    calls: list[str] = []
+    legacy = GraphRuntimeState(
+        board_id=BOARD,
+        storage_ref=StorageRef(f"board:{BOARD}", "community_local_graph"),
+        exists=False,
+        status="absent",
+    )
+    cli = _install_registry(
+        monkeypatch,
+        schema_manager=_RecordingSchemaManager(calls),
+        runtime_store=_RecordingRuntimeStore(calls, legacy),
+    )
+
+    with pytest.raises(cli.BoardGraphInitError) as refused:
+        asyncio.run(cli._bootstrap_board_graph(BOARD))
+
+    assert refused.value.code == "board_graph_init_refused"
+    assert calls == [f"ensure_bootstrapped:{BOARD}", f"graph_state:{BOARD}"]
+
+
+def test_a_legacy_adapter_reporting_presence_still_completes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from okto_pulse.core.kg.interfaces.graph_runtime_store import GraphRuntimeState
+    from okto_pulse.core.kg.interfaces.storage_ref import StorageRef
+
+    calls: list[str] = []
+    legacy = GraphRuntimeState(
+        board_id=BOARD,
+        storage_ref=StorageRef(f"board:{BOARD}", "community_local_graph"),
+        exists=True,
+        status="available",
+    )
+    cli = _install_registry(
+        monkeypatch,
+        schema_manager=_RecordingSchemaManager(calls, version="3"),
+        runtime_store=_RecordingRuntimeStore(calls, legacy),
+    )
+
+    assert asyncio.run(cli._bootstrap_board_graph(BOARD)) == (f"board:{BOARD}", "3")
+
+
+def test_a_missing_runtime_store_fails_closed_rather_than_skipping_the_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    calls: list[str] = []
+    cli = _install_registry(
+        monkeypatch,
+        schema_manager=_RecordingSchemaManager(calls),
+        runtime_store=None,
+    )
+
+    with pytest.raises(cli.BoardGraphInitError) as refused:
+        asyncio.run(cli._bootstrap_board_graph(BOARD))
+
+    assert refused.value.code == "board_graph_provider_unavailable"
+    assert calls == [f"ensure_bootstrapped:{BOARD}"]
+
+
+def test_a_backend_error_during_the_diagnosis_is_not_turned_into_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raising runtime must surface, not be swallowed into a clean init."""
+
+    import asyncio
+
+    from okto_pulse.core.kg.interfaces.graph_errors import GraphUnavailable
+
+    calls: list[str] = []
+    cli = _install_registry(
+        monkeypatch,
+        schema_manager=_RecordingSchemaManager(calls),
+        runtime_store=_RecordingRuntimeStore(
+            calls, GraphUnavailable("injected Grafx runtime failure")
+        ),
+    )
+
+    with pytest.raises(GraphUnavailable):
+        asyncio.run(cli._bootstrap_board_graph(BOARD))
+
+    assert calls == [f"ensure_bootstrapped:{BOARD}", f"graph_state:{BOARD}"]
+
+
+def test_the_init_board_graph_path_names_no_concrete_backend() -> None:
+    """Ratchet: nothing in the init path may name a storage engine again.
+
+    Checked over both the source AST and the compiled code object, so neither a
+    re-added import, a renamed alias, nor a backend name buried in a constant
+    can come back unnoticed.
+    """
+
+    import ast
+    import inspect
+
+    from okto_pulse.community import cli as community_cli
+
+    forbidden_substring = "kuzu"
+    forbidden_names = {"board_kuzu_path"}
+
+    for function in (community_cli._bootstrap_board_graph, community_cli.cmd_init):
+        source = inspect.getsource(function)
+        tree = ast.parse(textwrap.dedent(source))
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                assert node.id not in forbidden_names, function.__name__
+                assert forbidden_substring not in node.id.casefold(), function.__name__
+            elif isinstance(node, ast.Attribute):
+                assert node.attr not in forbidden_names, function.__name__
+                assert forbidden_substring not in node.attr.casefold(), (
+                    function.__name__
+                )
+            elif isinstance(node, ast.alias):
+                imported = f"{node.name} {node.asname or ''}"
+                assert forbidden_substring not in imported.casefold(), function.__name__
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                module = getattr(node, "module", "") or ""
+                assert forbidden_substring not in module.casefold(), function.__name__
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                assert forbidden_substring not in node.value.casefold(), (
+                    function.__name__
+                )
+
+    # Bytecode, including every nested function object, so the async closure
+    # inside cmd_init is covered too.
+    def _code_objects(code: object):
+        yield code
+        for const in getattr(code, "co_consts", ()):
+            if hasattr(const, "co_names"):
+                yield from _code_objects(const)
+
+    for function in (community_cli._bootstrap_board_graph, community_cli.cmd_init):
+        for code in _code_objects(function.__code__):
+            for name in (*code.co_names, *code.co_varnames, *code.co_freevars):
+                assert forbidden_substring not in name.casefold(), (
+                    function.__name__,
+                    name,
+                )
+            for const in code.co_consts:
+                if isinstance(const, str):
+                    assert forbidden_substring not in const.casefold(), (
+                        function.__name__,
+                        const,
+                    )
+
+
+def test_the_init_module_no_longer_imports_the_board_graph_file_resolver() -> None:
+    # The module-wide statement: the concrete resolver is not reachable from the
+    # CLI at all any more, so no other command can quietly reintroduce it here.
+    source = (REPO_SRC / "okto_pulse" / "community" / "cli.py").read_text(
+        encoding="utf-8"
+    )
+    assert "board_kuzu_path" not in source
