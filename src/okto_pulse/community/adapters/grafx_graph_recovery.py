@@ -35,7 +35,10 @@ from typing import Any
 
 from okto_pulse.core.kg.interfaces.graph_recovery import WalRecoveryReport
 
-from okto_pulse.community.adapters.filesystem_erasure import fsync_directory
+from okto_pulse.community.adapters.filesystem_erasure import (
+    fsync_directory,
+    is_filesystem_alias,
+)
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
 
 _MANIFEST_FORMAT = "pulse_grafx_quarantine/1"
@@ -74,10 +77,20 @@ def _sha256_file(path: Path) -> str:
 
 
 def _is_link(path: Path) -> bool:
-    """Recognize both ordinary links and Windows directory junctions."""
+    """Recognize any alias -- symlink, junction, or other reparse point.
 
-    junction_probe = getattr(path, "is_junction", None)
-    return path.is_symlink() or bool(callable(junction_probe) and junction_probe())
+    Delegates to the shared filesystem primitive rather than asking pathlib.
+    ``Path.is_junction`` only exists from CPython 3.12 and Pulse supports 3.11,
+    where the previous probe degenerated to ``is_symlink()`` -- which is False
+    for a junction. Every boundary below is guarded by this one predicate, so on
+    3.11 a junction planted at ``<database>/wal`` was followed out of the
+    database: recovery adopted an external file as a WAL segment and copied its
+    bytes into quarantine, and the restore side would have written back through
+    it. The primitive reads ``lstat`` and the Windows reparse-point attribute,
+    so it answers on 3.11 and never traverses what it is inspecting.
+    """
+
+    return is_filesystem_alias(path)
 
 
 def _failure_text(failure: BaseException, *, operation: str) -> str:

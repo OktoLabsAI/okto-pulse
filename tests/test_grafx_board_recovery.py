@@ -607,3 +607,176 @@ def test_done_journal_failure_is_a_typed_partial_restore(
     persisted = json.loads(operation.read_text("utf-8"))
     assert persisted["phase"] == "failed"
     assert persisted["open_validated"] is True
+
+
+# --- Windows junctions, proved on the floor of the supported range ------------------------------
+#
+# ``Path.is_junction`` arrived in CPython 3.12 and Pulse supports 3.11, so these
+# tests DELETE it before exercising the boundary. Without that, the suite proves
+# the guard only on the interpreter that happens to be running and stays green on
+# 3.11 while the protection is off -- which is exactly how this defect survived a
+# clean audit. A real junction is created here; nothing is monkeypatched into
+# existence.
+
+
+def _make_junction(link: Path, target: Path) -> bool:
+    """Create a real Windows directory junction, or report that we cannot."""
+
+    import subprocess
+
+    completed = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        text=True,
+    )
+    return completed.returncode == 0 and link.exists()
+
+
+@pytest.fixture
+def without_is_junction(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Present the pathlib surface of Python 3.11: no ``Path.is_junction``.
+
+    The method is inherited, so deleting it from ``Path`` alone leaves it
+    reachable through the MRO. Every class that defines it is stripped, which is
+    what makes this fixture reproduce 3.11 rather than merely look like it.
+    """
+
+    for owner in Path.__mro__:
+        if "is_junction" in owner.__dict__:
+            monkeypatch.delattr(owner, "is_junction", raising=False)
+    assert not hasattr(Path, "is_junction")
+
+
+def test_recovery_refuses_a_real_wal_junction_without_reading_outside(
+    tmp_path: Path,
+    without_is_junction: None,
+) -> None:
+    """The read direction: an external WAL must not be adopted or copied."""
+
+    outside = tmp_path / "outside-the-database"
+    outside.mkdir()
+    external_bytes = b"content that lives outside the database\n"
+    (outside / "000000000001.wal").write_bytes(external_bytes)
+
+    database_path = tmp_path / "boards" / BOARD_ID / "grafx" / "generation-1"
+    _seed_checkpointed_database(database_path)
+    protected_before = _protected_digests(database_path)
+    shutil.rmtree(database_path / "wal")
+    if not _make_junction(database_path / "wal", outside):
+        pytest.skip("host cannot create a Windows junction for this safety probe")
+
+    # The junction is real: pathlib alone does not see it as a link on 3.11.
+    assert (database_path / "wal").is_symlink() is False
+
+    opened = False
+
+    def open_database(_path: Path):
+        nonlocal opened
+        opened = True
+        raise AssertionError("a junctioned WAL root reached Grafx open")
+
+    report = asyncio.run(
+        _recovery(database_path, open_database=open_database).recover_wal_only(BOARD_ID)
+    )
+
+    assert report.status == "failed"
+    assert report.quarantine_id is None
+    assert opened is False
+    assert _protected_digests(database_path) == protected_before
+
+    # Nothing from outside the database was copied anywhere under quarantine.
+    quarantine_root = database_path.parents[3] / "quarantine"
+    copied = (
+        [
+            path
+            for path in quarantine_root.rglob("*")
+            if path.is_file() and path.read_bytes() == external_bytes
+        ]
+        if quarantine_root.exists()
+        else []
+    )
+    assert copied == []
+    assert (outside / "000000000001.wal").read_bytes() == external_bytes
+
+
+def test_restore_plan_refuses_a_real_junctioned_live_wal(
+    tmp_path: Path,
+    without_is_junction: None,
+) -> None:
+    """The write direction: plan must refuse before anything is renamed."""
+
+    database_path = tmp_path / "boards" / BOARD_ID / "grafx" / "generation-1"
+    _seed_checkpointed_database(database_path)
+    quarantine_root = tmp_path / "quarantine"
+    _external_wal_quarantine(
+        database_path, quarantine_root, quarantine_id="external-junction-plan"
+    )
+    outside = tmp_path / "outside-the-database"
+    outside.mkdir()
+    (outside / "decoy.txt").write_bytes(b"must not be written through\n")
+    shutil.rmtree(database_path / "wal")
+    if not _make_junction(database_path / "wal", outside):
+        pytest.skip("host cannot create a Windows junction for this safety probe")
+    # Captured with the junction already in place, so the comparison is about
+    # what plan did and not about the trap the test just set.
+    tree_before = _tree_digests(database_path)
+
+    with pytest.raises(QuarantineRestoreError) as refused:
+        _restore(database_path, quarantine_root).plan("external-junction-plan")
+
+    assert refused.value.code is not None
+    assert _tree_digests(database_path) == tree_before
+    assert sorted(path.name for path in outside.iterdir()) == ["decoy.txt"]
+
+
+def test_restore_apply_refuses_a_real_junctioned_live_wal(
+    tmp_path: Path,
+    without_is_junction: None,
+) -> None:
+    """Apply refuses too, so a junction planted after plan cannot be written through."""
+
+    database_path = tmp_path / "boards" / BOARD_ID / "grafx" / "generation-1"
+    _seed_checkpointed_database(database_path)
+    quarantine_root = tmp_path / "quarantine"
+    _external_wal_quarantine(
+        database_path, quarantine_root, quarantine_id="external-junction-apply"
+    )
+
+    outside = tmp_path / "outside-the-database"
+    outside.mkdir()
+    sentinel = outside / "sentinel.txt"
+    sentinel.write_bytes(b"external sentinel\n")
+    shutil.rmtree(database_path / "wal")
+    if not _make_junction(database_path / "wal", outside):
+        pytest.skip("host cannot create a Windows junction for this safety probe")
+    tree_before = _tree_digests(database_path)
+
+    with pytest.raises(QuarantineRestoreError):
+        _restore(database_path, quarantine_root).apply("external-junction-apply")
+
+    assert _tree_digests(database_path) == tree_before
+    # The sentinel outside the database is untouched: nothing was written or
+    # deleted through the junction.
+    assert sentinel.read_bytes() == b"external sentinel\n"
+    assert sorted(path.name for path in outside.iterdir()) == ["sentinel.txt"]
+
+
+def test_the_alias_guard_does_not_depend_on_pathlib_is_junction(
+    tmp_path: Path,
+    without_is_junction: None,
+) -> None:
+    """The guard answers from lstat, so it holds where pathlib cannot help."""
+
+    from okto_pulse.community.adapters.grafx_graph_recovery import _is_link
+
+    target = tmp_path / "real"
+    target.mkdir()
+    link = tmp_path / "as_junction"
+    if not _make_junction(link, target):
+        pytest.skip("host cannot create a Windows junction for this safety probe")
+
+    assert not hasattr(Path, "is_junction")
+    assert link.is_symlink() is False
+    assert _is_link(link) is True
+    assert _is_link(target) is False
+    assert _is_link(tmp_path / "does-not-exist") is False
