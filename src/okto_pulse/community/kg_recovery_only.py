@@ -5301,11 +5301,23 @@ def _expected_compensation_board_storage(
     quarantine_root: Path,
     board_id: str,
     manifest_ref: str,
+    binding: OfflineBoardGraphBinding,
 ) -> dict[str, str]:
-    """Pin the exact predecessor bytes a governed compensation must restore."""
+    """Pin restored physical bytes plus the immutable authenticated binding."""
 
     if checkpoint is None:
         return {}
+    _require(
+        isinstance(binding, OfflineBoardGraphBinding),
+        "manifest_compensation_board_binding_missing",
+    )
+    _require(
+        binding.board_id == board_id
+        and binding.data_home == Path(os.path.abspath(quarantine_root.parent)),
+        "manifest_compensation_board_binding_scope_invalid",
+    )
+    binding = _revalidate_board_binding(binding)
+    binding_only = {_BOARD_BINDING_FILENAME: binding.document_sha256}
     receipts = checkpoint.get("receipts")
     quarantine_key = f"f06:{manifest_ref}:quarantine"
     quarantine_receipt = (
@@ -5321,7 +5333,12 @@ def _expected_compensation_board_storage(
     assert isinstance(details, Mapping)
     affected = tuple(str(value) for value in details.get("affected_files", ()))
     if not affected:
-        return {}
+        _revalidate_board_binding(binding)
+        return binding_only
+    _require(
+        len(affected) == len(set(affected)),
+        "manifest_compensation_quarantine_receipt_invalid",
+    )
     quarantine_id = str(details.get("quarantine_ref") or "")
     _require(
         bool(quarantine_id),
@@ -5332,32 +5349,210 @@ def _expected_compensation_board_storage(
         quarantine_dir / "manifest.json",
         "manifest_compensation_quarantine_manifest_invalid",
     )
+    raw_paths = manifest.get("affected_paths_relative")
+    raw_storage_refs = manifest.get("affected_storage_refs")
     _require(
         str(manifest.get("quarantine_id")) == quarantine_id
         and str(manifest.get("board_id")) == board_id
-        and set(str(value) for value in manifest.get("affected_paths_relative", ()))
-        == set(affected),
+        and manifest.get("graph_type") == "board_graph"
+        and isinstance(raw_paths, list)
+        and bool(raw_paths)
+        and len(raw_paths) == len({str(value) for value in raw_paths})
+        and isinstance(raw_storage_refs, list)
+        and len(raw_storage_refs) == len(raw_paths),
         "manifest_compensation_quarantine_binding_invalid",
     )
-    expected: dict[str, str] = {}
-    for relative in affected:
-        relative_path = Path(relative)
+    assert isinstance(raw_paths, list)
+    assert isinstance(raw_storage_refs, list)
+    manifest_paths = tuple(str(value) for value in raw_paths)
+
+    decoded_refs: list[Path] = []
+    for raw_ref in raw_storage_refs:
         _require(
-            not relative_path.is_absolute()
-            and ".." not in relative_path.parts
-            and len(relative_path.parts) == 1,
-            "manifest_compensation_quarantine_path_invalid",
+            isinstance(raw_ref, Mapping)
+            and set(raw_ref) == {"token", "namespace"}
+            and raw_ref.get("namespace") == "community_local_graph_v1"
+            and type(raw_ref.get("token")) is str,
+            "manifest_compensation_quarantine_storage_ref_invalid",
+        )
+        assert isinstance(raw_ref, Mapping)
+        token = str(raw_ref["token"])
+        try:
+            padding = "=" * (-len(token) % 4)
+            encoded_path = base64.urlsafe_b64decode(token + padding).decode("utf-8")
+        except (ValueError, UnicodeError) as exc:
+            raise RecoveryRefused(
+                "manifest_compensation_quarantine_storage_ref_invalid"
+            ) from exc
+        _require(
+            base64.urlsafe_b64encode(encoded_path.encode("utf-8"))
+            .decode("ascii")
+            .rstrip("=")
+            == token,
+            "manifest_compensation_quarantine_storage_ref_invalid",
+        )
+        decoded = Path(os.path.abspath(encoded_path))
+        _require(
+            Path(encoded_path).is_absolute()
+            and os.path.normcase(str(decoded))
+            == os.path.normcase(str(Path(encoded_path).resolve(strict=False))),
+            "manifest_compensation_quarantine_storage_ref_invalid",
+        )
+        _assert_no_symlink_components(
+            decoded,
+            "manifest_compensation_quarantine_storage_ref_alias_refused",
+        )
+        decoded_refs.append(decoded)
+
+    if binding.backend == "ladybug":
+        allowed_names = {
+            _BINDING_LADYBUG_FILENAME,
+            *(
+                f"{_BINDING_LADYBUG_FILENAME}{suffix}"
+                for suffix in _BINDING_LADYBUG_SIDECAR_SUFFIXES
+            ),
+        }
+        current_receipt_tokens = tuple(
+            f"board:{board_id}:artifact:{index}"
+            for index in range(len(manifest_paths))
+        )
+        _require(
+            affected in {manifest_paths, current_receipt_tokens}
+            and set(manifest_paths) <= allowed_names
+            and _BINDING_LADYBUG_FILENAME in manifest_paths
+            and tuple(decoded_refs)
+            == tuple(binding.physical_path.with_name(name) for name in manifest_paths),
+            "manifest_compensation_quarantine_binding_invalid",
+        )
+        expected = dict(binding_only)
+        for relative in manifest_paths:
+            relative_path = Path(relative)
+            _require(
+                not relative_path.is_absolute()
+                and ".." not in relative_path.parts
+                and len(relative_path.parts) == 1,
+                "manifest_compensation_quarantine_path_invalid",
+                relative,
+            )
+            path = quarantine_dir / relative_path
+            _require(
+                path.is_file() and not _is_filesystem_alias(path),
+                "manifest_compensation_quarantine_source_missing",
+                relative,
+            )
+            expected[relative_path.as_posix()] = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+        _revalidate_board_binding(binding)
+        return expected
+
+    _require(
+        binding.backend == "grafx"
+        and affected == (f"board:{board_id}",)
+        and manifest_paths == (binding.physical_path_relative,)
+        and tuple(decoded_refs) == (binding.physical_path,)
+        and manifest.get("format") == "pulse_grafx_quarantine/1"
+        and manifest.get("kind") == "grafx_board_directory"
+        and manifest.get("generation") == binding.generation
+        and manifest.get("binding_sha256") == binding.binding_sha256
+        and Path(str(manifest.get("database_path") or ""))
+        == binding.physical_path
+        and manifest.get("payload_relative") == "payload/database"
+        and manifest.get("source_removed") is True
+        and manifest.get("complete") is True
+        and manifest.get("phase") == "captured",
+        "manifest_compensation_quarantine_binding_invalid",
+    )
+    manifest_sha256 = manifest.get("manifest_sha256")
+    authenticated_manifest = {
+        key: value for key, value in manifest.items() if key != "manifest_sha256"
+    }
+    _require(
+        _is_sha256(manifest_sha256)
+        and _canonical_json_hash(authenticated_manifest) == manifest_sha256,
+        "manifest_compensation_quarantine_manifest_authentication_invalid",
+    )
+    raw_files = manifest.get("files")
+    raw_directories = manifest.get("directories")
+    _require(
+        isinstance(raw_files, list)
+        and bool(raw_files)
+        and isinstance(raw_directories, list),
+        "manifest_compensation_grafx_inventory_invalid",
+    )
+    assert isinstance(raw_files, list)
+    assert isinstance(raw_directories, list)
+    normalized_files: list[dict[str, object]] = []
+    expected_payload_hashes: dict[str, str] = {}
+    expected_sizes: dict[str, int] = {}
+    for raw_file in raw_files:
+        _require(
+            isinstance(raw_file, Mapping)
+            and set(raw_file) == {"relative_path", "size_bytes", "sha256"},
+            "manifest_compensation_grafx_inventory_invalid",
+        )
+        assert isinstance(raw_file, Mapping)
+        relative = raw_file.get("relative_path")
+        size = raw_file.get("size_bytes")
+        digest = raw_file.get("sha256")
+        parsed = PurePosixPath(relative) if type(relative) is str else None
+        _require(
+            parsed is not None
+            and not parsed.is_absolute()
+            and bool(parsed.parts)
+            and ".." not in parsed.parts
+            and parsed.as_posix() == relative
+            and type(size) is int
+            and size >= 0
+            and _is_sha256(digest)
+            and relative not in expected_payload_hashes,
+            "manifest_compensation_grafx_inventory_invalid",
+        )
+        expected_payload_hashes[str(relative)] = str(digest)
+        expected_sizes[str(relative)] = int(size)
+        normalized_files.append(
+            {
+                "relative_path": str(relative),
+                "size_bytes": int(size),
+                "sha256": str(digest),
+            }
+        )
+    directories = tuple(str(value) for value in raw_directories)
+    _require(
+        len(directories) == len(set(directories))
+        and tuple(normalized_files)
+        == tuple(sorted(normalized_files, key=lambda item: item["relative_path"]))
+        and manifest.get("inventory_sha256")
+        == _canonical_json_hash(
+            {"directories": list(directories), "files": normalized_files}
+        ),
+        "manifest_compensation_grafx_inventory_invalid",
+    )
+    payload_root = quarantine_dir / "payload" / "database"
+    payload_hashes = _snapshot_tree_hashes(payload_root)
+    payload_identities = _snapshot_tree_identities(payload_root)
+    actual_directories = tuple(
+        sorted(set(payload_identities) - set(payload_hashes))
+    )
+    _require(
+        payload_hashes == expected_payload_hashes
+        and actual_directories == directories
+        and "grafx.meta" in payload_hashes,
+        "manifest_compensation_grafx_payload_invalid",
+    )
+    for relative, expected_size in expected_sizes.items():
+        path = payload_root.joinpath(*PurePosixPath(relative).parts)
+        _require(
+            path.lstat().st_size == expected_size,
+            "manifest_compensation_grafx_payload_invalid",
             relative,
         )
-        path = quarantine_dir / relative_path
-        _require(
-            path.is_file() and not _is_filesystem_alias(path),
-            "manifest_compensation_quarantine_source_missing",
-            relative,
-        )
-        expected[relative_path.as_posix()] = hashlib.sha256(
-            path.read_bytes()
-        ).hexdigest()
+    expected = dict(binding_only)
+    prefix = f"{binding.board_storage_relative}/"
+    expected.update(
+        {f"{prefix}{relative}": digest for relative, digest in payload_hashes.items()}
+    )
+    _revalidate_board_binding(binding)
     return expected
 
 
@@ -6631,7 +6826,10 @@ def _offline_cold_graph_health(
         allowed = {
             _BOARD_BINDING_FILENAME,
             _BINDING_LADYBUG_FILENAME,
-            f"{_BINDING_LADYBUG_FILENAME}.wal",
+            *(
+                f"{_BINDING_LADYBUG_FILENAME}{suffix}"
+                for suffix in _BINDING_LADYBUG_SIDECAR_SUFFIXES
+            ),
         }
         _require(
             set(board_storage_snapshot).issubset(allowed),
@@ -10875,6 +11073,7 @@ def _assert_closed_operation_baseline_safe(
         quarantine_root=quarantine_root,
         board_id=board_id,
         manifest_ref=manifest_ref,
+        binding=bundle.graph_binding,
     )
     _require(
         _snapshot_board_storage_hashes(board_storage_root) == expected_board_storage,
@@ -10887,7 +11086,10 @@ def _assert_closed_operation_baseline_safe(
         "terminal_reconciliation_required:closed_compensation_pointer_mismatch",
         run_id,
     )
-    if expected_board_storage:
+    expected_physical_storage = set(expected_board_storage) - {
+        _BOARD_BINDING_FILENAME
+    }
+    if expected_physical_storage:
         _require(
             bool(raw_health.get("graph_storage_exists")),
             "terminal_reconciliation_required:closed_compensation_graph_unresolved",
@@ -13394,7 +13596,7 @@ async def _assert_manifest_compensation_reconciliation(
         == baseline_health.get("current_kg_generation_id"),
         "manifest_compensation_generation_pointer_changed",
     )
-    graph_files = terminal_board_storage
+    graph_files = set(terminal_board_storage) - {_BOARD_BINDING_FILENAME}
     if graph_files:
         _require(
             bool(post_health.get("graph_storage_exists")),
@@ -14974,6 +15176,7 @@ async def _execute_under_serve_lock(
                     quarantine_root=quarantine_root,
                     board_id=args.board_id,
                     manifest_ref=manifest.manifest_ref,
+                    binding=bundle.graph_binding,
                 )
                 if compensation_mode
                 else {}

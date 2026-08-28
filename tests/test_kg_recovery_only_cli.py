@@ -1200,6 +1200,191 @@ def test_offline_cold_health_is_conservative_and_snapshot_bound(
         )
 
 
+@pytest.mark.parametrize(
+    ("suffix", "locked"),
+    ((".wal", True), (".shadow", False), (".wal.checkpoint", False)),
+)
+def test_cold_health_accepts_every_recognized_ladybug_sidecar(
+    tmp_path: Path,
+    suffix: str,
+    locked: bool,
+) -> None:
+    data_home = tmp_path.resolve()
+    board_root = data_home / "boards" / BOARD_ID
+    board_root.mkdir(parents=True)
+    (board_root / "graph.lbug").write_bytes(b"closed graph")
+    (board_root / f"graph.lbug{suffix}").write_bytes(b"recognized sidecar")
+    _write_binding(data_home, backend="ladybug")
+    decision = recovery._require_authenticated_recoverable_backend(
+        data_home,
+        BOARD_ID,
+    )
+    assert decision.binding is not None
+    state = SimpleNamespace(
+        board_id=BOARD_ID,
+        backend="community_local_graph",
+        generation=GUARD_GENERATION,
+        exists=True,
+        locked=locked,
+        quarantined=False,
+    )
+    bundle = SimpleNamespace(
+        graph_binding=decision.binding,
+        generation_repository=SimpleNamespace(get_current=lambda _board_id: None),
+    )
+
+    health = recovery._offline_cold_graph_health(
+        bundle,
+        board_id=BOARD_ID,
+        board_storage_root=board_root,
+        board_storage_snapshot=recovery._snapshot_board_storage_hashes(board_root),
+        graph_runtime_store=SimpleNamespace(
+            graph_state=lambda _board_id, generation=None: state
+        ),
+    )
+
+    assert health["graph_storage_exists"] is True
+    assert health["graph_storage_locked"] is locked
+
+
+def _compensation_checkpoint(
+    *,
+    manifest_ref: str,
+    quarantine_id: str,
+    affected_files: list[str],
+) -> dict[str, object]:
+    return {
+        "receipts": {
+            f"f06:{manifest_ref}:quarantine": {
+                "details": {
+                    "affected_files": affected_files,
+                    "quarantine_ref": quarantine_id,
+                }
+            }
+        }
+    }
+
+
+def test_ladybug_compensation_storage_keeps_the_authenticated_binding(
+    tmp_path: Path,
+) -> None:
+    from okto_pulse.community.adapters.local_storage_ref import local_storage_ref
+
+    data_home = tmp_path.resolve()
+    board_root = data_home / "boards" / BOARD_ID
+    board_root.mkdir(parents=True)
+    graph = board_root / "graph.lbug"
+    graph.write_bytes(b"restored ladybug bytes")
+    binding_path = _write_binding(data_home, backend="ladybug")
+    decision = recovery._require_authenticated_recoverable_backend(
+        data_home,
+        BOARD_ID,
+    )
+    assert decision.binding is not None
+    binding = decision.binding
+    quarantine_id = "q_ladybug_compensation"
+    quarantine_dir = data_home / "quarantine" / quarantine_id
+    quarantine_dir.mkdir(parents=True)
+    (quarantine_dir / "graph.lbug").write_bytes(graph.read_bytes())
+    storage_ref = local_storage_ref(graph)
+    (quarantine_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "quarantine_id": quarantine_id,
+                "board_id": BOARD_ID,
+                "graph_type": "board_graph",
+                "affected_paths_relative": ["graph.lbug"],
+                "affected_storage_refs": [
+                    {
+                        "token": storage_ref.token,
+                        "namespace": storage_ref.namespace,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest_ref = "manifest-ladybug-compensation"
+
+    expected = recovery._expected_compensation_board_storage(
+        _compensation_checkpoint(
+            manifest_ref=manifest_ref,
+            quarantine_id=quarantine_id,
+            affected_files=[f"board:{BOARD_ID}:artifact:0"],
+        ),
+        quarantine_root=data_home / "quarantine",
+        board_id=BOARD_ID,
+        manifest_ref=manifest_ref,
+        binding=binding,
+    )
+
+    assert expected == recovery._snapshot_board_storage_hashes(board_root)
+    assert expected["graph_backend_binding.json"] == hashlib.sha256(
+        binding_path.read_bytes()
+    ).hexdigest()
+
+
+def test_grafx_compensation_maps_the_opaque_receipt_to_the_directory_payload(
+    tmp_path: Path,
+) -> None:
+    import okto_grafx
+    from okto_pulse.community.adapters.grafx_board_storage import (
+        quarantine_grafx_board_storage,
+    )
+
+    data_home = tmp_path.resolve()
+    board_root = data_home / "boards" / BOARD_ID
+    graph_path = board_root / "grafx" / GUARD_GENERATION
+    database = okto_grafx.connect(graph_path, page_size=GRAFX_PAGE_SIZE)
+    _store_module, store = _binding_store(data_home)
+    store.initialize_board_binding(
+        board_id=BOARD_ID,
+        backend="grafx",
+        generation=GUARD_GENERATION,
+        physical_path=graph_path,
+        page_size=GRAFX_PAGE_SIZE,
+        database=database,
+    )
+    database.close()
+    decision = recovery._require_authenticated_recoverable_backend(
+        data_home,
+        BOARD_ID,
+    )
+    assert decision.binding is not None
+    binding = decision.binding
+    affected_count, quarantine_id = quarantine_grafx_board_storage(
+        BOARD_ID,
+        graph_path,
+        reason="recovery-only-regression",
+    )
+    assert affected_count > 0
+    assert quarantine_id is not None
+    assert not graph_path.exists()
+    manifest_ref = "manifest-grafx-compensation"
+
+    expected = recovery._expected_compensation_board_storage(
+        _compensation_checkpoint(
+            manifest_ref=manifest_ref,
+            quarantine_id=quarantine_id,
+            affected_files=[f"board:{BOARD_ID}"],
+        ),
+        quarantine_root=data_home / "quarantine",
+        board_id=BOARD_ID,
+        manifest_ref=manifest_ref,
+        binding=binding,
+    )
+    payload = data_home / "quarantine" / quarantine_id / "payload" / "database"
+    shutil.copytree(payload, graph_path)
+
+    assert expected == recovery._snapshot_board_storage_hashes(board_root)
+    assert expected["graph_backend_binding.json"] == binding.document_sha256
+    assert all(
+        relative == "graph_backend_binding.json"
+        or relative.startswith(f"grafx/{GUARD_GENERATION}/")
+        for relative in expected
+    )
+
+
 def test_offline_cold_health_routes_a_real_grafx_database_by_binding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4640,13 +4825,22 @@ def _closed_baseline_inputs(tmp_path: Path, *, checkpoint=None):  # noqa: ANN001
     rebuild_root.mkdir()
     quarantine_root.mkdir()
     board_storage_root.mkdir(parents=True)
+    _write_binding(tmp_path.resolve(), backend="ladybug")
+    decision = recovery._require_authenticated_recoverable_backend(
+        tmp_path.resolve(),
+        BOARD_ID,
+    )
+    assert decision.binding is not None
     receipt = _receipt(state="authorized")
     audit = _terminal_audit(
         receipt,
         outcome="failed",
         reason="lifecycle_failed",
     )
-    bundle = SimpleNamespace(artifact_store=_CheckpointArtifactStore(checkpoint))
+    bundle = SimpleNamespace(
+        artifact_store=_CheckpointArtifactStore(checkpoint),
+        graph_binding=decision.binding,
+    )
     return {
         "bundle": bundle,
         "receipt": receipt,
@@ -5519,7 +5713,16 @@ def test_closed_archive_baseline_reproves_real_exact_relational_compensation(
     rebuild_root.mkdir()
     quarantine_root.mkdir()
     board_storage_root.mkdir(parents=True)
-    bundle = SimpleNamespace(artifact_store=_CheckpointArtifactStore(checkpoint))
+    _write_binding(tmp_path.resolve(), backend="ladybug")
+    decision = recovery._require_authenticated_recoverable_backend(
+        tmp_path.resolve(),
+        BOARD_ID,
+    )
+    assert decision.binding is not None
+    bundle = SimpleNamespace(
+        artifact_store=_CheckpointArtifactStore(checkpoint),
+        graph_binding=decision.binding,
+    )
 
     def persist_effects() -> dict[str, str]:
         for effect_key, effect_payload in checkpoint["receipts"].items():
