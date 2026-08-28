@@ -148,7 +148,7 @@ def test_community_dependency_pins_the_release_candidate_exactly() -> None:
         )
     )
 
-    assert "okto-grafx==0.0.1" in project["project"]["dependencies"]
+    assert "okto-grafx[accel]==0.0.1" in project["project"]["dependencies"]
 
 
 def test_missing_binding_fails_closed_without_creating_state(tmp_path: Path) -> None:
