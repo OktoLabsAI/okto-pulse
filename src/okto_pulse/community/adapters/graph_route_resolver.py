@@ -56,6 +56,7 @@ from okto_pulse.community.config import validate_grafx_page_size
 _INITIAL_GENERATION = "generation-1"
 _ROUTE_LOCK_FILENAME = ".graph_route_initialization.lock"
 _GRAFX_IDENTITY_FILENAME = "grafx.meta"
+_LADYBUG_SIDECAR_SUFFIXES = (".wal", ".shadow", ".wal.checkpoint")
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,6 +344,11 @@ class CommunityGraphRouteResolver:
         create_physical: GraphPhysicalCreationCallback | None,
     ) -> CommunityGraphRouteSnapshot:
         operation = "initialize_community_graph_route"
+        # This gate must precede mkdir and FileLock.  A board/global directory
+        # may already be a Windows junction (reported as a normal directory by
+        # pathlib on Python 3.11); following it here would publish the lock
+        # outside the configured root before routing had refused the alias.
+        self._require_no_alias(lock_path, scope=scope, scope_id=scope_id)
         try:
             lock_path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as failure:
@@ -492,7 +498,12 @@ class CommunityGraphRouteResolver:
         scope: GraphBindingScope = "board"
         ladybug = self._store.board_ladybug_path(board_id)
         ladybug_kind = self._path_kind(ladybug, scope=scope, scope_id=board_id)
+        ladybug_sidecars = self._ladybug_sidecars_present(
+            ladybug, scope=scope, scope_id=board_id
+        )
         if ladybug_kind not in {None, "file"}:
+            self._raise_ambiguous(scope=scope, scope_id=board_id)
+        if ladybug_kind is None and ladybug_sidecars:
             self._raise_ambiguous(scope=scope, scope_id=board_id)
         if ladybug_kind == "file":
             self._require_no_alias(ladybug, scope=scope, scope_id=board_id)
@@ -565,7 +576,26 @@ class CommunityGraphRouteResolver:
         for path in (anchor, active_pointer_path(anchor), generations_root(anchor)):
             if self._path_kind(path, scope="global", scope_id="global") is not None:
                 return True
-        return False
+        return self._ladybug_sidecars_present(anchor, scope="global", scope_id="global")
+
+    def _ladybug_sidecars_present(
+        self,
+        primary: Path,
+        *,
+        scope: GraphBindingScope,
+        scope_id: str,
+    ) -> bool:
+        """Recognize only the WAL/checkpoint sidecars owned by Ladybug runtime."""
+
+        return any(
+            self._path_kind(
+                primary.with_name(primary.name + suffix),
+                scope=scope,
+                scope_id=scope_id,
+            )
+            is not None
+            for suffix in _LADYBUG_SIDECAR_SUFFIXES
+        )
 
     def _detect_global_ladybug(self, anchor: Path) -> _DetectedRoute:
         scope: GraphBindingScope = "global"

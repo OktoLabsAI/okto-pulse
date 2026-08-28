@@ -251,6 +251,58 @@ def test_unbound_ambiguous_storage_fails_without_fallback(
     ).exists()
 
 
+@pytest.mark.parametrize("suffix", [".wal", ".shadow", ".wal.checkpoint"])
+def test_unbound_board_ladybug_sidecar_blocks_grafx_creation_and_publication(
+    tmp_path: Path, suffix: str
+) -> None:
+    store = CommunityGraphBackendBindingStore(tmp_path)
+    primary = store.board_ladybug_path("board-residue")
+    primary.parent.mkdir(parents=True)
+    sidecar = primary.with_name(primary.name + suffix)
+    sidecar.write_bytes(b"ladybug-residue")
+    resolver = _resolver(store, board_backend="grafx")
+    creation_calls: list[CommunityGraphRouteCandidate] = []
+
+    with pytest.raises(GraphCapabilityUnavailable) as ambiguous:
+        resolver.initialize_board_route(
+            "board-residue",
+            create_physical=lambda candidate: creation_calls.append(candidate),
+        )
+
+    assert ambiguous.value.details["reason"] == "graph_route_storage_ambiguous"
+    assert creation_calls == []
+    assert sidecar.read_bytes() == b"ladybug-residue"
+    assert not (primary.parent / "graph_backend_binding.json").exists()
+
+
+def test_unbound_board_wal_residue_blocks_existing_grafx_before_open(
+    tmp_path: Path,
+) -> None:
+    store = CommunityGraphBackendBindingStore(tmp_path)
+    primary = store.board_ladybug_path("board-wal")
+    primary.parent.mkdir(parents=True)
+    primary.with_name(primary.name + ".wal").write_bytes(b"pending-wal")
+    grafx_path = store.board_grafx_path("board-wal", "generation-1")
+    database = _grafx(grafx_path)
+    opened: list[Path] = []
+    resolver = _resolver(
+        store,
+        board_backend="grafx",
+        databases={grafx_path: database},
+        opened=opened,
+    )
+
+    with pytest.raises(GraphCapabilityUnavailable) as ambiguous:
+        resolver.initialize_board_route(
+            "board-wal",
+            create_physical=lambda candidate: pytest.fail(str(candidate)),
+        )
+
+    assert ambiguous.value.details["reason"] == "graph_route_storage_ambiguous"
+    assert opened == []
+    assert not (primary.parent / "graph_backend_binding.json").exists()
+
+
 def test_corrupt_binding_never_falls_back_to_other_physical_backend(
     tmp_path: Path,
 ) -> None:
@@ -430,6 +482,110 @@ def test_unbound_global_ambiguous_physical_routes_never_open_or_publish(
     assert not (
         store.global_ladybug_path().parent / "graph_backend_binding.json"
     ).exists()
+
+
+def test_unbound_global_wal_residue_blocks_grafx_creation_and_publication(
+    tmp_path: Path,
+) -> None:
+    store = CommunityGraphBackendBindingStore(tmp_path)
+    primary = store.global_ladybug_path()
+    primary.parent.mkdir(parents=True)
+    wal = primary.with_name(primary.name + ".wal")
+    wal.write_bytes(b"pending-global-wal")
+    resolver = _resolver(store, global_backend="grafx")
+    creation_calls: list[CommunityGraphRouteCandidate] = []
+
+    with pytest.raises(GraphCapabilityUnavailable) as ambiguous:
+        resolver.initialize_global_route(
+            create_physical=lambda candidate: creation_calls.append(candidate)
+        )
+
+    assert ambiguous.value.details["reason"] == "graph_route_storage_ambiguous"
+    assert creation_calls == []
+    assert wal.read_bytes() == b"pending-global-wal"
+    assert not (primary.parent / "graph_backend_binding.json").exists()
+
+
+def test_unbound_global_wal_residue_blocks_existing_grafx_before_open(
+    tmp_path: Path,
+) -> None:
+    store = CommunityGraphBackendBindingStore(tmp_path)
+    primary = store.global_ladybug_path()
+    primary.parent.mkdir(parents=True)
+    primary.with_name(primary.name + ".wal").write_bytes(b"pending-global-wal")
+    grafx_path = store.global_grafx_path("generation-1")
+    database = _grafx(grafx_path)
+    opened: list[Path] = []
+    resolver = _resolver(
+        store,
+        global_backend="grafx",
+        databases={grafx_path: database},
+        opened=opened,
+    )
+
+    with pytest.raises(GraphCapabilityUnavailable) as ambiguous:
+        resolver.initialize_global_route()
+
+    assert ambiguous.value.details["reason"] == "graph_route_storage_ambiguous"
+    assert opened == []
+    assert not (primary.parent / "graph_backend_binding.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("scope", "alias_level"),
+    [("board", "root"), ("board", "scope_parent"), ("global", "scope_parent")],
+)
+def test_route_initialization_alias_gate_precedes_every_filesystem_write(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    scope: str,
+    alias_level: str,
+) -> None:
+    store = CommunityGraphBackendBindingStore(tmp_path)
+    if scope == "board":
+        scope_parent = store.board_ladybug_path("board-alias").parent
+    else:
+        scope_parent = store.global_ladybug_path().parent
+    alias_target = tmp_path if alias_level == "root" else scope_parent
+    resolver = _resolver(store, board_backend="grafx", global_backend="grafx")
+    alias_probes: list[Path] = []
+    mkdir_calls: list[Path] = []
+    file_lock_calls: list[tuple[object, ...]] = []
+    creation_calls: list[CommunityGraphRouteCandidate] = []
+
+    def alias_probe(path: Path) -> bool:
+        alias_probes.append(path)
+        return path == alias_target
+
+    def forbidden_mkdir(path: Path, *args: object, **kwargs: object) -> None:
+        mkdir_calls.append(path)
+        raise AssertionError((args, kwargs))
+
+    def forbidden_file_lock(*args: object, **kwargs: object) -> None:
+        file_lock_calls.append(args)
+        raise AssertionError(kwargs)
+
+    monkeypatch.setattr(route_module, "is_filesystem_alias", alias_probe)
+    monkeypatch.setattr(Path, "mkdir", forbidden_mkdir)
+    monkeypatch.setattr(route_module, "FileLock", forbidden_file_lock)
+
+    with pytest.raises(GraphCorruption) as refused:
+        if scope == "board":
+            resolver.initialize_board_route(
+                "board-alias",
+                create_physical=lambda candidate: creation_calls.append(candidate),
+            )
+        else:
+            resolver.initialize_global_route(
+                create_physical=lambda candidate: creation_calls.append(candidate)
+            )
+
+    assert refused.value.details["reason"] == "graph_route_filesystem_alias_refused"
+    assert alias_target in alias_probes
+    assert mkdir_calls == []
+    assert file_lock_calls == []
+    assert creation_calls == []
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_global_missing_anchor_remains_inspectable_but_not_acquirable(
