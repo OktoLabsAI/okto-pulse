@@ -1,10 +1,11 @@
 """Installed-wheel, real-HTTP acceptance for recovery and Global Outbox DLQ.
 
-This is intentionally artifact-first.  It builds both current worktrees, installs
-only those wheels into an isolated virtual environment, starts the installed CLI's
-dual API/MCP server on loopback ports, and drives the public Streamable HTTP MCP
-surface.  Controlled fixture injections are declared in the sibling JSON manifest;
-there are no direct FastMCP ``.fn`` calls in this harness.
+This is intentionally artifact-first.  It builds the current Pulse worktrees plus
+an explicit Grafx 0.0.1 candidate, installs only those wheels into isolated virtual
+environments, starts the installed CLI's dual API/MCP server on loopback ports, and
+drives the public Streamable HTTP MCP surface.  Controlled fixture injections are
+declared in the sibling JSON manifest; there are no direct FastMCP ``.fn`` calls in
+this harness.
 """
 
 from __future__ import annotations
@@ -51,6 +52,13 @@ MANIFEST_PATH = Path(__file__).with_name(
     "global_discovery_recovery_installed_e2e_manifest.json"
 )
 OPT_OUT_ENV = "OKTO_SKIP_GLOBAL_DISCOVERY_INSTALLED_E2E"
+GRAFX_WHEEL_ENV = "OKTO_E2E_GRAFX_WHEEL"
+GRAFX_REPO_ENV = "OKTO_E2E_GRAFX_REPO"
+FINAL_WHEEL_DIR_ENV = "OKTO_E2E_FINAL_WHEEL_DIR"
+FINAL_CORE_WHEEL_SHA256_ENV = "OKTO_E2E_FINAL_CORE_WHEEL_SHA256"
+FINAL_COMMUNITY_WHEEL_SHA256_ENV = "OKTO_E2E_FINAL_COMMUNITY_WHEEL_SHA256"
+FINAL_GRAFX_WHEEL_SHA256_ENV = "OKTO_E2E_FINAL_GRAFX_WHEEL_SHA256"
+EXPECTED_GRAFX_VERSION = "0.0.1"
 BOARD_CENSUS_SIZE = 1_500
 EXPECTED_TOOL_COUNT = 338
 EXPECTED_CANONICAL_TOOL_COUNT = 330
@@ -125,6 +133,78 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _expected_sha256(environment_name: str, *, required: bool = False) -> str | None:
+    raw = os.environ.get(environment_name, "").strip().lower()
+    if not raw:
+        assert not required, f"{environment_name} is required in FINAL-pair mode"
+        return None
+    assert re.fullmatch(r"[0-9a-f]{64}", raw), (
+        f"{environment_name} must be exactly 64 hexadecimal characters"
+    )
+    return raw
+
+
+def _resolve_pulse_wheel_pair(
+    *,
+    root: Path,
+    uv: str,
+    build_env: dict[str, str],
+) -> tuple[Path, Path]:
+    """Reuse the governed FINAL pair or build the two current Pulse worktrees."""
+
+    final_wheel_dir_raw = os.environ.get(FINAL_WHEEL_DIR_ENV, "").strip()
+    if final_wheel_dir_raw:
+        final_wheel_dir = Path(final_wheel_dir_raw).expanduser().resolve()
+        assert final_wheel_dir.is_dir(), final_wheel_dir
+        all_wheels = sorted(final_wheel_dir.glob("*.whl"))
+        core_candidates = [
+            wheel for wheel in all_wheels if wheel.name.startswith("okto_pulse_core-")
+        ]
+        community_candidates = [
+            wheel for wheel in all_wheels if wheel.name.startswith("okto_pulse-")
+        ]
+        assert len(all_wheels) == 2, all_wheels
+        assert len(core_candidates) == 1, all_wheels
+        assert len(community_candidates) == 1, all_wheels
+        core_wheel = core_candidates[0]
+        community_wheel = community_candidates[0]
+        assert "-0.3.3-" in core_wheel.name, core_wheel.name
+        assert "-0.3.3-" in community_wheel.name, community_wheel.name
+        expected_core_sha = _expected_sha256(FINAL_CORE_WHEEL_SHA256_ENV)
+        expected_community_sha = _expected_sha256(FINAL_COMMUNITY_WHEEL_SHA256_ENV)
+        if expected_core_sha is not None:
+            assert _sha256(core_wheel) == expected_core_sha
+        if expected_community_sha is not None:
+            assert _sha256(community_wheel) == expected_community_sha
+        return core_wheel, community_wheel
+
+    core_dist = root / "dist" / "core"
+    community_dist = root / "dist" / "community"
+    core_dist.mkdir(parents=True)
+    community_dist.mkdir(parents=True)
+    _run_checked(
+        [uv, "build", "--wheel", "--out-dir", str(core_dist), str(CORE_REPO)],
+        cwd=root,
+        env=build_env,
+    )
+    _run_checked(
+        [
+            uv,
+            "build",
+            "--wheel",
+            "--out-dir",
+            str(community_dist),
+            str(COMMUNITY_REPO),
+        ],
+        cwd=root,
+        env=build_env,
+    )
+    return (
+        _single_wheel(core_dist, "okto_pulse_core"),
+        _single_wheel(community_dist, "okto_pulse"),
+    )
+
+
 def _assert_wheel_resource_ownership(
     core_wheel: Path,
     community_wheel: Path,
@@ -163,6 +243,93 @@ def _assert_wheel_resource_ownership(
     assert all(body and body not in core_payload for body in operational.values())
 
 
+def _assert_grafx_candidate_wheel(wheel: Path) -> Path:
+    """Authenticate the exact unpublished Grafx candidate used by installed tests."""
+
+    resolved = wheel.expanduser().resolve()
+    assert resolved.is_file(), resolved
+    assert resolved.suffix == ".whl", resolved
+    with zipfile.ZipFile(resolved) as archive:
+        metadata_names = [
+            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+        ]
+        assert len(metadata_names) == 1, metadata_names
+        metadata = archive.read(metadata_names[0]).decode("utf-8")
+    assert re.search(r"(?m)^Name: okto-grafx\s*$", metadata), metadata[:2000]
+    assert re.search(
+        rf"(?m)^Version: {re.escape(EXPECTED_GRAFX_VERSION)}\s*$", metadata
+    ), metadata[:2000]
+    assert re.search(r"(?m)^Provides-Extra: accel\s*$", metadata), metadata[:2000]
+    assert re.search(
+        r"(?mi)^Requires-Dist: numpy>=1\.24; extra == ['\"]accel['\"]\s*$",
+        metadata,
+    ), metadata[:4000]
+    assert re.search(
+        r"(?mi)^Requires-Dist: google-crc32c>=1\.5; extra == ['\"]accel['\"]\s*$",
+        metadata,
+    ), metadata[:4000]
+    return resolved
+
+
+def _resolve_grafx_candidate_wheel(
+    *,
+    root: Path,
+    uv: str,
+    build_env: dict[str, str],
+) -> Path:
+    """Use an explicit wheel or build one explicit local Grafx checkout.
+
+    The installed acceptance never falls back to an index.  That keeps the
+    pre-publication Pulse gate on the exact candidate that will become 0.0.1,
+    while ``OKTO_E2E_FINAL_WHEEL_DIR`` remains the governed Core/Community pair.
+    """
+
+    wheel_raw = os.environ.get(GRAFX_WHEEL_ENV, "").strip()
+    repo_raw = os.environ.get(GRAFX_REPO_ENV, "").strip()
+    assert not (wheel_raw and repo_raw), (
+        f"set exactly one of {GRAFX_WHEEL_ENV} or {GRAFX_REPO_ENV}, not both"
+    )
+    final_pair_mode = bool(os.environ.get(FINAL_WHEEL_DIR_ENV, "").strip())
+    expected_final_sha = _expected_sha256(
+        FINAL_GRAFX_WHEEL_SHA256_ENV,
+        required=final_pair_mode,
+    )
+    if final_pair_mode:
+        assert wheel_raw, (
+            "FINAL-pair mode may not rebuild Grafx: pass the frozen candidate via "
+            f"{GRAFX_WHEEL_ENV}"
+        )
+    if wheel_raw:
+        source_wheel = _assert_grafx_candidate_wheel(Path(wheel_raw))
+        source_sha256 = _sha256(source_wheel)
+        if expected_final_sha is not None:
+            assert source_sha256 == expected_final_sha
+        grafx_dist = root / "dist" / "grafx"
+        grafx_dist.mkdir(parents=True, exist_ok=True)
+        staged_wheel = grafx_dist / source_wheel.name
+        if source_wheel != staged_wheel.resolve():
+            shutil.copy2(source_wheel, staged_wheel)
+        staged_wheel = _assert_grafx_candidate_wheel(staged_wheel)
+        assert _sha256(staged_wheel) == source_sha256
+        return staged_wheel
+
+    assert repo_raw, (
+        "the unpublished okto-grafx 0.0.1 candidate must be explicit: set "
+        f"{GRAFX_WHEEL_ENV} to its wheel or {GRAFX_REPO_ENV} to its source checkout"
+    )
+    source_repo = Path(repo_raw).expanduser().resolve()
+    assert source_repo.is_dir(), source_repo
+    assert (source_repo / "pyproject.toml").is_file(), source_repo
+    grafx_dist = root / "dist" / "grafx"
+    grafx_dist.mkdir(parents=True, exist_ok=True)
+    _run_checked(
+        [uv, "build", "--wheel", "--out-dir", str(grafx_dist), str(source_repo)],
+        cwd=root,
+        env=build_env,
+    )
+    return _assert_grafx_candidate_wheel(_single_wheel(grafx_dist, "okto_grafx"))
+
+
 @dataclass(frozen=True)
 class InstalledRuntime:
     root: Path
@@ -177,6 +344,10 @@ class InstalledRuntime:
     peer_actor_id: str
     core_wheel: Path
     community_wheel: Path
+    grafx_wheel: Path
+    core_wheel_sha256: str
+    community_wheel_sha256: str
+    grafx_wheel_sha256: str
     clock_file: Path
     fail_once_marker: Path
     preparation_release_file: Path
@@ -214,58 +385,19 @@ def installed_runtime(
     root = tmp_path_factory.mktemp("global-recovery-installed-e2e")
     build_env = {**os.environ, "UV_NO_PROGRESS": "1"}
 
-    final_wheel_dir_raw = os.environ.get("OKTO_E2E_FINAL_WHEEL_DIR")
-    if final_wheel_dir_raw:
-        # FINAL-pair mode (fail-closed): consume EXACTLY the frozen governed
-        # wheel pair — one Core wheel + one Community wheel, expected
-        # distribution names and version — and never rebuild.  An ambiguous,
-        # missing or extra wheel is a hard failure, not a fallback to build.
-        final_wheel_dir = Path(final_wheel_dir_raw).resolve()
-        assert final_wheel_dir.is_dir(), final_wheel_dir
-        all_wheels = sorted(final_wheel_dir.glob("*.whl"))
-        core_candidates = [
-            wheel for wheel in all_wheels if wheel.name.startswith("okto_pulse_core-")
-        ]
-        community_candidates = [
-            wheel for wheel in all_wheels if wheel.name.startswith("okto_pulse-")
-        ]
-        assert len(all_wheels) == 2, all_wheels
-        assert len(core_candidates) == 1, all_wheels
-        assert len(community_candidates) == 1, all_wheels
-        core_wheel = core_candidates[0]
-        community_wheel = community_candidates[0]
-        assert "-0.3.3-" in core_wheel.name, core_wheel.name
-        assert "-0.3.3-" in community_wheel.name, community_wheel.name
-        expected_core_sha = os.environ.get("OKTO_E2E_FINAL_CORE_WHEEL_SHA256")
-        expected_community_sha = os.environ.get("OKTO_E2E_FINAL_COMMUNITY_WHEEL_SHA256")
-        if expected_core_sha:
-            assert _sha256(core_wheel) == expected_core_sha.lower()
-        if expected_community_sha:
-            assert _sha256(community_wheel) == expected_community_sha.lower()
-    else:
-        core_dist = root / "dist" / "core"
-        community_dist = root / "dist" / "community"
-        core_dist.mkdir(parents=True)
-        community_dist.mkdir(parents=True)
-        _run_checked(
-            [uv, "build", "--wheel", "--out-dir", str(core_dist), str(CORE_REPO)],
-            cwd=root,
-            env=build_env,
-        )
-        _run_checked(
-            [
-                uv,
-                "build",
-                "--wheel",
-                "--out-dir",
-                str(community_dist),
-                str(COMMUNITY_REPO),
-            ],
-            cwd=root,
-            env=build_env,
-        )
-        core_wheel = _single_wheel(core_dist, "okto_pulse_core")
-        community_wheel = _single_wheel(community_dist, "okto_pulse")
+    core_wheel, community_wheel = _resolve_pulse_wheel_pair(
+        root=root,
+        uv=uv,
+        build_env=build_env,
+    )
+    grafx_wheel = _resolve_grafx_candidate_wheel(
+        root=root,
+        uv=uv,
+        build_env=build_env,
+    )
+    core_wheel_sha256 = _sha256(core_wheel)
+    community_wheel_sha256 = _sha256(community_wheel)
+    grafx_wheel_sha256 = _sha256(grafx_wheel)
     _assert_wheel_resource_ownership(core_wheel, community_wheel)
 
     venv = root / "venv"
@@ -284,11 +416,15 @@ def installed_runtime(
             str(python),
             str(core_wheel),
             str(community_wheel),
+            str(grafx_wheel),
         ],
         cwd=root,
         env=build_env,
         timeout=900,
     )
+    assert _sha256(core_wheel) == core_wheel_sha256
+    assert _sha256(community_wheel) == community_wheel_sha256
+    assert _sha256(grafx_wheel) == grafx_wheel_sha256
 
     data_dir = root / "pulse-home"
     clock_file = root / "confirmation-clock-offset-seconds.txt"
@@ -313,6 +449,8 @@ def installed_runtime(
     runtime_env = {
         **os.environ,
         "HF_HUB_OFFLINE": "1",
+        "KG_GLOBAL_GRAPH_BACKEND": "ladybug",
+        "KG_GRAPH_BACKEND": "ladybug",
         "NO_PROXY": "127.0.0.1,localhost",
         "OKTO_PULSE_HOME": str(data_dir),
         "OKTO_PULSE_METRICS_BEACON_STARTUP_DELAY_SECONDS": "600",
@@ -337,12 +475,16 @@ from pathlib import Path
 
 import okto_pulse.community
 import okto_pulse.core
+import okto_grafx
+import google_crc32c
+import numpy
 
 workspace = Path(os.environ["E2E_WORKSPACE_ROOT"]).resolve()
 venv = Path(sys.prefix).resolve()
 origins = {
     "community": str(Path(okto_pulse.community.__file__).resolve()),
     "core": str(Path(okto_pulse.core.__file__).resolve()),
+    "grafx": str(Path(okto_grafx.__file__).resolve()),
 }
 for origin in origins.values():
     path = Path(origin)
@@ -356,12 +498,19 @@ for raw in sys.path:
 
 core = distribution("okto-pulse-core")
 community = distribution("okto-pulse")
+grafx = distribution("okto-grafx")
+grafx_direct_url = json.loads(grafx.read_text("direct_url.json") or "{}")
+assert grafx_direct_url["url"] == os.environ["E2E_GRAFX_WHEEL_URI"]
 core_files = [str(path).replace("\\", "/") for path in (core.files or ())]
 community_files = [str(path).replace("\\", "/") for path in (community.files or ())]
 assert not any(path.startswith("okto_pulse/community/") for path in core_files)
 assert "okto_pulse/community/frontend_dist/index.html" in community_files
 assert "okto_pulse/community/adapters/global_discovery_recovery_worker.py" in community_files
 requirements = [str(requirement).lower() for requirement in (community.requires or ())]
+assert any(
+    row.replace(" ", "") == "okto-grafx[accel]==0.0.1"
+    for row in requirements
+), requirements
 for direct_dependency in (
     "aiosqlite",
     "anyio",
@@ -397,6 +546,15 @@ print(json.dumps({
         "core": version("okto-pulse-core"),
         "community": version("okto-pulse"),
     },
+    "grafx": {
+        "version": version("okto-grafx"),
+        "file_count": len(grafx.files or ()),
+        "accelerators": {
+            "google-crc32c": version("google-crc32c"),
+            "numpy": version("numpy"),
+        },
+        "direct_url": grafx_direct_url["url"],
+    },
     "origins": origins,
     "core_file_count": len(core_files),
     "community_file_count": len(community_files),
@@ -406,6 +564,7 @@ print(json.dumps({
 """
     origin_env = {
         **runtime_env,
+        "E2E_GRAFX_WHEEL_URI": grafx_wheel.as_uri(),
         "E2E_WORKSPACE_ROOT": str(WORKSPACE_ROOT),
     }
     origin_result = _run_checked(
@@ -415,6 +574,7 @@ print(json.dumps({
     )
     origin_report = json.loads(origin_result.stdout.strip().splitlines()[-1])
     assert origin_report["versions"] == {"community": "0.3.3", "core": "0.3.3"}
+    assert origin_report["grafx"]["version"] == EXPECTED_GRAFX_VERSION
     assert origin_report["about_bundle_count"] == 1
 
     resource_manifest_script = r"""
@@ -589,6 +749,10 @@ print(json.dumps({"api_key_hash": key_hash, "api_key_marker": credential_marker(
         peer_actor_id=peer_actor_id,
         core_wheel=core_wheel,
         community_wheel=community_wheel,
+        grafx_wheel=grafx_wheel,
+        core_wheel_sha256=core_wheel_sha256,
+        community_wheel_sha256=community_wheel_sha256,
+        grafx_wheel_sha256=grafx_wheel_sha256,
         clock_file=clock_file,
         fail_once_marker=fail_once_marker,
         preparation_release_file=preparation_release_file,
@@ -611,6 +775,274 @@ print(json.dumps({"api_key_hash": key_hash, "api_key_marker": credential_marker(
         origin_report=origin_report,
         resource_manifest=resource_manifest,
     )
+
+
+def test_final_wheel_mode_reuses_pair_and_authenticates_grafx_before_install(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    final_pair = tmp_path / "final-pair"
+    final_pair.mkdir()
+    core_wheel = final_pair / "okto_pulse_core-0.3.3-py3-none-any.whl"
+    community_wheel = final_pair / "okto_pulse-0.3.3-py3-none-any.whl"
+    core_wheel.write_bytes(b"governed-core")
+    community_wheel.write_bytes(b"governed-community")
+    grafx_wheel = tmp_path / "okto_grafx-0.0.1-py3-none-any.whl"
+    with zipfile.ZipFile(grafx_wheel, "w") as archive:
+        archive.writestr(
+            "okto_grafx-0.0.1.dist-info/METADATA",
+            "\n".join(
+                (
+                    "Metadata-Version: 2.4",
+                    "Name: okto-grafx",
+                    "Version: 0.0.1",
+                    "Provides-Extra: accel",
+                    'Requires-Dist: numpy>=1.24; extra == "accel"',
+                    'Requires-Dist: google-crc32c>=1.5; extra == "accel"',
+                    "",
+                )
+            ),
+        )
+    grafx_sha256 = _sha256(grafx_wheel)
+    monkeypatch.setenv(FINAL_WHEEL_DIR_ENV, str(final_pair))
+    monkeypatch.setenv(GRAFX_WHEEL_ENV, str(grafx_wheel))
+    monkeypatch.delenv(GRAFX_REPO_ENV, raising=False)
+    monkeypatch.delenv(FINAL_CORE_WHEEL_SHA256_ENV, raising=False)
+    monkeypatch.delenv(FINAL_COMMUNITY_WHEEL_SHA256_ENV, raising=False)
+    monkeypatch.setenv(FINAL_GRAFX_WHEEL_SHA256_ENV, grafx_sha256)
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_run_checked",
+        lambda *_args, **_kwargs: pytest.fail("FINAL mode attempted a build"),
+    )
+
+    selected_core, selected_community = _resolve_pulse_wheel_pair(
+        root=tmp_path / "unused-build-root",
+        uv="uv-must-not-run",
+        build_env={},
+    )
+    selected_grafx = _resolve_grafx_candidate_wheel(
+        root=tmp_path / "staged",
+        uv="uv-must-not-run",
+        build_env={},
+    )
+
+    assert selected_core == core_wheel
+    assert selected_community == community_wheel
+    assert _sha256(selected_grafx) == grafx_sha256
+    assert not (tmp_path / "unused-build-root").exists()
+
+    monkeypatch.delenv(FINAL_GRAFX_WHEEL_SHA256_ENV)
+    with pytest.raises(AssertionError, match=FINAL_GRAFX_WHEEL_SHA256_ENV):
+        _resolve_grafx_candidate_wheel(
+            root=tmp_path / "missing-sha",
+            uv="uv-must-not-run",
+            build_env={},
+        )
+    monkeypatch.setenv(FINAL_GRAFX_WHEEL_SHA256_ENV, "0" * 64)
+    with pytest.raises(AssertionError):
+        _resolve_grafx_candidate_wheel(
+            root=tmp_path / "wrong-sha",
+            uv="uv-must-not-run",
+            build_env={},
+        )
+    assert not (tmp_path / "wrong-sha" / "dist").exists()
+
+
+def test_installed_grafx_candidate_materializes_board_and_global_routes(
+    tmp_path: Path,
+) -> None:
+    """Prove the unpublished Grafx wheel through an isolated Pulse install."""
+
+    uv = shutil.which("uv")
+    assert uv is not None, "uv is required; set the explicit opt-out marker to skip"
+    root = tmp_path / "installed-grafx"
+    root.mkdir()
+    build_env = {**os.environ, "UV_NO_PROGRESS": "1"}
+    core_wheel, community_wheel = _resolve_pulse_wheel_pair(
+        root=root,
+        uv=uv,
+        build_env=build_env,
+    )
+    grafx_wheel = _resolve_grafx_candidate_wheel(
+        root=root,
+        uv=uv,
+        build_env=build_env,
+    )
+    core_wheel_sha256 = _sha256(core_wheel)
+    community_wheel_sha256 = _sha256(community_wheel)
+    grafx_wheel_sha256 = _sha256(grafx_wheel)
+    _assert_wheel_resource_ownership(core_wheel, community_wheel)
+
+    venv = root / "venv"
+    _run_checked(
+        [uv, "venv", str(venv), "--python", sys.executable, "--seed"],
+        cwd=root,
+        env=build_env,
+    )
+    python = _venv_python(venv)
+    _run_checked(
+        [
+            uv,
+            "pip",
+            "install",
+            "--python",
+            str(python),
+            str(core_wheel),
+            str(community_wheel),
+            str(grafx_wheel),
+        ],
+        cwd=root,
+        env=build_env,
+        timeout=900,
+    )
+    assert _sha256(core_wheel) == core_wheel_sha256
+    assert _sha256(community_wheel) == community_wheel_sha256
+    assert _sha256(grafx_wheel) == grafx_wheel_sha256
+    _run_checked(
+        [uv, "pip", "check", "--python", str(python)],
+        cwd=root,
+        env=build_env,
+        timeout=120,
+    )
+
+    data_dir = root / "pulse-home"
+    runtime_env = {
+        **os.environ,
+        "HF_HUB_OFFLINE": "1",
+        "KG_GLOBAL_GRAPH_BACKEND": "grafx",
+        "KG_GRAFX_PAGE_SIZE": "8192",
+        "KG_GRAPH_BACKEND": "grafx",
+        "NO_PROXY": "127.0.0.1,localhost",
+        "OKTO_PULSE_HOME": str(data_dir),
+        "OKTO_PULSE_NO_BANNER": "1",
+        "OKTO_PULSE_SKIP_DEMO_SEED": "1",
+        "OKTO_PULSE_TERMS_ACCEPTED": "1",
+        "PYTHONUNBUFFERED": "1",
+        "TOKENIZERS_PARALLELISM": "false",
+        "TRANSFORMERS_OFFLINE": "1",
+    }
+    runtime_env.pop("PYTHONPATH", None)
+    runtime_env.pop("PYTHONHOME", None)
+    console = _venv_script(venv, "okto-pulse")
+    initialized = _run_checked(
+        [str(console), "init"],
+        cwd=root,
+        env=runtime_env,
+        timeout=300,
+    )
+    assert "  Knowledge Graph: board:" in initialized.stdout, initialized.stdout[-4000:]
+    assert "  Global Discovery: materialized" in initialized.stdout, initialized.stdout[
+        -4000:
+    ]
+
+    database_path = data_dir / "data" / "pulse.db"
+    with sqlite3.connect(database_path, timeout=30) as connection:
+        board_rows = connection.execute(
+            "SELECT id FROM boards ORDER BY created_at, id LIMIT 1"
+        ).fetchall()
+    assert len(board_rows) == 1, board_rows
+    board_id = str(board_rows[0][0])
+
+    inspection_script = r"""
+import json
+import os
+import sys
+from importlib.metadata import distribution, version
+from pathlib import Path
+
+import google_crc32c
+import numpy
+import okto_grafx
+import okto_pulse.community
+from okto_grafx import connect
+from okto_pulse.community.adapters.graph_backend_binding import (
+    CommunityGraphBackendBindingStore,
+)
+from okto_pulse.community.config import CommunitySettings
+
+venv = Path(sys.prefix).resolve()
+workspace = Path(os.environ["E2E_WORKSPACE_ROOT"]).resolve()
+for module in (okto_grafx, okto_pulse.community):
+    origin = Path(module.__file__).resolve()
+    assert venv in origin.parents, (venv, origin)
+    assert workspace not in origin.parents, (workspace, origin)
+
+settings = CommunitySettings(_env_file=None)
+assert settings.kg_graph_backend == "grafx"
+assert settings.kg_global_graph_backend == "grafx"
+assert settings.kg_grafx_page_size == 8192
+store = CommunityGraphBackendBindingStore(settings.kg_base_dir)
+board = store.acquire_board_binding(os.environ["E2E_BOARD_ID"])
+global_route = store.acquire_global_binding()
+assert board.backend == "grafx"
+assert global_route.backend == "grafx"
+assert board.page_size == global_route.page_size == 8192
+
+def inspect(binding):
+    # Pulse's productive pool uses the normal Grafx open, which performs the
+    # same bounded recovery/checkpoint admission that a fresh server process
+    # performs.  A forensic read-only open has a stricter checkpoint-complete
+    # precondition and is not the installed runtime path this smoke certifies.
+    with connect(binding.physical_path) as database:
+        assert database.identity.page_size == binding.page_size
+        return sorted(table.name for table in database.catalog.catalog.tables())
+
+board_tables = inspect(board)
+global_tables = inspect(global_route)
+assert len(board_tables) == 81, board_tables
+assert {"BoardMeta", "Entity", "Decision"} <= set(board_tables)
+assert len(global_tables) == 11, global_tables
+assert {
+    "Board",
+    "Topic",
+    "Entity",
+    "DecisionDigest",
+    "HAS_TOPIC",
+    "CONTAINS_DECISION",
+} <= set(global_tables)
+
+grafx_distribution = distribution("okto-grafx")
+grafx_direct_url = json.loads(grafx_distribution.read_text("direct_url.json") or "{}")
+assert grafx_direct_url["url"] == os.environ["E2E_GRAFX_WHEEL_URI"]
+requirements = [
+    str(requirement).lower().replace(" ", "")
+    for requirement in (distribution("okto-pulse").requires or ())
+]
+assert "okto-grafx[accel]==0.0.1" in requirements, requirements
+print(json.dumps({
+    "backends": {"board": board.backend, "global": global_route.backend},
+    "board_table_count": len(board_tables),
+    "global_table_count": len(global_tables),
+    "grafx_version": version("okto-grafx"),
+    "grafx_direct_url": grafx_direct_url["url"],
+    "accelerators": {
+        "google-crc32c": version("google-crc32c"),
+        "numpy": version("numpy"),
+    },
+    "grafx_origin": str(Path(okto_grafx.__file__).resolve()),
+}, sort_keys=True))
+"""
+    inspected = _run_checked(
+        [str(python), "-I", "-c", inspection_script],
+        cwd=root,
+        env={
+            **runtime_env,
+            "E2E_BOARD_ID": board_id,
+            "E2E_GRAFX_WHEEL_URI": grafx_wheel.as_uri(),
+            "E2E_WORKSPACE_ROOT": str(WORKSPACE_ROOT),
+        },
+        timeout=180,
+    )
+    report = json.loads(inspected.stdout.strip().splitlines()[-1])
+    assert report["backends"] == {"board": "grafx", "global": "grafx"}
+    assert report["grafx_version"] == EXPECTED_GRAFX_VERSION
+    assert report["grafx_direct_url"] == grafx_wheel.as_uri()
+    assert report["board_table_count"] == 81
+    assert report["global_table_count"] == 11
+    assert _sha256(core_wheel) == core_wheel_sha256
+    assert _sha256(community_wheel) == community_wheel_sha256
+    assert _sha256(grafx_wheel) == grafx_wheel_sha256
 
 
 def _free_port() -> int:
@@ -1421,8 +1853,9 @@ async def test_installed_wheels_serve_exact_frozen_resource_manifest_over_real_h
         "community": "0.3.3",
         "core": "0.3.3",
     }
-    assert _sha256(runtime.core_wheel)
-    assert _sha256(runtime.community_wheel)
+    assert _sha256(runtime.core_wheel) == runtime.core_wheel_sha256
+    assert _sha256(runtime.community_wheel) == runtime.community_wheel_sha256
+    assert _sha256(runtime.grafx_wheel) == runtime.grafx_wheel_sha256
     with _running_server(runtime, mode="normal") as server:
         async with Client(
             _authenticated_mcp_url(runtime, server),
@@ -1441,8 +1874,9 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
         "community": "0.3.3",
         "core": "0.3.3",
     }
-    assert _sha256(runtime.core_wheel)
-    assert _sha256(runtime.community_wheel)
+    assert _sha256(runtime.core_wheel) == runtime.core_wheel_sha256
+    assert _sha256(runtime.community_wheel) == runtime.community_wheel_sha256
+    assert _sha256(runtime.grafx_wheel) == runtime.grafx_wheel_sha256
 
     # Deterministic queued replay/cancel: only the owned preparation consumer is
     # paused. Admission, persistence, auth, transport, and cancellation are real.
