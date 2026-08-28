@@ -628,6 +628,9 @@ def _make_junction(link: Path, target: Path) -> bool:
         ["cmd", "/c", "mklink", "/J", str(link), str(target)],
         capture_output=True,
         text=True,
+        # A host that cannot make a junction is a skip, not an error, so the
+        # return code is read rather than raised.
+        check=False,
     )
     return completed.returncode == 0 and link.exists()
 
