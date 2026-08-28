@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Any, Iterable
 
 from okto_grafx import Database, VectorValue
@@ -37,6 +38,8 @@ _WRITE_OPERATION = "write_grafx_global_vector"
 _LAYERS = frozenset(("canonical", "working", "all"))
 _SCORE_ABS_TOL = 1e-9
 _SCORE_REL_TOL = 1e-9
+
+MutationFence = Callable[[str], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -429,6 +432,7 @@ def ensure_current_grafx_global_schema(
     database: Database,
     *,
     manifest: GrafxGlobalSchemaManifest = PULSE_GRAFX_GLOBAL_SCHEMA,
+    revalidate_fence: MutationFence | None = None,
 ) -> GrafxGlobalBootstrapResult:
     """Create only missing Global objects in one transaction and validate cold truth."""
 
@@ -439,16 +443,35 @@ def ensure_current_grafx_global_schema(
                 logical_fingerprint=manifest.logical_fingerprint,
                 changed=False,
             )
-        with database.begin("write") as transaction:
+        transaction = database.begin("write")
+        try:
             for space in preflight.missing_spaces:
+                if revalidate_fence is not None:
+                    revalidate_fence("global_schema")
                 transaction.execute(space.ddl())
             missing_names = {table.name for table in preflight.missing_tables}
             for table in manifest.nodes:
                 if table.name in missing_names:
+                    if revalidate_fence is not None:
+                        revalidate_fence("global_schema")
                     transaction.execute(table.ddl())
             for table in manifest.relationships:
                 if table.name in missing_names:
+                    if revalidate_fence is not None:
+                        revalidate_fence("global_schema")
                     transaction.execute(table.ddl())
+            if revalidate_fence is not None:
+                revalidate_fence("commit")
+            report = transaction.commit()
+        except BaseException:
+            if transaction.active:
+                transaction.rollback()
+            raise
+        if not report.durable or not report.wrote:
+            raise _failure(
+                "schema_commit_not_published",
+                operation=_BOOTSTRAP_OPERATION,
+            )
         validate_current_grafx_global_schema(database, manifest=manifest)
         return GrafxGlobalBootstrapResult(
             logical_fingerprint=manifest.logical_fingerprint,
@@ -857,6 +880,7 @@ def upsert_grafx_board_summary_vector(
     summary_embedding: list[float],
     decision_count: int,
     synced_at: str,
+    revalidate_fence: MutationFence | None = None,
 ) -> None:
     """Upsert Board summary data, including every replacement embedding."""
 
@@ -867,7 +891,10 @@ def upsert_grafx_board_summary_vector(
             space="board_summary_idx",
             operation=_WRITE_OPERATION,
         )
-        with database.begin("write") as transaction:
+        transaction = database.begin("write")
+        try:
+            if revalidate_fence is not None:
+                revalidate_fence("upsert_board_summary")
             exists = transaction.execute(
                 "MATCH (b:Board {board_id: $board_id}) RETURN b.board_id",
                 {"board_id": board_id},
@@ -881,6 +908,8 @@ def upsert_grafx_board_summary_vector(
                 "synced_at": synced_at,
             }
             if exists:
+                if revalidate_fence is not None:
+                    revalidate_fence("upsert_board_summary")
                 transaction.execute(
                     "MATCH (b:Board {board_id: $board_id}) "
                     "SET b.name = $name, b.summary = $summary, "
@@ -890,6 +919,8 @@ def upsert_grafx_board_summary_vector(
                     values,
                 )
             else:
+                if revalidate_fence is not None:
+                    revalidate_fence("upsert_board_summary")
                 transaction.execute(
                     "CREATE (:Board {board_id: $board_id, name: $name, "
                     "summary: $summary, summary_embedding: $embedding, "
@@ -898,6 +929,18 @@ def upsert_grafx_board_summary_vector(
                     "last_sync_at: timestamp($synced_at)})",
                     values,
                 )
+            if revalidate_fence is not None:
+                revalidate_fence("commit")
+            report = transaction.commit()
+        except BaseException:
+            if transaction.active:
+                transaction.rollback()
+            raise
+        if not report.durable or not report.wrote:
+            raise _failure(
+                "board_summary_commit_not_published",
+                operation=_WRITE_OPERATION,
+            )
     except GraphError:
         raise
     except Exception as exc:
@@ -917,6 +960,7 @@ def upsert_grafx_decision_digest_vector(
     graph_layer: str,
     embedding: list[float],
     created_at: str,
+    revalidate_fence: MutationFence | None = None,
 ) -> str:
     """Upsert one healthy digest identity and replace its embedding atomically."""
 
@@ -929,7 +973,10 @@ def upsert_grafx_decision_digest_vector(
             space="digest_embedding_idx",
             operation=_WRITE_OPERATION,
         )
-        with database.begin("write") as transaction:
+        transaction = database.begin("write")
+        try:
+            if revalidate_fence is not None:
+                revalidate_fence("upsert_decision_digest")
             by_source = transaction.execute(
                 "MATCH (d:DecisionDigest) "
                 "WHERE d.board_id = $board_id "
@@ -946,6 +993,8 @@ def upsert_grafx_decision_digest_vector(
                     board_id=board_id,
                     original_node_id=original_node_id,
                 )
+            if revalidate_fence is not None:
+                revalidate_fence("upsert_decision_digest")
             by_id = transaction.execute(
                 "MATCH (d:DecisionDigest {id: $digest_id}) "
                 "RETURN d.board_id, d.original_node_id",
@@ -971,6 +1020,8 @@ def upsert_grafx_decision_digest_vector(
                 "created_at": created_at,
             }
             if by_id:
+                if revalidate_fence is not None:
+                    revalidate_fence("upsert_decision_digest")
                 transaction.execute(
                     "MATCH (d:DecisionDigest {id: $digest_id}) "
                     "SET d.board_id = $board_id, "
@@ -983,6 +1034,8 @@ def upsert_grafx_decision_digest_vector(
                 )
                 outcome = "updated"
             else:
+                if revalidate_fence is not None:
+                    revalidate_fence("upsert_decision_digest")
                 transaction.execute(
                     "CREATE (:DecisionDigest {id: $digest_id, "
                     "board_id: $board_id, original_node_id: $original_node_id, "
@@ -993,6 +1046,18 @@ def upsert_grafx_decision_digest_vector(
                     values,
                 )
                 outcome = "created"
+            if revalidate_fence is not None:
+                revalidate_fence("commit")
+            report = transaction.commit()
+        except BaseException:
+            if transaction.active:
+                transaction.rollback()
+            raise
+        if not report.durable or not report.wrote:
+            raise _failure(
+                "decision_digest_commit_not_published",
+                operation=_WRITE_OPERATION,
+            )
         return outcome
     except GraphError:
         raise
@@ -1006,6 +1071,7 @@ __all__ = [
     "GrafxGlobalBootstrapResult",
     "GrafxGlobalSchemaManifest",
     "GrafxVectorIndexStatus",
+    "MutationFence",
     "certify_grafx_global_vector_indexes",
     "ensure_current_grafx_global_schema",
     "search_grafx_decision_digests",
