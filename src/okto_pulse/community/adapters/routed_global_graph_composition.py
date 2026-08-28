@@ -55,10 +55,14 @@ from okto_pulse.community.adapters.global_discovery_layout import (
     GENERATION_MANIFEST_FILENAME,
     active_pointer_path,
     canonical_sha256,
+    generation_graph_path,
     generations_root,
 )
 from okto_pulse.community.adapters.global_discovery_recovery import (
     CommunityGlobalDiscoveryRecovery,
+)
+from okto_pulse.community.adapters.global_discovery_recovery import (
+    _physical_generation_id as _ladybug_recovery_generation_id,
 )
 from okto_pulse.community.adapters.global_discovery_runtime import (
     CommunityGlobalDiscoveryRuntime,
@@ -69,6 +73,12 @@ from okto_pulse.community.adapters.grafx_database_pool import (
 )
 from okto_pulse.community.adapters.grafx_global_discovery_recovery import (
     CommunityGrafxGlobalDiscoveryRecovery,
+)
+from okto_pulse.community.adapters.grafx_global_discovery_recovery import (
+    _adoption_generation_id as _grafx_adoption_generation_id,
+)
+from okto_pulse.community.adapters.grafx_global_discovery_recovery import (
+    _generation_id as _grafx_recovery_generation_id,
 )
 from okto_pulse.community.adapters.grafx_global_discovery_runtime import (
     CommunityGrafxGlobalDiscoveryRuntime,
@@ -105,12 +115,6 @@ _PRESERVED_GLOBAL_CONTROL_FILES = frozenset(
         ".graph_route_initialization.lock",
     }
 )
-_ALLOWED_GRAFX_RECOVERY_KINDS = frozenset(
-    {
-        "grafx_global_discovery_recovery",
-        "grafx_global_discovery_recovery_adoption",
-    }
-)
 
 
 class _GlobalLock(Protocol):
@@ -142,6 +146,14 @@ FenceRevalidator = Callable[[str], None]
 QuarantineTargets = Callable[
     [CommunityGraphRouteSnapshot, tuple[Path, ...], str],
     int,
+]
+StandaloneGlobalPurge = Callable[
+    [CommunityGraphRouteSnapshot, str],
+    GraphPurgeResult,
+]
+StandaloneGlobalPrivacy = Callable[
+    [CommunityGraphRouteSnapshot, str, str, tuple[str, ...] | None],
+    dict[str, object],
 ]
 
 
@@ -196,6 +208,59 @@ def _require_binding_unchanged(
                 "reason": "global_binding_changed",
             },
         )
+
+
+class _GlobalAdministrationBinding:
+    """Late-bind the one durable administration path into operation sessions.
+
+    A post-write verification session retains the selected physical handle.
+    Purge/privacy must first release that pin, then use the same standalone
+    coordinator as an ordinary call.  This binding breaks the construction
+    cycle without creating a fallback to either backend leaf.
+    """
+
+    def __init__(self) -> None:
+        self._purge: StandaloneGlobalPurge | None = None
+        self._privacy: StandaloneGlobalPrivacy | None = None
+
+    def bind(
+        self,
+        *,
+        purge: StandaloneGlobalPurge,
+        privacy: StandaloneGlobalPrivacy,
+    ) -> None:
+        if self._purge is not None or self._privacy is not None:
+            raise RuntimeError("global_graph_administration_already_bound")
+        self._purge = purge
+        self._privacy = privacy
+
+    def purge(
+        self,
+        snapshot: CommunityGraphRouteSnapshot,
+        *,
+        close_active: Callable[[], None],
+        reason: str,
+    ) -> GraphPurgeResult:
+        purge = self._purge
+        if purge is None:
+            raise RuntimeError("global_graph_administration_unbound")
+        close_active()
+        return purge(snapshot, reason)
+
+    def privacy(
+        self,
+        snapshot: CommunityGraphRouteSnapshot,
+        *,
+        close_active: Callable[[], None],
+        board_id: str,
+        reason: str,
+        survivor_board_ids: tuple[str, ...] | None,
+    ) -> dict[str, object]:
+        privacy = self._privacy
+        if privacy is None:
+            raise RuntimeError("global_graph_administration_unbound")
+        close_active()
+        return privacy(snapshot, board_id, reason, survivor_board_ids)
 
 
 class _LadybugGlobalRuntimeManager:
@@ -342,10 +407,12 @@ class _GrafxRuntimeSessionFactory:
         resolver: CommunityGraphRouteResolver,
         pool_manager: _GrafxGlobalPoolManager,
         revalidate_write_fence: FenceRevalidator,
+        administration: _GlobalAdministrationBinding,
     ) -> None:
         self._resolver = resolver
         self._pool_manager = pool_manager
         self._revalidate_write_fence = revalidate_write_fence
+        self._administration = administration
 
     @contextmanager
     def __call__(
@@ -397,9 +464,15 @@ class _GrafxRuntimeSessionFactory:
                 ),
                 flush_after_write_batch_unguarded=runtime.flush_after_write_batch,
                 close_unguarded=runtime.close,
-                purge_unguarded=lambda reason: runtime.purge(reason=reason),
+                purge_unguarded=lambda reason: self._administration.purge(
+                    snapshot,
+                    close_active=runtime.close,
+                    reason=reason,
+                ),
                 erase_storage_for_privacy_unguarded=lambda board_id, reason, survivors: (
-                    runtime.erase_storage_for_privacy(
+                    self._administration.privacy(
+                        snapshot,
+                        close_active=runtime.close,
                         board_id=board_id,
                         reason=reason,
                         survivor_board_ids=survivors,
@@ -411,8 +484,13 @@ class _GrafxRuntimeSessionFactory:
 
 
 class _LadybugRuntimeSessionFactory:
-    def __init__(self, manager: _LadybugGlobalRuntimeManager) -> None:
+    def __init__(
+        self,
+        manager: _LadybugGlobalRuntimeManager,
+        administration: _GlobalAdministrationBinding,
+    ) -> None:
         self._manager = manager
+        self._administration = administration
 
     @contextmanager
     def __call__(
@@ -430,9 +508,15 @@ class _LadybugRuntimeSessionFactory:
             ),
             flush_after_write_batch_unguarded=runtime.flush_after_write_batch,
             close_unguarded=runtime.close,
-            purge_unguarded=lambda reason: runtime.purge(reason=reason),
+            purge_unguarded=lambda reason: self._administration.purge(
+                snapshot,
+                close_active=runtime.close,
+                reason=reason,
+            ),
             erase_storage_for_privacy_unguarded=lambda board_id, reason, survivors: (
-                runtime.erase_storage_for_privacy(
+                self._administration.privacy(
+                    snapshot,
+                    close_active=runtime.close,
                     board_id=board_id,
                     reason=reason,
                     survivor_board_ids=survivors,
@@ -601,8 +685,10 @@ def _validate_authenticated_recovery_transition(
 ) -> bool:
     """Accept only the manifest/pointer written for this exact worker attempt."""
 
-    del previous  # the authenticated pointer is authoritative, never settings
-    if not _immutable_binding_matches(initial, observed):
+    # One recovery invocation owns at most one active-pointer transition.  Once
+    # a new snapshot was accepted, neither a rollback to ``initial`` nor a
+    # second generation may become current under the same operation.
+    if previous != initial or not _immutable_binding_matches(initial, observed):
         return False
     if (
         observed.active_generation is None
@@ -628,12 +714,38 @@ def _validate_authenticated_recovery_transition(
     ):
         return False
     kind = document.get("kind")
-    if initial.backend == "grafx":
-        return kind in _ALLOWED_GRAFX_RECOVERY_KINDS
-    # Ladybug's durable generation manifest predates the explicit ``kind``
-    # field.  Refuse a Grafx/ad-hoc kind on that backend rather than widening
-    # the accepted document vocabulary.
-    return kind is None
+    try:
+        if initial.backend == "grafx":
+            if kind == "grafx_global_discovery_recovery":
+                expected_generation = _grafx_recovery_generation_id(
+                    run_id=run_id,
+                    epoch=epoch,
+                    attempt_id=attempt_id,
+                )
+            elif kind == "grafx_global_discovery_recovery_adoption":
+                expected_generation = _grafx_adoption_generation_id(
+                    run_id=run_id,
+                    epoch=epoch,
+                    attempt_id=attempt_id,
+                )
+            else:
+                return False
+        else:
+            # Ladybug's durable generation manifest predates the explicit
+            # ``kind`` field.  Refuse a Grafx/ad-hoc vocabulary there.
+            if kind is not None:
+                return False
+            expected_generation = _ladybug_recovery_generation_id(
+                run_id=run_id,
+                epoch=epoch,
+                attempt_id=attempt_id,
+            )
+    except (TypeError, ValueError):
+        return False
+    return observed.active_generation == expected_generation and _same_path(
+        observed.active_path,
+        generation_graph_path(initial.anchor_path, expected_generation),
+    )
 
 
 class _ComposedRoutedGlobalDiscoveryRecovery(CommunityRoutedGlobalDiscoveryRecovery):
@@ -1317,11 +1429,13 @@ def build_community_routed_global_graph_composition(
     revalidate = revalidate_write_fence or _default_fence_revalidator
     ladybug = _LadybugGlobalRuntimeManager(ladybug_runtime_factory)
     grafx = _GrafxGlobalPoolManager(grafx_pool)
-    ladybug_sessions = _LadybugRuntimeSessionFactory(ladybug)
+    administration = _GlobalAdministrationBinding()
+    ladybug_sessions = _LadybugRuntimeSessionFactory(ladybug, administration)
     grafx_sessions = _GrafxRuntimeSessionFactory(
         resolver=resolver,
         pool_manager=grafx,
         revalidate_write_fence=revalidate,
+        administration=administration,
     )
     purge = _GlobalPurgeCoordinator(
         binding_store=binding_store,
@@ -1339,6 +1453,7 @@ def build_community_routed_global_graph_composition(
         grafx_sessions=grafx_sessions,
         revalidate_write_fence=revalidate,
     )
+    administration.bind(purge=purge, privacy=privacy)
 
     def ladybug_state(
         snapshot: CommunityGraphRouteSnapshot,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,13 +15,28 @@ from okto_pulse.core.kg.interfaces.graph_runtime_store import (
     GraphRuntimeState,
 )
 from okto_pulse.core.kg.interfaces.storage_ref import StorageRef
+from okto_pulse.core.ports.global_discovery_recovery_control import (
+    recovery_attempt_id,
+)
 
-from okto_pulse.community.adapters.global_discovery_layout import canonical_sha256
+from okto_pulse.community.adapters.global_discovery_layout import (
+    canonical_sha256,
+    generation_graph_path,
+)
+from okto_pulse.community.adapters.global_discovery_recovery import (
+    _physical_generation_id as _ladybug_recovery_generation_id,
+)
 from okto_pulse.community.adapters.global_discovery_runtime import (
     CommunityGlobalDiscoveryRuntime,
 )
 from okto_pulse.community.adapters.grafx_database_pool import (
     CommunityGrafxDatabasePool,
+)
+from okto_pulse.community.adapters.grafx_global_discovery_recovery import (
+    _adoption_generation_id as _grafx_adoption_generation_id,
+)
+from okto_pulse.community.adapters.grafx_global_discovery_recovery import (
+    _generation_id as _grafx_recovery_generation_id,
 )
 from okto_pulse.community.adapters.graph_backend_binding import (
     GLOBAL_BINDING_FILENAME,
@@ -273,26 +288,40 @@ def test_grafx_operation_lease_rotates_without_leaking_a_pin(tmp_path: Path) -> 
     assert len(manager.leases) == 2
 
 
+@pytest.mark.parametrize(
+    ("kind", "generation_factory"),
+    [
+        ("grafx_global_discovery_recovery", _grafx_recovery_generation_id),
+        (
+            "grafx_global_discovery_recovery_adoption",
+            _grafx_adoption_generation_id,
+        ),
+    ],
+)
 def test_recovery_transition_requires_exact_authenticated_attempt_manifest(
     tmp_path: Path,
+    kind: str,
+    generation_factory: Any,
 ) -> None:
     initial = _snapshot(tmp_path, backend="grafx")
-    generation = "gdr_attempt_1234"
-    active = (
-        initial.anchor_path.parent
-        / "discovery.generations"
-        / generation
-        / initial.anchor_path.name
+    run_id = "gdr_run_1234"
+    epoch = 7
+    attempt_id = recovery_attempt_id(run_id, epoch)
+    generation = generation_factory(
+        run_id=run_id,
+        epoch=epoch,
+        attempt_id=attempt_id,
     )
+    active = generation_graph_path(initial.anchor_path, generation)
     manifest_path = active.parent / "generation_manifest.json"
     manifest_path.parent.mkdir(parents=True)
     body = {
         "layout_version": 1,
         "generation_id": generation,
-        "kind": "grafx_global_discovery_recovery",
-        "run_id": "gdr_run_1234",
-        "epoch": 7,
-        "attempt_id": "attempt-7",
+        "kind": kind,
+        "run_id": run_id,
+        "epoch": epoch,
+        "attempt_id": attempt_id,
     }
     manifest_sha = canonical_sha256(body)
     manifest_path.write_text(
@@ -311,16 +340,16 @@ def test_recovery_transition_requires_exact_authenticated_attempt_manifest(
         initial=initial,
         previous=initial,
         observed=observed,
-        run_id="gdr_run_1234",
-        epoch=7,
-        attempt_id="attempt-7",
+        run_id=run_id,
+        epoch=epoch,
+        attempt_id=attempt_id,
     )
     assert not _validate_authenticated_recovery_transition(
         initial=initial,
         previous=initial,
         observed=observed,
-        run_id="gdr_run_1234",
-        epoch=7,
+        run_id=run_id,
+        epoch=epoch,
         attempt_id="forged",
     )
     forged = dict(body)
@@ -334,9 +363,104 @@ def test_recovery_transition_requires_exact_authenticated_attempt_manifest(
         initial=initial,
         previous=initial,
         observed=replace(observed, active_manifest_sha256=forged_sha),
-        run_id="gdr_run_1234",
-        epoch=7,
-        attempt_id="attempt-7",
+        run_id=run_id,
+        epoch=epoch,
+        attempt_id=attempt_id,
+    )
+
+    forged_generation = "gdr_forged_same_attempt"
+    forged_active = generation_graph_path(initial.anchor_path, forged_generation)
+    forged_active.parent.mkdir(parents=True)
+    forged_body = {
+        **body,
+        "generation_id": forged_generation,
+    }
+    forged_manifest_sha = canonical_sha256(forged_body)
+    (forged_active.parent / "generation_manifest.json").write_text(
+        json.dumps({**forged_body, "manifest_sha256": forged_manifest_sha}),
+        encoding="utf-8",
+    )
+    assert not _validate_authenticated_recovery_transition(
+        initial=initial,
+        previous=initial,
+        observed=replace(
+            observed,
+            active_path=forged_active,
+            active_generation=forged_generation,
+            active_manifest_sha256=forged_manifest_sha,
+            route_sha256="e" * 64,
+        ),
+        run_id=run_id,
+        epoch=epoch,
+        attempt_id=attempt_id,
+    )
+
+
+def test_ladybug_recovery_transition_requires_deterministic_generation(
+    tmp_path: Path,
+) -> None:
+    initial = _snapshot(tmp_path, backend="ladybug")
+    run_id = "gdr_run_5678"
+    epoch = 3
+    attempt_id = recovery_attempt_id(run_id, epoch)
+    generation = _ladybug_recovery_generation_id(
+        run_id=run_id,
+        epoch=epoch,
+        attempt_id=attempt_id,
+    )
+    active = generation_graph_path(initial.anchor_path, generation)
+    active.parent.mkdir(parents=True)
+    body = {
+        "layout_version": 1,
+        "generation_id": generation,
+        "run_id": run_id,
+        "epoch": epoch,
+        "attempt_id": attempt_id,
+    }
+    manifest_sha = canonical_sha256(body)
+    (active.parent / "generation_manifest.json").write_text(
+        json.dumps({**body, "manifest_sha256": manifest_sha}),
+        encoding="utf-8",
+    )
+    observed = replace(
+        initial,
+        active_path=active,
+        active_generation=generation,
+        active_manifest_sha256=manifest_sha,
+        route_sha256="d" * 64,
+    )
+
+    assert _validate_authenticated_recovery_transition(
+        initial=initial,
+        previous=initial,
+        observed=observed,
+        run_id=run_id,
+        epoch=epoch,
+        attempt_id=attempt_id,
+    )
+
+    forged_generation = "gdr_run_5678_attempt_999"
+    forged_active = generation_graph_path(initial.anchor_path, forged_generation)
+    forged_active.parent.mkdir(parents=True)
+    forged_body = {**body, "generation_id": forged_generation}
+    forged_sha = canonical_sha256(forged_body)
+    (forged_active.parent / "generation_manifest.json").write_text(
+        json.dumps({**forged_body, "manifest_sha256": forged_sha}),
+        encoding="utf-8",
+    )
+    assert not _validate_authenticated_recovery_transition(
+        initial=initial,
+        previous=initial,
+        observed=replace(
+            observed,
+            active_path=forged_active,
+            active_generation=forged_generation,
+            active_manifest_sha256=forged_sha,
+            route_sha256="e" * 64,
+        ),
+        run_id=run_id,
+        epoch=epoch,
+        attempt_id=attempt_id,
     )
 
 
@@ -461,6 +585,58 @@ def test_ladybug_purge_quarantines_only_selected_layout_and_preserves_binding(
     assert not (global_root / "discovery.generations").exists()
 
 
+def test_real_grafx_purge_then_bootstrap_rematerializes_exact_bound_route(
+    tmp_path: Path,
+) -> None:
+    store = CommunityGraphBackendBindingStore(tmp_path)
+    resolver = CommunityGraphRouteResolver(
+        store,
+        board_backend="ladybug",
+        global_backend="grafx",
+        grafx_page_size=PULSE_GRAFX_DEFAULT_PAGE_SIZE,
+    )
+
+    def quarantine(
+        _snapshot: CommunityGraphRouteSnapshot,
+        targets: tuple[Path, ...],
+        _reason: str,
+    ) -> int:
+        for target in targets:
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        return len(targets)
+
+    bundle = build_community_routed_global_graph_composition(
+        binding_store=store,
+        resolver=resolver,
+        grafx_pool=CommunityGrafxDatabasePool(tmp_path),
+        global_lock=threading.RLock(),
+        revalidate_write_fence=lambda _phase: None,
+        quarantine_targets=quarantine,
+    )
+    initialized = bundle.initialize_global_route()
+    binding_path = _binding_manifest(store.root)
+    binding_before = binding_path.read_bytes()
+
+    receipt = bundle.runtime.purge(reason="rebuild-from-scratch")
+
+    assert receipt.status == "purged"
+    assert binding_path.read_bytes() == binding_before
+    assert not initialized.active_path.exists()
+
+    handle = bundle.runtime.bootstrap()
+    rebound = resolver.acquire_global_route()
+
+    assert handle.opened
+    assert rebound == initialized
+    assert binding_path.read_bytes() == binding_before
+    assert initialized.active_path.is_dir()
+    assert "Board" in bundle.runtime.list_schema_objects()
+    bundle.close_all_on_shutdown()
+
+
 def test_privacy_sweeps_both_layouts_restores_survivors_and_keeps_binding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -574,8 +750,10 @@ def test_privacy_sweeps_both_layouts_restores_survivors_and_keeps_binding(
     assert runtime.flushes == 1
 
 
+@pytest.mark.parametrize("inside_verification_scope", [False, True])
 def test_real_grafx_privacy_handles_present_target_and_dual_layout(
     tmp_path: Path,
+    inside_verification_scope: bool,
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
     resolver = CommunityGraphRouteResolver(
@@ -626,11 +804,17 @@ def test_real_grafx_privacy_handles_present_target_and_dual_layout(
     binding_path = _binding_manifest(store.root)
     binding_before = binding_path.read_bytes()
 
-    receipt = bundle.runtime.erase_storage_for_privacy(
-        board_id="target",
-        reason="privacy-test",
-        survivor_board_ids=("survivor",),
+    scope = (
+        bundle.runtime.post_write_verification_scope()
+        if inside_verification_scope
+        else nullcontext()
     )
+    with scope:
+        receipt = bundle.runtime.erase_storage_for_privacy(
+            board_id="target",
+            reason="privacy-test",
+            survivor_board_ids=("survivor",),
+        )
 
     assert receipt["status"] == "purged"
     assert binding_path.read_bytes() == binding_before

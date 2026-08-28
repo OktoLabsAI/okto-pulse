@@ -481,13 +481,39 @@ class CommunityRoutedGlobalDiscoveryRuntime:
             return self._backend(snapshot).materialization_paths(snapshot)
 
     def bootstrap(self) -> GraphHandle:
-        """Bootstrap only an already initialized route; never create a binding."""
+        """Bootstrap one bound route, rematerializing its exact target if absent.
 
-        return self._call_runtime(
-            "bootstrap",
-            phase="global_bootstrap",
-            write=True,
-        )
+        Purge deliberately preserves the immutable backend binding while it
+        quarantines the selected physical layout.  Bootstrap is the explicit
+        lifecycle door that makes that already-bound target usable again; it
+        must therefore inspect (not acquire) the route before the physical
+        provider creates the same path.  Ordinary reads and writes still use
+        ``_acquire_live_snapshot`` and remain fail-closed while it is absent.
+        """
+
+        with self._global_lock:
+            snapshot = self._inspect_snapshot()
+            active = self._active_for_current_thread()
+            self._revalidate_dispatch(
+                snapshot,
+                phase="global_bootstrap",
+                write=True,
+                require_physical=False,
+            )
+            if active is not None:
+                handle = active.session.runtime.bootstrap()
+            else:
+                with self._backend(snapshot).session_factory(snapshot) as session:
+                    handle = session.runtime.bootstrap()
+            # Publication is terminal only when the exact bound target now
+            # exists and no binding/active-pointer cutover occurred meanwhile.
+            self._revalidate_dispatch(
+                snapshot,
+                phase="global_bootstrap",
+                write=True,
+                require_physical=True,
+            )
+            return handle
 
     def ensure_layer_schema(self) -> tuple[str, ...]:
         return self._call_runtime(
@@ -893,8 +919,7 @@ class CommunityRoutedGlobalDiscoveryRecovery:
                 # Calling it is revalidation, never acquisition.
                 fence_check()
                 observed = self._snapshot()
-                if observed == accepted or observed == initial:
-                    accepted = observed
+                if observed == accepted:
                     return
                 if not _immutable_recovery_binding_matches(initial, observed):
                     raise GraphCapabilityUnavailable(

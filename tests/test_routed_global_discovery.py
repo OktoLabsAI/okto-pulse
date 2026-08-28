@@ -662,6 +662,60 @@ def test_recovery_accepts_only_authenticated_same_attempt_transition(
     assert validation_calls[0]["attempt_id"] == "attempt-a"
 
 
+def test_recovery_refuses_rollback_after_authenticated_transition(
+    tmp_path: Path,
+) -> None:
+    initial = _snapshot(tmp_path, backend="grafx")
+    transitioned = replace(
+        initial,
+        active_path=initial.anchor_path.parent / "generations" / "attempt-2" / "graph",
+        active_generation="attempt-2",
+        active_manifest_sha256="1" * 64,
+        route_sha256="2" * 64,
+    )
+    resolver = _Resolver(initial)
+
+    class RollingBackProvider(_RecoveryProvider):
+        def _operation(
+            self,
+            name: str,
+            *,
+            fence_check: Any,
+            result: Any,
+            **kwargs: object,
+        ) -> Any:
+            self.calls.append(name)
+            self.extension_kwargs.append((name, kwargs))
+            fence_check()
+            resolver.current = transitioned
+            fence_check()
+            resolver.current = initial
+            fence_check()
+            return result
+
+    provider = RollingBackProvider()
+
+    def validate(**kwargs: object) -> bool:
+        return kwargs["previous"] == initial and kwargs["observed"] == transitioned
+
+    recovery = _recovery(resolver, provider, validator=validate)
+
+    with pytest.raises(GraphCapabilityUnavailable) as refused:
+        recovery.recover_and_cutover(
+            run_id="run-a",
+            epoch=2,
+            attempt_id="attempt-a",
+            expected_live_sha256="3" * 64,
+            boards=(),
+            fence_check=lambda: None,
+        )
+
+    assert refused.value.details["reason"] == (
+        "recovery_route_transition_unauthenticated"
+    )
+    assert resolver.current == initial
+
+
 def test_recovery_rejects_unauthenticated_transition_and_lost_writer(
     tmp_path: Path,
 ) -> None:
