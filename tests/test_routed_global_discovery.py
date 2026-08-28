@@ -27,6 +27,12 @@ from okto_pulse.core.kg.interfaces.graph_runtime_store import (
 from okto_pulse.core.kg.interfaces.graph_transaction import GraphStatementResult
 from okto_pulse.core.kg.interfaces.storage_ref import StorageRef
 
+from okto_pulse.community.adapters.global_discovery_recovery import (
+    CommunityGlobalDiscoveryRecoveryFenceError,
+)
+from okto_pulse.community.adapters.grafx_global_discovery_recovery import (
+    CommunityGrafxGlobalDiscoveryFenceError,
+)
 from okto_pulse.community.adapters.graph_route_resolver import (
     CommunityGraphRouteSnapshot,
 )
@@ -484,6 +490,18 @@ class _RecoveryProvider:
     def __init__(self) -> None:
         self.before_second_fence: Any = None
         self.calls: list[str] = []
+        self.extension_kwargs: list[tuple[str, dict[str, object]]] = []
+        self.failure: BaseException | None = None
+        self.retention_result = _RetentionResult()
+        self.terminal_result: GlobalDiscoveryCutoverResult | None = None
+        self.predecessor_result: GlobalDiscoveryCutoverResult | None = (
+            GlobalDiscoveryCutoverResult(
+                outcome="completed",
+                candidate_sha256="c" * 64,
+                quarantine_ref=None,
+                schema_object_count=3,
+            )
+        )
 
     def inspect_live_artifact(self) -> GlobalDiscoveryArtifactSnapshot:
         self.calls.append("inspect")
@@ -498,21 +516,79 @@ class _RecoveryProvider:
         self.calls.append("fingerprint")
         return "e" * 64
 
-    def _recover(self, *, fence_check: Any, **kwargs: object):
-        self.calls.append("recover")
+    def _operation(
+        self,
+        name: str,
+        *,
+        fence_check: Any,
+        result: Any,
+        **kwargs: object,
+    ) -> Any:
+        self.calls.append(name)
+        self.extension_kwargs.append((name, kwargs))
         fence_check()
         if self.before_second_fence is not None:
             self.before_second_fence()
         fence_check()
-        return GlobalDiscoveryCutoverResult(
-            outcome="completed",
-            candidate_sha256="f" * 64,
-            quarantine_ref=None,
-            schema_object_count=3,
+        if self.failure is not None:
+            raise self.failure
+        return result
+
+    def _recover(self, *, fence_check: Any, **kwargs: object):
+        return self._operation(
+            "recover",
+            fence_check=fence_check,
+            result=GlobalDiscoveryCutoverResult(
+                outcome="completed",
+                candidate_sha256="f" * 64,
+                quarantine_ref=None,
+                schema_object_count=3,
+            ),
+            **kwargs,
+        )
+
+    def reconcile_attempt_artifacts(self, *, fence_check: Any, **kwargs: object):
+        return self._operation(
+            "reconcile_attempt_artifacts",
+            fence_check=fence_check,
+            result=self.retention_result,
+            **kwargs,
+        )
+
+    def reconcile_attempt_terminal_truth(
+        self,
+        *,
+        fence_check: Any,
+        **kwargs: object,
+    ):
+        return self._operation(
+            "reconcile_attempt_terminal_truth",
+            fence_check=fence_check,
+            result=self.terminal_result,
+            **kwargs,
+        )
+
+    def reconcile_predecessor_and_complete(
+        self,
+        *,
+        fence_check: Any,
+        **kwargs: object,
+    ):
+        return self._operation(
+            "reconcile_predecessor_and_complete",
+            fence_check=fence_check,
+            result=self.predecessor_result,
+            **kwargs,
         )
 
     rebuild_candidate_and_cutover = _recover
     recover_and_cutover = _recover
+
+
+class _RetentionResult:
+    quarantined_ids: tuple[str, ...] = ()
+    retained_ids: tuple[str, ...] = ("retained",)
+    deleted_ids: tuple[str, ...] = ()
 
 
 def _recovery(
@@ -682,6 +758,190 @@ def test_runtime_and_recovery_share_the_injected_lock_and_match_core_ports(
     assert shared_lock.entries == 2
     assert shared_lock.exits == 2
     assert shared_lock.depth == 0
+
+
+@pytest.mark.parametrize("backend", ["ladybug", "grafx"])
+def test_recovery_worker_extensions_route_one_selected_leaf_with_exact_arguments(
+    tmp_path: Path,
+    backend: str,
+) -> None:
+    initial = _snapshot(tmp_path, backend=backend)
+    resolver = _Resolver(initial)
+    provider = _RecoveryProvider()
+    selected: list[tuple[str, CommunityGraphRouteSnapshot]] = []
+    wrong_backend_calls = 0
+
+    def selected_factory(snapshot: CommunityGraphRouteSnapshot) -> _RecoveryProvider:
+        selected.append((backend, snapshot))
+        return provider
+
+    def wrong_factory(_snapshot: CommunityGraphRouteSnapshot) -> _RecoveryProvider:
+        nonlocal wrong_backend_calls
+        wrong_backend_calls += 1
+        raise AssertionError("fallback provider called")
+
+    recovery = CommunityRoutedGlobalDiscoveryRecovery(
+        resolver,  # type: ignore[arg-type]
+        global_lock=_TracingRLock(),
+        ladybug_factory=selected_factory if backend == "ladybug" else wrong_factory,
+        grafx_factory=selected_factory if backend == "grafx" else wrong_factory,
+        validate_authenticated_transition=lambda **_kwargs: False,
+    )
+    checks = 0
+
+    def fence() -> None:
+        nonlocal checks
+        checks += 1
+
+    now = datetime(2026, 8, 28, 12, 0, tzinfo=UTC)
+    retention = recovery.reconcile_attempt_artifacts(
+        run_id="run-a",
+        known_attempt_ids=("run-a/attempt-1",),
+        now=now,
+        fence_check=fence,
+    )
+    terminal = recovery.reconcile_attempt_terminal_truth(
+        run_id="run-a",
+        epoch=2,
+        attempt_id="run-a/attempt-2",
+        expected_live_sha256="1" * 64,
+        boards=(),
+        fence_check=fence,
+    )
+    predecessor = recovery.reconcile_predecessor_and_complete(
+        run_id="run-a",
+        epoch=2,
+        attempt_id="run-a/attempt-2",
+        ancestry=((1, "run-a/attempt-1"),),
+        expected_live_sha256="1" * 64,
+        boards=(),
+        fence_check=fence,
+    )
+
+    assert retention is provider.retention_result
+    assert terminal is None
+    assert predecessor is provider.predecessor_result
+    assert selected == [(backend, initial)] * 3
+    assert wrong_backend_calls == 0
+    assert checks == 9
+    assert provider.calls == [
+        "reconcile_attempt_artifacts",
+        "reconcile_attempt_terminal_truth",
+        "reconcile_predecessor_and_complete",
+    ]
+    assert provider.extension_kwargs[0][1] == {
+        "run_id": "run-a",
+        "known_attempt_ids": ("run-a/attempt-1",),
+        "now": now,
+    }
+    assert provider.extension_kwargs[1][1] == {
+        "run_id": "run-a",
+        "epoch": 2,
+        "attempt_id": "run-a/attempt-2",
+        "expected_live_sha256": "1" * 64,
+        "boards": (),
+    }
+    assert provider.extension_kwargs[2][1] == {
+        **provider.extension_kwargs[1][1],
+        "ancestry": ((1, "run-a/attempt-1"),),
+    }
+
+
+def test_recovery_worker_extension_requires_exact_route_and_core_fence(
+    tmp_path: Path,
+) -> None:
+    initial = _snapshot(tmp_path, backend="grafx")
+    transitioned = replace(
+        initial,
+        active_path=initial.anchor_path.parent / "generations" / "foreign" / "graph",
+        active_generation="foreign",
+        active_manifest_sha256="2" * 64,
+        route_sha256="3" * 64,
+    )
+    resolver = _Resolver(initial)
+    provider = _RecoveryProvider()
+    provider.before_second_fence = lambda: setattr(resolver, "current", transitioned)
+    validator_calls = 0
+
+    def validator(**_kwargs: object) -> bool:
+        nonlocal validator_calls
+        validator_calls += 1
+        return True
+
+    recovery = _recovery(resolver, provider, validator=validator)
+    with pytest.raises(GraphCapabilityUnavailable) as changed:
+        recovery.reconcile_attempt_terminal_truth(
+            run_id="run-a",
+            epoch=1,
+            attempt_id="run-a/attempt-1",
+            expected_live_sha256="4" * 64,
+            boards=(),
+            fence_check=lambda: None,
+        )
+    assert changed.value.details["reason"] == ("recovery_route_transition_not_allowed")
+    assert validator_calls == 0
+
+    resolver.current = initial
+    provider.before_second_fence = None
+    provider.calls.clear()
+
+    def lost() -> None:
+        raise RuntimeError("writer lost before leaf")
+
+    with pytest.raises(RuntimeError, match="writer lost before leaf"):
+        recovery.reconcile_attempt_artifacts(
+            run_id="run-a",
+            known_attempt_ids=("run-a/attempt-1",),
+            now=datetime.now(UTC),
+            fence_check=lost,
+        )
+    assert provider.calls == []
+
+
+def test_recovery_worker_extensions_translate_every_grafx_fence_envelope(
+    tmp_path: Path,
+) -> None:
+    resolver = _Resolver(_snapshot(tmp_path, backend="grafx"))
+    provider = _RecoveryProvider()
+    original = RuntimeError("lost exact Grafx fence")
+    provider.failure = CommunityGrafxGlobalDiscoveryFenceError(original)
+    recovery = _recovery(resolver, provider)
+
+    calls = (
+        lambda: recovery.reconcile_attempt_artifacts(
+            run_id="run-a",
+            known_attempt_ids=("run-a/attempt-1",),
+            now=datetime.now(UTC),
+            fence_check=lambda: None,
+        ),
+        lambda: recovery.reconcile_attempt_terminal_truth(
+            run_id="run-a",
+            epoch=2,
+            attempt_id="run-a/attempt-2",
+            expected_live_sha256="5" * 64,
+            boards=(),
+            fence_check=lambda: None,
+        ),
+        lambda: recovery.reconcile_predecessor_and_complete(
+            run_id="run-a",
+            epoch=2,
+            attempt_id="run-a/attempt-2",
+            ancestry=((1, "run-a/attempt-1"),),
+            expected_live_sha256="5" * 64,
+            boards=(),
+            fence_check=lambda: None,
+        ),
+    )
+    for call in calls:
+        with pytest.raises(CommunityGlobalDiscoveryRecoveryFenceError) as translated:
+            call()
+        assert translated.value.original is original
+
+    assert provider.calls == [
+        "reconcile_attempt_artifacts",
+        "reconcile_attempt_terminal_truth",
+        "reconcile_predecessor_and_complete",
+    ]
 
 
 def test_routed_global_module_has_no_settings_fallback_or_writer_acquisition() -> None:

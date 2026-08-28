@@ -74,6 +74,7 @@ _GLOBAL_BOARD_ID = "_global"
 _ROUTED_SOURCE = "community_global_discovery_routed"
 _BINDING_MISSING_REASON = "graph_route_binding_missing"
 _ProviderT = TypeVar("_ProviderT")
+_RecoveryResultT = TypeVar("_RecoveryResultT")
 
 
 class GlobalDiscoverySharedLock(Protocol):
@@ -143,13 +144,62 @@ class GlobalRuntimeSessionFactory(Protocol):
     ) -> AbstractContextManager[CommunityGlobalDiscoveryRuntimeOperationSession]: ...
 
 
+class RecoveryAttemptReconciliation(Protocol):
+    """Backend-neutral retention result consumed structurally by the worker."""
+
+    @property
+    def quarantined_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def retained_ids(self) -> tuple[str, ...]: ...
+
+    @property
+    def deleted_ids(self) -> tuple[str, ...]: ...
+
+
+class RecoveryWorkerExtensionProvider(GlobalDiscoveryRecovery, Protocol):
+    """Recovery leaf including the optional methods required by the worker."""
+
+    def reconcile_attempt_artifacts(
+        self,
+        *,
+        run_id: str,
+        known_attempt_ids: tuple[str, ...],
+        now: datetime,
+        fence_check: Callable[[], None],
+    ) -> RecoveryAttemptReconciliation: ...
+
+    def reconcile_attempt_terminal_truth(
+        self,
+        *,
+        run_id: str,
+        epoch: int,
+        attempt_id: str,
+        expected_live_sha256: str,
+        boards: tuple[GlobalDiscoveryBoardSeed, ...],
+        fence_check: Callable[[], None],
+    ) -> GlobalDiscoveryCutoverResult | None: ...
+
+    def reconcile_predecessor_and_complete(
+        self,
+        *,
+        run_id: str,
+        epoch: int,
+        attempt_id: str,
+        ancestry: tuple[tuple[int, str], ...],
+        expected_live_sha256: str,
+        boards: tuple[GlobalDiscoveryBoardSeed, ...],
+        fence_check: Callable[[], None],
+    ) -> GlobalDiscoveryCutoverResult | None: ...
+
+
 class RecoveryProviderFactory(Protocol):
     """Build a non-settings recovery provider fixed to one route anchor."""
 
     def __call__(
         self,
         snapshot: CommunityGraphRouteSnapshot,
-    ) -> GlobalDiscoveryRecovery: ...
+    ) -> RecoveryWorkerExtensionProvider: ...
 
 
 class RecoveryRouteTransitionValidator(Protocol):
@@ -787,7 +837,7 @@ class CommunityRoutedGlobalDiscoveryRecovery:
     def _provider(
         self,
         snapshot: CommunityGraphRouteSnapshot,
-    ) -> GlobalDiscoveryRecovery:
+    ) -> RecoveryWorkerExtensionProvider:
         factory = _select_backend(
             snapshot,
             ladybug=self._ladybug_factory,
@@ -807,21 +857,35 @@ class CommunityRoutedGlobalDiscoveryRecovery:
             self._resolver.revalidate_snapshot(snapshot, require_physical=False)
             return self._provider(snapshot).current_snapshot_fingerprint()
 
-    def _run_recovery(
+    def _run_recovery_operation(
         self,
-        method_name: str,
         *,
         run_id: str,
-        epoch: int,
-        attempt_id: str,
-        expected_live_sha256: str,
-        boards: tuple[GlobalDiscoveryBoardSeed, ...],
+        epoch: int | None,
+        attempt_id: str | None,
         fence_check: Callable[[], None],
-    ) -> GlobalDiscoveryCutoverResult:
+        allow_authenticated_transition: bool,
+        invoke: Callable[
+            [RecoveryWorkerExtensionProvider, Callable[[], None]],
+            _RecoveryResultT,
+        ],
+    ) -> _RecoveryResultT:
         with self._global_lock:
             initial = self._snapshot()
             accepted = initial
             provider = self._provider(initial)
+
+            def failure_details(reason: str) -> dict[str, object]:
+                details: dict[str, object] = {
+                    "operation": "route_global_discovery_recovery",
+                    "reason": reason,
+                    "run_id": run_id,
+                }
+                if epoch is not None:
+                    details["epoch"] = epoch
+                if attempt_id is not None:
+                    details["attempt_id"] = attempt_id
+                return details
 
             def routed_fence() -> None:
                 nonlocal accepted
@@ -835,13 +899,19 @@ class CommunityRoutedGlobalDiscoveryRecovery:
                 if not _immutable_recovery_binding_matches(initial, observed):
                     raise GraphCapabilityUnavailable(
                         "The Global Discovery recovery binding changed.",
-                        details={
-                            "operation": "route_global_discovery_recovery",
-                            "reason": "recovery_binding_changed",
-                            "run_id": run_id,
-                            "epoch": epoch,
-                            "attempt_id": attempt_id,
-                        },
+                        details=failure_details("recovery_binding_changed"),
+                    )
+                if not allow_authenticated_transition:
+                    raise GraphCapabilityUnavailable(
+                        "The Global Discovery recovery route changed during an "
+                        "exact-route operation.",
+                        details=failure_details(
+                            "recovery_route_transition_not_allowed"
+                        ),
+                    )
+                if epoch is None or attempt_id is None:
+                    raise AssertionError(
+                        "authenticated recovery transition requires attempt identity"
                     )
                 authenticated = self._validate_authenticated_transition(
                     initial=initial,
@@ -854,13 +924,9 @@ class CommunityRoutedGlobalDiscoveryRecovery:
                 if not authenticated:
                     raise GraphCapabilityUnavailable(
                         "The Global Discovery recovery route transition was refused.",
-                        details={
-                            "operation": "route_global_discovery_recovery",
-                            "reason": "recovery_route_transition_unauthenticated",
-                            "run_id": run_id,
-                            "epoch": epoch,
-                            "attempt_id": attempt_id,
-                        },
+                        details=failure_details(
+                            "recovery_route_transition_unauthenticated"
+                        ),
                     )
                 accepted = observed
 
@@ -868,16 +934,8 @@ class CommunityRoutedGlobalDiscoveryRecovery:
             # the operation, then give it the same combined check for every
             # mutation and terminal publication phase.
             routed_fence()
-            operation = getattr(provider, method_name)
             try:
-                return operation(
-                    run_id=run_id,
-                    epoch=epoch,
-                    attempt_id=attempt_id,
-                    expected_live_sha256=expected_live_sha256,
-                    boards=boards,
-                    fence_check=routed_fence,
-                )
+                return invoke(provider, routed_fence)
             except CommunityGrafxGlobalDiscoveryFenceError as failure:
                 # The existing worker consumes the Community fence envelope;
                 # keep that stable while hiding the selected engine.
@@ -895,14 +953,22 @@ class CommunityRoutedGlobalDiscoveryRecovery:
         boards: tuple[GlobalDiscoveryBoardSeed, ...],
         fence_check: Callable[[], None],
     ) -> GlobalDiscoveryCutoverResult:
-        return self._run_recovery(
-            "rebuild_candidate_and_cutover",
+        return self._run_recovery_operation(
             run_id=run_id,
             epoch=epoch,
             attempt_id=attempt_id,
-            expected_live_sha256=expected_live_sha256,
-            boards=boards,
             fence_check=fence_check,
+            allow_authenticated_transition=True,
+            invoke=lambda provider, routed_fence: (
+                provider.rebuild_candidate_and_cutover(
+                    run_id=run_id,
+                    epoch=epoch,
+                    attempt_id=attempt_id,
+                    expected_live_sha256=expected_live_sha256,
+                    boards=boards,
+                    fence_check=routed_fence,
+                )
+            ),
         )
 
     def recover_and_cutover(
@@ -915,14 +981,100 @@ class CommunityRoutedGlobalDiscoveryRecovery:
         boards: tuple[GlobalDiscoveryBoardSeed, ...],
         fence_check: Callable[[], None],
     ) -> GlobalDiscoveryCutoverResult:
-        return self._run_recovery(
-            "recover_and_cutover",
+        return self._run_recovery_operation(
             run_id=run_id,
             epoch=epoch,
             attempt_id=attempt_id,
-            expected_live_sha256=expected_live_sha256,
-            boards=boards,
             fence_check=fence_check,
+            allow_authenticated_transition=True,
+            invoke=lambda provider, routed_fence: provider.recover_and_cutover(
+                run_id=run_id,
+                epoch=epoch,
+                attempt_id=attempt_id,
+                expected_live_sha256=expected_live_sha256,
+                boards=boards,
+                fence_check=routed_fence,
+            ),
+        )
+
+    def reconcile_attempt_artifacts(
+        self,
+        *,
+        run_id: str,
+        known_attempt_ids: tuple[str, ...],
+        now: datetime,
+        fence_check: Callable[[], None],
+    ) -> RecoveryAttemptReconciliation:
+        return self._run_recovery_operation(
+            run_id=run_id,
+            epoch=None,
+            attempt_id=None,
+            fence_check=fence_check,
+            allow_authenticated_transition=False,
+            invoke=lambda provider, routed_fence: provider.reconcile_attempt_artifacts(
+                run_id=run_id,
+                known_attempt_ids=known_attempt_ids,
+                now=now,
+                fence_check=routed_fence,
+            ),
+        )
+
+    def reconcile_attempt_terminal_truth(
+        self,
+        *,
+        run_id: str,
+        epoch: int,
+        attempt_id: str,
+        expected_live_sha256: str,
+        boards: tuple[GlobalDiscoveryBoardSeed, ...],
+        fence_check: Callable[[], None],
+    ) -> GlobalDiscoveryCutoverResult | None:
+        return self._run_recovery_operation(
+            run_id=run_id,
+            epoch=epoch,
+            attempt_id=attempt_id,
+            fence_check=fence_check,
+            allow_authenticated_transition=False,
+            invoke=lambda provider, routed_fence: (
+                provider.reconcile_attempt_terminal_truth(
+                    run_id=run_id,
+                    epoch=epoch,
+                    attempt_id=attempt_id,
+                    expected_live_sha256=expected_live_sha256,
+                    boards=boards,
+                    fence_check=routed_fence,
+                )
+            ),
+        )
+
+    def reconcile_predecessor_and_complete(
+        self,
+        *,
+        run_id: str,
+        epoch: int,
+        attempt_id: str,
+        ancestry: tuple[tuple[int, str], ...],
+        expected_live_sha256: str,
+        boards: tuple[GlobalDiscoveryBoardSeed, ...],
+        fence_check: Callable[[], None],
+    ) -> GlobalDiscoveryCutoverResult | None:
+        return self._run_recovery_operation(
+            run_id=run_id,
+            epoch=epoch,
+            attempt_id=attempt_id,
+            fence_check=fence_check,
+            allow_authenticated_transition=False,
+            invoke=lambda provider, routed_fence: (
+                provider.reconcile_predecessor_and_complete(
+                    run_id=run_id,
+                    epoch=epoch,
+                    attempt_id=attempt_id,
+                    ancestry=ancestry,
+                    expected_live_sha256=expected_live_sha256,
+                    boards=boards,
+                    fence_check=routed_fence,
+                )
+            ),
         )
 
 
