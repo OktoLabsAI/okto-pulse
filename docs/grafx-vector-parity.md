@@ -213,6 +213,11 @@ The two non-public board indexes are measured once for build time and persisted
 size and are retained for `0.0.1`. M-PULSE-4 adds no latency or size SLO and does
 not add a physical-index opt-out.
 
+The completed one-time measurement, exact command, source pins, physical sizes,
+and no-SLO boundary are recorded in
+`docs/evidence/M4_VECTOR_RECALL_EVIDENCE.md` and
+`docs/evidence/m4-non-public-vector-indexes.json`.
+
 ## 7. Explicit non-goals
 
 - no Core port or DTO change;

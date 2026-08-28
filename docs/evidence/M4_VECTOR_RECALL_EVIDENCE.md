@@ -121,6 +121,39 @@ driver for `Alternative` and `Assumption`. It uses this same 8,192 x 384 corpus,
 seed 1337, float32 quantization, query seed 4242, efSearch 320, and public Pulse
 and Grafx APIs. It records durable ingest/build time, cold/reopen ANN time,
 verification time, physical persisted-index bytes, and database-tree growth.
-It deliberately defines no latency or size SLO. Its final full-size result is
-recorded separately so the recall run and timing run never contend for the same
-machine resources.
+It deliberately defines no latency or size SLO. The full-size run was isolated
+from the recall gate and used Grafx `origin/main` at
+`caa1f869e9c6840f2f4cfc288c4e98eacfa0ba69`.
+
+From the Pulse evidence worktree, PowerShell ran:
+
+```powershell
+python scripts\measure_m4_non_public_vector_indexes.py `
+  --grafx-repo 'D:\Projetos\Techridy\okto-grafx-mpulse4-rebuild' `
+  --core-repo 'D:\Projetos\Techridy\okto-pulse-core-grafx-contract' `
+  --database 'D:\Projetos\Techridy\okto-pulse-grafx-mpulse4-recall\scripts\.tmp\m4-non-public-8192' `
+  --out 'D:\Projetos\Techridy\okto-pulse-grafx-mpulse4-recall\docs\evidence\m4-non-public-vector-indexes.json' `
+  --rows 8192 `
+  --seed 1337 `
+  --batch-size 64
+```
+
+The run started at `2026-08-27T21:35:52.3894431Z`, ended at
+`2026-08-28T01:37:17.8884277Z`, exited zero, and took `14485.498985`
+seconds. Each index received 8,192 rows through 128 durable commits.
+
+| Index | Durable build/ingest | Empty baseline | Persisted size | Physical growth |
+|---|---:|---:|---:|---:|
+| `Alternative` | `1279.6239901 s` | 532,480 B | **794,624 B (776 KiB)** | 262,144 B (256 KiB) |
+| `Assumption` | `1415.9925527 s` | 532,480 B | **802,816 B (784 KiB)** | 270,336 B (264 KiB) |
+
+For both indexes, `verify("all")` returned no findings and the post-ingest and
+reopened cold validations each returned ten unique hits. Their raw phase times
+are retained in `m4-non-public-vector-indexes.json` for auditability, but are
+not a latency benchmark, acceptance threshold, or SLO. The HNSW graph is
+derived memory state and is excluded from the physical persisted-index bytes.
+
+The raw artifact is 4,291 bytes with SHA-256
+`e010ef6fb4a46b9e7a7bb770c9d4f6007b5b1af6415efb9952e3b7c369a0bede`.
+The 156,167,513-byte temporary database was deleted after its two exact physical
+index paths and sizes matched the JSON; it is not a release artifact.

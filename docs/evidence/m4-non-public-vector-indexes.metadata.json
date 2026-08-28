@@ -1,0 +1,62 @@
+{
+  "artifact": "docs/evidence/m4-non-public-vector-indexes.json",
+  "artifact_bytes": 4291,
+  "artifact_sha256": "e010ef6fb4a46b9e7a7bb770c9d4f6007b5b1af6415efb9952e3b7c369a0bede",
+  "command": "python scripts\\measure_m4_non_public_vector_indexes.py --grafx-repo D:\\Projetos\\Techridy\\okto-grafx-mpulse4-rebuild --core-repo D:\\Projetos\\Techridy\\okto-pulse-core-grafx-contract --database D:\\Projetos\\Techridy\\okto-pulse-grafx-mpulse4-recall\\scripts\\.tmp\\m4-non-public-8192 --out D:\\Projetos\\Techridy\\okto-pulse-grafx-mpulse4-recall\\docs\\evidence\\m4-non-public-vector-indexes.json --rows 8192 --seed 1337 --batch-size 64",
+  "driver_blob": "2ddf3a3ff0a3b871ea263940a4f2a7283dd060d7",
+  "duration_seconds": 14485.498985,
+  "ended_at_utc": "2026-08-28T01:37:17.8884277Z",
+  "no_slo": true,
+  "observed": {
+    "Alternative": {
+      "durable_build_ingest_seconds": 1279.6239900999935,
+      "empty_baseline_bytes": 532480,
+      "persisted_growth_bytes": 262144,
+      "persisted_index_bytes": 794624
+    },
+    "Assumption": {
+      "durable_build_ingest_seconds": 1415.9925526999868,
+      "empty_baseline_bytes": 532480,
+      "persisted_growth_bytes": 270336,
+      "persisted_index_bytes": 802816
+    }
+  },
+  "source": {
+    "core": {
+      "path": "D:\\Projetos\\Techridy\\okto-pulse-core-grafx-contract",
+      "sha": "ab61b9a785f2018312fc91541a580877fd068bbb"
+    },
+    "grafx": {
+      "clean": true,
+      "path": "D:\\Projetos\\Techridy\\okto-grafx-mpulse4-rebuild",
+      "ref": "origin/main",
+      "sha": "caa1f869e9c6840f2f4cfc288c4e98eacfa0ba69"
+    },
+    "pulse": {
+      "clean_before_artifact": true,
+      "sha_before_artifact": "db5bd063ec6942ae21c417ab39ebe0d3f62e270c"
+    }
+  },
+  "started_at_utc": "2026-08-27T21:35:52.3894431Z",
+  "temporary_database": {
+    "bytes_before_removal": 156167513,
+    "path": "D:\\Projetos\\Techridy\\okto-pulse-grafx-mpulse4-recall\\scripts\\.tmp\\m4-non-public-8192",
+    "removed_after_physical_validation": true,
+    "recoverable": false
+  },
+  "test_blob": "68540ac8e1aef117dbd199c80de922abbd979c9a",
+  "validation": {
+    "Alternative": {
+      "cold_hits": 10,
+      "physical_file": "index/vector_Alternative_alternative_embedding_idx.idx",
+      "reopen_hits": 10,
+      "verify_findings": 0
+    },
+    "Assumption": {
+      "cold_hits": 10,
+      "physical_file": "index/vector_Assumption_assumption_embedding_idx.idx",
+      "reopen_hits": 10,
+      "verify_findings": 0
+    }
+  }
+}

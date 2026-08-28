@@ -1,0 +1,100 @@
+{
+  "bootstrap_seconds": 151.30974239998613,
+  "contract": "M-PULSE-4-non-public-vector-index-measurement-v1",
+  "database_path": "D:\\Projetos\\Techridy\\okto-pulse-grafx-mpulse4-recall\\scripts\\.tmp\\m4-non-public-8192",
+  "fixture": {
+    "dimension": 384,
+    "generator": "uniform-int53-v1",
+    "query_seed": 4242,
+    "query_sha256_f64": "34ad0d40d8c7df1138c818334296a1834876e4bccd32348850f6dfab9ec51ed3",
+    "rows": 8192,
+    "seed": 1337,
+    "source_sha256_f32": "a17bd95c6bada8e5bdb8185d695d9391a79fb5c572e23aee50dba5146a7a1468",
+    "source_sha256_f64": "654adaa7b189618c7698da9108c9e69a378ff7256f114409622a48b43cdcc1ed",
+    "stored_values": "float32-quantized components stored in Pulse float64 spaces",
+    "stored_values_sha256_f64": "64b49f48160d36b03635031adc89527bad1baa4075af5675eb1c50aefe9d0080"
+  },
+  "generated_at_utc": "2026-08-28T01:37:15.670487+00:00",
+  "hnsw": {
+    "ef_construction": 200,
+    "ef_search": 320,
+    "exact_scan_threshold": 0,
+    "index_seed": "0x0C701A11F0C0FFEE",
+    "neighbours": 16
+  },
+  "measurement_boundary": {
+    "cold_ann_seconds": "one public similarity query forced to ANN by vector_exact_scan_threshold=0; the HNSW graph is derived memory state and is not included in persisted_index_bytes",
+    "durable_ingest_seconds": "execute CREATE statements in fixed-size write batches through the public transaction API, including each durable commit",
+    "persisted_index_bytes": "closed-database size of index/vector_<table>_<space>.idx; growth subtracts the empty index created by schema bootstrap"
+  },
+  "measurements": [
+    {
+      "baseline_index_bytes": 532480,
+      "batch_size": 64,
+      "close_seconds": 0.006115500000305474,
+      "cold_hits": 10,
+      "commits": 128,
+      "database_tree_bytes_after": 122952499,
+      "database_tree_bytes_before": 85853647,
+      "database_tree_growth_bytes": 37098852,
+      "durable_ingest_seconds": 1279.6239900999935,
+      "node_type": "Alternative",
+      "open_seconds": 6.093982699996559,
+      "persisted_index_bytes": 794624,
+      "persisted_index_growth_bytes": 262144,
+      "post_ingest_cold_ann_seconds": 3225.250293499994,
+      "reopen_cold_ann_seconds": 3324.1990030999877,
+      "reopen_hits": 10,
+      "reopen_seconds": 11.426155699999072,
+      "rows": 8192,
+      "space": "alternative_embedding_idx",
+      "verify_seconds": 79.17532089998713
+    },
+    {
+      "baseline_index_bytes": 532480,
+      "batch_size": 64,
+      "close_seconds": 0.015122100012376904,
+      "cold_hits": 10,
+      "commits": 128,
+      "database_tree_bytes_after": 156167513,
+      "database_tree_bytes_before": 122952499,
+      "database_tree_growth_bytes": 33215014,
+      "durable_ingest_seconds": 1415.9925526999868,
+      "node_type": "Assumption",
+      "open_seconds": 12.233536599989748,
+      "persisted_index_bytes": 802816,
+      "persisted_index_growth_bytes": 270336,
+      "post_ingest_cold_ann_seconds": 2501.081781200017,
+      "reopen_cold_ann_seconds": 2391.4552473000076,
+      "reopen_hits": 10,
+      "reopen_seconds": 7.082282200019108,
+      "rows": 8192,
+      "space": "assumption_embedding_idx",
+      "verify_seconds": 68.55443579997518
+    }
+  ],
+  "no_slo": true,
+  "runtime": {
+    "executable": "C:\\Python313\\python.exe",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.1 (tags/v3.13.1:0671451, Dec  3 2024, 19:06:28) [MSC v.1942 64 bit (AMD64)]"
+  },
+  "source": {
+    "grafx": {
+      "dirty": false,
+      "root": "D:\\Projetos\\Techridy\\okto-grafx-mpulse4-rebuild",
+      "sha": "caa1f869e9c6840f2f4cfc288c4e98eacfa0ba69"
+    },
+    "pulse": {
+      "dirty": false,
+      "root": "D:\\Projetos\\Techridy\\okto-pulse-grafx-mpulse4-recall",
+      "sha": "db5bd063ec6942ae21c417ab39ebe0d3f62e270c"
+    },
+    "resolved_dependencies": {
+      "okto_grafx": "D:\\Projetos\\Techridy\\okto-grafx-mpulse4-rebuild\\src\\okto_grafx\\__init__.py",
+      "pulse_community": "D:\\Projetos\\Techridy\\okto-pulse-grafx-mpulse4-recall\\src\\okto_pulse\\community\\adapters\\grafx_schema_bootstrap.py",
+      "pulse_core": "D:\\Projetos\\Techridy\\okto-pulse-core-grafx-contract\\src\\okto_pulse\\core\\kg\\schema_contract.py",
+      "recall_corpus": "D:\\Projetos\\Techridy\\okto-grafx-mpulse4-rebuild\\bench\\recall_corpus.py"
+    }
+  }
+}
