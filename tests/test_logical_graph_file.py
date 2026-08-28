@@ -106,6 +106,16 @@ def test_atomic_logical_graph_file(
                 OSError("injected replace failure")
             ),
         )
+    elif fault == "success":
+        monkeypatch.setattr(
+            Path,
+            "unlink",
+            lambda _path, *, missing_ok=False: (_ for _ in ()).throw(
+                AssertionError(
+                    "successful publication attempted cleanup after os.replace"
+                )
+            ),
+        )
 
     if fault == "success":
         certificate = logical_graph_file.publish_logical_graph_file(

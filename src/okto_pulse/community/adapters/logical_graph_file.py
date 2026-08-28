@@ -86,6 +86,10 @@ def publish_logical_graph_file(
             _fsync_file(stream.fileno())
         certificate = _verify_complete_file(temporary)
         _replace_file(temporary, destination)
+        # The source name ceased to exist atomically.  Clearing it is part of
+        # the replace step itself: the finally block must perform no fallible
+        # filesystem operation after publication became visible.
+        temporary = None
     except PhasedTransferError as exc:
         failure = exc
         cause = exc.__cause__
