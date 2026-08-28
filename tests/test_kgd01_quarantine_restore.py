@@ -722,13 +722,22 @@ def test_cli_restore_dry_run_json(restore_env, monkeypatch, capsys):
     base: Path = restore_env["base"]
     before = _disk_state(base)
 
-    from okto_pulse.community import cli as community_cli
     from okto_pulse.core import configure_settings, get_settings
     from okto_pulse.core.infra.config import reset_settings_for_tests
+    from okto_pulse.core.services import application_kg
+
+    from okto_pulse.community import cli as community_cli
 
     original_settings = get_settings()
     reset_settings_for_tests()
     monkeypatch.setenv("OKTO_PULSE_HOME", str(base))
+
+    class _Registry:
+        @staticmethod
+        def require_quarantine_restore():
+            return restore_env["adapter"]
+
+    monkeypatch.setattr(application_kg, "get_current_provider_registry", _Registry)
 
     monkeypatch.setattr(
         sys, "argv", ["okto-pulse", "kg", "restore", QUARANTINE_ID, "--json"]

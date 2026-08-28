@@ -119,12 +119,14 @@ def test_quarantine_restore_composition_fences_distinct_data_and_kg_roots(
         registry,
         kg_base_dir=str(kg_root),
         data_dir=str(data_root),
+        graph_route_resolver=SimpleNamespace(),
     )
 
     restore = registry.quarantine_restore
-    assert restore._resolved_base_dir() == kg_root  # noqa: SLF001
+    ladybug = restore._ladybug  # noqa: SLF001
+    assert ladybug._resolved_base_dir() == kg_root  # noqa: SLF001
     assert not data_root.exists()
-    assert restore._serve_lock_directories() == tuple(  # noqa: SLF001
+    assert ladybug._serve_lock_directories() == tuple(  # noqa: SLF001
         sorted((data_root, kg_root), key=str)
     )
 

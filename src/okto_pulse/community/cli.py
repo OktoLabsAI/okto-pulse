@@ -2251,32 +2251,21 @@ def cmd_kg_restore(args):
     structured `board_locked`); mid-flight failures return `partial_restore`
     with the operation manifest recording the exact state for rollback.
     """
-    from okto_pulse.community.adapters.quarantine_restore import (
-        CommunityQuarantineRestore,
-    )
     from okto_pulse.core.kg.interfaces.quarantine_restore import (
         QuarantineRestoreError,
     )
-    from okto_pulse.core import configure_settings, get_settings
-    from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.core.services.application_kg import (
+        get_current_provider_registry,
+    )
 
     quarantine_id: str = args.quarantine_id
     apply_restore: bool = bool(getattr(args, "apply", False))
     emit_json: bool = bool(getattr(args, "json", False))
 
-    try:
-        settings = get_settings()
-    except RuntimeError:
-        settings = CommunitySettings()
-        configure_settings(settings)
-
-    data_dir = getattr(settings, "data_dir", None)
-    extra_lock_dirs = (Path(data_dir).expanduser(),) if data_dir else ()
-
-    service = CommunityQuarantineRestore(
-        base_dir=settings.kg_base_dir,
-        extra_serve_lock_dirs=extra_lock_dirs,
-    )
+    # The composition-owned slot is the only CLI factory.  In particular, the
+    # command must not reconstruct the Ladybug adapter from settings: doing so
+    # would bypass persisted Board routing and silently misroute Grafx data.
+    service = get_current_provider_registry().require_quarantine_restore()
 
     def _emit_restore_error(exc: QuarantineRestoreError) -> None:
         payload = exc.to_payload()

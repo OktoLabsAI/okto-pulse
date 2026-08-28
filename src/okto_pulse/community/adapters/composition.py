@@ -204,17 +204,59 @@ def _apply_quarantine_restore(
     *,
     kg_base_dir: str,
     data_dir: str,
+    graph_route_resolver: Any | None = None,
+    grafx_restore_factory: Any | None = None,
 ) -> None:
     """(KGD-01 FR4) Fill the quarantine-restore port slot with the Community
-    filesystem adapter. Lazy-imported; the adapter itself only touches
-    Ladybug inside ``apply`` (open validation), never at import time."""
+    filesystem adapter. The shared routing bundle injects its sole resolver;
+    until then the optional Core slot remains absent and fails closed on use."""
+    if graph_route_resolver is None:
+        # Never reconstruct a Ladybug-only provider as a routing fallback.
+        # The slot is optional specifically so the later shared bundle can
+        # activate it atomically with resolver/pool/facade composition.
+        base.quarantine_restore = None
+        return
+    base.quarantine_restore = build_community_routed_quarantine_restore(
+        kg_base_dir=kg_base_dir,
+        data_dir=data_dir,
+        graph_route_resolver=graph_route_resolver,
+        grafx_restore_factory=grafx_restore_factory,
+    )
+
+
+def build_community_routed_quarantine_restore(
+    *,
+    kg_base_dir: str,
+    data_dir: str,
+    graph_route_resolver: Any,
+    grafx_restore_factory: Any | None,
+):
+    """Build restore routing from explicitly shared graph dependencies.
+
+    The resolver is intentionally mandatory.  The Grafx factory may be absent
+    while an installation is still Ladybug-only; the routed adapter then fails
+    closed only if a Grafx manifest/binding is actually selected.  A future
+    shared composition bundle supplies both without this helper constructing a
+    second resolver or pool.
+    """
+
+    if graph_route_resolver is None:
+        raise TypeError("graph_route_resolver is required")
     from okto_pulse.community.adapters.quarantine_restore import (
         CommunityQuarantineRestore,
     )
+    from okto_pulse.community.adapters.routed_quarantine_restore import (
+        CommunityRoutedQuarantineRestore,
+    )
 
-    base.quarantine_restore = CommunityQuarantineRestore(
-        base_dir=Path(kg_base_dir),
-        extra_serve_lock_dirs=(Path(data_dir),),
+    return CommunityRoutedQuarantineRestore(
+        graph_route_resolver,
+        quarantine_root=Path(kg_base_dir) / "quarantine",
+        ladybug=CommunityQuarantineRestore(
+            base_dir=Path(kg_base_dir),
+            extra_serve_lock_dirs=(Path(data_dir),),
+        ),
+        grafx_factory=grafx_restore_factory,
     )
 
 
@@ -223,6 +265,8 @@ def build_community_kg_composition(
     upload_dir: str,
     settings: Any | None = None,
     include_graph: bool = True,
+    graph_route_resolver: Any | None = None,
+    grafx_restore_factory: Any | None = None,
 ) -> CommunityKgComposition:
     """Build the full Community KG composition (single source): storage +
     embedding + base registry (Onda A in-memory + Onda C graph adapters) and
@@ -236,6 +280,8 @@ def build_community_kg_composition(
         base,
         kg_base_dir=str(s.kg_base_dir),
         data_dir=str(getattr(s, "data_dir", s.kg_base_dir)),
+        graph_route_resolver=graph_route_resolver,
+        grafx_restore_factory=grafx_restore_factory,
     )
     _apply_rebuild_ingestion(base)
     if include_graph:
@@ -254,6 +300,8 @@ def configure_community_kg_registry(
     settings: Any | None = None,
     include_graph: bool = True,
     auth_context_factory: Any | None = None,
+    graph_route_resolver: Any | None = None,
+    grafx_restore_factory: Any | None = None,
 ) -> None:
     """Configure the core KG registry with the Community base registry +
     reranker. Replaces ``configure_kg_registry(session_factory=...)`` at the
@@ -353,6 +401,8 @@ def configure_community_kg_registry(
                 effective_settings.kg_base_dir,
             )
         ),
+        graph_route_resolver=graph_route_resolver,
+        grafx_restore_factory=grafx_restore_factory,
     )
     _apply_rebuild_ingestion(base, session_factory)
     if include_graph:
@@ -421,9 +471,10 @@ def _community_settings_snapshot(settings: Any | None = None) -> Any:
 
 __all__ = [
     "CommunityKgComposition",
-    "community_storage_provider",
-    "build_community_embedding",
     "build_community_base_registry",
+    "build_community_embedding",
     "build_community_kg_composition",
+    "build_community_routed_quarantine_restore",
+    "community_storage_provider",
     "configure_community_kg_registry",
 ]
