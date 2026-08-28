@@ -13,6 +13,7 @@ from okto_pulse.core.kg.quarantine import KGQuarantineService
 
 from okto_pulse.community.adapters.filesystem_erasure import (
     fsync_directory,
+    is_filesystem_alias,
     remove_contained_tree,
     validate_scope_id,
 )
@@ -29,11 +30,6 @@ class GrafxBoardPrivacyScope:
     board_root: Path
     grafx_root: Path
     binding_path: Path
-
-
-def _is_junction(path: Path) -> bool:
-    checker = getattr(path, "is_junction", None)
-    return bool(checker is not None and checker())
 
 
 def grafx_board_privacy_scope(
@@ -54,7 +50,7 @@ def grafx_board_privacy_scope(
     except FileNotFoundError:
         pass
     else:
-        if lexical.is_symlink() or _is_junction(lexical):
+        if is_filesystem_alias(lexical):
             raise ValueError("Grafx board storage root alias refused")
     resolved = lexical.resolve(strict=False)
     if os.path.normcase(str(lexical)) != os.path.normcase(str(resolved)):
@@ -80,7 +76,7 @@ def _binding_artifacts(scope: GrafxBoardPrivacyScope) -> tuple[Path, ...]:
         scope.board_root.lstat()
     except FileNotFoundError:
         return ()
-    if scope.board_root.is_symlink() or _is_junction(scope.board_root):
+    if is_filesystem_alias(scope.board_root):
         raise ValueError("Grafx board storage root alias refused")
     temporary_prefix = f".{_BINDING_FILENAME}."
     residues = tuple(
@@ -212,7 +208,7 @@ def grafx_directory_size(path: Path) -> int:
 
     def measure(candidate: Path) -> int:
         metadata = candidate.lstat()
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        if is_filesystem_alias(candidate) or not stat.S_ISDIR(metadata.st_mode):
             return int(metadata.st_size)
         total = 0
         with os.scandir(candidate) as entries:

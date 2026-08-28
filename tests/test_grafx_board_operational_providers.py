@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from okto_pulse.community.adapters import (
 from okto_pulse.community.adapters import (
     grafx_graph_schema_manager as schema_module,
 )
+from okto_pulse.community.adapters.filesystem_erasure import is_filesystem_alias
 from okto_pulse.community.adapters.grafx_graph_lifecycle import (
     CommunityGrafxGraphLifecycle,
 )
@@ -732,7 +734,10 @@ def test_privacy_erase_unlinks_aliases_without_traversing_them(tmp_path) -> None
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows junction probe requires nt")
-def test_privacy_erase_unlinks_junction_without_traversing_it(tmp_path) -> None:
+def test_privacy_erase_unlinks_junction_without_traversing_it(
+    tmp_path,
+    monkeypatch,
+) -> None:
     board_root = tmp_path / "boards" / "board-1"
     active = board_root / "grafx" / "generation-1"
     active.mkdir(parents=True)
@@ -750,6 +755,11 @@ def test_privacy_erase_unlinks_junction_without_traversing_it(tmp_path) -> None:
     )
     if made.returncode != 0 or not junction.exists():
         pytest.skip(f"junction unavailable: {made.stderr.strip()!r}")
+    junction_metadata = junction.lstat()
+    reparse_flag = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    assert int(getattr(junction_metadata, "st_file_attributes", 0)) & reparse_flag
+    monkeypatch.setattr(Path, "is_junction", lambda _path: False, raising=False)
+    assert is_filesystem_alias(junction)
     _write_foundation_binding(board_root, generation="generation-1")
     store = CommunityGrafxGraphRuntimeStore(
         lambda _board_id: active,
@@ -761,6 +771,9 @@ def test_privacy_erase_unlinks_junction_without_traversing_it(tmp_path) -> None:
     result = store.erase_board_graph("board-1", reason="right_to_erasure")
 
     assert result.status == "erased"
+    with pytest.raises(FileNotFoundError):
+        junction.lstat()
+    assert external.is_dir()
     assert sentinel.read_bytes() == b"outside"
 
 
