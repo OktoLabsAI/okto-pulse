@@ -420,6 +420,7 @@ class _GrafxBoardAccess:
         self.resolver.revalidate_snapshot(snapshot, require_physical=True)
 
     def runtime_fence(self, board_id: str, phase: str) -> None:
+        revalidate_board_graph_write_lease(board_id, failure_phase=phase)
         snapshot = self.resolver.revalidate_session_authority(
             board_id,
             require_physical=phase != "privacy_erase",
@@ -510,7 +511,8 @@ class _LadybugRuntimeMutations:
         self.runtime = runtime
         self.path_guard = path_guard
 
-    def _revalidate(self, board_id: str) -> None:
+    def _revalidate(self, board_id: str, *, phase: str) -> None:
+        revalidate_board_graph_write_lease(board_id, failure_phase=phase)
         snapshot = self.resolver.revalidate_session_authority(
             board_id,
             require_physical=False,
@@ -523,7 +525,7 @@ class _LadybugRuntimeMutations:
     def purge(self, board_id: str, *, reason: str) -> GraphPurgeResult:
         before = self.runtime.graph_state(board_id)
         try:
-            self._revalidate(board_id)
+            self._revalidate(board_id, phase="runtime_purge_ladybug")
             affected, _quarantine = (
                 kg_runtime.purge_board_graph_storage_with_receipt_unguarded(
                     board_id,
@@ -567,7 +569,7 @@ class _LadybugRuntimeMutations:
     def erase(self, board_id: str, *, reason: str) -> GraphPurgeResult:
         before = self.runtime.graph_state(board_id)
         try:
-            self._revalidate(board_id)
+            self._revalidate(board_id, phase="runtime_privacy_erase_ladybug")
             affected = kg_runtime.erase_board_graph_storage_for_privacy_unguarded(
                 board_id,
                 reason=reason,
@@ -618,14 +620,47 @@ class CommunityRoutedBoardGraphComposition:
     graph_runtime_store: CommunityRoutedGraphRuntimeStore
     graph_recovery: CommunityRoutedGraphRecovery
     _initialize_physical: Callable[[CommunityGraphRouteCandidate], object | None]
+    _rematerialize_physical: Callable[[CommunityGraphRouteCandidate], object | None]
 
     def initialize_board_route(self, board_id: str) -> CommunityGraphRouteSnapshot:
         """Create/adopt and publish one Board route, only when explicitly called."""
 
+        revalidate_board_graph_write_lease(
+            board_id,
+            failure_phase="initialize_board_route",
+        )
         snapshot = self.resolver.initialize_board_route(
             board_id,
             create_physical=self._initialize_physical,
         )
+        self.resolver.revalidate_snapshot(snapshot, require_physical=True)
+        return snapshot
+
+    def adopt_existing_board_route(
+        self,
+        board_id: str,
+    ) -> CommunityGraphRouteSnapshot | None:
+        """Adopt physical storage without creating an absent Board target."""
+
+        revalidate_board_graph_write_lease(
+            board_id,
+            failure_phase="adopt_existing_board_route",
+        )
+        return self.resolver.adopt_existing_board_route(board_id)
+
+    def rematerialize_board_route(
+        self,
+        board_id: str,
+    ) -> CommunityGraphRouteSnapshot:
+        """Explicitly recreate the exact target authorized by a rebuild."""
+
+        phase = "rematerialize_board_route_after_purge"
+        revalidate_board_graph_write_lease(board_id, failure_phase=phase)
+        with kg_runtime.board_storage_mutation_window(board_id, phase=phase):
+            snapshot = self.resolver.rematerialize_board_route(
+                board_id,
+                create_physical=self._rematerialize_physical,
+            )
         self.resolver.revalidate_snapshot(snapshot, require_physical=True)
         return snapshot
 
@@ -801,18 +836,24 @@ def build_community_routed_board_graph_composition(
             kg_runtime.board_storage_mutation_window(board_id, phase=phase),
             board_route_session(board_id),
         ):
+            revalidate_board_graph_write_lease(board_id, failure_phase=phase)
             yield
 
     @contextmanager
     def lifecycle_mutation_window(board_id: str, *, phase: str) -> Iterator[None]:
-        with (
-            kg_runtime.board_storage_mutation_window_unguarded(
-                board_id,
-                phase=phase,
-            ),
-            board_route_session(board_id),
-        ):
-            yield
+        with board_route_session(board_id):
+            snapshot = resolver.inspect_board_route(board_id)
+            # Core's logical Board writer lease and Ladybug's process-wide
+            # native single-writer constraint are distinct authorities.  Only
+            # the Ladybug route needs the native (logically re-entrant) gate;
+            # Grafx retains the backend-neutral exclusive close window.
+            physical_window = (
+                kg_runtime.board_storage_mutation_window
+                if snapshot.backend == "ladybug"
+                else kg_runtime.board_storage_mutation_window_unguarded
+            )
+            with physical_window(board_id, phase=phase):
+                yield
 
     ladybug_store = CommunityKuzuGraphStore()
     ladybug_cypher = CommunityKuzuCypherExecutor()
@@ -1065,11 +1106,19 @@ def build_community_routed_board_graph_composition(
         access.close(None)
 
     async def ladybug_recover(board_id: str) -> WalRecoveryReport:
+        revalidate_board_graph_write_lease(
+            board_id,
+            failure_phase="graph_recovery_ladybug",
+        )
         resolver.revalidate_session_authority(board_id, require_physical=False)
         require_ladybug_runtime_path(board_id)
         return await ladybug_recovery.recover_wal_only_unguarded(board_id)
 
     async def grafx_recover(board_id: str) -> WalRecoveryReport:
+        revalidate_board_graph_write_lease(
+            board_id,
+            failure_phase="graph_recovery_grafx",
+        )
         resolver.revalidate_session_authority(board_id, require_physical=False)
         return await grafx_recovery.recover_wal_only(board_id)
 
@@ -1084,6 +1133,9 @@ def build_community_routed_board_graph_composition(
         ladybug=ladybug_store,
         grafx=grafx_store,
         operation_window=operation_window,
+        revalidate_write_fence=lambda board_id, phase: (
+            revalidate_board_graph_write_lease(board_id, failure_phase=phase)
+        ),
     )
     cypher_executor = CommunityRoutedCypherExecutor(
         resolver,
@@ -1096,6 +1148,9 @@ def build_community_routed_board_graph_composition(
         ladybug=ladybug_schema,
         grafx=grafx_schema,
         operation_window=operation_window,
+        revalidate_write_fence=lambda board_id, phase: (
+            revalidate_board_graph_write_lease(board_id, failure_phase=phase)
+        ),
     )
     graph_transaction = CommunityRoutedGraphTransaction(
         resolver,
@@ -1141,7 +1196,11 @@ def build_community_routed_board_graph_composition(
         mutation_window=mutation_window,
     )
 
-    def initialize_physical(candidate: CommunityGraphRouteCandidate) -> object | None:
+    def create_board_physical(
+        candidate: CommunityGraphRouteCandidate,
+        *,
+        close_window_owned: bool,
+    ) -> object | None:
         if candidate.scope != "board":
             raise _route_failure(
                 "board_initialization_candidate_scope_invalid",
@@ -1155,7 +1214,28 @@ def build_community_routed_board_graph_composition(
                     board_id=candidate.scope_id,
                 )
             require_ladybug_runtime_path(candidate.scope_id)
-            handle = kg_runtime.bootstrap_board_graph(candidate.scope_id)
+            revalidate_board_graph_write_lease(
+                candidate.scope_id,
+                failure_phase=(
+                    "rematerialize_board_route_after_purge"
+                    if close_window_owned
+                    else "initialize_board_route"
+                ),
+            )
+            if close_window_owned:
+                handle = kg_runtime.rematerialize_board_graph_unguarded(
+                    candidate.scope_id
+                )
+            else:
+                from okto_pulse.community.adapters.ladybug_writer import (
+                    ladybug_writer_scope,
+                )
+
+                with ladybug_writer_scope(
+                    scope=candidate.scope_id,
+                    phase="initialize_board_route",
+                ):
+                    handle = kg_runtime.bootstrap_board_graph(candidate.scope_id)
             if not _same_path(handle.path, candidate.binding_path):
                 raise _route_failure(
                     "ladybug_initialization_result_mismatch",
@@ -1167,10 +1247,26 @@ def build_community_routed_board_graph_composition(
                 "board_initialization_backend_invalid",
                 board_id=candidate.scope_id,
             )
+        revalidate_board_graph_write_lease(
+            candidate.scope_id,
+            failure_phase=(
+                "rematerialize_board_route_after_purge"
+                if close_window_owned
+                else "initialize_board_route"
+            ),
+        )
         return grafx_pool.get(
             candidate.binding_path,
             page_size=candidate.page_size,
         )
+
+    def initialize_physical(candidate: CommunityGraphRouteCandidate) -> object | None:
+        return create_board_physical(candidate, close_window_owned=False)
+
+    def rematerialize_physical(
+        candidate: CommunityGraphRouteCandidate,
+    ) -> object | None:
+        return create_board_physical(candidate, close_window_owned=True)
 
     return CommunityRoutedBoardGraphComposition(
         binding_store=binding_store,
@@ -1184,6 +1280,7 @@ def build_community_routed_board_graph_composition(
         graph_runtime_store=graph_runtime_store,
         graph_recovery=graph_recovery,
         _initialize_physical=initialize_physical,
+        _rematerialize_physical=rematerialize_physical,
     )
 
 

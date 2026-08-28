@@ -316,6 +316,193 @@ class CommunityGraphRouteResolver:
             create_physical=create_physical,
         )
 
+    def adopt_existing_board_route(
+        self,
+        board_id: str,
+    ) -> CommunityGraphRouteSnapshot | None:
+        """Publish only an already-existing, authenticated Board route.
+
+        A persisted binding is authoritative even when its physical target is
+        temporarily absent, so that case returns the inspected (non-opening)
+        snapshot.  Without a binding, physical discovery is read-only until a
+        concrete artifact has been authenticated.  An entirely absent board
+        returns ``None`` without creating its directory, lock, database, or
+        binding.
+        """
+
+        scope: GraphBindingScope = "board"
+        operation = "adopt_existing_community_graph_route"
+        ladybug_path = self._store.board_ladybug_path(board_id)
+        lock_path = ladybug_path.parent / _ROUTE_LOCK_FILENAME
+        # Refuse a junctioned/symlinked board root even when the binding file
+        # and physical artifacts are both absent.  Binding inspection alone
+        # cannot see an aliased parent after lstat(binding) reports ENOENT.
+        self._require_no_alias(lock_path, scope=scope, scope_id=board_id)
+
+        try:
+            binding = self._store.inspect_board_binding(board_id)
+        except GraphCapabilityUnavailable as failure:
+            if failure.details.get("reason") != "binding_missing":
+                raise
+        else:
+            return self._snapshot(binding, require_active_physical=False)
+
+        # Do not materialize a FileLock (or its parent) for an empty board.
+        # A second discovery inside the lock closes the publication race once
+        # there is actual storage worth adopting.
+        detected = self._detect_board(board_id, supplied_grafx=None)
+        if detected is None:
+            return None
+
+        lock = FileLock(str(lock_path), timeout=self._lock_timeout_seconds)
+        try:
+            with lock:
+                try:
+                    binding = self._store.inspect_board_binding(board_id)
+                except GraphCapabilityUnavailable as failure:
+                    if failure.details.get("reason") != "binding_missing":
+                        raise
+                    detected = self._detect_board(board_id, supplied_grafx=None)
+                    if detected is None:
+                        return None
+                    binding = self._publish_detected(
+                        scope=scope,
+                        scope_id=board_id,
+                        detected=detected,
+                    )
+                    return self._snapshot(binding, require_active_physical=True)
+                return self._snapshot(binding, require_active_physical=False)
+        except FileLockTimeout as failure:
+            raise GraphLockContention(
+                "The Community graph route adoption lock is contended.",
+                details={
+                    "operation": operation,
+                    "reason": "graph_route_adoption_lock_contention",
+                    "scope": scope,
+                    "scope_id": board_id,
+                },
+            ) from failure
+        except (
+            GraphCapabilityUnavailable,
+            GraphCorruption,
+            GraphLockContention,
+            GraphUnavailable,
+        ):
+            raise
+        except OSError as failure:
+            raise _unavailable(
+                "graph_route_adoption_lock_failed",
+                operation=operation,
+                scope=scope,
+                scope_id=board_id,
+                error_type=type(failure).__name__,
+            ) from failure
+
+    def rematerialize_board_route(
+        self,
+        board_id: str,
+        *,
+        create_physical: GraphPhysicalCreationCallback,
+    ) -> CommunityGraphRouteSnapshot:
+        """Recreate only the exact physical target of an immutable binding.
+
+        This is the explicit, lifecycle-authorized counterpart to normal
+        acquire/open calls, which remain strictly non-creating.  The binding,
+        backend, generation, path and page geometry are re-read under the route
+        lock and must be byte-semantically unchanged after materialization.
+        """
+
+        scope: GraphBindingScope = "board"
+        operation = "rematerialize_community_graph_route"
+        ladybug_path = self._store.board_ladybug_path(board_id)
+        lock_path = ladybug_path.parent / _ROUTE_LOCK_FILENAME
+        self._require_no_alias(lock_path, scope=scope, scope_id=board_id)
+        lock = FileLock(str(lock_path), timeout=self._lock_timeout_seconds)
+        try:
+            with lock:
+                binding = self._store.inspect_board_binding(board_id)
+                expected = self._snapshot(binding, require_active_physical=False)
+                try:
+                    current = self._snapshot(
+                        self._store.acquire_board_binding(board_id),
+                        require_active_physical=True,
+                    )
+                except GraphUnavailable as failure:
+                    if failure.details.get("reason") != "physical_database_missing":
+                        raise
+                else:
+                    if current != expected:
+                        raise _capability(
+                            "graph_route_rematerialization_snapshot_mismatch",
+                            operation=operation,
+                            scope=scope,
+                            scope_id=board_id,
+                        )
+                    return current
+
+                candidate = CommunityGraphRouteCandidate(
+                    scope=scope,
+                    scope_id=board_id,
+                    backend=expected.backend,
+                    generation=expected.generation,
+                    binding_path=expected.binding_path,
+                    anchor_path=expected.anchor_path,
+                    page_size=expected.page_size,
+                )
+                try:
+                    created_database = create_physical(candidate)
+                except (
+                    GraphCapabilityUnavailable,
+                    GraphCorruption,
+                    GraphLockContention,
+                    GraphUnavailable,
+                ):
+                    raise
+                except Exception as failure:
+                    raise _unavailable(
+                        "graph_route_rematerialization_failed",
+                        operation=operation,
+                        scope=scope,
+                        scope_id=board_id,
+                        error_type=type(failure).__name__,
+                    ) from failure
+
+                current = self._snapshot(
+                    self._store.acquire_board_binding(board_id),
+                    require_active_physical=True,
+                )
+                if current != expected:
+                    raise _capability(
+                        "graph_route_rematerialization_snapshot_mismatch",
+                        operation=operation,
+                        scope=scope,
+                        scope_id=board_id,
+                    )
+                if current.backend == "grafx":
+                    if created_database is None:
+                        raise _capability(
+                            "grafx_route_rematerialization_admission_required",
+                            operation=operation,
+                            scope=scope,
+                            scope_id=board_id,
+                        )
+                    self.admit_grafx_route(
+                        current,
+                        created_database,
+                        operation=operation,
+                    )
+                return current
+        except FileLockTimeout as failure:
+            raise GraphLockContention(
+                "The Community graph route rematerialization lock is contended.",
+                details={
+                    "operation": operation,
+                    "reason": "graph_route_rematerialization_lock_contention",
+                    "scope": scope,
+                    "scope_id": board_id,
+                },
+            ) from failure
+
     def initialize_global_route(
         self,
         *,

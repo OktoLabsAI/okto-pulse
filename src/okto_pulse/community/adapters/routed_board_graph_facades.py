@@ -61,6 +61,10 @@ class BoardStorageMutationWindowFactory(Protocol):
     ) -> AbstractContextManager[None]: ...
 
 
+class BoardGraphWriteFenceRevalidator(Protocol):
+    def __call__(self, board_id: str, phase: str) -> None: ...
+
+
 class _BoardMutationOperation(Protocol):
     """Mutate one backend while the routed facade owns the only guard."""
 
@@ -226,11 +230,15 @@ class CommunityRoutedSemanticGraphStore:
         ladybug: SemanticGraphStore,
         grafx: SemanticGraphStore,
         operation_window: BoardGraphOperationWindowFactory,
+        revalidate_write_fence: BoardGraphWriteFenceRevalidator | None = None,
     ) -> None:
         self._resolver = resolver
         self._ladybug = ladybug
         self._grafx = grafx
         self._operation_window = operation_window
+        self._revalidate_write_fence = revalidate_write_fence or (
+            lambda _board_id, _phase: None
+        )
 
     def _provider(self, board_id: str) -> SemanticGraphStore:
         snapshot = self._resolver.acquire_board_route(board_id)
@@ -240,6 +248,16 @@ class CommunityRoutedSemanticGraphStore:
             ladybug=self._ladybug,
             grafx=self._grafx,
         )
+
+    def _mutation_provider(
+        self,
+        board_id: str,
+        *,
+        phase: str,
+    ) -> SemanticGraphStore:
+        provider = self._provider(board_id)
+        self._revalidate_write_fence(board_id, phase)
+        return provider
 
     def find_by_topic(
         self,
@@ -409,7 +427,10 @@ class CommunityRoutedSemanticGraphStore:
         attrs: dict[str, Any],
     ) -> None:
         with self._operation_window(board_id):
-            self._provider(board_id).create_node(board_id, node_type, node_id, attrs)
+            self._mutation_provider(
+                board_id,
+                phase="graph_store_create_node",
+            ).create_node(board_id, node_type, node_id, attrs)
 
     def create_edge(
         self,
@@ -423,7 +444,10 @@ class CommunityRoutedSemanticGraphStore:
         to_type: str | None = None,
     ) -> None:
         with self._operation_window(board_id):
-            self._provider(board_id).create_edge(
+            self._mutation_provider(
+                board_id,
+                phase="graph_store_create_edge",
+            ).create_edge(
                 board_id,
                 edge_type,
                 from_id,
@@ -441,7 +465,10 @@ class CommunityRoutedSemanticGraphStore:
         attrs: dict[str, Any],
     ) -> None:
         with self._operation_window(board_id):
-            self._provider(board_id).update_node(board_id, node_type, node_id, attrs)
+            self._mutation_provider(
+                board_id,
+                phase="graph_store_update_node",
+            ).update_node(board_id, node_type, node_id, attrs)
 
     def mark_superseded(
         self,
@@ -454,7 +481,10 @@ class CommunityRoutedSemanticGraphStore:
         revocation_reason: str,
     ) -> None:
         with self._operation_window(board_id):
-            self._provider(board_id).mark_superseded(
+            self._mutation_provider(
+                board_id,
+                phase="graph_store_mark_superseded",
+            ).mark_superseded(
                 board_id,
                 node_type,
                 node_id,
@@ -497,25 +527,33 @@ class CommunityRoutedSemanticGraphStore:
         attested_at: str,
     ) -> None:
         with self._operation_window(board_id):
-            self._provider(board_id).increment_attestation(
+            self._mutation_provider(
+                board_id,
+                phase="graph_store_increment_attestation",
+            ).increment_attestation(
                 board_id, node_type, node_id, attested_at=attested_at
             )
 
     def delete_nodes_by_session(self, board_id: str, session_id: str) -> int:
         with self._operation_window(board_id):
-            return self._provider(board_id).delete_nodes_by_session(
-                board_id, session_id
-            )
+            return self._mutation_provider(
+                board_id,
+                phase="graph_store_delete_nodes_by_session",
+            ).delete_nodes_by_session(board_id, session_id)
 
     def delete_edges_by_session(self, board_id: str, session_id: str) -> int:
         with self._operation_window(board_id):
-            return self._provider(board_id).delete_edges_by_session(
-                board_id, session_id
-            )
+            return self._mutation_provider(
+                board_id,
+                phase="graph_store_delete_edges_by_session",
+            ).delete_edges_by_session(board_id, session_id)
 
     def bootstrap(self, board_id: str) -> None:
         with self._operation_window(board_id):
-            self._provider(board_id).bootstrap(board_id)
+            self._mutation_provider(
+                board_id,
+                phase="graph_store_bootstrap",
+            ).bootstrap(board_id)
 
 
 class CommunityRoutedCypherExecutor:
@@ -589,11 +627,15 @@ class CommunityRoutedGraphSchemaManager:
         ladybug: GraphSchemaManager,
         grafx: GraphSchemaManager,
         operation_window: BoardGraphOperationWindowFactory,
+        revalidate_write_fence: BoardGraphWriteFenceRevalidator | None = None,
     ) -> None:
         self._resolver = resolver
         self._ladybug = ladybug
         self._grafx = grafx
         self._operation_window = operation_window
+        self._revalidate_write_fence = revalidate_write_fence or (
+            lambda _board_id, _phase: None
+        )
 
     def _provider(self, board_id: str) -> GraphSchemaManager:
         return _select_board_provider(
@@ -603,13 +645,29 @@ class CommunityRoutedGraphSchemaManager:
             grafx=self._grafx,
         )
 
+    def _mutation_provider(
+        self,
+        board_id: str,
+        *,
+        phase: str,
+    ) -> GraphSchemaManager:
+        provider = self._provider(board_id)
+        self._revalidate_write_fence(board_id, phase)
+        return provider
+
     async def ensure_bootstrapped(self, board_id: str) -> None:
         with self._operation_window(board_id):
-            await self._provider(board_id).ensure_bootstrapped(board_id)
+            await self._mutation_provider(
+                board_id,
+                phase="graph_schema_ensure_bootstrapped",
+            ).ensure_bootstrapped(board_id)
 
     async def migrate(self, board_id: str) -> dict[str, Any]:
         with self._operation_window(board_id):
-            return await self._provider(board_id).migrate(board_id)
+            return await self._mutation_provider(
+                board_id,
+                phase="graph_schema_migrate",
+            ).migrate(board_id)
 
     async def current_version(self, board_id: str) -> str:
         with self._operation_window(board_id):

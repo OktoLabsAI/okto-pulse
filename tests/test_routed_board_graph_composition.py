@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,7 +11,11 @@ from typing import Any
 
 import pytest
 from okto_grafx.errors import GrafxSchemaVersionMismatch
-from okto_pulse.core.kg.interfaces.graph_errors import GraphCapabilityUnavailable
+from okto_pulse.core.kg.interfaces.graph_errors import (
+    GraphCapabilityUnavailable,
+    GraphCorruption,
+    GraphUnavailable,
+)
 from okto_pulse.core.kg.interfaces.graph_recovery import WalRecoveryReport
 
 import okto_pulse.community.adapters.graph_connection_pool as connection_pool
@@ -133,6 +139,19 @@ def _publish_ladybug_binding(
     return path
 
 
+def _make_windows_junction(link: Path, target: Path) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows junction semantics are required")
+    completed = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        pytest.skip(f"junction creation unavailable: {completed.stderr.strip()}")
+
+
 def test_build_is_read_only_and_every_board_port_shares_one_route_identity(
     tmp_path: Path,
 ) -> None:
@@ -216,6 +235,202 @@ def test_explicit_initialization_is_the_only_grafx_first_boot_door(
         first = bundle.resolver.inspect_board_route("board-a")
         second = bundle.resolver.acquire_board_route("board-a")
         assert second is first
+
+
+def test_adopt_existing_board_route_is_noncreating_and_publishes_only_storage(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "kg"
+    connector = _GrafxConnector()
+    bundle = _build(root, connector)
+
+    assert bundle.adopt_existing_board_route("board-absent") is None
+    assert connector.calls == []
+    assert not root.exists()
+
+    existing = bundle.binding_store.board_grafx_path(
+        "board-existing",
+        "generation-existing",
+    )
+    existing.mkdir(parents=True)
+    (existing / "grafx.meta").write_bytes(b"grafx")
+
+    adopted = bundle.adopt_existing_board_route("board-existing")
+
+    assert adopted is not None
+    assert adopted.backend == "grafx"
+    assert adopted.active_path == existing
+    assert bundle.resolver.acquire_board_route("board-existing") == adopted
+    assert connector.calls == [(existing, PAGE_SIZE)]
+
+
+def test_adopt_returns_an_existing_binding_without_recreating_missing_physical(
+    tmp_path: Path,
+) -> None:
+    connector = _GrafxConnector()
+    bundle = _build(tmp_path / "kg", connector)
+    initial = bundle.initialize_board_route("board-purged")
+    assert bundle.grafx_pool.close(initial.active_path) is True
+    (initial.active_path / "grafx.meta").unlink()
+    initial.active_path.rmdir()
+
+    adopted = bundle.adopt_existing_board_route("board-purged")
+
+    assert adopted == initial
+    assert not initial.active_path.exists()
+    assert connector.calls == [(initial.active_path, PAGE_SIZE)]
+
+
+def test_rematerialize_is_the_only_door_after_purge_and_preserves_route_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = _GrafxConnector()
+    bundle = _build(tmp_path / "kg", connector)
+    monkeypatch.setattr(
+        kg_runtime,
+        "board_kuzu_path",
+        lambda board_id: bundle.binding_store.board_ladybug_path(board_id),
+    )
+    initial = bundle.initialize_board_route("board-rematerialize")
+    assert bundle.grafx_pool.close(initial.active_path) is True
+    (initial.active_path / "grafx.meta").unlink()
+    initial.active_path.rmdir()
+
+    with pytest.raises(GraphUnavailable) as ordinary_initialize:
+        bundle.initialize_board_route("board-rematerialize")
+    assert ordinary_initialize.value.details["reason"] == "physical_database_missing"
+    assert connector.calls == [(initial.active_path, PAGE_SIZE)]
+
+    restored = bundle.rematerialize_board_route("board-rematerialize")
+
+    assert restored == initial
+    assert restored.binding_sha256 == initial.binding_sha256
+    assert restored.route_sha256 == initial.route_sha256
+    assert restored.active_path.exists()
+    assert connector.calls == [
+        (initial.active_path, PAGE_SIZE),
+        (initial.active_path, PAGE_SIZE),
+    ]
+
+
+def test_ladybug_rematerialization_uses_only_the_owned_window_primitive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _build(
+        tmp_path / "kg",
+        _GrafxConnector(),
+        board_backend="ladybug",
+    )
+    path = _publish_ladybug_binding(bundle, "board-rematerialize-ladybug")
+    initial = bundle.resolver.acquire_board_route("board-rematerialize-ladybug")
+    path.unlink()
+    calls: list[str] = []
+
+    @contextmanager
+    def owned_window(board_id: str, *, phase: str):
+        calls.append(f"window:{board_id}:{phase}")
+        yield
+
+    def rematerialize_unguarded(board_id: str):
+        calls.append(f"physical:{board_id}")
+        path.write_bytes(b"rematerialized-ladybug")
+        return SimpleNamespace(path=path)
+
+    monkeypatch.setattr(kg_runtime, "board_kuzu_path", lambda _board_id: path)
+    monkeypatch.setattr(
+        kg_runtime,
+        "board_storage_mutation_window",
+        owned_window,
+    )
+    monkeypatch.setattr(
+        kg_runtime,
+        "rematerialize_board_graph_unguarded",
+        rematerialize_unguarded,
+    )
+    monkeypatch.setattr(
+        kg_runtime,
+        "bootstrap_board_graph",
+        lambda _board_id: (_ for _ in ()).throw(
+            AssertionError("normal bootstrap used during rematerialization")
+        ),
+    )
+    monkeypatch.setattr(
+        composition,
+        "revalidate_board_graph_write_lease",
+        lambda _board_id, *, failure_phase: None,
+    )
+
+    restored = bundle.rematerialize_board_route("board-rematerialize-ladybug")
+
+    assert restored == initial
+    assert calls == [
+        "window:board-rematerialize-ladybug:rematerialize_board_route_after_purge",
+        "physical:board-rematerialize-ladybug",
+    ]
+
+
+def test_adopt_fails_closed_on_ambiguous_existing_storage(tmp_path: Path) -> None:
+    root = tmp_path / "kg"
+    bundle = _build(root, _GrafxConnector())
+    ladybug = bundle.binding_store.board_ladybug_path("board-ambiguous")
+    ladybug.parent.mkdir(parents=True)
+    ladybug.write_bytes(b"ladybug")
+    grafx = bundle.binding_store.board_grafx_path(
+        "board-ambiguous",
+        "generation-existing",
+    )
+    grafx.mkdir(parents=True)
+    (grafx / "grafx.meta").write_bytes(b"grafx")
+
+    with pytest.raises(GraphCapabilityUnavailable) as ambiguous:
+        bundle.adopt_existing_board_route("board-ambiguous")
+
+    assert ambiguous.value.details["reason"] == "graph_route_storage_ambiguous"
+    with pytest.raises(GraphCapabilityUnavailable) as missing:
+        bundle.binding_store.inspect_board_binding("board-ambiguous")
+    assert missing.value.details["reason"] == "binding_missing"
+
+
+def test_unbound_adopt_and_ladybug_privacy_erase_refuse_a_board_root_junction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "kg"
+    bundle = _build(root, _GrafxConnector(), board_backend="ladybug")
+    external = tmp_path / "outside-board"
+    external.mkdir()
+    sentinel = external / "graph.lbug"
+    sentinel.write_bytes(b"private-external-data")
+    boards_root = root / "boards"
+    boards_root.mkdir(parents=True)
+    junction = boards_root / "board-unbound"
+    _make_windows_junction(junction, external)
+    monkeypatch.setattr(kg_runtime, "_kg_base_dir", lambda: root)
+    monkeypatch.setattr(
+        kg_runtime,
+        "board_kuzu_path",
+        lambda _board_id: junction / "graph.lbug",
+    )
+
+    try:
+        with pytest.raises(GraphCorruption) as alias:
+            bundle.adopt_existing_board_route("board-unbound")
+        assert alias.value.details["reason"] == "graph_route_filesystem_alias_refused"
+
+        with pytest.raises(ValueError, match="filesystem alias"):
+            kg_runtime.erase_board_graph_storage_for_privacy_unguarded(
+                "board-unbound",
+                reason="privacy",
+            )
+
+        assert sentinel.read_bytes() == b"private-external-data"
+        with pytest.raises(GraphCapabilityUnavailable) as missing:
+            bundle.binding_store.inspect_board_binding("board-unbound")
+        assert missing.value.details["reason"] == "binding_missing"
+    finally:
+        junction.rmdir()
 
 
 def test_adoption_retries_only_a_typed_persisted_grafx_geometry(
@@ -403,7 +618,7 @@ def test_unguarded_storage_window_never_enters_the_native_writer(
 
 
 @pytest.mark.asyncio
-async def test_routed_ladybug_rebuild_ensures_schema_without_nested_writer(
+async def test_routed_ladybug_rebuild_owns_a_logically_reentrant_native_writer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -417,23 +632,26 @@ async def test_routed_ladybug_rebuild_ensures_schema_without_nested_writer(
     ensured: list[str] = []
 
     @contextmanager
-    def unguarded_window(board_id: str, *, phase: str):
+    def unguarded_window(
+        board_id: str,
+        *,
+        phase: str,
+        drain_timeout: float = 30.0,
+    ):
+        assert drain_timeout == 30.0
+        assert ladybug_writer.writer_lease_is_active() is True
         windows.append(f"{board_id}:{phase}")
         yield
 
-    def guarded_window_must_not_run(*_args: Any, **_kwargs: Any):
-        raise AssertionError("nested writer/close guard")
+    def ensure_under_writer(board_id: str) -> None:
+        assert ladybug_writer.writer_lease_is_active() is True
+        ensured.append(board_id)
 
     monkeypatch.setattr(kg_runtime, "board_kuzu_path", lambda _board_id: path)
     monkeypatch.setattr(
         kg_runtime,
         "board_storage_mutation_window_unguarded",
         unguarded_window,
-    )
-    monkeypatch.setattr(
-        kg_runtime,
-        "board_storage_mutation_window",
-        guarded_window_must_not_run,
     )
     monkeypatch.setattr(
         composition,
@@ -443,18 +661,27 @@ async def test_routed_ladybug_rebuild_ensures_schema_without_nested_writer(
     monkeypatch.setattr(
         kg_runtime,
         "ensure_board_graph_bootstrapped_unguarded",
-        lambda board_id: ensured.append(board_id),
+        ensure_under_writer,
     )
 
     report = await bundle.graph_lifecycle.rebuild("board-rebuild")
+    with ladybug_writer.ladybug_writer_scope(
+        scope="outer-global-writer",
+        phase="test-reentrant",
+    ):
+        repeated = await bundle.graph_lifecycle.rebuild("board-rebuild")
 
     assert report.status == "rebuilt"
     assert report.steps == (
         "close_all_connections",
         "ensure_board_graph_bootstrapped",
     )
-    assert ensured == ["board-rebuild"]
-    assert windows == ["board-rebuild:graph_lifecycle_rebuild"]
+    assert repeated.status == "rebuilt"
+    assert ensured == ["board-rebuild", "board-rebuild"]
+    assert windows == [
+        "board-rebuild:graph_lifecycle_rebuild",
+        "board-rebuild:graph_lifecycle_rebuild",
+    ]
 
 
 def test_ladybug_schema_ensure_uses_the_owned_window_connection(
@@ -521,6 +748,7 @@ async def test_runtime_and_recovery_callbacks_do_not_reenter_the_outer_guard(
         "board-recover": recovery_path,
     }
     phases: list[str] = []
+    fences: list[str] = []
 
     @contextmanager
     def one_outer_window(board_id: str, *, phase: str):
@@ -544,6 +772,11 @@ async def test_runtime_and_recovery_callbacks_do_not_reenter_the_outer_guard(
         kg_runtime,
         "board_storage_mutation_window",
         one_outer_window,
+    )
+    monkeypatch.setattr(
+        composition,
+        "revalidate_board_graph_write_lease",
+        lambda board_id, *, failure_phase: fences.append(f"{board_id}:{failure_phase}"),
     )
     monkeypatch.setattr(
         kg_runtime,
@@ -581,4 +814,10 @@ async def test_runtime_and_recovery_callbacks_do_not_reenter_the_outer_guard(
     assert phases == [
         "board-purge:purge_board_graph",
         "board-recover:recover_wal_only",
+    ]
+    assert fences == [
+        "board-purge:purge_board_graph",
+        "board-purge:runtime_purge_ladybug",
+        "board-recover:recover_wal_only",
+        "board-recover:graph_recovery_ladybug",
     ]

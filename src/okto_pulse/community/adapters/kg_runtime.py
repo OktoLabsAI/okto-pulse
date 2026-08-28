@@ -12,7 +12,6 @@ import gc
 import json
 import logging
 import os
-import shutil
 import threading
 import time
 from collections import OrderedDict
@@ -32,7 +31,14 @@ from okto_pulse.community.adapters.graph_memory_pressure import (
     is_graph_memory_pressure_error,
     run_graph_database_open,
 )
-from okto_pulse.community.adapters.filesystem_erasure import fsync_directory
+from okto_pulse.community.adapters.filesystem_erasure import (
+    contained_lexical_path,
+    fsync_directory,
+    is_filesystem_alias,
+    reject_filesystem_alias_ancestry,
+    remove_contained_tree,
+    validate_scope_id,
+)
 from okto_pulse.core.kg import schema_contract as _schema_contract
 from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphLockContention,
@@ -1595,28 +1601,60 @@ def erase_board_graph_storage_for_privacy_unguarded(
 ) -> list[str]:
     """Erase Ladybug Board artifacts under an already-owned mutation window."""
 
+    safe_board_id = validate_scope_id(board_id)
     path = board_kuzu_path(board_id)
+    storage_root = _kg_base_dir()
+    expected = contained_lexical_path(
+        storage_root,
+        storage_root / "boards" / safe_board_id / GRAPH_DB_FILENAME,
+    )
+    board_root = path.parent
+    if (
+        os.path.normcase(str(Path(os.path.abspath(path))))
+        != os.path.normcase(str(expected))
+        or path.name != GRAPH_DB_FILENAME
+        or board_root.name != safe_board_id
+        or board_root.parent.name != "boards"
+    ):
+        raise ValueError("ladybug_board_privacy_scope_not_canonical")
+
+    # Complete the alias/containment preflight before deleting the first byte.
+    # In the unbound privacy lane, binding inspection cannot detect that the
+    # missing binding's parent is a Windows junction.  Following that junction
+    # here would unlink an identically named database outside Pulse storage.
+    reject_filesystem_alias_ancestry(board_root)
     removed: list[str] = []
     targets: list[Path] = []
-    if path.exists():
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        pass
+    else:
         targets.append(path)
-    if path.parent.exists():
+    try:
+        board_root.lstat()
+    except FileNotFoundError:
+        pass
+    else:
         targets.extend(
             candidate
-            for candidate in sorted(path.parent.glob(path.name + ".*"))
+            for candidate in sorted(board_root.glob(path.name + ".*"))
             if candidate not in targets
         )
     for target in targets:
-        if target.is_dir():
-            shutil.rmtree(target)
-        else:
-            target.unlink()
-        removed.append(str(target))
-    if path.parent.exists() and not any(path.parent.iterdir()):
-        path.parent.rmdir()
-        fsync_directory(path.parent.parent)
-    elif path.parent.exists():
-        fsync_directory(path.parent)
+        target.relative_to(board_root)
+        if is_filesystem_alias(target):
+            raise ValueError(f"ladybug_board_privacy_alias_refused:{target.name}")
+
+    for target in targets:
+        files, directories = remove_contained_tree(target, base_dir=board_root)
+        if files or directories:
+            removed.append(str(target))
+    if board_root.exists() and not any(board_root.iterdir()):
+        board_root.rmdir()
+        fsync_directory(board_root.parent)
+    elif board_root.exists():
+        fsync_directory(board_root)
 
     if path.exists() or (
         path.parent.exists() and any(path.parent.glob(path.name + ".*"))
@@ -4692,6 +4730,52 @@ def ensure_board_graph_bootstrapped_unguarded(board_id: str) -> BoardGraphHandle
         except Exception:
             _MIGRATED_BOARDS.discard(board_id)
             _BOOTSTRAPPED_BOARDS.discard(board_id)
+            raise
+        _MIGRATED_BOARDS.add(board_id)
+        _BOOTSTRAPPED_BOARDS.add(board_id)
+
+    return BoardGraphHandle(
+        board_id=board_id,
+        path=path,
+        schema_version=SCHEMA_VERSION,
+    )
+
+
+def rematerialize_board_graph_unguarded(board_id: str) -> BoardGraphHandle:
+    """Explicitly recreate a purged bound Ladybug target under its close window.
+
+    Normal opens and schema probes must never call this function.  The routed
+    composition invokes it only after Core authorizes a rebuild, the immutable
+    binding has been revalidated, and the native writer plus per-Board close
+    guard are both already owned.
+    """
+
+    path = board_kuzu_path(board_id)
+    if path.exists():
+        raise GraphUnavailable(
+            "The routed Ladybug Board rematerialization target already exists.",
+            details={
+                "operation": "rematerialize_board_graph_unguarded",
+                "reason": "bound_ladybug_graph_already_present",
+                "board_id": board_id,
+                "path": str(path),
+            },
+        )
+    reject_filesystem_alias_ancestry(path.parent)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = _get_bootstrap_lock(board_id)
+    with lock:
+        try:
+            with registered_raw_connection(
+                board_id,
+                within_close_window=True,
+            ) as (_db, conn):
+                _apply_board_schema_and_stamp_meta(conn, board_id)
+                _enforce_embedding_guard_on_connection(conn, board_id)
+        except Exception:
+            _MIGRATED_BOARDS.discard(board_id)
+            _BOOTSTRAPPED_BOARDS.discard(board_id)
+            _close_cached_db_unguarded(board_id)
             raise
         _MIGRATED_BOARDS.add(board_id)
         _BOOTSTRAPPED_BOARDS.add(board_id)

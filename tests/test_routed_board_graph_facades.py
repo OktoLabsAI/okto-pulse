@@ -1314,3 +1314,153 @@ def test_unguarded_mutation_callbacks_are_required_private_facade_seams() -> Non
     assert "_BoardRecoveryOperation" not in facade_module.__all__
     assert not hasattr(facade_module, "BoardPurgeOperation")
     assert not hasattr(facade_module, "BoardRecoveryOperation")
+
+
+@pytest.mark.parametrize(
+    ("method", "phase", "invoke"),
+    [
+        (
+            "create_node",
+            "graph_store_create_node",
+            lambda store: store.create_node("board-l", "Decision", "node-1", {}),
+        ),
+        (
+            "create_edge",
+            "graph_store_create_edge",
+            lambda store: store.create_edge(
+                "board-l",
+                "SUPPORTS",
+                "node-1",
+                "node-2",
+                {},
+                from_type="Decision",
+                to_type="Decision",
+            ),
+        ),
+        (
+            "update_node",
+            "graph_store_update_node",
+            lambda store: store.update_node(
+                "board-l", "Decision", "node-1", {"title": "updated"}
+            ),
+        ),
+        (
+            "mark_superseded",
+            "graph_store_mark_superseded",
+            lambda store: store.mark_superseded(
+                "board-l",
+                "Decision",
+                "node-1",
+                superseded_by="node-2",
+                superseded_at="2026-08-28T00:00:00Z",
+                revocation_reason="test",
+            ),
+        ),
+        (
+            "increment_attestation",
+            "graph_store_increment_attestation",
+            lambda store: store.increment_attestation(
+                "board-l",
+                "Decision",
+                "node-1",
+                attested_at="2026-08-28T00:00:00Z",
+            ),
+        ),
+        (
+            "delete_nodes_by_session",
+            "graph_store_delete_nodes_by_session",
+            lambda store: store.delete_nodes_by_session("board-l", "session-1"),
+        ),
+        (
+            "delete_edges_by_session",
+            "graph_store_delete_edges_by_session",
+            lambda store: store.delete_edges_by_session("board-l", "session-1"),
+        ),
+        (
+            "bootstrap",
+            "graph_store_bootstrap",
+            lambda store: store.bootstrap("board-l"),
+        ),
+    ],
+)
+def test_every_routed_ladybug_semantic_mutation_revalidates_its_write_fence(
+    method: str,
+    phase: str,
+    invoke,
+) -> None:
+    events: list[tuple[Any, ...]] = []
+    resolver = _RouteResolver(
+        {"board-l": _snapshot("board-l", "ladybug", generation="legacy-1")},
+        events,
+    )
+    ladybug = Mock()
+    grafx = Mock()
+    getattr(ladybug, method).side_effect = lambda *_args, **_kwargs: events.append(
+        ("provider_mutation", method)
+    )
+    facade = CommunityRoutedSemanticGraphStore(
+        resolver,  # type: ignore[arg-type]
+        ladybug=ladybug,
+        grafx=grafx,
+        operation_window=_Windows(events).operation,
+        revalidate_write_fence=lambda board_id, observed_phase: events.append(
+            ("write_fence", board_id, observed_phase)
+        ),
+    )
+
+    invoke(facade)
+
+    assert ("write_fence", "board-l", phase) in events
+    assert events.index(("write_fence", "board-l", phase)) < events.index(
+        ("provider_mutation", method)
+    )
+    assert grafx.mock_calls == []
+
+
+@pytest.mark.asyncio
+async def test_every_routed_ladybug_schema_mutation_revalidates_its_write_fence() -> (
+    None
+):
+    events: list[tuple[Any, ...]] = []
+    resolver = _RouteResolver(
+        {"board-l": _snapshot("board-l", "ladybug", generation="legacy-1")},
+        events,
+    )
+    ladybug = Mock()
+    grafx = Mock()
+
+    async def ensure(board_id: str) -> None:
+        events.append(("provider_mutation", "ensure", board_id))
+
+    async def migrate(board_id: str) -> dict[str, Any]:
+        events.append(("provider_mutation", "migrate", board_id))
+        return {"migrated": True}
+
+    ladybug.ensure_bootstrapped = ensure
+    ladybug.migrate = migrate
+    facade = CommunityRoutedGraphSchemaManager(
+        resolver,  # type: ignore[arg-type]
+        ladybug=ladybug,
+        grafx=grafx,
+        operation_window=_Windows(events).operation,
+        revalidate_write_fence=lambda board_id, phase: events.append(
+            ("write_fence", board_id, phase)
+        ),
+    )
+
+    await facade.ensure_bootstrapped("board-l")
+    assert await facade.migrate("board-l") == {"migrated": True}
+
+    ensure_fence = (
+        "write_fence",
+        "board-l",
+        "graph_schema_ensure_bootstrapped",
+    )
+    migrate_fence = ("write_fence", "board-l", "graph_schema_migrate")
+    assert events.index(ensure_fence) < events.index(
+        ("provider_mutation", "ensure", "board-l")
+    )
+    assert events.index(migrate_fence) < events.index(
+        ("provider_mutation", "migrate", "board-l")
+    )
+    assert grafx.mock_calls == []
