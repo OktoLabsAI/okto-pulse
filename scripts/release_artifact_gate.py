@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Fail-closed release gate for the paired Core and Community wheels.
+"""Fail-closed release gate for the Core, Community, and Grafx wheels.
 
 The gate deliberately runs outside either source tree after building the current
-working trees.  It installs both wheels into a fresh virtual environment, proves
-that imports and distribution metadata resolve from that environment, exercises
-the packaged CLI and About surface, and lists the installed MCP catalog through
-a real loopback HTTP listener.
+working trees. It installs the three wheels into a fresh virtual environment,
+proves that imports and distribution metadata resolve from that environment,
+exercises the packaged CLI and About surface, and lists the installed MCP catalog
+through a real loopback HTTP listener.
 
 Usage::
 
@@ -31,16 +31,17 @@ from pathlib import Path
 from typing import Any
 
 EXPECTED_VERSION = "0.3.3"
+EXPECTED_GRAFX_VERSION = "0.0.1"
 EXPECTED_MCP_TOOL_COUNT = 338
 EXPECTED_CANONICAL_TOOL_COUNT = 330
 EXPECTED_TOOL_ALIAS_COUNT = 8
-EXPECTED_RESOURCE_COUNT = 55
+EXPECTED_RESOURCE_COUNT = 56
 MINIMUM_SUPPORTED_PYTHON = (3, 11)
 COMMUNITY_REPO = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT_ENV = "OKTO_PULSE_WORKSPACE_ROOT"
-RUNTIME_MATRIX_PROBE = (
-    COMMUNITY_REPO / "scripts" / "release_runtime_matrix_probe.py"
-)
+GRAFX_WHEEL_ENV = "OKTO_E2E_GRAFX_WHEEL"
+GRAFX_REPO_ENV = "OKTO_E2E_GRAFX_REPO"
+RUNTIME_MATRIX_PROBE = COMMUNITY_REPO / "scripts" / "release_runtime_matrix_probe.py"
 
 
 class ReleaseArtifactGateError(RuntimeError):
@@ -48,10 +49,9 @@ class ReleaseArtifactGateError(RuntimeError):
 
 
 def _is_core_checkout(candidate: Path) -> bool:
-    return (
-        (candidate / "pyproject.toml").is_file()
-        and (candidate / "src" / "okto_pulse" / "core").is_dir()
-    )
+    return (candidate / "pyproject.toml").is_file() and (
+        candidate / "src" / "okto_pulse" / "core"
+    ).is_dir()
 
 
 def _resolve_core_repo() -> Path:
@@ -61,8 +61,7 @@ def _resolve_core_repo() -> Path:
         if _is_core_checkout(candidate):
             return candidate
         raise ReleaseArtifactGateError(
-            "OKTO_PULSE_CORE_REPO does not point to a valid Core checkout: "
-            f"{candidate}"
+            f"OKTO_PULSE_CORE_REPO does not point to a valid Core checkout: {candidate}"
         )
 
     configured_workspace = str(os.environ.get(WORKSPACE_ROOT_ENV, "")).strip()
@@ -80,8 +79,7 @@ def _resolve_core_repo() -> Path:
             if _is_core_checkout(candidate):
                 return candidate
         raise ReleaseArtifactGateError(
-            f"{WORKSPACE_ROOT_ENV} contains no valid Core checkout; "
-            f"checked: {checked}"
+            f"{WORKSPACE_ROOT_ENV} contains no valid Core checkout; checked: {checked}"
         )
 
     roots = (COMMUNITY_REPO.parent, COMMUNITY_REPO.parent.parent)
@@ -217,6 +215,12 @@ def _isolated_env() -> dict[str, str]:
 
 
 def _wheel_metadata_version(wheel: Path) -> str:
+    return _wheel_metadata_identity(wheel)[1]
+
+
+def _wheel_metadata_identity(wheel: Path) -> tuple[str, str, tuple[str, ...]]:
+    if not wheel.is_file() or wheel.suffix.casefold() != ".whl":
+        raise ReleaseArtifactGateError(f"wheel candidate is not a file: {wheel}")
     with zipfile.ZipFile(wheel) as archive:
         metadata_names = sorted(
             name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
@@ -226,10 +230,43 @@ def _wheel_metadata_version(wheel: Path) -> str:
                 f"expected one METADATA member in {wheel.name}; got {metadata_names!r}"
             )
         metadata = archive.read(metadata_names[0]).decode("utf-8")
-    for line in metadata.splitlines():
-        if line.startswith("Version: "):
-            return line.removeprefix("Version: ").strip()
-    raise ReleaseArtifactGateError(f"Version missing from {wheel.name} METADATA")
+    names = [
+        line.removeprefix("Name: ").strip()
+        for line in metadata.splitlines()
+        if line.startswith("Name: ")
+    ]
+    versions = [
+        line.removeprefix("Version: ").strip()
+        for line in metadata.splitlines()
+        if line.startswith("Version: ")
+    ]
+    extras = tuple(
+        sorted(
+            line.removeprefix("Provides-Extra: ").strip()
+            for line in metadata.splitlines()
+            if line.startswith("Provides-Extra: ")
+        )
+    )
+    if len(names) != 1 or len(versions) != 1:
+        raise ReleaseArtifactGateError(
+            f"Name/Version identity invalid in {wheel.name} METADATA: "
+            f"names={names!r}, versions={versions!r}"
+        )
+    return names[0], versions[0], extras
+
+
+def _validate_grafx_wheel(wheel: Path) -> None:
+    name, version, extras = _wheel_metadata_identity(wheel)
+    normalized_name = name.casefold().replace("_", "-")
+    if normalized_name != "okto-grafx" or version != EXPECTED_GRAFX_VERSION:
+        raise ReleaseArtifactGateError(
+            "Grafx wheel identity mismatch: "
+            f"name={name!r}, version={version!r}, wheel={wheel}"
+        )
+    if "accel" not in {extra.casefold() for extra in extras}:
+        raise ReleaseArtifactGateError(
+            f"Grafx wheel does not provide the required accel extra: {wheel}"
+        )
 
 
 def _sha256(path: Path) -> str:
@@ -299,13 +336,9 @@ def _payload_tree_provenance(
                 mismatches.append(
                     {
                         "member": member,
-                        "source": (
-                            "present" if source.is_file() else "missing"
-                        ),
+                        "source": ("present" if source.is_file() else "missing"),
                         "wheel": "present",
-                        "installed": (
-                            "present" if installed.is_file() else "missing"
-                        ),
+                        "installed": ("present" if installed.is_file() else "missing"),
                     }
                 )
                 continue
@@ -420,7 +453,7 @@ def _build_wheels(
     work_dir: Path,
     *,
     offline: bool,
-) -> tuple[Path, Path]:
+) -> tuple[Path, Path, Path]:
     wheel_dir = work_dir / "wheels"
     wheel_dir.mkdir(parents=True)
     for repo in (CORE_REPO, COMMUNITY_REPO):
@@ -434,6 +467,44 @@ def _build_wheels(
             timeout=240,
         )
 
+    configured_wheel = str(os.environ.get(GRAFX_WHEEL_ENV, "")).strip()
+    configured_repo = str(os.environ.get(GRAFX_REPO_ENV, "")).strip()
+    if bool(configured_wheel) == bool(configured_repo):
+        raise ReleaseArtifactGateError(
+            f"exactly one of {GRAFX_WHEEL_ENV} or {GRAFX_REPO_ENV} must be set"
+        )
+    if configured_wheel:
+        source_wheel = Path(configured_wheel).expanduser().resolve()
+        _validate_grafx_wheel(source_wheel)
+        grafx_wheel = wheel_dir / source_wheel.name
+        shutil.copy2(source_wheel, grafx_wheel)
+        if _sha256(grafx_wheel) != _sha256(source_wheel):
+            raise ReleaseArtifactGateError(
+                f"staged Grafx wheel hash diverged from its input: {source_wheel}"
+            )
+    else:
+        grafx_repo = Path(configured_repo).expanduser().resolve()
+        if not (
+            (grafx_repo / "pyproject.toml").is_file()
+            and (grafx_repo / "src" / "okto_grafx" / "__init__.py").is_file()
+        ):
+            raise ReleaseArtifactGateError(
+                f"{GRAFX_REPO_ENV} does not point to a Grafx checkout: {grafx_repo}"
+            )
+        command = [uv, "build", "--wheel"]
+        if offline:
+            command.append("--offline")
+        command.extend(("--out-dir", wheel_dir, grafx_repo))
+        _run(command, cwd=work_dir, timeout=240)
+        grafx_candidates = sorted(wheel_dir.glob("okto_grafx-*.whl"))
+        if len(grafx_candidates) != 1:
+            raise ReleaseArtifactGateError(
+                "fresh build did not produce exactly one Grafx wheel: "
+                f"grafx={grafx_candidates!r}"
+            )
+        grafx_wheel = grafx_candidates[0]
+
+    _validate_grafx_wheel(grafx_wheel)
     core = sorted(wheel_dir.glob("okto_pulse_core-*.whl"))
     community = sorted(wheel_dir.glob("okto_pulse-0*.whl"))
     if len(core) != 1 or len(community) != 1:
@@ -447,7 +518,7 @@ def _build_wheels(
             raise ReleaseArtifactGateError(
                 f"{wheel.name} metadata version {observed!r} != {EXPECTED_VERSION!r}"
             )
-    return core[0], community[0]
+    return core[0], community[0], grafx_wheel
 
 
 def _audit_core_artifact(
@@ -460,7 +531,7 @@ def _audit_core_artifact(
     core_source = CORE_REPO / "src"
     sys.path.insert(0, str(core_source))
     try:
-        from okto_pulse.core.application.boundary.distribution_dependency_ownership import (  # noqa: E501
+        from okto_pulse.core.application.boundary.distribution_dependency_ownership import (
             CORE_DISTRIBUTION,
             audit_distribution_dependencies,
         )
@@ -526,16 +597,21 @@ def _audit_core_artifact(
 _INSTALLED_ORIGIN_PROBE = r"""
 import importlib.metadata as metadata
 import importlib.util
+import hashlib
 import inspect
 import json
 import sys
 from pathlib import Path
 
 venv = Path(sys.argv[1]).resolve()
-forbidden_roots = tuple(Path(value).resolve() for value in sys.argv[2:])
+expected_grafx_url = sys.argv[2]
+expected_grafx_wheel = Path(sys.argv[3]).resolve()
+expected_grafx_sha256 = sys.argv[4]
+forbidden_roots = tuple(Path(value).resolve() for value in sys.argv[5:])
 
 import okto_pulse.core as core
 import okto_pulse.community as community
+import okto_grafx
 from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_v2 import (
     CommunitySqlAlchemySemanticGuidelineAssessmentV2,
 )
@@ -571,13 +647,16 @@ origins = {
         "okto_pulse.core.mcp.server",
         "okto_pulse.community",
         "okto_pulse.community.adapters.mcp_host",
+        "okto_grafx",
     )
 }
 
 core_dist = metadata.distribution("okto-pulse-core")
 community_dist = metadata.distribution("okto-pulse")
+grafx_dist = metadata.distribution("okto-grafx")
 assert core_dist.version == community_dist.version == "0.3.3"
-for distribution in (core_dist, community_dist):
+assert grafx_dist.version == "0.0.1"
+for distribution in (core_dist, community_dist, grafx_dist):
     root = Path(distribution.locate_file("")).resolve()
     assert under(root, venv), (distribution.metadata["Name"], root, venv)
     assert not any(
@@ -589,9 +668,15 @@ core_files = sorted(str(path).replace("\\", "/") for path in (core_dist.files or
 community_files = sorted(
     str(path).replace("\\", "/") for path in (community_dist.files or ())
 )
+grafx_files = sorted(str(path).replace("\\", "/") for path in (grafx_dist.files or ()))
 assert any(path.startswith("okto_pulse/core/") for path in core_files)
 assert not any(path.startswith("okto_pulse/community/") for path in core_files)
 assert any(path.startswith("okto_pulse/community/") for path in community_files)
+assert any(path.startswith("okto_grafx/") for path in grafx_files)
+grafx_direct_url = json.loads(grafx_dist.read_text("direct_url.json"))
+assert grafx_direct_url["url"] == expected_grafx_url, grafx_direct_url
+grafx_wheel_sha256 = hashlib.sha256(expected_grafx_wheel.read_bytes()).hexdigest()
+assert grafx_wheel_sha256 == expected_grafx_sha256
 required_core_resources = (
     "okto_pulse/core/mcp/resources/ska_resource_manifest.json",
     "okto_pulse/core/mcp/resources/ska_tool_manifest.json",
@@ -643,11 +728,19 @@ assert "0.3.3" in about[0]
 assert not any("Community Edition \u2014 v0.3.0" in source for source in sources)
 
 print("INSTALLED_ORIGIN_PROBE=" + json.dumps({
-    "versions": {"core": core_dist.version, "community": community_dist.version},
+    "versions": {
+        "core": core_dist.version,
+        "community": community_dist.version,
+        "grafx": grafx_dist.version,
+    },
     "origins": origins,
     "distribution_file_counts": {
-        "core": len(core_files), "community": len(community_files),
+        "core": len(core_files),
+        "community": len(community_files),
+        "grafx": len(grafx_files),
     },
+    "grafx_direct_url": grafx_direct_url,
+    "grafx_wheel_sha256": grafx_wheel_sha256,
     "required_core_resources": list(required_core_resources),
     "ska_contract_manifests": {
         "tool_count": tool_manifest["tool_count"],
@@ -685,6 +778,7 @@ print("INSTALLED_RUNTIME_VERSION=" + json.dumps({
     "pydantic": metadata.version("pydantic"),
     "okto_pulse_core": metadata.version("okto-pulse-core"),
     "okto_pulse": metadata.version("okto-pulse"),
+    "okto_grafx": metadata.version("okto-grafx"),
 }, sort_keys=True))
 """
 
@@ -776,8 +870,9 @@ async def main():
 asyncio.run(main())
 """
 _MCP_CLIENT_PROBE = (
-    _MCP_CLIENT_PROBE
-    .replace("__EXPECTED_MCP_TOOL_COUNT__", str(EXPECTED_MCP_TOOL_COUNT))
+    _MCP_CLIENT_PROBE.replace(
+        "__EXPECTED_MCP_TOOL_COUNT__", str(EXPECTED_MCP_TOOL_COUNT)
+    )
     .replace(
         "__EXPECTED_CANONICAL_TOOL_COUNT__",
         str(EXPECTED_CANONICAL_TOOL_COUNT),
@@ -830,6 +925,7 @@ def _installed_gate(
     uv: str,
     core_wheel: Path,
     community_wheel: Path,
+    grafx_wheel: Path,
     work_dir: Path,
     *,
     offline: bool,
@@ -845,7 +941,7 @@ def _installed_gate(
     install = [uv, "pip", "install"]
     if offline:
         install.append("--offline")
-    install.extend(("--python", python, core_wheel, community_wheel))
+    install.extend(("--python", python, core_wheel, community_wheel, grafx_wheel))
     _run(install, cwd=work_dir, timeout=900)
 
     env = _isolated_env()
@@ -870,6 +966,9 @@ def _installed_gate(
             "-c",
             _INSTALLED_ORIGIN_PROBE,
             venv,
+            grafx_wheel.resolve().as_uri(),
+            grafx_wheel.resolve(),
+            _sha256(grafx_wheel),
             *FORBIDDEN_CHECKOUT_ROOTS,
         ),
         cwd=work_dir,
@@ -903,18 +1002,14 @@ def _installed_gate(
     ).items():
         module_origin = Path(str(raw_origin)).resolve()
         if not (
-            module_origin == venv.resolve()
-            or venv.resolve() in module_origin.parents
+            module_origin == venv.resolve() or venv.resolve() in module_origin.parents
         ):
             raise ReleaseArtifactGateError(
                 "runtime matrix imported outside the isolated environment: "
                 f"{module_name}={module_origin}"
             )
         if any(
-            (
-                module_origin == forbidden
-                or forbidden in module_origin.parents
-            )
+            (module_origin == forbidden or forbidden in module_origin.parents)
             and not (
                 module_origin == venv.resolve()
                 or venv.resolve() in module_origin.parents
@@ -988,9 +1083,7 @@ def _installed_gate(
         "isolated_venv": str(venv),
         "offline_install": offline,
         "runtime_version": runtime_version_evidence,
-        "forbidden_checkout_roots": [
-            str(path) for path in FORBIDDEN_CHECKOUT_ROOTS
-        ],
+        "forbidden_checkout_roots": [str(path) for path in FORBIDDEN_CHECKOUT_ROOTS],
         "origin_probe": origin_evidence,
         "payload_provenance": payload_provenance,
         "runtime_matrix": runtime_matrix_evidence,
@@ -1011,12 +1104,17 @@ def run_gate(work_dir: Path, *, offline: bool) -> dict[str, Any]:
     _assert_canonical_core_resolution()
 
     work_dir.mkdir(parents=True, exist_ok=False)
-    core_wheel, community_wheel = _build_wheels(uv, work_dir, offline=offline)
+    core_wheel, community_wheel, grafx_wheel = _build_wheels(
+        uv,
+        work_dir,
+        offline=offline,
+    )
     audit = _audit_core_artifact(core_wheel, community_wheel, work_dir)
     installed = _installed_gate(
         uv,
         core_wheel,
         community_wheel,
+        grafx_wheel,
         work_dir,
         offline=offline,
     )
@@ -1033,6 +1131,11 @@ def run_gate(work_dir: Path, *, offline: bool) -> dict[str, Any]:
                 "name": community_wheel.name,
                 "sha256": _sha256(community_wheel),
                 "size": community_wheel.stat().st_size,
+            },
+            "grafx": {
+                "name": grafx_wheel.name,
+                "sha256": _sha256(grafx_wheel),
+                "size": grafx_wheel.stat().st_size,
             },
         },
         "core_artifact_audit": audit,
