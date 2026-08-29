@@ -1509,6 +1509,258 @@ async def test_a_read_runs_on_the_scope_without_spending_a_fence(
 
 
 @pytest.mark.asyncio
+async def test_execute_recursively_adapts_datetime_parameters_to_grafx_timestamps(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[dict[str, Any]] = []
+    original_execute = Transaction.execute
+
+    def traced_execute(
+        self: Any,
+        statement: str,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        observed.append(dict(params or {}))
+        return original_execute(self, statement, params)
+
+    monkeypatch.setattr(Transaction, "execute", traced_execute)
+    now = datetime(2026, 8, 28, 12, 34, 56, 123456, tzinfo=UTC)
+    scope = await _provider(grafx_database, fence).begin(BOARD_ID)
+    try:
+        result = scope.execute(
+            "RETURN $now",
+            {
+                "now": now,
+                "rows": [{"now": now}, (now,)],
+            },
+        )
+    finally:
+        await scope.rollback()
+
+    assert result.rows == (("2026-08-28T12:34:56.123456Z",),)
+    assert isinstance(observed[-1]["now"], Timestamp)
+    assert isinstance(observed[-1]["rows"][0]["now"], Timestamp)
+    assert isinstance(observed[-1]["rows"][1][0], Timestamp)
+
+
+@pytest.mark.asyncio
+async def test_execute_fans_logical_relationship_metrics_across_physical_tables(
+    tmp_path: Path,
+) -> None:
+    from okto_pulse.community.adapters.grafx_graph_transaction import (
+        CommunityGrafxGraphTransaction,
+    )
+    from okto_pulse.community.adapters.grafx_relationship_layout import (
+        resolve_relationship_table,
+    )
+
+    database = okto_grafx.connect(tmp_path / "logical-relationship-scan")
+    pairs = (
+        ("belongs_to", "Entity", "Entity"),
+        ("belongs_to", "Bug", "Entity"),
+    )
+    try:
+        with database.begin("write") as writer:
+            writer.execute(
+                "CREATE NODE TABLE Entity(id STRING, kind_of STRING, PRIMARY KEY(id))"
+            )
+            writer.execute(
+                "CREATE NODE TABLE Bug(id STRING, kind_of STRING, PRIMARY KEY(id))"
+            )
+            for _logical, from_type, to_type in pairs:
+                physical = resolve_relationship_table("belongs_to", from_type, to_type)
+                writer.execute(
+                    f"CREATE REL TABLE {physical}(FROM {from_type} TO {to_type}, "
+                    "layer STRING, rule_id STRING)"
+                )
+            writer.execute(
+                "CREATE (:Entity {id: 'owner', kind_of: 'entity'}), "
+                "(:Entity {id: 'peer', kind_of: 'entity'}), "
+                "(:Bug {id: 'bug', kind_of: 'bug'})"
+            )
+            writer.execute(
+                "MATCH (a:Entity), (b:Entity) "
+                "WHERE a.id = 'peer' AND b.id = 'owner' "
+                "CREATE (a)-[:belongs_to__Entity__Entity "
+                "{layer: 'working', rule_id: 'same'}]->(b)"
+            )
+            writer.execute(
+                "MATCH (a:Bug), (b:Entity) "
+                "WHERE a.id = 'bug' AND b.id = 'owner' "
+                "CREATE (a)-[:belongs_to__Bug__Entity "
+                "{layer: 'working', rule_id: 'same'}]->(b)"
+            )
+
+        provider = CommunityGrafxGraphTransaction(
+            lambda _board_id: database,
+            lambda _board_id, _phase: None,
+            node_types=("Entity", "Bug"),
+            relationship_pairs=pairs,
+            relationship_table_resolver=resolve_relationship_table,
+        )
+        scope = await provider.begin(BOARD_ID)
+        try:
+            plain = scope.execute(
+                "MATCH (a)-[r:belongs_to]->(b) RETURN r.layer, r.rule_id"
+            )
+            filtered = scope.execute(
+                "MATCH (a)-[r:belongs_to]->(b) "
+                "WHERE ($include_code_traceability = true OR "
+                "(coalesce(a.kind_of, '') <> 'code_investigation_receipt' AND "
+                "coalesce(a.kind_of, '') <> 'code_evidence' AND "
+                "coalesce(a.kind_of, '') <> 'implementation_target')) AND "
+                "($include_code_traceability = true OR "
+                "(coalesce(b.kind_of, '') <> 'code_investigation_receipt' AND "
+                "coalesce(b.kind_of, '') <> 'code_evidence' AND "
+                "coalesce(b.kind_of, '') <> 'implementation_target')) "
+                "RETURN r.layer, r.rule_id",
+                {"include_code_traceability": False},
+            )
+            scope.execute(
+                "MATCH (a:Entity)-[r:belongs_to]->(b:Entity) "
+                "WHERE a.id = $dup DELETE r",
+                {"dup": "peer"},
+            )
+            after_source_delete = scope.execute(
+                "MATCH (a)-[r:belongs_to]->(b) RETURN r.layer, r.rule_id"
+            )
+            scope.execute(
+                "MATCH (a:Entity) WHERE a.id = $src "
+                "MATCH (b:Entity) WHERE b.id = $tgt "
+                "CREATE (a)-[:belongs_to "
+                "{layer: $layer, rule_id: $rule_id}]->(b)",
+                {
+                    "src": "peer",
+                    "tgt": "owner",
+                    "layer": "working",
+                    "rule_id": "same",
+                },
+            )
+            after_recreate = scope.execute(
+                "MATCH (a)-[r:belongs_to]->(b) RETURN r.layer, r.rule_id"
+            )
+            scope.execute(
+                "MATCH (a:Entity)-[r:belongs_to]->(b:Entity) "
+                "WHERE b.id = $dup DELETE r",
+                {"dup": "owner"},
+            )
+            after_target_delete = scope.execute(
+                "MATCH (a)-[r:belongs_to]->(b) RETURN r.layer, r.rule_id"
+            )
+        finally:
+            await scope.rollback()
+
+        expected = (
+            ("working", "same"),
+            ("working", "same"),
+        )
+        assert plain.columns == ("r.layer", "r.rule_id")
+        assert plain.rows == expected
+        assert filtered.rows == expected
+        assert after_source_delete.rows == (("working", "same"),)
+        assert after_recreate.rows == expected
+        assert after_target_delete.rows == (("working", "same"),)
+    finally:
+        database.close()
+
+
+@pytest.mark.asyncio
+async def test_execute_translates_every_frozen_typed_relationship_shape() -> None:
+    from okto_pulse.community.adapters.grafx_graph_transaction import (
+        CommunityGrafxGraphTransaction,
+    )
+    from okto_pulse.community.adapters.grafx_relationship_layout import (
+        PULSE_RELATIONSHIP_LAYOUT,
+        resolve_relationship_table,
+    )
+
+    class TransactionProbe:
+        active = True
+
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        def execute(self, statement: str, _params: object = None) -> object:
+            self.statements.append(statement)
+            return type("ResultProbe", (), {"columns": (), "rows": ()})()
+
+        def rollback(self) -> None:
+            self.active = False
+
+    transaction = TransactionProbe()
+
+    class DatabaseProbe:
+        def begin(self, mode: str) -> TransactionProbe:
+            assert mode == "write"
+            return transaction
+
+    pairs = tuple(
+        (entry.logical_type, entry.from_type, entry.to_type)
+        for entry in PULSE_RELATIONSHIP_LAYOUT.entries
+    )
+    provider = CommunityGrafxGraphTransaction(
+        lambda _board_id: DatabaseProbe(),  # type: ignore[arg-type]
+        lambda _board_id, _phase: None,
+        relationship_pairs=pairs,
+        relationship_table_resolver=resolve_relationship_table,
+    )
+    scope = await provider.begin(BOARD_ID)
+    cases = (
+        (
+            (
+                "MATCH (d:Decision {id: $id})-[r:relates_to]->"
+                "(n:Alternative {id: $root}) RETURN r LIMIT 1"
+            ),
+            ("relates_to", "Decision", "Alternative"),
+        ),
+        (
+            "MATCH (l:Learning)-[r:validates]->(b:Bug) RETURN l.id",
+            ("validates", "Learning", "Bug"),
+        ),
+        (
+            "MATCH (c:Constraint)<-[:violates]-(bug:Bug) RETURN bug.id",
+            ("violates", "Bug", "Constraint"),
+        ),
+        (
+            "MATCH (a:Decision)-[r:contradicts]->(b:Decision) RETURN a.id",
+            ("contradicts", "Decision", "Decision"),
+        ),
+        (
+            ("MATCH (current:Decision)-[:supersedes]->(next:Decision) RETURN next.id"),
+            ("supersedes", "Decision", "Decision"),
+        ),
+        (
+            "MATCH (d:Decision)-[:relates_to]->(alt:Alternative) RETURN alt.id",
+            ("relates_to", "Decision", "Alternative"),
+        ),
+        (
+            (
+                "MATCH (a:Decision)-[r:belongs_to]->(b:Entity) "
+                "WHERE a.id = $dup DELETE r"
+            ),
+            ("belongs_to", "Decision", "Entity"),
+        ),
+        (
+            (
+                "MATCH (a:Decision) WHERE a.id = $src "
+                "MATCH (b:Entity) WHERE b.id = $tgt "
+                "CREATE (a)-[:belongs_to {layer: $layer}]->(b)"
+            ),
+            ("belongs_to", "Decision", "Entity"),
+        ),
+    )
+    try:
+        for statement, (logical, from_type, to_type) in cases:
+            scope.execute(statement, {})
+            physical = resolve_relationship_table(logical, from_type, to_type)
+            assert f":{physical}" in transaction.statements[-1]
+    finally:
+        await scope.rollback()
+
+
+@pytest.mark.asyncio
 async def test_begin_revalidates_fence_before_opening_engine_transaction(
     grafx_database: Any,
     fence: _DeterministicFence,

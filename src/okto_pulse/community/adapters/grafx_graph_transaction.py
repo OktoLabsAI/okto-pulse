@@ -47,6 +47,9 @@ from okto_pulse.core.kg.schema_contract import (
     REL_TYPES,
 )
 
+from okto_pulse.community.adapters.cypher_statement_policy import (
+    strip_comments_and_literals,
+)
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
 from okto_pulse.community.adapters.grafx_relationship_layout import (
     resolve_relationship_table,
@@ -55,6 +58,30 @@ from okto_pulse.community.adapters.grafx_relationship_layout import (
 logger = logging.getLogger(__name__)
 
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_LOGICAL_RELATIONSHIP_PROPERTY_SCAN = re.compile(
+    r"\A\s*MATCH\s+\([A-Za-z_][A-Za-z0-9_]*\)\s*-\s*"
+    r"\[(?P<relationship_alias>[A-Za-z_][A-Za-z0-9_]*):"
+    r"(?P<logical_type>[A-Za-z_][A-Za-z0-9_]*)\]\s*->\s*"
+    r"\([A-Za-z_][A-Za-z0-9_]*\)\s*"
+    r"(?:WHERE\b.*?)?\s*RETURN\s+"
+    r"(?P=relationship_alias)\.layer\s*,\s*"
+    r"(?P=relationship_alias)\.rule_id\s*;?\s*\Z",
+    re.IGNORECASE | re.DOTALL,
+)
+_NODE_ALIAS_LABEL = re.compile(
+    r"\(\s*(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*"
+    r"(?P<label>[A-Za-z_][A-Za-z0-9_]*)\b"
+)
+_TYPED_LOGICAL_RELATIONSHIP = re.compile(
+    r"\(\s*(?P<left_alias>[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?:\s*:\s*(?P<left_label>[A-Za-z_][A-Za-z0-9_]*))?[^()]*\)\s*"
+    r"(?P<left_arrow><-|-)[ \t\r\n]*\[[ \t\r\n]*"
+    r"(?:[A-Za-z_][A-Za-z0-9_]*[ \t\r\n]*)?:[ \t\r\n]*"
+    r"(?P<logical_type>[A-Za-z_][A-Za-z0-9_]*)\b[^\]]*\][ \t\r\n]*"
+    r"(?P<right_arrow>->|-)[ \t\r\n]*"
+    r"\(\s*(?P<right_alias>[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?:\s*:\s*(?P<right_label>[A-Za-z_][A-Za-z0-9_]*))?[^()]*\)"
+)
 _IDENTITY_PROPERTIES = frozenset({"id", "source_session_id"})
 # The relational projection materializes exactly these two node tables; naming them keeps the
 # owned-set discovery bounded to a read the provider can actually justify, rather than a sweep
@@ -247,6 +274,36 @@ def _timestamp_from_iso(value: str | datetime) -> Timestamp:
     return Timestamp(micros=micros)
 
 
+def _grafx_query_parameter_value(value: Any) -> Any:
+    """Translate Pulse parameter values into Grafx's public value domain.
+
+    Core legitimately supplies timezone-aware ``datetime`` objects to generic
+    Cypher operations (including cancellation decay and batched recovery
+    rows).  Grafx deliberately accepts its immutable ``Timestamp`` value at
+    the public boundary instead of retaining a Python ``datetime`` capability,
+    so adapt that impedance mismatch recursively before entering the engine.
+    """
+
+    if isinstance(value, datetime):
+        return _timestamp_from_iso(value)
+    if isinstance(value, Mapping):
+        return {key: _grafx_query_parameter_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(_grafx_query_parameter_value(item) for item in value)
+    if isinstance(value, list):
+        return [_grafx_query_parameter_value(item) for item in value]
+    return value
+
+
+def _grafx_query_parameters(
+    params: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        key: _grafx_query_parameter_value(value)
+        for key, value in (params or {}).items()
+    }
+
+
 def _normalize_value(value: Any) -> Any:
     if isinstance(value, Timestamp):
         rendered = datetime.fromtimestamp(
@@ -378,7 +435,10 @@ class _GrafxTransactionScope:
     ):
         self._require_active()
         try:
-            return self._transaction.execute(statement, dict(params or {}))
+            return self._transaction.execute(
+                statement,
+                _grafx_query_parameters(params),
+            )
         except Exception as exc:
             mapped = map_grafx_error(exc, operation=operation)
             if mapped is exc:
@@ -394,6 +454,99 @@ class _GrafxTransactionScope:
     ):
         self._fence(operation)
         return self._query(statement, params, operation=operation)
+
+    def _expand_logical_relationship_property_scan(
+        self,
+        statement: str,
+    ) -> tuple[str, ...]:
+        """Fan one frozen logical relationship scan into physical Grafx tables.
+
+        Pulse's metrics family reads ``r.layer`` and ``r.rule_id`` through an
+        untyped-endpoint logical relationship name.  Grafx stores each allowed
+        endpoint pair in a distinct physical table.  Executing one branch per
+        declared pair and concatenating the rows preserves the required
+        multiset semantics; using Cypher ``UNION`` would incorrectly discard
+        duplicate rows.  No aggregate, ordering, limit, write, or open-ended
+        statement shape is widened here.
+        """
+
+        match = _LOGICAL_RELATIONSHIP_PROPERTY_SCAN.fullmatch(statement)
+        if match is None:
+            return (statement,)
+        logical_type = match.group("logical_type")
+        physical_tables = tuple(
+            dict.fromkeys(
+                self._relationship_table_resolver(edge_type, from_type, to_type)
+                for edge_type, from_type, to_type in self._relationship_pairs
+                if edge_type == logical_type
+            )
+        )
+        if not physical_tables:
+            return (statement,)
+        start, end = match.span("logical_type")
+        return tuple(
+            f"{statement[:start]}{physical}{statement[end:]}"
+            for physical in physical_tables
+        )
+
+    def _translate_typed_logical_relationships(self, statement: str) -> str:
+        """Resolve endpoint-typed logical relationship names without widening Cypher.
+
+        The two endpoint labels select exactly one table in the immutable Pulse
+        layout.  Labels may be present on the relationship pattern itself or on
+        earlier ``MATCH`` clauses that bind the aliases used by ``CREATE``.
+        Literals and comments are blanked before scanning, so text that merely
+        resembles a pattern is never rewritten.
+        """
+
+        code = strip_comments_and_literals(statement)
+        labels_by_alias: dict[str, set[str]] = {}
+        for node_match in _NODE_ALIAS_LABEL.finditer(code):
+            labels_by_alias.setdefault(node_match.group("alias"), set()).add(
+                node_match.group("label")
+            )
+
+        def resolved_label(alias: str, local: str | None) -> str | None:
+            if local is not None:
+                return local
+            candidates = labels_by_alias.get(alias, set())
+            return next(iter(candidates)) if len(candidates) == 1 else None
+
+        replacements: list[tuple[int, int, str]] = []
+        for relationship_match in _TYPED_LOGICAL_RELATIONSHIP.finditer(code):
+            left_label = resolved_label(
+                relationship_match.group("left_alias"),
+                relationship_match.group("left_label"),
+            )
+            right_label = resolved_label(
+                relationship_match.group("right_alias"),
+                relationship_match.group("right_label"),
+            )
+            if left_label is None or right_label is None:
+                continue
+            left_arrow = relationship_match.group("left_arrow")
+            right_arrow = relationship_match.group("right_arrow")
+            if left_arrow == "-" and right_arrow == "->":
+                from_type, to_type = left_label, right_label
+            elif left_arrow == "<-" and right_arrow == "-":
+                from_type, to_type = right_label, left_label
+            else:
+                continue
+            logical_type = relationship_match.group("logical_type")
+            if (logical_type, from_type, to_type) not in self._relationship_pairs:
+                continue
+            physical = self._relationship_table_resolver(
+                logical_type,
+                from_type,
+                to_type,
+            )
+            start, end = relationship_match.span("logical_type")
+            replacements.append((start, end, physical))
+
+        translated = statement
+        for start, end, physical in reversed(replacements):
+            translated = f"{translated[:start]}{physical}{translated[end:]}"
+        return translated
 
     def _node_definition(self, node_type: str):
         name = _identifier("node type", node_type)
@@ -535,7 +688,13 @@ class _GrafxTransactionScope:
         if statement_is_write(statement):
             self._fence("graph_statement_precommit")
         try:
-            result = self._transaction.execute(statement, dict(params or {}))
+            prepared_params = _grafx_query_parameters(params)
+            translated = self._translate_typed_logical_relationships(statement)
+            statements = self._expand_logical_relationship_property_scan(translated)
+            results = tuple(
+                self._transaction.execute(candidate, prepared_params)
+                for candidate in statements
+            )
         except Exception as exc:
             mapped = map_grafx_error(exc, operation="graph_statement")
             kind = statement_kind(statement)
@@ -546,14 +705,47 @@ class _GrafxTransactionScope:
             if mapped is exc:
                 raise
             raise mapped from exc
-        if result is None:
+        if len(results) == 1:
+            result = results[0]
+            if result is None:
+                return GraphStatementResult()
+            columns = tuple(str(name) for name in getattr(result, "columns", ()) or ())
+            rows = tuple(
+                tuple(pulse_value(cell) for cell in row)
+                for row in getattr(result, "rows", ()) or ()
+            )
+            return GraphStatementResult(rows=rows, columns=columns)
+
+        if any(result is None for result in results):
+            raise GraphError(
+                "Grafx logical relationship scan returned no query result.",
+                details={
+                    "backend": "okto_grafx",
+                    "operation": "graph_statement",
+                    "reason": "logical_relationship_scan_result_missing",
+                },
+            )
+        branch_columns = tuple(
+            tuple(str(name) for name in getattr(result, "columns", ()) or ())
+            for result in results
+        )
+        if len(set(branch_columns)) != 1:
+            raise GraphError(
+                "Grafx logical relationship scan returned inconsistent columns.",
+                details={
+                    "backend": "okto_grafx",
+                    "operation": "graph_statement",
+                    "reason": "logical_relationship_scan_columns_mismatch",
+                },
+            )
+        if not branch_columns:
             return GraphStatementResult()
-        columns = tuple(str(name) for name in getattr(result, "columns", ()) or ())
         rows = tuple(
             tuple(pulse_value(cell) for cell in row)
+            for result in results
             for row in getattr(result, "rows", ()) or ()
         )
-        return GraphStatementResult(rows=rows, columns=columns)
+        return GraphStatementResult(rows=rows, columns=branch_columns[0])
 
     def create_node(
         self,
