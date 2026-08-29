@@ -452,10 +452,36 @@ class CapturedGraphTransactionScope:
         return self
 
     async def __aexit__(self, *exc: object) -> None:
-        if exc and exc[0] is not None:
-            await self.rollback()
-        else:
-            await self.commit()
+        if self._terminal:
+            return
+
+        # The delegate owns its complete context-manager shutdown protocol.
+        # In particular, the Grafx scope rolls an active transaction back when
+        # commit fails before reaching a terminal engine state, and only then
+        # releases its database pin and Board operation window.  Calling our
+        # ``commit`` shortcut here used to bypass that cleanup path.
+        try:
+            await self._delegate.__aexit__(*exc)
+        except BaseException as failure:
+            # A failed context exit can be either pre-commit (with a successful
+            # cleanup rollback), post-durable, or a rollback that left the
+            # engine active.  Retain the prepared record for fenced snapshot
+            # reconciliation instead of guessing which terminal outcome won.
+            # Consume the local tokens so an idempotent cleanup retry cannot
+            # later misclassify an ambiguous durable commit as abandoned.
+            pending, self._pending = self._pending, []
+            for token in pending:
+                self._capture_failure(token, failure)
+            raise
+
+        self._terminal = True
+        if self._backend == "grafx":
+            terminal = (
+                "mark_source_abandoned"
+                if exc and exc[0] is not None
+                else "mark_source_committed"
+            )
+            self._terminalize_pending(terminal)
 
 
 __all__ = [

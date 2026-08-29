@@ -45,6 +45,7 @@ class _Delegate:
     def __init__(self, events: list[tuple[Any, ...]]) -> None:
         self.events = events
         self.fail_operation = False
+        self.exit_calls = 0
 
     def create_node(self, *args: Any, **kwargs: Any) -> str:
         self.events.append(("source_create_node", args, kwargs))
@@ -71,6 +72,13 @@ class _Delegate:
     async def __aenter__(self) -> Self:
         self.events.append(("source_enter",))
         return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        self.exit_calls += 1
+        if exc and exc[0] is not None:
+            await self.rollback()
+        else:
+            await self.commit()
 
 
 def _scope(
@@ -311,7 +319,7 @@ def test_read_only_execute_does_not_create_a_false_mutation_record() -> None:
 @pytest.mark.asyncio
 async def test_mutating_execute_is_captured_and_context_exit_commits() -> None:
     events: list[tuple[Any, ...]] = []
-    scope, _delegate, _recorder = _scope("grafx", events)
+    scope, delegate, _recorder = _scope("grafx", events)
 
     async with scope as entered:
         assert entered is scope
@@ -330,6 +338,7 @@ async def test_mutating_execute_is_captured_and_context_exit_commits() -> None:
         "source_commit",
         "committed",
     ]
+    assert delegate.exit_calls == 1
 
 
 def test_inactive_rollout_adds_no_terminal_work_but_keeps_same_source_call() -> None:

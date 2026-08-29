@@ -177,11 +177,14 @@ class _EngineTransaction:
         self.events = events
         self.active = True
         self.report: object | None = None
+        self.commit_failure: BaseException | None = None
         self.rollback_failure: BaseException | None = None
         self.rollback_failure_leaves_active = True
 
     def commit(self) -> None:
         self.events.append("engine_commit")
+        if self.commit_failure is not None:
+            raise self.commit_failure
         self.active = False
         self.report = SimpleNamespace(durable=True, wrote=True, csn=7)
 
@@ -426,6 +429,63 @@ async def test_grafx_capture_confirms_only_after_durable_engine_commit(
         "window_exit",
         "capture_committed:mutation-1",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capture_enabled", [False, True])
+async def test_grafx_context_commit_failure_cleans_up_with_or_without_capture(
+    tmp_path: Path,
+    capture_enabled: bool,
+) -> None:
+    events: list[str] = []
+    recorder = _MutationRecorderProbe(events) if capture_enabled else None
+    (
+        facade,
+        routed_events,
+        window,
+        _resolver,
+        _ladybug,
+        transaction,
+        _database,
+        lease,
+        _pool,
+    ) = _assembly(
+        tmp_path,
+        backend="grafx",
+        mutation_recorder=recorder,
+    )
+    if recorder is not None:
+        recorder.events = routed_events
+    primary = OSError("injected pre-terminal commit failure")
+    transaction.commit_failure = primary
+
+    with pytest.raises(GraphError) as raised:
+        async with await facade.begin(BOARD_ID) as scope:
+            scope.execute("CREATE (n {id: $id})", {"id": "node-1"})
+
+    assert raised.value.__cause__ is primary
+    assert not transaction.active
+    assert lease.released
+    assert not window.active
+    rollback_index = routed_events.index("engine_rollback")
+    assert routed_events[rollback_index : rollback_index + 3] == [
+        "engine_rollback",
+        "pool_release",
+        "window_exit",
+    ]
+    assert lease.release_calls == 1
+    assert window.exits == 1
+
+    if recorder is None:
+        assert all(not event.startswith("capture_") for event in routed_events)
+    else:
+        assert routed_events[-1] == "capture_ambiguous:mutation-1:GraphError"
+        # Cleanup is idempotent and must not rewrite an ambiguous commit as an
+        # abandoned mutation after the delegate has already rolled back.
+        await scope.rollback()
+        assert lease.release_calls == 1
+        assert window.exits == 1
+        assert "capture_abandoned:mutation-1" not in routed_events
 
 
 @pytest.mark.asyncio
