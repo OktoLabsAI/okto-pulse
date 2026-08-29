@@ -1,0 +1,719 @@
+{
+  "manifest_format": "okto-pulse-community-m-pulse-7-acceptance-gate/1",
+  "scope": {
+    "rollout": "board-only",
+    "global_discovery": "excluded-independent-generation-and-recovery-protocol",
+    "data_contract": "m-pulse-5-logical-transfer-v1",
+    "runtime_route_authority": "m-pulse-6-persisted-binding",
+    "source_revisions": {
+      "community": "d1e988af78eb27e57a2913ed74c9b1fcc8652909",
+      "core": "ccc1f345ece1db89a274cfdd634bd4da27028f63",
+      "okto_grafx_corpus": "6d9b7a1eb6efc5b67a62c4b36fb059257b9765f2"
+    }
+  },
+  "trace": {
+    "generator": "splitmix64-fisher-yates-logical-mutations/1",
+    "canonical_stream": "sorted-compact-ascii-json-lines/1",
+    "seed": "0x6F6B746F4D503731",
+    "operation_count": 10000,
+    "bootstrap_create_nodes": 880,
+    "projection_owner_slots": 64,
+    "bootstrap_projection_edges": 128,
+    "schema_authority": {
+      "node_types_source": "okto_pulse.core.kg.schema_contract.NODE_TYPES",
+      "node_type_count": 11,
+      "node_types_sha256": "de3ee8aec849842834e1f3b102ccda01920fa450f57bf3a0702b876567779d9b",
+      "relationship_layout_source": "okto_pulse.community.adapters.grafx_relationship_layout.PULSE_RELATIONSHIP_LAYOUT.entries",
+      "relationship_layout_count": 69,
+      "logical_relationship_type_count": 16,
+      "relationship_layouts_sha256": "aceb580af84b5602f1c88ca2585614a18993736f8ba931df5bfab1fbb66e5f20"
+    },
+    "family_distribution": [
+      {
+        "family": "create_node",
+        "count": 2000,
+        "methods": [
+          "SemanticGraphStore.create_node",
+          "GraphTransactionScope.create_node"
+        ]
+      },
+      {
+        "family": "create_edge",
+        "count": 2200,
+        "methods": [
+          "SemanticGraphStore.create_edge",
+          "GraphTransactionScope.create_edge"
+        ]
+      },
+      {
+        "family": "update_node",
+        "count": 1500,
+        "methods": [
+          "SemanticGraphStore.update_node",
+          "GraphTransactionScope.update_node"
+        ]
+      },
+      {
+        "family": "replace_node_payload",
+        "count": 700,
+        "methods": [
+          "GraphTransactionScope.replace_node_payload"
+        ]
+      },
+      {
+        "family": "mark_superseded",
+        "count": 500,
+        "methods": [
+          "SemanticGraphStore.mark_superseded",
+          "GraphTransactionScope.mark_superseded"
+        ]
+      },
+      {
+        "family": "increment_attestation",
+        "count": 700,
+        "methods": [
+          "SemanticGraphStore.increment_attestation",
+          "GraphTransactionScope.increment_attestation"
+        ]
+      },
+      {
+        "family": "replace_with_source_deleted_tombstone",
+        "count": 300,
+        "methods": [
+          "GraphTransactionScopeExtension.replace_with_source_deleted_tombstone"
+        ]
+      },
+      {
+        "family": "reconcile_spec_lineage_parent",
+        "count": 500,
+        "methods": [
+          "GraphTransactionScope.reconcile_spec_lineage_parent"
+        ]
+      },
+      {
+        "family": "clear_spec_lineage_parent",
+        "count": 300,
+        "methods": [
+          "GraphTransactionScope.clear_spec_lineage_parent"
+        ]
+      },
+      {
+        "family": "reconcile_projection_active_set",
+        "count": 500,
+        "methods": [
+          "GraphTransactionScope.reconcile_projection_active_set"
+        ]
+      },
+      {
+        "family": "delete_edges_by_session",
+        "count": 400,
+        "methods": [
+          "SemanticGraphStore.delete_edges_by_session",
+          "GraphTransactionScope.delete_edges_by_session"
+        ]
+      },
+      {
+        "family": "delete_nodes_by_session",
+        "count": 400,
+        "methods": [
+          "SemanticGraphStore.delete_nodes_by_session",
+          "GraphTransactionScope.delete_nodes_by_session"
+        ]
+      }
+    ],
+    "expanded_trace_sha256": "243d25a4fc807b5b29b63a64c597acf56d1dc94ca026030077178ba6abd86bea",
+    "checkpoints": [
+      {
+        "after_operations": 2500,
+        "model_fingerprint_sha256": "6a8a8c0d5f976df0d35aa992c60fbc392f9a0fe7bf86f1fae1612ad2ae9e94c1",
+        "census": {
+          "nodes": 932,
+          "edges": 99,
+          "lineage_edges": 12,
+          "projection_removed_nodes": 128
+        }
+      },
+      {
+        "after_operations": 5000,
+        "model_fingerprint_sha256": "5a93b77ac50e109cad88e5874b12d315b7dd460b92405a73c6335c25a2a90fa5",
+        "census": {
+          "nodes": 946,
+          "edges": 114,
+          "lineage_edges": 11,
+          "projection_removed_nodes": 128
+        }
+      },
+      {
+        "after_operations": 7500,
+        "model_fingerprint_sha256": "c785cc1739169a3e2ca509bd8e22fe40d004dc1e048b6f43c5f78b7876915580",
+        "census": {
+          "nodes": 908,
+          "edges": 106,
+          "lineage_edges": 10,
+          "projection_removed_nodes": 128
+        }
+      },
+      {
+        "after_operations": 10000,
+        "model_fingerprint_sha256": "f248f4fd2778806dd43437642a32ca6457cdbb595c7ae678f49cc7277960b5d0",
+        "census": {
+          "nodes": 926,
+          "edges": 70,
+          "lineage_edges": 10,
+          "projection_removed_nodes": 128
+        }
+      }
+    ],
+    "final_model_fingerprint_sha256": "f248f4fd2778806dd43437642a32ca6457cdbb595c7ae678f49cc7277960b5d0"
+  },
+  "mutation_surface_inventory": [
+    {
+      "protocol": "SemanticGraphStore",
+      "qualified_name": "okto_pulse.core.kg.interfaces.graph_store.SemanticGraphStore",
+      "included_methods": {
+        "create_node": "create_node",
+        "create_edge": "create_edge",
+        "update_node": "update_node",
+        "mark_superseded": "mark_superseded",
+        "increment_attestation": "increment_attestation",
+        "delete_edges_by_session": "delete_edges_by_session",
+        "delete_nodes_by_session": "delete_nodes_by_session"
+      },
+      "non_mutating_methods": [
+        "find_by_topic",
+        "find_by_artifact",
+        "traverse_supersedence",
+        "find_contradictions",
+        "vector_search",
+        "find_active_by_source_ref",
+        "get_constraint_detail",
+        "get_alternatives",
+        "get_learnings_for_area",
+        "get_schema_version",
+        "get_schema_info",
+        "list_schema_objects",
+        "list_node_properties",
+        "capabilities",
+        "edge_exists",
+        "find_node_types"
+      ],
+      "control_methods": [],
+      "excluded_mutations": [
+        {
+          "method": "bootstrap",
+          "reason_code": "schema-lifecycle-not-logical-data-mutation",
+          "justification": "Bootstrap is exercised by each cold-open cycle and is not replayed as a logical mutation envelope."
+        }
+      ]
+    },
+    {
+      "protocol": "GraphTransactionScope",
+      "qualified_name": "okto_pulse.core.kg.interfaces.graph_transaction.GraphTransactionScope",
+      "included_methods": {
+        "create_node": "create_node",
+        "create_edge": "create_edge",
+        "update_node": "update_node",
+        "replace_node_payload": "replace_node_payload",
+        "mark_superseded": "mark_superseded",
+        "increment_attestation": "increment_attestation",
+        "reconcile_spec_lineage_parent": "reconcile_spec_lineage_parent",
+        "clear_spec_lineage_parent": "clear_spec_lineage_parent",
+        "reconcile_projection_active_set": "reconcile_projection_active_set",
+        "delete_edges_by_session": "delete_edges_by_session",
+        "delete_nodes_by_session": "delete_nodes_by_session"
+      },
+      "non_mutating_methods": [
+        "snapshot_node_properties",
+        "edge_exists",
+        "find_node_types"
+      ],
+      "control_methods": [
+        "commit",
+        "rollback"
+      ],
+      "excluded_mutations": [
+        {
+          "method": "execute",
+          "reason_code": "backend-specific-statement-language",
+          "justification": "Arbitrary raw statements are not a backend-neutral logical mutation contract. The closed set of 21 productive Pulse 1.0 write families is covered separately by raw_execute_supplement."
+        },
+        {
+          "method": "restore_node_properties",
+          "reason_code": "runtime-before-image-required",
+          "justification": "Restore consumes an exact before-image emitted by the active backend during compensation, not a standalone portable trace payload."
+        },
+        {
+          "method": "compensate_spec_lineage_parent",
+          "reason_code": "runtime-receipt-required",
+          "justification": "Compensation consumes the reconciliation receipt produced by the attempted mutation and is covered at frozen crash points."
+        },
+        {
+          "method": "compensate_projection_active_set",
+          "reason_code": "runtime-receipt-required",
+          "justification": "Compensation consumes backend-observed projection before-images and is covered at frozen crash points."
+        },
+        {
+          "method": "delete_edges_by_session_preserving_spec_lineage",
+          "reason_code": "runtime-compensation-snapshots-required",
+          "justification": "The preserving delete requires lineage and projection snapshots produced by the active compensation path."
+        }
+      ]
+    }
+  ],
+  "backend_neutral_extension_mutations": [
+    {
+      "method": "replace_with_source_deleted_tombstone",
+      "family": "replace_with_source_deleted_tombstone",
+      "caller": "okto_pulse.core.kg.canonical_stale_reconciler",
+      "implementations": [
+        "okto_pulse.community.adapters.kuzu_graph_transaction._KuzuTransactionScope.replace_with_source_deleted_tombstone",
+        "okto_pulse.community.adapters.grafx_graph_transaction._GrafxTransactionScope.replace_with_source_deleted_tombstone"
+      ],
+      "justification": "The productive optional capability has the same logical arguments and fail-closed Boolean result in both Board transaction adapters."
+    }
+  ],
+  "receipt_bound_scenarios": [
+    {
+      "id": "restore-node-properties-local-before-image",
+      "method": "restore_node_properties",
+      "input_authority": "same-backend-snapshot_node_properties"
+    },
+    {
+      "id": "compensate-spec-lineage-local-receipt",
+      "method": "compensate_spec_lineage_parent",
+      "input_authority": "same-backend-reconcile_spec_lineage_parent"
+    },
+    {
+      "id": "compensate-projection-local-receipt",
+      "method": "compensate_projection_active_set",
+      "input_authority": "same-backend-reconcile_projection_active_set"
+    },
+    {
+      "id": "session-delete-preserving-local-snapshots",
+      "method": "delete_edges_by_session_preserving_spec_lineage",
+      "input_authority": "same-backend-lineage-and-projection-before-images"
+    }
+  ],
+  "raw_execute_supplement": {
+    "scope": "closed-pulse-1.0-write-families-not-arbitrary-cypher",
+    "corpus_digest": "b29334edf6e7c1e6b9419a4f3add84ede4baad94fdeaecb0c679261a78f241cc",
+    "family_count": 21,
+    "family_ids": [
+      "I05",
+      "I06",
+      "I07",
+      "I10",
+      "I13",
+      "I21",
+      "I22",
+      "I23",
+      "I26",
+      "I27",
+      "I29",
+      "I30",
+      "I37",
+      "I38",
+      "I40",
+      "I41",
+      "I42",
+      "I65",
+      "I66",
+      "I67",
+      "I68"
+    ]
+  },
+  "crash_points": {
+    "digest_scope": "points-canonical-json/1",
+    "points_sha256": "b47c850dac2c876d2486ba4ab1ecbd4186c880cb2e1d96965ad1d8709ed5127b",
+    "points": [
+      {
+        "id": "outbox-prepared-before-provider-call",
+        "after_operation": 137,
+        "hook": "after_outbox_prepare_fsync",
+        "expected_recovery": "reconcile_from_authenticated_source_snapshot"
+      },
+      {
+        "id": "provider-return-before-outbox-terminal",
+        "after_operation": 1013,
+        "hook": "after_provider_return",
+        "expected_recovery": "resolve_ambiguous_record_from_source_state"
+      },
+      {
+        "id": "source-snapshot-close-before-candidate-open",
+        "after_operation": 2003,
+        "hook": "after_source_snapshot_close",
+        "expected_recovery": "abandon_unpublished_candidate_and_resume_shadow"
+      },
+      {
+        "id": "candidate-write-before-certificate",
+        "after_operation": 2499,
+        "hook": "after_candidate_checkpoint",
+        "expected_recovery": "cold_verify_before_any_publication"
+      },
+      {
+        "id": "checkpoint-fsync-before-canary-ready",
+        "after_operation": 2500,
+        "hook": "after_shadow_checkpoint_fsync",
+        "expected_recovery": "resume_from_authenticated_checkpoint"
+      },
+      {
+        "id": "final-delta-before-binding-cas",
+        "after_operation": 7499,
+        "hook": "after_final_delta_certificate",
+        "expected_recovery": "keep_ladybug_active_and_retry_freeze"
+      },
+      {
+        "id": "binding-replace-before-directory-fsync",
+        "after_operation": 7500,
+        "hook": "after_binding_replace",
+        "expected_recovery": "authenticate_persisted_binding_without_fallback"
+      },
+      {
+        "id": "binding-cas-before-rollout-transition",
+        "after_operation": 7501,
+        "hook": "after_binding_cas_fsync",
+        "expected_recovery": "derive_active_backend_from_binding_and_reconcile_rollout"
+      },
+      {
+        "id": "rollback-close-before-first-grafx-write",
+        "after_operation": 8001,
+        "hook": "after_rollback_close_fsync",
+        "expected_recovery": "keep_rollback_closed_before_accepting_write"
+      },
+      {
+        "id": "privacy-invalidation-before-copy-sweep",
+        "after_operation": 9999,
+        "hook": "after_privacy_invalidation_fsync",
+        "expected_recovery": "resume_erasure_without_rehydration"
+      },
+      {
+        "id": "copy-sweep-before-absence-receipt",
+        "after_operation": 10000,
+        "hook": "after_all_copy_sweeps",
+        "expected_recovery": "reverify_aggregate_absence_before_success"
+      }
+    ]
+  },
+  "reopen_recovery_cycles": {
+    "count": 3,
+    "after_operations": [
+      2500,
+      5000,
+      7500
+    ],
+    "required_steps": [
+      "close_active_and_shadow_handles",
+      "reopen_from_persisted_binding",
+      "run_backend_recovery",
+      "verify_all",
+      "compare_logical_fingerprint"
+    ]
+  },
+  "pulse_query_corpus": {
+    "name": "Pulse query corpus 1.0",
+    "descriptor": "pulse-1",
+    "query_contract_version": "1.0",
+    "source": "okto-grafx/tests/corpus/pulse_query_corpus_1_0.json",
+    "digest_scope": "entire-payload-excluding-digest-json-sort-keys-default-str/1",
+    "digest": "b29334edf6e7c1e6b9419a4f3add84ede4baad94fdeaecb0c679261a78f241cc",
+    "physical_file_sha256": "0997747ed8bb9172d05781a62e5f81e7694630b173aaa152ac9ea28daec9d13f",
+    "entry_count": 97,
+    "read_entry_count": 75,
+    "write_entry_count": 21,
+    "fragment_entry_count": 1,
+    "external_timeout_seconds": 30,
+    "timeout_enforcement": "isolated-process-watchdog-per-executable-case",
+    "result_normalization": {
+      "ordered": "preserve-row-sequence-and-canonicalize-each-row/1",
+      "multiset": "sort-canonical-row-encodings-preserving-duplicates/1"
+    }
+  },
+  "board_result_supplement": {
+    "name": "m-pulse-7-board-result-supplement/1",
+    "digest_scope": "queries-canonical-json/1",
+    "queries_sha256": "f88cebf59149f516f110bae51d26377ac0574cf967bc816173faa1ce821a9369",
+    "external_timeout_seconds": 30,
+    "timeout_enforcement": "isolated-process-watchdog-per-case",
+    "queries": [
+      {
+        "id": "topic-decision-default",
+        "ordering": "ordered",
+        "method": "find_by_topic",
+        "arguments": {
+          "board_id": "${board_id}",
+          "node_type": "Decision",
+          "topic": "deterministic-content",
+          "filters": {
+            "min_confidence": 0.5,
+            "max_rows": 100,
+            "min_relevance": 0.3,
+            "include_superseded": false
+          }
+        }
+      },
+      {
+        "id": "topic-api-contract-inclusive",
+        "ordering": "ordered",
+        "method": "find_by_topic",
+        "arguments": {
+          "board_id": "${board_id}",
+          "node_type": "APIContract",
+          "topic": "trace-title",
+          "filters": {
+            "min_confidence": 0.0,
+            "max_rows": 250,
+            "min_relevance": 0.0,
+            "include_superseded": true
+          }
+        }
+      },
+      {
+        "id": "artifact-all-layers",
+        "ordering": "ordered",
+        "method": "find_by_artifact",
+        "arguments": {
+          "board_id": "${board_id}",
+          "artifact_id": "trace-artifact-00017",
+          "filters": {
+            "min_confidence": 0.5,
+            "max_rows": 100,
+            "min_relevance": 0.3,
+            "include_superseded": false
+          },
+          "graph_layer": "all",
+          "include_code_traceability": true
+        }
+      },
+      {
+        "id": "artifact-canonical-layer",
+        "ordering": "ordered",
+        "method": "find_by_artifact",
+        "arguments": {
+          "board_id": "${board_id}",
+          "artifact_id": "trace-artifact-00031",
+          "filters": {
+            "min_confidence": 0.0,
+            "max_rows": 50,
+            "min_relevance": 0.0,
+            "include_superseded": true
+          },
+          "graph_layer": "canonical",
+          "include_code_traceability": false
+        }
+      },
+      {
+        "id": "supersedence-decision",
+        "ordering": "ordered",
+        "method": "traverse_supersedence",
+        "arguments": {
+          "board_id": "${board_id}",
+          "decision_id": "trace-node-00000",
+          "max_depth": 10,
+          "node_type": "Decision"
+        }
+      },
+      {
+        "id": "contradictions-board",
+        "ordering": "ordered",
+        "method": "find_contradictions",
+        "arguments": {
+          "board_id": "${board_id}",
+          "node_id": null,
+          "limit": 100
+        }
+      },
+      {
+        "id": "contradictions-node",
+        "ordering": "ordered",
+        "method": "find_contradictions",
+        "arguments": {
+          "board_id": "${board_id}",
+          "node_id": "trace-node-00007",
+          "limit": 25
+        }
+      },
+      {
+        "id": "vector-decision-active",
+        "ordering": "ordered",
+        "method": "vector_search",
+        "arguments": {
+          "board_id": "${board_id}",
+          "node_type": "Decision",
+          "query_vec": {
+            "generator": "splitmix64-unit-vector/1",
+            "seed": "0x50554C5345515631",
+            "dimensions": 384
+          },
+          "top_k": 20,
+          "min_similarity": 0.0,
+          "include_superseded": false,
+          "graph_layer": "all"
+        }
+      },
+      {
+        "id": "vector-api-contract-inclusive",
+        "ordering": "ordered",
+        "method": "vector_search",
+        "arguments": {
+          "board_id": "${board_id}",
+          "node_type": "APIContract",
+          "query_vec": {
+            "generator": "splitmix64-unit-vector/1",
+            "seed": "0x50554C5345515632",
+            "dimensions": 384
+          },
+          "top_k": 50,
+          "min_similarity": -1.0,
+          "include_superseded": true,
+          "graph_layer": "all"
+        }
+      },
+      {
+        "id": "active-source-ref",
+        "ordering": "ordered",
+        "method": "find_active_by_source_ref",
+        "arguments": {
+          "board_id": "${board_id}",
+          "node_type": "Decision",
+          "source_artifact_ref": "trace-artifact-00017"
+        }
+      },
+      {
+        "id": "constraint-detail",
+        "ordering": "ordered",
+        "method": "get_constraint_detail",
+        "arguments": {
+          "board_id": "${board_id}",
+          "constraint_id": "trace-node-00002"
+        }
+      },
+      {
+        "id": "decision-alternatives",
+        "ordering": "ordered",
+        "method": "get_alternatives",
+        "arguments": {
+          "board_id": "${board_id}",
+          "decision_id": "trace-node-00000",
+          "limit": 50
+        }
+      },
+      {
+        "id": "learnings-area",
+        "ordering": "ordered",
+        "method": "get_learnings_for_area",
+        "arguments": {
+          "board_id": "${board_id}",
+          "area": "deterministic-content",
+          "filters": {
+            "min_confidence": 0.5,
+            "max_rows": 100,
+            "min_relevance": 0.3,
+            "include_superseded": false
+          }
+        }
+      },
+      {
+        "id": "schema-version",
+        "ordering": "ordered",
+        "method": "get_schema_version",
+        "arguments": {
+          "board_id": "${board_id}"
+        }
+      },
+      {
+        "id": "schema-info-public",
+        "ordering": "ordered",
+        "method": "get_schema_info",
+        "arguments": {
+          "board_id": "${board_id}",
+          "include_internal": false
+        }
+      },
+      {
+        "id": "schema-objects",
+        "ordering": "ordered",
+        "method": "list_schema_objects",
+        "arguments": {
+          "board_id": "${board_id}"
+        }
+      },
+      {
+        "id": "decision-properties",
+        "ordering": "ordered",
+        "method": "list_node_properties",
+        "arguments": {
+          "board_id": "${board_id}",
+          "node_type": "Decision"
+        }
+      },
+      {
+        "id": "edge-existence",
+        "ordering": "ordered",
+        "method": "edge_exists",
+        "arguments": {
+          "board_id": "${board_id}",
+          "edge_type": "belongs_to",
+          "from_type": "Decision",
+          "to_type": "Entity",
+          "from_id": "trace-node-00000",
+          "to_id": "trace-node-00005",
+          "rule_id": "belongs_to/relational_rdl_decision@v2.0"
+        }
+      },
+      {
+        "id": "node-types",
+        "ordering": "ordered",
+        "method": "find_node_types",
+        "arguments": {
+          "board_id": "${board_id}",
+          "node_id": "trace-node-00000"
+        }
+      }
+    ]
+  },
+  "benchmark_contract": {
+    "backends": [
+      "ladybug",
+      "grafx"
+    ],
+    "one_record_per_backend": true,
+    "same_trace_corpus_and_host_required": true,
+    "required_metrics": [
+      {
+        "field": "throughput_ops_per_second",
+        "unit": "operations/second"
+      },
+      {
+        "field": "latency_ms_p50",
+        "unit": "milliseconds"
+      },
+      {
+        "field": "latency_ms_p90",
+        "unit": "milliseconds"
+      },
+      {
+        "field": "latency_ms_p99",
+        "unit": "milliseconds"
+      },
+      {
+        "field": "peak_memory_bytes",
+        "unit": "bytes"
+      }
+    ],
+    "required_identity_fields": [
+      "backend",
+      "backend_version",
+      "trace_sha256",
+      "pulse_query_corpus_digest",
+      "operation_count",
+      "reopen_recovery_cycle_count",
+      "host_fingerprint"
+    ]
+  },
+  "acceptance": {
+    "maximum_unexplained_divergences": 0,
+    "maximum_verify_failures": 0,
+    "required_verify_scope": "all",
+    "query_timeout_failures_allowed": 0
+  }
+}
