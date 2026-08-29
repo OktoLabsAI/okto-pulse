@@ -460,6 +460,52 @@ def _statement_rows(result: Any) -> list[list[Any]]:
     return [[_json_graph_value(value) for value in row] for row in rows]
 
 
+async def _freeze_gate_bootstrap_timestamp(
+    graph_transaction: Any,
+    board_id: str,
+) -> None:
+    """Give independently bootstrapped gate stores identical logical metadata.
+
+    ``BoardMeta`` belongs to the M-PULSE-5 logical graph, so its timestamp must
+    participate in the bilateral fingerprint.  The two real backends are
+    necessarily initialized one after the other, though, and their productive
+    bootstrap clocks therefore cannot agree by accident.  Seed the one
+    nondeterministic bootstrap field to the gate's already-frozen instant
+    instead of weakening the fingerprint by excluding ``BoardMeta``.
+    """
+
+    async with await graph_transaction.begin(board_id) as scope:
+        result = scope.execute(
+            "MATCH (m:BoardMeta {board_id: $board_id}) "
+            "SET m.bootstrapped_at = $bootstrapped_at "
+            "RETURN m.board_id",
+            {
+                "board_id": board_id,
+                "bootstrapped_at": _FIXED_MOMENT,
+            },
+        )
+        matched = _statement_rows(result)
+    _require(matched == [[board_id]], "gate_board_meta_bootstrap_row_not_found")
+
+    # The productive Grafx executor exposes the statement's pre-write snapshot
+    # to RETURN.  Re-read after the transaction commits so
+    # this proves durable state instead of the visibility convention of one
+    # backend's SET operator.
+    async with await graph_transaction.begin(board_id) as scope:
+        result = scope.execute(
+            "MATCH (m:BoardMeta {board_id: $board_id}) RETURN m.bootstrapped_at",
+            {"board_id": board_id},
+        )
+        rows = _statement_rows(result)
+    _require(
+        len(rows) == 1
+        and len(rows[0]) == 1
+        and _canonical_temporal_evidence(rows[0][0])
+        == _canonical_temporal_evidence(_FIXED_MOMENT),
+        "gate_board_meta_bootstrap_timestamp_not_frozen",
+    )
+
+
 def _structural_placeholder(name: str, *, entry_id: str) -> str:
     # A structural hole is a production-controlled identifier, not a free
     # parameter.  Pick one real endpoint layout for the few templates whose
@@ -699,6 +745,10 @@ class RealCommunityGateBackend:
             _require(initialize_if_missing, "persisted_board_binding_missing")
             await routed.graph_schema_manager.ensure_bootstrapped(self._board_id)
             binding = board.binding_store.acquire_board_binding(self._board_id)
+            await _freeze_gate_bootstrap_timestamp(
+                board.graph_transaction,
+                self._board_id,
+            )
         else:
             _require(
                 binding.backend == self._backend,

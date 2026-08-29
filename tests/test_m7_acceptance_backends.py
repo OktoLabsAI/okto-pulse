@@ -326,6 +326,35 @@ async def test_real_factory_bootstraps_and_reopens_the_productive_bundle(
         await reopened.close()
 
 
+@pytest.mark.asyncio
+async def test_real_factories_freeze_bilateral_board_meta_fingerprint(
+    tmp_path: Path,
+) -> None:
+    observed: dict[str, dict[str, str]] = {}
+    for backend, factory in (
+        ("ladybug", backends.ladybug_factory),
+        ("grafx", backends.grafx_factory),
+    ):
+        context = SimpleNamespace(
+            backend=backend,
+            board_id="m7-bilateral-bootstrap",
+            workspace=str(tmp_path),
+            run_id="bilateral-bootstrap-fingerprint",
+        )
+        instance = await factory(context)
+        try:
+            observed[backend] = instance.observe_fingerprints()
+        finally:
+            await instance.close()
+
+    assert observed["ladybug"]["trace_model_sha256"] == observed["grafx"][
+        "trace_model_sha256"
+    ]
+    assert observed["ladybug"]["logical_graph_sha256"] == observed["grafx"][
+        "logical_graph_sha256"
+    ]
+
+
 def test_corpus_renderer_closes_structural_and_parameter_inputs() -> None:
     entry = {
         "template": (
