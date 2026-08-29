@@ -29,6 +29,10 @@ from okto_pulse.community.adapters.grafx_database_pool import (
 from okto_pulse.community.adapters.grafx_graph_transaction import (
     CommunityGrafxGraphTransaction,
 )
+from okto_pulse.community.adapters.graph_rollout_capture import (
+    BoardRolloutMutationRecorder,
+    CapturedGraphTransactionScope,
+)
 from okto_pulse.community.adapters.graph_route_resolver import (
     CommunityGraphRouteResolver,
     CommunityGraphRouteSnapshot,
@@ -239,11 +243,29 @@ class CommunityRoutedGraphTransaction:
         operation_window: BoardGraphOperationWindowFactory = (
             board_graph_operation_window
         ),
+        mutation_recorder: BoardRolloutMutationRecorder | None = None,
     ) -> None:
         self._resolver = resolver
         self._ladybug = ladybug
         self._grafx_pool = grafx_pool
         self._operation_window = operation_window
+        self._mutation_recorder = mutation_recorder
+
+    def _capture(
+        self,
+        scope: GraphTransactionScope,
+        snapshot: CommunityGraphRouteSnapshot,
+    ) -> GraphTransactionScope:
+        recorder = self._mutation_recorder
+        if recorder is None:
+            return scope
+        return CapturedGraphTransactionScope(
+            scope,
+            recorder=recorder,
+            board_id=snapshot.scope_id,
+            backend=snapshot.backend,
+            binding_sha256=snapshot.binding_sha256,
+        )
 
     async def begin(self, board_id: str) -> GraphTransactionScope:
         if type(board_id) is not str or not board_id:
@@ -261,7 +283,10 @@ class CommunityRoutedGraphTransaction:
 
             if snapshot.backend == "ladybug":
                 scope = await self._ladybug.begin(board_id)
-                return _WindowedGraphTransactionScope(scope, window)
+                return self._capture(
+                    _WindowedGraphTransactionScope(scope, window),
+                    snapshot,
+                )
 
             # The route validator above proves this for type checkers and for
             # runtime safety before the pool sees persisted geometry.
@@ -310,7 +335,7 @@ class CommunityRoutedGraphTransaction:
                 database_resolver=resolve_database,
                 revalidate_fence=revalidate_fence,
             )
-            return await provider.begin(board_id)
+            return self._capture(await provider.begin(board_id), snapshot)
         except BaseException as failure:
             if lease is None:
                 _release_during_failure(

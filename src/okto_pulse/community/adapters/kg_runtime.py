@@ -147,6 +147,7 @@ class _BoardCloseGuard:
         "_readers",
         "_owner_readers",
         "_closing",
+        "_closing_owner_thread_id",
         "_close_serial_lock",
     )
 
@@ -156,6 +157,7 @@ class _BoardCloseGuard:
         self._readers = 0
         self._owner_readers = 0
         self._closing = False
+        self._closing_owner_thread_id: int | None = None
         # KGD-01 C6 (item 3): serializa janelas closing() por board — duas
         # janelas simultâneas não podem mais se sobrepor.
         self._close_serial_lock = threading.Lock()
@@ -176,6 +178,23 @@ class _BoardCloseGuard:
         with self._cond:
             self._readers = max(0, self._readers - 1)
             self._cond.notify_all()
+
+    def pin_reader_from_closing_owner(self) -> None:
+        """Atomically downgrade an exclusive owner into a retained reader.
+
+        A fixed logical snapshot is opened only after the exclusive window has
+        drained all prior graph operations.  Pinning it here, before that
+        window reopens, prevents a lifecycle close from reaching the native
+        database while the snapshot is consumed outside the short freeze.
+        """
+
+        with self._cond:
+            if (
+                not self._closing
+                or self._closing_owner_thread_id != threading.get_ident()
+            ):
+                raise RuntimeError("board_graph_snapshot_pin_requires_window_owner")
+            self._readers += 1
 
     def owner_enter(self) -> None:
         """Registro do "dono da janela" (KGD-01 C6, item 4): o CHECKPOINT
@@ -223,6 +242,7 @@ class _BoardCloseGuard:
         try:
             with self._cond:
                 self._closing = True
+                self._closing_owner_thread_id = threading.get_ident()
                 drained = self._cond.wait_for(lambda: self._readers == 0, timeout)
                 stuck = self._readers
             try:
@@ -230,6 +250,7 @@ class _BoardCloseGuard:
             finally:
                 with self._cond:
                     self._closing = False
+                    self._closing_owner_thread_id = None
                     self._cond.notify_all()
         finally:
             self._close_serial_lock.release()
@@ -237,6 +258,27 @@ class _BoardCloseGuard:
 
 _board_close_guards: dict[str, _BoardCloseGuard] = {}
 _board_close_guards_lock = threading.Lock()
+
+
+class BoardGraphOperationPin:
+    """One idempotently releasable reader pin created by a mutation owner."""
+
+    __slots__ = ("_guard", "_released")
+
+    def __init__(self, guard: _BoardCloseGuard) -> None:
+        self._guard = guard
+        self._released = False
+
+    @property
+    def released(self) -> bool:
+        return self._released
+
+    def release(self) -> bool:
+        if self._released:
+            return False
+        self._released = True
+        self._guard.reader_exit()
+        return True
 
 
 def _get_close_guard(board_id: str) -> _BoardCloseGuard:
@@ -270,6 +312,23 @@ def board_graph_operation_window(board_id: str):
         yield
     finally:
         guard.reader_exit()
+
+
+def pin_board_graph_operation_from_mutation_window(
+    board_id: str,
+) -> BoardGraphOperationPin:
+    """Retain a reader pin while the current thread owns the exclusive window.
+
+    This low-level handoff is for a fixed snapshot opened inside
+    :func:`board_storage_mutation_window`.  The caller must release the returned
+    pin only after the snapshot's native connection is fully closed.
+    """
+
+    if type(board_id) is not str or not board_id:
+        raise ValueError("board_graph_operation_pin_invalid")
+    guard = _get_close_guard(board_id)
+    guard.pin_reader_from_closing_owner()
+    return BoardGraphOperationPin(guard)
 
 
 @contextmanager

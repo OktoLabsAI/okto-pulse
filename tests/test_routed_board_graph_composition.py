@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,7 +29,13 @@ from okto_pulse.community.adapters.grafx_database_pool import (
     GrafxDatabasePoolError,
 )
 from okto_pulse.community.adapters.graph_backend_binding import (
+    BOARD_BINDING_FILENAME,
     CommunityGraphBackendBindingStore,
+)
+from okto_pulse.community.adapters.graph_rollout_journal import (
+    CommunityGraphRolloutJournal,
+    GraphRolloutJournalConflict,
+    RolloutEndpointIdentity,
 )
 
 PAGE_SIZE = 8192
@@ -152,6 +159,472 @@ def _make_windows_junction(link: Path, target: Path) -> None:
         pytest.skip(f"junction creation unavailable: {completed.stderr.strip()}")
 
 
+def _leave_erased_rollout_with_unbound_ladybug_residue(
+    bundle: composition.CommunityRoutedBoardGraphComposition,
+    board_id: str,
+) -> tuple[CommunityGraphRolloutJournal, Path, Path]:
+    source_path = _publish_ladybug_binding(bundle, board_id)
+    source = bundle.binding_store.acquire_board_binding(board_id)
+    candidate_path = bundle.binding_store.board_grafx_path(
+        board_id,
+        "rollout-candidate-1",
+    )
+    journal = CommunityGraphRolloutJournal(bundle.binding_store.root, board_id)
+    rollout = journal.start(
+        source=RolloutEndpointIdentity(
+            backend="ladybug",
+            binding_sha256=source.binding_sha256,
+            generation=source.generation,
+            physical_path=source_path,
+        ),
+        candidate=RolloutEndpointIdentity(
+            backend="grafx",
+            binding_sha256=None,
+            generation="rollout-candidate-1",
+            physical_path=candidate_path,
+            page_size=PAGE_SIZE,
+        ),
+    )
+    journal.close_for_privacy(expected_version=rollout.state_version)
+    binding_path = source_path.parent / BOARD_BINDING_FILENAME
+    binding_path.unlink()
+    binding_lock = Path(f"{binding_path}.lock")
+    if binding_lock.exists():
+        binding_lock.unlink()
+    return journal, source_path, candidate_path
+
+
+def test_grafx_common_write_fence_closes_rollout_rollback_after_route_revalidation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[object] = []
+    snapshot = SimpleNamespace(
+        backend="grafx",
+        page_size=PAGE_SIZE,
+        binding_sha256="a" * 64,
+    )
+    resolver = SimpleNamespace(
+        current_board_snapshot=lambda board_id, require_physical: (
+            events.append(("resolve", board_id, require_physical)) or snapshot
+        ),
+        revalidate_snapshot=lambda observed, require_physical: events.append(
+            ("revalidate", observed, require_physical)
+        ),
+    )
+    recorder = SimpleNamespace(
+        close_rollback_before_write_if_active=lambda *args: events.append(
+            ("close_rollback", *args)
+        )
+    )
+    monkeypatch.setattr(
+        composition,
+        "revalidate_board_graph_write_lease",
+        lambda board_id, failure_phase: events.append(
+            ("lease", board_id, failure_phase)
+        ),
+    )
+    access = composition._GrafxBoardAccess(
+        resolver,
+        SimpleNamespace(),
+        SimpleNamespace(),
+        recorder,
+        configured_page_size=PAGE_SIZE,
+        connect=None,
+    )
+
+    access.write_fence("board-1", "schema_write")
+
+    assert events == [
+        ("lease", "board-1", "schema_write"),
+        ("resolve", "board-1", True),
+        ("revalidate", snapshot, True),
+        ("close_rollback", "board-1", "a" * 64, "grafx"),
+    ]
+
+
+def test_grafx_common_write_fence_never_closes_rollback_for_a_stale_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = SimpleNamespace(
+        backend="grafx",
+        page_size=PAGE_SIZE,
+        binding_sha256="b" * 64,
+    )
+    recorder_calls: list[object] = []
+
+    def reject_stale_route(_snapshot: object, *, require_physical: bool) -> None:
+        assert require_physical is True
+        raise GraphCapabilityUnavailable(
+            "stale route",
+            details={"operation": "test", "reason": "binding_changed"},
+        )
+
+    resolver = SimpleNamespace(
+        current_board_snapshot=lambda _board_id, require_physical: snapshot,
+        revalidate_snapshot=reject_stale_route,
+    )
+    recorder = SimpleNamespace(
+        close_rollback_before_write_if_active=lambda *args: recorder_calls.append(args)
+    )
+    monkeypatch.setattr(
+        composition,
+        "revalidate_board_graph_write_lease",
+        lambda _board_id, failure_phase: None,
+    )
+    access = composition._GrafxBoardAccess(
+        resolver,
+        SimpleNamespace(),
+        SimpleNamespace(),
+        recorder,
+        configured_page_size=PAGE_SIZE,
+        connect=None,
+    )
+
+    with pytest.raises(GraphCapabilityUnavailable):
+        access.write_fence("board-1", "schema_write")
+
+    assert recorder_calls == []
+
+
+def test_ladybug_administrative_write_advances_rollout_high_water(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "kg"
+    bundle = _build(root, _GrafxConnector(), board_backend="ladybug")
+    source_path = _publish_ladybug_binding(bundle, "board-admin")
+    source = bundle.binding_store.acquire_board_binding("board-admin")
+    journal = CommunityGraphRolloutJournal(root, "board-admin")
+    journal.start(
+        source=RolloutEndpointIdentity(
+            backend="ladybug",
+            binding_sha256=source.binding_sha256,
+            generation=source.generation,
+            physical_path=source_path,
+        ),
+        candidate=RolloutEndpointIdentity(
+            backend="grafx",
+            binding_sha256=None,
+            generation="rollout-candidate-1",
+            physical_path=bundle.binding_store.board_grafx_path(
+                "board-admin", "rollout-candidate-1"
+            ),
+            page_size=PAGE_SIZE,
+        ),
+    )
+    monkeypatch.setattr(
+        composition,
+        "revalidate_board_graph_write_lease",
+        lambda _board_id, failure_phase: None,
+    )
+
+    with bundle.resolver.board_route_session("board-admin"):
+        bundle.graph_schema_manager._revalidate_write_fence(
+            "board-admin", "graph_schema_migrate"
+        )
+        bundle.graph_lifecycle._revalidate_write_fence(
+            "board-admin", "graph_lifecycle_close"
+        )
+
+    assert journal.capture_high_water() == 1
+
+
+def test_composed_rollout_privacy_keeps_tombstone_until_finalized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "kg"
+    bundle = _build(root, _GrafxConnector(), board_backend="ladybug")
+    source_path = _publish_ladybug_binding(bundle, "board-erase")
+    source = bundle.binding_store.acquire_board_binding("board-erase")
+    journal = CommunityGraphRolloutJournal(root, "board-erase")
+    journal.start(
+        source=RolloutEndpointIdentity(
+            backend="ladybug",
+            binding_sha256=source.binding_sha256,
+            generation=source.generation,
+            physical_path=source_path,
+        ),
+        candidate=RolloutEndpointIdentity(
+            backend="grafx",
+            binding_sha256=None,
+            generation="rollout-candidate-1",
+            physical_path=bundle.binding_store.board_grafx_path(
+                "board-erase", "rollout-candidate-1"
+            ),
+            page_size=PAGE_SIZE,
+        ),
+    )
+    monkeypatch.setattr(
+        composition,
+        "revalidate_board_graph_write_lease",
+        lambda _board_id, failure_phase: None,
+    )
+    invalidate_rollout = bundle.graph_runtime_store._rollout_erase_unguarded
+    finalize_rollout = bundle.graph_runtime_store._rollout_finalize_erase_unguarded
+    assert invalidate_rollout is not None
+    assert finalize_rollout is not None
+
+    first = invalidate_rollout("board-erase", reason="privacy")
+    retry = invalidate_rollout("board-erase", reason="privacy_retry")
+
+    assert first.status == "erased"
+    assert first.removed is True
+    assert retry.status == "not_found"
+    assert retry.not_found is True
+    assert journal.read().state == "erased"
+    assert journal.privacy_storage_present() is True
+    with pytest.raises(GraphRolloutJournalConflict) as refused:
+        journal.prepare_if_active(
+            family="upsert_node",
+            payload={"payload": "redacted"},
+            expected_binding_sha256=source.binding_sha256,
+            backend="ladybug",
+        )
+    assert refused.value.details["reason"] == "rollout_not_writable"
+
+    finalized = finalize_rollout("board-erase", reason="privacy")
+
+    assert finalized.status == "erased"
+    assert finalized.removed is True
+    assert journal.privacy_storage_present() is False
+
+
+@pytest.mark.parametrize(
+    "route_door",
+    (
+        "initialize_board_route",
+        "adopt_existing_board_route",
+        "rematerialize_board_route",
+    ),
+)
+def test_erased_rollout_refuses_every_route_creation_door_without_a_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    route_door: str,
+) -> None:
+    board_id = f"board-erased-{route_door}"
+    connector = _GrafxConnector()
+    bundle = _build(
+        tmp_path / route_door / "kg",
+        connector,
+        board_backend="ladybug",
+    )
+    journal, source_path, _candidate_path = (
+        _leave_erased_rollout_with_unbound_ladybug_residue(bundle, board_id)
+    )
+    monkeypatch.setattr(
+        kg_runtime,
+        "board_kuzu_path",
+        lambda observed_board_id: bundle.binding_store.board_ladybug_path(
+            observed_board_id
+        ),
+    )
+    monkeypatch.setattr(
+        composition,
+        "revalidate_board_graph_write_lease",
+        lambda _board_id, *, failure_phase: None,
+    )
+
+    with pytest.raises(GraphCapabilityUnavailable) as refused:
+        getattr(bundle, route_door)(board_id)
+
+    assert refused.value.details["reason"] == ("graph_rollout_privacy_tombstone_active")
+    assert journal.read().state == "erased"
+    assert source_path.read_bytes() == b"ladybug"
+    assert not (source_path.parent / BOARD_BINDING_FILENAME).exists()
+    assert connector.calls == []
+
+
+def test_empty_board_can_be_initialized_after_privacy_finalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board_id = "board-erased-finalized"
+    connector = _GrafxConnector()
+    bundle = _build(tmp_path / "kg", connector, board_backend="grafx")
+    journal, source_path, candidate_path = (
+        _leave_erased_rollout_with_unbound_ladybug_residue(bundle, board_id)
+    )
+    source_path.unlink()
+    assert not source_path.exists()
+    assert not candidate_path.exists()
+    proof = journal.erase_privacy_storage()
+    assert proof.storage_absent is True
+    assert journal.privacy_storage_present() is False
+    monkeypatch.setattr(
+        kg_runtime,
+        "board_kuzu_path",
+        lambda observed_board_id: bundle.binding_store.board_ladybug_path(
+            observed_board_id
+        ),
+    )
+    monkeypatch.setattr(
+        composition,
+        "revalidate_board_graph_write_lease",
+        lambda _board_id, *, failure_phase: None,
+    )
+
+    snapshot = bundle.initialize_board_route(board_id)
+
+    assert snapshot.backend == "grafx"
+    assert snapshot.active_path.exists()
+    assert connector.calls == [(snapshot.active_path, PAGE_SIZE)]
+
+
+def test_initialize_and_privacy_invalidation_share_one_writer_serialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board_id = "board-route-privacy-race"
+    bundle = _build(tmp_path / "kg", _GrafxConnector(), board_backend="ladybug")
+    source_path = _publish_ladybug_binding(bundle, board_id)
+    source = bundle.binding_store.acquire_board_binding(board_id)
+    journal = CommunityGraphRolloutJournal(bundle.binding_store.root, board_id)
+    journal.start(
+        source=RolloutEndpointIdentity(
+            backend="ladybug",
+            binding_sha256=source.binding_sha256,
+            generation=source.generation,
+            physical_path=source_path,
+        ),
+        candidate=RolloutEndpointIdentity(
+            backend="grafx",
+            binding_sha256=None,
+            generation="rollout-candidate-1",
+            physical_path=bundle.binding_store.board_grafx_path(
+                board_id,
+                "rollout-candidate-1",
+            ),
+            page_size=PAGE_SIZE,
+        ),
+    )
+    monkeypatch.setattr(
+        kg_runtime,
+        "board_kuzu_path",
+        lambda observed_board_id: bundle.binding_store.board_ladybug_path(
+            observed_board_id
+        ),
+    )
+    monkeypatch.setattr(
+        composition,
+        "revalidate_board_graph_write_lease",
+        lambda _board_id, *, failure_phase: None,
+    )
+
+    guard_read = threading.Event()
+    release_guard = threading.Event()
+    privacy_writer_attempted = threading.Event()
+    privacy_closed = threading.Event()
+    events: list[str] = []
+    failures: list[BaseException] = []
+    initialized: list[object] = []
+
+    real_read_if_exists = CommunityGraphRolloutJournal.read_if_exists
+
+    def blocking_route_guard(
+        observed_journal: CommunityGraphRolloutJournal,
+    ):
+        observed = real_read_if_exists(observed_journal)
+        if threading.current_thread().name == "route-initialize":
+            events.append("route_guard_read")
+            guard_read.set()
+            assert release_guard.wait(timeout=5.0)
+        return observed
+
+    monkeypatch.setattr(
+        CommunityGraphRolloutJournal,
+        "read_if_exists",
+        blocking_route_guard,
+    )
+
+    real_initialize = bundle.resolver.initialize_board_route
+
+    def observed_initialize(*args: Any, **kwargs: Any):
+        snapshot = real_initialize(*args, **kwargs)
+        events.append("route_resolved")
+        return snapshot
+
+    monkeypatch.setattr(
+        bundle.resolver,
+        "initialize_board_route",
+        observed_initialize,
+    )
+
+    real_close_for_privacy = CommunityGraphRolloutJournal.close_for_privacy
+
+    def observed_close_for_privacy(
+        observed_journal: CommunityGraphRolloutJournal,
+        *,
+        expected_version: int,
+    ):
+        events.append("privacy_close")
+        privacy_closed.set()
+        return real_close_for_privacy(
+            observed_journal,
+            expected_version=expected_version,
+        )
+
+    monkeypatch.setattr(
+        CommunityGraphRolloutJournal,
+        "close_for_privacy",
+        observed_close_for_privacy,
+    )
+
+    real_writer_scope = ladybug_writer.ladybug_writer_scope
+
+    @contextmanager
+    def tracked_writer_scope(*, scope: str, phase: str, **kwargs: Any):
+        if phase == "privacy_invalidation_race":
+            privacy_writer_attempted.set()
+        with real_writer_scope(scope=scope, phase=phase, **kwargs) as lease:
+            yield lease
+
+    monkeypatch.setattr(ladybug_writer, "ladybug_writer_scope", tracked_writer_scope)
+
+    def initialize_route() -> None:
+        try:
+            initialized.append(bundle.initialize_board_route(board_id))
+        except BaseException as failure:  # noqa: BLE001 - surface thread failure
+            failures.append(failure)
+
+    def invalidate_privacy() -> None:
+        try:
+            with kg_runtime.board_storage_mutation_window(
+                board_id,
+                phase="privacy_invalidation_race",
+            ):
+                invalidate = bundle.graph_runtime_store._rollout_erase_unguarded
+                assert invalidate is not None
+                invalidate(board_id, reason="privacy_race")
+        except BaseException as failure:  # noqa: BLE001 - surface thread failure
+            failures.append(failure)
+
+    initialize_thread = threading.Thread(
+        target=initialize_route,
+        name="route-initialize",
+    )
+    privacy_thread = threading.Thread(
+        target=invalidate_privacy,
+        name="privacy-invalidate",
+    )
+    initialize_thread.start()
+    assert guard_read.wait(timeout=5.0)
+    privacy_thread.start()
+    assert privacy_writer_attempted.wait(timeout=5.0)
+    assert privacy_closed.is_set() is False
+    release_guard.set()
+    initialize_thread.join(timeout=5.0)
+    privacy_thread.join(timeout=5.0)
+
+    assert initialize_thread.is_alive() is False
+    assert privacy_thread.is_alive() is False
+    assert failures == []
+    assert len(initialized) == 1
+    assert journal.read().state == "erased"
+    assert events == ["route_guard_read", "route_resolved", "privacy_close"]
+
+
 def test_build_is_read_only_and_every_board_port_shares_one_route_identity(
     tmp_path: Path,
 ) -> None:
@@ -164,6 +637,10 @@ def test_build_is_read_only_and_every_board_port_shares_one_route_identity(
     assert connector.calls == []
     assert bundle.grafx_pool._max_entries is None
     assert bundle.graph_transaction._grafx_pool is bundle.grafx_pool
+    assert bundle.graph_rollout_coordinator._bindings is bundle.binding_store
+    assert bundle.graph_rollout_coordinator._shadow._connector is connector
+    assert "graph_rollout_coordinator" not in bundle.registry_providers()
+    assert bundle.graph_rollout_coordinator not in bundle.registry_providers().values()
     for port in (
         bundle.graph_store,
         bundle.cypher_executor,
@@ -817,7 +1294,137 @@ async def test_runtime_and_recovery_callbacks_do_not_reenter_the_outer_guard(
     ]
     assert fences == [
         "board-purge:purge_board_graph",
+        "board-purge:purge_board_graph",
         "board-purge:runtime_purge_ladybug",
         "board-recover:recover_wal_only",
         "board-recover:graph_recovery_ladybug",
     ]
+
+
+@pytest.mark.asyncio
+async def test_ladybug_recovery_advances_rollout_high_water_before_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "kg"
+    bundle = _build(root, _GrafxConnector(), board_backend="ladybug")
+    source_path = _publish_ladybug_binding(bundle, "board-recover-shadow")
+    source = bundle.binding_store.acquire_board_binding("board-recover-shadow")
+    journal = CommunityGraphRolloutJournal(root, "board-recover-shadow")
+    journal.start(
+        source=RolloutEndpointIdentity(
+            backend="ladybug",
+            binding_sha256=source.binding_sha256,
+            generation=source.generation,
+            physical_path=source_path,
+        ),
+        candidate=RolloutEndpointIdentity(
+            backend="grafx",
+            binding_sha256=None,
+            generation="rollout-candidate-1",
+            physical_path=bundle.binding_store.board_grafx_path(
+                "board-recover-shadow", "rollout-candidate-1"
+            ),
+            page_size=PAGE_SIZE,
+        ),
+    )
+
+    @contextmanager
+    def mutation_window(_board_id: str, *, phase: str):
+        assert phase == "recover_wal_only"
+        yield
+
+    async def recover_unguarded(board_id: str) -> WalRecoveryReport:
+        assert journal.capture_high_water() == 1
+        return WalRecoveryReport(
+            board_id=board_id,
+            status="recovered",
+            main_untouched=True,
+        )
+
+    monkeypatch.setattr(kg_runtime, "board_storage_mutation_window", mutation_window)
+    monkeypatch.setattr(kg_runtime, "board_kuzu_path", lambda _board_id: source_path)
+    monkeypatch.setattr(
+        composition,
+        "revalidate_board_graph_write_lease",
+        lambda _board_id, *, failure_phase: None,
+    )
+    monkeypatch.setattr(
+        wal_recovery.CommunityGraphRecovery,
+        "recover_wal_only_unguarded",
+        lambda _self, board_id: recover_unguarded(board_id),
+    )
+
+    recovered = await bundle.graph_recovery.recover_wal_only("board-recover-shadow")
+
+    assert recovered.status == "recovered"
+    assert journal.capture_high_water() == 1
+
+
+@pytest.mark.asyncio
+async def test_grafx_recovery_closes_rollback_fence_before_writable_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "kg"
+    connector = _GrafxConnector()
+    bundle = _build(root, connector, board_backend="grafx")
+    board_id = "board-recover-grafx"
+    path = bundle.binding_store.board_grafx_path(board_id, "grafx-1")
+    database = connector(path, page_size=PAGE_SIZE)
+    binding = bundle.binding_store.initialize_board_binding(
+        board_id=board_id,
+        backend="grafx",
+        generation="grafx-1",
+        physical_path=path,
+        page_size=PAGE_SIZE,
+        database=database,
+    )
+    events: list[str] = []
+
+    @contextmanager
+    def mutation_window(_board_id: str, *, phase: str):
+        assert phase == "recover_wal_only"
+        yield
+
+    def close_rollback(
+        _self: object,
+        observed_board_id: str,
+        binding_sha256: str,
+        backend: str,
+    ) -> None:
+        assert observed_board_id == board_id
+        assert binding_sha256 == binding.binding_sha256
+        assert backend == "grafx"
+        events.append("close_rollback")
+
+    async def recover_grafx(_self: object, observed_board_id: str) -> WalRecoveryReport:
+        assert events == ["close_rollback"]
+        events.append("recover")
+        return WalRecoveryReport(
+            board_id=observed_board_id,
+            status="recovered",
+            main_untouched=False,
+        )
+
+    monkeypatch.setattr(kg_runtime, "board_storage_mutation_window", mutation_window)
+    monkeypatch.setattr(
+        composition,
+        "revalidate_board_graph_write_lease",
+        lambda _board_id, *, failure_phase: None,
+    )
+    monkeypatch.setattr(
+        composition.CommunityGraphRolloutMutationRecorder,
+        "close_rollback_before_write_if_active",
+        close_rollback,
+    )
+    monkeypatch.setattr(
+        composition.CommunityGrafxGraphRecovery,
+        "recover_wal_only",
+        recover_grafx,
+    )
+
+    recovered = await bundle.graph_recovery.recover_wal_only(board_id)
+
+    assert recovered.status == "recovered"
+    assert events == ["close_rollback", "recover"]

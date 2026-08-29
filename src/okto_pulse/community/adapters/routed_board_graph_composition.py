@@ -18,6 +18,7 @@ whole engine scope.
 from __future__ import annotations
 
 import os
+import secrets
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
@@ -79,6 +80,16 @@ from okto_pulse.community.adapters.grafx_schema_bootstrap import (
 from okto_pulse.community.adapters.graph_backend_binding import (
     CommunityGraphBackendBindingStore,
 )
+from okto_pulse.community.adapters.graph_rollout_comparison import (
+    CommunityBoardGraphShadowCycleAdapter,
+)
+from okto_pulse.community.adapters.graph_rollout_coordinator import (
+    CommunityBoardGraphRolloutCoordinator,
+)
+from okto_pulse.community.adapters.graph_rollout_journal import (
+    CommunityGraphRolloutJournal,
+    CommunityGraphRolloutMutationRecorder,
+)
 from okto_pulse.community.adapters.graph_route_resolver import (
     CommunityGraphRouteCandidate,
     CommunityGraphRouteResolver,
@@ -115,6 +126,20 @@ from okto_pulse.community.config import validate_grafx_page_size
 
 GrafxConnector = Callable[..., Any]
 _SessionStatus = Literal["unresolved", "missing", "snapshot"]
+_ROLLOUT_ADMIN_MUTATION_PHASES = frozenset(
+    {
+        "graph_schema_ensure_bootstrapped",
+        "graph_schema_migrate",
+        "graph_lifecycle_rebuild",
+        "graph_lifecycle_purge",
+        "purge_board_graph",
+        "graph_recovery_ladybug",
+        "graph_recovery_grafx",
+    }
+)
+_ROLLOUT_INSPECT_ONLY_ADMIN_PHASES = frozenset(
+    {"graph_recovery_ladybug", "graph_recovery_grafx"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,6 +383,7 @@ class _GrafxBoardAccess:
         resolver: CommunityBoardRouteSessionResolver,
         pool: CommunityGrafxDatabasePool,
         binding_store: CommunityGraphBackendBindingStore,
+        rollout_mutation_recorder: CommunityGraphRolloutMutationRecorder,
         *,
         configured_page_size: int,
         connect: GrafxConnector | None,
@@ -365,6 +391,7 @@ class _GrafxBoardAccess:
         self.resolver = resolver
         self.pool = pool
         self.binding_store = binding_store
+        self.rollout_mutation_recorder = rollout_mutation_recorder
         self.configured_page_size = validate_grafx_page_size(configured_page_size)
         self.connect = connect
 
@@ -418,6 +445,11 @@ class _GrafxBoardAccess:
         revalidate_board_graph_write_lease(board_id, failure_phase=phase)
         snapshot = self._snapshot(board_id, require_physical=True)
         self.resolver.revalidate_snapshot(snapshot, require_physical=True)
+        self.rollout_mutation_recorder.close_rollback_before_write_if_active(
+            board_id,
+            snapshot.binding_sha256,
+            snapshot.backend,
+        )
 
     def runtime_fence(self, board_id: str, phase: str) -> None:
         revalidate_board_graph_write_lease(board_id, failure_phase=phase)
@@ -619,21 +651,55 @@ class CommunityRoutedBoardGraphComposition:
     graph_lifecycle: CommunityRoutedGraphLifecycle
     graph_runtime_store: CommunityRoutedGraphRuntimeStore
     graph_recovery: CommunityRoutedGraphRecovery
+    graph_rollout_coordinator: CommunityBoardGraphRolloutCoordinator
     _initialize_physical: Callable[[CommunityGraphRouteCandidate], object | None]
     _rematerialize_physical: Callable[[CommunityGraphRouteCandidate], object | None]
+
+    def _require_route_materialization_allowed(self, board_id: str) -> None:
+        """Refuse every route-creation door while privacy erasure is durable."""
+
+        journal = CommunityGraphRolloutJournal(
+            self.binding_store.root,
+            board_id,
+        )
+        # Preserve the route resolver's existing empty-board and filesystem
+        # alias diagnostics when no rollout storage exists. ``lexists`` still
+        # sends a broken/aliased rollout root through the journal's fail-closed
+        # layout validation instead of treating it as finalized absence.
+        if not os.path.lexists(journal.rollout_root):
+            return
+        rollout = journal.read_if_exists()
+        if rollout is not None and rollout.state == "erased":
+            raise _route_failure(
+                "graph_rollout_privacy_tombstone_active",
+                board_id=board_id,
+            )
 
     def initialize_board_route(self, board_id: str) -> CommunityGraphRouteSnapshot:
         """Create/adopt and publish one Board route, only when explicitly called."""
 
-        revalidate_board_graph_write_lease(
-            board_id,
-            failure_phase="initialize_board_route",
+        phase = "initialize_board_route"
+        from okto_pulse.community.adapters.ladybug_writer import (
+            ladybug_writer_scope,
         )
-        snapshot = self.resolver.initialize_board_route(
-            board_id,
-            create_physical=self._initialize_physical,
-        )
-        self.resolver.revalidate_snapshot(snapshot, require_physical=True)
+
+        # Privacy invalidation enters this same writer authority before its
+        # exclusive close window. Retain the writer across the tombstone check,
+        # discovery/materialization, publication and revalidation so privacy
+        # cannot enter between them. A first Ladybug bootstrap registers a
+        # normal close-guard reader, so this door intentionally retains the
+        # common writer facet without entering the exclusive close facet.
+        with ladybug_writer_scope(scope=board_id, phase=phase):
+            revalidate_board_graph_write_lease(
+                board_id,
+                failure_phase=phase,
+            )
+            self._require_route_materialization_allowed(board_id)
+            snapshot = self.resolver.initialize_board_route(
+                board_id,
+                create_physical=self._initialize_physical,
+            )
+            self.resolver.revalidate_snapshot(snapshot, require_physical=True)
         return snapshot
 
     def adopt_existing_board_route(
@@ -642,11 +708,18 @@ class CommunityRoutedBoardGraphComposition:
     ) -> CommunityGraphRouteSnapshot | None:
         """Adopt physical storage without creating an absent Board target."""
 
-        revalidate_board_graph_write_lease(
-            board_id,
-            failure_phase="adopt_existing_board_route",
+        phase = "adopt_existing_board_route"
+        from okto_pulse.community.adapters.ladybug_writer import (
+            ladybug_writer_scope,
         )
-        return self.resolver.adopt_existing_board_route(board_id)
+
+        with ladybug_writer_scope(scope=board_id, phase=phase):
+            revalidate_board_graph_write_lease(
+                board_id,
+                failure_phase=phase,
+            )
+            self._require_route_materialization_allowed(board_id)
+            return self.resolver.adopt_existing_board_route(board_id)
 
     def rematerialize_board_route(
         self,
@@ -655,13 +728,14 @@ class CommunityRoutedBoardGraphComposition:
         """Explicitly recreate the exact target authorized by a rebuild."""
 
         phase = "rematerialize_board_route_after_purge"
-        revalidate_board_graph_write_lease(board_id, failure_phase=phase)
         with kg_runtime.board_storage_mutation_window(board_id, phase=phase):
+            revalidate_board_graph_write_lease(board_id, failure_phase=phase)
+            self._require_route_materialization_allowed(board_id)
             snapshot = self.resolver.rematerialize_board_route(
                 board_id,
                 create_physical=self._rematerialize_physical,
             )
-        self.resolver.revalidate_snapshot(snapshot, require_physical=True)
+            self.resolver.revalidate_snapshot(snapshot, require_physical=True)
         return snapshot
 
     def registry_providers(self) -> dict[str, Any]:
@@ -770,6 +844,9 @@ def build_community_routed_board_graph_composition(
     assert binding_store is not None
     assert resolver is not None
     assert grafx_pool is not None
+    rollout_mutation_recorder = CommunityGraphRolloutMutationRecorder(
+        binding_store.root
+    )
     if getattr(resolver, "_board_backend", None) != board_backend:
         raise ValueError("shared resolver Board backend does not match settings")
     if getattr(resolver, "_global_backend", None) != global_backend:
@@ -784,6 +861,7 @@ def build_community_routed_board_graph_composition(
         resolver,
         grafx_pool,
         binding_store,
+        rollout_mutation_recorder,
         configured_page_size=configured_page_size,
         connect=connector,
     )
@@ -793,6 +871,106 @@ def build_community_routed_board_graph_composition(
         # A prebuilt resolver can only be safely reused when its physical
         # adoption door is rebound to the exact shared pool supplied here.
         resolver._open_grafx_database = access.open_for_adoption
+
+    def rollout_administrative_write_fence(
+        board_id: str,
+        phase: str,
+        snapshot: CommunityGraphRouteSnapshot | None = None,
+    ) -> None:
+        """Fence non-logical mutations against a stale rollout checkpoint."""
+
+        revalidate_board_graph_write_lease(board_id, failure_phase=phase)
+        require_physical = phase not in _ROLLOUT_INSPECT_ONLY_ADMIN_PHASES
+        observed = snapshot or resolver.current_board_snapshot(
+            board_id,
+            require_physical=require_physical,
+        )
+        if observed is None:
+            raise _route_failure("board_route_required", board_id=board_id)
+        resolver.require_exact_session_snapshot(
+            observed,
+            require_physical=require_physical,
+        )
+        if phase not in _ROLLOUT_ADMIN_MUTATION_PHASES:
+            return
+        if observed.backend == "grafx":
+            rollout_mutation_recorder.close_rollback_before_write_if_active(
+                board_id,
+                observed.binding_sha256,
+                "grafx",
+            )
+            return
+
+        # The callback runs before a Ladybug administrative operation and has
+        # no matching post-call seam.  Retaining this record as ``prepared`` is
+        # intentional: the next fixed full-state snapshot resolves whether the
+        # operation changed data, while its allocation moves the high-water so
+        # a stale candidate cannot be cut over.
+        rollout_mutation_recorder.prepare_mutation(
+            board_id=board_id,
+            binding_sha256=observed.binding_sha256,
+            backend="ladybug",
+            transaction_id=f"admin-{secrets.token_hex(16)}",
+            family="administrative_write",
+            payload={"phase": phase},
+        )
+
+    def invalidate_rollout_for_privacy(
+        board_id: str,
+        *,
+        reason: str,
+    ) -> GraphPurgeResult:
+        """Persist the privacy tombstone before either backend is touched."""
+
+        revalidate_board_graph_write_lease(
+            board_id,
+            failure_phase="privacy_invalidate_graph_rollout",
+        )
+        journal = CommunityGraphRolloutJournal(binding_store.root, board_id)
+        current = journal.read_if_exists()
+        if current is None:
+            return GraphPurgeResult(
+                board_id=board_id,
+                removed=False,
+                not_found=True,
+                status="not_found",
+                reason=reason,
+                backend="rollout",
+            )
+        already_invalidated = current.state == "erased"
+        journal.close_for_privacy(expected_version=current.state_version)
+        return GraphPurgeResult(
+            board_id=board_id,
+            removed=not already_invalidated,
+            not_found=already_invalidated,
+            status="not_found" if already_invalidated else "erased",
+            reason=reason,
+            backend="rollout",
+        )
+
+    def finalize_rollout_privacy_storage(
+        board_id: str,
+        *,
+        reason: str,
+    ) -> GraphPurgeResult:
+        """Remove rollout bytes only after both physical erasures succeeded."""
+
+        journal = CommunityGraphRolloutJournal(binding_store.root, board_id)
+        proof = journal.erase_privacy_storage(
+            before_mutation=lambda: revalidate_board_graph_write_lease(
+                board_id,
+                failure_phase="privacy_finalize_graph_rollout",
+            )
+        )
+        removed = proof.files_removed > 0 or proof.directories_removed > 0
+        return GraphPurgeResult(
+            board_id=board_id,
+            removed=removed,
+            not_found=not removed,
+            status="erased" if removed else "not_found",
+            reason=reason,
+            backend="rollout",
+        )
 
     def require_ladybug_runtime_path(board_id: str) -> None:
         expected = binding_store.board_ladybug_path(board_id)
@@ -1106,20 +1284,26 @@ def build_community_routed_board_graph_composition(
         access.close(None)
 
     async def ladybug_recover(board_id: str) -> WalRecoveryReport:
-        revalidate_board_graph_write_lease(
+        snapshot = resolver.current_board_snapshot(board_id, require_physical=False)
+        if snapshot is None:
+            raise _route_failure("board_route_required", board_id=board_id)
+        rollout_administrative_write_fence(
             board_id,
-            failure_phase="graph_recovery_ladybug",
+            "graph_recovery_ladybug",
+            snapshot,
         )
-        resolver.revalidate_session_authority(board_id, require_physical=False)
         require_ladybug_runtime_path(board_id)
         return await ladybug_recovery.recover_wal_only_unguarded(board_id)
 
     async def grafx_recover(board_id: str) -> WalRecoveryReport:
-        revalidate_board_graph_write_lease(
+        snapshot = resolver.current_board_snapshot(board_id, require_physical=False)
+        if snapshot is None:
+            raise _route_failure("board_route_required", board_id=board_id)
+        rollout_administrative_write_fence(
             board_id,
-            failure_phase="graph_recovery_grafx",
+            "graph_recovery_grafx",
+            snapshot,
         )
-        resolver.revalidate_session_authority(board_id, require_physical=False)
         return await grafx_recovery.recover_wal_only(board_id)
 
     def grafx_erase(board_id: str, *, reason: str) -> GraphPurgeResult:
@@ -1136,6 +1320,7 @@ def build_community_routed_board_graph_composition(
         revalidate_write_fence=lambda board_id, phase: (
             revalidate_board_graph_write_lease(board_id, failure_phase=phase)
         ),
+        mutation_recorder=rollout_mutation_recorder,
     )
     cypher_executor = CommunityRoutedCypherExecutor(
         resolver,
@@ -1148,23 +1333,20 @@ def build_community_routed_board_graph_composition(
         ladybug=ladybug_schema,
         grafx=grafx_schema,
         operation_window=operation_window,
-        revalidate_write_fence=lambda board_id, phase: (
-            revalidate_board_graph_write_lease(board_id, failure_phase=phase)
-        ),
+        revalidate_write_fence=rollout_administrative_write_fence,
     )
     graph_transaction = CommunityRoutedGraphTransaction(
         resolver,
         ladybug=ladybug_transaction,
         grafx_pool=grafx_pool,
         operation_window=operation_window,
+        mutation_recorder=rollout_mutation_recorder,
     )
     graph_lifecycle = CommunityRoutedGraphLifecycle(
         resolver,
         operation_window=operation_window,
         mutation_window_unguarded=lifecycle_mutation_window,
-        revalidate_write_fence=lambda board_id, phase: (
-            revalidate_board_graph_write_lease(board_id, failure_phase=phase)
-        ),
+        revalidate_write_fence=rollout_administrative_write_fence,
         ladybug_open_unguarded=ladybug_open,
         ladybug_close_unguarded=ladybug_close,
         ladybug_rebuild_unguarded=ladybug_rebuild,
@@ -1188,12 +1370,21 @@ def build_community_routed_board_graph_composition(
         grafx_purge_unguarded=grafx_runtime.purge_board_graph,
         ladybug_erase_unguarded=ladybug_mutations.erase,
         grafx_erase_unguarded=grafx_erase,
+        rollout_erase_unguarded=invalidate_rollout_for_privacy,
+        rollout_finalize_erase_unguarded=finalize_rollout_privacy_storage,
+        rollout_write_fence=rollout_administrative_write_fence,
     )
     graph_recovery = CommunityRoutedGraphRecovery(
         resolver,
         ladybug_recovery_unguarded=ladybug_recover,
         grafx_recovery_unguarded=grafx_recover,
         mutation_window=mutation_window,
+    )
+    graph_rollout_coordinator = CommunityBoardGraphRolloutCoordinator(
+        binding_store,
+        CommunityBoardGraphShadowCycleAdapter(connector=connector),
+        mutation_window=mutation_window,
+        grafx_page_size=configured_page_size,
     )
 
     def create_board_physical(
@@ -1279,6 +1470,7 @@ def build_community_routed_board_graph_composition(
         graph_lifecycle=graph_lifecycle,
         graph_runtime_store=graph_runtime_store,
         graph_recovery=graph_recovery,
+        graph_rollout_coordinator=graph_rollout_coordinator,
         _initialize_physical=initialize_physical,
         _rematerialize_physical=rematerialize_physical,
     )

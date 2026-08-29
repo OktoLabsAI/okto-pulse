@@ -223,6 +223,34 @@ def test_board_graph_operation_window_blocks_storage_mutation(kg_env):
     assert kg_runtime._get_close_guard(board_id).readers == 0
 
 
+def test_exclusive_owner_can_handoff_a_fixed_snapshot_reader_pin(kg_env):
+    board_id = "kgd01-fixed-snapshot-handoff"
+    guard = kg_runtime._get_close_guard(board_id)
+
+    with guard.closing(timeout=1.0) as (drained, stuck):
+        assert (drained, stuck) == (True, 0)
+        pin = kg_runtime.pin_board_graph_operation_from_mutation_window(board_id)
+        assert guard.readers == 1
+
+    with guard.closing(timeout=0.01) as (drained, stuck):
+        assert (drained, stuck) == (False, 1)
+
+    assert pin.release() is True
+    assert pin.release() is False
+    assert pin.released is True
+    assert guard.readers == 0
+
+
+def test_fixed_snapshot_pin_is_refused_without_window_ownership(kg_env):
+    with pytest.raises(
+        RuntimeError,
+        match="board_graph_snapshot_pin_requires_window_owner",
+    ):
+        kg_runtime.pin_board_graph_operation_from_mutation_window(
+            "kgd01-fixed-snapshot-no-owner"
+        )
+
+
 @pytest.mark.parametrize("board_id", ["", None, 7])
 def test_board_graph_operation_window_rejects_invalid_scope(kg_env, board_id):
     with pytest.raises(ValueError, match="board_graph_operation_window_invalid"):

@@ -1,9 +1,8 @@
 """Persisted, fail-closed graph-backend bindings for Community runtimes.
 
-The binding is deliberately smaller than the M-PULSE-7 cutover protocol.  It
-can initialize one scope idempotently and acquire an immutable snapshot, but it
-cannot replace a different binding.  A future CAS cutover therefore cannot be
-accidentally approximated by overwriting this file.
+Initialization remains immutable and idempotent.  An existing binding can only
+be replaced through the explicit compare-and-swap API with its authenticated
+digest as the expected value.
 """
 
 from __future__ import annotations
@@ -95,6 +94,12 @@ class GrafxDatabaseAdmission:
     minimum_page_size: int
 
 
+class GraphBindingCompareAndSwapConflict(GraphCapabilityUnavailable):
+    """The persisted binding no longer matches one CAS caller's snapshot."""
+
+    code = "graph_binding_compare_and_swap_conflict"
+
+
 def _capability(reason: str, *, operation: str, **details: object) -> Exception:
     return GraphCapabilityUnavailable(
         "The Community graph backend binding was refused.",
@@ -114,6 +119,26 @@ def _corruption(reason: str, *, scope: str, scope_id: str) -> Exception:
             "reason": reason,
             "scope": scope,
             "scope_id": scope_id,
+        },
+    )
+
+
+def _compare_and_swap_conflict(
+    *,
+    scope: GraphBindingScope,
+    scope_id: str,
+    expected_binding_sha256: str,
+    observed_binding_sha256: str,
+) -> Exception:
+    return GraphBindingCompareAndSwapConflict(
+        "The Community graph backend binding compare-and-swap was refused.",
+        details={
+            "operation": "compare_and_swap_graph_backend_binding",
+            "reason": "binding_compare_and_swap_stale",
+            "scope": scope,
+            "scope_id": scope_id,
+            "expected_binding_sha256": expected_binding_sha256,
+            "observed_binding_sha256": observed_binding_sha256,
         },
     )
 
@@ -389,7 +414,7 @@ def admit_grafx_database(
 
 
 class CommunityGraphBackendBindingStore:
-    """Initialize and acquire immutable graph bindings below one data root."""
+    """Initialize, acquire and explicitly CAS graph bindings below one root."""
 
     def __init__(
         self,
@@ -472,6 +497,85 @@ class CommunityGraphBackendBindingStore:
         return self._initialize(
             scope="global",
             scope_id="global",
+            backend=backend,
+            generation=generation,
+            physical_path=physical_path,
+            page_size=page_size,
+            database=database,
+        )
+
+    def compare_and_swap_board_binding(
+        self,
+        *,
+        board_id: str,
+        expected_binding_sha256: str,
+        backend: GraphBackend,
+        generation: str,
+        physical_path: str | os.PathLike[str],
+        page_size: int | None = None,
+        database: object | None = None,
+    ) -> CommunityGraphBackendBinding:
+        """Replace one Board binding iff its authenticated digest is current."""
+
+        safe_board_id = self._validated_segment(board_id, field_name="board_id")
+        return self._compare_and_swap(
+            scope="board",
+            scope_id=safe_board_id,
+            expected_binding_sha256=expected_binding_sha256,
+            backend=backend,
+            generation=generation,
+            physical_path=physical_path,
+            page_size=page_size,
+            database=database,
+        )
+
+    def prepare_board_binding_candidate(
+        self,
+        *,
+        board_id: str,
+        backend: GraphBackend,
+        generation: str,
+        physical_path: str | os.PathLike[str],
+        page_size: int | None = None,
+        database: object | None = None,
+    ) -> CommunityGraphBackendBinding:
+        """Authenticate a prospective Board binding without publishing it.
+
+        Rollout certification needs the exact digest that a later CAS will
+        publish.  This door applies the same physical-path and Grafx admission
+        checks as publication, but performs no lock acquisition or filesystem
+        mutation of the binding authority.
+        """
+
+        safe_board_id = self._validated_segment(board_id, field_name="board_id")
+        candidate, _document = self._prepare_candidate(
+            scope="board",
+            scope_id=safe_board_id,
+            backend=backend,
+            generation=generation,
+            physical_path=physical_path,
+            page_size=page_size,
+            database=database,
+            operation="prepare_graph_backend_binding_candidate",
+        )
+        return candidate
+
+    def compare_and_swap_global_binding(
+        self,
+        *,
+        expected_binding_sha256: str,
+        backend: GraphBackend,
+        generation: str,
+        physical_path: str | os.PathLike[str],
+        page_size: int | None = None,
+        database: object | None = None,
+    ) -> CommunityGraphBackendBinding:
+        """Replace the Global binding iff its authenticated digest is current."""
+
+        return self._compare_and_swap(
+            scope="global",
+            scope_id="global",
+            expected_binding_sha256=expected_binding_sha256,
             backend=backend,
             generation=generation,
             physical_path=physical_path,
@@ -565,6 +669,87 @@ class CommunityGraphBackendBindingStore:
         page_size: object,
         database: object | None,
     ) -> CommunityGraphBackendBinding:
+        candidate, document = self._prepare_candidate(
+            scope=scope,
+            scope_id=scope_id,
+            backend=backend,
+            generation=generation,
+            physical_path=physical_path,
+            page_size=page_size,
+            database=database,
+            operation="initialize_graph_backend_binding",
+        )
+        path = (
+            self._board_binding_path(scope_id)
+            if scope == "board"
+            else self._global_binding_path()
+        )
+        self._publish_initial(path, body=document)
+        persisted = self._acquire(path, scope=scope, scope_id=scope_id)
+        if persisted != candidate:
+            raise _corruption(
+                "binding_readback_mismatch",
+                scope=scope,
+                scope_id=scope_id,
+            )
+        return persisted
+
+    def _compare_and_swap(
+        self,
+        *,
+        scope: GraphBindingScope,
+        scope_id: str,
+        expected_binding_sha256: object,
+        backend: object,
+        generation: object,
+        physical_path: str | os.PathLike[str],
+        page_size: object,
+        database: object | None,
+    ) -> CommunityGraphBackendBinding:
+        if (
+            type(expected_binding_sha256) is not str
+            or _SHA256_RE.fullmatch(expected_binding_sha256) is None
+        ):
+            raise _capability(
+                "expected_binding_sha256_invalid",
+                operation="compare_and_swap_graph_backend_binding",
+                scope=scope,
+                scope_id=scope_id,
+            )
+        candidate, document = self._prepare_candidate(
+            scope=scope,
+            scope_id=scope_id,
+            backend=backend,
+            generation=generation,
+            physical_path=physical_path,
+            page_size=page_size,
+            database=database,
+            operation="compare_and_swap_graph_backend_binding",
+        )
+        path = (
+            self._board_binding_path(scope_id)
+            if scope == "board"
+            else self._global_binding_path()
+        )
+        return self._publish_compare_and_swap(
+            path,
+            expected_binding_sha256=expected_binding_sha256,
+            candidate=candidate,
+            body=document,
+        )
+
+    def _prepare_candidate(
+        self,
+        *,
+        scope: GraphBindingScope,
+        scope_id: str,
+        backend: object,
+        generation: object,
+        physical_path: str | os.PathLike[str],
+        page_size: object,
+        database: object | None,
+        operation: str,
+    ) -> tuple[CommunityGraphBackendBinding, dict[str, object]]:
         try:
             safe_backend = _validate_backend(backend)
             safe_generation = _validate_portable_segment(
@@ -589,7 +774,7 @@ class CommunityGraphBackendBindingStore:
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             raise _capability(
                 "binding_argument_invalid",
-                operation="initialize_graph_backend_binding",
+                operation=operation,
                 scope=scope,
                 scope_id=scope_id,
             ) from exc
@@ -604,7 +789,7 @@ class CommunityGraphBackendBindingStore:
             if database is None:
                 raise _capability(
                     "grafx_database_admission_required",
-                    operation="initialize_graph_backend_binding",
+                    operation=operation,
                     scope=scope,
                     scope_id=scope_id,
                 )
@@ -612,7 +797,7 @@ class CommunityGraphBackendBindingStore:
                 database,
                 expected_page_size=effective_page_size,
                 expected_path=safe_path,
-                operation="initialize_graph_backend_binding",
+                operation=operation,
             )
 
         body = self._body(
@@ -633,20 +818,7 @@ class CommunityGraphBackendBindingStore:
             page_size=effective_page_size,
             binding_sha256=digest,
         )
-        path = (
-            self._board_binding_path(scope_id)
-            if scope == "board"
-            else self._global_binding_path()
-        )
-        self._publish_initial(path, body={**body, "binding_sha256": digest})
-        persisted = self._acquire(path, scope=scope, scope_id=scope_id)
-        if persisted != candidate:
-            raise _corruption(
-                "binding_readback_mismatch",
-                scope=scope,
-                scope_id=scope_id,
-            )
-        return persisted
+        return candidate, {**body, "binding_sha256": digest}
 
     def _body(
         self,
@@ -718,6 +890,57 @@ class CommunityGraphBackendBindingStore:
             raise _unavailable(
                 "binding_publication_failed",
                 operation="initialize_graph_backend_binding",
+                scope=scope,
+                scope_id=scope_id,
+                error_type=type(exc).__name__,
+            ) from exc
+
+    def _publish_compare_and_swap(
+        self,
+        path: Path,
+        *,
+        expected_binding_sha256: str,
+        candidate: CommunityGraphBackendBinding,
+        body: Mapping[str, Any],
+    ) -> CommunityGraphBackendBinding:
+        scope = candidate.scope
+        scope_id = candidate.scope_id
+        lock = FileLock(f"{path}.lock", timeout=self._lock_timeout_seconds)
+        try:
+            with lock:
+                current = self._acquire(path, scope=scope, scope_id=scope_id)
+                if current.binding_sha256 != expected_binding_sha256:
+                    raise _compare_and_swap_conflict(
+                        scope=scope,
+                        scope_id=scope_id,
+                        expected_binding_sha256=expected_binding_sha256,
+                        observed_binding_sha256=current.binding_sha256,
+                    )
+                self._write_json_atomic(path, body)
+                persisted = self._acquire(path, scope=scope, scope_id=scope_id)
+                if persisted != candidate:
+                    raise _corruption(
+                        "binding_readback_mismatch",
+                        scope=scope,
+                        scope_id=scope_id,
+                    )
+                return persisted
+        except FileLockTimeout as exc:
+            raise GraphLockContention(
+                "The Community graph backend binding lock is contended.",
+                details={
+                    "operation": "compare_and_swap_graph_backend_binding",
+                    "reason": "binding_lock_contention",
+                    "scope": scope,
+                    "scope_id": scope_id,
+                },
+            ) from exc
+        except (GraphCapabilityUnavailable, GraphCorruption, GraphUnavailable):
+            raise
+        except OSError as exc:
+            raise _unavailable(
+                "binding_compare_and_swap_publication_failed",
+                operation="compare_and_swap_graph_backend_binding",
                 scope=scope,
                 scope_id=scope_id,
                 error_type=type(exc).__name__,
@@ -871,6 +1094,7 @@ __all__ = [
     "CommunityGraphBackendBindingStore",
     "GrafxDatabaseAdmission",
     "GraphBackend",
+    "GraphBindingCompareAndSwapConflict",
     "GraphBindingScope",
     "admit_grafx_database",
 ]

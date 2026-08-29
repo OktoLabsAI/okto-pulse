@@ -140,6 +140,26 @@ class _Windows:
             self.events.append(("mutation_exit", board_id, phase))
 
 
+class _MutationRecorder:
+    def __init__(self, events: list[tuple[Any, ...]]) -> None:
+        self.events = events
+        self.prepared: list[dict[str, Any]] = []
+
+    def prepare_mutation(self, **values: Any) -> object:
+        self.prepared.append(dict(values))
+        self.events.append(("capture_prepare", values["family"]))
+        return "mutation-1"
+
+    def mark_source_committed(self, token: object) -> None:
+        self.events.append(("capture_committed", token))
+
+    def mark_source_abandoned(self, token: object) -> None:
+        self.events.append(("capture_abandoned", token))
+
+    def mark_source_ambiguous(self, token: object, *, error_type: str) -> None:
+        self.events.append(("capture_ambiguous", token, error_type))
+
+
 class _StrictWindows(_Windows):
     """A mutation guard that makes accidental provider re-entry observable."""
 
@@ -471,6 +491,74 @@ def test_semantic_capabilities_are_the_conservative_backend_intersection() -> No
     ladybug.capabilities.assert_called_once_with()
     grafx.capabilities.assert_called_once_with()
     assert events == []
+
+
+def test_semantic_mutation_is_prepared_before_selected_auto_commit_provider() -> None:
+    events: list[tuple[Any, ...]] = []
+    snapshot = _snapshot("board-g", "grafx", generation="generation-7")
+    resolver = _RouteResolver({"board-g": snapshot}, events)
+    windows = _Windows(events)
+    ladybug = Mock(name="ladybug_store")
+    grafx = Mock(name="grafx_store")
+    recorder = _MutationRecorder(events)
+
+    def create_node(*_args: object, **_kwargs: object) -> None:
+        events.append(("provider", "create_node"))
+
+    grafx.create_node.side_effect = create_node
+    facade = CommunityRoutedSemanticGraphStore(
+        resolver,  # type: ignore[arg-type]
+        ladybug=ladybug,
+        grafx=grafx,
+        operation_window=windows.operation,
+        mutation_recorder=recorder,
+    )
+
+    facade.create_node(
+        "board-g",
+        "Decision",
+        "node-1",
+        {"title": "customer@example.test"},
+    )
+
+    assert events == [
+        ("operation_enter", "board-g"),
+        ("acquire", "board-g"),
+        ("route", "grafx", "generation-7"),
+        ("capture_prepare", "create_node"),
+        ("provider", "create_node"),
+        ("capture_committed", "mutation-1"),
+        ("operation_exit", "board-g"),
+    ]
+    prepared = recorder.prepared[0]
+    assert prepared["board_id"] == "board-g"
+    assert prepared["backend"] == "grafx"
+    assert prepared["binding_sha256"] == snapshot.binding_sha256
+    assert "customer@example.test" not in repr(prepared["payload"])
+
+
+def test_semantic_read_does_not_touch_mutation_recorder() -> None:
+    events: list[tuple[Any, ...]] = []
+    resolver = _RouteResolver(
+        {"board-l": _snapshot("board-l", "ladybug", generation="legacy-4")},
+        events,
+    )
+    windows = _Windows(events)
+    ladybug = Mock(name="ladybug_store")
+    grafx = Mock(name="grafx_store")
+    recorder = _MutationRecorder(events)
+    ladybug.get_schema_version.return_value = "0.5.0"
+    facade = CommunityRoutedSemanticGraphStore(
+        resolver,  # type: ignore[arg-type]
+        ladybug=ladybug,
+        grafx=grafx,
+        operation_window=windows.operation,
+        mutation_recorder=recorder,
+    )
+
+    assert facade.get_schema_version("board-l") == "0.5.0"
+    assert recorder.prepared == []
+    assert all(event[0] != "capture_prepare" for event in events)
 
 
 def test_two_boards_select_distinct_persisted_backends_and_generations() -> None:
