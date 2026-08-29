@@ -5,7 +5,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -99,6 +99,89 @@ def test_two_short_children_execute_under_the_same_observed_authority(
     assert first.exit_code == second.exit_code == 0
     assert first.stdout.strip().splitlines()[-1] == expected
     assert second.stdout.strip().splitlines()[-1] == expected
+
+
+def test_certifying_main_runner_is_reused_without_a_second_module_copy(
+    tmp_path: Path,
+) -> None:
+    runner_path = TOOLS / "run_mpulse7_acceptance.py"
+    code = """
+import json
+import pathlib
+import sys
+
+runner_path = pathlib.Path(__RUNNER_PATH__).resolve()
+source = runner_path.read_bytes()
+marker_line = (
+    source.decode("utf-8").splitlines().index('if __name__ == "__main__":') + 1
+)
+
+def suppress_cli(frame, event, argument):
+    if (
+        event == "line"
+        and frame.f_code.co_filename == str(runner_path)
+        and frame.f_lineno == marker_line
+    ):
+        frame.f_globals["__name__"] = "__mpulse7_authority_probe__"
+    return suppress_cli
+
+sys.settrace(suppress_cli)
+globals()["__file__"] = str(runner_path)
+exec(compile(source, str(runner_path), "exec"), globals(), globals())
+sys.settrace(None)
+globals()["__name__"] = "__main__"
+
+runner = sys.modules["__main__"]
+sentinel = {"probe": "certifying-main-runner"}
+runner.collect_certification_process_authority = lambda: sentinel
+runner.canonical_sha256 = lambda value: "a" * 64 if value is sentinel else "b" * 64
+
+import mpulse7_crash_harness as crash_harness
+
+observed = crash_harness._collect_process_authority_sha256(certification=True)
+runner_modules = {
+    name: id(module)
+    for name, module in sys.modules.items()
+    if getattr(module, "__file__", None)
+    and pathlib.Path(module.__file__).resolve() == runner_path
+}
+print(json.dumps({
+    "distinct_runner_objects": len(set(runner_modules.values())),
+    "named_second_copy": "run_mpulse7_acceptance" in runner_modules,
+    "observed": observed,
+    "resolved_main": crash_harness._certification_runner_module() is runner,
+}, sort_keys=True))
+""".replace("__RUNNER_PATH__", repr(str(runner_path)))
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join(sys.path)
+
+    completed = _run_process(
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        env=environment,
+    )
+
+    assert completed.exit_code == 0, completed.stderr
+    observed = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert observed == {
+        "distinct_runner_objects": 1,
+        "named_second_copy": False,
+        "observed": "a" * 64,
+        "resolved_main": True,
+    }
+
+
+def test_certification_runner_resolution_rejects_distinct_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = crash_harness._certification_runner_module()
+    duplicate = ModuleType("run_mpulse7_acceptance_duplicate")
+    duplicate.__file__ = str(TOOLS / "run_mpulse7_acceptance.py")
+    monkeypatch.setitem(sys.modules, duplicate.__name__, duplicate)
+
+    with pytest.raises(CrashHarnessError, match="runner_authority_module_ambiguous"):
+        crash_harness._certification_runner_module()
+    assert runner is not duplicate
 
 
 def test_crash_worker_measures_authority_before_building_bundle(

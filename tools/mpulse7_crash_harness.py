@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+import importlib
 import json
 import os
 import subprocess
@@ -27,13 +28,17 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from types import CodeType
+from types import CodeType, ModuleType
 from typing import Any, Final
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
 for _import_root in (REPO_ROOT / "src", REPO_ROOT / "tests", REPO_ROOT / "tools"):
     if str(_import_root) not in sys.path:
         sys.path.insert(0, str(_import_root))
+
+_RUNNER_SOURCE_PATH: Final[Path] = (
+    REPO_ROOT / "tools" / "run_mpulse7_acceptance.py"
+).resolve()
 
 _HARNESS_IMPORT_CODE: Final[CodeType] = sys._getframe().f_code
 _HARNESS_IMPORT_CODE_FILENAME: Final[str] = _HARNESS_IMPORT_CODE.co_filename
@@ -223,12 +228,44 @@ def _is_sha256(value: object) -> bool:
     )
 
 
+def _certification_runner_module() -> ModuleType:
+    """Resolve the exact runner already executing, including CLI ``__main__``."""
+
+    expected_origin = os.path.normcase(os.path.realpath(_RUNNER_SOURCE_PATH))
+    candidates: dict[int, ModuleType] = {}
+    for candidate in tuple(sys.modules.values()):
+        if not isinstance(candidate, ModuleType):
+            continue
+        raw_origin = getattr(candidate, "__file__", None)
+        if not isinstance(raw_origin, (str, bytes, os.PathLike)):
+            continue
+        if os.path.normcase(os.path.realpath(raw_origin)) == expected_origin:
+            candidates[id(candidate)] = candidate
+    _require(len(candidates) <= 1, "runner_authority_module_ambiguous")
+    if candidates:
+        return next(iter(candidates.values()))
+
+    try:
+        imported = importlib.import_module("run_mpulse7_acceptance")
+    except ImportError as failure:
+        raise CrashHarnessError("runner_authority_module_unavailable") from failure
+    imported_origin = getattr(imported, "__file__", None)
+    _require(
+        isinstance(imported_origin, (str, bytes, os.PathLike))
+        and os.path.normcase(os.path.realpath(imported_origin)) == expected_origin,
+        "runner_authority_module_origin_invalid",
+    )
+    return imported
+
+
 def _validate_harness_import_authority() -> dict[str, str]:
     """Reject source restored after this process loaded different harness code."""
 
     origin = Path(__file__).resolve()
     try:
-        from run_mpulse7_acceptance import _code_object_sha256
+        runner = _certification_runner_module()
+        code_object_sha256 = getattr(runner, "_code_object_sha256", None)
+        _require(callable(code_object_sha256), "runner_code_authority_api_missing")
 
         source = origin.read_bytes()
         current_code = compile(
@@ -245,8 +282,8 @@ def _validate_harness_import_authority() -> dict[str, str]:
         "harness_import_authority_code_missing",
     )
     source_sha256 = hashlib.sha256(source).hexdigest()
-    code_sha256 = _code_object_sha256(current_code)
-    loaded_code_sha256 = _code_object_sha256(_HARNESS_IMPORT_CODE)
+    code_sha256 = code_object_sha256(current_code)
+    loaded_code_sha256 = code_object_sha256(_HARNESS_IMPORT_CODE)
     _require(
         source_sha256 == _HARNESS_IMPORT_SOURCE_SHA256,
         "harness_imported_source_bytes_changed",
@@ -303,12 +340,20 @@ def _collect_process_authority_sha256(*, certification: bool) -> str:
 
     if certification:
         _validate_harness_import_authority()
-        from run_mpulse7_acceptance import (
-            canonical_sha256,
-            collect_certification_process_authority,
+        runner = _certification_runner_module()
+        canonical_sha256 = getattr(runner, "canonical_sha256", None)
+        collect_process_authority = getattr(
+            runner,
+            "collect_certification_process_authority",
+            None,
+        )
+        _require(callable(canonical_sha256), "runner_digest_authority_api_missing")
+        _require(
+            callable(collect_process_authority),
+            "runner_process_authority_api_missing",
         )
 
-        authority = collect_certification_process_authority()
+        authority = collect_process_authority()
         digest = canonical_sha256(authority)
     else:
         digest = _canonical_sha256(_relaxed_process_authority())
@@ -639,7 +684,10 @@ async def _build_bundle(
         capture_registry_state_for_tests,
         restore_registry_state_for_tests,
     )
-    from run_mpulse7_acceptance import GateBackendContext
+
+    runner = _certification_runner_module()
+    GateBackendContext = getattr(runner, "GateBackendContext", None)
+    _require(GateBackendContext is not None, "runner_backend_context_api_missing")
 
     from okto_pulse.community.adapters.composition import (
         build_community_kg_composition,
@@ -990,7 +1038,11 @@ async def _crash_worker(config: Mapping[str, Any], spec: CrashPointSpec) -> None
         == config["expected_execution_authority_sha256"],
         "crash_worker_execution_authority_mismatch",
     )
-    from run_mpulse7_acceptance import _execute_operation, verify_frozen_inputs
+    runner = _certification_runner_module()
+    execute_operation = getattr(runner, "_execute_operation", None)
+    verify_frozen_inputs = getattr(runner, "verify_frozen_inputs", None)
+    _require(callable(execute_operation), "runner_execute_operation_api_missing")
+    _require(callable(verify_frozen_inputs), "runner_frozen_inputs_api_missing")
 
     inputs = verify_frozen_inputs(Path(str(config["manifest_path"])))
     manifest_points = inputs.manifest["crash_points"]["points"]
@@ -1014,7 +1066,7 @@ async def _crash_worker(config: Mapping[str, Any], spec: CrashPointSpec) -> None
     # the candidate path available for the coordinator's absence checks.
     rollout.candidate.physical_path.parent.mkdir(parents=True, exist_ok=True)
     for operation in inputs.operations[: spec.after_operation]:
-        await _execute_operation(bundle, bundle.context, operation)
+        await execute_operation(bundle, bundle.context, operation)
 
     observed = _observe(bundle)
     _write_json_atomic(
