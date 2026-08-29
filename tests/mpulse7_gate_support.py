@@ -685,7 +685,15 @@ class DeterministicGraphModel:
             return
 
         if family == "reconcile_spec_lineage_parent":
-            self.lineage[str(payload["source_id"])] = payload
+            source_id = str(payload["source_id"])
+            existing = self.lineage.get(source_id)
+            if (
+                existing is not None
+                and existing["target_id"] == payload["target_id"]
+                and existing["attrs"].get("rule_id") == payload["attrs"].get("rule_id")
+            ):
+                return
+            self.lineage[source_id] = payload
             return
 
         if family == "clear_spec_lineage_parent":

@@ -59,7 +59,7 @@ from run_mpulse7_acceptance import (
 
 MANIFEST = ROOT / "tests" / "fixtures" / "m_pulse_7_acceptance_gate_v1.json"
 CORPUS = ROOT.parent / "okto_grafx" / "tests" / "corpus" / "pulse_query_corpus_1_0.json"
-FINAL_FINGERPRINT = "f248f4fd2778806dd43437642a32ca6457cdbb595c7ae678f49cc7277960b5d0"
+FINAL_FINGERPRINT = "e6b7f3abafdff55f8e4167d012083eddf2106f6ec9de7347bccd5d7e41097344"
 OPERATIONS = expand_trace(load_gate_manifest(MANIFEST))
 
 

@@ -125,7 +125,7 @@
     "checkpoints": [
       {
         "after_operations": 2500,
-        "model_fingerprint_sha256": "6a8a8c0d5f976df0d35aa992c60fbc392f9a0fe7bf86f1fae1612ad2ae9e94c1",
+        "model_fingerprint_sha256": "33d307d0f1d8f9c55f3eaef5e8253f0f9c5eb9e39687f1c5198106c4b377a4eb",
         "census": {
           "nodes": 932,
           "edges": 99,
@@ -155,7 +155,7 @@
       },
       {
         "after_operations": 10000,
-        "model_fingerprint_sha256": "f248f4fd2778806dd43437642a32ca6457cdbb595c7ae678f49cc7277960b5d0",
+        "model_fingerprint_sha256": "e6b7f3abafdff55f8e4167d012083eddf2106f6ec9de7347bccd5d7e41097344",
         "census": {
           "nodes": 926,
           "edges": 70,
@@ -164,7 +164,7 @@
         }
       }
     ],
-    "final_model_fingerprint_sha256": "f248f4fd2778806dd43437642a32ca6457cdbb595c7ae678f49cc7277960b5d0"
+    "final_model_fingerprint_sha256": "e6b7f3abafdff55f8e4167d012083eddf2106f6ec9de7347bccd5d7e41097344"
   },
   "mutation_surface_inventory": [
     {

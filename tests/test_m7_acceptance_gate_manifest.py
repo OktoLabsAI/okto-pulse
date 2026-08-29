@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from mpulse7_gate_support import (
+    DeterministicGraphModel,
     board_result_supplement_sha256,
     crash_points_sha256,
     evaluate_trace,
@@ -114,7 +115,7 @@ EXPECTED_CHECKPOINTS: tuple[dict[str, Any], ...] = (
     {
         "after_operations": 2500,
         "model_fingerprint_sha256": (
-            "6a8a8c0d5f976df0d35aa992c60fbc392f9a0fe7bf86f1fae1612ad2ae9e94c1"
+            "33d307d0f1d8f9c55f3eaef5e8253f0f9c5eb9e39687f1c5198106c4b377a4eb"
         ),
         "census": {
             "nodes": 932,
@@ -150,7 +151,7 @@ EXPECTED_CHECKPOINTS: tuple[dict[str, Any], ...] = (
     {
         "after_operations": 10000,
         "model_fingerprint_sha256": (
-            "f248f4fd2778806dd43437642a32ca6457cdbb595c7ae678f49cc7277960b5d0"
+            "e6b7f3abafdff55f8e4167d012083eddf2106f6ec9de7347bccd5d7e41097344"
         ),
         "census": {
             "nodes": 926,
@@ -307,7 +308,13 @@ def _independent_replay(
                 if node_id not in {edge["from_id"], edge["to_id"]}
             }
         elif family == "reconcile_spec_lineage_parent":
-            lineage[payload["source_id"]] = payload
+            existing = lineage.get(payload["source_id"])
+            if not (
+                existing is not None
+                and existing["target_id"] == payload["target_id"]
+                and existing["attrs"].get("rule_id") == payload["attrs"].get("rule_id")
+            ):
+                lineage[payload["source_id"]] = payload
         elif family == "clear_spec_lineage_parent":
             lineage.pop(payload["source_id"], None)
         elif family == "reconcile_projection_active_set":
@@ -607,6 +614,38 @@ def test_checkpoints_and_three_recovery_cycles_have_independent_goldens() -> Non
     }
     assert tuple(evaluation.recovery_cycles) == recoveries
     assert len(recoveries) == 3
+
+
+def test_lineage_retry_oracles_preserve_the_first_edge_attributes() -> None:
+    first = {
+        "family": "reconcile_spec_lineage_parent",
+        "sequence": 1,
+        "payload": {
+            "source_id": "spec",
+            "target_id": "parent",
+            "attrs": {
+                "created_at": "2026-01-01T00:00:01Z",
+                "rule_id": "belongs_to/spec_to_refinement@trace-v1",
+            },
+        },
+    }
+    retry = deepcopy(first)
+    retry["sequence"] = 2
+    retry["payload"]["attrs"]["created_at"] = "2026-01-01T00:00:02Z"
+    operations = (first, retry)
+
+    model = DeterministicGraphModel()
+    for operation in operations:
+        model.apply(operation)
+    checkpoints, _recoveries = _independent_replay(
+        operations,
+        frozenset({2}),
+        frozenset(),
+    )
+
+    lineage = model.export_state()["lineage"]
+    assert lineage == [first["payload"]]
+    assert checkpoints[0]["model_fingerprint_sha256"] == model.fingerprint_sha256()
 
 
 def test_mutation_inventory_is_closed_and_exclusions_are_scenario_bound() -> None:
