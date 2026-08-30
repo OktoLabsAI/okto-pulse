@@ -53,7 +53,8 @@ def test_help_lists_the_h1_h8_flags() -> None:
 def test_harness_revision_identifies_this_file() -> None:
     revision = harness.harness_revision()
     assert revision["name"] == "h1-h8"
-    assert revision["sha256"] == hashlib.sha256(HARNESS_FILE.read_bytes()).hexdigest()
+    normalized = HARNESS_FILE.read_bytes().replace(b"\r\n", b"\n")
+    assert revision["sha256"] == hashlib.sha256(normalized).hexdigest()
     assert revision["certified_source_sha256"] == CERTIFIED_SOURCE_SHA256
     assert "comparable ONLY" in revision["instrumented_comparability"]
 

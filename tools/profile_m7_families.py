@@ -712,7 +712,9 @@ def harness_revision() -> dict[str, Any]:
     return {
         "name": HARNESS_REVISION,
         "file": str(here),
-        "sha256": hashlib.sha256(here.read_bytes()).hexdigest(),
+        # Line endings are normalized before hashing so an autocrlf checkout of the same file reports
+        # the same revision sha256 as an LF checkout.
+        "sha256": hashlib.sha256(here.read_bytes().replace(b"\r\n", b"\n")).hexdigest(),
         "certified_source_sha256": CERTIFIED_SOURCE_SHA256,
         "raw_pass": (
             "logically identical to the certified source (no hooks, no cProfile, same open/close/timing "
