@@ -271,3 +271,45 @@ def test_catalog_changing_statements_are_recognised_fail_safe() -> None:
     assert not changes("CREATE (n:Entity {id: $id, title: 'CREATE NODE TABLE'})")
     assert not changes("MATCH (a:Entity)-[r:supports]->(b:Entity) DELETE r")
     assert not changes("MERGE (n:Entity {id: $id})")
+
+
+@pytest.fixture
+def broken_public_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every access to the PUBLIC ``Database.catalog`` property fail."""
+
+    def exploding(self: Any) -> Any:
+        raise RuntimeError("catalog property failed")
+
+    monkeypatch.setattr(Database, "catalog", property(exploding))
+
+
+@pytest.mark.asyncio
+async def test_a_public_catalog_failure_keeps_each_callers_operation(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+    broken_public_catalog: None,
+) -> None:
+    """The snapshot must not rename the failure.
+
+    Before the snapshot every resolver mapped a failing ``Database.catalog`` under its
+    own operation and ``_catalog_space`` let it through unmapped; mutant "map inside
+    ``_catalog()``" reports ``catalog_snapshot`` for all of them.
+    """
+
+    provider = _provider(grafx_database, fence)
+    scope = await provider.begin(BOARD_ID)
+    try:
+        with pytest.raises(GraphError) as node_failure:
+            scope.create_node("Entity", "x", {"title": "t"}, source_session_id="s")
+        assert node_failure.value.details["operation"] == "node_schema"
+        assert node_failure.value.details["backend_error_type"] == "RuntimeError"
+        with pytest.raises(GraphError) as relationship_failure:
+            scope._relationship_definition("supports", "Entity", "Entity")
+        assert relationship_failure.value.details["operation"] == "relationship_schema"
+        with pytest.raises(GraphError) as incident_failure:
+            scope._incident_relationship_definitions("Entity")
+        assert incident_failure.value.details["operation"] == "snapshot_incident_schema"
+        with pytest.raises(RuntimeError, match="catalog property failed"):
+            scope._catalog_space("anything")
+    finally:
+        await scope.rollback()

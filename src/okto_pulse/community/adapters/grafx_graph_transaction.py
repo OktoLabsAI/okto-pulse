@@ -597,11 +597,7 @@ class _GrafxTransactionScope:
         """
 
         if self._catalog_view is None:
-            try:
-                view = self._database.catalog.catalog
-            except Exception as exc:
-                mapped = map_grafx_error(exc, operation="catalog_snapshot")
-                raise mapped from exc
+            view = self._database.catalog.catalog
             self._catalog_view = view
             self._catalog_tables = {table.name: table for table in view.tables()}
             self._catalog_spaces = {space.name: space for space in view.spaces()}
@@ -619,11 +615,11 @@ class _GrafxTransactionScope:
     def _catalog_table(self, name: str, *, operation: str) -> Any:
         """Look a table up in the scope's snapshot, failing exactly as the view would."""
 
-        view = self._catalog()
-        definition = self._catalog_tables.get(name)
-        if definition is not None:
-            return definition
         try:
+            view = self._catalog()
+            definition = self._catalog_tables.get(name)
+            if definition is not None:
+                return definition
             return view.table(name)
         except Exception as exc:
             mapped = map_grafx_error(exc, operation=operation)
