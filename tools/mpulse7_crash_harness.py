@@ -907,6 +907,43 @@ def _identity(bundle: _Bundle) -> tuple[str, str]:
     return storage_identity, binding.generation
 
 
+def _expected_replay_capture_high_water(
+    *,
+    after_operation: int,
+    recovery_boundaries: frozenset[int],
+) -> int:
+    """Account for the fenced administrative recovery writes in a prefix."""
+
+    _require(
+        type(after_operation) is int and after_operation > 0,
+        "crash_capture_after_invalid",
+    )
+    _require(
+        all(type(boundary) is int and boundary > 0 for boundary in recovery_boundaries),
+        "crash_capture_recovery_boundaries_invalid",
+    )
+    return after_operation + sum(
+        boundary <= after_operation for boundary in recovery_boundaries
+    )
+
+
+def _rollout_capture_high_water(bundle: _Bundle) -> int:
+    from okto_pulse.community.adapters.graph_rollout_journal import (
+        CommunityGraphRolloutJournal,
+    )
+
+    journal = CommunityGraphRolloutJournal(
+        bundle.board.binding_store.root,
+        bundle.context.board_id,
+    )
+    high_water = journal.capture_high_water()
+    _require(
+        type(high_water) is int and high_water > 0,
+        "crash_rollout_capture_high_water_invalid",
+    )
+    return high_water
+
+
 def _hard_exit(config: Mapping[str, Any], spec: CrashPointSpec) -> None:
     authority = _WORKER_EXECUTION_AUTHORITY_SHA256
     _require(_is_sha256(authority), "crash_worker_authority_not_captured")
@@ -1148,6 +1185,15 @@ async def _crash_worker(config: Mapping[str, Any], spec: CrashPointSpec) -> None
         )
         coordinator = bundle.board.graph_rollout_coordinator
 
+    capture_high_water = _rollout_capture_high_water(bundle)
+    _require(
+        capture_high_water
+        == _expected_replay_capture_high_water(
+            after_operation=spec.after_operation,
+            recovery_boundaries=recovery_boundaries,
+        ),
+        "crash_replay_capture_high_water_mismatch",
+    )
     observed = _observe(bundle)
     _write_json_atomic(
         Path(str(config["pre_observation_path"])),
@@ -1155,6 +1201,7 @@ async def _crash_worker(config: Mapping[str, Any], spec: CrashPointSpec) -> None
             "format": _PRE_OBSERVATION_FORMAT,
             "id": spec.id,
             "after_operation": spec.after_operation,
+            "rollout_capture_high_water": capture_high_water,
             **observed,
         },
     )
@@ -1212,6 +1259,11 @@ def _pre_observation(config: Mapping[str, Any], spec: CrashPointSpec) -> dict[st
             and all(character in "0123456789abcdef" for character in value),
             f"pre_crash_{key}_invalid",
         )
+    capture_high_water = observed.get("rollout_capture_high_water")
+    _require(
+        type(capture_high_water) is int and capture_high_water >= spec.after_operation,
+        "pre_crash_rollout_capture_high_water_invalid",
+    )
     return observed
 
 
@@ -1243,7 +1295,7 @@ async def _recover_nonprivacy(
     journal = CommunityGraphRolloutJournal(bundle.board.binding_store.root, board_id)
     crashed = journal.verify()
     binding = bundle.board.binding_store.acquire_board_binding(board_id)
-    after = spec.after_operation
+    capture_high_water = int(pre["rollout_capture_high_water"])
 
     if spec.id in {
         "outbox-prepared-before-provider-call",
@@ -1251,11 +1303,14 @@ async def _recover_nonprivacy(
     }:
         _require(crashed.state == "shadowing", "prepared_recovery_state_invalid")
         _require(binding.backend == "ladybug", "prepared_recovery_binding_changed")
-        _require(crashed.next_seq == after + 2, "prepared_probe_not_durable")
+        _require(
+            crashed.next_seq == capture_high_water + 2,
+            "prepared_probe_not_durable",
+        )
         recovered = coordinator.recover(board_id)
         _require(recovered.state == "shadowing", "prepared_recovery_not_shadowing")
         cycle = coordinator.run_shadow_cycle(board_id)
-        _require_shadow_result(cycle, through_seq=after + 1)
+        _require_shadow_result(cycle, through_seq=capture_high_water + 1)
     elif spec.id in {
         "source-snapshot-close-before-candidate-open",
         "candidate-write-before-certificate",
@@ -1269,7 +1324,7 @@ async def _recover_nonprivacy(
         abandoned_generation = crashed.candidate.generation
         coordinator.recover(board_id)
         cycle = coordinator.run_shadow_cycle(board_id)
-        _require_shadow_result(cycle, through_seq=after)
+        _require_shadow_result(cycle, through_seq=capture_high_water)
         _require(
             cycle.rollout.candidate.generation != abandoned_generation,
             "candidate_generation_was_reused",
@@ -1282,12 +1337,15 @@ async def _recover_nonprivacy(
         receipt = journal.latest_comparison_receipt("shadow")
         _require(crashed.state == "shadowing", "checkpoint_recovery_state_invalid")
         _require(checkpoint is not None, "checkpoint_not_durable")
-        _require(checkpoint.through_seq == after, "checkpoint_boundary_invalid")
+        _require(
+            checkpoint.through_seq == capture_high_water,
+            "checkpoint_boundary_invalid",
+        )
         _require(receipt is None, "comparison_receipt_published_before_hook")
         abandoned_generation = crashed.candidate.generation
         coordinator.recover(board_id)
         cycle = coordinator.run_shadow_cycle(board_id)
-        _require_shadow_result(cycle, through_seq=after)
+        _require_shadow_result(cycle, through_seq=capture_high_water)
         _require(
             cycle.rollout.candidate.generation != abandoned_generation,
             "checkpoint_candidate_generation_was_reused",
@@ -1302,8 +1360,8 @@ async def _recover_nonprivacy(
         _require(
             checkpoint is not None
             and receipt is not None
-            and checkpoint.through_seq == after
-            and receipt.through_seq == after,
+            and checkpoint.through_seq == capture_high_water
+            and receipt.through_seq == capture_high_water,
             "final_delta_certificate_not_durable",
         )
         recovered = coordinator.recover(board_id)
@@ -1314,7 +1372,7 @@ async def _recover_nonprivacy(
             "final_delta_recovery_changed_active_backend",
         )
         retried = coordinator.run_shadow_cycle(board_id)
-        _require_shadow_result(retried, through_seq=after)
+        _require_shadow_result(retried, through_seq=capture_high_water)
         _require(
             bundle.board.binding_store.acquire_board_binding(board_id).backend
             == "ladybug",
@@ -1337,7 +1395,10 @@ async def _recover_nonprivacy(
             "rollback_close_not_durable",
         )
         _require(binding.backend == "grafx", "rollback_close_binding_not_grafx")
-        _require(crashed.next_seq == after + 2, "rollback_close_probe_not_prepared")
+        _require(
+            crashed.next_seq == capture_high_water + 2,
+            "rollback_close_probe_not_prepared",
+        )
         recovered = coordinator.recover(board_id)
         _require(
             recovered.state == "grafx_active_rollback_closed",

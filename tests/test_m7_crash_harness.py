@@ -310,6 +310,9 @@ def test_crash_worker_replays_frozen_cold_recovery_boundaries(
     monkeypatch.setattr(crash_harness, "_build_bundle", build)
     monkeypatch.setattr(crash_harness, "_reopen_at_recovery_boundary", recover)
     monkeypatch.setattr(
+        crash_harness, "_rollout_capture_high_water", lambda _bundle: 10002
+    )
+    monkeypatch.setattr(
         crash_harness,
         "_observe",
         lambda current: events.append(("observe", current.name)) or {},
@@ -355,6 +358,39 @@ def test_crash_worker_replays_frozen_cold_recovery_boundaries(
         ("execute", 8001, "after-7500"),
         ("observe", "after-7500"),
     ]
+
+
+def test_replay_capture_high_water_accounts_for_frozen_recovery_boundaries() -> None:
+    boundaries = frozenset((2500, 5000, 7500))
+
+    assert (
+        crash_harness._expected_replay_capture_high_water(
+            after_operation=137,
+            recovery_boundaries=boundaries,
+        )
+        == 137
+    )
+    assert (
+        crash_harness._expected_replay_capture_high_water(
+            after_operation=2500,
+            recovery_boundaries=boundaries,
+        )
+        == 2501
+    )
+    assert (
+        crash_harness._expected_replay_capture_high_water(
+            after_operation=5001,
+            recovery_boundaries=boundaries,
+        )
+        == 5003
+    )
+    assert (
+        crash_harness._expected_replay_capture_high_water(
+            after_operation=8001,
+            recovery_boundaries=boundaries,
+        )
+        == 8004
+    )
 
 
 def test_recovery_boundary_closes_rebuilds_recovers_verifies_and_observes(
