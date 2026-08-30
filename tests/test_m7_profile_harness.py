@@ -1,4 +1,4 @@
-"""Revision/serialization tests for tools/profile_m7_families.py (harness revision h1-h8).
+"""Revision/serialization tests for tools/profile_m7_families.py (revision h1-h8.1).
 
 No forensic board, no m7-cert-* workspace and no benchmark is touched: the tests exercise the
 hook/timer plumbing on fakes, the CLI surface, the harness identity record and -- the important
@@ -52,7 +52,7 @@ def test_help_lists_the_h1_h8_flags() -> None:
 
 def test_harness_revision_identifies_this_file() -> None:
     revision = harness.harness_revision()
-    assert revision["name"] == "h1-h8"
+    assert revision["name"] == "h1-h8.1"
     normalized = HARNESS_FILE.read_bytes().replace(b"\r\n", b"\n")
     assert revision["sha256"] == hashlib.sha256(normalized).hexdigest()
     assert revision["certified_source_sha256"] == CERTIFIED_SOURCE_SHA256
@@ -142,12 +142,17 @@ def test_invalidate_wrapper_classifies_read_view_drops() -> None:
 
 
 class _FakeScope:
+    __slots__ = ("statements",)
+
     def __init__(self) -> None:
         self.statements: list[str] = []
 
     def execute(self, statement: str, params: dict | None = None) -> SimpleNamespace:
         self.statements.append(statement)
         return SimpleNamespace(rows=[])
+
+    def create_node(self, marker: str) -> None:
+        self.statements.append(f"create:{marker}")
 
     async def commit(self) -> str:
         return "committed"
@@ -161,28 +166,37 @@ class _FakeTransactions:
         return _FakeScope()
 
 
-async def test_phase_timers_time_begin_execute_and_commit_on_the_instance() -> None:
+async def test_phase_timers_time_begin_execute_and_commit_on_slotted_scopes() -> None:
     backend = SimpleNamespace(graph_transaction=_FakeTransactions())
     original_begin = backend.graph_transaction.begin
+    original_execute = _FakeScope.execute
+    original_commit = _FakeScope.commit
     timers = harness.PhaseTimers()
     timers.attach(backend)
     assert timers.available, timers.reason
     scope = await backend.graph_transaction.begin("board")
     scope.execute("MATCH (n) RETURN n")
     scope.execute("CREATE (n)")
+    scope.create_node("family-dispatch")
     assert await scope.commit() == "committed"
     snapshot = timers.snapshot()
     assert snapshot["available"] is True
     assert snapshot["begins"] == 1
-    assert snapshot["execute_count"] == 2
-    assert len(snapshot["execute_ms"]) == 2
+    assert snapshot["execute_count"] == 3
+    assert len(snapshot["execute_ms"]) == 3
     assert snapshot["commit_ms"] >= 0.0
     assert snapshot["rollback_ms"] == 0.0
-    assert scope.statements == ["MATCH (n) RETURN n", "CREATE (n)"]
+    assert scope.statements == [
+        "MATCH (n) RETURN n",
+        "CREATE (n)",
+        "create:family-dispatch",
+    ]
     timers.reset()
     assert timers.snapshot()["begins"] == 0
     timers.detach()
     assert backend.graph_transaction.begin == original_begin
+    assert _FakeScope.execute is original_execute
+    assert _FakeScope.commit is original_commit
 
 
 async def test_phase_timers_report_unavailable_instead_of_failing() -> None:

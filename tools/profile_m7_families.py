@@ -19,7 +19,7 @@ Revision 3 — after Codex's rejection of v2.1 (7 blockers). What changed and wh
   BLOCKER 6  Every hook, including BufferPool._write_back, accumulates inclusive nanoseconds.
   BLOCKER 7  per_family > 0 is validated.
 
-Revision h1-h8 (2026-08-30, branch perf/w0-harness-h1-h8, GRAFX_PERFORMANCE_NEXT_STEPS.md section
+Revision h1-h8.1 (2026-08-30, branch perf/w0-harness-h1-h8, GRAFX_PERFORMANCE_NEXT_STEPS.md section
 6.1). Versioned copy of the certified harness (sha256 0cb60d5e...); the RAW pass is LOGICALLY
 UNCHANGED (no hooks, no cProfile, same open/close/timing sequence) and operation_set_sha256 is
 unchanged for the default fixture plan, so RAW medians remain comparable with the pf5 reports.
@@ -36,7 +36,8 @@ instrumented/phases passes only between reports whose ``harness_revision.sha256`
       inclusive time cannot be measured (generator/async functions) are listed under
       ``unmeasurable_targets``.
   H3  Third pass ``phases`` (RAW-phases): three timers per operation -- begin, each execute,
-      commit/rollback -- installed on the backend INSTANCE (no hooks, no cProfile), published as
+      commit/rollback -- begin on the backend instance and family dispatch through a harness proxy
+      (required by slotted/read-only scope instances; no hooks, no cProfile), published as
       ``passes.phases`` beside RAW and never in its place.
   H4  In the instrumented pass the hooks are installed BEFORE the open, so the open (including the
       unmeasured warm BoardMeta read) has its own snapshot (``open_hooks``); the measured op still
@@ -120,7 +121,7 @@ SCRATCH = Path(
 FORENSIC_WORKSPACE = SCRATCH / "m7fail" / "workspace"
 TERMINAL_MARKER = SCRATCH / "run4.terminal"
 RUN4_PID = 33244
-HARNESS_REVISION = "h1-h8"
+HARNESS_REVISION = "h1-h8.1"
 CERTIFIED_SOURCE_SHA256 = (
     "0cb60d5e43e29ac82e9a41534668c2237b7be78534fca789b4f37c4601862591"
 )
@@ -588,14 +589,75 @@ class Hooks:
         }
 
 
+class _TimedScopeProxy:
+    """Proxy the gate runner's scope so slotted production scopes stay untouched."""
+
+    __slots__ = ("_inner", "_timers")
+
+    def __init__(self, inner: Any, timers: PhaseTimers) -> None:
+        self._inner = inner
+        self._timers = timers
+
+    def __getattr__(self, name: str) -> Any:
+        original = getattr(self._inner, name)
+        if not callable(original):
+            return original
+        if name in ("commit", "rollback"):
+
+            def terminal(*args: Any, **kwargs: Any) -> Any:
+                started = time.perf_counter_ns()
+                try:
+                    result = original(*args, **kwargs)
+                except BaseException:
+                    self._timers._record(name, time.perf_counter_ns() - started)
+                    raise
+                if inspect.isawaitable(result):
+
+                    async def awaiting() -> Any:
+                        try:
+                            return await result
+                        finally:
+                            self._timers._record(name, time.perf_counter_ns() - started)
+
+                    return awaiting()
+                self._timers._record(name, time.perf_counter_ns() - started)
+                return result
+
+            return terminal
+        if name not in FAMILIES and name != "execute":
+            return original
+
+        def execute(*args: Any, **kwargs: Any) -> Any:
+            started = time.perf_counter_ns()
+            try:
+                result = original(*args, **kwargs)
+            except BaseException:
+                self._timers.execute_ns.append(time.perf_counter_ns() - started)
+                raise
+            if inspect.isawaitable(result):
+
+                async def awaiting() -> Any:
+                    try:
+                        return await result
+                    finally:
+                        self._timers.execute_ns.append(time.perf_counter_ns() - started)
+
+                return awaiting()
+            self._timers.execute_ns.append(time.perf_counter_ns() - started)
+            return result
+
+        return execute
+
+
 class PhaseTimers:
     """H3 -- three timers per operation (begin / each execute / commit) and nothing else.
 
-    Installed on the backend INSTANCE (never on classes, never on ``os``): ``graph_transaction.begin``
-    is replaced by a wrapper that times the begin and, on the scope it returns, times every
-    ``execute`` and the final ``commit``/``rollback``. No cProfile, no OS hooks. If the backend or
-    the scope refuses instance attributes the timers are reported as unavailable (with the reason)
-    and the pass still runs; the pass is published beside RAW, never in its place.
+    ``graph_transaction.begin`` is replaced on the backend instance. The returned production
+    scope is left untouched and carried through a harness-only proxy because the real capture
+    scope deliberately exposes read-only, slotted instances. Every dispatched family operation
+    and final ``commit``/``rollback`` is then timed. No cProfile and no OS hooks. If the begin
+    owner refuses replacement the timers are reported as unavailable (with the reason) and the
+    pass still runs; it is published beside RAW, never in its place.
     """
 
     def __init__(self) -> None:
@@ -632,8 +694,7 @@ class PhaseTimers:
                     scope = await scope
                 timers.begin_ns += time.perf_counter_ns() - started
                 timers.begins += 1
-                timers._wrap_scope(scope)
-                return scope
+                return _TimedScopeProxy(scope, timers)
 
             transaction.begin = begin
             self._restore.append((transaction, "begin", original_begin))
@@ -645,46 +706,6 @@ class PhaseTimers:
             self.commit_ns += nanos
         else:
             self.rollback_ns += nanos
-
-    def _wrap_scope(self, scope: Any) -> None:
-        timers = self
-        try:
-            original_execute = scope.execute
-
-            def execute(*args: Any, **kwargs: Any) -> Any:
-                started = time.perf_counter_ns()
-                try:
-                    return original_execute(*args, **kwargs)
-                finally:
-                    timers.execute_ns.append(time.perf_counter_ns() - started)
-
-            scope.execute = execute
-            for name in ("commit", "rollback"):
-                original = getattr(scope, name)
-
-                def timed(
-                    *args: Any,
-                    _original: Any = original,
-                    _name: str = name,
-                    **kwargs: Any,
-                ) -> Any:
-                    started = time.perf_counter_ns()
-                    result = _original(*args, **kwargs)
-                    if inspect.isawaitable(result):
-
-                        async def awaiting() -> Any:
-                            try:
-                                return await result
-                            finally:
-                                timers._record(_name, time.perf_counter_ns() - started)
-
-                        return awaiting()
-                    timers._record(_name, time.perf_counter_ns() - started)
-                    return result
-
-                setattr(scope, name, timed)
-        except Exception as failure:  # noqa: BLE001
-            self._unavailable(failure)
 
     def detach(self) -> None:
         for owner, attribute, original in reversed(self._restore):
@@ -722,7 +743,7 @@ def harness_revision() -> dict[str, Any]:
         ),
         "instrumented_comparability": (
             "instrumented and phases passes are comparable ONLY between reports with the same "
-            "harness_revision.sha256 (the hook set and the timers changed in h1-h8)"
+            "harness_revision.sha256 (the hook set and timers are revision-bound)"
         ),
     }
 
@@ -1442,7 +1463,7 @@ async def _run_family(
 
     Passes: RAW (instrumented=False, phases=False -- unchanged since the certified source),
     INSTRUMENTED (hooks installed before the open [H4] + cProfile cumulative and tottime [H1]) and
-    PHASES (three instance timers per op [H3]; no hooks, no cProfile).
+    PHASES (three transaction/scope timers per op [H3]; no hooks, no cProfile).
     """
     kind = "instr" if instrumented else ("phases" if phases else "raw")
     root_workspace = _relocated_copy(
@@ -1783,7 +1804,7 @@ async def _profile(
             "mode": mode,
             "raw": MODE_TEXT[mode],
             "instrumented": "same as raw plus hooks (installed before the open, H4) + cProfile cumulative and tottime (H1); attribution only; never compare its wall to raw",
-            "phases": "same as raw plus three instance timers per op (begin / each execute / commit, H3); no hooks, no cProfile; published beside raw, never in its place",
+            "phases": "same as raw plus three transaction/scope timers per op (begin / each execute / commit, H3); no hooks, no cProfile; published beside raw, never in its place",
             "definitive_baseline": "mode=continuous on an engine without the attach fence (A1 5002a77 or later); mode=reopen numbers are diagnostic",
             "hook_attribution": Hooks.ATTRIBUTION_NOTE,
             "hooks_excluded": list(Hooks.EXCLUDED_CONTEXT_MANAGERS),
@@ -1799,7 +1820,7 @@ async def _profile(
             "continuous approximates the gate's warm loop. INSTRUMENTED = attribution only; separate copies of "
             "the same fixture base",
             "the copied board is relocated under sha256(PROFILE_RUN_ID)[:24]; DatabaseIdentity carries no path",
-            "harness revision h1-h8: RAW pass logically unchanged since the certified source; instrumented/phases "
+            "harness revision h1-h8.1: RAW pass logically unchanged since the certified source; instrumented/phases "
             "output comparable only across the same harness_revision.sha256",
         ],
     }
@@ -1860,7 +1881,14 @@ async def _profile(
             phase_text = ""
             if run_phases:
                 ph = report["passes"]["phases"][family]
-                phase_text = f" begin={ph['begin_ms_median']:.1f}ms exec={ph['execute_total_ms_median']:.1f}ms/{ph['execute_count_median']:.0f} commit={ph['commit_ms_median']:.1f}ms"
+                if ph["timers_available"]:
+                    phase_text = f" begin={ph['begin_ms_median']:.1f}ms exec={ph['execute_total_ms_median']:.1f}ms/{ph['execute_count_median']:.0f} commit={ph['commit_ms_median']:.1f}ms"
+                else:
+                    phase_text = (
+                        " phases=UNAVAILABLE("
+                        + "; ".join(ph["timers_unavailable_reasons"])
+                        + ")"
+                    )
             print(
                 f"{backend_name:8} {family:40} raw={raw['wall_ms_median']:.1f}ms instr={ins['wall_ms_median']:.1f}ms "
                 f"pw={ins.get('page_writes_median')} idx={ins.get('page_writes_index_files_median')} "
