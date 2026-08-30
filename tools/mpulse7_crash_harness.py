@@ -832,6 +832,66 @@ async def _verify_all(bundle: _Bundle) -> None:
         _require(health.get("ok") is True, "crash_ladybug_verify_failed")
 
 
+async def _reopen_at_recovery_boundary(
+    config: Mapping[str, Any],
+    bundle: _Bundle,
+    *,
+    after_operations: int,
+    expected_trace_fingerprint: str,
+) -> _Bundle:
+    """Reproduce one frozen cold-recovery cycle while replaying a crash prefix."""
+
+    _require(type(after_operations) is int, "crash_recovery_boundary_invalid")
+    _require(
+        _is_sha256(expected_trace_fingerprint),
+        "crash_recovery_fingerprint_invalid",
+    )
+    expected_identity = _identity(bundle)
+    await _close_bundle(bundle)
+
+    reopened: _Bundle | None = None
+    try:
+        reopened = await _build_bundle(config, initialize_if_missing=False)
+        _require(
+            _collect_process_authority_sha256(
+                certification=bool(config["certification"])
+            )
+            == config["expected_execution_authority_sha256"],
+            "crash_recovery_boundary_execution_authority_mismatch",
+        )
+        recovery = await reopened.board.graph_recovery.recover_wal_only(
+            reopened.context.board_id
+        )
+        _require(
+            recovery.status in {"recovered", "skipped"}
+            and recovery.main_untouched is True,
+            "crash_recovery_boundary_wal_recovery_failed",
+        )
+        opened = await reopened.board.graph_lifecycle.open(reopened.context.board_id)
+        _require(
+            opened.opened is True,
+            "crash_recovery_boundary_post_recovery_reopen_failed",
+        )
+        await _verify_all(reopened)
+        _require(
+            _identity(reopened) == expected_identity,
+            "crash_recovery_boundary_storage_identity_changed",
+        )
+        observed = _observe(reopened)
+        _require(
+            observed["fingerprint_trace_model_sha256"] == expected_trace_fingerprint,
+            f"crash_recovery_boundary_{after_operations}_diverged",
+        )
+        return reopened
+    except BaseException:
+        if reopened is not None:
+            try:
+                await _close_bundle(reopened)
+            except Exception as cleanup:  # noqa: BLE001 - preserve primary failure
+                traceback.print_exception(cleanup, file=sys.stderr)
+        raise
+
+
 def _identity(bundle: _Bundle) -> tuple[str, str]:
     binding = bundle.board.binding_store.acquire_board_binding(bundle.context.board_id)
     storage_identity = _canonical_sha256(
@@ -1065,8 +1125,28 @@ async def _crash_worker(config: Mapping[str, Any], spec: CrashPointSpec) -> None
     # remain absent.  Preparing this container changes no graph state and keeps
     # the candidate path available for the coordinator's absence checks.
     rollout.candidate.physical_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoints = {
+        int(checkpoint["after_operations"]): checkpoint
+        for checkpoint in inputs.manifest["trace"]["checkpoints"]
+    }
+    recovery_boundaries = frozenset(
+        int(value)
+        for value in inputs.manifest["reopen_recovery_cycles"]["after_operations"]
+    )
     for operation in inputs.operations[: spec.after_operation]:
         await execute_operation(bundle, bundle.context, operation)
+        sequence = int(operation["sequence"])
+        if sequence not in recovery_boundaries:
+            continue
+        checkpoint = checkpoints.get(sequence)
+        _require(checkpoint is not None, "crash_recovery_checkpoint_missing")
+        bundle = await _reopen_at_recovery_boundary(
+            config,
+            bundle,
+            after_operations=sequence,
+            expected_trace_fingerprint=str(checkpoint["model_fingerprint_sha256"]),
+        )
+        coordinator = bundle.board.graph_rollout_coordinator
 
     observed = _observe(bundle)
     _write_json_atomic(

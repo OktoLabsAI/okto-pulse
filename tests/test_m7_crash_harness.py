@@ -227,6 +227,224 @@ def test_crash_worker_measures_authority_before_building_bundle(
     assert events == ["authority", "bundle"]
 
 
+def test_crash_worker_replays_frozen_cold_recovery_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import run_mpulse7_acceptance as acceptance_runner
+
+    authority = "c" * 64
+    spec = next(
+        candidate
+        for candidate in CRASH_POINT_SPECS
+        if candidate.id == "privacy-invalidation-before-copy-sweep"
+    )
+    events: list[object] = []
+
+    class Coordinator:
+        def start(self, board_id: str) -> SimpleNamespace:
+            events.append(("start", board_id))
+            return SimpleNamespace(
+                state="shadowing",
+                candidate=SimpleNamespace(
+                    physical_path=tmp_path / "candidate" / "graph"
+                ),
+            )
+
+    def bundle(name: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            name=name,
+            context=SimpleNamespace(board_id="board", run_id="run"),
+            board=SimpleNamespace(graph_rollout_coordinator=Coordinator()),
+        )
+
+    initial = bundle("initial")
+    after_2500 = bundle("after-2500")
+    after_5000 = bundle("after-5000")
+    after_7500 = bundle("after-7500")
+    reopened = iter((after_2500, after_5000, after_7500))
+    operations = tuple({"sequence": sequence} for sequence in range(1, 8207))
+    checkpoints = tuple(
+        {
+            "after_operations": sequence,
+            "model_fingerprint_sha256": character * 64,
+        }
+        for sequence, character in ((2500, "a"), (5000, "b"), (7500, "d"))
+    )
+
+    async def build(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return initial
+
+    async def execute(
+        current: SimpleNamespace,
+        _context: object,
+        operation: dict[str, int],
+    ) -> None:
+        if operation["sequence"] in {1, 2501, 5001, 7501, 8001}:
+            events.append(("execute", operation["sequence"], current.name))
+
+    async def recover(
+        _config: object,
+        current: SimpleNamespace,
+        *,
+        after_operations: int,
+        expected_trace_fingerprint: str,
+    ) -> SimpleNamespace:
+        next_bundle = next(reopened)
+        events.append(
+            (
+                "recover",
+                after_operations,
+                expected_trace_fingerprint,
+                current.name,
+                next_bundle.name,
+            )
+        )
+        return next_bundle
+
+    monkeypatch.setattr(
+        crash_harness,
+        "_collect_process_authority_sha256",
+        lambda *, certification: authority,
+    )
+    monkeypatch.setattr(crash_harness, "_build_bundle", build)
+    monkeypatch.setattr(crash_harness, "_reopen_at_recovery_boundary", recover)
+    monkeypatch.setattr(
+        crash_harness,
+        "_observe",
+        lambda current: events.append(("observe", current.name)) or {},
+    )
+    monkeypatch.setattr(crash_harness, "_write_json_atomic", lambda *_args: None)
+    monkeypatch.setattr(
+        crash_harness,
+        "_arm_and_crash",
+        lambda current, *_args: (_ for _ in ()).throw(_OrderingObserved(current.name)),
+    )
+    monkeypatch.setattr(
+        acceptance_runner,
+        "verify_frozen_inputs",
+        lambda _path: SimpleNamespace(
+            manifest={
+                "crash_points": {"points": [spec.manifest_point()]},
+                "reopen_recovery_cycles": {"after_operations": [2500, 5000, 7500]},
+                "trace": {"checkpoints": checkpoints},
+            },
+            operations=operations,
+        ),
+    )
+    monkeypatch.setattr(acceptance_runner, "_execute_operation", execute)
+    config = {
+        "certification": True,
+        "expected_execution_authority_sha256": authority,
+        "manifest_path": str(MANIFEST),
+        "pre_observation_path": str(tmp_path / "pre.json"),
+    }
+
+    with pytest.raises(_OrderingObserved, match="after-7500"):
+        asyncio.run(crash_harness._crash_worker(config, spec))
+
+    assert events == [
+        ("start", "board"),
+        ("execute", 1, "initial"),
+        ("recover", 2500, "a" * 64, "initial", "after-2500"),
+        ("execute", 2501, "after-2500"),
+        ("recover", 5000, "b" * 64, "after-2500", "after-5000"),
+        ("execute", 5001, "after-5000"),
+        ("recover", 7500, "d" * 64, "after-5000", "after-7500"),
+        ("execute", 7501, "after-7500"),
+        ("execute", 8001, "after-7500"),
+        ("observe", "after-7500"),
+    ]
+
+
+def test_recovery_boundary_closes_rebuilds_recovers_verifies_and_observes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority = "c" * 64
+    fingerprint = "a" * 64
+    events: list[str] = []
+
+    old = SimpleNamespace(context=SimpleNamespace(board_id="board"))
+    recovery = SimpleNamespace(status="recovered", main_untouched=True)
+
+    class Recovery:
+        async def recover_wal_only(self, board_id: str) -> object:
+            assert board_id == "board"
+            events.append("recover")
+            return recovery
+
+    class Lifecycle:
+        async def open(self, board_id: str) -> object:
+            assert board_id == "board"
+            events.append("open")
+            return SimpleNamespace(opened=True)
+
+    reopened = SimpleNamespace(
+        context=SimpleNamespace(board_id="board"),
+        board=SimpleNamespace(graph_recovery=Recovery(), graph_lifecycle=Lifecycle()),
+    )
+
+    async def close(current: object) -> None:
+        assert current is old
+        events.append("close")
+
+    async def build(*_args: object, **kwargs: object) -> object:
+        assert kwargs == {"initialize_if_missing": False}
+        events.append("build")
+        return reopened
+
+    async def verify(current: object) -> None:
+        assert current is reopened
+        events.append("verify")
+
+    def identity(current: object) -> tuple[str, str]:
+        events.append("identity-old" if current is old else "identity-new")
+        return ("storage", "generation")
+
+    monkeypatch.setattr(crash_harness, "_close_bundle", close)
+    monkeypatch.setattr(crash_harness, "_build_bundle", build)
+    monkeypatch.setattr(crash_harness, "_verify_all", verify)
+    monkeypatch.setattr(crash_harness, "_identity", identity)
+    monkeypatch.setattr(
+        crash_harness,
+        "_observe",
+        lambda current: (
+            events.append("observe") or {"fingerprint_trace_model_sha256": fingerprint}
+        ),
+    )
+    monkeypatch.setattr(
+        crash_harness,
+        "_collect_process_authority_sha256",
+        lambda *, certification: events.append("authority") or authority,
+    )
+    config = {
+        "certification": True,
+        "expected_execution_authority_sha256": authority,
+    }
+
+    result = asyncio.run(
+        crash_harness._reopen_at_recovery_boundary(
+            config,
+            old,
+            after_operations=2500,
+            expected_trace_fingerprint=fingerprint,
+        )
+    )
+
+    assert result is reopened
+    assert events == [
+        "identity-old",
+        "close",
+        "build",
+        "authority",
+        "recover",
+        "open",
+        "verify",
+        "identity-new",
+        "observe",
+    ]
+
+
 def test_recovery_worker_measures_authority_before_building_bundle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
