@@ -45,18 +45,22 @@ from contextvars import copy_context
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import pytest
-
 import ladybug
+import pytest
+from okto_pulse.core.infra.config import configure_settings, get_settings
+from okto_pulse.core.kg.interfaces.graph_errors import GraphLockContention
+from okto_pulse.core.kg.logical_transfer import LogicalSchemaError
+from repo_layout import resolve_core_repo
+
 from okto_pulse.community import serve_lock
 from okto_pulse.community.adapters import kg_runtime
 from okto_pulse.community.adapters.graph_memory_pressure import (
     GraphMemoryPressure,
 )
-from okto_pulse.core.kg.interfaces.graph_errors import GraphLockContention
+from okto_pulse.community.adapters.graph_rollout_comparison import (
+    open_fixed_ladybug_board_snapshots,
+)
 from okto_pulse.community.config import CommunitySettings
-from okto_pulse.core.infra.config import configure_settings, get_settings
-from repo_layout import resolve_core_repo
 
 KG_LOGGER = "okto_pulse.kg.schema"
 
@@ -191,6 +195,45 @@ def test_board_storage_mutation_window_drains_or_fails_closed(kg_env):
     ):
         assert writer_lease_is_active() is True
         assert kg_runtime._get_close_guard(board_id).readers == 0
+
+
+def test_fixed_rollout_capture_warms_database_reopened_by_mutation_window(
+    kg_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    board_id = "kgd01-fixed-rollout-cold-vector"
+    kg_runtime.bootstrap_board_graph(board_id)
+
+    # Prove that cache eviction makes the extension load material: removing
+    # the warm step must leave the physical vector-index metric unprovable.
+    with monkeypatch.context() as isolated:
+        isolated.setattr(
+            kg_runtime,
+            "load_vector_extension",
+            lambda _connection, *, install=False: None,
+        )
+        with pytest.raises(
+            LogicalSchemaError,
+            match="the vector extension is not loaded on this handle",
+        ):
+            with kg_runtime.board_storage_mutation_window(
+                board_id,
+                phase="test_fixed_rollout_cold_negative",
+            ):
+                open_fixed_ladybug_board_snapshots(board_id)
+
+    with kg_runtime.board_storage_mutation_window(
+        board_id,
+        phase="test_fixed_rollout_cold_positive",
+    ):
+        snapshots = open_fixed_ladybug_board_snapshots(board_id)
+
+    try:
+        transfer = snapshots.transfer_source.open_snapshot()
+        assert transfer.counts() == snapshots.comparison_snapshot.counts()
+    finally:
+        snapshots.close()
+    assert snapshots.pin_released is True
 
 
 def test_board_graph_operation_window_pins_and_releases_on_failure(kg_env):

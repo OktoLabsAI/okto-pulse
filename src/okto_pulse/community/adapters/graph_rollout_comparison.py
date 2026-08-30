@@ -317,6 +317,7 @@ def open_fixed_ladybug_board_snapshots(
 
     if type(board_id) is not str or not board_id:
         raise ValueError("fixed_board_snapshot_board_id_invalid")
+    uses_runtime_raw_connection = raw_connection_factory is None
     raw_factory = raw_connection_factory or kg_runtime.registered_raw_connection
     source_factory = logical_source_factory or make_ladybug_logical_source
     retain = pin_factory or kg_runtime.pin_board_graph_operation_from_mutation_window
@@ -328,6 +329,14 @@ def open_fixed_ladybug_board_snapshots(
     try:
         with raw_factory(board_id, within_close_window=True) as opened:
             database, _connection = opened
+            if uses_runtime_raw_connection:
+                # The mutation window already owns the re-entrant Ladybug
+                # writer fence.  Its cache eviction can leave this newly
+                # opened Database cold, so LOAD VECTOR on the owner connection
+                # before opening either logical snapshot.  Without this step,
+                # SHOW_INDEXES cannot prove vector metrics and the schema gate
+                # correctly refuses the capture.
+                kg_runtime.load_vector_extension(_connection, install=False)
             # Retain before the first native snapshot exists.  If any later
             # open or close becomes uncertain, the shared Database remains
             # protected instead of leaving the exclusive window unpinned.

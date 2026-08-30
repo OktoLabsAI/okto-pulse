@@ -23,6 +23,8 @@ from okto_pulse.core.kg.logical_transfer import (
 from okto_pulse.core.kg.logical_transfer.model import COUNT_FIELDS
 from okto_pulse.core.kg.schema_contract import NODE_TYPES
 
+from okto_pulse.community.adapters import graph_rollout_comparison as rollout_comparison
+from okto_pulse.community.adapters import kg_runtime
 from okto_pulse.community.adapters.graph_rollout_comparison import (
     BOARD_RESULT_CORPUS_SHA256,
     BOARD_RESULT_QUERY_COUNT,
@@ -455,6 +457,69 @@ def test_capture_opens_both_views_and_retains_pin_before_raw_owner_exits() -> No
         "raw:exit",
     ]
     assert lease.pin_released is False
+    lease.close()
+    assert lease.pin_released is True
+
+
+def test_default_capture_warms_cold_database_before_opening_snapshots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    database = object()
+    connection = object()
+    transfer = _Snapshot("transfer", events=events)
+    comparison = _Snapshot("comparison", events=events)
+    snapshots = iter((transfer, comparison))
+    pin = _Pin(events)
+
+    @contextmanager
+    def raw(board_id: str, *, within_close_window: bool):
+        assert board_id == "board-cold"
+        assert within_close_window is True
+        events.append("raw:enter")
+        try:
+            yield database, connection
+        finally:
+            events.append("raw:exit")
+
+    def load_vector(opened: object, *, install: bool) -> None:
+        assert opened is connection
+        assert install is False
+        events.append("vector:load")
+
+    def source(opened: object, *, scope: str) -> _Source:
+        assert opened is database
+        assert scope == "board"
+        return _Source(next(snapshots), events=events)
+
+    def retain(board_id: str) -> _Pin:
+        assert board_id == "board-cold"
+        events.append("pin:retain")
+        return pin
+
+    monkeypatch.setattr(kg_runtime, "registered_raw_connection", raw)
+    monkeypatch.setattr(kg_runtime, "load_vector_extension", load_vector)
+    monkeypatch.setattr(
+        rollout_comparison,
+        "make_ladybug_logical_source",
+        source,
+    )
+    monkeypatch.setattr(
+        kg_runtime,
+        "pin_board_graph_operation_from_mutation_window",
+        retain,
+    )
+
+    lease = open_fixed_ladybug_board_snapshots("board-cold")
+
+    assert events == [
+        "raw:enter",
+        "vector:load",
+        "pin:retain",
+        "open:transfer",
+        "open:comparison",
+        "raw:exit",
+    ]
     lease.close()
     assert lease.pin_released is True
 
