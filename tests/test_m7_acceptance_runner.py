@@ -656,6 +656,15 @@ print(json.dumps({{
             },
         )
 
+    with pytest.raises(GateFailure, match="okto_grafx HEAD differs"):
+        _require_dependency_revision_authority(
+            process_authority,
+            {
+                **inputs.manifest["scope"]["source_revisions"],
+                "okto_grafx_corpus": "f" * 40,
+            },
+        )
+
 
 def test_dependency_authority_rejects_core_preloaded_before_runner() -> None:
     code = f"""
