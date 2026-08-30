@@ -332,6 +332,31 @@ def _contains_non_finite_number(value: Any) -> bool:
     return False
 
 
+_CATALOG_CHANGING_STATEMENT = re.compile(r"\b(?:ALTER|DROP|CALL|INSTALL|LOAD)\b")
+"""Grammar that can change the catalog outright: DDL verbs, procedures and extensions."""
+
+_NON_ROW_CREATE = re.compile(r"\b(?:CREATE|MERGE)\b(?!\s*\()")
+"""A CREATE/MERGE that is not the row form ``CREATE (``: tables, spaces, indexes, sequences
+and anything not yet known all look like this, and every one of them drops the snapshot."""
+
+_LEADING_STATEMENT_TOKEN = re.compile(r"^\s*(?:EXPLAIN\s+|PROFILE\s+)?([A-Z_]+)")
+_CATALOG_NEUTRAL_LEADING_TOKENS = frozenset(
+    {
+        "MATCH",
+        "OPTIONAL",
+        "CREATE",
+        "MERGE",
+        "UNWIND",
+        "WITH",
+        "RETURN",
+        "DELETE",
+        "SET",
+        "REMOVE",
+    }
+)
+"""Leading tokens of row-level statements; any other leading token is treated as catalog-changing."""
+
+
 class _GrafxTransactionScope:
     """One staged, fenced Grafx write transaction for a Pulse board."""
 
@@ -355,6 +380,19 @@ class _GrafxTransactionScope:
         self._relationship_pairs = relationship_pairs
         self._relationship_table_resolver = relationship_table_resolver
         self._on_terminal = on_terminal
+        # One public catalog snapshot per scope.  ``Database.catalog`` builds a complete,
+        # linearized copy of the catalog on every access and its ``CatalogView`` answers
+        # ``table()``/``space()`` by linear scan; a single Pulse operation used to pay that
+        # once per resolved node type, relationship pair and vector column (94 snapshots
+        # and 5.6 s of one 12-family sample on the M-PULSE-7 board).  The snapshot is
+        # captured on first use, indexed by name, and dropped the moment THIS scope emits a
+        # statement that can change the catalog (see ``_statement_changes_catalog``).  It is
+        # never shared across scopes: a new scope always starts from the live catalog.
+        self._catalog_view: Any | None = None
+        self._catalog_tables: dict[str, Any] = {}
+        self._catalog_spaces: dict[str, Any] = {}
+        self._relationship_definitions: dict[tuple[str, str, str], tuple[str, Any]] = {}
+        self._column_maps: dict[str, dict[str, Any]] = {}
         self._settled = False
         # Set when a release failed after a durable commit, so the fault is
         # findable without pretending the commit did not happen.
@@ -548,13 +586,80 @@ class _GrafxTransactionScope:
             translated = f"{translated[:start]}{physical}{translated[end:]}"
         return translated
 
+    def _catalog(self) -> Any:
+        """Return this scope's catalog snapshot, captured from the public API once.
+
+        Only ``Database.catalog`` is consulted -- the same public view the adapter always
+        read -- so the AF21 reach-in ledger does not move.  The view is an immutable
+        snapshot; what makes it safe to keep for the life of one scope is that the only
+        way this scope can change the catalog is a statement through ``execute``, and that
+        path drops the snapshot before running anything that could.
+        """
+
+        if self._catalog_view is None:
+            try:
+                view = self._database.catalog.catalog
+            except Exception as exc:
+                mapped = map_grafx_error(exc, operation="catalog_snapshot")
+                raise mapped from exc
+            self._catalog_view = view
+            self._catalog_tables = {table.name: table for table in view.tables()}
+            self._catalog_spaces = {space.name: space for space in view.spaces()}
+        return self._catalog_view
+
+    def _forget_catalog(self) -> None:
+        """Drop every catalog-derived memo; the next resolution re-reads the public view."""
+
+        self._catalog_view = None
+        self._catalog_tables = {}
+        self._catalog_spaces = {}
+        self._relationship_definitions = {}
+        self._column_maps = {}
+
+    def _catalog_table(self, name: str, *, operation: str) -> Any:
+        """Look a table up in the scope's snapshot, failing exactly as the view would."""
+
+        view = self._catalog()
+        definition = self._catalog_tables.get(name)
+        if definition is not None:
+            return definition
+        try:
+            return view.table(name)
+        except Exception as exc:
+            mapped = map_grafx_error(exc, operation=operation)
+            raise mapped from exc
+
+    def _catalog_space(self, name: str) -> Any:
+        view = self._catalog()
+        space = self._catalog_spaces.get(name)
+        if space is not None:
+            return space
+        return view.space(name)
+
+    @staticmethod
+    def _statement_changes_catalog(statement: str) -> bool:
+        """Say whether a statement may change the catalog, failing towards ``True``.
+
+        Row-level statements (``MATCH``/``SET``/``DELETE`` over nodes and relationships,
+        and ``CREATE``/``MERGE`` only in their row form ``CREATE (``, wherever they occur)
+        cannot change the catalog.  Everything else can and drops the snapshot: ``ALTER``,
+        ``DROP``, ``CALL``, ``INSTALL``, ``LOAD``, any ``CREATE``/``MERGE`` that is not
+        immediately followed by ``(`` (tables, spaces, indexes, sequences, forms not known
+        yet) and any statement whose leading token this scanner does not know.  Literals
+        and comments are blanked first, so DDL-looking text inside a string never counts;
+        a statement the engine refuses as malformed cannot change the catalog either way.
+        """
+
+        normalized = strip_comments_and_literals(statement)
+        upper = normalized.upper()
+        if _CATALOG_CHANGING_STATEMENT.search(upper) or _NON_ROW_CREATE.search(upper):
+            return True
+        first = _LEADING_STATEMENT_TOKEN.match(upper)
+        return first is None or first.group(1) not in _CATALOG_NEUTRAL_LEADING_TOKENS
+
     def _node_definition(self, node_type: str):
         name = _identifier("node type", node_type)
-        try:
-            definition = self._database.catalog.catalog.table(name)
-        except Exception as exc:
-            mapped = map_grafx_error(exc, operation="node_schema")
-            raise mapped from exc
+        definition = self._catalog_table(name, operation="node_schema")
         if definition.kind != "node":
             raise GraphCapabilityUnavailable(
                 f"Grafx table {name!r} is not a node table.",
@@ -571,15 +676,15 @@ class _GrafxTransactionScope:
         logical = _identifier("relationship type", edge_type)
         source = _identifier("source node type", from_type)
         target = _identifier("target node type", to_type)
+        key = (logical, source, target)
+        memo = self._relationship_definitions.get(key)
+        if memo is not None:
+            return memo
         physical = _identifier(
             "relationship table",
             self._relationship_table_resolver(logical, source, target),
         )
-        try:
-            definition = self._database.catalog.catalog.table(physical)
-        except Exception as exc:
-            mapped = map_grafx_error(exc, operation="relationship_schema")
-            raise mapped from exc
+        definition = self._catalog_table(physical, operation="relationship_schema")
         if (
             definition.kind != "rel"
             or definition.from_table != source
@@ -596,11 +701,15 @@ class _GrafxTransactionScope:
                     "to_type": target,
                 },
             )
+        self._relationship_definitions[key] = (physical, definition)
         return physical, definition
 
-    @staticmethod
-    def _column_map(definition: Any) -> dict[str, Any]:
-        return {column.name: column for column in definition.columns}
+    def _column_map(self, definition: Any) -> dict[str, Any]:
+        columns = self._column_maps.get(definition.name)
+        if columns is None:
+            columns = {column.name: column for column in definition.columns}
+            self._column_maps[definition.name] = columns
+        return columns
 
     def _coerce_value(self, column: Any, value: Any) -> Any:
         if value is None:
@@ -616,7 +725,7 @@ class _GrafxTransactionScope:
                 raise ValueError(
                     f"vector property {column.name!r} requires a numeric sequence"
                 )
-            space = self._database.catalog.catalog.space(str(column.vector_space))
+            space = self._catalog_space(str(column.vector_space))
             components = tuple(float(item) for item in value)
             if len(components) != space.dimension:
                 raise ValueError(
@@ -687,6 +796,10 @@ class _GrafxTransactionScope:
         self._require_active()
         if statement_is_write(statement):
             self._fence("graph_statement_precommit")
+            if self._statement_changes_catalog(statement):
+                # Dropped BEFORE the statement runs, so the outcome cannot matter: whether
+                # the DDL lands or fails, the next resolution reads the live catalog.
+                self._forget_catalog()
         try:
             prepared_params = _grafx_query_parameters(params)
             translated = self._translate_typed_logical_relationships(statement)
@@ -864,7 +977,7 @@ class _GrafxTransactionScope:
     ) -> tuple[tuple[str, str, str, Any], ...]:
         wanted = _identifier("node type", node_type)
         try:
-            definitions = self._database.catalog.catalog.tables()
+            definitions = self._catalog().tables()
         except Exception as exc:
             mapped = map_grafx_error(exc, operation="snapshot_incident_schema")
             raise mapped from exc
