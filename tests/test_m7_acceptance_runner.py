@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -58,7 +59,16 @@ from run_mpulse7_acceptance import (
 )
 
 MANIFEST = ROOT / "tests" / "fixtures" / "m_pulse_7_acceptance_gate_v1.json"
-CORPUS = ROOT.parent / "okto_grafx" / "tests" / "corpus" / "pulse_query_corpus_1_0.json"
+
+
+def _corpus_path_from_environment(environment: Mapping[str, str]) -> Path:
+    grafx_repo = Path(
+        environment.get("OKTO_E2E_GRAFX_REPO", str(ROOT.parent / "okto_grafx"))
+    ).resolve()
+    return grafx_repo / "tests" / "corpus" / "pulse_query_corpus_1_0.json"
+
+
+CORPUS = _corpus_path_from_environment(os.environ)
 FINAL_FINGERPRINT = "e6b7f3abafdff55f8e4167d012083eddf2106f6ec9de7347bccd5d7e41097344"
 OPERATIONS = expand_trace(load_gate_manifest(MANIFEST))
 
@@ -468,6 +478,18 @@ def _noop_factory(context: GateBackendContext) -> _NoOpBackend:
     state = _NOOP_STATES.setdefault(context.backend, _FakeState())
     state.factory_calls += 1
     return _NoOpBackend(context, state)
+
+
+def test_corpus_fixture_prefers_explicit_grafx_repo_and_retains_fallback() -> None:
+    relative = Path("tests/corpus/pulse_query_corpus_1_0.json")
+    assert _corpus_path_from_environment({}) == (
+        ROOT.parent / "okto_grafx" / relative
+    ).resolve()
+
+    explicit = ROOT.parent / "exact-grafx-checkout"
+    assert _corpus_path_from_environment(
+        {"OKTO_E2E_GRAFX_REPO": str(explicit)}
+    ) == (explicit / relative).resolve()
 
 
 def test_frozen_inputs_authenticate_exact_gate_and_corpus() -> None:
