@@ -57,6 +57,7 @@ class _FakeGrafxDatabase:
     def __init__(self, path: Path, page_size: int) -> None:
         self.path = str(path)
         self.identity = SimpleNamespace(page_size=page_size)
+        self.catalog = object()
         self.closed = False
         self.close_calls = 0
         self.begin_modes: list[str] = []
@@ -970,6 +971,7 @@ async def test_routed_grafx_open_validates_without_schema_initialization(
     bundle = _build(tmp_path / "kg", connector)
     bundle.initialize_board_route("board-open")
     validations: list[str] = []
+    catalogs: list[object] = []
 
     async def creating_open_must_not_run(*_args: Any, **_kwargs: Any):
         raise AssertionError("schema-initializing Grafx lifecycle open")
@@ -982,18 +984,25 @@ async def test_routed_grafx_open_validates_without_schema_initialization(
     monkeypatch.setattr(
         composition,
         "validate_current_grafx_schema",
-        lambda _database: validations.append("schema") or "fingerprint",
+        lambda _database, *, catalog=None: (
+            catalogs.append(catalog)
+            or validations.append("schema")
+            or "fingerprint"
+        ),
     )
     monkeypatch.setattr(
         composition,
         "read_current_grafx_schema_version",
-        lambda _database: validations.append("board-meta") or "1",
+        lambda _database, *, catalog=None: (
+            catalogs.append(catalog) or validations.append("board-meta") or "1"
+        ),
     )
 
     handle = await bundle.graph_lifecycle.open("board-open")
 
     assert handle.opened is True
     assert validations == ["schema", "board-meta"]
+    assert catalogs == [connector.databases[0].catalog] * 2
 
 
 @pytest.mark.asyncio

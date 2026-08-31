@@ -182,8 +182,9 @@ class CommunityGrafxGraphSchemaManager:
         current: str | None = None
         try:
             database = self._database(board_id)
-            current = read_current_grafx_schema_version(database)
-            validate_current_grafx_schema(database)
+            catalog = database.catalog
+            current = read_current_grafx_schema_version(database, catalog=catalog)
+            validate_current_grafx_schema(database, catalog=catalog)
             if current != expected:
                 return SchemaValidationResult(
                     board_id=board_id,

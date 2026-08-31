@@ -1236,8 +1236,9 @@ def build_community_routed_board_graph_composition(
     async def grafx_open(snapshot: CommunityGraphRouteSnapshot) -> GraphHandle:
         resolver.require_exact_session_snapshot(snapshot, require_physical=True)
         database = access.database(snapshot.scope_id)
-        validate_current_grafx_schema(database)
-        if not read_current_grafx_schema_version(database):
+        catalog = database.catalog
+        validate_current_grafx_schema(database, catalog=catalog)
+        if not read_current_grafx_schema_version(database, catalog=catalog):
             raise GraphCorruption(
                 "The routed Grafx Board graph has no BoardMeta schema version.",
                 details={

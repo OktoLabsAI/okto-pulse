@@ -442,6 +442,12 @@ class CommunityGraphBackendBindingStore:
         safe_board_id = self._validated_segment(board_id, field_name="board_id")
         return self._root / "boards" / safe_board_id / "graph.lbug"
 
+    def board_binding_path(self, board_id: str) -> Path:
+        """Return the canonical persisted binding document for one Board."""
+
+        safe_board_id = self._validated_segment(board_id, field_name="board_id")
+        return self._board_binding_path(safe_board_id)
+
     def board_grafx_path(self, board_id: str, generation: str) -> Path:
         safe_board_id = self._validated_segment(board_id, field_name="board_id")
         safe_generation = self._validated_segment(generation, field_name="generation")

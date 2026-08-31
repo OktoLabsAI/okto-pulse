@@ -54,6 +54,7 @@ from okto_pulse.core.kg.safe_write_lifecycle import (
 class _Database:
     def __init__(self, page_size: int = 8192) -> None:
         self.identity = SimpleNamespace(page_size=page_size)
+        self.catalog = object()
         self.closed = False
         self.events: list[str] = []
 
@@ -222,12 +223,12 @@ async def test_schema_manager_covers_bootstrap_version_and_validation(
     monkeypatch.setattr(
         schema_module,
         "read_current_grafx_schema_version",
-        lambda _database: target,
+        lambda _database, *, catalog=None: target,
     )
     monkeypatch.setattr(
         schema_module,
         "validate_current_grafx_schema",
-        lambda _database: "fingerprint",
+        lambda _database, *, catalog=None: "fingerprint",
     )
     manager = CommunityGrafxGraphSchemaManager(
         resolve,

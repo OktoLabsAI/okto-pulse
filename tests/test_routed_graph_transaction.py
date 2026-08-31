@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Self
@@ -86,6 +88,10 @@ class _ResolverProbe:
         self.acquire_calls += 1
         self.events.append("route_acquire")
         return self.snapshot
+
+    def board_binding_path(self, board_id: str) -> Path:
+        assert board_id == BOARD_ID
+        return self.snapshot.binding_path
 
     def admit_grafx_route(
         self,
@@ -291,14 +297,16 @@ def _assembly(
 ]:
     events: list[str] = []
     window = _WindowProbe(events)
-    resolver = _ResolverProbe(
-        _snapshot(
-            tmp_path,
-            backend=backend,
-            page_size=PAGE_SIZE if backend == "grafx" else None,
-        ),
-        events,
+    snapshot = _snapshot(
+        tmp_path,
+        backend=backend,
+        page_size=PAGE_SIZE if backend == "grafx" else None,
     )
+    if backend == "grafx":
+        snapshot.binding_path.parent.mkdir(parents=True, exist_ok=True)
+        snapshot.binding_path.write_text("binding-v1", encoding="utf-8")
+        snapshot.active_path.mkdir(parents=True, exist_ok=True)
+    resolver = _ResolverProbe(snapshot, events)
     ladybug_scope = _LadybugScope(events)
     ladybug = _LadybugProvider(events, ladybug_scope)
     transaction = _EngineTransaction(events)
@@ -411,9 +419,8 @@ async def test_grafx_capture_confirms_only_after_durable_engine_commit(
     scope = await facade.begin(BOARD_ID)
     scope.execute("CREATE (n {id: $id})", {"id": "node-1"})
 
-    assert routed_events[-3:] == [
+    assert routed_events[-2:] == [
         "capture_prepare:grafx",
-        "route_revalidate:2",
         "engine_execute",
     ]
     assert recorder.prepared[0]["binding_sha256"] == resolver.snapshot.binding_sha256
@@ -423,7 +430,7 @@ async def test_grafx_capture_confirms_only_after_durable_engine_commit(
 
     assert transaction.report is not None
     assert routed_events[-5:] == [
-        "route_revalidate:3",
+        "route_revalidate:2",
         "engine_commit",
         "pool_release",
         "window_exit",
@@ -635,25 +642,74 @@ async def test_grafx_order_is_window_route_pin_admit_begin_engine_pin_window(
     ]
 
     scope.execute("CREATE (n:Entity {id: $id})", {"id": "node-1"})
-    assert resolver.revalidate_require_physical == [True, True]
-    assert events[-3:] == [
+    assert resolver.revalidate_require_physical == [True]
+    assert events[-2:] == [
         "writer_fence:graph_statement_precommit",
-        "route_revalidate:2",
         "engine_execute",
     ]
 
     await scope.commit()
 
-    assert resolver.revalidate_require_physical == [True, True, True]
+    assert resolver.revalidate_require_physical == [True, True]
     assert events[-5:] == [
         "writer_fence:commit",
-        "route_revalidate:3",
+        "route_revalidate:2",
         "engine_commit",
         "pool_release",
         "window_exit",
     ]
     assert lease.release_calls == 1
     assert window.exits == 1
+
+
+@pytest.mark.asyncio
+async def test_grafx_fast_fence_falls_back_and_refuses_cross_process_binding_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, events, window, resolver, _ladybug, transaction, _database, lease, _pool = (
+        _assembly(tmp_path, backend="grafx")
+    )
+    monkeypatch.setattr(
+        routed,
+        "revalidate_board_graph_write_lease",
+        lambda _board, *, failure_phase: events.append(f"writer_fence:{failure_phase}"),
+    )
+    scope = await facade.begin(BOARD_ID)
+    scope.execute("CREATE (n:Entity {id: $id})", {"id": "node-1"})
+    assert resolver.revalidate_calls == 1
+
+    replacement = resolver.snapshot.binding_path.with_suffix(".replacement")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os, pathlib, sys; "
+                "target=pathlib.Path(sys.argv[1]); "
+                "replacement=pathlib.Path(sys.argv[2]); "
+                "replacement.write_text('binding-v2', encoding='utf-8'); "
+                "os.replace(replacement, target)"
+            ),
+            str(resolver.snapshot.binding_path),
+            str(replacement),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    resolver.revalidate_error_at = 2
+
+    with pytest.raises(GraphCorruption, match="injected route cutover"):
+        scope.execute("CREATE (n:Entity {id: $id})", {"id": "node-2"})
+
+    assert resolver.revalidate_calls == 2
+    assert transaction.active
+    assert not lease.released
+    assert window.active
+    resolver.revalidate_error_at = None
+    await scope.rollback()
 
     await scope.commit()
     await scope.rollback()

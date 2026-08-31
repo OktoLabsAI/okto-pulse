@@ -202,12 +202,14 @@ def _validate_space(
 def _catalog_preflight(
     database: Database,
     *,
+    catalog: object | None = None,
     manifest: GrafxSchemaManifest = PULSE_GRAFX_SCHEMA_MANIFEST,
     operation: str = _OPERATION,
 ) -> _CatalogPreflight:
-    catalog = database.catalog.catalog
-    observed_tables = tuple(catalog.tables())
-    observed_spaces = tuple(catalog.spaces())
+    snapshot = database.catalog if catalog is None else catalog
+    logical_catalog = snapshot.catalog
+    observed_tables = tuple(logical_catalog.tables())
+    observed_spaces = tuple(logical_catalog.spaces())
     tables_by_name = {table.name: table for table in observed_tables}
     spaces_by_name = {space.name: space for space in observed_spaces}
 
@@ -434,11 +436,19 @@ def _stamp_board_meta(
     )
 
 
-def read_current_grafx_schema_version(database: Database) -> str | None:
+def read_current_grafx_schema_version(
+    database: Database,
+    *,
+    catalog: object | None = None,
+) -> str | None:
     """Return the persisted BoardMeta version without mutating the catalog."""
 
     try:
-        preflight = _catalog_preflight(database, operation=_VALIDATE_OPERATION)
+        preflight = _catalog_preflight(
+            database,
+            catalog=catalog,
+            operation=_VALIDATE_OPERATION,
+        )
         table_exists = all(
             table.name != "BoardMeta" for table in preflight.missing_tables
         )
@@ -451,11 +461,19 @@ def read_current_grafx_schema_version(database: Database) -> str | None:
         raise mapped from exc
 
 
-def validate_current_grafx_schema(database: Database) -> str:
+def validate_current_grafx_schema(
+    database: Database,
+    *,
+    catalog: object | None = None,
+) -> str:
     """Validate the complete logical schema and return its stable fingerprint."""
 
     try:
-        preflight = _catalog_preflight(database, operation=_VALIDATE_OPERATION)
+        preflight = _catalog_preflight(
+            database,
+            catalog=catalog,
+            operation=_VALIDATE_OPERATION,
+        )
         if not preflight.complete:
             raise _divergence(
                 "schema_incomplete",
@@ -479,6 +497,7 @@ def ensure_current_grafx_board_schema(
     embedding_model: str | None = None,
     embedding_dimension: int | None = None,
     revalidate_fence: BootstrapFence | None = None,
+    catalog: object | None = None,
 ) -> GrafxSchemaBootstrapResult:
     """Ensure exactly the current schema and BoardMeta singleton, or fail closed."""
 
@@ -492,7 +511,8 @@ def ensure_current_grafx_board_schema(
     )
     changed = False
     try:
-        preflight = _catalog_preflight(database)
+        catalog_snapshot = database.catalog if catalog is None else catalog
+        preflight = _catalog_preflight(database, catalog=catalog_snapshot)
         board_meta_exists = all(
             table.name != "BoardMeta" for table in preflight.missing_tables
         )
@@ -524,8 +544,13 @@ def ensure_current_grafx_board_schema(
 
         # This is intentionally a fresh public snapshot after schema commit.  BoardMeta is not
         # stamped until the committed catalog has proved the complete current shape.
-        fingerprint = validate_current_grafx_schema(database)
-        observed_meta = _read_board_meta(database, table_exists=True)
+        validation_catalog = None if changed else catalog_snapshot
+        fingerprint = validate_current_grafx_schema(
+            database,
+            catalog=validation_catalog,
+        )
+        if changed:
+            observed_meta = _read_board_meta(database, table_exists=True)
         if observed_meta is None:
             _stamp_board_meta(
                 database,
@@ -556,7 +581,11 @@ def ensure_current_grafx_board_schema(
                 )
                 changed = True
 
-        final_meta = _read_board_meta(database, table_exists=True)
+        final_meta = (
+            _read_board_meta(database, table_exists=True)
+            if changed
+            else observed_meta
+        )
         if final_meta is None:
             raise _divergence("board_meta_missing_after_bootstrap")
         if _validate_board_meta(

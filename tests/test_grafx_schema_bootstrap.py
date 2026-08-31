@@ -158,13 +158,25 @@ class _BeginCountingDatabase:
     def __init__(self, database) -> None:
         self._database = database
         self.begin_calls = 0
+        self.catalog_reads = 0
+        self.board_meta_reads = 0
 
     def __getattr__(self, name: str):
         return getattr(self._database, name)
 
+    @property
+    def catalog(self):
+        self.catalog_reads += 1
+        return self._database.catalog
+
     def begin(self, mode: str):
         self.begin_calls += 1
         return self._database.begin(mode)
+
+    def execute(self, statement: str, parameters=None):
+        if statement.startswith("MATCH (m:BoardMeta)"):
+            self.board_meta_reads += 1
+        return self._database.execute(statement, parameters)
 
 
 def test_manifest_is_the_closed_current_pulse_authority() -> None:
@@ -291,6 +303,8 @@ def test_empty_bootstrap_is_exact_second_call_is_noop_and_reopen_is_stable(
         assert second.changed is False
         assert second.logical_fingerprint == first.logical_fingerprint
         assert counted.begin_calls == 0
+        assert counted.catalog_reads == 1
+        assert counted.board_meta_reads == 1
         assert database.catalog.catalog == catalog_before
         assert database.transactions == transactions_before
         assert database.wal == wal_before

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol, Self
 
 from okto_pulse.core.kg.interfaces.graph_errors import GraphCorruption
@@ -40,6 +42,47 @@ from okto_pulse.community.adapters.graph_route_resolver import (
 from okto_pulse.community.adapters.kg_runtime import board_graph_operation_window
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _PathIdentity:
+    """Cheap identity of a path whose replacement invalidates a routed scope."""
+
+    inode: int
+    size: int
+    mtime_ns: int
+    file_attributes: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _RouteFenceProbe:
+    binding: _PathIdentity
+    physical: _PathIdentity
+
+
+def _path_identity(path: Path) -> _PathIdentity:
+    observed = path.lstat()
+    return _PathIdentity(
+        inode=observed.st_ino,
+        size=observed.st_size,
+        mtime_ns=observed.st_mtime_ns,
+        file_attributes=getattr(observed, "st_file_attributes", None),
+    )
+
+
+def _capture_route_fence_probe(
+    binding_path: Path,
+    physical_path: Path,
+) -> _RouteFenceProbe | None:
+    """Capture both route identities, disabling the fast path on any OS refusal."""
+
+    try:
+        return _RouteFenceProbe(
+            binding=_path_identity(binding_path),
+            physical=_path_identity(physical_path),
+        )
+    except OSError:
+        return None
 
 
 class BoardGraphOperationWindowFactory(Protocol):
@@ -301,8 +344,11 @@ class CommunityRoutedGraphTransaction:
                 operation="begin_routed_graph_transaction",
             )
             terminal = _GrafxTerminalResources(lease, window)
+            binding_path = self._resolver.board_binding_path(board_id)
+            route_probe: _RouteFenceProbe | None = None
 
             def revalidate_fence(expected_board_id: str, phase: str) -> None:
+                nonlocal route_probe
                 if expected_board_id != board_id:
                     raise _invalid_snapshot(
                         snapshot,
@@ -313,9 +359,22 @@ class CommunityRoutedGraphTransaction:
                     board_id,
                     failure_phase=phase,
                 )
+                if phase not in {"begin", "commit"}:
+                    current_probe = _capture_route_fence_probe(
+                        binding_path,
+                        snapshot.active_path,
+                    )
+                    if route_probe is not None and current_probe == route_probe:
+                        return
                 self._resolver.revalidate_snapshot(
                     snapshot,
                     require_physical=True,
+                )
+                # An lstat refusal never weakens the fence: it disables the shortcut until
+                # a later complete validation can capture both route identities again.
+                route_probe = _capture_route_fence_probe(
+                    binding_path,
+                    snapshot.active_path,
                 )
 
             def resolve_database(expected_board_id: str):

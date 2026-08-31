@@ -210,6 +210,11 @@ class CommunityGraphRouteResolver:
         binding = self._store.acquire_board_binding(board_id)
         return self._snapshot(binding, require_active_physical=True)
 
+    def board_binding_path(self, board_id: str) -> Path:
+        """Return the binding document whose atomic replacement changes a Board route."""
+
+        return self._store.board_binding_path(board_id)
+
     def inspect_global_route(self) -> CommunityGraphRouteSnapshot:
         binding = self._store.inspect_global_binding()
         return self._snapshot(binding, require_active_physical=False)
