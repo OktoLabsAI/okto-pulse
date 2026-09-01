@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -46,6 +48,24 @@ def _grafx(path: Path, *, page_size: int = 8192) -> _FakeGrafxDatabase:
     path.mkdir(parents=True, exist_ok=True)
     (path / "grafx.meta").write_bytes(b"grafx")
     return _FakeGrafxDatabase(path, page_size=page_size)
+
+
+def _make_directory_alias(link: Path, target: Path) -> bool:
+    """Create a real directory alias on POSIX or Windows, when permitted."""
+
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        if os.name != "nt":
+            return False
+        completed = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return completed.returncode == 0 and link.exists()
+    return link.is_symlink()
 
 
 def _resolver(
@@ -710,6 +730,34 @@ def test_pinned_grafx_board_revalidation_still_requires_the_physical_database(
         resolver.revalidate_pinned_grafx_board_snapshot(snapshot, database)
 
     assert unavailable.value.details["reason"] == "physical_database_missing"
+
+
+def test_pinned_grafx_board_revalidation_refuses_a_physical_path_alias(
+    tmp_path: Path,
+) -> None:
+    store = CommunityGraphBackendBindingStore(tmp_path)
+    resolver = _resolver(store, board_backend="grafx")
+    database: _FakeGrafxDatabase | None = None
+
+    def create(candidate: CommunityGraphRouteCandidate) -> _FakeGrafxDatabase:
+        nonlocal database
+        database = _grafx(candidate.binding_path)
+        return database
+
+    snapshot = resolver.initialize_board_route(
+        "board-pinned-alias",
+        create_physical=create,
+    )
+    assert database is not None
+    alias_target = tmp_path / "aliased-generation"
+    snapshot.active_path.rename(alias_target)
+    if not _make_directory_alias(snapshot.active_path, alias_target):
+        pytest.skip("this environment cannot create a directory alias")
+
+    with pytest.raises(GraphCorruption) as refused:
+        resolver.revalidate_pinned_grafx_board_snapshot(snapshot, database)
+
+    assert refused.value.details["reason"] == "binding_document_invalid"
 
 
 @pytest.mark.parametrize(
