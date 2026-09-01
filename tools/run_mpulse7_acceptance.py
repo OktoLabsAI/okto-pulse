@@ -51,6 +51,9 @@ _FACTORY_AUTHORITY_MODULE = "mpulse7_acceptance_backends"
 REQUIRED_GRAFX_DESCRIPTOR_REVALIDATION = "generation"
 _CRASH_AUTHORITY_MODULE = "mpulse7_crash_harness"
 _IMPORT_AUTHORITY_FORMAT = "okto-pulse-community-python-import-authority/1"
+# Operational deadlock containment for setup/finalize; not a performance SLO.
+_ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS = 300
+_ISOLATED_WORKER_EVENT_POLL_SECONDS = 0.05
 _OBSERVED_IMPORT_AUTHORITIES: dict[str, dict[str, Any]] = {}
 _OBSERVED_IMPORT_AUTHORITIES_BY_ORIGIN: dict[str, list[dict[str, Any]]] = {}
 _PENDING_IMPORT_AUTHORITY_NAMES: set[str] = set()
@@ -445,6 +448,18 @@ class GateBackendContext:
     workspace: str
     run_id: str
     certification_process_authority_sha256: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _IsolatedOperationControl:
+    """Spawn-safe handshake that keeps setup outside the operation watchdog."""
+
+    operation_finished: Any
+    operation_finished_ns: Any
+    operation_started: Any
+    operation_started_ns: Any
+    ready: Any
+    start: Any
 
 
 class GateBackend(Protocol):
@@ -2344,11 +2359,34 @@ def _execute_board_case(
     )
 
 
+def _release_isolated_operation(control: _IsolatedOperationControl | None) -> None:
+    """Declare authenticated readiness and wait for the supervisor to start."""
+
+    if control is None:
+        return
+    control.ready.set()
+    _require(
+        control.start.wait(_ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS),
+        "isolated worker supervisor did not release the prepared operation",
+    )
+    with control.operation_started_ns.get_lock():
+        control.operation_started_ns.value = time.monotonic_ns()
+    control.operation_started.set()
+
+
+def _finish_isolated_operation(control: _IsolatedOperationControl | None) -> None:
+    if control is not None:
+        with control.operation_finished_ns.get_lock():
+            control.operation_finished_ns.value = time.monotonic_ns()
+        control.operation_finished.set()
+
+
 async def _query_worker_async(
     output_path: Path,
     factory: GateBackendFactory,
     context: GateBackendContext,
     case: Mapping[str, Any],
+    control: _IsolatedOperationControl | None = None,
 ) -> None:
     backend: GateBackend | None = None
     primary: BaseException | None = None
@@ -2361,14 +2399,18 @@ async def _query_worker_async(
         _worker_execution_authority_sha256(factory, context)
         identity = await _backend_identity(backend, context)
         fingerprints = await _observed_fingerprints(backend, context)
-        result = _execute_board_case(
-            backend,
-            context,
-            case,
-            identity=identity,
-            fingerprints=fingerprints,
-            execution_authority_sha256=execution_authority_sha256,
-        )
+        _release_isolated_operation(control)
+        try:
+            result = _execute_board_case(
+                backend,
+                context,
+                case,
+                identity=identity,
+                fingerprints=fingerprints,
+                execution_authority_sha256=execution_authority_sha256,
+            )
+        finally:
+            _finish_isolated_operation(control)
         after_identity = await _backend_identity(backend, context)
         _require_same_storage(
             identity,
@@ -2410,8 +2452,198 @@ def _query_worker_entry(
     factory: GateBackendFactory,
     context: GateBackendContext,
     case: Mapping[str, Any],
+    control: _IsolatedOperationControl | None = None,
 ) -> None:
-    asyncio.run(_query_worker_async(Path(output_path), factory, context, case))
+    asyncio.run(
+        _query_worker_async(Path(output_path), factory, context, case, control)
+    )
+
+
+def _wait_for_isolated_worker_event(
+    process: Any,
+    event: Any,
+    timeout_seconds: float,
+) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        if event.is_set():
+            return True
+        if not process.is_alive():
+            return event.is_set()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return event.is_set()
+        event.wait(min(_ISOLATED_WORKER_EVENT_POLL_SECONDS, remaining))
+
+
+def _stop_isolated_worker(process: Any) -> None:
+    if not process.is_alive():
+        process.join()
+        return
+    process.terminate()
+    process.join(5)
+    if process.is_alive():
+        process.kill()
+        process.join(5)
+    _require(
+        not process.is_alive(),
+        "isolated worker remained alive after terminate and kill",
+    )
+
+
+def _isolated_operation_timestamp(counter: Any, *, label: str) -> int:
+    with counter.get_lock():
+        value = int(counter.value)
+    _require(value > 0, f"isolated worker omitted its {label} timestamp")
+    return value
+
+
+def _run_isolated_operation_worker(
+    *,
+    case_label: str,
+    output_prefix: str,
+    target: Callable[..., None],
+    target_args: tuple[Any, ...],
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    """Run one operation with separate fail-closed setup/operation/finalize bounds."""
+
+    spawn = multiprocessing.get_context("spawn")
+    control = _IsolatedOperationControl(
+        operation_finished=spawn.Event(),
+        operation_finished_ns=spawn.Value(ctypes.c_longlong, 0),
+        operation_started=spawn.Event(),
+        operation_started_ns=spawn.Value(ctypes.c_longlong, 0),
+        ready=spawn.Event(),
+        start=spawn.Event(),
+    )
+    with tempfile.TemporaryDirectory(prefix=output_prefix) as temporary:
+        output_path = Path(temporary) / "result.json"
+        process = spawn.Process(
+            target=target,
+            args=(str(output_path), *target_args, control),
+            daemon=False,
+        )
+        try:
+            process.start()
+        except BaseException as failure:
+            raise GateFailure(
+                f"cannot start isolated {case_label}: "
+                f"{type(failure).__name__}: {failure}"
+            ) from failure
+
+        ready = _wait_for_isolated_worker_event(
+            process,
+            control.ready,
+            _ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS,
+        )
+        if not ready and process.is_alive():
+            _stop_isolated_worker(process)
+            raise GateFailure(
+                f"{case_label} worker did not reach authenticated readiness within "
+                f"{_ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS}s"
+            )
+
+        if ready:
+            control.start.set()
+            started = _wait_for_isolated_worker_event(
+                process,
+                control.operation_started,
+                _ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS,
+            )
+            if not started and process.is_alive():
+                _stop_isolated_worker(process)
+                raise GateFailure(
+                    f"{case_label} worker did not start its prepared operation within "
+                    f"{_ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS}s"
+                )
+            if started:
+                operation_started_ns = _isolated_operation_timestamp(
+                    control.operation_started_ns,
+                    label="operation-start",
+                )
+                elapsed_ns = max(0, time.monotonic_ns() - operation_started_ns)
+                remaining_seconds = max(
+                    0.0,
+                    timeout_seconds - elapsed_ns / 1_000_000_000,
+                )
+                finished = _wait_for_isolated_worker_event(
+                    process,
+                    control.operation_finished,
+                    remaining_seconds,
+                )
+                if not finished:
+                    with control.operation_finished_ns.get_lock():
+                        finished = int(control.operation_finished_ns.value) > 0
+                if not finished and process.is_alive():
+                    _stop_isolated_worker(process)
+                    raise GateFailure(
+                        f"{case_label} exceeded the real {timeout_seconds}s "
+                        "operation watchdog"
+                    )
+                if finished:
+                    operation_finished_ns = _isolated_operation_timestamp(
+                        control.operation_finished_ns,
+                        label="operation-finish",
+                    )
+                    _require(
+                        operation_finished_ns >= operation_started_ns,
+                        "isolated worker operation timestamps are not monotonic",
+                    )
+                    if (
+                        operation_finished_ns - operation_started_ns
+                        > timeout_seconds * 1_000_000_000
+                    ):
+                        _stop_isolated_worker(process)
+                        raise GateFailure(
+                            f"{case_label} exceeded the real {timeout_seconds}s "
+                            "operation watchdog"
+                        )
+
+        process.join(_ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS)
+        if process.is_alive():
+            _stop_isolated_worker(process)
+            raise GateFailure(
+                f"{case_label} worker did not finish post-validation and close within "
+                f"{_ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS}s"
+            )
+        _require(
+            process.exitcode == 0,
+            f"{case_label} worker exited with code {process.exitcode}",
+        )
+        if ready:
+            _require(
+                control.operation_started.is_set(),
+                f"{case_label} worker exited without starting its operation",
+            )
+            _require(
+                control.operation_finished.is_set(),
+                f"{case_label} worker exited without completing its operation",
+            )
+            operation_started_ns = _isolated_operation_timestamp(
+                control.operation_started_ns,
+                label="operation-start",
+            )
+            operation_finished_ns = _isolated_operation_timestamp(
+                control.operation_finished_ns,
+                label="operation-finish",
+            )
+            _require(
+                operation_finished_ns >= operation_started_ns,
+                "isolated worker operation timestamps are not monotonic",
+            )
+            if (
+                operation_finished_ns - operation_started_ns
+                > timeout_seconds * 1_000_000_000
+            ):
+                raise GateFailure(
+                    f"{case_label} exceeded the real {timeout_seconds}s "
+                    "operation watchdog"
+                )
+        _require(output_path.is_file(), f"{case_label} produced no receipt")
+        document = _load_json_document(output_path)
+        _require(type(document) is dict, "isolated worker receipt is not an object")
+        return document
 
 
 def run_isolated_board_query(
@@ -2420,75 +2652,51 @@ def run_isolated_board_query(
     case: Mapping[str, Any],
     timeout_seconds: int,
 ) -> IsolatedQueryResult:
-    """Run exactly one frozen Board case in a killable spawned process."""
+    """Run one Board case with a real 30s operation-only watchdog."""
 
     _require(timeout_seconds > 0, "the query watchdog must be positive")
-    with tempfile.TemporaryDirectory(prefix="mpulse7-query-") as temporary:
-        output_path = Path(temporary) / "result.json"
-        process = multiprocessing.get_context("spawn").Process(
-            target=_query_worker_entry,
-            args=(str(output_path), factory, context, dict(case)),
-            daemon=False,
+    document = _run_isolated_operation_worker(
+        case_label=f"Board query {case['id']}",
+        output_prefix="mpulse7-query-",
+        target=_query_worker_entry,
+        target_args=(factory, context, dict(case)),
+        timeout_seconds=timeout_seconds,
+    )
+    if document.get("worker_status") != "ok":
+        raise GateFailure(
+            f"Board query {case['id']} failed in its worker: "
+            f"{document.get('error_type')}: {document.get('error')}"
         )
-        try:
-            process.start()
-        except BaseException as failure:
-            raise GateFailure(
-                f"cannot start isolated query {case['id']}: "
-                f"{type(failure).__name__}: {failure}"
-            ) from failure
-        process.join(timeout_seconds)
-        if process.is_alive():
-            process.terminate()
-            process.join(5)
-            if process.is_alive():
-                process.kill()
-                process.join(5)
-            raise GateFailure(
-                f"Board query {case['id']} exceeded the real {timeout_seconds}s watchdog"
-            )
-        _require(
-            process.exitcode == 0,
-            f"Board query {case['id']} worker exited with code {process.exitcode}",
+    try:
+        return IsolatedQueryResult(
+            case_id=str(document["case_id"]),
+            fingerprint_logical_graph_sha256=_sha256_text(
+                document["fingerprint_logical_graph_sha256"],
+                field="isolated Board logical_graph_sha256",
+            ),
+            fingerprint_trace_model_sha256=_sha256_text(
+                document["fingerprint_trace_model_sha256"],
+                field="isolated Board trace_model_sha256",
+            ),
+            generation=str(document["generation"]),
+            ordering=str(document["ordering"]),
+            result_sha256=str(document["result_sha256"]),
+            row_count=int(document["row_count"]),
+            storage_identity=str(document["storage_identity"]),
+            worker_pid=int(document["worker_pid"]),
+            execution_authority_sha256=(
+                None
+                if document.get("execution_authority_sha256") is None
+                else _sha256_text(
+                    document["execution_authority_sha256"],
+                    field="isolated Board execution authority SHA-256",
+                )
+            ),
         )
-        _require(output_path.is_file(), f"Board query {case['id']} produced no receipt")
-        document = _load_json_document(output_path)
-        _require(type(document) is dict, "isolated query receipt is not an object")
-        if document.get("worker_status") != "ok":
-            raise GateFailure(
-                f"Board query {case['id']} failed in its worker: "
-                f"{document.get('error_type')}: {document.get('error')}"
-            )
-        try:
-            return IsolatedQueryResult(
-                case_id=str(document["case_id"]),
-                fingerprint_logical_graph_sha256=_sha256_text(
-                    document["fingerprint_logical_graph_sha256"],
-                    field="isolated Board logical_graph_sha256",
-                ),
-                fingerprint_trace_model_sha256=_sha256_text(
-                    document["fingerprint_trace_model_sha256"],
-                    field="isolated Board trace_model_sha256",
-                ),
-                generation=str(document["generation"]),
-                ordering=str(document["ordering"]),
-                result_sha256=str(document["result_sha256"]),
-                row_count=int(document["row_count"]),
-                storage_identity=str(document["storage_identity"]),
-                worker_pid=int(document["worker_pid"]),
-                execution_authority_sha256=(
-                    None
-                    if document.get("execution_authority_sha256") is None
-                    else _sha256_text(
-                        document["execution_authority_sha256"],
-                        field="isolated Board execution authority SHA-256",
-                    )
-                ),
-            )
-        except (KeyError, TypeError, ValueError) as failure:
-            raise GateFailure(
-                f"Board query {case['id']} returned an invalid worker receipt"
-            ) from failure
+    except (KeyError, TypeError, ValueError) as failure:
+        raise GateFailure(
+            f"Board query {case['id']} returned an invalid worker receipt"
+        ) from failure
 
 
 async def _run_queries(
@@ -2694,6 +2902,7 @@ async def _pulse_corpus_worker_async(
     factory: GateBackendFactory,
     context: GateBackendContext,
     entry: Mapping[str, Any],
+    control: _IsolatedOperationControl | None = None,
 ) -> None:
     backend: GateBackend | None = None
     primary: BaseException | None = None
@@ -2706,14 +2915,18 @@ async def _pulse_corpus_worker_async(
         _worker_execution_authority_sha256(factory, context)
         identity = await _backend_identity(backend, context)
         fingerprints = await _observed_fingerprints(backend, context)
-        callback_value = await _maybe_await(backend.run_pulse_corpus_case(entry))
-        result = _normalize_pulse_corpus_callback(
-            callback_value,
-            entry=entry,
-            identity=identity,
-            fingerprints=fingerprints,
-            execution_authority_sha256=execution_authority_sha256,
-        )
+        _release_isolated_operation(control)
+        try:
+            callback_value = await _maybe_await(backend.run_pulse_corpus_case(entry))
+            result = _normalize_pulse_corpus_callback(
+                callback_value,
+                entry=entry,
+                identity=identity,
+                fingerprints=fingerprints,
+                execution_authority_sha256=execution_authority_sha256,
+            )
+        finally:
+            _finish_isolated_operation(control)
         after_identity = await _backend_identity(backend, context)
         _require_same_storage(
             identity,
@@ -2755,8 +2968,11 @@ def _pulse_corpus_worker_entry(
     factory: GateBackendFactory,
     context: GateBackendContext,
     entry: Mapping[str, Any],
+    control: _IsolatedOperationControl | None = None,
 ) -> None:
-    asyncio.run(_pulse_corpus_worker_async(Path(output_path), factory, context, entry))
+    asyncio.run(
+        _pulse_corpus_worker_async(Path(output_path), factory, context, entry, control)
+    )
 
 
 def run_isolated_pulse_corpus_case(
@@ -2765,83 +2981,54 @@ def run_isolated_pulse_corpus_case(
     entry: Mapping[str, Any],
     timeout_seconds: int,
 ) -> IsolatedPulseCorpusResult:
-    """Run one frozen Pulse corpus entry in a killable spawned process."""
+    """Run one Pulse corpus entry with a real 30s operation-only watchdog."""
 
     _require(timeout_seconds > 0, "the Pulse corpus watchdog must be positive")
-    with tempfile.TemporaryDirectory(prefix="mpulse7-pulse-query-") as temporary:
-        output_path = Path(temporary) / "result.json"
-        process = multiprocessing.get_context("spawn").Process(
-            target=_pulse_corpus_worker_entry,
-            args=(str(output_path), factory, context, dict(entry)),
-            daemon=False,
+    document = _run_isolated_operation_worker(
+        case_label=f"Pulse corpus case {entry['id']}",
+        output_prefix="mpulse7-pulse-query-",
+        target=_pulse_corpus_worker_entry,
+        target_args=(factory, context, dict(entry)),
+        timeout_seconds=timeout_seconds,
+    )
+    if document.get("worker_status") != "ok":
+        raise GateFailure(
+            f"Pulse corpus case {entry['id']} failed in its worker: "
+            f"{document.get('error_type')}: {document.get('error')}"
         )
-        try:
-            process.start()
-        except BaseException as failure:
-            raise GateFailure(
-                f"cannot start isolated Pulse corpus case {entry['id']}: "
-                f"{type(failure).__name__}: {failure}"
-            ) from failure
-        process.join(timeout_seconds)
-        if process.is_alive():
-            process.terminate()
-            process.join(5)
-            if process.is_alive():
-                process.kill()
-                process.join(5)
-            raise GateFailure(
-                f"Pulse corpus case {entry['id']} exceeded the real "
-                f"{timeout_seconds}s watchdog"
-            )
-        _require(
-            process.exitcode == 0,
-            f"Pulse corpus case {entry['id']} worker exited with code "
-            f"{process.exitcode}",
+    try:
+        return IsolatedPulseCorpusResult(
+            entry_class=str(document["entry_class"]),
+            entry_id=str(document["entry_id"]),
+            fingerprint_logical_graph_sha256=_sha256_text(
+                document["fingerprint_logical_graph_sha256"],
+                field="isolated Pulse logical_graph_sha256",
+            ),
+            fingerprint_trace_model_sha256=_sha256_text(
+                document["fingerprint_trace_model_sha256"],
+                field="isolated Pulse trace_model_sha256",
+            ),
+            generation=str(document["generation"]),
+            result_sha256=_sha256_text(
+                document["result_sha256"],
+                field="isolated Pulse result_sha256",
+            ),
+            status=str(document["status"]),
+            storage_identity=str(document["storage_identity"]),
+            worker_pid=int(document["worker_pid"]),
+            execution_authority_sha256=(
+                None
+                if document.get("execution_authority_sha256") is None
+                else _sha256_text(
+                    document["execution_authority_sha256"],
+                    field="isolated Pulse execution authority SHA-256",
+                )
+            ),
         )
-        _require(
-            output_path.is_file(),
-            f"Pulse corpus case {entry['id']} produced no receipt",
-        )
-        document = _load_json_document(output_path)
-        _require(type(document) is dict, "isolated Pulse receipt is not an object")
-        if document.get("worker_status") != "ok":
-            raise GateFailure(
-                f"Pulse corpus case {entry['id']} failed in its worker: "
-                f"{document.get('error_type')}: {document.get('error')}"
-            )
-        try:
-            return IsolatedPulseCorpusResult(
-                entry_class=str(document["entry_class"]),
-                entry_id=str(document["entry_id"]),
-                fingerprint_logical_graph_sha256=_sha256_text(
-                    document["fingerprint_logical_graph_sha256"],
-                    field="isolated Pulse logical_graph_sha256",
-                ),
-                fingerprint_trace_model_sha256=_sha256_text(
-                    document["fingerprint_trace_model_sha256"],
-                    field="isolated Pulse trace_model_sha256",
-                ),
-                generation=str(document["generation"]),
-                result_sha256=_sha256_text(
-                    document["result_sha256"],
-                    field="isolated Pulse result_sha256",
-                ),
-                status=str(document["status"]),
-                storage_identity=str(document["storage_identity"]),
-                worker_pid=int(document["worker_pid"]),
-                execution_authority_sha256=(
-                    None
-                    if document.get("execution_authority_sha256") is None
-                    else _sha256_text(
-                        document["execution_authority_sha256"],
-                        field="isolated Pulse execution authority SHA-256",
-                    )
-                ),
-            )
-        except (KeyError, TypeError, ValueError) as failure:
-            raise GateFailure(
-                f"Pulse corpus case {entry['id']} returned an invalid worker receipt"
-            ) from failure
+    except (KeyError, TypeError, ValueError) as failure:
+        raise GateFailure(
+            f"Pulse corpus case {entry['id']} returned an invalid worker receipt"
+        ) from failure
 
 
 async def _run_pulse_corpus(

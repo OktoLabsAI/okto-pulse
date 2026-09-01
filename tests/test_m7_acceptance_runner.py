@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import multiprocessing
 import os
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -479,6 +481,51 @@ def test_grafx_backend_identity_records_the_effective_generation_policy() -> Non
 class _WorkerFactory:
     def __call__(self, context: GateBackendContext) -> _WorkerBackend:
         return _WorkerBackend(context)
+
+
+class _DelayedWorkerStore(_WorkerStore):
+    def __init__(self, operation_delay_seconds: float) -> None:
+        self._operation_delay_seconds = operation_delay_seconds
+
+    def get_schema_version(self, *, board_id: str) -> list[list[str]]:
+        time.sleep(self._operation_delay_seconds)
+        return super().get_schema_version(board_id=board_id)
+
+
+class _DelayedWorkerBackend(_WorkerBackend):
+    def __init__(
+        self,
+        context: GateBackendContext,
+        close_delay_seconds: float,
+        operation_delay_seconds: float,
+    ) -> None:
+        super().__init__(context)
+        self.semantic_store = _DelayedWorkerStore(operation_delay_seconds)
+        self._close_delay_seconds = close_delay_seconds
+        self._operation_delay_seconds = operation_delay_seconds
+
+    def run_pulse_corpus_case(self, entry: dict[str, Any]) -> dict[str, Any]:
+        time.sleep(self._operation_delay_seconds)
+        return super().run_pulse_corpus_case(entry)
+
+    def close(self) -> None:
+        time.sleep(self._close_delay_seconds)
+        return super().close()
+
+
+@dataclass(frozen=True)
+class _DelayedWorkerFactory:
+    close_delay_seconds: float = 0.0
+    setup_delay_seconds: float = 0.0
+    operation_delay_seconds: float = 0.0
+
+    def __call__(self, context: GateBackendContext) -> _DelayedWorkerBackend:
+        time.sleep(self.setup_delay_seconds)
+        return _DelayedWorkerBackend(
+            context,
+            self.close_delay_seconds,
+            self.operation_delay_seconds,
+        )
 
 
 class _NoOpStore(_FakeStore):
@@ -1096,6 +1143,81 @@ def test_default_pulse_corpus_runner_uses_a_distinct_process(tmp_path: Path) -> 
     assert result.generation == "worker-generation"
     assert result.fingerprint_trace_model_sha256 == FINAL_FINGERPRINT
     assert result.worker_pid != os.getpid()
+
+
+def test_query_watchdog_excludes_authenticated_setup_and_finalize(
+    tmp_path: Path,
+) -> None:
+    context = GateBackendContext(
+        backend="ladybug",
+        board_id="isolated-board",
+        workspace=str(tmp_path),
+        run_id="delayed-setup-run",
+    )
+    case = {
+        "id": "schema-version-delayed-setup",
+        "ordering": "ordered",
+        "method": "get_schema_version",
+        "arguments": {"board_id": "${board_id}"},
+    }
+
+    result = run_isolated_board_query(
+        _DelayedWorkerFactory(
+            close_delay_seconds=1.25,
+            setup_delay_seconds=1.25,
+        ),
+        context,
+        case,
+        1,
+    )
+
+    assert result.case_id == "schema-version-delayed-setup"
+    assert result.row_count == 1
+
+
+def test_board_operation_still_has_a_real_watchdog(tmp_path: Path) -> None:
+    children_before = {child.pid for child in multiprocessing.active_children()}
+    context = GateBackendContext(
+        backend="ladybug",
+        board_id="isolated-board",
+        workspace=str(tmp_path),
+        run_id="slow-board-operation-run",
+    )
+    case = {
+        "id": "schema-version-slow-operation",
+        "ordering": "ordered",
+        "method": "get_schema_version",
+        "arguments": {"board_id": "${board_id}"},
+    }
+
+    with pytest.raises(GateFailure, match="real 1s operation watchdog"):
+        run_isolated_board_query(
+            _DelayedWorkerFactory(operation_delay_seconds=2.0),
+            context,
+            case,
+            1,
+        )
+    assert {child.pid for child in multiprocessing.active_children()} <= children_before
+
+
+def test_pulse_operation_still_has_a_real_watchdog(tmp_path: Path) -> None:
+    context = GateBackendContext(
+        backend="ladybug",
+        board_id="isolated-board",
+        workspace=str(tmp_path),
+        run_id="slow-pulse-operation-run",
+    )
+    entry = verify_frozen_inputs(MANIFEST, pulse_corpus_path=CORPUS).pulse_corpus[
+        "entries"
+    ][0]
+
+    with pytest.raises(GateFailure, match="real 1s operation watchdog"):
+        run_isolated_pulse_corpus_case(
+            _DelayedWorkerFactory(operation_delay_seconds=2.0),
+            context,
+            entry,
+            1,
+        )
 
 
 def test_noop_backend_cannot_echo_a_successful_recovery(tmp_path: Path) -> None:
