@@ -430,9 +430,9 @@ def test_trace_is_exactly_frozen_and_schema_authoritative() -> None:
 
     assert manifest["manifest_format"].endswith("/1")
     assert manifest["scope"]["source_revisions"] == {
-        "community": "d1e988af78eb27e57a2913ed74c9b1fcc8652909",
+        "community": "050ced9b79533d50efed453d53ed450984f75cf3",
         "core": "ccc1f345ece1db89a274cfdd634bd4da27028f63",
-        "okto_grafx_corpus": "4c474b56ac35cd3169f18ef416bc3d2ae906083c",
+        "okto_grafx_corpus": "a1c3c496fe21d8e9f86953ca3932aced5917fb22",
     }
     assert trace["seed"] == "0x6F6B746F4D503731"
     assert trace["operation_count"] == 10_000

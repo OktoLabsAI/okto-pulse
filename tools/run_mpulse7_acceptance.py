@@ -398,10 +398,10 @@ CERTIFICATION_PROCESS_AUTHORITY_FORMAT = (
 # Changing the frozen manifest/corpus requires an explicit new gate version and
 # corresponding code review, rather than recomputing digests inside altered input.
 CERTIFICATION_MANIFEST_FILE_SHA256 = (
-    "a353b29b4ebd6ff0c8fb69ed3ef04d6333bce4f5abc2b530fa132473eb441762"
+    "94beae63c97da124e0dd5681926c5be72688ff38c96d45d4d49d18e63dfa2f9b"
 )
 CERTIFICATION_MANIFEST_CANONICAL_SHA256 = (
-    "855bac2796a552332efb2b05345dc272d7cbefdbbeece57cc45d222773d7929d"
+    "b3cbdfdcd3989dcf2d0f0831c57905336e0e2bb05d0f66876242feca1fa03012"
 )
 CERTIFICATION_PULSE_CORPUS_FILE_SHA256 = (
     "0997747ed8bb9172d05781a62e5f81e7694630b173aaa152ac9ea28daec9d13f"
