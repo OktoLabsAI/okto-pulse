@@ -77,7 +77,9 @@ class _ResolverProbe:
         self.events = events
         self.acquire_calls = 0
         self.revalidate_calls = 0
+        self.generic_revalidate_calls = 0
         self.revalidate_require_physical: list[bool] = []
+        self.pinned_revalidation_databases: list[object] = []
         self.admission_error: BaseException | None = None
         self.revalidate_error_at: int | None = None
 
@@ -108,6 +110,18 @@ class _ResolverProbe:
         *,
         require_physical: bool = False,
     ) -> CommunityGraphRouteSnapshot:
+        self.generic_revalidate_calls += 1
+        return self._record_revalidation(
+            snapshot,
+            require_physical=require_physical,
+        )
+
+    def _record_revalidation(
+        self,
+        snapshot: CommunityGraphRouteSnapshot,
+        *,
+        require_physical: bool,
+    ) -> CommunityGraphRouteSnapshot:
         assert snapshot is self.snapshot
         self.revalidate_calls += 1
         self.revalidate_require_physical.append(require_physical)
@@ -118,6 +132,14 @@ class _ResolverProbe:
                 details={"reason": "graph_route_snapshot_mismatch"},
             )
         return snapshot
+
+    def revalidate_pinned_grafx_board_snapshot(
+        self,
+        snapshot: CommunityGraphRouteSnapshot,
+        database: object,
+    ) -> CommunityGraphRouteSnapshot:
+        self.pinned_revalidation_databases.append(database)
+        return self._record_revalidation(snapshot, require_physical=True)
 
 
 class _LadybugScope:
@@ -604,7 +626,7 @@ async def test_grafx_order_is_window_route_pin_admit_begin_engine_pin_window(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    facade, events, window, resolver, ladybug, transaction, _database, lease, pool = (
+    facade, events, window, resolver, ladybug, transaction, database, lease, pool = (
         _assembly(tmp_path, backend="grafx")
     )
 
@@ -621,7 +643,9 @@ async def test_grafx_order_is_window_route_pin_admit_begin_engine_pin_window(
     assert not lease.released
     assert resolver.acquire_calls == 1
     assert resolver.revalidate_calls == 1
+    assert resolver.generic_revalidate_calls == 0
     assert resolver.revalidate_require_physical == [True]
+    assert resolver.pinned_revalidation_databases == [database]
     assert pool.acquire_calls == 1
     assert ladybug.begin_calls == 0
     assert events == [
@@ -636,6 +660,7 @@ async def test_grafx_order_is_window_route_pin_admit_begin_engine_pin_window(
 
     scope.execute("CREATE (n:Entity {id: $id})", {"id": "node-1"})
     assert resolver.revalidate_require_physical == [True, True]
+    assert resolver.pinned_revalidation_databases == [database, database]
     assert events[-3:] == [
         "writer_fence:graph_statement_precommit",
         "route_revalidate:2",
@@ -645,6 +670,8 @@ async def test_grafx_order_is_window_route_pin_admit_begin_engine_pin_window(
     await scope.commit()
 
     assert resolver.revalidate_require_physical == [True, True, True]
+    assert resolver.pinned_revalidation_databases == [database, database, database]
+    assert resolver.generic_revalidate_calls == 0
     assert events[-5:] == [
         "writer_fence:commit",
         "route_revalidate:3",

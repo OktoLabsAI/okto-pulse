@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -616,6 +616,241 @@ def test_global_missing_anchor_remains_inspectable_but_not_acquirable(
     with pytest.raises(GraphUnavailable) as unavailable:
         resolver.acquire_global_route()
     assert unavailable.value.details["reason"] == "physical_database_missing"
+
+
+def test_pinned_grafx_board_revalidation_reuses_the_acquired_physical_proof(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store = CommunityGraphBackendBindingStore(tmp_path)
+    resolver = _resolver(store, board_backend="grafx")
+    database: _FakeGrafxDatabase | None = None
+
+    def create(candidate: CommunityGraphRouteCandidate) -> _FakeGrafxDatabase:
+        nonlocal database
+        database = _grafx(candidate.binding_path)
+        return database
+
+    snapshot = resolver.initialize_board_route(
+        "board-pinned-revalidation",
+        create_physical=create,
+    )
+    assert database is not None
+
+    def duplicate_route_walk(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("the acquired binding already authenticated this path")
+
+    monkeypatch.setattr(resolver, "_require_expected_path", duplicate_route_walk)
+
+    assert resolver.revalidate_pinned_grafx_board_snapshot(snapshot, database) == snapshot
+
+
+def test_pinned_grafx_board_revalidation_detects_binding_cutover(
+    tmp_path: Path,
+) -> None:
+    store = CommunityGraphBackendBindingStore(tmp_path)
+    resolver = _resolver(store, board_backend="grafx")
+    original_database: _FakeGrafxDatabase | None = None
+
+    def create(candidate: CommunityGraphRouteCandidate) -> _FakeGrafxDatabase:
+        nonlocal original_database
+        original_database = _grafx(candidate.binding_path)
+        return original_database
+
+    original = resolver.initialize_board_route(
+        "board-pinned-cutover",
+        create_physical=create,
+    )
+    assert original_database is not None
+    replacement_path = store.board_grafx_path(
+        "board-pinned-cutover",
+        "generation-2",
+    )
+    replacement_database = _grafx(replacement_path)
+    store.compare_and_swap_board_binding(
+        board_id="board-pinned-cutover",
+        expected_binding_sha256=original.binding_sha256,
+        backend="grafx",
+        generation="generation-2",
+        physical_path=replacement_path,
+        page_size=8192,
+        database=replacement_database,
+    )
+
+    with pytest.raises(GraphCapabilityUnavailable) as mismatch:
+        resolver.revalidate_pinned_grafx_board_snapshot(
+            original,
+            original_database,
+        )
+
+    assert mismatch.value.details["reason"] == "graph_route_snapshot_mismatch"
+
+
+def test_pinned_grafx_board_revalidation_still_requires_the_physical_database(
+    tmp_path: Path,
+) -> None:
+    store = CommunityGraphBackendBindingStore(tmp_path)
+    resolver = _resolver(store, board_backend="grafx")
+    database: _FakeGrafxDatabase | None = None
+
+    def create(candidate: CommunityGraphRouteCandidate) -> _FakeGrafxDatabase:
+        nonlocal database
+        database = _grafx(candidate.binding_path)
+        return database
+
+    snapshot = resolver.initialize_board_route(
+        "board-pinned-missing",
+        create_physical=create,
+    )
+    assert database is not None
+    (snapshot.active_path / "grafx.meta").unlink()
+    snapshot.active_path.rmdir()
+
+    with pytest.raises(GraphUnavailable) as unavailable:
+        resolver.revalidate_pinned_grafx_board_snapshot(snapshot, database)
+
+    assert unavailable.value.details["reason"] == "physical_database_missing"
+
+
+@pytest.mark.parametrize(
+    ("database", "reason"),
+    [
+        (_FakeGrafxDatabase(Path("D:/foreign/grafx"), page_size=8192), "grafx_database_path_mismatch"),
+        (_FakeGrafxDatabase(Path("D:/unused"), page_size=4096), "grafx_page_size_configuration_mismatch"),
+    ],
+)
+def test_pinned_grafx_board_revalidation_readmits_path_and_page_size(
+    tmp_path: Path,
+    database: _FakeGrafxDatabase,
+    reason: str,
+) -> None:
+    store = CommunityGraphBackendBindingStore(tmp_path)
+    resolver = _resolver(store, board_backend="grafx")
+    snapshot = resolver.initialize_board_route(
+        "board-pinned-admission",
+        create_physical=lambda candidate: _grafx(candidate.binding_path),
+    )
+    if reason == "grafx_page_size_configuration_mismatch":
+        database.path = str(snapshot.active_path)
+
+    with pytest.raises(GraphCapabilityUnavailable) as refused:
+        resolver.revalidate_pinned_grafx_board_snapshot(snapshot, database)
+
+    assert refused.value.details["reason"] == reason
+
+
+def test_pinned_grafx_board_revalidation_compares_the_complete_snapshot(
+    tmp_path: Path,
+) -> None:
+    store = CommunityGraphBackendBindingStore(tmp_path)
+    resolver = _resolver(store, board_backend="grafx")
+    database: _FakeGrafxDatabase | None = None
+
+    def create(candidate: CommunityGraphRouteCandidate) -> _FakeGrafxDatabase:
+        nonlocal database
+        database = _grafx(candidate.binding_path)
+        return database
+
+    snapshot = resolver.initialize_board_route(
+        "board-pinned-complete-snapshot",
+        create_physical=create,
+    )
+    assert database is not None
+    forged = replace(snapshot, route_sha256="f" * 64)
+
+    with pytest.raises(GraphCapabilityUnavailable) as mismatch:
+        resolver.revalidate_pinned_grafx_board_snapshot(forged, database)
+
+    assert mismatch.value.details["reason"] == "graph_route_snapshot_mismatch"
+
+
+def test_pinned_grafx_board_revalidation_propagates_binding_corruption(
+    tmp_path: Path,
+) -> None:
+    store = CommunityGraphBackendBindingStore(tmp_path)
+    resolver = _resolver(store, board_backend="grafx")
+    database: _FakeGrafxDatabase | None = None
+
+    def create(candidate: CommunityGraphRouteCandidate) -> _FakeGrafxDatabase:
+        nonlocal database
+        database = _grafx(candidate.binding_path)
+        return database
+
+    snapshot = resolver.initialize_board_route(
+        "board-pinned-corrupt-binding",
+        create_physical=create,
+    )
+    assert database is not None
+    binding_path = snapshot.active_path.parents[1] / "graph_backend_binding.json"
+    binding_path.write_text('{"broken":true}', encoding="utf-8")
+
+    with pytest.raises(GraphCorruption) as corrupt:
+        resolver.revalidate_pinned_grafx_board_snapshot(snapshot, database)
+
+    assert corrupt.value.details["reason"] == "binding_document_invalid"
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        {"scope": "global", "scope_id": "global"},
+        {"backend": "ladybug", "page_size": None},
+        {"page_size": None},
+    ],
+)
+def test_pinned_grafx_board_revalidation_rejects_the_wrong_route_kind_first(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    invalid: dict[str, object],
+) -> None:
+    store = CommunityGraphBackendBindingStore(tmp_path)
+    resolver = _resolver(store, board_backend="grafx")
+    database: _FakeGrafxDatabase | None = None
+
+    def create(candidate: CommunityGraphRouteCandidate) -> _FakeGrafxDatabase:
+        nonlocal database
+        database = _grafx(candidate.binding_path)
+        return database
+
+    snapshot = resolver.initialize_board_route(
+        "board-pinned-route-kind",
+        create_physical=create,
+    )
+    assert database is not None
+    invalid_snapshot = replace(snapshot, **invalid)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        store,
+        "acquire_board_binding",
+        lambda _board_id: pytest.fail("invalid route touched the binding store"),
+    )
+
+    with pytest.raises(GraphCapabilityUnavailable) as refused:
+        resolver.revalidate_pinned_grafx_board_snapshot(invalid_snapshot, database)
+
+    assert refused.value.details["reason"] == "pinned_grafx_board_route_required"
+
+
+def test_generic_board_revalidation_keeps_the_full_resolver_walk(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store = CommunityGraphBackendBindingStore(tmp_path)
+    resolver = _resolver(store, board_backend="grafx")
+    snapshot = resolver.initialize_board_route(
+        "board-generic-revalidation",
+        create_physical=lambda candidate: _grafx(candidate.binding_path),
+    )
+    original = resolver._require_expected_path
+    walked: list[Path] = []
+
+    def counted(path: Path, **kwargs: object) -> None:
+        walked.append(path)
+        original(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(resolver, "_require_expected_path", counted)
+
+    assert resolver.revalidate_snapshot(snapshot, require_physical=True) == snapshot
+    assert walked == [snapshot.active_path]
 
 
 def test_global_pointer_cutover_invalidates_snapshot_without_binding_fallback(

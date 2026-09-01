@@ -15,6 +15,10 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   `strict` policy remains the default; controlled performance runs opt into `generation`, and the
   shared pool, temporary recovery/restore opens and M-PULSE-7 receipts authenticate the effective
   process-local policy before accepting a handle or result.
+- Board Grafx statement fences now transfer the physical-route proof from the freshly authenticated
+  binding while the exact database remains pool-pinned. Every fence still re-reads the binding,
+  detects a visible CAS cutover, requires the canonical physical database and re-admits its path and
+  page size; generic and Global route revalidation keep the complete component walk.
 
 ## [0.3.3] - 2026-08-23
 

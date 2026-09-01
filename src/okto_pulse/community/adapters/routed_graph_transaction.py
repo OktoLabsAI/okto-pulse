@@ -313,9 +313,12 @@ class CommunityRoutedGraphTransaction:
                     board_id,
                     failure_phase=phase,
                 )
-                self._resolver.revalidate_snapshot(
+                # Keep the fence at every existing statement boundary.  This door still
+                # authenticates the binding and physical database, but transfers that proof
+                # to the already-pinned lease instead of walking the same route twice.
+                self._resolver.revalidate_pinned_grafx_board_snapshot(
                     snapshot,
-                    require_physical=True,
+                    lease.database,
                 )
 
             def resolve_database(expected_board_id: str):

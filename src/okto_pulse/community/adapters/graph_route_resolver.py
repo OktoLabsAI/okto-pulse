@@ -245,6 +245,59 @@ class CommunityGraphRouteResolver:
                 if require_physical
                 else self.inspect_global_route()
             )
+        return self._require_same_snapshot(snapshot, current)
+
+    def revalidate_pinned_grafx_board_snapshot(
+        self,
+        snapshot: CommunityGraphRouteSnapshot,
+        database: object,
+    ) -> CommunityGraphRouteSnapshot:
+        """Revalidate one Board route while its exact Grafx database is pinned.
+
+        The only caller already owns a pool lease and an open Grafx transaction inside a
+        Board operation window.  The binding store still re-reads and authenticates the
+        complete binding and proves that its canonical physical directory exists, so a
+        binding cutover visible at this fence is refused.  Repeating the resolver's full
+        component walk immediately afterwards would prove the same physical path a second
+        time.  Re-admitting the caller-supplied database binds that precondition back to
+        the persisted path and page size; the pool keeps the handle pinned, while Grafx's
+        configured descriptor policy remains responsible for storage identity checks.
+
+        This is deliberately Board/Grafx-only.  Global routes still need the ordinary
+        resolver because their active-generation pointer can change independently of the
+        binding, and callers without a pinned database keep the full path walk.
+        """
+
+        if (
+            snapshot.scope != "board"
+            or snapshot.backend != "grafx"
+            or snapshot.page_size is None
+        ):
+            raise _capability(
+                "pinned_grafx_board_route_required",
+                operation="revalidate_pinned_grafx_board_route",
+                scope=snapshot.scope,
+                scope_id=snapshot.scope_id,
+            )
+        binding = self._store.acquire_board_binding(snapshot.scope_id)
+        current = self._board_snapshot_from_authenticated_binding(binding)
+        self._require_same_snapshot(snapshot, current)
+        assert current.page_size is not None  # equality preserves the Grafx guard above
+        admit_grafx_database(
+            database,
+            expected_page_size=current.page_size,
+            expected_path=current.active_path,
+            operation="revalidate_pinned_grafx_board_route",
+        )
+        return current
+
+    @staticmethod
+    def _require_same_snapshot(
+        snapshot: CommunityGraphRouteSnapshot,
+        current: CommunityGraphRouteSnapshot,
+    ) -> CommunityGraphRouteSnapshot:
+        """Return a matching route or preserve the public fail-closed mismatch."""
+
         if current != snapshot:
             raise _capability(
                 "graph_route_snapshot_mismatch",
@@ -915,34 +968,38 @@ class CommunityGraphRouteResolver:
     ) -> CommunityGraphRouteSnapshot:
         expected = "directory" if binding.backend == "grafx" else "file"
         if binding.scope == "board":
-            anchor = binding.physical_path
-            active_path = binding.physical_path
-            active_generation = None
-            manifest_sha256 = None
-        else:
-            anchor = (
-                binding.physical_path
-                if binding.backend == "grafx"
-                else self._store.global_ladybug_path()
-            )
-            active = self._authenticated_active(
-                anchor,
+            self._require_expected_path(
+                binding.physical_path,
                 expected=expected,
                 scope=binding.scope,
                 scope_id=binding.scope_id,
-                require_physical=require_active_physical,
+                missing_is_unavailable=require_active_physical,
             )
-            active_path = active.graph_path if active is not None else anchor
-            active_generation = active.generation_id if active is not None else None
-            manifest_sha256 = active.manifest_sha256 if active is not None else None
-            if binding.backend == "ladybug" and not _same_path(
-                binding.physical_path, anchor
-            ):
-                raise _corruption(
-                    "global_route_binding_anchor_invalid",
-                    scope=binding.scope,
-                    scope_id=binding.scope_id,
-                )
+            return self._board_snapshot_from_authenticated_binding(binding)
+
+        anchor = (
+            binding.physical_path
+            if binding.backend == "grafx"
+            else self._store.global_ladybug_path()
+        )
+        active = self._authenticated_active(
+            anchor,
+            expected=expected,
+            scope=binding.scope,
+            scope_id=binding.scope_id,
+            require_physical=require_active_physical,
+        )
+        active_path = active.graph_path if active is not None else anchor
+        active_generation = active.generation_id if active is not None else None
+        manifest_sha256 = active.manifest_sha256 if active is not None else None
+        if binding.backend == "ladybug" and not _same_path(
+            binding.physical_path, anchor
+        ):
+            raise _corruption(
+                "global_route_binding_anchor_invalid",
+                scope=binding.scope,
+                scope_id=binding.scope_id,
+            )
         self._require_expected_path(
             active_path,
             expected=expected,
@@ -970,6 +1027,35 @@ class CommunityGraphRouteResolver:
             route_sha256=route_sha256,
             active_generation=active_generation,
             active_manifest_sha256=manifest_sha256,
+        )
+
+    def _board_snapshot_from_authenticated_binding(
+        self,
+        binding: CommunityGraphBackendBinding,
+    ) -> CommunityGraphRouteSnapshot:
+        """Project fields from a Board binding after its caller's required checks."""
+
+        if binding.scope != "board":  # private construction invariant
+            raise AssertionError("an acquired Board binding is required")
+        active_path = binding.physical_path
+        route_sha256 = self._route_sha256(
+            binding=binding,
+            anchor=active_path,
+            active_path=active_path,
+            active_generation=None,
+            active_manifest_sha256=None,
+        )
+        return CommunityGraphRouteSnapshot(
+            scope=binding.scope,
+            scope_id=binding.scope_id,
+            backend=binding.backend,
+            generation=binding.generation,
+            binding_path=binding.physical_path,
+            anchor_path=active_path,
+            active_path=active_path,
+            page_size=binding.page_size,
+            binding_sha256=binding.binding_sha256,
+            route_sha256=route_sha256,
         )
 
     def _route_sha256(
