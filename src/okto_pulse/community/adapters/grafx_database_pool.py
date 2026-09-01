@@ -52,7 +52,10 @@ from okto_pulse.community.adapters.filesystem_erasure import (
 from okto_pulse.community.adapters.graph_backend_binding import (
     admit_grafx_database,
 )
-from okto_pulse.community.config import validate_grafx_page_size
+from okto_pulse.community.config import (
+    validate_grafx_descriptor_revalidation,
+    validate_grafx_page_size,
+)
 
 
 class GrafxDatabasePoolError(RuntimeError):
@@ -141,6 +144,7 @@ class CommunityGrafxDatabasePool:
         *,
         connect: Any = None,
         max_entries: int | None = None,
+        descriptor_revalidation: str = "strict",
     ) -> None:
         root = Path(os.path.abspath(Path(os.fspath(kg_base_dir)).expanduser()))
         if not root.is_absolute():
@@ -162,6 +166,16 @@ class CommunityGrafxDatabasePool:
         self._root = root
         self._connect = connect
         self._max_entries = max_entries
+        try:
+            self._descriptor_revalidation = validate_grafx_descriptor_revalidation(
+                descriptor_revalidation
+            )
+        except ValueError as failure:
+            raise GrafxDatabasePoolError(
+                "The Grafx descriptor revalidation policy is invalid.",
+                reason="pool_descriptor_revalidation_invalid",
+                descriptor_revalidation=descriptor_revalidation,
+            ) from failure
         self._clock = 0
         # One lock for the map and one condition per key would let two callers
         # open the same database at once. A single lock held across open is the
@@ -220,6 +234,40 @@ class CommunityGrafxDatabasePool:
                 )
 
     # -- acquisition -------------------------------------------------------
+
+    @property
+    def descriptor_revalidation(self) -> str:
+        """The immutable process-local policy used by every handle in this pool."""
+
+        return self._descriptor_revalidation
+
+    def open_unpooled(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        page_size: int,
+        connect: Any = None,
+    ) -> Any:
+        """Open one admitted temporary handle under the pool's immutable policy.
+
+        Recovery and restore own these handles directly, so they must not enter the shared cache;
+        they still use the same contained namespace, connector contract and observed-policy proof.
+        """
+
+        try:
+            configured = validate_grafx_page_size(page_size)
+        except ValueError as failure:
+            raise GrafxDatabasePoolError(
+                "The configured Grafx page size is invalid.",
+                reason="pool_page_size_invalid",
+                page_size=page_size,
+            ) from failure
+        contained = self._require_contained(Path(os.fspath(path)))
+        return self._open_admitted(
+            contained,
+            page_size=configured,
+            connect_override=connect,
+        )
 
     def get(self, path: str | os.PathLike[str], *, page_size: int) -> Any:
         """Return the shared handle for ``path``, opening it once if needed."""
@@ -342,16 +390,26 @@ class CommunityGrafxDatabasePool:
             entry = self._entries.get(key)
             return 0 if entry is None else entry.pins
 
-    def _open_admitted(self, path: Path, *, page_size: int) -> Any:
+    def _open_admitted(
+        self,
+        path: Path,
+        *,
+        page_size: int,
+        connect_override: Any = None,
+    ) -> Any:
         """Open and fully admit one database, or leave nothing behind."""
 
-        connect = self._connect
+        connect = connect_override if connect_override is not None else self._connect
         if connect is None:
             import okto_grafx
 
             connect = okto_grafx.connect
         try:
-            database = connect(path, page_size=page_size)
+            database = connect(
+                path,
+                page_size=page_size,
+                descriptor_revalidation=self._descriptor_revalidation,
+            )
         except Exception as failure:
             raise GrafxDatabasePoolError(
                 "Opening the Grafx database failed.",
@@ -363,6 +421,7 @@ class CommunityGrafxDatabasePool:
             admit_grafx_database(
                 database,
                 expected_page_size=page_size,
+                expected_descriptor_revalidation=self._descriptor_revalidation,
                 operation="grafx_database_pool_get",
                 expected_path=path,
             )

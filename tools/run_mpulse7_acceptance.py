@@ -48,6 +48,7 @@ GRAFX_AUTHORITY_MODULE = "okto_grafx"
 CORE_CHECKOUT_ENV = "OKTO_PULSE_CORE_REPO"
 GRAFX_CHECKOUT_ENV = "OKTO_E2E_GRAFX_REPO"
 _FACTORY_AUTHORITY_MODULE = "mpulse7_acceptance_backends"
+REQUIRED_GRAFX_DESCRIPTOR_REVALIDATION = "generation"
 _CRASH_AUTHORITY_MODULE = "mpulse7_crash_harness"
 _IMPORT_AUTHORITY_FORMAT = "okto-pulse-community-python-import-authority/1"
 _OBSERVED_IMPORT_AUTHORITIES: dict[str, dict[str, Any]] = {}
@@ -2023,6 +2024,12 @@ async def _backend_identity(
         and bool(identity["backend_version"]),
         f"{context.backend} identity omitted backend_version",
     )
+    if context.backend == "grafx":
+        _require(
+            identity.get("descriptor_revalidation")
+            == REQUIRED_GRAFX_DESCRIPTOR_REVALIDATION,
+            "grafx identity did not prove descriptor_revalidation=generation",
+        )
     _stable_storage_identity(identity)
     canonical_json_bytes(identity)
     return identity

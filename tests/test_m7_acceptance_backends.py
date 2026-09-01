@@ -225,13 +225,21 @@ async def test_real_factory_bootstraps_and_reopens_the_productive_bundle(
     try:
         first_identity = first.identity()
         first_fingerprints = first.observe_fingerprints()
-        assert set(first_identity) == {
+        expected_identity_fields = {
             "backend",
             "backend_version",
             "generation",
             "storage_identity",
         }
+        if backend == "grafx":
+            expected_identity_fields.add("descriptor_revalidation")
+        assert set(first_identity) == expected_identity_fields
         assert first_identity["backend"] == backend
+        if backend == "grafx":
+            assert (
+                first_identity["descriptor_revalidation"]
+                == backends.GRAFX_DESCRIPTOR_REVALIDATION
+            )
         assert first_fingerprints["trace_model_sha256"] == expected_empty_model
         assert set(first_fingerprints) == {
             "logical_graph_sha256",

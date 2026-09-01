@@ -35,6 +35,7 @@ from okto_pulse.community.adapters.filesystem_erasure import (
 from okto_pulse.community.config import (
     PULSE_GRAFX_DEFAULT_PAGE_SIZE,
     PULSE_GRAFX_MIN_PAGE_SIZE,
+    validate_grafx_descriptor_revalidation,
     validate_grafx_page_size,
 )
 
@@ -331,6 +332,7 @@ def admit_grafx_database(
     expected_page_size: int,
     operation: str,
     expected_path: Path | None = None,
+    expected_descriptor_revalidation: str | None = None,
 ) -> GrafxDatabaseAdmission:
     """Fail before schema mutation when persisted Grafx geometry is unsafe."""
 
@@ -387,6 +389,48 @@ def admit_grafx_database(
             observed_page_size=observed_page_size,
             configured_page_size=configured_page_size,
         )
+
+    if expected_descriptor_revalidation is not None:
+        try:
+            configured_revalidation = validate_grafx_descriptor_revalidation(
+                expected_descriptor_revalidation
+            )
+        except ValueError as exc:
+            raise _capability(
+                "grafx_descriptor_revalidation_configuration_invalid",
+                operation=operation,
+                backend="okto_grafx",
+            ) from exc
+        try:
+            observed_revalidation = database.descriptor_revalidation
+        except Exception as exc:
+            raise GraphUnavailable(
+                "The Grafx descriptor revalidation policy could not be inspected.",
+                details={
+                    "backend": "okto_grafx",
+                    "operation": operation,
+                    "reason": "grafx_descriptor_revalidation_unavailable",
+                    "error_type": type(exc).__name__,
+                },
+            ) from exc
+        try:
+            validated_observed = validate_grafx_descriptor_revalidation(
+                observed_revalidation
+            )
+        except ValueError as exc:
+            raise _capability(
+                "grafx_observed_descriptor_revalidation_invalid",
+                operation=operation,
+                backend="okto_grafx",
+            ) from exc
+        if validated_observed != configured_revalidation:
+            raise _capability(
+                "grafx_descriptor_revalidation_configuration_mismatch",
+                operation=operation,
+                backend="okto_grafx",
+                observed_descriptor_revalidation=validated_observed,
+                configured_descriptor_revalidation=configured_revalidation,
+            )
 
     if expected_path is not None:
         try:

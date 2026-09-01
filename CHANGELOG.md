@@ -9,6 +9,13 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Changed
+
+- Grafx descriptor revalidation is now an explicit, fail-closed Community setting. The safe
+  `strict` policy remains the default; controlled performance runs opt into `generation`, and the
+  shared pool, temporary recovery/restore opens and M-PULSE-7 receipts authenticate the effective
+  process-local policy before accepting a handle or result.
+
 ## [0.3.3] - 2026-08-23
 
 ### Added

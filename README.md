@@ -332,6 +332,7 @@ docker compose up -d
 | `MCP_HOST` | `127.0.0.1` | MCP bind host. Use `0.0.0.0` in containers. |
 | `DATA_DIR` | `~/.okto-pulse` | SQLite database, uploads and graph storage root. |
 | `KG_BASE_DIR` | derived from `DATA_DIR` | Per-board graph database location. |
+| `KG_GRAFX_DESCRIPTOR_REVALIDATION` | `strict` | Grafx process-local descriptor policy: `strict` or `generation`. |
 | `HF_HOME` | `~/.cache/huggingface` | Sentence-transformers model cache. |
 | `MCP_TRACE_ENABLED` | unset | Set to `1` to record MCP calls for replay testing. |
 | `MCP_TRACE_DIR` | `${KG_BASE_DIR}/mcp_traces` | Trace output directory when tracing is enabled; falls back to `./mcp_traces` when `KG_BASE_DIR` is unset. |
@@ -342,6 +343,30 @@ docker compose up -d
 | `MCP_ADMISSION_MAX_QUEUED_PER_SESSION` | `4` | Maximum queued MCP tool calls owned by one session. |
 | `MCP_ADMISSION_WAIT_TIMEOUT_MS` | `250` | Maximum queue wait before a fail-fast saturation result. Set to `0` to reject instead of waiting. |
 | `MCP_ADMISSION_RETRY_AFTER_MS` | `500` | Retry delay advertised by a retryable `mcp_admission_saturated` result. |
+
+For Grafx, `strict` proves the physical identity behind every cached descriptor hit. It is the safe
+default: use it when other tools may touch the database directory, during maintenance, recovery or
+forensics with uncertain directory provenance, on mixed-trust hosts, or whenever descriptor checks
+are not a measured bottleneck. Its
+cost is the repeated namespace/descriptor system calls on hot files.
+
+`generation` is an explicit performance opt-in. It amortizes those proofs only for Grafx's closed
+whitelist of canonical heap, catalog, index and WAL files; control and unknown names remain strict.
+Use it only when Pulse/Grafx exclusively own the directory, restores and file synchronization occur
+with every participant closed, the local filesystem satisfies Grafx's locking/replace contract, and
+a representative measurement justifies the tradeoff. Do not use it with live file replacement,
+replication tools that swap names, manual mutation, uncertain recovery provenance or unsupported
+shared filesystems: an out-of-protocol replacement can remain undetected until directed
+invalidation, generation advance or reopen. The policy is process-local and not persisted; it does
+not alter OCC, WAL, durability or multiwriter/multireader guarantees. Pulse fixes one policy per
+Grafx pool and refuses a handle whose observed effective mode differs from configuration. The full
+whitelist and transition matrix are specified in Okto Grafx's
+`docs/architecture/ST2_DESCRIPTOR_REVALIDATION.md`.
+
+One-shot schema-migration and rollout builders continue to open their separate, unbound candidate
+paths with Grafx's `strict` default and close them before activation. They do not share the live
+pool or its path, so this conservative choice neither changes nor weakens the configured policy of
+the active Pulse database.
 
 MCP admission is intentionally scoped to tool execution. Saturated calls receive
 a bounded, retryable outcome with `next_action.rel=retry_after`; initialization,

@@ -28,9 +28,16 @@ from okto_pulse.community.config import (
 
 
 class _FakeGrafxDatabase:
-    def __init__(self, path: Path, *, page_size: int) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        page_size: int,
+        descriptor_revalidation: str = "strict",
+    ) -> None:
         self.path = str(path)
         self.identity = SimpleNamespace(page_size=page_size)
+        self.descriptor_revalidation = descriptor_revalidation
         self.mutations = 0
 
 
@@ -52,6 +59,7 @@ def test_settings_default_to_ladybug_and_safe_grafx_geometry(tmp_path: Path) -> 
     assert settings.kg_graph_backend == "ladybug"
     assert settings.kg_global_graph_backend == "ladybug"
     assert settings.kg_grafx_page_size == 8192
+    assert settings.kg_grafx_descriptor_revalidation == "strict"
     assert settings.kg_ladybug_buffer_pool_mb == settings.kg_kuzu_buffer_pool_mb
     assert (
         settings.kg_global_ladybug_buffer_pool_mb
@@ -137,6 +145,18 @@ def test_settings_reject_unknown_backends(tmp_path: Path) -> None:
         CommunitySettings(
             data_dir=str(tmp_path),
             kg_graph_backend="automatic",
+            _env_file=None,
+        )
+
+
+@pytest.mark.parametrize("mode", ["always", "GENERATION", "", None, 1])
+def test_settings_reject_unknown_grafx_descriptor_revalidation_modes(
+    tmp_path: Path, mode: object
+) -> None:
+    with pytest.raises(ValidationError):
+        CommunitySettings(
+            data_dir=str(tmp_path),
+            kg_grafx_descriptor_revalidation=mode,  # type: ignore[arg-type]
             _env_file=None,
         )
 
@@ -352,6 +372,28 @@ def test_admission_rejects_config_and_database_path_mismatch_without_mutation(
             operation="ensure_current_grafx_board_schema",
         )
     assert path_mismatch.value.details["reason"] == "grafx_database_path_mismatch"
+    assert database.mutations == 0
+
+
+def test_admission_rejects_descriptor_revalidation_mismatch_without_mutation(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "grafx"
+    database = _grafx_database(path)
+
+    with pytest.raises(GraphCapabilityUnavailable) as mismatch:
+        admit_grafx_database(
+            database,
+            expected_page_size=8192,
+            expected_descriptor_revalidation="generation",
+            expected_path=path,
+            operation="grafx_database_pool_get",
+        )
+
+    assert (
+        mismatch.value.details["reason"]
+        == "grafx_descriptor_revalidation_configuration_mismatch"
+    )
     assert database.mutations == 0
 
 

@@ -97,11 +97,11 @@ class _GrafxRestoreBoundary:
             or not _same_path(current.active_path, path)
         ):
             raise ValueError("grafx_restore_cold_open_route_mismatch")
-        connector = self._connect
-        if connector is None:
-            from okto_grafx import connect as connector
-
-        return connector(path, page_size=current.page_size)
+        return self._board.grafx_pool.open_unpooled(
+            path,
+            page_size=current.page_size,
+            connect=self._connect,
+        )
 
     def close_board(self, board_id: str) -> None:
         snapshot = self._board.resolver.revalidate_session_authority(

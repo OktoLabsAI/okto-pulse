@@ -122,7 +122,10 @@ from okto_pulse.community.adapters.routed_graph_lifecycle import (
 from okto_pulse.community.adapters.routed_graph_transaction import (
     CommunityRoutedGraphTransaction,
 )
-from okto_pulse.community.config import validate_grafx_page_size
+from okto_pulse.community.config import (
+    validate_grafx_descriptor_revalidation,
+    validate_grafx_page_size,
+)
 
 GrafxConnector = Callable[..., Any]
 _SessionStatus = Literal["unresolved", "missing", "snapshot"]
@@ -525,11 +528,11 @@ class _GrafxBoardAccess:
                 "grafx_recovery_path_mismatch",
                 board_id=snapshot.scope_id,
             )
-        connector = self.connect
-        if connector is None:
-            from okto_grafx import connect as connector
-
-        return connector(path, page_size=snapshot.page_size)
+        return self.pool.open_unpooled(
+            path,
+            page_size=snapshot.page_size,
+            connect=self.connect,
+        )
 
 
 class _LadybugRuntimeMutations:
@@ -807,6 +810,9 @@ def build_community_routed_board_graph_composition(
         os.fspath(kg_base_dir if kg_base_dir is not None else settings.kg_base_dir)
     ).expanduser()
     configured_page_size = validate_grafx_page_size(settings.kg_grafx_page_size)
+    configured_descriptor_revalidation = validate_grafx_descriptor_revalidation(
+        getattr(settings, "kg_grafx_descriptor_revalidation", "strict")
+    )
     board_backend = settings.kg_graph_backend
     global_backend = settings.kg_global_graph_backend
     local_adoption_opener: list[Callable[[Path], Any]] = [
@@ -825,6 +831,7 @@ def build_community_routed_board_graph_composition(
             binding_store.root,
             connect=grafx_connect,
             max_entries=None,
+            descriptor_revalidation=configured_descriptor_revalidation,
         )
         resolver = CommunityBoardRouteSessionResolver(
             binding_store,
@@ -844,6 +851,10 @@ def build_community_routed_board_graph_composition(
     assert binding_store is not None
     assert resolver is not None
     assert grafx_pool is not None
+    if grafx_pool.descriptor_revalidation != configured_descriptor_revalidation:
+        raise ValueError(
+            "the shared Grafx pool descriptor revalidation policy must match settings"
+        )
     rollout_mutation_recorder = CommunityGraphRolloutMutationRecorder(
         binding_store.root
     )

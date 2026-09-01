@@ -54,9 +54,12 @@ class _FakeGrafxTransaction:
 
 
 class _FakeGrafxDatabase:
-    def __init__(self, path: Path, page_size: int) -> None:
+    def __init__(
+        self, path: Path, page_size: int, descriptor_revalidation: str = "strict"
+    ) -> None:
         self.path = str(path)
         self.identity = SimpleNamespace(page_size=page_size)
+        self.descriptor_revalidation = descriptor_revalidation
         self.closed = False
         self.close_calls = 0
         self.begin_modes: list[str] = []
@@ -74,11 +77,19 @@ class _GrafxConnector:
     def __init__(self, *, persisted_page_size: int | None = None) -> None:
         self.persisted_page_size = persisted_page_size
         self.calls: list[tuple[Path, int]] = []
+        self.descriptor_revalidation_calls: list[str] = []
         self.databases: list[_FakeGrafxDatabase] = []
 
-    def __call__(self, path: Path, *, page_size: int) -> _FakeGrafxDatabase:
+    def __call__(
+        self,
+        path: Path,
+        *,
+        page_size: int,
+        descriptor_revalidation: str = "strict",
+    ) -> _FakeGrafxDatabase:
         path = Path(path)
         self.calls.append((path, page_size))
+        self.descriptor_revalidation_calls.append(descriptor_revalidation)
         if (
             self.persisted_page_size is not None
             and path.exists()
@@ -92,7 +103,7 @@ class _GrafxConnector:
         observed = self.persisted_page_size or page_size
         path.mkdir(parents=True, exist_ok=True)
         (path / "grafx.meta").write_bytes(b"grafx")
-        database = _FakeGrafxDatabase(path, observed)
+        database = _FakeGrafxDatabase(path, observed, descriptor_revalidation)
         self.databases.append(database)
         return database
 
@@ -103,12 +114,14 @@ def _settings(
     board_backend: str = "grafx",
     global_backend: str = "grafx",
     page_size: int = PAGE_SIZE,
+    descriptor_revalidation: str = "strict",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         kg_base_dir=str(root),
         kg_graph_backend=board_backend,
         kg_global_graph_backend=global_backend,
         kg_grafx_page_size=page_size,
+        kg_grafx_descriptor_revalidation=descriptor_revalidation,
         kg_ladybug_max_db_size_gb=2,
     )
 
@@ -119,12 +132,14 @@ def _build(
     *,
     board_backend: str = "grafx",
     page_size: int = PAGE_SIZE,
+    descriptor_revalidation: str = "strict",
 ) -> composition.CommunityRoutedBoardGraphComposition:
     return composition.build_community_routed_board_graph_composition(
         settings=_settings(
             root,
             board_backend=board_backend,
             page_size=page_size,
+            descriptor_revalidation=descriptor_revalidation,
         ),
         grafx_connect=connector,
     )
@@ -687,6 +702,31 @@ def test_builder_accepts_and_validates_exact_prebuilt_shared_components(
             resolver=first.resolver,
             grafx_pool=bounded,
         )
+
+    with pytest.raises(ValueError, match="descriptor revalidation policy"):
+        composition.build_community_routed_board_graph_composition(
+            settings=_settings(root, descriptor_revalidation="generation"),
+            binding_store=first.binding_store,
+            resolver=first.resolver,
+            grafx_pool=first.grafx_pool,
+        )
+
+
+def test_builder_applies_one_generation_policy_to_the_shared_pool(
+    tmp_path: Path,
+) -> None:
+    connector = _GrafxConnector()
+    bundle = _build(
+        tmp_path / "kg",
+        connector,
+        descriptor_revalidation="generation",
+    )
+
+    snapshot = bundle.initialize_board_route("board-generation")
+
+    assert bundle.grafx_pool.descriptor_revalidation == "generation"
+    assert connector.descriptor_revalidation_calls == ["generation"]
+    assert snapshot.backend == "grafx"
 
 
 def test_explicit_initialization_is_the_only_grafx_first_boot_door(

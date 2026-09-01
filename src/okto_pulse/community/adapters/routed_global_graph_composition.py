@@ -594,12 +594,11 @@ class _GrafxRecoveryFactory:
             )
 
         def connect(path: Path) -> Any:
-            opener = self._connect
-            if opener is None:
-                import okto_grafx
-
-                opener = okto_grafx.connect
-            return opener(path, page_size=snapshot.page_size)
+            return self._pool_manager.pool.open_unpooled(
+                path,
+                page_size=snapshot.page_size,
+                connect=self._connect,
+            )
 
         def binding_fence(_phase: str) -> None:
             observed = self._resolver.inspect_global_route()

@@ -21,6 +21,7 @@ from okto_pulse.community.adapters.telemetry_effect_config import (
 GRAPH_DB_MAX_SIZE_GB_VALUES: tuple[int, ...] = (2, 4, 8, 16, 32, 64)
 DataDirOrigin = Literal["explicit", "DATA_DIR", "OKTO_PULSE_HOME", "default"]
 GraphBackend = Literal["ladybug", "grafx"]
+GrafxDescriptorRevalidation = Literal["strict", "generation"]
 
 PULSE_GRAFX_DEFAULT_PAGE_SIZE = 8192
 PULSE_GRAFX_MIN_PAGE_SIZE = 4096
@@ -57,6 +58,16 @@ def validate_grafx_page_size(value: int) -> int:
         raise ValueError("kg_grafx_page_size must be between 4096 and 32768 bytes")
     if value & (value - 1):
         raise ValueError("kg_grafx_page_size must be a power of two")
+    return value
+
+
+def validate_grafx_descriptor_revalidation(value: object) -> str:
+    """Validate the process-local descriptor policy accepted by Okto Grafx."""
+
+    if type(value) is not str or value not in {"strict", "generation"}:
+        raise ValueError(
+            "kg_grafx_descriptor_revalidation must be 'strict' or 'generation'"
+        )
     return value
 
 
@@ -150,6 +161,7 @@ class CommunitySettings(CoreSettings, BaseSettings):
     kg_graph_backend: GraphBackend = "ladybug"
     kg_global_graph_backend: GraphBackend = "ladybug"
     kg_grafx_page_size: int = PULSE_GRAFX_DEFAULT_PAGE_SIZE
+    kg_grafx_descriptor_revalidation: GrafxDescriptorRevalidation = "strict"
 
     # Community ships sentence-transformers as a mandatory dep (pyproject.toml),
     # so override the core default of "stub" — semantic KG search needs real
@@ -276,6 +288,11 @@ class CommunitySettings(CoreSettings, BaseSettings):
     @classmethod
     def _validate_grafx_page_size(cls, value: int) -> int:
         return validate_grafx_page_size(value)
+
+    @field_validator("kg_grafx_descriptor_revalidation", mode="before")
+    @classmethod
+    def _validate_grafx_descriptor_revalidation(cls, value: object) -> str:
+        return validate_grafx_descriptor_revalidation(value)
 
     @property
     def kg_ladybug_buffer_pool_mb(self) -> int:

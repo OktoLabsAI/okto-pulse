@@ -68,6 +68,7 @@ from okto_pulse.community.adapters.logical_transfer_factories import (
 from okto_pulse.community.config import CommunitySettings
 
 _BACKENDS: Final[frozenset[str]] = frozenset({"ladybug", "grafx"})
+GRAFX_DESCRIPTOR_REVALIDATION: Final[str] = "generation"
 _BOARD_META_TYPE: Final[str] = "BoardMeta"
 _BATCH_SIZE: Final[int] = 500
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -734,6 +735,17 @@ class RealCommunityGateBackend:
         routed = composition.routed_graph
         _require(routed is not None, "community_routed_graph_bundle_missing")
         board = routed.board
+        _require(
+            board.grafx_pool.descriptor_revalidation
+            == self._settings.kg_grafx_descriptor_revalidation,
+            "grafx_pool_descriptor_revalidation_mismatch",
+        )
+        if self._backend == "grafx":
+            _require(
+                board.grafx_pool.descriptor_revalidation
+                == GRAFX_DESCRIPTOR_REVALIDATION,
+                "grafx_gate_descriptor_revalidation_mismatch",
+            )
 
         try:
             binding = board.binding_store.inspect_board_binding(self._board_id)
@@ -823,7 +835,7 @@ class RealCommunityGateBackend:
             raise RealGateBackendError(
                 f"backend_distribution_not_installed:{distribution}"
             ) from failure
-        return {
+        identity = {
             "backend": self._backend,
             "backend_version": version,
             "generation": binding.generation,
@@ -838,6 +850,11 @@ class RealCommunityGateBackend:
                 }
             ),
         }
+        if self._backend == "grafx":
+            identity["descriptor_revalidation"] = (
+                self._board.grafx_pool.descriptor_revalidation
+            )
+        return identity
 
     def observe_fingerprints(self) -> dict[str, str]:
         """Return both named digests derived from the same physical snapshot."""
@@ -1540,6 +1557,7 @@ def _settings(root: Path, backend: str) -> CommunitySettings:
         kg_graph_backend=backend,
         kg_global_graph_backend=backend,
         kg_grafx_page_size=8192,
+        kg_grafx_descriptor_revalidation=GRAFX_DESCRIPTOR_REVALIDATION,
         kg_embedding_mode="stub",
         kg_kuzu_max_db_size_gb=2,
     )
@@ -1572,6 +1590,7 @@ async def grafx_factory(context: object) -> RealCommunityGateBackend:
 
 
 __all__ = [
+    "GRAFX_DESCRIPTOR_REVALIDATION",
     "PhysicalFingerprintObservation",
     "RealCommunityGateBackend",
     "RealGateBackendError",

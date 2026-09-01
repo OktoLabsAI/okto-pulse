@@ -8,6 +8,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -187,12 +188,15 @@ class _FakeBackend:
         self.graph_transaction = _FakeTransaction(state)
 
     def identity(self) -> dict[str, Any]:
-        return {
+        identity = {
             "backend": self._context.backend,
             "backend_version": f"fake-{self._context.backend}-1",
             "generation": "generation-1",
             "storage_identity": f"{self._context.run_id}/{self._context.backend}",
         }
+        if self._context.backend == "grafx":
+            identity["descriptor_revalidation"] = "generation"
+        return identity
 
     def observe_fingerprints(self) -> dict[str, str]:
         state = self._state.model.export_state()
@@ -379,12 +383,15 @@ class _WorkerBackend:
         self.graph_transaction = object()
 
     def identity(self) -> dict[str, str]:
-        return {
+        identity = {
             "backend": self._context.backend,
             "backend_version": "worker-1",
             "generation": "worker-generation",
             "storage_identity": "worker-storage",
         }
+        if self._context.backend == "grafx":
+            identity["descriptor_revalidation"] = "generation"
+        return identity
 
     def reopen_recover_verify_fingerprint(self, **_kwargs: Any) -> dict[str, Any]:
         raise AssertionError("not used by the isolated query worker")
@@ -394,6 +401,7 @@ class _WorkerBackend:
             "logical_graph_sha256": "a" * 64,
             "trace_model_sha256": FINAL_FINGERPRINT,
         }
+
 
     def run_crash_point(self, _point: dict[str, Any]) -> dict[str, Any]:
         raise AssertionError("not used by the isolated query worker")
@@ -415,6 +423,54 @@ class _WorkerBackend:
 
     def close(self) -> None:
         return None
+
+
+@pytest.mark.parametrize("mode", [None, "strict", "always"])
+def test_grafx_backend_identity_requires_the_effective_generation_policy(
+    mode: str | None,
+) -> None:
+    identity: dict[str, Any] = {
+        "backend": "grafx",
+        "backend_version": "test",
+        "generation": "generation-1",
+        "storage_identity": "storage-1",
+    }
+    if mode is not None:
+        identity["descriptor_revalidation"] = mode
+    backend = SimpleNamespace(identity=lambda: dict(identity))
+    context = GateBackendContext(
+        backend="grafx",
+        board_id="board",
+        workspace="workspace",
+        run_id="run",
+    )
+
+    with pytest.raises(
+        GateFailure,
+        match="did not prove descriptor_revalidation=generation",
+    ):
+        asyncio.run(acceptance_runner._backend_identity(backend, context))
+
+
+def test_grafx_backend_identity_records_the_effective_generation_policy() -> None:
+    identity = {
+        "backend": "grafx",
+        "backend_version": "test",
+        "descriptor_revalidation": "generation",
+        "generation": "generation-1",
+        "storage_identity": "storage-1",
+    }
+    backend = SimpleNamespace(identity=lambda: dict(identity))
+    context = GateBackendContext(
+        backend="grafx",
+        board_id="board",
+        workspace="workspace",
+        run_id="run",
+    )
+
+    observed = asyncio.run(acceptance_runner._backend_identity(backend, context))
+
+    assert observed == identity
 
 
 class _WorkerFactory:

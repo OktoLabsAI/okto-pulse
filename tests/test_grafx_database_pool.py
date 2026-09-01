@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphCapabilityUnavailable,
+    GraphUnavailable,
 )
 
 from okto_pulse.community.adapters.grafx_database_pool import (
@@ -36,9 +37,12 @@ class _FakeIdentity:
 class _FakeDatabase:
     """A stand-in that reports the geometry and path admission checks."""
 
-    def __init__(self, path: Path, page_size: int) -> None:
+    def __init__(
+        self, path: Path, page_size: int, descriptor_revalidation: str = "strict"
+    ) -> None:
         self.path = str(path)
         self.identity = _FakeIdentity(page_size)
+        self.descriptor_revalidation = descriptor_revalidation
         self.close_calls = 0
         self.close_failures = 0
         self.closed = False
@@ -54,9 +58,16 @@ class _FakeDatabase:
 class _Connector:
     """Records every open so a test can prove how many actually happened."""
 
-    def __init__(self, *, page_size: int = PAGE_SIZE) -> None:
+    def __init__(
+        self,
+        *,
+        page_size: int = PAGE_SIZE,
+        descriptor_revalidation: str | None = None,
+    ) -> None:
         self.page_size = page_size
         self.calls: list[tuple[Path, int]] = []
+        self.descriptor_revalidation_calls: list[str] = []
+        self.descriptor_revalidation = descriptor_revalidation
         self.databases: list[_FakeDatabase] = []
         self.failure: Exception | None = None
         # A real open takes time. Widening that window is what turns the
@@ -64,13 +75,20 @@ class _Connector:
         # one the GIL wins for it by finishing before the next thread starts.
         self.open_delay_seconds = 0.0
 
-    def __call__(self, path: Path, *, page_size: int) -> _FakeDatabase:
+    def __call__(
+        self, path: Path, *, page_size: int, descriptor_revalidation: str
+    ) -> _FakeDatabase:
         self.calls.append((Path(path), page_size))
+        self.descriptor_revalidation_calls.append(descriptor_revalidation)
         if self.open_delay_seconds:
             time.sleep(self.open_delay_seconds)
         if self.failure is not None:
             raise self.failure
-        database = _FakeDatabase(Path(path), self.page_size)
+        database = _FakeDatabase(
+            Path(path),
+            self.page_size,
+            self.descriptor_revalidation or descriptor_revalidation,
+        )
         self.databases.append(database)
         return database
 
@@ -191,6 +209,129 @@ class TestGeometryIsPartOfIdentity:
         assert len(pool) == 0
 
 
+class TestDescriptorPolicyIsFixedForThePool:
+    def test_generation_reaches_connect_and_is_observed_before_caching(
+        self, root: Path
+    ) -> None:
+        connector = _Connector()
+        pool = CommunityGrafxDatabasePool(
+            root,
+            connect=connector,
+            descriptor_revalidation="generation",
+        )
+
+        database = pool.get(root / "board-a", page_size=PAGE_SIZE)
+
+        assert pool.descriptor_revalidation == "generation"
+        assert database.descriptor_revalidation == "generation"
+        assert connector.descriptor_revalidation_calls == ["generation"]
+        assert len(pool) == 1
+
+    def test_temporary_open_uses_the_same_policy_without_entering_the_cache(
+        self, root: Path
+    ) -> None:
+        connector = _Connector()
+        pool = CommunityGrafxDatabasePool(
+            root,
+            connect=connector,
+            descriptor_revalidation="generation",
+        )
+
+        database = pool.open_unpooled(root / "candidate", page_size=PAGE_SIZE)
+
+        assert database.descriptor_revalidation == "generation"
+        assert connector.descriptor_revalidation_calls == ["generation"]
+        assert len(pool) == 0
+        database.close()
+
+    def test_an_observed_policy_mismatch_is_closed_and_never_cached(
+        self, root: Path
+    ) -> None:
+        connector = _Connector(descriptor_revalidation="strict")
+        pool = CommunityGrafxDatabasePool(
+            root,
+            connect=connector,
+            descriptor_revalidation="generation",
+        )
+
+        with pytest.raises(GraphCapabilityUnavailable) as refused:
+            pool.get(root / "board-a", page_size=PAGE_SIZE)
+
+        assert (
+            refused.value.details["reason"]
+            == "grafx_descriptor_revalidation_configuration_mismatch"
+        )
+        assert len(pool) == 0
+        assert connector.databases[0].close_calls == 1
+
+    def test_a_missing_observed_policy_is_closed_and_never_cached(
+        self, root: Path
+    ) -> None:
+        class _MissingPolicyConnector(_Connector):
+            def __call__(
+                self, path: Path, *, page_size: int, descriptor_revalidation: str
+            ) -> _FakeDatabase:
+                database = super().__call__(
+                    path,
+                    page_size=page_size,
+                    descriptor_revalidation=descriptor_revalidation,
+                )
+                del database.descriptor_revalidation
+                return database
+
+        connector = _MissingPolicyConnector()
+        pool = CommunityGrafxDatabasePool(
+            root,
+            connect=connector,
+            descriptor_revalidation="generation",
+        )
+
+        with pytest.raises(GraphUnavailable) as refused:
+            pool.get(root / "board-a", page_size=PAGE_SIZE)
+
+        assert (
+            refused.value.details["reason"]
+            == "grafx_descriptor_revalidation_unavailable"
+        )
+        assert len(pool) == 0
+        assert connector.databases[0].close_calls == 1
+
+    def test_an_unknown_observed_policy_is_closed_and_never_cached(
+        self, root: Path
+    ) -> None:
+        connector = _Connector(descriptor_revalidation="always")
+        pool = CommunityGrafxDatabasePool(
+            root,
+            connect=connector,
+            descriptor_revalidation="generation",
+        )
+
+        with pytest.raises(GraphCapabilityUnavailable) as refused:
+            pool.get(root / "board-a", page_size=PAGE_SIZE)
+
+        assert (
+            refused.value.details["reason"]
+            == "grafx_observed_descriptor_revalidation_invalid"
+        )
+        assert len(pool) == 0
+        assert connector.databases[0].close_calls == 1
+
+    @pytest.mark.parametrize("mode", ["always", "GENERATION", "", None, 1])
+    def test_an_invalid_pool_policy_is_refused_before_connect(
+        self, root: Path, mode: object
+    ) -> None:
+        connector = _Connector()
+
+        with pytest.raises(GrafxDatabasePoolError) as refused:
+            CommunityGrafxDatabasePool(
+                root,
+                connect=connector,
+                descriptor_revalidation=mode,  # type: ignore[arg-type]
+            )
+
+        assert refused.value.reason == "pool_descriptor_revalidation_invalid"
+        assert connector.calls == []
+
 class TestNothingPartiallyOpenIsPublished:
     def test_a_failed_connect_caches_nothing(self, root: Path) -> None:
         connector = _Connector()
@@ -232,8 +373,14 @@ class TestNothingPartiallyOpenIsPublished:
         self, root: Path
     ) -> None:
         class _WrongPathConnector(_Connector):
-            def __call__(self, path: Path, *, page_size: int) -> _FakeDatabase:
-                database = super().__call__(path, page_size=page_size)
+            def __call__(
+                self, path: Path, *, page_size: int, descriptor_revalidation: str
+            ) -> _FakeDatabase:
+                database = super().__call__(
+                    path,
+                    page_size=page_size,
+                    descriptor_revalidation=descriptor_revalidation,
+                )
                 database.path = str(Path(path).parent / "somewhere-else")
                 return database
 
