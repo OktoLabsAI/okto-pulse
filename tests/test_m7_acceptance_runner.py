@@ -528,6 +528,16 @@ class _DelayedWorkerFactory:
         )
 
 
+def _write_success_without_readiness(
+    output_path: str,
+    _control: Any,
+) -> None:
+    Path(output_path).write_text(
+        json.dumps({"worker_status": "ok"}),
+        encoding="utf-8",
+    )
+
+
 class _NoOpStore(_FakeStore):
     def __getattr__(self, name: str):
         if name not in self._MUTATIONS:
@@ -1218,6 +1228,58 @@ def test_pulse_operation_still_has_a_real_watchdog(tmp_path: Path) -> None:
             entry,
             1,
         )
+
+
+def test_isolated_worker_fails_closed_without_authenticated_readiness() -> None:
+    children_before = {child.pid for child in multiprocessing.active_children()}
+
+    with pytest.raises(GateFailure, match="did not reach authenticated readiness"):
+        acceptance_runner._run_isolated_operation_worker(
+            case_label="readiness probe",
+            output_prefix="mpulse7-readiness-probe-",
+            target=_write_success_without_readiness,
+            target_args=(),
+            timeout_seconds=1,
+        )
+
+    assert {child.pid for child in multiprocessing.active_children()} <= children_before
+
+
+def test_isolated_worker_stops_child_when_supervisor_validation_raises(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    children_before = {child.pid for child in multiprocessing.active_children()}
+    context = GateBackendContext(
+        backend="ladybug",
+        board_id="isolated-board",
+        workspace=str(tmp_path),
+        run_id="supervisor-failure-run",
+    )
+    case = {
+        "id": "schema-version-supervisor-failure",
+        "ordering": "ordered",
+        "method": "get_schema_version",
+        "arguments": {"board_id": "${board_id}"},
+    }
+
+    def reject_timestamp(*_args: Any, **_kwargs: Any) -> int:
+        raise RuntimeError("supervisor timestamp validation failed")
+
+    monkeypatch.setattr(
+        acceptance_runner,
+        "_isolated_operation_timestamp",
+        reject_timestamp,
+    )
+    with pytest.raises(RuntimeError, match="timestamp validation failed"):
+        run_isolated_board_query(
+            _DelayedWorkerFactory(operation_delay_seconds=10.0),
+            context,
+            case,
+            30,
+        )
+
+    assert {child.pid for child in multiprocessing.active_children()} <= children_before
 
 
 def test_noop_backend_cannot_echo_a_successful_recovery(tmp_path: Path) -> None:

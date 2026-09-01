@@ -2531,87 +2531,75 @@ def _run_isolated_operation_worker(
                 f"cannot start isolated {case_label}: "
                 f"{type(failure).__name__}: {failure}"
             ) from failure
-
-        ready = _wait_for_isolated_worker_event(
-            process,
-            control.ready,
-            _ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS,
-        )
-        if not ready and process.is_alive():
-            _stop_isolated_worker(process)
-            raise GateFailure(
-                f"{case_label} worker did not reach authenticated readiness within "
-                f"{_ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS}s"
+        try:
+            ready = _wait_for_isolated_worker_event(
+                process,
+                control.ready,
+                _ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS,
             )
-
-        if ready:
+            _require(
+                ready,
+                f"{case_label} worker did not reach authenticated readiness within "
+                f"{_ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS}s",
+            )
             control.start.set()
             started = _wait_for_isolated_worker_event(
                 process,
                 control.operation_started,
                 _ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS,
             )
-            if not started and process.is_alive():
-                _stop_isolated_worker(process)
-                raise GateFailure(
-                    f"{case_label} worker did not start its prepared operation within "
-                    f"{_ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS}s"
-                )
-            if started:
-                operation_started_ns = _isolated_operation_timestamp(
-                    control.operation_started_ns,
-                    label="operation-start",
-                )
-                elapsed_ns = max(0, time.monotonic_ns() - operation_started_ns)
-                remaining_seconds = max(
-                    0.0,
-                    timeout_seconds - elapsed_ns / 1_000_000_000,
-                )
-                finished = _wait_for_isolated_worker_event(
-                    process,
-                    control.operation_finished,
-                    remaining_seconds,
-                )
-                if not finished:
-                    with control.operation_finished_ns.get_lock():
-                        finished = int(control.operation_finished_ns.value) > 0
-                if not finished and process.is_alive():
-                    _stop_isolated_worker(process)
-                    raise GateFailure(
-                        f"{case_label} exceeded the real {timeout_seconds}s "
-                        "operation watchdog"
-                    )
-                if finished:
-                    operation_finished_ns = _isolated_operation_timestamp(
-                        control.operation_finished_ns,
-                        label="operation-finish",
-                    )
-                    _require(
-                        operation_finished_ns >= operation_started_ns,
-                        "isolated worker operation timestamps are not monotonic",
-                    )
-                    if (
-                        operation_finished_ns - operation_started_ns
-                        > timeout_seconds * 1_000_000_000
-                    ):
-                        _stop_isolated_worker(process)
-                        raise GateFailure(
-                            f"{case_label} exceeded the real {timeout_seconds}s "
-                            "operation watchdog"
-                        )
-
-        process.join(_ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS)
-        if process.is_alive():
-            _stop_isolated_worker(process)
-            raise GateFailure(
-                f"{case_label} worker did not finish post-validation and close within "
-                f"{_ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS}s"
+            _require(
+                started,
+                f"{case_label} worker did not start its prepared operation within "
+                f"{_ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS}s",
             )
-        _require(
-            process.exitcode == 0,
-            f"{case_label} worker exited with code {process.exitcode}",
-        )
-        if ready:
+            operation_started_ns = _isolated_operation_timestamp(
+                control.operation_started_ns,
+                label="operation-start",
+            )
+            elapsed_ns = max(0, time.monotonic_ns() - operation_started_ns)
+            remaining_seconds = max(
+                0.0,
+                timeout_seconds - elapsed_ns / 1_000_000_000,
+            )
+            finished = _wait_for_isolated_worker_event(
+                process,
+                control.operation_finished,
+                remaining_seconds,
+            )
+            if not finished:
+                with control.operation_finished_ns.get_lock():
+                    finished = int(control.operation_finished_ns.value) > 0
+            _require(
+                finished,
+                f"{case_label} exceeded the real {timeout_seconds}s "
+                "operation watchdog",
+            )
+            operation_finished_ns = _isolated_operation_timestamp(
+                control.operation_finished_ns,
+                label="operation-finish",
+            )
+            _require(
+                operation_finished_ns >= operation_started_ns,
+                "isolated worker operation timestamps are not monotonic",
+            )
+            _require(
+                operation_finished_ns - operation_started_ns
+                <= timeout_seconds * 1_000_000_000,
+                f"{case_label} exceeded the real {timeout_seconds}s "
+                "operation watchdog",
+            )
+
+            process.join(_ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS)
+            _require(
+                not process.is_alive(),
+                f"{case_label} worker did not finish post-validation and close within "
+                f"{_ISOLATED_WORKER_CONTROL_TIMEOUT_SECONDS}s",
+            )
+            _require(
+                process.exitcode == 0,
+                f"{case_label} worker exited with code {process.exitcode}",
+            )
             _require(
                 control.operation_started.is_set(),
                 f"{case_label} worker exited without starting its operation",
@@ -2632,18 +2620,19 @@ def _run_isolated_operation_worker(
                 operation_finished_ns >= operation_started_ns,
                 "isolated worker operation timestamps are not monotonic",
             )
-            if (
+            _require(
                 operation_finished_ns - operation_started_ns
-                > timeout_seconds * 1_000_000_000
-            ):
-                raise GateFailure(
-                    f"{case_label} exceeded the real {timeout_seconds}s "
-                    "operation watchdog"
-                )
-        _require(output_path.is_file(), f"{case_label} produced no receipt")
-        document = _load_json_document(output_path)
-        _require(type(document) is dict, "isolated worker receipt is not an object")
-        return document
+                <= timeout_seconds * 1_000_000_000,
+                f"{case_label} exceeded the real {timeout_seconds}s "
+                "operation watchdog",
+            )
+            _require(output_path.is_file(), f"{case_label} produced no receipt")
+            document = _load_json_document(output_path)
+            _require(type(document) is dict, "isolated worker receipt is not an object")
+            return document
+        except BaseException:
+            _stop_isolated_worker(process)
+            raise
 
 
 def run_isolated_board_query(
