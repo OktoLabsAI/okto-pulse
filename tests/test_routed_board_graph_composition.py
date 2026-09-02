@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import threading
@@ -1061,6 +1062,31 @@ async def test_transaction_pins_shared_grafx_handle_until_terminal_close(
     assert bundle.grafx_pool.pin_count(snapshot.active_path) == 0
     assert bundle.grafx_pool.close(snapshot.active_path) is True
     assert connector.databases[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_transaction_terminal_close_is_safe_in_copied_worker_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Blocking graph I/O may finish outside the begin ContextVar context."""
+
+    connector = _GrafxConnector()
+    bundle = _build(tmp_path / "kg", connector)
+    snapshot = bundle.initialize_board_route("board-cross-context")
+    monkeypatch.setattr(
+        routed_transaction,
+        "revalidate_board_graph_write_lease",
+        lambda _board_id, *, failure_phase: None,
+    )
+
+    scope = await bundle.graph_transaction.begin("board-cross-context")
+    assert bundle.grafx_pool.pin_count(snapshot.active_path) == 1
+
+    await asyncio.to_thread(lambda: asyncio.run(scope.rollback()))
+
+    assert bundle.grafx_pool.pin_count(snapshot.active_path) == 0
+    assert bundle.grafx_pool.close(snapshot.active_path) is True
 
 
 @pytest.mark.asyncio

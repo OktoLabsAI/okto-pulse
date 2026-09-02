@@ -1582,6 +1582,15 @@ def cmd_kg_backfill(args):
 
     # ── Path B: Apply ────────────────────────────────────────────────
     if apply_writes:
+        # Historical consolidation acquires the same durable writer lease as
+        # the server and ``init`` paths.  Register Community's concrete
+        # coordination ports before entering the async apply flow; otherwise
+        # a standalone CLI process reaches the queue with no write_lock_port.
+        from okto_pulse.community.adapters.coordination import (
+            register_community_coordination_providers,
+        )
+
+        register_community_coordination_providers()
         asyncio.run(_apply_backfill(board_id, emit_json, settings))
         sys.exit(0)
 

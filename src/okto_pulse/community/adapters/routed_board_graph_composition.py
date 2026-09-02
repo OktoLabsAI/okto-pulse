@@ -1350,7 +1350,14 @@ def build_community_routed_board_graph_composition(
         resolver,
         ladybug=ladybug_transaction,
         grafx_pool=grafx_pool,
-        operation_window=operation_window,
+        # A GraphTransaction is opened in the async orchestration context but
+        # its blocking engine work (including terminal commit/rollback) runs
+        # in a worker thread.  The generic operation_window also owns a
+        # ContextVar route-session token, which cannot legally be reset from
+        # that copied worker context.  Transactions already pin and
+        # revalidate their immutable snapshot explicitly, so retain only the
+        # thread-neutral physical close guard for their full lifetime.
+        operation_window=kg_runtime.board_graph_operation_window,
         mutation_recorder=rollout_mutation_recorder,
     )
     graph_lifecycle = CommunityRoutedGraphLifecycle(
