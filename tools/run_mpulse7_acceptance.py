@@ -377,7 +377,7 @@ from okto_pulse.community.adapters.grafx_relationship_layout import (
 
 BACKENDS = ("ladybug", "grafx")
 RECEIPT_FORMAT = "okto-pulse-community-m-pulse-7-acceptance-receipt/1"
-MANIFEST_PATH = REPO_ROOT / "tests" / "fixtures" / ("m_pulse_7_acceptance_gate_v1.json")
+MANIFEST_PATH = REPO_ROOT / "tests" / "fixtures" / ("m_pulse_7_acceptance_gate_v2.json")
 TOOLS_ROOT = REPO_ROOT / "tools"
 RUNNER_SOURCE_PATH = TOOLS_ROOT / "run_mpulse7_acceptance.py"
 FACTORY_SOURCE_PATH = TOOLS_ROOT / "mpulse7_acceptance_backends.py"
@@ -401,10 +401,10 @@ CERTIFICATION_PROCESS_AUTHORITY_FORMAT = (
 # Changing the frozen manifest/corpus requires an explicit new gate version and
 # corresponding code review, rather than recomputing digests inside altered input.
 CERTIFICATION_MANIFEST_FILE_SHA256 = (
-    "94beae63c97da124e0dd5681926c5be72688ff38c96d45d4d49d18e63dfa2f9b"
+    "e5c9ef4432b2c550e8ba22fc57ee607a0eabdb8cf6e49a87ae080d50c726ee66"
 )
 CERTIFICATION_MANIFEST_CANONICAL_SHA256 = (
-    "b3cbdfdcd3989dcf2d0f0831c57905336e0e2bb05d0f66876242feca1fa03012"
+    "ea7b070b8e98b3a53b12bfe89cc4ff4355c5c433da03b8bcf681733398bd199e"
 )
 CERTIFICATION_PULSE_CORPUS_FILE_SHA256 = (
     "0997747ed8bb9172d05781a62e5f81e7694630b173aaa152ac9ea28daec9d13f"
@@ -808,6 +808,21 @@ def verify_frozen_inputs(
         ),
         "the Board result supplement contains an open or invalid query case",
     )
+    for case in queries:
+        if case.get("method") != "vector_search":
+            continue
+        arguments = case.get("arguments")
+        threshold = (
+            arguments.get("min_similarity") if type(arguments) is dict else None
+        )
+        _require(
+            type(arguments) is dict
+            and type(threshold) in (int, float)
+            and not isinstance(threshold, bool)
+            and math.isfinite(float(threshold))
+            and 0.0 <= float(threshold) <= 1.0,
+            f"Board vector_search case {case.get('id')} has min_similarity outside [0,1]",
+        )
     _require(
         board_result_supplement_sha256(manifest) == supplement["queries_sha256"],
         "the Board result supplement digest differs from the manifest",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import math
 from collections import Counter
 from copy import deepcopy
 from pathlib import Path
@@ -52,7 +53,7 @@ from okto_pulse.community.adapters.kuzu_graph_transaction import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "tests" / "fixtures" / "m_pulse_7_acceptance_gate_v1.json"
+MANIFEST_PATH = ROOT / "tests" / "fixtures" / "m_pulse_7_acceptance_gate_v2.json"
 EXPECTED_NODE_TYPES_SHA256 = (
     "de3ee8aec849842834e1f3b102ccda01920fa450f57bf3a0702b876567779d9b"
 )
@@ -63,7 +64,7 @@ EXPECTED_TRACE_SHA256 = (
     "243d25a4fc807b5b29b63a64c597acf56d1dc94ca026030077178ba6abd86bea"
 )
 EXPECTED_SUPPLEMENT_SHA256 = (
-    "f88cebf59149f516f110bae51d26377ac0574cf967bc816173faa1ce821a9369"
+    "f0f50de41464a112147d1d13552fcb4b964022799959f5b64c64ca68df3ac2cd"
 )
 EXPECTED_CRASH_POINTS_SHA256 = (
     "b47c850dac2c876d2486ba4ab1ecbd4186c880cb2e1d96965ad1d8709ed5127b"
@@ -432,7 +433,7 @@ def test_trace_is_exactly_frozen_and_schema_authoritative() -> None:
     assert manifest["scope"]["source_revisions"] == {
         "community": "050ced9b79533d50efed453d53ed450984f75cf3",
         "core": "ccc1f345ece1db89a274cfdd634bd4da27028f63",
-        "okto_grafx_corpus": "a1c3c496fe21d8e9f86953ca3932aced5917fb22",
+        "okto_grafx_corpus": "8cee82b9b92529f2ba767519c01c161f20876dce",
     }
     assert trace["seed"] == "0x6F6B746F4D503731"
     assert trace["operation_count"] == 10_000
@@ -742,6 +743,12 @@ def test_crash_points_corpus_and_bilateral_benchmark_are_frozen() -> None:
                 assert arguments[type_field] in NODE_TYPES
         if "graph_layer" in arguments:
             assert arguments["graph_layer"] in {"all", "canonical", "working"}
+        if case["method"] == "vector_search":
+            threshold = arguments["min_similarity"]
+            assert type(threshold) in (int, float)
+            assert not isinstance(threshold, bool)
+            assert math.isfinite(float(threshold))
+            assert 0.0 <= float(threshold) <= 1.0
         if case["method"] == "edge_exists":
             assert (
                 arguments["edge_type"],

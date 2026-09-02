@@ -8,7 +8,7 @@
     "source_revisions": {
       "community": "050ced9b79533d50efed453d53ed450984f75cf3",
       "core": "ccc1f345ece1db89a274cfdd634bd4da27028f63",
-      "okto_grafx_corpus": "a1c3c496fe21d8e9f86953ca3932aced5917fb22"
+      "okto_grafx_corpus": "8cee82b9b92529f2ba767519c01c161f20876dce"
     }
   },
   "trace": {
@@ -429,9 +429,9 @@
     }
   },
   "board_result_supplement": {
-    "name": "m-pulse-7-board-result-supplement/1",
+    "name": "m-pulse-7-board-result-supplement/2",
     "digest_scope": "queries-canonical-json/1",
-    "queries_sha256": "f88cebf59149f516f110bae51d26377ac0574cf967bc816173faa1ce821a9369",
+    "queries_sha256": "f0f50de41464a112147d1d13552fcb4b964022799959f5b64c64ca68df3ac2cd",
     "external_timeout_seconds": 30,
     "timeout_enforcement": "isolated-process-watchdog-per-case",
     "queries": [
@@ -563,7 +563,7 @@
             "dimensions": 384
           },
           "top_k": 50,
-          "min_similarity": -1.0,
+          "min_similarity": 0.0,
           "include_superseded": true,
           "graph_layer": "all"
         }

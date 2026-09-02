@@ -570,7 +570,7 @@ def _run_scenario(backend: object, point: Mapping[str, Any]) -> dict[str, Any]:
         "board_id": board_id,
         "run_id": f"mpulse7-crash-{uuid.uuid4().hex}",
         "manifest_path": str(
-            REPO_ROOT / "tests" / "fixtures" / "m_pulse_7_acceptance_gate_v1.json"
+            REPO_ROOT / "tests" / "fixtures" / "m_pulse_7_acceptance_gate_v2.json"
         ),
         "hook_evidence_path": str(scenario_root / "hook-evidence.json"),
         "pre_observation_path": str(scenario_root / "pre-observation.json"),

@@ -60,7 +60,7 @@ from run_mpulse7_acceptance import (
     verify_frozen_inputs,
 )
 
-MANIFEST = ROOT / "tests" / "fixtures" / "m_pulse_7_acceptance_gate_v1.json"
+MANIFEST = ROOT / "tests" / "fixtures" / "m_pulse_7_acceptance_gate_v2.json"
 GRAFX_REPO = Path(
     os.environ.get("OKTO_E2E_GRAFX_REPO", ROOT.parent / "okto_grafx")
 ).resolve()
@@ -1699,6 +1699,22 @@ def test_manifest_digest_drift_fails_before_factories(tmp_path: Path) -> None:
 
     with pytest.raises(GateFailure, match="expanded trace digest"):
         verify_frozen_inputs(drifted, pulse_corpus_path=CORPUS)
+
+
+def test_manifest_refuses_vector_threshold_outside_public_range(tmp_path: Path) -> None:
+    document = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    queries = document["board_result_supplement"]["queries"]
+    case = next(item for item in queries if item["id"] == "vector-api-contract-inclusive")
+    case["arguments"]["min_similarity"] = -1.0
+    document["board_result_supplement"]["queries_sha256"] = canonical_sha256(queries)
+    invalid = tmp_path / "invalid-vector-threshold.json"
+    invalid.write_text(
+        json.dumps(document, ensure_ascii=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(GateFailure, match=r"min_similarity outside \[0,1\]"):
+        verify_frozen_inputs(invalid, pulse_corpus_path=CORPUS)
 
 
 def test_cli_fails_closed_for_noncanonical_factory_references(
