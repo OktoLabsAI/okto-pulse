@@ -29,6 +29,31 @@ from mpulse7_crash_harness import (
 MANIFEST = ROOT / "tests" / "fixtures" / "m_pulse_7_acceptance_gate_v3.json"
 
 
+def _authoritative_child_environment() -> dict[str, str]:
+    """Keep subprocess imports pinned to the checkouts selected for this run."""
+
+    environment = dict(os.environ)
+    environment["OKTO_PULSE_COMMUNITY_REPO"] = str(ROOT)
+    source_roots = [str(TOOLS), str(ROOT / "src")]
+    for variable in (
+        "OKTO_PULSE_CORE_REPO",
+        "OKTO_E2E_GRAFX_REPO",
+        "OKTO_PULSE_GRAFX_REPO",
+    ):
+        configured = environment.get(variable, "").strip()
+        if configured:
+            source_roots.append(str(Path(configured).expanduser().resolve() / "src"))
+    inherited = [
+        entry
+        for entry in environment.get("PYTHONPATH", "").split(os.pathsep)
+        if entry
+    ]
+    environment["PYTHONPATH"] = os.pathsep.join(
+        dict.fromkeys([*source_roots, *inherited])
+    )
+    return environment
+
+
 def _manifest_points() -> list[dict[str, object]]:
     document = json.loads(MANIFEST.read_text(encoding="utf-8"))
     return list(document["crash_points"]["points"])
@@ -91,8 +116,7 @@ def test_two_short_children_execute_under_the_same_observed_authority(
         "from mpulse7_crash_harness import _collect_process_authority_sha256;"
         "print(_collect_process_authority_sha256(certification=False))"
     )
-    environment = dict(os.environ)
-    environment["PYTHONPATH"] = os.pathsep.join(sys.path)
+    environment = _authoritative_child_environment()
     first = _run_process([sys.executable, "-c", code], cwd=tmp_path, env=environment)
     second = _run_process([sys.executable, "-c", code], cwd=tmp_path, env=environment)
 
@@ -152,8 +176,7 @@ print(json.dumps({
     "resolved_main": crash_harness._certification_runner_module() is runner,
 }, sort_keys=True))
 """.replace("__RUNNER_PATH__", repr(str(runner_path)))
-    environment = dict(os.environ)
-    environment["PYTHONPATH"] = os.pathsep.join(sys.path)
+    environment = _authoritative_child_environment()
 
     completed = _run_process(
         [sys.executable, "-c", code],

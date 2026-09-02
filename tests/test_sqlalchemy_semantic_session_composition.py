@@ -271,7 +271,23 @@ def test_focused_semantic_suite_runs_without_global_session_harness() -> None:
 
     repository = Path(__file__).resolve().parents[1]
     environment = os.environ.copy()
+    environment["OKTO_PULSE_COMMUNITY_REPO"] = str(repository)
     environment["OKTO_PULSE_SEMANTIC_HARNESS_CHILD"] = "1"
+    environment.pop("PYTEST_ADDOPTS", None)
+    source_roots = [str(repository / "src")]
+    configured_core = environment.get("OKTO_PULSE_CORE_REPO", "").strip()
+    if configured_core:
+        source_roots.append(
+            str(Path(configured_core).expanduser().resolve() / "src")
+        )
+    inherited = [
+        entry
+        for entry in environment.get("PYTHONPATH", "").split(os.pathsep)
+        if entry
+    ]
+    environment["PYTHONPATH"] = os.pathsep.join(
+        dict.fromkeys([*source_roots, *inherited])
+    )
     result = subprocess.run(
         [
             sys.executable,
@@ -288,7 +304,8 @@ def test_focused_semantic_suite_runs_without_global_session_harness() -> None:
         check=False,
         capture_output=True,
         text=True,
-        timeout=240,
+        # Process-containment bound only; this is not a performance SLO.
+        timeout=600,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
