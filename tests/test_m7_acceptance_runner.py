@@ -34,6 +34,7 @@ from run_mpulse7_acceptance import (
     CERTIFICATION_PULSE_CORPUS_LOGICAL_SHA256,
     CORE_AUTHORITY_MODULE,
     CORE_CHECKOUT_ENV,
+    GRAFX_CHECKOUT_ENV,
     RUNNER_SOURCE_PATH,
     GateBackendContext,
     GateFailure,
@@ -709,63 +710,163 @@ def test_certification_source_must_be_the_expected_tools_file() -> None:
         )
 
 
-def test_dependency_authority_uses_exact_tracked_clean_checkouts() -> None:
+def test_strict_dependency_authority_and_exact_docs_only_release_proof() -> None:
+    """Keep a05 authority strict while proving the finite 0.0.1 carry-forward."""
+
     inputs = verify_frozen_inputs(
         MANIFEST,
         pulse_corpus_path=CORPUS,
         certification=True,
+    )
+    certified_receipt_sha256 = (
+        "f08c8be63ea2cd7abf6c6ffbb0deef5203169ed22c5b42a2c34ac290d90b77f1"
+    )
+    certified_core_head = "ccc1f345ece1db89a274cfdd634bd4da27028f63"
+    release_core_head = "341bccdbb1232ee7ed6a9bcce380fdf9616c1600"
+    certified_core_src_tree = "a83336036c1276f6582261579cf60d45883cb084"
+    certified_loaded_python_sources = {
+        "catalog_sha256": (
+            "689dee55bef6b28cae87400aa168a33fc0b88a07c6c050e608999ed04544f6ac"
+        ),
+        "checkouts": {
+            "community": {
+                "catalog_sha256": (
+                    "be0ea432bb5d00cc5a2004105d9d9a1971a263e75b0a80985459ff52028e6b7b"
+                ),
+                "file_count": 309,
+            },
+            "core": {
+                "catalog_sha256": (
+                    "d3c564d86f84e90ad5bc6c3cf1d7284ccf21d8352d209a6f9ee4c8d594344ae6"
+                ),
+                "file_count": 757,
+            },
+            "okto_grafx": {
+                "catalog_sha256": (
+                    "2b6d8ab0c1acbec836fc02cd80e4ce1e5d39e8be1c3788fb919a4d81c17819ff"
+                ),
+                "file_count": 129,
+            },
+        },
+        "policy": "all-loaded-python-imports-match-tracked-catalog",
+        "validated": True,
+    }
+    assert inputs.manifest["scope"]["source_revisions"]["core"] == certified_core_head
+
+    core_repo = Path(os.environ[CORE_CHECKOUT_ENV]).resolve()
+    child_environment = dict(os.environ)
+    child_environment.update(
+        {
+            "OKTO_PULSE_COMMUNITY_REPO": str(ROOT),
+            CORE_CHECKOUT_ENV: str(core_repo),
+            GRAFX_CHECKOUT_ENV: str(GRAFX_REPO),
+            "PYTHONPATH": os.pathsep.join(
+                (
+                    str(ROOT / "src"),
+                    str(core_repo / "src"),
+                    str(GRAFX_REPO / "src"),
+                )
+            ),
+        }
     )
     code = f"""
 import json
 import sys
 sys.path.insert(0, {str(TOOLS)!r})
 from run_mpulse7_acceptance import (
-    CORE_AUTHORITY_MODULE,
-    CORE_CHECKOUT_ENV,
-    GRAFX_AUTHORITY_MODULE,
-    GRAFX_CHECKOUT_ENV,
-    _module_checkout_authority,
+    collect_certification_process_authority,
 )
-print(json.dumps({{
-    "core": _module_checkout_authority(
-        label="Core",
-        module_name=CORE_AUTHORITY_MODULE,
-        checkout_environment=CORE_CHECKOUT_ENV,
-    ),
-    "okto_grafx": _module_checkout_authority(
-        label="okto_grafx",
-        module_name=GRAFX_AUTHORITY_MODULE,
-        checkout_environment=GRAFX_CHECKOUT_ENV,
-    ),
-}}, sort_keys=True))
+print(json.dumps(collect_certification_process_authority(), sort_keys=True))
 """
     completed = subprocess.run(
         [sys.executable, "-c", code],
         cwd=ROOT,
-        env=dict(os.environ),
+        env=child_environment,
         check=False,
         capture_output=True,
         text=True,
     )
     assert completed.returncode == 0, completed.stderr
-    authority = json.loads(completed.stdout.strip().splitlines()[-1])
-    core = authority["core"]
-    grafx = authority["okto_grafx"]
-    process_authority = {"dependency_checkouts": {"core": core, "okto_grafx": grafx}}
+    process_authority = json.loads(completed.stdout.strip().splitlines()[-1])
+    core = process_authority["dependency_checkouts"]["core"]
+    grafx = process_authority["dependency_checkouts"]["okto_grafx"]
 
     assert core["tracked_clean"] is True
     assert core["module_origin"].startswith("src/")
+    assert core["head"] == release_core_head
     assert grafx["tracked_clean"] is True
     assert grafx["untracked_allowed"] is True
     assert grafx["module_origin"].startswith("src/")
+    assert (
+        grafx["head"]
+        == inputs.manifest["scope"]["source_revisions"]["okto_grafx_corpus"]
+    )
+    assert (
+        process_authority["loaded_python_sources"] == certified_loaded_python_sources
+    ), (
+        f"productive authority differs from certified a05 receipt {certified_receipt_sha256}"
+    )
+
+    # The production runner remains fail-closed: the docs-only release checkout
+    # is not silently treated as the exact checkout certified by receipt a05.
+    with pytest.raises(GateFailure, match="Core HEAD differs"):
+        _require_dependency_revision_authority(
+            process_authority,
+            inputs.manifest["scope"]["source_revisions"],
+        )
+
+    ancestry = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(core_repo),
+            "merge-base",
+            "--is-ancestor",
+            certified_core_head,
+            release_core_head,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert ancestry.returncode == 0, ancestry.stderr
+
+    def core_git(*arguments: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(core_repo), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    assert (
+        core_git("rev-list", "--count", f"{certified_core_head}..{release_core_head}")
+        == "1"
+    )
+    assert (
+        core_git("diff", "--name-status", certified_core_head, release_core_head)
+        == "M\tREADME.md"
+    )
+    assert (
+        core_git("rev-parse", f"{certified_core_head}:src") == certified_core_src_tree
+    )
+    assert core_git("rev-parse", f"{release_core_head}:src") == certified_core_src_tree
+
+    # Exercise the helper's exact happy path independently from the explicitly
+    # attested release carry-forward, then retain its forged-pin refusals.
+    certified_process_authority = json.loads(json.dumps(process_authority))
+    certified_process_authority["dependency_checkouts"]["core"]["head"] = (
+        certified_core_head
+    )
     _require_dependency_revision_authority(
-        process_authority,
+        certified_process_authority,
         inputs.manifest["scope"]["source_revisions"],
     )
 
     with pytest.raises(GateFailure, match="Core HEAD differs"):
         _require_dependency_revision_authority(
-            process_authority,
+            certified_process_authority,
             {
                 **inputs.manifest["scope"]["source_revisions"],
                 "core": "f" * 40,
@@ -774,7 +875,7 @@ print(json.dumps({{
 
     with pytest.raises(GateFailure, match="okto_grafx HEAD differs"):
         _require_dependency_revision_authority(
-            process_authority,
+            certified_process_authority,
             {
                 **inputs.manifest["scope"]["source_revisions"],
                 "okto_grafx_corpus": "f" * 40,
