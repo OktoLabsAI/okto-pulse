@@ -53,7 +53,7 @@ from okto_pulse.community.adapters.kuzu_graph_transaction import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "tests" / "fixtures" / "m_pulse_7_acceptance_gate_v2.json"
+MANIFEST_PATH = ROOT / "tests" / "fixtures" / "m_pulse_7_acceptance_gate_v3.json"
 EXPECTED_NODE_TYPES_SHA256 = (
     "de3ee8aec849842834e1f3b102ccda01920fa450f57bf3a0702b876567779d9b"
 )
@@ -64,7 +64,7 @@ EXPECTED_TRACE_SHA256 = (
     "243d25a4fc807b5b29b63a64c597acf56d1dc94ca026030077178ba6abd86bea"
 )
 EXPECTED_SUPPLEMENT_SHA256 = (
-    "f0f50de41464a112147d1d13552fcb4b964022799959f5b64c64ca68df3ac2cd"
+    "02c3b06dd71a0f66e04afbf64d33c203ef53d985d8912edb738e6519a6a29a7d"
 )
 EXPECTED_CRASH_POINTS_SHA256 = (
     "b47c850dac2c876d2486ba4ab1ecbd4186c880cb2e1d96965ad1d8709ed5127b"
@@ -732,7 +732,14 @@ def test_crash_points_corpus_and_bilateral_benchmark_are_frozen() -> None:
     board_cases = manifest["board_result_supplement"]
     assert board_result_supplement_sha256(manifest) == EXPECTED_SUPPLEMENT_SHA256
     assert board_cases["queries_sha256"] == EXPECTED_SUPPLEMENT_SHA256
+    assert board_cases["name"] == "m-pulse-7-board-result-supplement/3"
     assert board_cases["external_timeout_seconds"] == 30
+    cases_by_id = {item["id"]: item for item in board_cases["queries"]}
+    assert cases_by_id["contradictions-board"]["ordering"] == "multiset"
+    assert cases_by_id["contradictions-board"]["arguments"]["limit"] > (
+        manifest["trace"]["checkpoints"][-1]["census"]["edges"]
+    )
+    assert cases_by_id["contradictions-node"]["ordering"] == "ordered"
     assert all(
         item["ordering"] in {"ordered", "multiset"} for item in board_cases["queries"]
     )

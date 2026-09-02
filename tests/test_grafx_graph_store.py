@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
 import okto_grafx
 import pytest
+from okto_grafx import Timestamp
 from okto_grafx.errors import GrafxStorageError
 from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphLockContention,
@@ -18,10 +20,12 @@ from okto_pulse.core.kg.interfaces.graph_store import (
     QueryFilters,
     SemanticGraphStore,
 )
+from okto_pulse.core.kg.kg_service import _as_iso_timestamp
 from okto_pulse.core.kg.schema_contract import SCHEMA_VERSION
 
 from okto_pulse.community.adapters.grafx_graph_store import (
     CommunityGrafxGraphStore,
+    _normalize_value,
 )
 from okto_pulse.community.adapters.grafx_schema_manifest import (
     PULSE_GRAFX_SCHEMA_MANIFEST,
@@ -137,6 +141,38 @@ def _edge_attrs(session_id: str, rule_id: str) -> dict[str, Any]:
         "created_by": "test",
         "fallback_reason": "",
     }
+
+
+def test_grafx_timestamps_match_the_current_ladybug_boundary_shape() -> None:
+    expected = datetime(2026, 8, 28, 12, 34, 56, 123456)
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    delta = expected.replace(tzinfo=UTC) - epoch
+    micros = (
+        delta.days * 86_400_000_000
+        + delta.seconds * 1_000_000
+        + delta.microseconds
+    )
+
+    assert _normalize_value(Timestamp(micros=micros)) == expected
+    assert _normalize_value(expected) is expected
+    assert _normalize_value(
+        datetime(
+            2026,
+            8,
+            28,
+            9,
+            34,
+            56,
+            123456,
+            tzinfo=timezone(-timedelta(hours=3)),
+        )
+    ) == expected
+    assert _as_iso_timestamp(_normalize_value(Timestamp(micros=micros))) == (
+        "2026-08-28T12:34:56.123456"
+    )
+    assert _as_iso_timestamp(
+        _normalize_value(Timestamp(micros=micros - 123456))
+    ) == "2026-08-28T12:34:56"
 
 
 def test_the_provider_implements_the_exact_24_method_core_surface() -> None:
@@ -350,7 +386,7 @@ def test_every_port_method_roundtrips_over_one_real_grafx_board(real_store) -> N
     )
     topic_rows = store.find_by_topic(BOARD_ID, "Decision", "Architecture", filters)
     assert {row[0] for row in topic_rows} == {"decision-old", "decision-new"}
-    assert all(isinstance(row[3], str) and row[3].endswith("Z") for row in topic_rows)
+    assert all(row[3] == datetime(2026, 8, 28) for row in topic_rows)
     assert all(len(row) == 8 for row in topic_rows)
 
     artifact_rows = store.find_by_artifact(

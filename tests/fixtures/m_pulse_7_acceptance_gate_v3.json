@@ -429,9 +429,9 @@
     }
   },
   "board_result_supplement": {
-    "name": "m-pulse-7-board-result-supplement/2",
+    "name": "m-pulse-7-board-result-supplement/3",
     "digest_scope": "queries-canonical-json/1",
-    "queries_sha256": "f0f50de41464a112147d1d13552fcb4b964022799959f5b64c64ca68df3ac2cd",
+    "queries_sha256": "02c3b06dd71a0f66e04afbf64d33c203ef53d985d8912edb738e6519a6a29a7d",
     "external_timeout_seconds": 30,
     "timeout_enforcement": "isolated-process-watchdog-per-case",
     "queries": [
@@ -514,7 +514,7 @@
       },
       {
         "id": "contradictions-board",
-        "ordering": "ordered",
+        "ordering": "multiset",
         "method": "find_contradictions",
         "arguments": {
           "board_id": "${board_id}",

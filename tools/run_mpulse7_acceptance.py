@@ -377,7 +377,7 @@ from okto_pulse.community.adapters.grafx_relationship_layout import (
 
 BACKENDS = ("ladybug", "grafx")
 RECEIPT_FORMAT = "okto-pulse-community-m-pulse-7-acceptance-receipt/1"
-MANIFEST_PATH = REPO_ROOT / "tests" / "fixtures" / ("m_pulse_7_acceptance_gate_v2.json")
+MANIFEST_PATH = REPO_ROOT / "tests" / "fixtures" / ("m_pulse_7_acceptance_gate_v3.json")
 TOOLS_ROOT = REPO_ROOT / "tools"
 RUNNER_SOURCE_PATH = TOOLS_ROOT / "run_mpulse7_acceptance.py"
 FACTORY_SOURCE_PATH = TOOLS_ROOT / "mpulse7_acceptance_backends.py"
@@ -401,10 +401,10 @@ CERTIFICATION_PROCESS_AUTHORITY_FORMAT = (
 # Changing the frozen manifest/corpus requires an explicit new gate version and
 # corresponding code review, rather than recomputing digests inside altered input.
 CERTIFICATION_MANIFEST_FILE_SHA256 = (
-    "e5c9ef4432b2c550e8ba22fc57ee607a0eabdb8cf6e49a87ae080d50c726ee66"
+    "f4caf1236104e9bb410462b6e5ef3541bec04f4fd591b8e6870b4bb0939a70b1"
 )
 CERTIFICATION_MANIFEST_CANONICAL_SHA256 = (
-    "ea7b070b8e98b3a53b12bfe89cc4ff4355c5c433da03b8bcf681733398bd199e"
+    "3160a8cdde56feab41b425182e1c41f1b323aeb5b1e91a00cadffb2ff94d6a83"
 )
 CERTIFICATION_PULSE_CORPUS_FILE_SHA256 = (
     "0997747ed8bb9172d05781a62e5f81e7694630b173aaa152ac9ea28daec9d13f"

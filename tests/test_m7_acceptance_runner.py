@@ -60,7 +60,7 @@ from run_mpulse7_acceptance import (
     verify_frozen_inputs,
 )
 
-MANIFEST = ROOT / "tests" / "fixtures" / "m_pulse_7_acceptance_gate_v2.json"
+MANIFEST = ROOT / "tests" / "fixtures" / "m_pulse_7_acceptance_gate_v3.json"
 GRAFX_REPO = Path(
     os.environ.get("OKTO_E2E_GRAFX_REPO", ROOT.parent / "okto_grafx")
 ).resolve()

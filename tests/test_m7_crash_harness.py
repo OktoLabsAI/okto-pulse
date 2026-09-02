@@ -26,7 +26,7 @@ from mpulse7_crash_harness import (
     _validate_point,
 )
 
-MANIFEST = ROOT / "tests" / "fixtures" / "m_pulse_7_acceptance_gate_v2.json"
+MANIFEST = ROOT / "tests" / "fixtures" / "m_pulse_7_acceptance_gate_v3.json"
 
 
 def _manifest_points() -> list[dict[str, object]]:

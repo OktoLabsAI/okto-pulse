@@ -12,7 +12,7 @@ import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, NoReturn, TypeVar
 
 from okto_grafx import Database, Timestamp, VectorValue
@@ -97,21 +97,22 @@ def _timestamp_from_value(value: str | datetime) -> Timestamp:
     return Timestamp(micros=micros)
 
 
-def _iso_timestamp(value: Timestamp | datetime) -> str:
+def _pulse_datetime(value: Timestamp | datetime) -> datetime:
+    """Return the stdlib UTC-naive shape exposed by the current Ladybug driver."""
+
     if isinstance(value, Timestamp):
-        rendered = datetime.fromtimestamp(value.micros / 1_000_000, tz=UTC)
-    else:
-        rendered = value
-        if rendered.tzinfo is None or rendered.utcoffset() is None:
-            rendered = rendered.replace(tzinfo=UTC)
-        else:
-            rendered = rendered.astimezone(UTC)
-    return rendered.isoformat(timespec="microseconds").replace("+00:00", "Z")
+        rendered = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(
+            microseconds=value.micros
+        )
+        return rendered.replace(tzinfo=None)
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
 
 
 def _normalize_value(value: Any) -> Any:
     if isinstance(value, (Timestamp, datetime)):
-        return _iso_timestamp(value)
+        return _pulse_datetime(value)
     if isinstance(value, VectorValue):
         return [_normalize_value(item) for item in value.values]
     if isinstance(value, (tuple, list)):
