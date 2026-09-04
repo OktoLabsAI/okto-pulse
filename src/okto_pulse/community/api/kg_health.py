@@ -44,6 +44,7 @@ from okto_pulse.core.application.errors import (
     BoardNotFoundError as KgBoardNotFoundError,
     CognitiveEffectivenessError,
 )
+from okto_pulse.core.kg.interfaces.graph_errors import GraphError
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.core.repositories import PulseUnitOfWork
@@ -160,15 +161,15 @@ class NativeRuntimeBudgetEffective(BaseModel):
 class NativeRuntimeBudgetSources(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    board_buffer_pool_cap: Literal[
-        "operational_default", "explicit_env", "invalid_env_fallback"
-    ] | None = None
-    max_db_size_cap: Literal[
-        "operational_default", "explicit_env", "invalid_env_fallback"
-    ] | None = None
-    resident_board_slots: Literal[
-        "operational_default", "explicit_env", "configured_pool"
-    ] | None = None
+    board_buffer_pool_cap: (
+        Literal["operational_default", "explicit_env", "invalid_env_fallback"] | None
+    ) = None
+    max_db_size_cap: (
+        Literal["operational_default", "explicit_env", "invalid_env_fallback"] | None
+    ) = None
+    resident_board_slots: (
+        Literal["operational_default", "explicit_env", "configured_pool"] | None
+    ) = None
 
 
 class NativeRuntimeBudgetProcessEnvelope(BaseModel):
@@ -232,6 +233,115 @@ class OrphanIntegrityProjection(BaseModel):
     correlation_id: str | None = None
     zero_orphan_validation: str = "not_evaluated"
     reason: str = "orphan_scan_not_evaluated"
+
+
+class GraphStorageRoute(BaseModel):
+    """Authenticated, read-only description of one active graph route."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scope: Literal["board", "global"]
+    backend: Literal["ladybug", "grafx"] | None = None
+    binding_status: Literal["bound", "missing", "unavailable"] = "unavailable"
+    physical_path: str | None = None
+    generation: str | None = None
+    page_size: int | None = None
+
+
+class GraphStorageSnapshot(BaseModel):
+    """Board and Global routes rendered by KG Health without opening storage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    board: GraphStorageRoute = Field(
+        default_factory=lambda: GraphStorageRoute(scope="board")
+    )
+    global_graph: GraphStorageRoute = Field(
+        default_factory=lambda: GraphStorageRoute(scope="global")
+    )
+
+
+def _unavailable_graph_storage(
+    scope: Literal["board", "global"],
+    *,
+    binding_status: Literal["missing", "unavailable"] = "unavailable",
+) -> GraphStorageRoute:
+    return GraphStorageRoute(scope=scope, binding_status=binding_status)
+
+
+def _graph_storage_route(
+    *,
+    resolver: object,
+    storage_root: object,
+    scope: Literal["board", "global"],
+    board_id: str,
+) -> GraphStorageRoute:
+    """Inspect one binding without opening or materializing its database."""
+
+    try:
+        if scope == "board":
+            snapshot = resolver.inspect_board_route(board_id)  # type: ignore[attr-defined]
+        else:
+            snapshot = resolver.inspect_global_route()  # type: ignore[attr-defined]
+    except GraphError as exc:
+        status: Literal["missing", "unavailable"] = (
+            "missing"
+            if exc.details.get("reason") == "binding_missing"
+            else "unavailable"
+        )
+        return _unavailable_graph_storage(scope, binding_status=status)
+
+    try:
+        physical_path = snapshot.active_path.relative_to(storage_root).as_posix()
+    except (AttributeError, TypeError, ValueError):
+        # A path outside the configured storage root is never disclosed.  The
+        # route authority is inconsistent, so Health reports it fail-closed.
+        return _unavailable_graph_storage(scope)
+
+    return GraphStorageRoute(
+        scope=scope,
+        backend=snapshot.backend,
+        binding_status="bound",
+        physical_path=physical_path,
+        generation=snapshot.generation,
+        page_size=snapshot.page_size,
+    )
+
+
+def _graph_storage_snapshot_from_bundle(
+    bundle: object,
+    board_id: str,
+) -> GraphStorageSnapshot:
+    resolver = bundle.resolver  # type: ignore[attr-defined]
+    storage_root = bundle.binding_store.root  # type: ignore[attr-defined]
+    return GraphStorageSnapshot(
+        board=_graph_storage_route(
+            resolver=resolver,
+            storage_root=storage_root,
+            scope="board",
+            board_id=board_id,
+        ),
+        global_graph=_graph_storage_route(
+            resolver=resolver,
+            storage_root=storage_root,
+            scope="global",
+            board_id=board_id,
+        ),
+    )
+
+
+def _graph_storage_snapshot(board_id: str) -> GraphStorageSnapshot:
+    try:
+        from okto_pulse.community.adapters.composition import (
+            require_community_routed_graph_composition,
+        )
+
+        bundle = require_community_routed_graph_composition()
+        return _graph_storage_snapshot_from_bundle(bundle, board_id)
+    except (AttributeError, RuntimeError):
+        # Health remains available even before routing composition exists.  It
+        # must not guess Ladybug or Grafx when no authenticated route is known.
+        return GraphStorageSnapshot()
 
 
 class KGHealthResponse(BaseModel):
@@ -339,6 +449,10 @@ class KGHealthResponse(BaseModel):
     kg_layer_counts: dict = Field(default_factory=dict)
     canonical_debt: dict = Field(default_factory=dict)
     rebuild_diagnostics: dict = Field(default_factory=dict)
+    # Backend-neutral route identity used by the dashboard.  Older clients can
+    # ignore it; newer clients no longer hard-code Ladybug filenames while the
+    # authoritative binding selects Grafx.
+    graph_storage: GraphStorageSnapshot = Field(default_factory=GraphStorageSnapshot)
     # R6-IMP2: active operational-queue drill-down (worker_mode + per-source
     # counts/classification). Additive; DLQ/canonical debt are NOT counted here.
     active_queue: dict = Field(default_factory=dict)
@@ -396,6 +510,7 @@ async def get_kg_health_endpoint(
         if "graph_primary_bytes" in footprint:
             footprint["graph_lbug_bytes"] = footprint.pop("graph_primary_bytes")
         data["storage_footprint_proxy"] = footprint
+        data["graph_storage"] = _graph_storage_snapshot(board_id)
     except PermissionDeniedError as exc:
         raise RESTAdapterContract.http_error(exc) from exc
     except (AccessBoardNotFoundError, KgBoardNotFoundError) as exc:

@@ -100,6 +100,24 @@ const baseHealth: KGHealth = {
     layer_counts_status: 'ok',
     operator_action: 'none',
   },
+  graph_storage: {
+    board: {
+      scope: 'board',
+      backend: 'grafx',
+      binding_status: 'bound',
+      physical_path: 'boards/b1/grafx/generation-1',
+      generation: 'generation-1',
+      page_size: 8192,
+    },
+    global_graph: {
+      scope: 'global',
+      backend: 'grafx',
+      binding_status: 'bound',
+      physical_path: 'global/grafx/generation-1',
+      generation: 'generation-1',
+      page_size: 8192,
+    },
+  },
 };
 
 function mockBoard(id: string | null) {
@@ -721,14 +739,51 @@ describe('KG recovery panel — health and cognitive rebuild state', () => {
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
 
     const graphMetric = await screen.findByTestId('kg-recovery-metric-board-graph');
-    expect(graphMetric.getAttribute('title')).toContain('graph.lbug');
+    expect(graphMetric).toHaveTextContent('Okto Grafx');
+    expect(graphMetric.getAttribute('title')).toContain('boards/b1/grafx/generation-1');
+    expect(graphMetric.getAttribute('title')).toContain('8192 bytes');
     expect(graphMetric.getAttribute('title')).toContain('metric.unavailable');
 
     const discoveryMetric = screen.getByTestId('kg-recovery-metric-global-discovery');
-    expect(discoveryMetric.getAttribute('title')).toContain('discovery.lbug');
+    expect(discoveryMetric).toHaveTextContent('Okto Grafx');
+    expect(discoveryMetric.getAttribute('title')).toContain('global/grafx/generation-1');
 
     const cognitiveMetric = screen.getByTestId('kg-recovery-metric-cognitive');
     expect(cognitiveMetric.getAttribute('title')).toContain('consolidated');
+  });
+
+  it('renders Ladybug only when the authenticated route actually selects it', async () => {
+    mockBoard('b1');
+    mockApi(() =>
+      Promise.resolve({
+        ...baseHealth,
+        graph_storage: {
+          board: {
+            scope: 'board',
+            backend: 'ladybug',
+            binding_status: 'bound',
+            physical_path: 'boards/b1/graph.lbug',
+            generation: 'legacy',
+            page_size: null,
+          },
+          global_graph: {
+            scope: 'global',
+            backend: 'ladybug',
+            binding_status: 'bound',
+            physical_path: 'global/discovery.lbug',
+            generation: 'legacy',
+            page_size: null,
+          },
+        },
+      }),
+    );
+
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+
+    expect(await screen.findByTestId('kg-recovery-metric-board-graph'))
+      .toHaveTextContent('LadybugDB');
+    expect(screen.getByTestId('kg-recovery-metric-global-discovery'))
+      .toHaveTextContent('LadybugDB');
   });
 
   it('surfaces an empty board graph explicitly when health total_nodes is zero', async () => {

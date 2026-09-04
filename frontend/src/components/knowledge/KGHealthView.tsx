@@ -44,6 +44,8 @@ import {
   runRebuildPreflight,
   runRebuildRun,
   type KGHealth,
+  type KGGraphStorageRoute,
+  type KGGraphStorageSnapshot,
   type KGCognitivePendingCounts,
   type CanonicalDebtSummary,
   type DecaySchedulerDiagnostics,
@@ -232,6 +234,7 @@ export function KGHealthView({
               currentGenerationId={data.current_kg_generation_id ?? null}
               classificationReason={data.classification_reason ?? null}
               totalNodes={data.total_nodes}
+              graphStorage={data.graph_storage ?? null}
               pollIntervalMs={pollIntervalMs}
               onCompleted={handleRefresh}
               canPreflight={canRunRebuildPreflight}
@@ -1234,6 +1237,7 @@ interface RecoveryPanelProps {
   currentGenerationId: string | null;
   classificationReason: string | null;
   totalNodes: number;
+  graphStorage: KGGraphStorageSnapshot | null;
   pollIntervalMs: number;
   onCompleted: () => void;
   canPreflight: boolean;
@@ -1401,6 +1405,32 @@ function explainRecoveryState(state: string | null, reason: string | null): stri
   return `State is unknown because the health payload did not include a known KG state.${reasonText}`;
 }
 
+function graphBackendLabel(route: KGGraphStorageRoute | null): string {
+  if (route?.backend === 'grafx') return 'Okto Grafx';
+  if (route?.backend === 'ladybug') return 'LadybugDB';
+  if (route?.binding_status === 'missing') return 'Not bound';
+  return 'Backend unavailable';
+}
+
+function graphStorageTooltip(
+  route: KGGraphStorageRoute | null,
+  role: 'board-local graph' | 'global discovery graph',
+): string {
+  if (!route || route.binding_status === 'unavailable') {
+    return `The ${role} backend is unavailable because KG Health could not authenticate its persisted route binding.`;
+  }
+  if (route.binding_status === 'missing') {
+    return `The ${role} has no persisted route binding yet. KG Health will not guess whether LadybugDB or Okto Grafx owns it.`;
+  }
+
+  const backend = graphBackendLabel(route);
+  const path = route.physical_path ? ` Active storage: ${route.physical_path}.` : '';
+  const pageSize = route.backend === 'grafx' && route.page_size
+    ? ` Page size: ${route.page_size} bytes.`
+    : '';
+  return `${backend} is the active ${role} backend.${path}${pageSize}`;
+}
+
 function RecoveryPanel({
   boardId,
   graphState,
@@ -1409,6 +1439,7 @@ function RecoveryPanel({
   currentGenerationId,
   classificationReason,
   totalNodes,
+  graphStorage,
   pollIntervalMs,
   onCompleted,
   canPreflight,
@@ -1540,11 +1571,13 @@ function RecoveryPanel({
     cognitiveError,
   );
   const graphDisplayState = totalNodes === 0 ? 'empty' : graphState;
-  const graphTooltip =
-    totalNodes === 0
-      ? `graph.lbug is the board-local LadybugDB graph for this board. The graph is empty because KG Health counted total_nodes=0 and the graph endpoint will return no nodes until the board is indexed again. ${explainRecoveryState(graphState, classificationReason)}`
-      : `graph.lbug is the board-local LadybugDB graph for this board. ${explainRecoveryState(graphState, classificationReason)}`;
-  const discoveryTooltip = `discovery.lbug is the global discovery LadybugDB index used for cross-board KG discovery. ${explainRecoveryState(discoveryState, classificationReason)}`;
+  const boardStorage = graphStorage?.board ?? null;
+  const globalStorage = graphStorage?.global_graph ?? null;
+  const emptyGraphExplanation = totalNodes === 0
+    ? ' The graph is empty because KG Health counted total_nodes=0 and the graph endpoint will return no nodes until the board is indexed again.'
+    : '';
+  const graphTooltip = `${graphStorageTooltip(boardStorage, 'board-local graph')}${emptyGraphExplanation} ${explainRecoveryState(graphState, classificationReason)}`;
+  const discoveryTooltip = `${graphStorageTooltip(globalStorage, 'global discovery graph')} ${explainRecoveryState(discoveryState, classificationReason)}`;
   const generationTooltip = currentGenerationId
     ? `Current KG generation is ${currentGenerationId}. It is fresh because a UUID v4 generation is selected as the active rebuild output.`
     : 'No current KG generation is selected yet, so rebuild-derived status cannot be tied to a generation.';
@@ -1580,14 +1613,14 @@ function RecoveryPanel({
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <RecoveryMetricCard
           label="Board graph"
-          value="graph.lbug"
+          value={graphBackendLabel(boardStorage)}
           state={graphDisplayState}
           subtitle={totalNodes === 0 ? '0 nodes indexed' : undefined}
           tooltip={graphTooltip}
         />
         <RecoveryMetricCard
           label="Global discovery"
-          value="discovery.lbug"
+          value={graphBackendLabel(globalStorage)}
           state={discoveryState}
           tooltip={discoveryTooltip}
         />

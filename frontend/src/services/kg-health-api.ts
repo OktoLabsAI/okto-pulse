@@ -96,6 +96,20 @@ export interface KGOperationalDomain {
   drill_down_signal?: string;
 }
 
+export interface KGGraphStorageRoute {
+  scope: 'board' | 'global';
+  backend: 'ladybug' | 'grafx' | null;
+  binding_status: 'bound' | 'missing' | 'unavailable';
+  physical_path: string | null;
+  generation: string | null;
+  page_size: number | null;
+}
+
+export interface KGGraphStorageSnapshot {
+  board: KGGraphStorageRoute;
+  global_graph: KGGraphStorageRoute;
+}
+
 export interface KGHealth {
   health_schema_version: string;
   materialization_state: 'not_materialized' | 'materialized' | 'unknown';
@@ -136,6 +150,7 @@ export interface KGHealth {
   kg_layer_counts?: KGLayerCounts;
   canonical_debt?: CanonicalDebtSummary;
   rebuild_diagnostics?: RebuildDiagnostics;
+  graph_storage?: KGGraphStorageSnapshot;
 }
 
 // ---- KG-02 rebuild lifecycle (spec e7360ffe, mockup sm_a30278ad) -------
