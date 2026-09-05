@@ -224,14 +224,29 @@ class CommunityBoardRepository:
         self.realm_scope = require_realm_scope(realm_scope)
 
     async def get(self, board_id: str) -> BoardEntity | None:
+        # Board relationships use eager/select-in loading in the legacy ORM
+        # model.  Selecting the mapped row here therefore pulled cards,
+        # comments, architecture and other complete board collections merely
+        # to authorize a request.  Besides being unbounded, that pins a SQLite
+        # read transaction long enough to starve operational writes such as
+        # historical-recovery cancellation.  Project only the aggregate fields
+        # required by the Core repository contract.
         result = await self._session.execute(
-            select(Board).where(
+            select(
+                *(getattr(Board, field).label(field) for field in _BOARD_FIELDS)
+            ).where(
                 Board.id == board_id,
                 Board.realm_id == self.realm_scope.realm_id,
             )
         )
-        row = result.scalar_one_or_none()
-        return board_to_domain(row) if row is not None else None
+        row = result.mappings().one_or_none()
+        return (
+            BoardEntity(
+                **{field: copy.deepcopy(row[field]) for field in _BOARD_FIELDS}
+            )
+            if row is not None
+            else None
+        )
 
     async def add(self, board: BoardEntity) -> None:
         if board.realm_id not in (None, self.realm_scope.realm_id):

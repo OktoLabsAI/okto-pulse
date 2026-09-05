@@ -214,6 +214,10 @@ progress or a legacy `claimed` row remains stuck:
 1. Select **Stop recovery**, then **Confirm stop**. Pulse deletes only live
    `historical_backfill` rows for the selected board (`pending`, `paused`, and
    `claimed`). Nodes and edges committed by completed entries are preserved.
+   Pulse first releases the authorization read snapshot and boundedly drains
+   the consolidation worker; the worker is restored after the short delete.
+   If that drain cannot be proven, cancellation fails closed instead of
+   deleting while an untracked write may still be running.
 2. Wait for the card to report **Stopped**. The deleted claim token is the
    durable fence: an older worker cannot ACK that row, and any unacknowledged
    graph mutation follows the existing compensation path.

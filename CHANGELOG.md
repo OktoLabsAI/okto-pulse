@@ -20,7 +20,10 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 - Historical-consolidation cancellation now includes claimed rows through the
   Core cancellation fence, so a stalled legacy worker no longer leaves the UI
-  permanently running or blocks a later restart.
+  permanently running or blocks a later restart. Board authorization and
+  historical-progress reads now use bounded column projections instead of
+  materializing every eager Board relationship, avoiding an unbounded SQLite
+  snapshot on this operational path.
 
 ### Changed
 

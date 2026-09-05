@@ -170,19 +170,32 @@ class CommunitySqlAlchemyKGGovernanceStore:
     async def get_board(
         self, context: Any, *, board_id: str
     ) -> HistoricalBoardRecord | None:
-        row = await context.get(Board, board_id)
+        # Never materialize the Board ORM graph for a two-column governance
+        # lookup.  Its eager relationships can load thousands of unrelated
+        # rows and keep a SQLite snapshot open across the following write.
+        row = (
+            await context.execute(
+                select(Board.id.label("id"), Board.settings.label("settings")).where(
+                    Board.id == board_id
+                )
+            )
+        ).mappings().one_or_none()
         return (
-            HistoricalBoardRecord(id=str(row.id), settings=dict(row.settings or {}))
+            HistoricalBoardRecord(
+                id=str(row["id"]), settings=dict(row["settings"] or {})
+            )
             if row is not None
             else None
         )
 
     async def save_board(self, context: Any, board: HistoricalBoardRecord) -> None:
-        row = await context.get(Board, board.id)
-        if row is not None:
-            row.settings = dict(board.settings)
-            flag_modified(row, "settings")
-            await context.flush()
+        # A set-based update avoids reloading that same eager ORM graph while
+        # preserving the established caller-owned transaction/commit boundary.
+        await context.execute(
+            update(Board)
+            .where(Board.id == board.id)
+            .values(settings=dict(board.settings))
+        )
 
     async def queue_counts(self, context: Any, *, board_id: str) -> dict[str, int]:
         rows = (
