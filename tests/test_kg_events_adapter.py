@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from okto_pulse.community.adapters.kg_events import (
@@ -15,7 +16,10 @@ from okto_pulse.community.adapters.kg_events import (
     cancel_safe_community_session_scope,
     register_community_kg_events_reader,
 )
-from okto_pulse.community.adapters.sqlalchemy_repositories import GlobalUpdateOutbox
+from okto_pulse.community.adapters.sqlalchemy_repositories import (
+    ConsolidationQueue,
+    GlobalUpdateOutbox,
+)
 from okto_pulse.core.ports.kg_events import (
     KGEventsReaderPort,
     get_kg_events_reader_port,
@@ -116,6 +120,72 @@ async def test_community_reader_pages_equal_timestamps_by_event_id() -> None:
 
         assert [event.event_id for event in first.events] == ["event-a", "event-b"]
         assert [event.event_id for event in second.events] == ["event-c"]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_queue_snapshot_excludes_maintenance_coordinators() -> None:
+    engine = create_async_engine("sqlite+aiosqlite://", future=True)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with factory() as session:
+            session.add_all(
+                [
+                    ConsolidationQueue(
+                        id="queue-consolidate",
+                        board_id="board-progress",
+                        artifact_type="spec",
+                        artifact_id="spec-1",
+                        source="historical_backfill",
+                        status="pending",
+                        work_kind="consolidate",
+                        generation=0,
+                        payload={},
+                    ),
+                    ConsolidationQueue(
+                        id="queue-maintenance",
+                        board_id="board-progress",
+                        artifact_type="board",
+                        artifact_id="board-progress",
+                        source="kg_tick",
+                        status="pending",
+                        work_kind="stale_sweep",
+                        generation=0,
+                        payload={"cursor": "", "budget": 50, "attempt": 0},
+                    ),
+                ]
+            )
+            await session.commit()
+            queue_rows = (
+                await session.execute(
+                    select(ConsolidationQueue.id, ConsolidationQueue.work_kind)
+                    .where(ConsolidationQueue.board_id == "board-progress")
+                    .order_by(ConsolidationQueue.id)
+                )
+            ).all()
+            assert queue_rows == [
+                ("queue-consolidate", "consolidate"),
+                ("queue-maintenance", "stale_sweep"),
+            ]
+
+        result = await CommunityKGEventsReader(factory).poll(
+            board_id="board-progress",
+            after=datetime.now(timezone.utc),
+            limit=50,
+        )
+
+        assert result.progress == {
+            "pending": 1,
+            "claimed": 0,
+            "done": 0,
+            "failed": 0,
+            "paused": 0,
+            "total": 1,
+            "processed": 0,
+        }
     finally:
         await engine.dispose()
 
