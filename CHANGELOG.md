@@ -9,6 +9,19 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- KG Health now exposes the board's historical graph-recovery status and
+  guarded controls to stop a live legacy backfill or start it again. Stopping
+  affects only live `historical_backfill` queue rows and preserves graph data
+  already committed by completed items.
+
+### Fixed
+
+- Historical-consolidation cancellation now includes claimed rows through the
+  Core cancellation fence, so a stalled legacy worker no longer leaves the UI
+  permanently running or blocks a later restart.
+
 ### Changed
 
 - Pulse-owned, unbound Grafx rebuild candidates now default to

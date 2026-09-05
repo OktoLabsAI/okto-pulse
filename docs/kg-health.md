@@ -204,6 +204,35 @@ MATCH (d:DecisionDigest {board_id: $bid}) RETURN count(d);
 - *`failed to query global graph: IO exception: Could not set lock…`.*
   Another process holds the global Kùzu lock. See "Kùzu file lock" below.
 
+## Stop and restart a historical recovery
+
+KG Health distinguishes the **historical graph recovery** (the legacy
+`historical_backfill` consolidation queue) from the destructive physical graph
+rebuild. Use the historical recovery card when the queue is no longer making
+progress or a legacy `claimed` row remains stuck:
+
+1. Select **Stop recovery**, then **Confirm stop**. Pulse deletes only live
+   `historical_backfill` rows for the selected board (`pending`, `paused`, and
+   `claimed`). Nodes and edges committed by completed entries are preserved.
+2. Wait for the card to report **Stopped**. The deleted claim token is the
+   durable fence: an older worker cannot ACK that row, and any unacknowledged
+   graph mutation follows the existing compensation path.
+3. Select **Start recovery again**. Pulse enumerates the current relational
+   source artifacts and creates a fresh, deduplicated historical queue.
+
+The controls require `kg.operations.historical.read`,
+`kg.operations.historical.cancel`, and `kg.operations.historical.start` as
+appropriate. Their REST equivalents are:
+
+```text
+GET  /api/v1/kg/boards/{board_id}/historical-consolidation/progress
+POST /api/v1/kg/boards/{board_id}/historical-consolidation/cancel
+POST /api/v1/kg/boards/{board_id}/historical-consolidation/start
+```
+
+Do not use **Confirm rebuild** for a stuck historical queue. Physical rebuild
+has separate quarantine, generation, and offline-recovery semantics.
+
 ---
 
 ## Troubleshooting

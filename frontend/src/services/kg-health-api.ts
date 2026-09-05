@@ -9,6 +9,15 @@
  * Clerk injetado pelo authAdapter.
  */
 
+// KG Health presents the historical recovery controls, while the transport
+// remains the shared KG API contract used by the empty-state workflow.
+export {
+  cancelHistorical,
+  getHistoricalProgress,
+  startHistorical,
+  type HistoricalProgress,
+} from './kg-api';
+
 export interface TopDisconnectedNode {
   id: string;
   type: string;

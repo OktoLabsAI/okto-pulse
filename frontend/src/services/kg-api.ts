@@ -252,7 +252,7 @@ export async function startHistorical(boardId: string) {
 }
 
 export async function cancelHistorical(boardId: string) {
-  return kgFetch<{ status: string }>(`/boards/${boardId}/historical-consolidation/cancel`, {
+  return kgFetch<{ status: string; board_id?: string; removed?: number }>(`/boards/${boardId}/historical-consolidation/cancel`, {
     method: 'POST',
   });
 }

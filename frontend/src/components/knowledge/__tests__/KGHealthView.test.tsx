@@ -160,7 +160,28 @@ function mockCognitivePending(counts: KGCognitivePendingCounts) {
 beforeEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  permissionHas.mockImplementation(() => true);
   mockCognitivePending(cognitiveCounts());
+  vi.mocked(kgHealthApi.getHistoricalProgress).mockResolvedValue({
+    enabled: false,
+    status: 'inactive',
+    total: 0,
+    progress: 0,
+    pending: 0,
+    claimed: 0,
+    paused: 0,
+    failed: 0,
+  });
+  vi.mocked(kgHealthApi.startHistorical).mockResolvedValue({
+    status: 'queueing',
+    board_id: 'b1',
+    total_artifacts: 3,
+  });
+  vi.mocked(kgHealthApi.cancelHistorical).mockResolvedValue({
+    status: 'cancelled',
+    board_id: 'b1',
+    removed: 3,
+  });
   vi.mocked(kgHealthApi.runRebuildPreflight).mockResolvedValue({
     board_id: 'b1',
     outcome: 'ready',
@@ -696,6 +717,72 @@ describe('TS12 — empty state sem currentBoard suprime polling', () => {
 });
 
 describe('KG recovery panel — health and cognitive rebuild state', () => {
+  it('stops a live legacy backfill, including its claimed work', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve(baseHealth));
+    vi.mocked(kgHealthApi.getHistoricalProgress)
+      .mockResolvedValueOnce({
+        enabled: true,
+        status: 'in_progress',
+        total: 263,
+        progress: 0,
+        pending: 262,
+        claimed: 1,
+        paused: 0,
+        failed: 0,
+      })
+      .mockResolvedValue({
+        enabled: true,
+        status: 'cancelled',
+        total: 263,
+        progress: 263,
+        pending: 0,
+        claimed: 0,
+        paused: 0,
+        failed: 0,
+      });
+
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+
+    expect(await screen.findByTestId('historical-recovery-status'))
+      .toHaveTextContent('Running');
+    expect(screen.getByText('262').parentElement).toHaveTextContent('Pending');
+    expect(screen.getByText('1').parentElement).toHaveTextContent('Claimed');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop recovery' }));
+    expect(screen.getByText(/Stop all live historical queue work/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm stop' }));
+
+    await waitFor(() => {
+      expect(kgHealthApi.cancelHistorical).toHaveBeenCalledWith('b1');
+      expect(screen.getByTestId('historical-recovery-status')).toHaveTextContent('Stopped');
+    });
+    expect(screen.getByRole('button', { name: 'Start recovery again' })).toBeEnabled();
+  });
+
+  it('starts a fresh historical recovery after cancellation', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve(baseHealth));
+    vi.mocked(kgHealthApi.getHistoricalProgress).mockResolvedValue({
+      enabled: true,
+      status: 'cancelled',
+      total: 263,
+      progress: 263,
+      pending: 0,
+      claimed: 0,
+      paused: 0,
+      failed: 0,
+    });
+
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Start recovery again' }));
+
+    await waitFor(() => {
+      expect(kgHealthApi.startHistorical).toHaveBeenCalledWith('b1');
+    });
+  });
+
   it('labels at_risk health as At risk, not Recovery needed', async () => {
     mockBoard('b1');
     mockApi(() =>

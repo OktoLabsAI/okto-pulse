@@ -314,11 +314,18 @@ class CommunitySqlAlchemyKGGovernanceStore:
         )
 
     async def delete_historical_pending(self, context: Any, *, board_id: str) -> int:
+        """Remove the full live historical run, including an in-flight claim.
+
+        A worker that already holds the deleted claim is fenced by its claim
+        token on ACK and compensates any unacknowledged graph mutation.  This
+        makes cancellation terminal instead of leaving a legacy ``claimed``
+        row that blocks a later restart.
+        """
         result = await context.execute(
             delete(ConsolidationQueue).where(
                 ConsolidationQueue.board_id == board_id,
                 ConsolidationQueue.source == "historical_backfill",
-                ConsolidationQueue.status.in_(("pending", "paused")),
+                ConsolidationQueue.status.in_(("pending", "claimed", "paused")),
             )
         )
         return int(result.rowcount or 0)
