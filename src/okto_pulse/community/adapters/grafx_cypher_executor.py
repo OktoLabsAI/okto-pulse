@@ -136,13 +136,12 @@ class CommunityGrafxCypherExecutor:
         database = self._database_resolver(board_id)
         started = time.monotonic()
         try:
-            with database.begin("read") as reader:
-                result = reader.execute(cleaned, dict(params or {}))
-                return self._envelope(
-                    result,
-                    max_rows=max_rows,
-                    started=started,
-                )
+            result = database.execute(cleaned, dict(params or {}))
+            return self._envelope(
+                result,
+                max_rows=max_rows,
+                started=started,
+            )
         except Exception as exc:
             mapped = map_grafx_error(exc, operation="read_only_query")
             if mapped is exc:
@@ -170,7 +169,7 @@ class CommunityGrafxCypherExecutor:
         comparison = self._prepare(comparison_cypher, max_rows=max_rows)
         database = self._database_resolver(board_id)
         try:
-            with database.begin("read") as reader:
+            with database.transaction("read") as reader:
                 primary_started = time.monotonic()
                 primary_result = reader.execute(primary, dict(params or {}))
                 primary_envelope = self._envelope(

@@ -218,9 +218,9 @@ class TestThePairedReadSharesOneSnapshot:
             def __init__(self, delegate: Any) -> None:
                 self._delegate = delegate
 
-            def begin(self, mode: str, *args: Any, **kwargs: Any) -> Any:
+            def transaction(self, mode: str, *args: Any, **kwargs: Any) -> Any:
                 opened.append(mode)
-                return self._delegate.begin(mode, *args, **kwargs)
+                return self._delegate.transaction(mode, *args, **kwargs)
 
             def __getattr__(self, name: str) -> Any:
                 return getattr(self._delegate, name)

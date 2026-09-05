@@ -27,6 +27,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Grafx read-only execution now uses its bounded autocommit door for single statements and its
+  identity-revalidated lexical transaction door for paired same-snapshot reads, avoiding repeated
+  Windows participant lock-file opens without retaining a lock or a descriptor between requests.
 - Pulse-owned, unbound Grafx rebuild candidates now default to
   `checkpoint_interval_records=1_000_000` and
   `descriptor_revalidation="generation"`, avoiding per-batch automatic checkpoint work while
