@@ -223,9 +223,14 @@ progress or a legacy `claimed` row remains stuck:
    only in persisted audit metadata. The deleted claim token is the
    durable fence: an older worker cannot ACK that row, and any unacknowledged
    graph mutation follows the existing compensation path.
-3. To start over, enter the required audit reason in the rebuild report and use
-   **Confirm rebuild**. The cancellation control never changes into a second
-   start button, avoiding an unaudited and ambiguous initiation path.
+3. To prepare a new rebuild, enter the required audit reason in the rebuild
+   report and use **Prepare offline rebuild**. KG Health refreshes the
+   diagnostic preflight and displays the governed three-stage recovery
+   instructions. It does not submit the obsolete online confirm/run sequence:
+   the installed one-shot executor must prove that Pulse and SDLC writers are
+   offline before it can create and promote a new generation. The cancellation
+   control never changes into a second start button, avoiding an unaudited and
+   ambiguous initiation path.
 
 The stop control requires `kg.operations.historical.read` and
 `kg.operations.historical.cancel`. Its REST equivalents are:

@@ -1225,16 +1225,13 @@ function formatBytes(value: number): string {
 // Recovery panel — KG-02 sm_a30278ad mockup
 // ---------------------------------------------------------------------------
 //
-// Single-page flow per the mockup: preflight summary + rebuild report aside,
-// inline reason input and one explicit "Confirm rebuild" button. No second
-// modal — the operator already sees all the destructive-op context on the
-// page (KG-02 FR3 explicit UI confirmation is satisfied by the destructive
-// red button + the reason input + the preflight context above it).
+// Single-page flow per the mockup: diagnostic preflight summary + rebuild
+// report aside, inline reason input and one explicit preparation action. The
+// Community runtime never starts destructive rebuild work online; the action
+// refreshes diagnostics and exposes the governed offline executor contract.
 //
-//   POST /kg/rebuild/preflight  ──▶  preflight_hash + manifest_ref
-//   POST /kg/rebuild/confirm    ──▶  confirmation_id (single-use TTL bound)
-//   POST /kg/rebuild/run        ──▶  RebuildRunResult (audit_ref + report_ref
-//                                    + promoted generation, KG-02.4 + .7)
+//   POST /kg/rebuild/preflight  ──▶  diagnostics + offline remediation
+//   confirm/run                  ──▶  never called in recovery_only_offline
 
 interface RecoveryPanelProps {
   boardId: string;
@@ -1464,7 +1461,7 @@ function RecoveryPanel({
   const [reason, setReason] = useState('');
   const [running, setRunning] = useState(false);
   const [runPhase, setRunPhase] = useState<
-    'idle' | 'preparing' | 'running' | 'completed' | 'failed'
+    'idle' | 'preparing' | 'running' | 'completed' | 'failed' | 'offline_required'
   >('idle');
   const [lastResult, setLastResult] = useState<RebuildRunResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
@@ -1550,6 +1547,14 @@ function RecoveryPanel({
       // current (KG-02.2 lifecycle: single-use TTL-bound confirmation).
       const fresh = await runRebuildPreflight(boardId);
       setPreflight(fresh);
+      if (fresh.execution_mode === 'recovery_only_offline' || !fresh.manifest_ref) {
+        setRunPhase('offline_required');
+        setRunError(
+          fresh.remediation
+            ?? 'Stop Pulse and run the installed local one-shot KG recovery executor.',
+        );
+        return;
+      }
       const confirmResult = await runRebuildConfirm({
         board_id: boardId,
         operation: 'rebuild',
@@ -1673,7 +1678,7 @@ function RecoveryPanel({
               Preflight
             </h3>
             <p className="text-[11px] text-surface-500 dark:text-surface-400">
-              Read-only — manifest persisted on every run.
+              Read-only — the offline executor creates the authoritative manifest.
             </p>
           </div>
           <div className="space-y-2 px-4 py-3 text-sm">
@@ -1721,7 +1726,7 @@ function RecoveryPanel({
                 </PreflightRow>
                 <PreflightRow label="Manifest">
                   <span className="font-mono text-[11px] text-surface-600 dark:text-surface-400">
-                    {preflight.manifest_ref}
+                    {preflight.manifest_ref ?? 'created by offline executor'}
                   </span>
                 </PreflightRow>
               </>
@@ -1738,16 +1743,23 @@ function RecoveryPanel({
               className={`mt-2 rounded-md px-3 py-2 text-xs ${
                 runPhase === 'failed'
                   ? 'bg-rose-50 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300'
+                  : runPhase === 'offline_required'
+                  ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
                   : 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
               }`}
               role="status"
               aria-live="polite"
               data-testid="rebuild-live-status"
             >
-              {runPhase === 'preparing' && 'Starting rebuild — refreshing and validating preflight…'}
+              {runPhase === 'preparing' && (
+                preflight?.execution_mode === 'recovery_only_offline'
+                  ? 'Refreshing diagnostics for the governed offline rebuild…'
+                  : 'Starting rebuild — refreshing and validating preflight…'
+              )}
               {runPhase === 'running' && 'Rebuild started — waiting for the terminal report…'}
               {runPhase === 'completed' && 'Rebuild completed — the terminal report is available below.'}
               {runPhase === 'failed' && 'Rebuild did not start or did not complete. Review the error below.'}
+              {runPhase === 'offline_required' && 'Online preflight completed — rebuild must run with Pulse offline.'}
             </div>
           )}
           <div className="mt-3 space-y-2 text-sm flex-1">
@@ -1848,7 +1860,13 @@ function RecoveryPanel({
               disabled={running}
             />
             {runError && (
-              <div className="rounded-md bg-rose-50 dark:bg-rose-900/40 border border-rose-200 dark:border-rose-700 px-3 py-2 text-rose-700 dark:text-rose-300 text-xs">
+              <div
+                className={`rounded-md px-3 py-2 text-xs border ${
+                  runPhase === 'offline_required'
+                    ? 'bg-amber-50 dark:bg-amber-900/40 border-amber-200 dark:border-amber-700 text-amber-700 dark:text-amber-300'
+                    : 'bg-rose-50 dark:bg-rose-900/40 border-rose-200 dark:border-rose-700 text-rose-700 dark:text-rose-300'
+                }`}
+              >
                 {runError}
               </div>
             )}
@@ -1862,14 +1880,22 @@ function RecoveryPanel({
                   ? 'Requires kg.operations.rebuild.preflight, .confirm and .run'
                   : reasonInvalid
                   ? 'Type a reason first'
+                  : preflight?.execution_mode === 'recovery_only_offline'
+                  ? 'Refresh diagnostics and show the governed offline rebuild steps'
                   : 'Run destructive rebuild now'
               }
             >
               {running && <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden />}
-              {running ? 'Running…' : 'Confirm rebuild'}
+              {running
+                ? 'Preparing…'
+                : preflight?.execution_mode === 'recovery_only_offline'
+                ? 'Prepare offline rebuild'
+                : 'Confirm rebuild'}
             </button>
             <p className="text-[11px] text-surface-500 dark:text-surface-400 text-center">
-              Destructive — promotes a new UUID v4 generation.
+              {preflight?.execution_mode === 'recovery_only_offline'
+                ? 'Pulse must be stopped before the recovery executor can promote a new UUID v4 generation.'
+                : 'Destructive — promotes a new UUID v4 generation.'}
             </p>
           </div>
         </aside>
@@ -2089,8 +2115,8 @@ function HistoricalRecoveryControl({
         )}
         {!active && !loading && (
           <p className="max-w-xl text-right text-xs text-surface-500 dark:text-surface-400">
-            No legacy recovery is active. Start a new rebuild only from the audited
-            {' '}<strong className="text-surface-700 dark:text-surface-200">Confirm rebuild</strong>
+            No legacy recovery is active. Prepare a new rebuild only from the audited
+            {' '}<strong className="text-surface-700 dark:text-surface-200">Prepare offline rebuild</strong>
             {' '}action below after entering its reason.
           </p>
         )}

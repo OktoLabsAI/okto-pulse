@@ -588,7 +588,7 @@ def test_online_rebuild_boundary_is_diagnostic_and_never_writes_or_consumes(
             "board_id": "board-b",
             "operation": "rebuild",
             "preflight_hash": "a" * 64,
-            "manifest_ref": "diagnostic-only",
+            "manifest_ref": None,
         },
     )
     assert confirm.status_code == 409
@@ -618,7 +618,7 @@ def test_online_rebuild_boundary_is_diagnostic_and_never_writes_or_consumes(
             "board_id": "board-b",
             "operation": "rebuild",
             "preflight_hash": "a" * 64,
-            "manifest_ref": "diagnostic-only",
+            "manifest_ref": None,
             "reason": "legacy token must remain untouched",
         },
     )

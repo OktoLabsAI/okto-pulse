@@ -186,13 +186,16 @@ export interface RebuildPreflightResult {
   generated_at: string;
   rebuild_status?: string;
   operational_substatus?: string;
-  manifest_ref: string;
-  source_set_hash: string;
+  manifest_ref: string | null;
+  source_set_hash: string | null;
+  execution_mode?: string;
+  operator_action?: string;
+  remediation?: string;
 }
 
 export interface RebuildConfirmResult {
   confirmation_id: string;
-  manifest_ref: string;
+  manifest_ref: string | null;
   source_set_hash: string;
   expires_at: string;
 }

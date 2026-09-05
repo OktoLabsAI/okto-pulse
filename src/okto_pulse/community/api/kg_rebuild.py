@@ -342,7 +342,10 @@ class RebuildConfirmRequest(BaseModel):
     board_id: str = Field(..., min_length=1)
     operation: str = Field(..., min_length=1)
     preflight_hash: str = Field(..., min_length=64, max_length=64)
-    manifest_ref: str = Field(..., min_length=8)
+    # The online boundary never dereferences this legacy value. Accept ``null`` from clients
+    # following the diagnostic preflight so the request reaches the typed 409 recovery-only
+    # response instead of failing in framework body validation with an unrelated 422.
+    manifest_ref: object | None = None
 
 
 @router.post(
@@ -438,7 +441,8 @@ class RebuildRunRequest(BaseModel):
     board_id: str = Field(..., min_length=1)
     operation: str = Field(..., min_length=1)
     preflight_hash: str = Field(..., min_length=64, max_length=64)
-    manifest_ref: str = Field(..., min_length=8)
+    # Kept only for compatibility with the retired online flow; never consumed below.
+    manifest_ref: object | None = None
     reason: str = Field(..., min_length=1, max_length=512)
 
 

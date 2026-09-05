@@ -777,7 +777,7 @@ describe('KG recovery panel — health and cognitive rebuild state', () => {
     expect(screen.getByTestId('historical-recovery-action-status'))
       .toHaveTextContent('Recovery cancelled. 3 live queue entries were fenced and removed.');
     expect(screen.queryByRole('button', { name: /Start recovery/ })).toBeNull();
-    expect(screen.getByText(/Start a new rebuild only from the audited/))
+    expect(screen.getByText(/Prepare a new rebuild only from the audited/))
       .toBeInTheDocument();
   });
 
@@ -802,6 +802,43 @@ describe('KG recovery panel — health and cognitive rebuild state', () => {
     expect(screen.queryByRole('button', { name: /Start recovery/ })).toBeNull();
     expect(screen.getByRole('button', { name: 'Confirm rebuild' })).toBeDisabled();
     expect(kgHealthApi.startHistorical).not.toHaveBeenCalled();
+  });
+
+  it('shows governed offline recovery instead of submitting an impossible online rebuild', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve(baseHealth));
+    vi.mocked(kgHealthApi.runRebuildPreflight).mockResolvedValue({
+      board_id: 'b1',
+      outcome: 'diagnostic_complete',
+      action_required: 'run_local_offline_kg_recovery_executor',
+      reason: null,
+      base_state: 'fresh',
+      metric_status: 'available',
+      current_kg_generation_id: 'gen1',
+      eligible_source_count: 1,
+      skipped_cancelled_count: 0,
+      has_non_deterministic_inputs: false,
+      preflight_hash: 'a'.repeat(64),
+      generated_at: new Date().toISOString(),
+      manifest_ref: null,
+      source_set_hash: null,
+      execution_mode: 'recovery_only_offline',
+      operator_action: 'run_local_offline_kg_recovery_executor',
+      remediation: 'Stop Pulse and run the governed three-stage recovery executor.',
+    });
+
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+
+    const button = await screen.findByRole('button', { name: 'Prepare offline rebuild' });
+    const reason = screen.getByRole('textbox', { name: 'Reason (audit) *' });
+    fireEvent.change(reason, { target: { value: 'operator requested rebuild' } });
+    fireEvent.click(button);
+
+    expect(await screen.findByTestId('rebuild-live-status'))
+      .toHaveTextContent('rebuild must run with Pulse offline');
+    expect(screen.getByText(/governed three-stage recovery executor/)).toBeInTheDocument();
+    expect(kgHealthApi.runRebuildConfirm).not.toHaveBeenCalled();
+    expect(kgHealthApi.runRebuildRun).not.toHaveBeenCalled();
   });
 
   it('announces rebuild preparation and start without waiting for completion', async () => {
