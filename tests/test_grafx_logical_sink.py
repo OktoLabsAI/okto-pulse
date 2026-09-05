@@ -268,6 +268,44 @@ def test_grafx_candidate_uses_owned_import_defaults_and_one_explicit_checkpoint(
     assert checkpoint_calls == 1
 
 
+def test_grafx_candidate_activates_v2_before_its_first_ddl(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = tmp_path / "candidate"
+    events: list[str] = []
+    original_activation = Database.ensure_identity_indexes
+    original_execute = Transaction.execute
+
+    def observed_activation(database):
+        events.append("activation_started")
+        result = original_activation(database)
+        events.append("activation_completed")
+        return result
+
+    def observed_execute(transaction, text, parameters=None):
+        if text.startswith("CREATE "):
+            events.append(f"ddl:{text.split(maxsplit=3)[1]}")
+        return original_execute(transaction, text, parameters)
+
+    monkeypatch.setattr(Database, "ensure_identity_indexes", observed_activation)
+    monkeypatch.setattr(Transaction, "execute", observed_execute)
+
+    transfer_logical_graph(_source(), _sink(candidate), batch_size=1)
+
+    assert events[:2] == ["activation_started", "activation_completed"]
+    assert events[2:6] == ["ddl:VECTOR", "ddl:NODE", "ddl:NODE", "ddl:REL"]
+    cold = connect(candidate, page_size=8192, read_only=True)
+    try:
+        # Grafx intentionally exposes activation as an operation rather than a
+        # public format knob.  Inspect its immutable catalog here only to prove
+        # that the operation used by the sink persisted format v2.
+        assert cold._catalog.catalog.format_version == 2
+    finally:
+        cold.close()
+    assert cold.close_complete is True
+
+
 def test_grafx_candidate_preserves_explicit_checkpoint_and_descriptor_policy(
     tmp_path: Path,
 ) -> None:
@@ -323,7 +361,34 @@ def test_grafx_candidate_refuses_unexpected_schema_before_owning_path(
     assert sink._owns_path is False
 
 
-@pytest.mark.parametrize("fault", ["import", "checkpoint", "reopen"])
+def test_grafx_candidate_never_activates_or_adopts_an_existing_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = tmp_path / "existing"
+    candidate.mkdir()
+    sentinel = candidate / "generation.bin"
+    sentinel.write_bytes(b"existing-generation")
+    activation_calls = 0
+
+    def observed_activation(_database):
+        nonlocal activation_calls
+        activation_calls += 1
+
+    monkeypatch.setattr(Database, "ensure_identity_indexes", observed_activation)
+    sink = _sink(candidate)
+
+    with pytest.raises(LogicalSchemaError, match="already exists"):
+        sink.begin_candidate(_schema())
+
+    assert activation_calls == 0
+    assert sink._owns_path is False
+    assert sentinel.read_bytes() == b"existing-generation"
+
+
+@pytest.mark.parametrize(
+    "fault", ["activation", "import", "checkpoint", "reopen"]
+)
 def test_grafx_candidate_failure_matrix_preserves_previous(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -337,7 +402,15 @@ def test_grafx_candidate_failure_matrix_preserves_previous(
     source = _source()
     sink_options = {}
 
-    if fault == "import":
+    if fault == "activation":
+        monkeypatch.setattr(
+            Database,
+            "ensure_identity_indexes",
+            lambda _database: (_ for _ in ()).throw(
+                OSError("injected activation failure")
+            ),
+        )
+    elif fault == "import":
         original_execute = Transaction.execute
 
         def failing_execute(transaction, text, parameters=None):
@@ -367,7 +440,8 @@ def test_grafx_candidate_failure_matrix_preserves_previous(
     with pytest.raises(PhasedTransferError) as caught:
         transfer_logical_graph(source, sink, batch_size=1)
 
-    assert caught.value.phase == fault
+    expected_phase = "import" if fault == "activation" else fault
+    assert caught.value.phase == expected_phase
     assert f"injected {fault} failure" in str(caught.value.__cause__)
     assert sink.abort_calls == 1
     assert sink._finalized is False

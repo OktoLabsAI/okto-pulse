@@ -11,6 +11,15 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Pulse-owned, unbound Grafx rebuild candidates now default to
+  `checkpoint_interval_records=1_000_000` and
+  `descriptor_revalidation="generation"`, avoiding per-batch automatic checkpoint work while
+  retaining the terminal explicit checkpoint, Grafx's default `wal_max_bytes` policy and any
+  connection overrides supplied by the caller.
+- A new, empty Grafx rebuild candidate now activates catalog v2 and its persistent identity-index
+  authority before the first schema DDL. Pre-existing paths are still refused before adoption,
+  and an activation failure closes and removes only the newly owned candidate through the
+  existing fail-closed transfer cleanup.
 - Grafx descriptor revalidation is now an explicit, fail-closed Community setting. The safe
   `strict` policy remains the default; controlled performance runs opt into `generation`, and the
   shared pool, temporary recovery/restore opens and M-PULSE-7 receipts authenticate the effective
