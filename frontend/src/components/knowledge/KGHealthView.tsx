@@ -45,7 +45,6 @@ import {
   runRebuildConfirm,
   runRebuildPreflight,
   runRebuildRun,
-  startHistorical,
   type KGHealth,
   type KGGraphStorageRoute,
   type KGGraphStorageSnapshot,
@@ -91,7 +90,6 @@ export function KGHealthView({
   const canRunRebuildConfirm = policyReady && permissions.has('kg.operations.rebuild.confirm');
   const canRunRebuild = policyReady && permissions.has('kg.operations.rebuild.run');
   const canReadHistorical = policyReady && permissions.has('kg.operations.historical.read');
-  const canStartHistorical = policyReady && permissions.has('kg.operations.historical.start');
   const canCancelHistorical = policyReady && permissions.has('kg.operations.historical.cancel');
   const canReadRuntime = policyReady && permissions.has('runtime.settings.read');
 
@@ -249,7 +247,6 @@ export function KGHealthView({
               canRun={canRunRebuild}
               canReadCognitive={canReadCognitive}
               canReadHistorical={canReadHistorical}
-              canStartHistorical={canStartHistorical}
               canCancelHistorical={canCancelHistorical}
             />
             {canReadCognitive && (
@@ -1255,7 +1252,6 @@ interface RecoveryPanelProps {
   canRun: boolean;
   canReadCognitive: boolean;
   canReadHistorical: boolean;
-  canStartHistorical: boolean;
   canCancelHistorical: boolean;
 }
 
@@ -1460,7 +1456,6 @@ function RecoveryPanel({
   canRun,
   canReadCognitive,
   canReadHistorical,
-  canStartHistorical,
   canCancelHistorical,
 }: RecoveryPanelProps) {
   const [preflight, setPreflight] = useState<RebuildPreflightResult | null>(null);
@@ -1468,6 +1463,9 @@ function RecoveryPanel({
   const [preflightLoading, setPreflightLoading] = useState(false);
   const [reason, setReason] = useState('');
   const [running, setRunning] = useState(false);
+  const [runPhase, setRunPhase] = useState<
+    'idle' | 'preparing' | 'running' | 'completed' | 'failed'
+  >('idle');
   const [lastResult, setLastResult] = useState<RebuildRunResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [cognitiveCounts, setCognitiveCounts] =
@@ -1544,6 +1542,7 @@ function RecoveryPanel({
       return;
     }
     setRunning(true);
+    setRunPhase('preparing');
     setRunError(null);
     setLastResult(null);
     try {
@@ -1557,6 +1556,7 @@ function RecoveryPanel({
         preflight_hash: fresh.preflight_hash,
         manifest_ref: fresh.manifest_ref,
       });
+      setRunPhase('running');
       const runResult = await runRebuildRun({
         confirmation_id: confirmResult.confirmation_id,
         board_id: boardId,
@@ -1566,6 +1566,7 @@ function RecoveryPanel({
         reason: reason.trim(),
       });
       setLastResult(runResult);
+      setRunPhase(runResult.outcome === 'completed' ? 'completed' : 'failed');
       if (runResult.outcome === 'completed') {
         toast.success('Rebuild completed — new generation promoted.');
         setReason('');
@@ -1575,6 +1576,7 @@ function RecoveryPanel({
       onCompleted();
     } catch (err) {
       setRunError((err as Error).message);
+      setRunPhase('failed');
     } finally {
       setRunning(false);
     }
@@ -1660,7 +1662,6 @@ function RecoveryPanel({
         boardId={boardId}
         pollIntervalMs={pollIntervalMs}
         canRead={canReadHistorical}
-        canStart={canStartHistorical}
         canCancel={canCancelHistorical}
         onChanged={onCompleted}
       />
@@ -1732,6 +1733,23 @@ function RecoveryPanel({
           <h3 className="text-sm font-semibold text-surface-900 dark:text-white">
             Rebuild report
           </h3>
+          {runPhase !== 'idle' && (
+            <div
+              className={`mt-2 rounded-md px-3 py-2 text-xs ${
+                runPhase === 'failed'
+                  ? 'bg-rose-50 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300'
+                  : 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+              }`}
+              role="status"
+              aria-live="polite"
+              data-testid="rebuild-live-status"
+            >
+              {runPhase === 'preparing' && 'Starting rebuild — refreshing and validating preflight…'}
+              {runPhase === 'running' && 'Rebuild started — waiting for the terminal report…'}
+              {runPhase === 'completed' && 'Rebuild completed — the terminal report is available below.'}
+              {runPhase === 'failed' && 'Rebuild did not start or did not complete. Review the error below.'}
+            </div>
+          )}
           <div className="mt-3 space-y-2 text-sm flex-1">
             {!lastResult && (
               <>
@@ -1864,7 +1882,6 @@ interface HistoricalRecoveryControlProps {
   boardId: string;
   pollIntervalMs: number;
   canRead: boolean;
-  canStart: boolean;
   canCancel: boolean;
   onChanged: () => void;
 }
@@ -1873,15 +1890,15 @@ function HistoricalRecoveryControl({
   boardId,
   pollIntervalMs,
   canRead,
-  canStart,
   canCancel,
   onChanged,
 }: HistoricalRecoveryControlProps) {
   const [progress, setProgress] = useState<HistoricalProgress | null>(null);
   const [loading, setLoading] = useState(true);
-  const [action, setAction] = useState<'start' | 'cancel' | null>(null);
+  const [action, setAction] = useState<'cancel' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmingStop, setConfirmingStop] = useState(false);
+  const [lastActionMessage, setLastActionMessage] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (!canRead) {
@@ -1925,34 +1942,25 @@ function HistoricalRecoveryControl({
     )
   );
 
-  const handleStart = useCallback(async () => {
-    if (!canStart || action) return;
-    setAction('start');
-    setError(null);
-    try {
-      const result = await startHistorical(boardId);
-      if (result.status === 'already_in_progress') {
-        toast('Historical recovery is already running.', { icon: 'ℹ️' });
-      } else {
-        toast.success(
-          `Historical recovery started: ${result.total_artifacts ?? 0} artifacts queued.`,
-        );
-      }
-      await refresh();
-      onChanged();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setAction(null);
-    }
-  }, [action, boardId, canStart, onChanged, refresh]);
-
   const handleCancel = useCallback(async () => {
     if (!canCancel || action) return;
     setAction('cancel');
     setError(null);
     try {
       const result = await cancelHistorical(boardId);
+      setProgress({
+        enabled: false,
+        status: 'cancelled',
+        total: 0,
+        progress: 0,
+        pending: 0,
+        claimed: 0,
+        paused: 0,
+        failed: 0,
+      });
+      setLastActionMessage(
+        `Recovery cancelled. ${result.removed ?? 0} live queue entries were fenced and removed.`,
+      );
       toast.success(
         `Historical recovery stopped: ${result.removed ?? 0} live queue entries removed.`,
       );
@@ -1994,6 +2002,10 @@ function HistoricalRecoveryControl({
             Controls the legacy backfill queue only. Stopping fences pending and claimed work;
             graph data already committed remains intact.
           </p>
+          <p className="mt-1 text-[11px] text-surface-500 dark:text-surface-400">
+            Cognitive pending items from already committed artifacts are audit debt, not active
+            recovery work, and are not deleted by this cancellation.
+          </p>
         </div>
         <span
           className={`rounded-full px-3 py-1 text-xs font-medium ${
@@ -2025,6 +2037,16 @@ function HistoricalRecoveryControl({
       {error && (
         <p className="mt-3 text-xs text-rose-600 dark:text-rose-400" role="alert">
           {error}
+        </p>
+      )}
+      {lastActionMessage && (
+        <p
+          className="mt-3 text-xs text-emerald-700 dark:text-emerald-300"
+          role="status"
+          aria-live="polite"
+          data-testid="historical-recovery-action-status"
+        >
+          {lastActionMessage}
         </p>
       )}
 
@@ -2065,23 +2087,12 @@ function HistoricalRecoveryControl({
             </button>
           </div>
         )}
-        {!active && (
-          <button
-            type="button"
-            onClick={() => void handleStart()}
-            disabled={!canStart || action !== null || loading}
-            className="rounded-md bg-blue-600 hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed px-3 py-2 text-xs font-medium text-white inline-flex items-center gap-2"
-            title={!canStart ? 'Requires kg.operations.historical.start' : undefined}
-          >
-            {action === 'start'
-              ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden />
-              : <Play className="w-3.5 h-3.5" aria-hidden />}
-            {action === 'start'
-              ? 'Starting…'
-              : progress?.status === 'cancelled' || progress?.status === 'completed'
-              ? 'Start recovery again'
-              : 'Start recovery'}
-          </button>
+        {!active && !loading && (
+          <p className="max-w-xl text-right text-xs text-surface-500 dark:text-surface-400">
+            No legacy recovery is active. Start a new rebuild only from the audited
+            {' '}<strong className="text-surface-700 dark:text-surface-200">Confirm rebuild</strong>
+            {' '}action below after entering its reason.
+          </p>
         )}
       </div>
     </section>

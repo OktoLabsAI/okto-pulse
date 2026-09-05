@@ -12,9 +12,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 ### Added
 
 - KG Health now exposes the board's historical graph-recovery status and
-  guarded controls to stop a live legacy backfill or start it again. Stopping
-  affects only live `historical_backfill` queue rows and preserves graph data
-  already committed by completed items.
+  a guarded control to stop a live legacy backfill. Stopping affects only live
+  `historical_backfill` queue rows and preserves graph data already committed
+  by completed items; new rebuilds use the separate reason-bound action.
 
 ### Fixed
 
@@ -29,6 +29,10 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   historical-progress reads now use bounded column projections instead of
   materializing every eager Board relationship, avoiding an unbounded SQLite
   snapshot on this operational path.
+- KG Health applies the terminal cancellation response immediately, announces
+  the zero-live-work outcome, and no longer turns the stop control into a
+  competing start button. Rebuild preparation and running phases are announced
+  in the report panel while the audited operation is in flight.
 
 ### Changed
 

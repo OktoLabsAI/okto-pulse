@@ -182,6 +182,23 @@ beforeEach(() => {
     board_id: 'b1',
     removed: 3,
   });
+  vi.mocked(kgHealthApi.runRebuildConfirm).mockResolvedValue({
+    confirmation_id: 'confirmation-1',
+    manifest_ref: 'manifest1',
+    source_set_hash: 'sourcehash1',
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+  });
+  vi.mocked(kgHealthApi.runRebuildRun).mockResolvedValue({
+    run_id: 'run-1',
+    outcome: 'completed',
+    reason: 'completed',
+    audit_ref: 'audit/run-1.json',
+    previous_kg_generation_id: 'gen1',
+    current_kg_generation_id: 'gen2',
+    started_at: new Date().toISOString(),
+    finished_at: new Date().toISOString(),
+    affected_files: [],
+  });
   vi.mocked(kgHealthApi.runRebuildPreflight).mockResolvedValue({
     board_id: 'b1',
     outcome: 'ready',
@@ -732,10 +749,10 @@ describe('KG recovery panel — health and cognitive rebuild state', () => {
         failed: 0,
       })
       .mockResolvedValue({
-        enabled: true,
+        enabled: false,
         status: 'cancelled',
-        total: 263,
-        progress: 263,
+        total: 0,
+        progress: 0,
         pending: 0,
         claimed: 0,
         paused: 0,
@@ -757,17 +774,21 @@ describe('KG recovery panel — health and cognitive rebuild state', () => {
       expect(kgHealthApi.cancelHistorical).toHaveBeenCalledWith('b1');
       expect(screen.getByTestId('historical-recovery-status')).toHaveTextContent('Stopped');
     });
-    expect(screen.getByRole('button', { name: 'Start recovery again' })).toBeEnabled();
+    expect(screen.getByTestId('historical-recovery-action-status'))
+      .toHaveTextContent('Recovery cancelled. 3 live queue entries were fenced and removed.');
+    expect(screen.queryByRole('button', { name: /Start recovery/ })).toBeNull();
+    expect(screen.getByText(/Start a new rebuild only from the audited/))
+      .toBeInTheDocument();
   });
 
-  it('starts a fresh historical recovery after cancellation', async () => {
+  it('does not expose a second rebuild start action after cancellation', async () => {
     mockBoard('b1');
     mockApi(() => Promise.resolve(baseHealth));
     vi.mocked(kgHealthApi.getHistoricalProgress).mockResolvedValue({
-      enabled: true,
+      enabled: false,
       status: 'cancelled',
-      total: 263,
-      progress: 263,
+      total: 0,
+      progress: 0,
       pending: 0,
       claimed: 0,
       paused: 0,
@@ -776,10 +797,54 @@ describe('KG recovery panel — health and cognitive rebuild state', () => {
 
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Start recovery again' }));
+    expect(await screen.findByTestId('historical-recovery-status'))
+      .toHaveTextContent('Stopped');
+    expect(screen.queryByRole('button', { name: /Start recovery/ })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Confirm rebuild' })).toBeDisabled();
+    expect(kgHealthApi.startHistorical).not.toHaveBeenCalled();
+  });
 
+  it('announces rebuild preparation and start without waiting for completion', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve(baseHealth));
+    let acceptConfirmation!: (value: Awaited<ReturnType<typeof kgHealthApi.runRebuildConfirm>>) => void;
+    let finishRun!: (value: Awaited<ReturnType<typeof kgHealthApi.runRebuildRun>>) => void;
+    vi.mocked(kgHealthApi.runRebuildConfirm).mockImplementation(
+      () => new Promise((resolve) => { acceptConfirmation = resolve; }),
+    );
+    vi.mocked(kgHealthApi.runRebuildRun).mockImplementation(
+      () => new Promise((resolve) => { finishRun = resolve; }),
+    );
+
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+    const reason = await screen.findByRole('textbox', { name: 'Reason (audit) *' });
+    fireEvent.change(reason, { target: { value: 'operator requested rebuild' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm rebuild' }));
+
+    expect(await screen.findByTestId('rebuild-live-status'))
+      .toHaveTextContent('Starting rebuild');
+    acceptConfirmation({
+      confirmation_id: 'confirmation-2',
+      manifest_ref: 'manifest1',
+      source_set_hash: 'sourcehash1',
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+    });
     await waitFor(() => {
-      expect(kgHealthApi.startHistorical).toHaveBeenCalledWith('b1');
+      expect(screen.getByTestId('rebuild-live-status')).toHaveTextContent('Rebuild started');
+    });
+    finishRun({
+      run_id: 'run-2',
+      outcome: 'completed',
+      reason: 'completed',
+      audit_ref: 'audit/run-2.json',
+      previous_kg_generation_id: 'gen1',
+      current_kg_generation_id: 'gen2',
+      started_at: new Date().toISOString(),
+      finished_at: new Date().toISOString(),
+      affected_files: [],
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('rebuild-live-status')).toHaveTextContent('Rebuild completed');
     });
   });
 

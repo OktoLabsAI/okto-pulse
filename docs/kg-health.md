@@ -204,7 +204,7 @@ MATCH (d:DecisionDigest {board_id: $bid}) RETURN count(d);
 - *`failed to query global graph: IO exception: Could not set lock…`.*
   Another process holds the global Kùzu lock. See "Kùzu file lock" below.
 
-## Stop and restart a historical recovery
+## Stop a historical recovery and start a new rebuild
 
 KG Health distinguishes the **historical graph recovery** (the legacy
 `historical_backfill` consolidation queue) from the destructive physical graph
@@ -218,24 +218,26 @@ progress or a legacy `claimed` row remains stuck:
    the consolidation worker; the worker is restored after the short delete.
    If that drain cannot be proven, cancellation fails closed instead of
    deleting while an untracked write may still be running.
-2. Wait for the card to report **Stopped**. The deleted claim token is the
+2. The card reports **Stopped** immediately after the cancellation response.
+   Its live total becomes zero (`enabled=false`); the former run size remains
+   only in persisted audit metadata. The deleted claim token is the
    durable fence: an older worker cannot ACK that row, and any unacknowledged
    graph mutation follows the existing compensation path.
-3. Select **Start recovery again**. Pulse enumerates the current relational
-   source artifacts and creates a fresh, deduplicated historical queue.
+3. To start over, enter the required audit reason in the rebuild report and use
+   **Confirm rebuild**. The cancellation control never changes into a second
+   start button, avoiding an unaudited and ambiguous initiation path.
 
-The controls require `kg.operations.historical.read`,
-`kg.operations.historical.cancel`, and `kg.operations.historical.start` as
-appropriate. Their REST equivalents are:
+The stop control requires `kg.operations.historical.read` and
+`kg.operations.historical.cancel`. Its REST equivalents are:
 
 ```text
 GET  /api/v1/kg/boards/{board_id}/historical-consolidation/progress
 POST /api/v1/kg/boards/{board_id}/historical-consolidation/cancel
-POST /api/v1/kg/boards/{board_id}/historical-consolidation/start
 ```
 
-Do not use **Confirm rebuild** for a stuck historical queue. Physical rebuild
-has separate quarantine, generation, and offline-recovery semantics.
+Cognitive-pending items already emitted by committed artifacts are a separate
+audit domain. Stopping the live historical queue never deletes that evidence;
+the UI labels the distinction instead of presenting it as active recovery work.
 
 ---
 
