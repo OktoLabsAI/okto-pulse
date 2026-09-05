@@ -89,6 +89,30 @@ router = APIRouter(prefix="/kg", tags=["knowledge-graph"])
 __all__ = ["decode_cursor", "encode_cursor", "router"]
 
 logger = logging.getLogger("okto_pulse.api.kg_routes")
+
+
+def _relationship_table_name(
+    executor: Any,
+    board_id: str | None,
+    logical_type: str,
+    from_type: str,
+    to_type: str,
+) -> str:
+    """Return the backend table for one exact logical endpoint pair.
+
+    Community's Grafx layout uses one physical relationship table per endpoint
+    pair, while Ladybug uses the logical name.  Fakes and older providers keep
+    the historical logical-name behavior.
+    """
+
+    resolver = getattr(executor, "relationship_table_name", None)
+    if not callable(resolver):
+        return logical_type
+    if board_id is None:
+        return str(resolver(logical_type, from_type, to_type))
+    return str(resolver(board_id, logical_type, from_type, to_type))
+
+
 def _kg_actor(
     *,
     user_id: str,
@@ -572,9 +596,16 @@ def _fetch_edges_for_nodes(
         for rel_name, from_type, to_type in rel_pairs:
             diagnostics["edge_tables_scanned"] += 1
             try:
+                physical_rel = _relationship_table_name(
+                    cypher_executor,
+                    board_id,
+                    rel_name,
+                    from_type,
+                    to_type,
+                )
                 result = cypher_executor.execute_read_only(
                     board_id,
-                    f"MATCH (a:{from_type})-[r:{rel_name}]->(b:{to_type}) "
+                    f"MATCH (a:{from_type})-[r:{physical_rel}]->(b:{to_type}) "
                     f"WHERE {tpl.code_traceability_visibility_clause('a')} "
                     f"AND {tpl.code_traceability_visibility_clause('b')} "
                     f"RETURN a.id, b.id, r.confidence "
@@ -653,15 +684,19 @@ def _count_edges_by_type(
     }
     try:
         from okto_pulse.core.kg.schema_contract import MULTI_REL_TYPES, REL_TYPES
-        rel_names = sorted({
-            rel_name
-            for rel_name, *_ in _relation_pairs(REL_TYPES, MULTI_REL_TYPES)
-        })
+        rel_pairs = _relation_pairs(REL_TYPES, MULTI_REL_TYPES)
         cypher_executor = resolve_cypher_executor()
         edge_counts: dict[str, int] = {}
-        for rel_name in rel_names:
+        for rel_name, from_type, to_type in rel_pairs:
             diagnostics["edge_count_tables_scanned"] += 1
             try:
+                physical_rel = _relationship_table_name(
+                    cypher_executor,
+                    board_id,
+                    rel_name,
+                    from_type,
+                    to_type,
+                )
                 visibility = ""
                 params: dict[str, Any] | None = None
                 if not include_code_traceability:
@@ -671,7 +706,8 @@ def _count_edges_by_type(
                     )
                     params = {"include_code_traceability": False}
                 edge_count_query = (
-                    f"MATCH (a)-[r:{rel_name}]->(b){visibility} "
+                    f"MATCH (a:{from_type})-[r:{physical_rel}]->(b:{to_type})"
+                    f"{visibility} "
                     "RETURN count(r) AS c"
                 )
                 result = (
@@ -691,7 +727,7 @@ def _count_edges_by_type(
                 rows = result.get("rows", [])
                 count = int(rows[0][0]) if rows else 0
                 if count:
-                    edge_counts[rel_name] = count
+                    edge_counts[rel_name] = edge_counts.get(rel_name, 0) + count
             except Exception as exc:
                 diagnostics["edge_count_tables_failed"] += 1
                 diagnostics["edge_count_errors"].append({
@@ -917,17 +953,12 @@ async def get_kg_metrics(
     # (MULTI_REL_TYPES, e.g. `belongs_to` hierarchy backbone). Without the
     # MULTI_REL_TYPES pass, the metrics page silently under-counts ~80% of
     # the deterministic edges Layer 1 produces.
-    all_rel_names = list(
-        dict.fromkeys(
-            [rel[0] for rel in REL_TYPES]
-            + [multi_rel[0] for multi_rel in MULTI_REL_TYPES]
-        )
-    )
+    all_rel_pairs = _relation_pairs(REL_TYPES, MULTI_REL_TYPES)
     # R05-C: read through the #06 GraphTransaction port (scope.execute) instead
     # of the direct board-connection tuple — the DB handle was unused and every
     # statement is a plain scope.execute, so the swap is behaviour-identical.
     async with await resolve_graph_transaction().begin(board_id) as scope:
-        for rel_name in all_rel_names:
+        for rel_name, from_type, to_type in all_rel_pairs:
             try:
                 # Kùzu groups implicitly on non-aggregate projections, but
                 # tolerates NULL only when we pre-coalesce per-row. Returning
@@ -942,8 +973,16 @@ async def get_kg_metrics(
                         f" AND {tpl.code_traceability_visibility_clause('b')}"
                     )
                     edge_params = {"include_code_traceability": False}
+                physical_rel = _relationship_table_name(
+                    scope,
+                    None,
+                    rel_name,
+                    from_type,
+                    to_type,
+                )
                 edge_query = (
-                    f"MATCH (a)-[r:{rel_name}]->(b){edge_visibility} "
+                    f"MATCH (a:{from_type})-[r:{physical_rel}]->(b:{to_type})"
+                    f"{edge_visibility} "
                     "RETURN r.layer, r.rule_id"
                 )
                 result = (

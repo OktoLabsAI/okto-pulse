@@ -157,3 +157,13 @@ class CommunityKuzuCypherExecutor:
 
     def is_supported(self) -> bool:
         return True
+
+    @staticmethod
+    def relationship_table_name(
+        logical_type: str,
+        _from_type: str,
+        _to_type: str,
+    ) -> str:
+        """Ladybug stores every endpoint pair under the logical rel name."""
+
+        return logical_type

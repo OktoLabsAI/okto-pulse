@@ -39,6 +39,9 @@ from okto_pulse.community.adapters.cypher_statement_policy import (
 )
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
 from okto_pulse.community.adapters.grafx_graph_transaction import _normalize_value
+from okto_pulse.community.adapters.grafx_relationship_layout import (
+    resolve_relationship_table,
+)
 
 DatabaseResolver = Callable[[str], Database]
 
@@ -95,6 +98,16 @@ class CommunityGrafxCypherExecutor:
         # composition root decides which generation a board reads from, and a
         # reader must not be able to close a handle other readers share.
         self._database_resolver = database_resolver
+
+    @staticmethod
+    def relationship_table_name(
+        logical_type: str,
+        from_type: str,
+        to_type: str,
+    ) -> str:
+        """Resolve a Pulse logical endpoint pair to its physical Grafx table."""
+
+        return resolve_relationship_table(logical_type, from_type, to_type)
 
     @staticmethod
     def _prepare(cypher: str, *, max_rows: int) -> str:

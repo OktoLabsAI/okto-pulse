@@ -656,6 +656,21 @@ class CommunityRoutedCypherExecutor:
             grafx=self._grafx,
         )
 
+    def relationship_table_name(
+        self,
+        board_id: str,
+        logical_type: str,
+        from_type: str,
+        to_type: str,
+    ) -> str:
+        """Resolve one logical relationship using the board's persisted route."""
+
+        provider = self._provider(board_id)
+        resolver = getattr(provider, "relationship_table_name", None)
+        if not callable(resolver):
+            return logical_type
+        return str(resolver(logical_type, from_type, to_type))
+
     def execute_read_only(
         self,
         board_id: str,

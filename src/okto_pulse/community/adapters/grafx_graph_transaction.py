@@ -399,6 +399,16 @@ class _GrafxTransactionScope:
         self.terminal_release_error: BaseException | None = None
         self._finished = False
 
+    def relationship_table_name(
+        self,
+        logical_type: str,
+        from_type: str,
+        to_type: str,
+    ) -> str:
+        """Resolve a logical Pulse endpoint pair inside this pinned Grafx scope."""
+
+        return self._relationship_table_resolver(logical_type, from_type, to_type)
+
     def _settle(self) -> None:
         """Tell the owner the transaction is over -- once, and never too early.
 

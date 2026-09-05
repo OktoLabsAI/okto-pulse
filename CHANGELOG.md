@@ -18,6 +18,11 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Knowledge Graph graph, stats and metrics reads now resolve each logical
+  relationship endpoint pair through the active backend. Grafx receives its
+  physical per-pair table name while Ladybug keeps the logical name, preventing
+  every edge table from failing with `plan_error` and preserving logical count
+  aggregation in the API.
 - Historical-consolidation cancellation now includes claimed rows through the
   Core cancellation fence, so a stalled legacy worker no longer leaves the UI
   permanently running or blocks a later restart. Board authorization and
