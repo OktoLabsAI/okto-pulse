@@ -39,6 +39,13 @@ if TYPE_CHECKING:
 
 _DEFAULT_BATCH_SIZE = 500
 _DEFAULT_PAGE_SIZE = 8192
+# A logical candidate is a fresh, unbound path created and exclusively owned by
+# this sink.  Import finishes with an explicit checkpoint before the writer is
+# closed and the candidate is cold-certified, so per-512-record automatic
+# checkpoints only add repeated full flushes to bulk backfills.  Keep the
+# record-based safety valve finite but well above ordinary candidate batches;
+# leave Grafx's independent ``wal_max_bytes`` default untouched.
+_CANDIDATE_CHECKPOINT_INTERVAL_RECORDS = 1_000_000
 _MINIMUM_PULSE_PAGE_SIZE = 4096
 _MAX_GRAFX_IDENTIFIER_LENGTH = 128
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
@@ -83,6 +90,14 @@ class CommunityGrafxLogicalCandidateSink:
                 "Grafx candidate connection options cannot set read_only"
             )
         options.setdefault("page_size", _DEFAULT_PAGE_SIZE)
+        options.setdefault(
+            "checkpoint_interval_records",
+            _CANDIDATE_CHECKPOINT_INTERVAL_RECORDS,
+        )
+        # Generation revalidation is safe only because begin_candidate refuses
+        # pre-existing paths and this sink remains the sole owner until its
+        # writer and cold verifier are closed.  Explicit caller policy wins.
+        options.setdefault("descriptor_revalidation", "generation")
         page_size = options["page_size"]
         if type(page_size) is not int or page_size < _MINIMUM_PULSE_PAGE_SIZE:
             raise LogicalSchemaError(

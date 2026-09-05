@@ -222,6 +222,73 @@ def test_grafx_candidate_roundtrip_is_cold_certified_and_unbound(
     assert candidate.is_dir()
 
 
+def test_grafx_candidate_uses_owned_import_defaults_and_one_explicit_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = tmp_path / "candidate"
+    opens: list[dict[str, object]] = []
+    checkpoint_calls = 0
+    original_checkpoint = Database.checkpoint
+
+    def observed_connect(path, **options):
+        opens.append(dict(options))
+        return connect(path, **options)
+
+    def observed_checkpoint(database):
+        nonlocal checkpoint_calls
+        checkpoint_calls += 1
+        return original_checkpoint(database)
+
+    monkeypatch.setattr(Database, "checkpoint", observed_checkpoint)
+
+    report = transfer_logical_graph(
+        _source(),
+        _sink(candidate, connect_factory=observed_connect),
+        batch_size=1,
+    )
+
+    assert report.counts == count_graph(_nodes(), _relations())
+    assert opens == [
+        {
+            "page_size": 8192,
+            "checkpoint_interval_records": 1_000_000,
+            "descriptor_revalidation": "generation",
+            "read_only": False,
+        },
+        {
+            "page_size": 8192,
+            "checkpoint_interval_records": 1_000_000,
+            "descriptor_revalidation": "generation",
+            "read_only": True,
+        },
+    ]
+    # The transfer's terminal checkpoint is the only checkpoint below the
+    # candidate's deliberately high automatic interval.
+    assert checkpoint_calls == 1
+
+
+def test_grafx_candidate_preserves_explicit_checkpoint_and_descriptor_policy(
+    tmp_path: Path,
+) -> None:
+    sink = _sink(
+        tmp_path / "candidate",
+        connect_options={
+            "page_size": 16384,
+            "checkpoint_interval_records": 17,
+            "descriptor_revalidation": "strict",
+            "wal_max_bytes": 65536,
+        },
+    )
+
+    assert dict(sink._connect_options) == {
+        "page_size": 16384,
+        "checkpoint_interval_records": 17,
+        "descriptor_revalidation": "strict",
+        "wal_max_bytes": 65536,
+    }
+
+
 def test_grafx_candidate_refuses_absent_property_and_preserves_previous(
     tmp_path: Path,
 ) -> None:

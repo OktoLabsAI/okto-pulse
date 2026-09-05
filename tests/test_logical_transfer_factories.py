@@ -257,7 +257,11 @@ class TestTheFactoriesBuildTheRightThing:
         assert sink._max_batch_size == 500
         # Passing nothing leaves the adapter's own default in place; the
         # factory composes, it does not quietly re-specify the backend.
-        assert dict(sink._connect_options) == {"page_size": 8192}
+        assert dict(sink._connect_options) == {
+            "page_size": 8192,
+            "checkpoint_interval_records": 1_000_000,
+            "descriptor_revalidation": "generation",
+        }
         assert sink._temporary_parent is None
 
     def test_the_grafx_sink_keeps_the_knobs_it_was_given(self, tmp_path: Path) -> None:
@@ -270,7 +274,11 @@ class TestTheFactoriesBuildTheRightThing:
         )
 
         assert sink._max_batch_size == 23
-        assert dict(sink._connect_options) == {"page_size": 16384}
+        assert dict(sink._connect_options) == {
+            "page_size": 16384,
+            "checkpoint_interval_records": 1_000_000,
+            "descriptor_revalidation": "generation",
+        }
         assert sink._temporary_parent == tmp_path
 
     def test_the_two_ends_of_one_scope_agree_on_the_map(self, tmp_path: Path) -> None:
