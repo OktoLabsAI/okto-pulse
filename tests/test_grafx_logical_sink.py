@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from okto_grafx import Database, Transaction, connect
+from okto_grafx.domain.index import identity_index_name
 from okto_pulse.core.kg.logical_transfer import (
     LOGICAL_NULL,
     LogicalCounts,
@@ -268,24 +269,37 @@ def test_grafx_candidate_uses_owned_import_defaults_and_one_explicit_checkpoint(
     assert checkpoint_calls == 1
 
 
-def test_grafx_candidate_activates_v2_before_its_first_ddl(
+def test_grafx_candidate_activates_v2_before_ddl_and_identity_after(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     candidate = tmp_path / "candidate"
     events: list[str] = []
+    activation_identity_names: list[frozenset[str]] = []
     original_activation = Database.ensure_identity_indexes
     original_execute = Transaction.execute
 
     def observed_activation(database):
         events.append("activation_started")
         result = original_activation(database)
+        activation_identity_names.append(
+            frozenset(
+                definition.name
+                for definition in database._catalog.catalog.index_definitions()
+                if definition.name.startswith("rid_t_")
+            )
+        )
         events.append("activation_completed")
         return result
 
     def observed_execute(transaction, text, parameters=None):
         if text.startswith("CREATE "):
-            events.append(f"ddl:{text.split(maxsplit=3)[1]}")
+            operation = text.split(maxsplit=3)[1]
+            events.append(
+                f"ddl:{operation}" if operation in {"VECTOR", "NODE", "REL"} else "import"
+            )
+        elif " CREATE " in text:
+            events.append("import")
         return original_execute(transaction, text, parameters)
 
     monkeypatch.setattr(Database, "ensure_identity_indexes", observed_activation)
@@ -293,14 +307,33 @@ def test_grafx_candidate_activates_v2_before_its_first_ddl(
 
     transfer_logical_graph(_source(), _sink(candidate), batch_size=1)
 
-    assert events[:2] == ["activation_started", "activation_completed"]
-    assert events[2:6] == ["ddl:VECTOR", "ddl:NODE", "ddl:NODE", "ddl:REL"]
+    assert events[:8] == [
+        "activation_started",
+        "activation_completed",
+        "ddl:VECTOR",
+        "ddl:NODE",
+        "ddl:NODE",
+        "ddl:REL",
+        "activation_started",
+        "activation_completed",
+    ]
+    assert events[8:] == ["import", "import", "import"]
+    assert activation_identity_names[0] == frozenset()
     cold = connect(candidate, page_size=8192, read_only=True)
     try:
         # Grafx intentionally exposes activation as an operation rather than a
         # public format knob.  Inspect its immutable catalog here only to prove
         # that the operation used by the sink persisted format v2.
         assert cold._catalog.catalog.format_version == 2
+        expected_identity_names = frozenset(
+            identity_index_name(cold._catalog.catalog.table(table).table_id)
+            for table in ("A", "B")
+        )
+        assert activation_identity_names[1] == expected_identity_names
+        assert expected_identity_names <= {
+            definition.name
+            for definition in cold._catalog.catalog.index_definitions()
+        }
     finally:
         cold.close()
     assert cold.close_complete is True
@@ -387,7 +420,8 @@ def test_grafx_candidate_never_activates_or_adopts_an_existing_path(
 
 
 @pytest.mark.parametrize(
-    "fault", ["activation", "import", "checkpoint", "reopen"]
+    "fault",
+    ["activation", "post_ddl_activation", "import", "checkpoint", "reopen"],
 )
 def test_grafx_candidate_failure_matrix_preserves_previous(
     tmp_path: Path,
@@ -409,6 +443,22 @@ def test_grafx_candidate_failure_matrix_preserves_previous(
             lambda _database: (_ for _ in ()).throw(
                 OSError("injected activation failure")
             ),
+        )
+    elif fault == "post_ddl_activation":
+        original_activation = Database.ensure_identity_indexes
+        activation_calls = 0
+
+        def fail_second_activation(database):
+            nonlocal activation_calls
+            activation_calls += 1
+            if activation_calls == 2:
+                raise OSError("injected post_ddl_activation failure")
+            return original_activation(database)
+
+        monkeypatch.setattr(
+            Database,
+            "ensure_identity_indexes",
+            fail_second_activation,
         )
     elif fault == "import":
         original_execute = Transaction.execute
@@ -440,7 +490,9 @@ def test_grafx_candidate_failure_matrix_preserves_previous(
     with pytest.raises(PhasedTransferError) as caught:
         transfer_logical_graph(source, sink, batch_size=1)
 
-    expected_phase = "import" if fault == "activation" else fault
+    expected_phase = (
+        "import" if fault in {"activation", "post_ddl_activation"} else fault
+    )
     assert caught.value.phase == expected_phase
     assert f"injected {fault} failure" in str(caught.value.__cause__)
     assert sink.abort_calls == 1

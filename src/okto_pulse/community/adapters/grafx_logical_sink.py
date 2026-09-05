@@ -176,12 +176,16 @@ class CommunityGrafxLogicalCandidateSink:
             )
         # This is the only safe point for the one-way catalog activation: the
         # sink has proved the path did not exist, created it itself and proved
-        # its catalog empty.  Activate v2 before the first DDL so every PK and
-        # relationship endpoint index created below receives persisted catalog
-        # authority from birth.  Existing databases never pass this ownership
-        # boundary, and any activation failure is handled by transfer abort.
+        # its catalog empty.  Activate v2 before the first DDL so all subsequent
+        # automatic indexes receive persisted catalog authority.  Existing
+        # databases never pass this ownership boundary, and any activation
+        # failure is handled by transfer abort.
         database.ensure_identity_indexes()
         _create_physical_schema(database, schema, relationship_tables)
+        # Activation on an empty catalog cannot know the relationship endpoint
+        # tables.  Re-run the idempotent operation after DDL so their rid_t_*
+        # identity indexes are materialized before the first imported row.
+        database.ensure_identity_indexes()
 
     def write_nodes(self, nodes: Sequence[LogicalNode]) -> None:
         self._require_writable_batch(nodes, "nodes")
