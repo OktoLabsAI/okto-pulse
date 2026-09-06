@@ -19,7 +19,7 @@ in the engine is a tuple in the contract.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from okto_grafx import Database
@@ -44,6 +44,7 @@ from okto_pulse.community.adapters.grafx_relationship_layout import (
 )
 
 DatabaseResolver = Callable[[str], Database]
+ReadOnlyBatchItem = tuple[str, dict[str, Any] | None, int]
 
 # The two path sequences Ladybug returns as lists. Named explicitly rather than
 # matched by shape: converting every tuple would silently rewrite values the
@@ -204,12 +205,49 @@ class CommunityGrafxCypherExecutor:
             raise mapped from exc
         return {"primary": primary_envelope, "comparison": comparison_envelope}
 
+    def execute_read_only_batch(
+        self,
+        board_id: str,
+        statements: Sequence[ReadOnlyBatchItem],
+    ) -> list[dict[str, Any]]:
+        """Execute independent reads against one immutable Grafx snapshot.
+
+        The KG projection fans out over every physical relationship table. Opening an
+        autocommit snapshot for each table adds lease and catalog work without improving
+        isolation. All statements are validated and bounded before the snapshot opens; an
+        invalid statement therefore fails closed without partially executing the batch.
+        """
+
+        prepared = [
+            (self._prepare(cypher, max_rows=max_rows), dict(params or {}), max_rows)
+            for cypher, params, max_rows in statements
+        ]
+        if not prepared:
+            return []
+        database = self._database_resolver(board_id)
+        envelopes: list[dict[str, Any]] = []
+        try:
+            with database.transaction("read") as reader:
+                for cypher, params, max_rows in prepared:
+                    started = time.monotonic()
+                    result = reader.execute(cypher, params)
+                    envelopes.append(
+                        self._envelope(result, max_rows=max_rows, started=started)
+                    )
+        except Exception as exc:
+            mapped = map_grafx_error(exc, operation="read_only_query")
+            if mapped is exc:
+                raise
+            raise mapped from exc
+        return envelopes
+
     def is_supported(self) -> bool:
         return True
 
 
 __all__ = [
     "CommunityGrafxCypherExecutor",
+    "ReadOnlyBatchItem",
     "project_path_sequences",
     "pulse_value",
     "statement_is_write",

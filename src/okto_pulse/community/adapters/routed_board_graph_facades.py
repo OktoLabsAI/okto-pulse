@@ -702,6 +702,28 @@ class CommunityRoutedCypherExecutor:
                 max_rows=max_rows,
             )
 
+    def execute_read_only_batch(
+        self,
+        board_id: str,
+        statements: Sequence[tuple[str, dict[str, Any] | None, int]],
+    ) -> list[dict[str, Any]]:
+        """Pin one route/window and use a shared snapshot when the backend supports it."""
+
+        with self._operation_window(board_id):
+            provider = self._provider(board_id)
+            batched = getattr(provider, "execute_read_only_batch", None)
+            if callable(batched):
+                return list(batched(board_id, statements))
+            return [
+                provider.execute_read_only(
+                    board_id,
+                    cypher,
+                    params,
+                    max_rows=max_rows,
+                )
+                for cypher, params, max_rows in statements
+            ]
+
     def is_supported(self) -> bool:
         ladybug = bool(self._ladybug.is_supported())
         grafx = bool(self._grafx.is_supported())

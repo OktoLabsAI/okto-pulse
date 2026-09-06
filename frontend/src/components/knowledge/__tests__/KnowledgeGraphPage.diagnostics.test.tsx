@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as kgApi from '@/services/kg-api';
 import * as kgHealthApi from '@/services/kg-health-api';
@@ -26,13 +26,15 @@ vi.mock('../GraphControlsPanel', () => ({
     subView,
     nodeCount,
     visibleNodeCount,
+    nodeTypeCounts,
   }: {
     subView: string;
     nodeCount: number;
     visibleNodeCount: number;
+    nodeTypeCounts?: Record<string, number>;
   }) => (
     <div data-testid="mock-graph-controls">
-      controls: {subView}; loaded: {nodeCount}; visible: {visibleNodeCount}
+      controls: {subView}; loaded: {nodeCount}; visible: {visibleNodeCount}; counts: {nodeTypeCounts?.Decision ?? 'pending'}
     </div>
   ),
 }));
@@ -121,10 +123,23 @@ const metadata: GraphMetadata = {
   edges_returned: 0,
 };
 
+const completedHistorical: kgApi.HistoricalProgress = {
+  enabled: true,
+  status: 'completed',
+  total: 1,
+  progress: 1,
+  pending: 0,
+  claimed: 0,
+  paused: 0,
+  failed: 0,
+};
+
 beforeEach(() => {
   vi.restoreAllMocks();
   permissionHas.mockImplementation(() => true);
 });
+
+afterEach(() => cleanup());
 
 describe('GraphVisibilityMismatchState', () => {
   it('renders source-aware diagnostics when health has nodes but graph is empty', () => {
@@ -152,6 +167,75 @@ describe('GraphVisibilityMismatchState', () => {
 });
 
 describe('KnowledgeGraphPage — historical completion release', () => {
+  it('renders the graph without waiting for the slower diagnostics', async () => {
+    const stats = {
+      schema_version: '1.0',
+      node_counts_by_type: { Decision: 1 },
+      edge_counts_by_type: {},
+      avg_confidence: 0.9,
+      pending_queue_count: 0,
+    };
+    let releaseStats!: () => void;
+    vi.spyOn(kgApi, 'getSubgraph').mockResolvedValue({
+      nodes: [{
+        id: 'decision-1',
+        title: 'Ready graph',
+        content: '',
+        source_confidence: 0.9,
+        relevance_score: 0.8,
+        node_type: 'Decision',
+      }],
+      edges: [],
+      metadata: { edge_read_status: 'ok' },
+      next_cursor: null,
+    });
+    vi.spyOn(kgApi, 'getStats').mockImplementation(() => new Promise((resolve) => {
+      releaseStats = () => resolve(stats);
+    }));
+    vi.spyOn(kgApi, 'getHistoricalProgress').mockResolvedValue(completedHistorical);
+    vi.spyOn(kgHealthApi, 'getKGHealth').mockResolvedValue({ ...health, total_nodes: 1 });
+
+    render(<KnowledgeGraphPage boardId="board-123" />);
+
+    expect(await screen.findByTestId('mock-graph-canvas')).toHaveTextContent('Ready graph');
+    expect(screen.queryByTestId('kg-loading')).not.toBeInTheDocument();
+    releaseStats();
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-graph-controls')).toHaveTextContent('counts: 1');
+    });
+  });
+
+  it('does not refetch the graph when diagnostic permissions become available', async () => {
+    let healthAllowed = false;
+    permissionHas.mockImplementation((flag: string) => (
+      flag === 'kg.operations.health.read' ? healthAllowed : true
+    ));
+    const graph = vi.spyOn(kgApi, 'getSubgraph').mockResolvedValue({
+      nodes: [],
+      edges: [],
+      metadata: { edge_read_status: 'ok' },
+      next_cursor: null,
+    });
+    vi.spyOn(kgApi, 'getStats').mockResolvedValue({
+      schema_version: '1.0',
+      node_counts_by_type: {},
+      edge_counts_by_type: {},
+      avg_confidence: 0,
+      pending_queue_count: 0,
+    });
+    vi.spyOn(kgApi, 'getHistoricalProgress').mockResolvedValue(completedHistorical);
+    const healthRead = vi.spyOn(kgHealthApi, 'getKGHealth').mockResolvedValue(health);
+
+    const { rerender } = render(<KnowledgeGraphPage boardId="board-123" />);
+    await waitFor(() => expect(graph).toHaveBeenCalledTimes(1));
+
+    healthAllowed = true;
+    rerender(<KnowledgeGraphPage boardId="board-123" />);
+
+    await waitFor(() => expect(healthRead).toHaveBeenCalledTimes(1));
+    expect(graph).toHaveBeenCalledTimes(1);
+  });
+
   it('renders the KG shell instead of the historical onboarding once backfill is terminal', async () => {
     vi.spyOn(kgApi, 'getSubgraph').mockResolvedValue({
       nodes: [],

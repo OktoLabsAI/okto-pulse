@@ -56,6 +56,7 @@ def test_graph_edges_use_grafx_physical_relationship_table(monkeypatch) -> None:
         ("board-1", "belongs_to", "Requirement", "Entity")
     ]
     assert f"[r:{physical}]" in executor.queries[0]
+    assert " WHERE " not in executor.queries[0]
     assert edges == [
         {
             "id": "requirement-1-belongs_to-entity-1",
@@ -67,6 +68,77 @@ def test_graph_edges_use_grafx_physical_relationship_table(monkeypatch) -> None:
     ]
     assert diagnostics["edge_read_status"] == "ok"
     assert diagnostics["edge_tables_failed"] == 0
+
+
+def test_graph_edges_use_one_optional_read_batch(monkeypatch) -> None:
+    physical = "belongs_to__Requirement__Entity"
+
+    class _BatchExecutor(_RelationshipAwareExecutor):
+        def __init__(self) -> None:
+            super().__init__({physical: []})
+            self.batches: list[list[tuple[str, dict[str, Any] | None, int]]] = []
+
+        def execute_read_only_batch(
+            self,
+            _board_id: str,
+            statements: list[tuple[str, dict[str, Any] | None, int]],
+        ) -> list[dict[str, Any]]:
+            self.batches.append(statements)
+            return [{"rows": [["requirement-1", "entity-1", 0.9]]}]
+
+    executor = _BatchExecutor()
+    monkeypatch.setattr(kg_routes, "resolve_cypher_executor", lambda: executor)
+    monkeypatch.setattr(
+        kg_routes,
+        "_relation_pairs",
+        lambda *_args: [("belongs_to", "Requirement", "Entity")],
+    )
+
+    edges, diagnostics = kg_routes._fetch_edges_for_nodes(
+        "board-1",
+        {"requirement-1"},
+    )
+
+    assert len(executor.batches) == 1
+    assert executor.queries == []
+    assert executor.batches[0][0][2] == 5000
+    assert edges[0]["edge_type"] == "belongs_to"
+    assert diagnostics["edge_read_status"] == "ok"
+
+
+def test_failed_batch_retries_per_table_to_preserve_diagnostics(monkeypatch) -> None:
+    good = "supports__Decision__Evidence"
+    bad = "blocks__Decision__Requirement"
+
+    class _FailingBatchExecutor(_RelationshipAwareExecutor):
+        def execute_read_only_batch(self, *_args, **_kwargs):
+            raise RuntimeError("batch failed")
+
+    executor = _FailingBatchExecutor({good: [["d1", "e1", 0.8]], bad: []})
+    original_execute = executor.execute_read_only
+
+    def execute(board_id, query, params=None, **kwargs):
+        if f"[r:{bad}]" in query:
+            raise RuntimeError("bad physical table")
+        return original_execute(board_id, query, params, **kwargs)
+
+    executor.execute_read_only = execute  # type: ignore[method-assign]
+    monkeypatch.setattr(kg_routes, "resolve_cypher_executor", lambda: executor)
+    monkeypatch.setattr(
+        kg_routes,
+        "_relation_pairs",
+        lambda *_args: [
+            ("supports", "Decision", "Evidence"),
+            ("blocks", "Decision", "Requirement"),
+        ],
+    )
+
+    edges, diagnostics = kg_routes._fetch_edges_for_nodes("board-1", {"d1"})
+
+    assert [edge["edge_type"] for edge in edges] == ["supports"]
+    assert diagnostics["edge_read_status"] == "partial_failure"
+    assert diagnostics["edge_tables_failed"] == 1
+    assert diagnostics["edge_errors"][0]["relationship"] == "blocks"
 
 
 def test_edge_counts_sum_physical_endpoint_tables_by_logical_name(monkeypatch) -> None:

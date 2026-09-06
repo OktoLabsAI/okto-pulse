@@ -593,6 +593,7 @@ def _fetch_edges_for_nodes(
 
         edges = []
         seen: set[tuple[str, str, str]] = set()  # (rel, src, tgt) dedup
+        pending: list[tuple[str, str, str, str, dict[str, Any] | None]] = []
         for rel_name, from_type, to_type in rel_pairs:
             diagnostics["edge_tables_scanned"] += 1
             try:
@@ -603,42 +604,114 @@ def _fetch_edges_for_nodes(
                     from_type,
                     to_type,
                 )
-                result = cypher_executor.execute_read_only(
-                    board_id,
-                    f"MATCH (a:{from_type})-[r:{physical_rel}]->(b:{to_type}) "
-                    f"WHERE {tpl.code_traceability_visibility_clause('a')} "
-                    f"AND {tpl.code_traceability_visibility_clause('b')} "
-                    f"RETURN a.id, b.id, r.confidence "
-                    f"LIMIT 5000",
-                    {"include_code_traceability": include_code_traceability},
-                    max_rows=5000,
+                visibility = ""
+                params: dict[str, Any] | None = None
+                if not include_code_traceability:
+                    visibility = (
+                        f" WHERE {tpl.code_traceability_visibility_clause('a')}"
+                        f" AND {tpl.code_traceability_visibility_clause('b')}"
+                    )
+                    params = {"include_code_traceability": False}
+                query = (
+                    f"MATCH (a:{from_type})-[r:{physical_rel}]->(b:{to_type})"
+                    f"{visibility} "
+                    "RETURN a.id, b.id, r.confidence LIMIT 5000"
                 )
-                for row in result.get("rows", []):
-                    src, tgt = row[0], row[1]
-                    key = (rel_name, src, tgt)
-                    if key in seen:
-                        continue
-                    # Pelo menos UMA ponta na página (era AND): com a projeção
-                    # paginada, exigir ambas as pontas escondia quase toda edge.
-                    # O cliente acumula as edges e materializa cada uma quando a
-                    # outra ponta chega nas páginas seguintes.
-                    if src in node_ids or tgt in node_ids:
-                        seen.add(key)
-                        edges.append({
-                            "id": f"{src}-{rel_name}-{tgt}",
-                            "source": src,
-                            "target": tgt,
-                            "edge_type": rel_name,
-                            "confidence": row[2] if len(row) > 2 else 0.7,
-                        })
+                pending.append((rel_name, from_type, to_type, query, params))
             except Exception as exc:
                 diagnostics["edge_tables_failed"] += 1
-                diagnostics["edge_errors"].append({
-                    "relationship": rel_name,
+                diagnostics["edge_errors"].append(
+                    {
+                        "relationship": rel_name,
+                        "from_type": from_type,
+                        "to_type": to_type,
+                        "error": str(exc),
+                    }
+                )
+
+        def consume(
+            relation: str,
+            result: dict[str, Any],
+        ) -> None:
+            for row in result.get("rows", []):
+                src, tgt = row[0], row[1]
+                key = (relation, src, tgt)
+                if key in seen:
+                    continue
+                # Pelo menos UMA ponta na página (era AND): com a projeção
+                # paginada, exigir ambas as pontas escondia quase toda edge.
+                # O cliente acumula as edges e materializa cada uma quando a
+                # outra ponta chega nas páginas seguintes.
+                if src in node_ids or tgt in node_ids:
+                    seen.add(key)
+                    edges.append(
+                        {
+                            "id": f"{src}-{relation}-{tgt}",
+                            "source": src,
+                            "target": tgt,
+                            "edge_type": relation,
+                            "confidence": row[2] if len(row) > 2 else 0.7,
+                        }
+                    )
+
+        def record_failure(
+            relation: str,
+            from_type: str,
+            to_type: str,
+            exc: Exception,
+        ) -> None:
+            diagnostics["edge_tables_failed"] += 1
+            diagnostics["edge_errors"].append(
+                {
+                    "relationship": relation,
                     "from_type": from_type,
                     "to_type": to_type,
                     "error": str(exc),
-                })
+                }
+            )
+
+        # Grafx can pin all relationship reads to one immutable snapshot. If the
+        # optional batch fails, retry table-by-table so the diagnostic contract still
+        # identifies the exact physical layout failure instead of hiding it.
+        batched = getattr(cypher_executor, "execute_read_only_batch", None)
+        batch_results: list[dict[str, Any]] | None = None
+        if pending and callable(batched):
+            try:
+                batch_results = list(
+                    batched(
+                        board_id,
+                        [(query, params, 5000) for *_, query, params in pending],
+                    )
+                )
+                if len(batch_results) != len(pending):
+                    raise RuntimeError(
+                        "read-only batch returned an incomplete result set"
+                    )
+            except Exception:
+                batch_results = None
+
+        if batch_results is not None:
+            for (rel_name, from_type, to_type, _query, _params), result in zip(
+                pending,
+                batch_results,
+                strict=True,
+            ):
+                try:
+                    consume(rel_name, result)
+                except Exception as exc:
+                    record_failure(rel_name, from_type, to_type, exc)
+        else:
+            for rel_name, from_type, to_type, query, params in pending:
+                try:
+                    result = cypher_executor.execute_read_only(
+                        board_id,
+                        query,
+                        params,
+                        max_rows=5000,
+                    )
+                    consume(rel_name, result)
+                except Exception as exc:
+                    record_failure(rel_name, from_type, to_type, exc)
         if diagnostics["edge_tables_failed"]:
             diagnostics["edge_read_status"] = "partial_failure"
         diagnostics["edges_returned"] = len(edges)
@@ -862,7 +935,6 @@ async def get_stats(
             **ct_visibility_kwargs,
         )
         from okto_pulse.core.kg.schema_contract import NODE_TYPES
-
         node_counts: dict[str, int] = {
             node_type: svc.count_all_nodes(
                 board_id,
@@ -1001,6 +1073,7 @@ async def get_kg_metrics(
 
         # Node type histogram — aggregate per type to dodge GROUP BY portability.
         from okto_pulse.core.kg.schema_contract import NODE_TYPES
+
         for nt in NODE_TYPES:
             try:
                 node_visibility = ""

@@ -239,6 +239,51 @@ class TestThePairedReadSharesOneSnapshot:
         assert paired["comparison"]["row_count"] == 2
 
 
+class TestTheBatchedReadSharesOneSnapshot:
+    def test_all_statements_use_one_snapshot(self, grafx_database) -> None:
+        opened: list[str] = []
+
+        class _CountingDatabase:
+            def transaction(self, mode: str, *args: Any, **kwargs: Any) -> Any:
+                opened.append(mode)
+                return grafx_database.transaction(mode, *args, **kwargs)
+
+        executor = CommunityGrafxCypherExecutor(lambda _board: _CountingDatabase())
+
+        results = executor.execute_read_only_batch(
+            BOARD_ID,
+            [
+                ("MATCH (d:Decision) WHERE d.id = 'd1' RETURN d.id", None, 10),
+                ("MATCH (d:Decision) RETURN d.id", None, 10),
+            ],
+        )
+
+        assert opened == ["read"]
+        assert results[0]["row_count"] == 1
+        assert results[1]["row_count"] == 2
+
+    def test_every_statement_is_validated_before_resolving_the_database(self) -> None:
+        resolved = False
+
+        def resolve(_board_id: str) -> Any:
+            nonlocal resolved
+            resolved = True
+            raise AssertionError("the database must not be resolved")
+
+        executor = CommunityGrafxCypherExecutor(resolve)
+
+        with pytest.raises(Exception):
+            executor.execute_read_only_batch(
+                BOARD_ID,
+                [
+                    ("MATCH (d:Decision) RETURN d.id", None, 10),
+                    ("CREATE (:Decision {id: 'forbidden'})", None, 10),
+                ],
+            )
+
+        assert resolved is False
+
+
 class TestWriteClassificationFailsClosed:
     @pytest.mark.parametrize(
         "statement",

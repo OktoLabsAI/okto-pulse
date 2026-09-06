@@ -705,6 +705,34 @@ def test_cypher_single_and_paired_reads_pin_one_route_and_one_window_each() -> N
     assert events.count(("operation_exit", "board-g")) == 2
 
 
+def test_cypher_batch_pins_one_route_and_one_complete_window() -> None:
+    events: list[tuple[Any, ...]] = []
+    resolver = _RouteResolver(
+        {"board-g": _snapshot("board-g", "grafx", generation="grafx-5")},
+        events,
+    )
+    windows = _Windows(events)
+    ladybug = Mock()
+    grafx = Mock()
+    expected = [{"rows": [[1]], "row_count": 1}]
+    grafx.execute_read_only_batch.return_value = expected
+    facade = CommunityRoutedCypherExecutor(
+        resolver,  # type: ignore[arg-type]
+        ladybug=ladybug,
+        grafx=grafx,
+        operation_window=windows.operation,
+    )
+    statements = [("MATCH (n) RETURN n", None, 13)]
+
+    assert facade.execute_read_only_batch("board-g", statements) == expected
+
+    grafx.execute_read_only_batch.assert_called_once_with("board-g", statements)
+    assert ladybug.mock_calls == []
+    assert resolver.acquire_calls == ["board-g"]
+    assert events.count(("operation_enter", "board-g")) == 1
+    assert events.count(("operation_exit", "board-g")) == 1
+
+
 @pytest.mark.parametrize(
     ("ladybug_supported", "grafx_supported", "expected"),
     [(True, True, True), (True, False, False), (False, True, False)],
