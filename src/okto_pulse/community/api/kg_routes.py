@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
 
@@ -744,6 +745,62 @@ def _relation_pairs(
     return rel_pairs
 
 
+def _count_nodes_by_type(
+    board_id: str,
+    node_types: Sequence[str],
+    service: Any,
+    *,
+    min_relevance: float,
+    graph_layer: str,
+    include_code_traceability: bool = True,
+) -> dict[str, int]:
+    """Count every declared node type in one scan, with the old service path as fallback."""
+
+    expected = tuple(str(node_type) for node_type in node_types)
+    try:
+        executor = resolve_cypher_executor()
+        result = executor.execute_read_only(
+            board_id,
+            "MATCH (n) "
+            "WHERE n.source_confidence >= $min_confidence "
+            "AND n.relevance_score >= $min_relevance "
+            f"AND {tpl.layer_filter_clause('n')} "
+            f"AND {tpl.active_read_filter_clause('n')} "
+            f"AND {tpl.code_traceability_visibility_clause('n')} "
+            "RETURN label(n) AS node_type, count(n) AS c",
+            {
+                "min_confidence": 0.0,
+                "min_relevance": min_relevance,
+                "graph_layer": graph_layer,
+                "include_code_traceability": include_code_traceability,
+            },
+            max_rows=len(expected) + 1,
+        )
+        counts = dict.fromkeys(expected, 0)
+        for row in result.get("rows", []):
+            if not isinstance(row, (list, tuple)) or len(row) < 2:
+                raise ValueError("grouped node count returned a malformed row")
+            node_type = str(row[0])
+            count = int(row[1])
+            if count < 0:
+                raise ValueError("grouped node count returned a negative count")
+            if node_type in counts:
+                counts[node_type] += count
+        return counts
+    except Exception:
+        return {
+            node_type: service.count_all_nodes(
+                board_id,
+                min_confidence=0.0,
+                min_relevance=min_relevance,
+                node_type=node_type,
+                graph_layer=graph_layer,
+                include_code_traceability=include_code_traceability,
+            )
+            for node_type in expected
+        }
+
+
 def _count_edges_by_type(
     board_id: str,
     *,
@@ -760,6 +817,7 @@ def _count_edges_by_type(
         rel_pairs = _relation_pairs(REL_TYPES, MULTI_REL_TYPES)
         cypher_executor = resolve_cypher_executor()
         edge_counts: dict[str, int] = {}
+        pending: list[tuple[str, str, dict[str, Any] | None]] = []
         for rel_name, from_type, to_type in rel_pairs:
             diagnostics["edge_count_tables_scanned"] += 1
             try:
@@ -783,30 +841,74 @@ def _count_edges_by_type(
                     f"{visibility} "
                     "RETURN count(r) AS c"
                 )
-                result = (
-                    cypher_executor.execute_read_only(
-                        board_id,
-                        edge_count_query,
-                        max_rows=1,
-                    )
-                    if params is None
-                    else cypher_executor.execute_read_only(
-                        board_id,
-                        edge_count_query,
-                        params,
-                        max_rows=1,
-                    )
-                )
-                rows = result.get("rows", [])
-                count = int(rows[0][0]) if rows else 0
-                if count:
-                    edge_counts[rel_name] = edge_counts.get(rel_name, 0) + count
+                pending.append((rel_name, edge_count_query, params))
             except Exception as exc:
                 diagnostics["edge_count_tables_failed"] += 1
                 diagnostics["edge_count_errors"].append({
                     "relationship": rel_name,
                     "error": str(exc),
                 })
+
+        def consume(rel_name: str, result: dict[str, Any]) -> None:
+            rows = result.get("rows", [])
+            count = int(rows[0][0]) if rows else 0
+            if count < 0:
+                raise ValueError("relationship count returned a negative value")
+            if count:
+                edge_counts[rel_name] = edge_counts.get(rel_name, 0) + count
+
+        def record_failure(rel_name: str, exc: Exception) -> None:
+            diagnostics["edge_count_tables_failed"] += 1
+            diagnostics["edge_count_errors"].append({
+                "relationship": rel_name,
+                "error": str(exc),
+            })
+
+        batched = getattr(cypher_executor, "execute_read_only_batch", None)
+        batch_results: list[dict[str, Any]] | None = None
+        if pending and callable(batched):
+            try:
+                batch_results = list(
+                    batched(
+                        board_id,
+                        [(query, params, 1) for _rel, query, params in pending],
+                    )
+                )
+                if len(batch_results) != len(pending):
+                    raise RuntimeError("count batch returned an incomplete result set")
+            except Exception:
+                batch_results = None
+
+        if batch_results is not None:
+            for (rel_name, _query, _params), result in zip(
+                pending,
+                batch_results,
+                strict=True,
+            ):
+                try:
+                    consume(rel_name, result)
+                except Exception as exc:
+                    record_failure(rel_name, exc)
+        else:
+            for rel_name, query, params in pending:
+                try:
+                    result = (
+                        cypher_executor.execute_read_only(
+                            board_id,
+                            query,
+                            max_rows=1,
+                        )
+                        if params is None
+                        else cypher_executor.execute_read_only(
+                            board_id,
+                            query,
+                            params,
+                            max_rows=1,
+                        )
+                    )
+                    consume(rel_name, result)
+                except Exception as exc:
+                    record_failure(rel_name, exc)
         if diagnostics["edge_count_tables_failed"]:
             diagnostics["edge_count_status"] = "partial_failure"
         return edge_counts, diagnostics
@@ -935,17 +1037,14 @@ async def get_stats(
             **ct_visibility_kwargs,
         )
         from okto_pulse.core.kg.schema_contract import NODE_TYPES
-        node_counts: dict[str, int] = {
-            node_type: svc.count_all_nodes(
-                board_id,
-                min_confidence=0.0,
-                min_relevance=min_relevance,
-                node_type=node_type,
-                graph_layer=layer,
-                **ct_visibility_kwargs,
-            )
-            for node_type in NODE_TYPES
-        }
+        node_counts = _count_nodes_by_type(
+            board_id,
+            NODE_TYPES,
+            svc,
+            min_relevance=min_relevance,
+            graph_layer=layer,
+            **ct_visibility_kwargs,
+        )
         total_conf = 0.0
         total_relevance = 0.0
         for n in all_nodes:

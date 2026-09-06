@@ -165,6 +165,100 @@ def test_edge_counts_sum_physical_endpoint_tables_by_logical_name(monkeypatch) -
     assert f"MATCH (a:Decision)-[r:{second}]->(b:Entity)" in executor.queries[1]
 
 
+def test_edge_counts_use_one_optional_read_batch(monkeypatch) -> None:
+    first = "belongs_to__Requirement__Entity"
+    second = "belongs_to__Decision__Entity"
+
+    class _BatchExecutor(_RelationshipAwareExecutor):
+        def __init__(self) -> None:
+            super().__init__({first: [], second: []})
+            self.batches = []
+
+        def execute_read_only_batch(self, _board_id, statements):
+            self.batches.append(statements)
+            return [{"rows": [[2]]}, {"rows": [[3]]}]
+
+    executor = _BatchExecutor()
+    monkeypatch.setattr(kg_routes, "resolve_cypher_executor", lambda: executor)
+    monkeypatch.setattr(
+        kg_routes,
+        "_relation_pairs",
+        lambda *_args: [
+            ("belongs_to", "Requirement", "Entity"),
+            ("belongs_to", "Decision", "Entity"),
+        ],
+    )
+
+    counts, diagnostics = kg_routes._count_edges_by_type("board-1")
+
+    assert counts == {"belongs_to": 5}
+    assert len(executor.batches) == 1
+    assert executor.queries == []
+    assert diagnostics["edge_count_status"] == "ok"
+
+
+def test_grouped_node_counts_scan_once_and_fill_declared_zeroes(monkeypatch) -> None:
+    calls = []
+
+    class _Executor:
+        def execute_read_only(self, board_id, query, params, **kwargs):
+            calls.append((board_id, query, params, kwargs))
+            return {"rows": [["Decision", 2], ["Entity", 3]]}
+
+    class _Service:
+        def count_all_nodes(self, *_args, **_kwargs):
+            raise AssertionError("the fallback must not run")
+
+    monkeypatch.setattr(kg_routes, "resolve_cypher_executor", lambda: _Executor())
+
+    counts = kg_routes._count_nodes_by_type(
+        "board-1",
+        ("Decision", "Entity", "Evidence"),
+        _Service(),
+        min_relevance=0.25,
+        graph_layer="canonical",
+    )
+
+    assert counts == {"Decision": 2, "Entity": 3, "Evidence": 0}
+    assert len(calls) == 1
+    assert "RETURN label(n) AS node_type, count(n) AS c" in calls[0][1]
+    assert calls[0][2]["min_relevance"] == 0.25
+    assert calls[0][3] == {"max_rows": 4}
+
+
+def test_grouped_node_count_refusal_falls_back_without_weakening_filters(
+    monkeypatch,
+) -> None:
+    observed = []
+
+    class _Executor:
+        @staticmethod
+        def execute_read_only(*_args, **_kwargs):
+            return {"rows": [["Decision", -1]]}
+
+    class _Service:
+        def count_all_nodes(self, _board_id, **kwargs):
+            observed.append(kwargs)
+            return {"Decision": 2, "Entity": 3}[kwargs["node_type"]]
+
+    monkeypatch.setattr(kg_routes, "resolve_cypher_executor", lambda: _Executor())
+
+    counts = kg_routes._count_nodes_by_type(
+        "board-1",
+        ("Decision", "Entity"),
+        _Service(),
+        min_relevance=0.4,
+        graph_layer="working",
+        include_code_traceability=False,
+    )
+
+    assert counts == {"Decision": 2, "Entity": 3}
+    assert [call["node_type"] for call in observed] == ["Decision", "Entity"]
+    assert all(call["min_relevance"] == 0.4 for call in observed)
+    assert all(call["graph_layer"] == "working" for call in observed)
+    assert all(call["include_code_traceability"] is False for call in observed)
+
+
 def test_legacy_executor_without_layout_extension_keeps_logical_name() -> None:
     assert (
         kg_routes._relationship_table_name(
