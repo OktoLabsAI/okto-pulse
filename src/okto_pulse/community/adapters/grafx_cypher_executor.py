@@ -38,7 +38,10 @@ from okto_pulse.community.adapters.cypher_statement_policy import (
     statement_is_write as _statement_is_write,
 )
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
-from okto_pulse.community.adapters.grafx_graph_transaction import _normalize_value
+from okto_pulse.community.adapters.grafx_graph_transaction import (
+    _grafx_query_parameters,
+    _normalize_value,
+)
 from okto_pulse.community.adapters.grafx_relationship_layout import (
     resolve_relationship_table,
 )
@@ -150,7 +153,7 @@ class CommunityGrafxCypherExecutor:
         database = self._database_resolver(board_id)
         started = time.monotonic()
         try:
-            result = database.execute(cleaned, dict(params or {}))
+            result = database.execute(cleaned, _grafx_query_parameters(params))
             return self._envelope(
                 result,
                 max_rows=max_rows,
@@ -185,14 +188,15 @@ class CommunityGrafxCypherExecutor:
         try:
             with database.transaction("read") as reader:
                 primary_started = time.monotonic()
-                primary_result = reader.execute(primary, dict(params or {}))
+                prepared_params = _grafx_query_parameters(params)
+                primary_result = reader.execute(primary, prepared_params)
                 primary_envelope = self._envelope(
                     primary_result,
                     max_rows=max_rows,
                     started=primary_started,
                 )
                 comparison_started = time.monotonic()
-                comparison_result = reader.execute(comparison, dict(params or {}))
+                comparison_result = reader.execute(comparison, prepared_params)
                 comparison_envelope = self._envelope(
                     comparison_result,
                     max_rows=max_rows,
@@ -219,7 +223,11 @@ class CommunityGrafxCypherExecutor:
         """
 
         prepared = [
-            (self._prepare(cypher, max_rows=max_rows), dict(params or {}), max_rows)
+            (
+                self._prepare(cypher, max_rows=max_rows),
+                _grafx_query_parameters(params),
+                max_rows,
+            )
             for cypher, params, max_rows in statements
         ]
         if not prepared:

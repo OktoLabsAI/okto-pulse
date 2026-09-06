@@ -8,6 +8,7 @@ runs. The query grammar belongs to Core and is not re-tested here.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -124,6 +125,15 @@ class TestThePulseEnvelope:
         assert isinstance(rendered, str)
         assert rendered.endswith("Z")
         assert rendered.startswith("2026-08-28T01:02:03")
+
+    def test_a_datetime_parameter_is_normalized_for_grafx(self, executor) -> None:
+        envelope = executor.execute_read_only(
+            BOARD_ID,
+            "MATCH (d:Decision) WHERE d.created_at < $cursor_ts RETURN d.id",
+            {"cursor_ts": datetime(2026, 9, 1, tzinfo=UTC)},
+        )
+
+        assert envelope["rows"] == [["d1"]]
 
     def test_is_supported(self, executor) -> None:
         assert executor.is_supported() is True
