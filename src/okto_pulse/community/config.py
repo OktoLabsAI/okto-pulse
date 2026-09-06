@@ -161,7 +161,11 @@ class CommunitySettings(CoreSettings, BaseSettings):
     kg_graph_backend: GraphBackend = "ladybug"
     kg_global_graph_backend: GraphBackend = "ladybug"
     kg_grafx_page_size: int = PULSE_GRAFX_DEFAULT_PAGE_SIZE
-    kg_grafx_descriptor_revalidation: GrafxDescriptorRevalidation = "strict"
+    # Pulse owns Grafx's generation directories and replaces them only with every handle closed,
+    # which is the closed lifecycle required by Grafx's generation policy.  Keep strict available
+    # for forensic/manual/shared-directory operation, but do not pay its per-page namespace walk
+    # on the ordinary managed runtime.
+    kg_grafx_descriptor_revalidation: GrafxDescriptorRevalidation = "generation"
 
     # Community ships sentence-transformers as a mandatory dep (pyproject.toml),
     # so override the core default of "stub" — semantic KG search needs real

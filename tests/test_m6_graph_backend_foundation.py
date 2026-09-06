@@ -59,7 +59,7 @@ def test_settings_default_to_ladybug_and_safe_grafx_geometry(tmp_path: Path) -> 
     assert settings.kg_graph_backend == "ladybug"
     assert settings.kg_global_graph_backend == "ladybug"
     assert settings.kg_grafx_page_size == 8192
-    assert settings.kg_grafx_descriptor_revalidation == "strict"
+    assert settings.kg_grafx_descriptor_revalidation == "generation"
     assert settings.kg_ladybug_buffer_pool_mb == settings.kg_kuzu_buffer_pool_mb
     assert (
         settings.kg_global_ladybug_buffer_pool_mb

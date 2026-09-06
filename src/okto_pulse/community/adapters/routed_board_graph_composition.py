@@ -811,7 +811,7 @@ def build_community_routed_board_graph_composition(
     ).expanduser()
     configured_page_size = validate_grafx_page_size(settings.kg_grafx_page_size)
     configured_descriptor_revalidation = validate_grafx_descriptor_revalidation(
-        getattr(settings, "kg_grafx_descriptor_revalidation", "strict")
+        getattr(settings, "kg_grafx_descriptor_revalidation", "generation")
     )
     board_backend = settings.kg_graph_backend
     global_backend = settings.kg_global_graph_backend
