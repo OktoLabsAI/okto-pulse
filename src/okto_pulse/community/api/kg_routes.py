@@ -519,9 +519,15 @@ async def get_subgraph(
             next_cursor = _next_cursor_for(rows, limit)
 
         node_ids = {_node_id(r) for r in rows if _node_id(r)}
+        node_types_by_id = {
+            str(row["id"]): str(row["node_type"])
+            for row in rows
+            if isinstance(row, dict) and row.get("id") and row.get("node_type")
+        }
         edges, edge_metadata = _fetch_edges_for_nodes(
             board_id,
             node_ids,
+            node_types_by_id=node_types_by_id,
             **ct_visibility_kwargs,
         )
 
@@ -571,6 +577,7 @@ def _fetch_edges_for_nodes(
     board_id: str,
     node_ids: set[str],
     *,
+    node_types_by_id: dict[str, str] | None = None,
     include_code_traceability: bool = True,
 ) -> tuple[list[dict], dict[str, Any]]:
     """Fetch all edges between the given node IDs from the board graph.
@@ -581,7 +588,9 @@ def _fetch_edges_for_nodes(
     """
     diagnostics: dict[str, Any] = {
         "edge_read_status": "ok",
+        "edge_tables_considered": 0,
         "edge_tables_scanned": 0,
+        "edge_tables_skipped_by_page_type": 0,
         "edge_tables_failed": 0,
         "edge_errors": [],
     }
@@ -592,12 +601,36 @@ def _fetch_edges_for_nodes(
         rel_pairs = _relation_pairs(REL_TYPES, MULTI_REL_TYPES)
         cypher_executor = resolve_cypher_executor()
 
+        ids_by_type: dict[str, set[str]] = {}
+        known_ids: set[str] = set()
+        if node_types_by_id is not None:
+            for node_id in node_ids:
+                node_type = node_types_by_id.get(node_id)
+                if node_type:
+                    ids_by_type.setdefault(node_type, set()).add(node_id)
+                    known_ids.add(node_id)
+        # A provider that omits the type must retain the old all-layout behaviour. Typed rows,
+        # however, let Grafx avoid probing every one of the 500 page ids against every endpoint
+        # table: each relationship statement receives only ids that can inhabit that endpoint.
+        untyped_ids = node_ids - known_ids
+
         edges = []
         seen: set[tuple[str, str, str]] = set()  # (rel, src, tgt) dedup
         pending: list[tuple[str, str, str, str, dict[str, Any] | None]] = []
         for rel_name, from_type, to_type in rel_pairs:
-            diagnostics["edge_tables_scanned"] += 1
+            diagnostics["edge_tables_considered"] += 1
             try:
+                from_node_ids = ids_by_type.get(from_type, set()) | untyped_ids
+                to_node_ids = ids_by_type.get(to_type, set()) | untyped_ids
+                if (
+                    include_code_traceability
+                    and node_types_by_id is not None
+                    and not from_node_ids
+                    and not to_node_ids
+                ):
+                    diagnostics["edge_tables_skipped_by_page_type"] += 1
+                    continue
+                diagnostics["edge_tables_scanned"] += 1
                 physical_rel = _relationship_table_name(
                     cypher_executor,
                     board_id,
@@ -607,7 +640,19 @@ def _fetch_edges_for_nodes(
                 )
                 visibility = ""
                 params: dict[str, Any] | None = None
-                if not include_code_traceability:
+                if include_code_traceability:
+                    # Grafx 0.0.3 recognises this exact endpoint union and resolves the page
+                    # through its PK and relationship-endpoint indexes. Other providers retain
+                    # ordinary Cypher semantics, and the Python membership check below remains
+                    # the final defence against a provider returning unrelated rows.
+                    visibility = (
+                        " WHERE (a.id IN $from_node_ids OR b.id IN $to_node_ids)"
+                    )
+                    params = {
+                        "from_node_ids": tuple(sorted(from_node_ids)),
+                        "to_node_ids": tuple(sorted(to_node_ids)),
+                    }
+                else:
                     visibility = (
                         f" WHERE {tpl.code_traceability_visibility_clause('a')}"
                         f" AND {tpl.code_traceability_visibility_clause('b')}"

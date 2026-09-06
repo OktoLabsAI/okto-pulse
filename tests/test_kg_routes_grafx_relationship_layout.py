@@ -56,7 +56,10 @@ def test_graph_edges_use_grafx_physical_relationship_table(monkeypatch) -> None:
         ("board-1", "belongs_to", "Requirement", "Entity")
     ]
     assert f"[r:{physical}]" in executor.queries[0]
-    assert " WHERE " not in executor.queries[0]
+    assert (
+        "WHERE (a.id IN $from_node_ids OR b.id IN $to_node_ids)"
+        in executor.queries[0]
+    )
     assert edges == [
         {
             "id": "requirement-1-belongs_to-entity-1",
@@ -102,8 +105,87 @@ def test_graph_edges_use_one_optional_read_batch(monkeypatch) -> None:
     assert len(executor.batches) == 1
     assert executor.queries == []
     assert executor.batches[0][0][2] == 5000
+    assert executor.batches[0][0][1] == {
+        "from_node_ids": ("requirement-1",),
+        "to_node_ids": ("requirement-1",),
+    }
     assert edges[0]["edge_type"] == "belongs_to"
     assert diagnostics["edge_read_status"] == "ok"
+
+
+def test_typed_graph_page_probes_only_ids_valid_for_each_endpoint(monkeypatch) -> None:
+    physical = "belongs_to__Requirement__Entity"
+
+    class _BatchExecutor(_RelationshipAwareExecutor):
+        def __init__(self) -> None:
+            super().__init__({physical: []})
+            self.statements = []
+
+        def execute_read_only_batch(self, _board_id, statements):
+            self.statements = statements
+            return [{"rows": [["requirement-1", "entity-1", 0.9]]}]
+
+    executor = _BatchExecutor()
+    monkeypatch.setattr(kg_routes, "resolve_cypher_executor", lambda: executor)
+    monkeypatch.setattr(
+        kg_routes,
+        "_relation_pairs",
+        lambda *_args: [("belongs_to", "Requirement", "Entity")],
+    )
+
+    edges, diagnostics = kg_routes._fetch_edges_for_nodes(
+        "board-1",
+        {"requirement-1", "entity-1", "unknown-1"},
+        node_types_by_id={
+            "requirement-1": "Requirement",
+            "entity-1": "Entity",
+        },
+    )
+
+    assert executor.statements[0][1] == {
+        "from_node_ids": ("requirement-1", "unknown-1"),
+        "to_node_ids": ("entity-1", "unknown-1"),
+    }
+    assert len(edges) == 1
+    assert diagnostics["edge_read_status"] == "ok"
+
+
+def test_typed_graph_page_skips_layouts_with_no_possible_endpoint(monkeypatch) -> None:
+    relevant = "belongs_to__Requirement__Entity"
+
+    class _BatchExecutor(_RelationshipAwareExecutor):
+        def __init__(self) -> None:
+            super().__init__({relevant: []})
+            self.statements = []
+
+        def execute_read_only_batch(self, _board_id, statements):
+            self.statements = statements
+            return [{"rows": []}]
+
+    executor = _BatchExecutor()
+    monkeypatch.setattr(kg_routes, "resolve_cypher_executor", lambda: executor)
+    monkeypatch.setattr(
+        kg_routes,
+        "_relation_pairs",
+        lambda *_args: [
+            ("belongs_to", "Requirement", "Entity"),
+            ("supports", "Decision", "Evidence"),
+        ],
+    )
+
+    _edges, diagnostics = kg_routes._fetch_edges_for_nodes(
+        "board-1",
+        {"requirement-1"},
+        node_types_by_id={"requirement-1": "Requirement"},
+    )
+
+    assert len(executor.statements) == 1
+    assert executor.resolutions == [
+        ("board-1", "belongs_to", "Requirement", "Entity")
+    ]
+    assert diagnostics["edge_tables_considered"] == 2
+    assert diagnostics["edge_tables_scanned"] == 1
+    assert diagnostics["edge_tables_skipped_by_page_type"] == 1
 
 
 def test_failed_batch_retries_per_table_to_preserve_diagnostics(monkeypatch) -> None:
