@@ -27,6 +27,7 @@ classifiers = [
 ]
 dependencies = [
     "okto-pulse-core>=0.3.3,<1.0.0",
+    "okto-grafx[accel]==0.0.3",
     # 0.137.0 regressed include_router for empty collection paths; 0.137.1 fixed it.
     "fastapi>=0.109.0,!=0.137.0,<1.0.0",
     "starlette>=0.35.0,<1.0.0",
