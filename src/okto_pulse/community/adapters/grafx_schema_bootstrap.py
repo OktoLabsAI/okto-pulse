@@ -18,6 +18,9 @@ from okto_pulse.core.kg.interfaces.graph_errors import (
 )
 
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+from okto_pulse.community.adapters.grafx_ordered_indexes import (
+    ensure_pulse_grafx_ordered_page_indexes,
+)
 from okto_pulse.community.adapters.grafx_schema_manifest import (
     EMBEDDING_DIMENSION,
     PULSE_GRAFX_SCHEMA_MANIFEST,
@@ -525,6 +528,14 @@ def ensure_current_grafx_board_schema(
         # This is intentionally a fresh public snapshot after schema commit.  BoardMeta is not
         # stamped until the committed catalog has proved the complete current shape.
         fingerprint = validate_current_grafx_schema(database)
+        # The physical page capability is Community policy, not part of Core's logical schema.
+        # Activate it before BoardMeta marks a fresh bootstrap complete so a crash or conflict
+        # leaves an explicitly retryable, unstamped catalog rather than a false-ready board.
+        ordered = ensure_pulse_grafx_ordered_page_indexes(
+            database,
+            revalidate_fence=revalidate_fence,
+        )
+        changed = changed or ordered.changed
         observed_meta = _read_board_meta(database, table_exists=True)
         if observed_meta is None:
             _stamp_board_meta(

@@ -26,6 +26,9 @@ from okto_pulse.core.kg.schema_contract import (
 from okto_pulse.community.adapters.grafx_relationship_layout import (
     PULSE_RELATIONSHIP_LAYOUT,
 )
+from okto_pulse.community.adapters.grafx_ordered_indexes import (
+    pulse_ordered_page_index_name,
+)
 from okto_pulse.community.adapters.grafx_schema_bootstrap import (
     ensure_current_grafx_board_schema,
     validate_current_grafx_schema,
@@ -273,6 +276,28 @@ def test_empty_bootstrap_is_exact_second_call_is_noop_and_reopen_is_stable(
         assert first.logical_fingerprint == _FINGERPRINT
         assert len(database.catalog.catalog.tables()) == 81
         assert len(database.catalog.catalog.spaces()) == 11
+        ordered_indexes = {
+            index.name: index
+            for index in database.indexes.indexes()
+            if index.name.startswith("pulse_page_")
+        }
+        assert set(ordered_indexes) == {
+            pulse_ordered_page_index_name(table.name)
+            for table in PULSE_GRAFX_SCHEMA_MANIFEST.nodes
+        }
+        assert all(
+            index.columns == ("created_at", "id") for index in ordered_indexes.values()
+        )
+        assert all(
+            index.layout.value == "ordered" for index in ordered_indexes.values()
+        )
+        assert all(
+            index.visibility.value == "exact" for index in ordered_indexes.values()
+        )
+        assert all(
+            index.generation_state == "active" for index in ordered_indexes.values()
+        )
+        assert all(index.stale is False for index in ordered_indexes.values())
         assert _meta_row(database) == (_BOARD_ID, "0.5.0", _STAMP, None, None)
         assert database.verify("all").findings == ()
 
