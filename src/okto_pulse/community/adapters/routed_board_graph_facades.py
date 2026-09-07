@@ -329,6 +329,32 @@ class CommunityRoutedSemanticGraphStore:
                 include_code_traceability=include_code_traceability,
             )
 
+    def find_by_artifact_filtered(
+        self,
+        board_id: str,
+        artifact_id: str,
+        filters: QueryFilters,
+        *,
+        rel_types: list[str] | None = None,
+        direction: str = "both",
+        max_depth: int = 2,
+        graph_layer: str = "all",
+        include_code_traceability: bool = True,
+    ) -> list[list]:
+        with self._operation_window(board_id):
+            provider = self._provider(board_id)
+            operation = getattr(provider, "find_by_artifact_filtered", None)
+            if not callable(operation):
+                raise GraphCapabilityUnavailable(
+                    "The routed graph provider cannot apply related-context filters.",
+                    details={"operation": "find_by_artifact_filtered"},
+                )
+            return operation(
+                board_id, artifact_id, filters, rel_types=rel_types,
+                direction=direction, max_depth=max_depth, graph_layer=graph_layer,
+                include_code_traceability=include_code_traceability,
+            )
+
     def traverse_supersedence(
         self,
         board_id: str,

@@ -866,6 +866,9 @@ class CommunityGrafxGraphStore:
         self,
         reader: Any,
         node: _NodeView,
+        *,
+        rel_types: frozenset[str] | None = None,
+        direction: str = "both",
     ) -> list[tuple[_NodeView, str]]:
         projection = (
             "neighbor.id, neighbor.title, neighbor.source_artifact_ref, "
@@ -874,7 +877,9 @@ class CommunityGrafxGraphStore:
         )
         adjacent: list[tuple[_NodeView, str]] = []
         for entry in self._incident_entries(node.node_type):
-            if entry.from_type == node.node_type:
+            if rel_types is not None and entry.logical_type not in rel_types:
+                continue
+            if entry.from_type == node.node_type and direction != "incoming":
                 result = reader.execute(
                     f"MATCH (center:{entry.from_type})-[r:{entry.physical_table}]->"
                     f"(neighbor:{entry.to_type}) WHERE center.id = $node_id "
@@ -885,7 +890,7 @@ class CommunityGrafxGraphStore:
                     (_node_view(row, node_type=entry.to_type), entry.logical_type)
                     for row in _rows(result)
                 )
-            if entry.to_type == node.node_type:
+            if entry.to_type == node.node_type and direction != "outgoing":
                 result = reader.execute(
                     f"MATCH (neighbor:{entry.from_type})-[r:{entry.physical_table}]->"
                     f"(center:{entry.to_type}) WHERE center.id = $node_id "
@@ -907,6 +912,55 @@ class CommunityGrafxGraphStore:
         graph_layer: str = "all",
         include_code_traceability: bool = True,
     ) -> list[list]:
+        return self._find_by_artifact(
+            board_id, artifact_id, filters, graph_layer=graph_layer,
+            include_code_traceability=include_code_traceability,
+        )
+
+    def find_by_artifact_filtered(
+        self,
+        board_id: str,
+        artifact_id: str,
+        filters: QueryFilters,
+        *,
+        rel_types: list[str] | None = None,
+        direction: str = "both",
+        max_depth: int = 2,
+        graph_layer: str = "all",
+        include_code_traceability: bool = True,
+    ) -> list[list]:
+        """Apply hop1 type/direction filters and preserve the full hop2 neighbourhood."""
+        if type(direction) is not str or direction not in {"both", "incoming", "outgoing"}:
+            raise ValueError("invalid direction")
+        if type(max_depth) is not int or max_depth not in {1, 2}:
+            raise ValueError("invalid max_depth")
+        known_types = {entry.logical_type for entry in PULSE_RELATIONSHIP_LAYOUT.entries}
+        if rel_types is not None and (
+            type(rel_types) is not list
+            or any(type(name) is not str or name not in known_types for name in rel_types)
+        ):
+            raise ValueError("invalid rel_types: expected logical relationship names")
+        return self._find_by_artifact(
+            board_id, artifact_id, filters,
+            rel_types=frozenset(rel_types) if rel_types else None,
+            direction=direction, max_depth=max_depth, graph_layer=graph_layer,
+            include_code_traceability=include_code_traceability,
+            operation="find_by_artifact_filtered",
+        )
+
+    def _find_by_artifact(
+        self,
+        board_id: str,
+        artifact_id: str,
+        filters: QueryFilters,
+        *,
+        rel_types: frozenset[str] | None = None,
+        direction: str = "both",
+        max_depth: int = 2,
+        graph_layer: str,
+        include_code_traceability: bool,
+        operation: str = "find_by_artifact",
+    ) -> list[list]:
         layer = _graph_layer(graph_layer)
         if filters.max_rows <= 0:
             return []
@@ -921,27 +975,32 @@ class CommunityGrafxGraphStore:
                     "RETURN center.id, label(center), center.title, "
                     "center.source_artifact_ref, center.source_confidence, "
                     "center.graph_layer, center.superseded_by, "
-                    "center.revocation_reason, center.kind_of LIMIT $max_rows",
+                    "center.revocation_reason, center.kind_of",
                     {
                         "artifact_id": artifact_id,
                         "min_confidence": filters.min_confidence,
                         "include_code_traceability": include_code_traceability,
-                        "max_rows": filters.max_rows,
                     },
                 )
             )
             centers = [_node_view(row) for row in center_rows]
-            cache: dict[tuple[str, str], list[tuple[_NodeView, str]]] = {}
+            # The result limit applies to expanded rows, not candidate centers:
+            # an earlier center may have no visible neighbours at all.
+            cache: dict[tuple, list[tuple[_NodeView, str]]] = {}
 
-            def neighbours(node: _NodeView) -> list[tuple[_NodeView, str]]:
-                key = (node.node_type, node.node_id)
+            def neighbours(node: _NodeView, *, first_hop: bool = False) -> list[tuple[_NodeView, str]]:
+                wanted_types = rel_types if first_hop else None
+                wanted_direction = direction if first_hop else "both"
+                key = (node.node_type, node.node_id, wanted_types, wanted_direction)
                 if key not in cache:
-                    cache[key] = self._adjacent(reader, node)
+                    cache[key] = self._adjacent(
+                        reader, node, rel_types=wanted_types, direction=wanted_direction,
+                    )
                 return cache[key]
 
             answer: list[list] = []
             for center in centers:
-                for hop1, rel1 in neighbours(center):
+                for hop1, rel1 in neighbours(center, first_hop=True):
                     if not self._visible_neighbour(
                         hop1,
                         graph_layer=layer,
@@ -949,7 +1008,7 @@ class CommunityGrafxGraphStore:
                         include_code_traceability=include_code_traceability,
                     ):
                         continue
-                    second = [
+                    second = [] if max_depth == 1 else [
                         (hop2, rel2)
                         for hop2, rel2 in neighbours(hop1)
                         if self._visible_neighbour(
@@ -990,7 +1049,7 @@ class CommunityGrafxGraphStore:
                         return answer[: filters.max_rows]
             return answer
 
-        return self._read(board_id, operation="find_by_artifact", callback=find)
+        return self._read(board_id, operation=operation, callback=find)
 
     def traverse_supersedence(
         self,
