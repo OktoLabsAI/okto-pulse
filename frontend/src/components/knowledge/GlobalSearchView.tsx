@@ -194,6 +194,8 @@ export function GlobalSearchView({ boardId }: Props) {
 
   // Real-tool execution state (ideação a4f526df).
   const [intentResult, setIntentResult] = useState<IntentExecutionResult | null>(null);
+  const intentWarning =
+    typeof intentResult?.warning === 'string' ? intentResult.warning.trim() : '';
   const [pendingIntent, setPendingIntent] = useState<DiscoveryIntent | null>(null);
   const [paramValues, setParamValues] = useState<Record<string, IntentParamValue>>({});
   const [selectorStates, setSelectorStates] = useState<Record<string, SelectorUiState>>({});
@@ -1104,7 +1106,7 @@ export function GlobalSearchView({ boardId }: Props) {
             </div>
             <div className="mb-3 rounded-md bg-gray-100 dark:bg-gray-800/60 p-3 text-xs">
               <div className="text-gray-500 dark:text-gray-400 mb-1">
-                Tool executed
+                {intentWarning ? 'Tool requested' : 'Tool executed'}
               </div>
               <code className="text-blue-600 dark:text-cyan-300 font-mono text-[11px] break-all">
                 {intentResult.tool_binding}(
@@ -1114,14 +1116,30 @@ export function GlobalSearchView({ boardId }: Props) {
                 )
               </code>
             </div>
-            {intentResult.rows.length === 0 ? (
-              <div className="text-center text-gray-500 dark:text-gray-400 py-6">
-                <div className="text-3xl mb-2">📭</div>
-                <p className="text-sm">
-                  The tool ran successfully but returned no rows for this
-                  board.
+            {intentWarning && (
+              <div
+                role="alert"
+                data-testid="discovery-intent-warning"
+                className="mb-3 rounded border border-amber-300 dark:border-amber-500/60 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-200"
+              >
+                <p className="font-medium">
+                  {intentResult.rows.length > 0
+                    ? 'Results may be incomplete'
+                    : 'Query could not be completed'}
                 </p>
+                <p className="mt-1 whitespace-pre-wrap break-words">{intentWarning}</p>
               </div>
+            )}
+            {intentResult.rows.length === 0 ? (
+              !intentWarning && (
+                <div className="text-center text-gray-500 dark:text-gray-400 py-6">
+                  <div className="text-3xl mb-2">📭</div>
+                  <p className="text-sm">
+                    The tool ran successfully but returned no rows for this
+                    board.
+                  </p>
+                </div>
+              )
             ) : (
               <div className="overflow-x-auto border border-gray-200 dark:border-gray-700 rounded-lg">
                 <table className="w-full text-xs">
@@ -1196,8 +1214,9 @@ export function GlobalSearchView({ boardId }: Props) {
               </div>
             )}
             <div className="mt-3 text-[11px] text-gray-500 dark:text-gray-400">
-              <strong>{intentResult.total}</strong>{' '}
-              {intentResult.total === 1 ? 'row' : 'rows'} from{' '}
+              <strong>{intentWarning ? intentResult.rows.length : intentResult.total}</strong>{' '}
+              {intentWarning && intentResult.rows.length > 0 ? 'partial ' : ''}
+              {(intentWarning ? intentResult.rows.length : intentResult.total) === 1 ? 'row' : 'rows'} from{' '}
               <code className="font-mono">{intentResult.tool_binding}</code>
             </div>
           </div>

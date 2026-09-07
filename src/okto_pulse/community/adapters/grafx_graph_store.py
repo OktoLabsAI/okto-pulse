@@ -1198,6 +1198,12 @@ class CommunityGrafxGraphStore:
         if filters.max_rows <= 0:
             return []
         physical = resolve_relationship_table("validates", "Learning", "Bug")
+        # An omitted area means all areas. CONTAINS NULL is correctly unknown
+        # in Cypher and must not accidentally filter out every Learning.
+        area_filter = (
+            "AND (b.title CONTAINS $area OR b.content CONTAINS $area) "
+            if area else ""
+        )
         return self._read(
             board_id,
             operation="get_learnings_for_area",
@@ -1206,7 +1212,7 @@ class CommunityGrafxGraphStore:
                     f"MATCH (l:Learning)-[r:{physical}]->(b:Bug) "
                     "WHERE l.source_confidence >= $min_confidence "
                     "AND l.relevance_score >= $min_relevance "
-                    "AND (b.title CONTAINS $area OR b.content CONTAINS $area) "
+                    f"{area_filter}"
                     f"AND {tpl.active_read_filter_clause('l')} "
                     f"AND {tpl.active_read_filter_clause('b')} "
                     "RETURN l.id, l.title, l.content, l.justification, "

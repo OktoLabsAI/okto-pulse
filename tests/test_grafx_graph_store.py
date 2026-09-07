@@ -447,6 +447,9 @@ def test_every_port_method_roundtrips_over_one_real_grafx_board(real_store) -> N
     assert alternatives[0][:2] == ["alternative-1", "Alternative one"]
     learnings = store.get_learnings_for_area(BOARD_ID, "storage", filters)
     assert learnings[0][0] == "learning-1"
+    assert store.get_learnings_for_area(BOARD_ID, None, filters) == learnings
+    assert store.get_learnings_for_area(BOARD_ID, "", filters) == learnings
+    assert store.get_learnings_for_area(BOARD_ID, "unrelated-area", filters) == []
 
     assert store.edge_exists(
         BOARD_ID,
