@@ -393,6 +393,20 @@ class CommunityGrafxGraphRecovery:
 
     async def recover_wal_only(self, board_id: str) -> WalRecoveryReport:
         try:
+            with self._mutation_guard(board_id):
+                return self.recover_wal_only_unguarded(board_id)
+        except BaseException as failure:  # noqa: BLE001 - report boundary
+            return self._failed(board_id, failure, operation="recover_wal_only_guard")
+
+    def recover_wal_only_unguarded(self, board_id: str) -> WalRecoveryReport:
+        """Recover while the caller holds the Board lifecycle mutation window.
+
+        This synchronous seam exists for the safe-write checkpoint path.  It
+        must not acquire the lifecycle guard again: the routed lifecycle owns
+        that exclusive window already and holds it through recovery,
+        verification, cold reopen and the checkpoint retry.
+        """
+        try:
             path = _database_path(self._database_path_resolver(board_id))
             _require_disjoint(path, self._quarantine_root)
         except BaseException as failure:  # noqa: BLE001 - report boundary
@@ -405,10 +419,9 @@ class CommunityGrafxGraphRecovery:
                 reason=f"Grafx database missing at {path}",
             )
         try:
-            with self._mutation_guard(board_id):
-                return self._recover_guarded(board_id, path)
+            return self._recover_guarded(board_id, path)
         except BaseException as failure:  # noqa: BLE001 - report boundary
-            return self._failed(board_id, failure, operation="recover_wal_only_guard")
+            return self._failed(board_id, failure, operation="recover_wal_only")
 
     def _recover_guarded(self, board_id: str, path: Path) -> WalRecoveryReport:
         snapshot: _WalSnapshot | None = None

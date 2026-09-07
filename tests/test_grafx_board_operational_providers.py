@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import stat
 import subprocess
@@ -9,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from okto_grafx.errors import GrafxRecoveryRefused, GrafxUnsupportedOperation
 
 from okto_pulse.community.adapters import (
     grafx_graph_lifecycle as lifecycle_module,
@@ -49,6 +51,21 @@ from okto_pulse.core.kg.safe_write_lifecycle import (
     STEP_FLUSH,
     STEP_FSYNC,
 )
+
+
+def test_checkpoint_refusal_log_keeps_codes_not_raw_messages_or_payloads(caplog):
+    failure = GrafxUnsupportedOperation(
+        "private/path/graph query payload", field="recovery_required",
+        operation="checkpoint", component="C:/private/file", reason="line1\nline2",
+        state="x" * 81,
+    )
+    with caplog.at_level(logging.ERROR, logger=lifecycle_module.__name__):
+        lifecycle_module._log_checkpoint_refusal("board-test", failure)
+    text = caplog.text
+    assert "field=recovery_required" in text and "operation=checkpoint" in text
+    assert "component=redacted" in text and "reason=redacted" in text
+    assert "state=redacted" in text
+    assert "private" not in text and "line1" not in text and "message=" not in text
 
 
 class _Database:
@@ -474,6 +491,276 @@ def test_lifecycle_apply_step_uses_only_public_grafx_operations(
     assert database.events == ["checkpoint", "flush", "flush", "checkpoint"]
     assert lifecycle.apply_step("board-1", "global_discovery", STEP_FLUSH).ok is False
     assert lifecycle.apply_step("board-1", "board_graph", "unknown").ok is False
+
+
+def test_checkpoint_transparently_recovers_only_a_latched_grafx_handle(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "graph.grafx"
+    path.mkdir()
+    (path / "grafx.meta").write_bytes(b"identity")
+    events: list[str] = []
+
+    class LatchedDatabase(_Database):
+        def checkpoint(self) -> None:
+            events.append("latched_checkpoint")
+            raise GrafxRecoveryRefused(
+                "recovery required",
+                field="recovery_required",
+                required_lsn=41,
+            )
+
+    class RecoveredDatabase(_Database):
+        def checkpoint(self) -> None:
+            events.append("recovered_checkpoint")
+
+    latched = LatchedDatabase()
+    recovered = RecoveredDatabase()
+    active = latched
+
+    def resolve(_board_id: str):
+        events.append("resolve")
+        return active
+
+    def recover(board_id: str):
+        nonlocal active
+        assert board_id == "board-1"
+        events.append("recover")
+        active = recovered
+        return SimpleNamespace(
+            status="skipped",
+            reason="Grafx recovery found no WAL work",
+            quarantine_id=None,
+        )
+
+    monkeypatch.setattr(
+        lifecycle_module,
+        "validate_current_grafx_schema",
+        lambda database: events.append(
+            "validate_recovered" if database is recovered else "validate_wrong"
+        ),
+    )
+    lifecycle = CommunityGrafxGraphLifecycle(
+        resolve,
+        lambda _board_id: path,
+        lambda _board_id: None,
+        lambda _board_id, phase: events.append(f"fence:{phase}"),
+        recover_latched_checkpoint=recover,
+    )
+
+    result = lifecycle.apply_step("board-1", "board_graph", STEP_CHECKPOINT)
+
+    assert result.ok is True
+    assert events == [
+        "fence:checkpoint",
+        "resolve",
+        "fence:checkpoint",
+        "latched_checkpoint",
+        "fence:checkpoint_auto_recovery",
+        "recover",
+        "fence:checkpoint_auto_recovery_reopen",
+        "resolve",
+        "validate_recovered",
+        "fence:checkpoint_auto_recovery_retry",
+        "recovered_checkpoint",
+    ]
+
+
+async def test_schema_reads_use_dedicated_resolver_but_writes_do_not(
+    monkeypatch,
+) -> None:
+    writer = _Database()
+    reader = _Database()
+    writer_resolutions: list[str] = []
+    reader_resolutions: list[str] = []
+    target = PULSE_GRAFX_SCHEMA_MANIFEST.schema_version
+
+    monkeypatch.setattr(
+        schema_module,
+        "read_current_grafx_schema_version",
+        lambda database: target if database is reader else "writer-used-for-read",
+    )
+    monkeypatch.setattr(
+        schema_module,
+        "validate_current_grafx_schema",
+        lambda database: "fingerprint" if database is reader else None,
+    )
+    monkeypatch.setattr(
+        schema_module,
+        "ensure_current_grafx_board_schema",
+        lambda database, **_kwargs: SimpleNamespace(
+            changed=database is writer,
+            logical_fingerprint="fingerprint",
+        ),
+    )
+
+    manager = CommunityGrafxGraphSchemaManager(
+        lambda board_id: writer_resolutions.append(board_id) or writer,
+        lambda _board_id, _phase: None,
+        read_database_resolver=(
+            lambda board_id: reader_resolutions.append(board_id) or reader
+        ),
+    )
+
+    assert await manager.current_version("board-read") == target
+    assert (await manager.validate("board-read")).valid is True
+    await manager.ensure_bootstrapped("board-write")
+
+    assert reader_resolutions == ["board-read", "board-read"]
+    assert writer_resolutions == ["board-write"]
+
+
+def test_checkpoint_never_treats_unsupported_operation_as_wal_recovery(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A process-local capability refusal must not close the shared pool."""
+
+    path = tmp_path / "graph.grafx"
+    path.mkdir()
+    (path / "grafx.meta").write_bytes(b"identity")
+    events: list[str] = []
+
+    class UnsupportedDatabase(_Database):
+        def checkpoint(self) -> None:
+            events.append("unsupported_checkpoint")
+            raise GrafxUnsupportedOperation("checkpoint handle is not writable")
+
+    active: _Database = UnsupportedDatabase()
+
+    def resolve(_board_id: str):
+        events.append("resolve")
+        return active
+
+    def recover(board_id: str):
+        assert board_id == "board-1"
+        events.append("native_reopen_verify")
+        raise AssertionError("unsupported_operation must not enter WAL recovery")
+
+    lifecycle = CommunityGrafxGraphLifecycle(
+        resolve,
+        lambda _board_id: path,
+        lambda _board_id: None,
+        lambda _board_id, phase: events.append(f"fence:{phase}"),
+        recover_latched_checkpoint=recover,
+    )
+
+    result = lifecycle.apply_step("board-1", "board_graph", STEP_CHECKPOINT)
+
+    assert result.ok is False
+    assert result.detail == "graph_capability_unavailable"
+    assert events == [
+        "fence:checkpoint",
+        "resolve",
+        "fence:checkpoint",
+        "unsupported_checkpoint",
+    ]
+
+
+def test_checkpoint_never_auto_recovers_an_unrelated_recovery_refusal(
+    tmp_path,
+) -> None:
+    path = tmp_path / "graph.grafx"
+    path.mkdir()
+    (path / "grafx.meta").write_bytes(b"identity")
+    recoveries: list[str] = []
+
+    class RefusedDatabase(_Database):
+        def checkpoint(self) -> None:
+            raise GrafxRecoveryRefused(
+                "operator policy refused recovery",
+                field="recovery.policy",
+            )
+
+    lifecycle = CommunityGrafxGraphLifecycle(
+        lambda _board_id: RefusedDatabase(),
+        lambda _board_id: path,
+        lambda _board_id: None,
+        lambda _board_id, _phase: None,
+        recover_latched_checkpoint=lambda board_id: recoveries.append(board_id),
+    )
+
+    result = lifecycle.apply_step("board-1", "board_graph", STEP_CHECKPOINT)
+
+    assert result.ok is False
+    assert result.detail == "graph_unavailable"
+    assert recoveries == []
+
+
+def test_checkpoint_auto_recovery_failure_is_fail_closed_without_retry(
+    tmp_path,
+) -> None:
+    path = tmp_path / "graph.grafx"
+    path.mkdir()
+    (path / "grafx.meta").write_bytes(b"identity")
+    attempts = 0
+
+    class LatchedDatabase(_Database):
+        def checkpoint(self) -> None:
+            nonlocal attempts
+            attempts += 1
+            raise GrafxRecoveryRefused(
+                "recovery required",
+                field="recovery_required",
+                required_lsn=52,
+            )
+
+    lifecycle = CommunityGrafxGraphLifecycle(
+        lambda _board_id: LatchedDatabase(),
+        lambda _board_id: path,
+        lambda _board_id: None,
+        lambda _board_id, _phase: None,
+        recover_latched_checkpoint=lambda _board_id: SimpleNamespace(
+            status="failed",
+            reason="verification was not clean",
+        ),
+    )
+
+    result = lifecycle.apply_step("board-1", "board_graph", STEP_CHECKPOINT)
+
+    assert result.ok is False
+    assert result.detail == "graph_error"
+    assert attempts == 1
+
+
+def test_checkpoint_auto_recovery_never_accepts_a_missing_database_skip(
+    tmp_path,
+) -> None:
+    path = tmp_path / "graph.grafx"
+    path.mkdir()
+    (path / "grafx.meta").write_bytes(b"identity")
+    resolutions = 0
+
+    class LatchedDatabase(_Database):
+        def checkpoint(self) -> None:
+            raise GrafxRecoveryRefused(
+                "recovery required",
+                field="recovery_required",
+                required_lsn=61,
+            )
+
+    def resolve(_board_id: str):
+        nonlocal resolutions
+        resolutions += 1
+        return LatchedDatabase()
+
+    lifecycle = CommunityGrafxGraphLifecycle(
+        resolve,
+        lambda _board_id: path,
+        lambda _board_id: None,
+        lambda _board_id, _phase: None,
+        recover_latched_checkpoint=lambda _board_id: SimpleNamespace(
+            status="skipped",
+            reason=f"Grafx database missing at {path}",
+        ),
+    )
+
+    result = lifecycle.apply_step("board-1", "board_graph", STEP_CHECKPOINT)
+
+    assert result.ok is False
+    assert result.detail == "graph_error"
+    assert resolutions == 1
 
 
 def test_runtime_graph_state_covers_all_four_non_opening_states(tmp_path) -> None:

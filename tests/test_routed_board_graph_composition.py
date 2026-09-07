@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from okto_grafx.errors import GrafxSchemaVersionMismatch
+from okto_grafx.errors import GrafxSchemaVersionMismatch, GrafxUnsupportedOperation
 from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphCapabilityUnavailable,
     GraphCorruption,
@@ -79,6 +79,7 @@ class _GrafxConnector:
         self.persisted_page_size = persisted_page_size
         self.calls: list[tuple[Path, int]] = []
         self.descriptor_revalidation_calls: list[str] = []
+        self.read_only_calls: list[bool] = []
         self.databases: list[_FakeGrafxDatabase] = []
 
     def __call__(
@@ -87,10 +88,12 @@ class _GrafxConnector:
         *,
         page_size: int,
         descriptor_revalidation: str = "strict",
+        read_only: bool = False,
     ) -> _FakeGrafxDatabase:
         path = Path(path)
         self.calls.append((path, page_size))
         self.descriptor_revalidation_calls.append(descriptor_revalidation)
+        self.read_only_calls.append(read_only)
         if (
             self.persisted_page_size is not None
             and path.exists()
@@ -300,6 +303,94 @@ def test_grafx_common_write_fence_never_closes_rollback_for_a_stale_route(
         access.write_fence("board-1", "schema_write")
 
     assert recorder_calls == []
+
+
+def test_first_reader_join_checkpoints_transparently_when_wal_is_ahead(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "grafx" / "generation-1"
+    snapshot = SimpleNamespace(
+        scope_id="board-reader-join",
+        backend="grafx",
+        active_path=path,
+        page_size=PAGE_SIZE,
+        binding_sha256="c" * 64,
+    )
+    checkpoints: list[str] = []
+    admissions: list[tuple[object, str]] = []
+    revalidations: list[object] = []
+
+    class Writer:
+        def checkpoint(self) -> None:
+            checkpoints.append("checkpoint")
+
+    class WriterPool:
+        def get(self, _path: Path, *, page_size: int) -> Writer:
+            assert page_size == PAGE_SIZE
+            return Writer()
+
+        def pooled_paths(self) -> tuple[str, ...]:
+            return ()
+
+    class ReadPool:
+        read_only = True
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get(self, _path: Path, *, page_size: int) -> object:
+            assert page_size == PAGE_SIZE
+            self.calls += 1
+            if self.calls <= 2:
+                cause = GrafxUnsupportedOperation(
+                    "checkpoint is required",
+                    field="read_only_consistency",
+                )
+                raise GrafxDatabasePoolError(
+                    "read-only open refused",
+                    reason="pool_open_failed",
+                ) from cause
+            return SimpleNamespace(path=str(path))
+
+        def pooled_paths(self) -> tuple[str, ...]:
+            return ()
+
+    resolver = SimpleNamespace(
+        current_board_snapshot=lambda _board_id, require_physical: snapshot,
+        admit_grafx_route=lambda _snapshot, database, operation: admissions.append(
+            (database, operation)
+        ),
+        revalidate_snapshot=lambda observed, require_physical: revalidations.append(
+            (observed, require_physical)
+        ),
+    )
+    recorder = SimpleNamespace(
+        close_rollback_before_write_if_active=lambda *_args: None
+    )
+    monkeypatch.setattr(
+        composition,
+        "revalidate_board_graph_write_lease",
+        lambda _board_id, failure_phase: revalidations.append(failure_phase),
+    )
+    read_pool = ReadPool()
+    access = composition._GrafxBoardAccess(
+        resolver,
+        WriterPool(),
+        SimpleNamespace(),
+        recorder,
+        configured_page_size=PAGE_SIZE,
+        connect=None,
+        read_pools=(read_pool,),
+    )
+
+    opened = access.read_database(snapshot.scope_id)
+
+    assert opened.path == str(path)
+    assert read_pool.calls == 3
+    assert checkpoints == ["checkpoint"]
+    assert admissions[-1][1] == "resolve_routed_board_grafx_read_database"
+    assert "grafx_read_join_checkpoint" in revalidations
 
 
 def test_ladybug_administrative_write_advances_rollout_high_water(
@@ -652,6 +743,8 @@ def test_build_is_read_only_and_every_board_port_shares_one_route_identity(
     assert not root.exists()
     assert connector.calls == []
     assert bundle.grafx_pool._max_entries is None
+    assert len(bundle.grafx_read_pools) == 2
+    assert all(pool.read_only for pool in bundle.grafx_read_pools)
     assert bundle.graph_transaction._grafx_pool is bundle.grafx_pool
     assert bundle.graph_rollout_coordinator._bindings is bundle.binding_store
     assert bundle.graph_rollout_coordinator._shadow._connector is connector
@@ -674,6 +767,24 @@ def test_build_is_read_only_and_every_board_port_shares_one_route_identity(
     assert missing.value.details["reason"] == "binding_missing"
     assert connector.calls == []
     assert not root.exists()
+
+
+def test_board_reader_lanes_are_distinct_from_the_writer_participant(
+    tmp_path: Path,
+) -> None:
+    connector = _GrafxConnector()
+    bundle = _build(tmp_path / "kg", connector)
+    snapshot = bundle.initialize_board_route("board-reader-lanes")
+
+    writer = bundle.grafx_pool.get(snapshot.active_path, page_size=PAGE_SIZE)
+    readers = tuple(
+        pool.get(snapshot.active_path, page_size=PAGE_SIZE)
+        for pool in bundle.grafx_read_pools
+    )
+
+    assert readers[0] is not readers[1]
+    assert all(reader is not writer for reader in readers)
+    assert connector.read_only_calls == [False, True, True]
 
 
 def test_builder_accepts_and_validates_exact_prebuilt_shared_components(

@@ -26,6 +26,7 @@ GrafxDescriptorRevalidation = Literal["strict", "generation"]
 PULSE_GRAFX_DEFAULT_PAGE_SIZE = 8192
 PULSE_GRAFX_MIN_PAGE_SIZE = 4096
 PULSE_GRAFX_MAX_PAGE_SIZE = 32768
+PULSE_GRAFX_DEFAULT_BUFFER_POOL_MB = 64
 
 _LADYBUG_SETTING_ALIASES: tuple[tuple[str, str], ...] = (
     ("kg_ladybug_buffer_pool_mb", "kg_kuzu_buffer_pool_mb"),
@@ -68,6 +69,14 @@ def validate_grafx_descriptor_revalidation(value: object) -> str:
         raise ValueError(
             "kg_grafx_descriptor_revalidation must be 'strict' or 'generation'"
         )
+    return value
+
+
+def validate_grafx_buffer_pool_mb(value: object) -> int:
+    """Validate a process-local buffer budget in MiB for each Grafx handle."""
+
+    if type(value) is not int or value < 1:
+        raise ValueError("kg_grafx_buffer_pool_mb must be a positive integer")
     return value
 
 
@@ -161,6 +170,10 @@ class CommunitySettings(CoreSettings, BaseSettings):
     kg_graph_backend: GraphBackend = "ladybug"
     kg_global_graph_backend: GraphBackend = "ladybug"
     kg_grafx_page_size: int = PULSE_GRAFX_DEFAULT_PAGE_SIZE
+    # Each writer/read lane owns its own buffer pool. This is a per-handle
+    # budget, not a process-wide cap; the three ordinary lanes can use 3x it.
+    kg_grafx_buffer_pool_mb: int = PULSE_GRAFX_DEFAULT_BUFFER_POOL_MB
+    kg_grafx_options: dict = Field(default_factory=dict)
     # Pulse owns Grafx's generation directories and replaces them only with every handle closed,
     # which is the closed lifecycle required by Grafx's generation policy.  Keep strict available
     # for forensic/manual/shared-directory operation, but do not pay its per-page namespace walk
@@ -293,10 +306,30 @@ class CommunitySettings(CoreSettings, BaseSettings):
     def _validate_grafx_page_size(cls, value: int) -> int:
         return validate_grafx_page_size(value)
 
+    @field_validator("kg_grafx_buffer_pool_mb", mode="before")
+    @classmethod
+    def _validate_grafx_buffer_pool_mb(cls, value: object) -> int:
+        if isinstance(value, str):
+            try:
+                value = int(value)
+            except ValueError:
+                pass
+        return validate_grafx_buffer_pool_mb(value)
+
     @field_validator("kg_grafx_descriptor_revalidation", mode="before")
     @classmethod
     def _validate_grafx_descriptor_revalidation(cls, value: object) -> str:
         return validate_grafx_descriptor_revalidation(value)
+
+    @model_validator(mode="after")
+    def _validate_grafx_constructor_options(self):
+        from okto_pulse.community.adapters.grafx_settings_catalog import validate_options
+
+        self.kg_grafx_options = validate_options(
+            self.kg_grafx_options, page_size=self.kg_grafx_page_size,
+            buffer_pool_mb=self.kg_grafx_buffer_pool_mb,
+        )
+        return self
 
     @property
     def kg_ladybug_buffer_pool_mb(self) -> int:

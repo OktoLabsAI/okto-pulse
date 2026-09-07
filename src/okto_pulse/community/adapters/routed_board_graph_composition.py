@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import os
 import secrets
+import threading
+from okto_pulse.community.adapters.grafx_read_lanes import GrafxReadLanes
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
@@ -26,7 +28,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
-from okto_grafx.errors import GrafxSchemaVersionMismatch
+from okto_grafx.errors import GrafxSchemaVersionMismatch, GrafxUnsupportedOperation
 from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphCapabilityUnavailable,
     GraphCorruption,
@@ -123,6 +125,8 @@ from okto_pulse.community.adapters.routed_graph_transaction import (
     CommunityRoutedGraphTransaction,
 )
 from okto_pulse.community.config import (
+    PULSE_GRAFX_DEFAULT_BUFFER_POOL_MB,
+    validate_grafx_buffer_pool_mb,
     validate_grafx_descriptor_revalidation,
     validate_grafx_page_size,
 )
@@ -390,9 +394,20 @@ class _GrafxBoardAccess:
         *,
         configured_page_size: int,
         connect: GrafxConnector | None,
+        read_pools: tuple[CommunityGrafxDatabasePool, ...] | None = None,
     ) -> None:
         self.resolver = resolver
         self.pool = pool
+        selected_read_pools = read_pools or ()
+        if selected_read_pools and any(
+            not candidate.read_only for candidate in selected_read_pools
+        ):
+            raise ValueError("Grafx Board read pools must be non-empty and read-only")
+        self.read_pools = selected_read_pools
+        self._read_lanes = GrafxReadLanes(len(selected_read_pools) or 1)
+        self._read_pool_lock = threading.Lock()
+        self._read_join_lock = threading.Lock()
+        self._next_read_pool = 0
         self.binding_store = binding_store
         self.rollout_mutation_recorder = rollout_mutation_recorder
         self.configured_page_size = validate_grafx_page_size(configured_page_size)
@@ -430,6 +445,78 @@ class _GrafxBoardAccess:
         )
         return database
 
+    @contextmanager
+    def read_database_scope(self, board_id: str) -> Iterator[Any]:
+        """Keep scheduling load charged through the caller's complete read."""
+        with self._read_lanes.reserve(board_id) as lane:
+            yield self.read_database(board_id, _lane=lane)
+
+    def read_database(self, board_id: str, *, _lane: int | None = None):
+        """Resolve one independent snapshot participant for foreground reads.
+
+        Round-robin selection lets concurrent worker threads use separate Grafx
+        participant sections.  A writer commit on the writable handle cannot
+        block either lane, and a retry resolves the other lane automatically.
+        """
+
+        snapshot = self._snapshot(board_id, require_physical=True)
+        assert snapshot.page_size is not None
+        if not self.read_pools:
+            # Backward-compatible narrow construction used by isolated tests;
+            # the production composition always supplies dedicated lanes.
+            return self.database(board_id)
+        with self._read_pool_lock:
+            selected = self._next_read_pool if _lane is None else _lane
+            self._next_read_pool = (selected + 1) % len(self.read_pools)
+        pool = self.read_pools[selected]
+        try:
+            database = pool.get(
+                snapshot.active_path,
+                page_size=snapshot.page_size,
+            )
+        except GrafxDatabasePoolError as failure:
+            cause = failure.__cause__
+            read_join_requires_checkpoint = (
+                isinstance(cause, GrafxUnsupportedOperation)
+                and cause.details.get("field") == "read_only_consistency"
+            )
+            if not read_join_requires_checkpoint:
+                raise
+            # A new read-only participant can join only a checkpoint-complete
+            # durable image.  First recheck under a single-flight lock: another
+            # foreground reader may already have completed the checkpoint.
+            # If it did not, use the existing writable participant to run the
+            # native Grafx checkpoint, with the normal Pulse write fence, then
+            # retry the exact read lane.  This is recovery/maintenance only;
+            # no logical write is replayed by the application.
+            with self._read_join_lock:
+                try:
+                    database = pool.get(
+                        snapshot.active_path,
+                        page_size=snapshot.page_size,
+                    )
+                except GrafxDatabasePoolError as repeated:
+                    repeated_cause = repeated.__cause__
+                    if not (
+                        isinstance(repeated_cause, GrafxUnsupportedOperation)
+                        and repeated_cause.details.get("field")
+                        == "read_only_consistency"
+                    ):
+                        raise
+                    self.write_fence(board_id, "grafx_read_join_checkpoint")
+                    writer = self.database(board_id)
+                    writer.checkpoint()
+                    database = pool.get(
+                        snapshot.active_path,
+                        page_size=snapshot.page_size,
+                    )
+        self.resolver.admit_grafx_route(
+            snapshot,
+            database,
+            operation="resolve_routed_board_grafx_read_database",
+        )
+        return database
+
     def path(self, board_id: str) -> Path:
         return self._snapshot(board_id, require_physical=False).active_path
 
@@ -464,37 +551,44 @@ class _GrafxBoardAccess:
         if snapshot is not None and snapshot.backend not in {"ladybug", "grafx"}:
             raise _route_failure("board_route_backend_invalid", board_id=board_id)
 
-    def _board_pool_paths(self, board_id: str) -> tuple[Path, ...]:
+    def _all_pools(self) -> tuple[CommunityGrafxDatabasePool, ...]:
+        return (*self.read_pools, self.pool)
+
+    def _board_pool_paths(
+        self, board_id: str
+    ) -> tuple[tuple[CommunityGrafxDatabasePool, Path], ...]:
         grafx_root = self.binding_store.board_grafx_path(
             board_id, "generation-1"
         ).parent
-        selected: list[Path] = []
-        for raw in self.pool.pooled_paths():
-            candidate = Path(raw)
-            try:
-                candidate.relative_to(grafx_root)
-            except ValueError:
-                continue
-            selected.append(candidate)
+        selected: list[tuple[CommunityGrafxDatabasePool, Path]] = []
+        for pool in self._all_pools():
+            for raw in pool.pooled_paths():
+                candidate = Path(raw)
+                try:
+                    candidate.relative_to(grafx_root)
+                except ValueError:
+                    continue
+                selected.append((pool, candidate))
         return tuple(selected)
 
     def close(self, board_id: str | None) -> None:
         if board_id is None:
             boards_root = self.binding_store.root / "boards"
-            paths = []
-            for raw in self.pool.pooled_paths():
-                candidate = Path(raw)
-                try:
-                    candidate.relative_to(boards_root)
-                except ValueError:
-                    continue
-                paths.append(candidate)
+            paths: list[tuple[CommunityGrafxDatabasePool, Path]] = []
+            for pool in self._all_pools():
+                for raw in pool.pooled_paths():
+                    candidate = Path(raw)
+                    try:
+                        candidate.relative_to(boards_root)
+                    except ValueError:
+                        continue
+                    paths.append((pool, candidate))
         else:
             paths = list(self._board_pool_paths(board_id))
         failures: list[BaseException] = []
-        for path in paths:
+        for pool, path in paths:
             try:
-                self.pool.close(path)
+                pool.close(path)
             except BaseException as failure:  # noqa: BLE001 - account for every handle
                 failures.append(failure)
         if failures:
@@ -647,6 +741,7 @@ class CommunityRoutedBoardGraphComposition:
     binding_store: CommunityGraphBackendBindingStore
     resolver: CommunityBoardRouteSessionResolver
     grafx_pool: CommunityGrafxDatabasePool
+    grafx_read_pools: tuple[CommunityGrafxDatabasePool, ...]
     graph_store: CommunityRoutedSemanticGraphStore
     cypher_executor: CommunityRoutedCypherExecutor
     graph_transaction: CommunityRoutedGraphTransaction
@@ -810,6 +905,9 @@ def build_community_routed_board_graph_composition(
         os.fspath(kg_base_dir if kg_base_dir is not None else settings.kg_base_dir)
     ).expanduser()
     configured_page_size = validate_grafx_page_size(settings.kg_grafx_page_size)
+    configured_buffer_pool_mb = validate_grafx_buffer_pool_mb(
+        getattr(settings, "kg_grafx_buffer_pool_mb", PULSE_GRAFX_DEFAULT_BUFFER_POOL_MB)
+    )
     configured_descriptor_revalidation = validate_grafx_descriptor_revalidation(
         getattr(settings, "kg_grafx_descriptor_revalidation", "generation")
     )
@@ -832,6 +930,8 @@ def build_community_routed_board_graph_composition(
             connect=grafx_connect,
             max_entries=None,
             descriptor_revalidation=configured_descriptor_revalidation,
+            buffer_pool_mb=configured_buffer_pool_mb,
+            constructor_options=getattr(settings, "kg_grafx_options", {}),
         )
         resolver = CommunityBoardRouteSessionResolver(
             binding_store,
@@ -855,6 +955,10 @@ def build_community_routed_board_graph_composition(
         raise ValueError(
             "the shared Grafx pool descriptor revalidation policy must match settings"
         )
+    if grafx_pool.buffer_pool_mb != configured_buffer_pool_mb:
+        raise ValueError("the shared Grafx pool buffer budget must match settings")
+    if grafx_pool.constructor_options != getattr(settings, "kg_grafx_options", {}):
+        raise ValueError("the shared Grafx pool constructor options must match settings")
     rollout_mutation_recorder = CommunityGraphRolloutMutationRecorder(
         binding_store.root
     )
@@ -868,6 +972,22 @@ def build_community_routed_board_graph_composition(
     connector = grafx_connect
     if connector is None:
         connector = getattr(grafx_pool, "_connect", None)
+    # Two lazy read-only handles are enough to keep the KG projection and its
+    # concurrent stats/health probes independent from a large writer commit,
+    # while keeping the memory envelope bounded and explicit.  Each pool owns
+    # one handle per Board path and therefore one Grafx participant section.
+    grafx_read_pools = tuple(
+        CommunityGrafxDatabasePool(
+            binding_store.root,
+            connect=connector,
+            max_entries=None,
+            descriptor_revalidation=configured_descriptor_revalidation,
+            read_only=True,
+            buffer_pool_mb=configured_buffer_pool_mb,
+            constructor_options=getattr(settings, "kg_grafx_options", {}),
+        )
+        for _lane in range(2)
+    )
     access = _GrafxBoardAccess(
         resolver,
         grafx_pool,
@@ -875,6 +995,7 @@ def build_community_routed_board_graph_composition(
         rollout_mutation_recorder,
         configured_page_size=configured_page_size,
         connect=connector,
+        read_pools=grafx_read_pools,
     )
     if shared_store is None:
         local_adoption_opener[0] = access.open_for_adoption
@@ -1056,11 +1177,19 @@ def build_community_routed_board_graph_composition(
     )
     ladybug_recovery = CommunityGraphRecovery()
 
-    grafx_store = CommunityGrafxGraphStore(access.database, access.write_fence)
-    grafx_cypher = CommunityGrafxCypherExecutor(access.database)
+    grafx_store = CommunityGrafxGraphStore(
+        access.database,
+        access.write_fence,
+        read_database_resolver=access.read_database,
+        read_database_scope=access.read_database_scope,
+    )
+    grafx_cypher = CommunityGrafxCypherExecutor(
+        access.read_database, read_database_scope=access.read_database_scope,
+    )
     grafx_schema = CommunityGrafxGraphSchemaManager(
         access.database,
         access.write_fence,
+        read_database_resolver=access.read_database,
         admission=access.admission,
     )
     grafx_runtime = CommunityGrafxGraphRuntimeStore(
@@ -1072,13 +1201,6 @@ def build_community_routed_board_graph_composition(
             getattr(settings, "kg_ladybug_max_db_size_gb", 2) * 1024**3
         ),
     )
-    grafx_lifecycle = CommunityGrafxGraphLifecycle(
-        access.database,
-        access.path,
-        access.close,
-        access.write_fence,
-        admission=access.admission,
-    )
     grafx_recovery = CommunityGrafxGraphRecovery(
         quarantine_root=binding_store.root / "quarantine",
         database_path_resolver=access.path,
@@ -1086,6 +1208,14 @@ def build_community_routed_board_graph_composition(
         close_board=lambda board_id: access.close(board_id),
         revalidate_fence=access.runtime_fence,
         mutation_guard=lambda _board_id: nullcontext(),
+    )
+    grafx_lifecycle = CommunityGrafxGraphLifecycle(
+        access.database,
+        access.path,
+        access.close,
+        access.write_fence,
+        admission=access.admission,
+        recover_latched_checkpoint=grafx_recovery.recover_wal_only_unguarded,
     )
 
     def require_ladybug_snapshot(
@@ -1481,6 +1611,7 @@ def build_community_routed_board_graph_composition(
         binding_store=binding_store,
         resolver=resolver,
         grafx_pool=grafx_pool,
+        grafx_read_pools=grafx_read_pools,
         graph_store=graph_store,
         cypher_executor=cypher_executor,
         graph_transaction=graph_transaction,

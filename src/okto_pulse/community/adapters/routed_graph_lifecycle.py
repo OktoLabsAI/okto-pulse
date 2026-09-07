@@ -346,13 +346,16 @@ class CommunityRoutedGraphLifecycle:
         board_id = _require_board_id(board_id)
         phase = f"graph_lifecycle_{step}"
 
-        # Ladybug CHECKPOINT is unsafe beside live readers, while the
-        # close/reopen probe releases handles.  Both therefore use the
-        # exclusive lifecycle window.  Flush/fsync retain the shared operation
-        # window.  No physical callback may acquire another guard internally.
+        # CHECKPOINT and FSYNC can both enter a checkpoint recovery path that
+        # closes/reopens the selected Grafx handle.  The close/reopen probe is
+        # destructive by definition.  All three therefore drain ordinary
+        # operation windows before dispatch; FLUSH alone stays shared.  This
+        # preserves normal multi-reader/multi-writer operation while preventing
+        # a durability transition from closing a handle still used by another
+        # transaction.  No physical callback may acquire another guard internally.
         window = (
             self._mutation_window_unguarded(board_id, phase=phase)
-            if step in {STEP_CHECKPOINT, STEP_CLOSE_REOPEN_PROBE}
+            if step in {STEP_CHECKPOINT, STEP_FSYNC, STEP_CLOSE_REOPEN_PROBE}
             else self._operation_window(board_id)
         )
         with window:

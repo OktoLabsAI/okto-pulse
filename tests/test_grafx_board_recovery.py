@@ -10,18 +10,24 @@ from types import SimpleNamespace
 
 import pytest
 from okto_grafx import connect
+from okto_grafx.errors import GrafxRecoveryRefused
 from okto_pulse.core.kg.interfaces.quarantine_restore import (
     QuarantineRestoreError,
     QuarantineRestoreErrorCode,
 )
 
 from okto_pulse.community.adapters import grafx_quarantine_restore as restore_module
+from okto_pulse.community.adapters import grafx_graph_lifecycle as lifecycle_module
+from okto_pulse.community.adapters.grafx_graph_lifecycle import (
+    CommunityGrafxGraphLifecycle,
+)
 from okto_pulse.community.adapters.grafx_graph_recovery import (
     CommunityGrafxGraphRecovery,
 )
 from okto_pulse.community.adapters.grafx_quarantine_restore import (
     CommunityGrafxQuarantineRestore,
 )
+from okto_pulse.core.kg.safe_write_lifecycle import STEP_CHECKPOINT
 
 BOARD_ID = "board-m6-recovery"
 
@@ -193,6 +199,79 @@ def test_recover_wal_only_skips_a_healthy_database_without_main_mutation(
         (BOARD_ID, "wal_recovery_reopen"),
     ]
     quarantine_root = database_path.parents[3] / "quarantine"
+    assert not quarantine_root.exists() or not tuple(quarantine_root.iterdir())
+
+
+def test_checkpoint_cold_reopen_uses_real_grafx_recovery_and_preserves_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise the complete Pulse recovery callback over a real Grafx generation."""
+
+    database_path = tmp_path / "boards" / BOARD_ID / "grafx" / "generation-1"
+    _seed_checkpointed_database(database_path)
+    active: object | None
+
+    class RecoveryLatchedOnce:
+        def __init__(self, delegate: object) -> None:
+            self._delegate = delegate
+
+        def __getattr__(self, name: str):
+            return getattr(self._delegate, name)
+
+        def checkpoint(self) -> None:
+            raise GrafxRecoveryRefused(
+                "durable recovery latch set",
+                field="recovery_required",
+                required_lsn=41,
+            )
+
+    active = RecoveryLatchedOnce(connect(database_path))
+
+    def close_board(_board_id: str) -> None:
+        nonlocal active
+        if active is not None:
+            active.close()  # type: ignore[attr-defined]
+            active = None
+
+    def resolve(_board_id: str):
+        nonlocal active
+        if active is None:
+            active = connect(database_path)
+        return active
+
+    quarantine_root = tmp_path / "quarantine"
+    recovery = CommunityGrafxGraphRecovery(
+        quarantine_root=quarantine_root,
+        database_path_resolver=lambda _board_id: database_path,
+        open_database=connect,
+        close_board=close_board,
+        revalidate_fence=lambda _board_id, _phase: None,
+        mutation_guard=lambda _board_id: nullcontext(),
+    )
+
+    def validate(database: object) -> str:
+        assert database.verify("all").clean is True  # type: ignore[attr-defined]
+        return "clean"
+
+    monkeypatch.setattr(lifecycle_module, "validate_current_grafx_schema", validate)
+    lifecycle = CommunityGrafxGraphLifecycle(
+        resolve,
+        lambda _board_id: database_path,
+        close_board,
+        lambda _board_id, _phase: None,
+        recover_latched_checkpoint=recovery.recover_wal_only_unguarded,
+    )
+
+    result = lifecycle.apply_step(BOARD_ID, "board_graph", STEP_CHECKPOINT)
+
+    assert result.ok is True
+    database = resolve(BOARD_ID)
+    assert database.execute(  # type: ignore[attr-defined]
+        "MATCH (n:RecoveryProbe {id: 'kept'}) RETURN n.id"
+    ).rows == (("kept",),)
+    assert database.verify("all").clean is True  # type: ignore[attr-defined]
+    close_board(BOARD_ID)
     assert not quarantine_root.exists() or not tuple(quarantine_root.iterdir())
 
 

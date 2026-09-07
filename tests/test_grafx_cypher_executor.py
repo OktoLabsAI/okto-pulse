@@ -14,6 +14,7 @@ from typing import Any
 
 import okto_grafx
 import pytest
+from okto_grafx.errors import GrafxLeaseTimeout
 from okto_pulse.core.kg.interfaces.graph_transaction import GraphStatementResult
 
 from okto_pulse.community.adapters.grafx_cypher_executor import (
@@ -46,7 +47,9 @@ def grafx_database(tmp_path: Path) -> Any:
             "CREATE NODE TABLE Decision("
             "id STRING, title STRING, created_at TIMESTAMP, PRIMARY KEY(id))"
         )
-        schema.execute("CREATE REL TABLE supersedes(FROM Decision TO Decision)")
+        schema.execute(
+            "CREATE REL TABLE supersedes__Decision__Decision(FROM Decision TO Decision)"
+        )
     with database.begin("write") as writer:
         writer.execute(
             "CREATE (:Decision {id: 'd1', title: 'first', "
@@ -55,7 +58,7 @@ def grafx_database(tmp_path: Path) -> Any:
         writer.execute("CREATE (:Decision {id: 'd2', title: 'second'})")
         writer.execute(
             "MATCH (a:Decision {id:'d1'}), (b:Decision {id:'d2'}) "
-            "CREATE (a)-[:supersedes]->(b)"
+            "CREATE (a)-[:supersedes__Decision__Decision]->(b)"
         )
     try:
         yield database
@@ -71,6 +74,72 @@ def executor(grafx_database: Any) -> CommunityGrafxCypherExecutor:
         return grafx_database
 
     return CommunityGrafxCypherExecutor(resolve)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "MATCH (a:Decision)-[:supersedes]->(b:Decision) RETURN a.id, b.id",
+        "MATCH (b:Decision)<-[:supersedes]-(a:Decision) RETURN a.id, b.id",
+        "MATCH (a:Decision) OPTIONAL MATCH (a)-[:supersedes]->(b) "
+        "RETURN a.id, b.id ORDER BY a.id",
+    ],
+)
+def test_logical_relationship_read_reaches_the_physical_table(executor, query):
+    rows = executor.execute_read_only(BOARD_ID, query)["rows"]
+    assert ["d1", "d2"] in rows
+    if "OPTIONAL" in query:
+        assert rows == [["d1", "d2"], ["d2", None]]
+    else:
+        assert rows == [["d1", "d2"]]
+
+
+def test_paired_logical_relationship_reads_are_translated(executor):
+    query = "MATCH (a:Decision)-[:supersedes]->(b:Decision) RETURN a.id, b.id"
+    pair = executor.execute_read_only_pair(BOARD_ID, query, query)
+    assert pair["primary"]["rows"] == [["d1", "d2"]]
+    assert pair["comparison"]["rows"] == [["d1", "d2"]]
+
+
+def test_optional_logical_single_table_with_other_node_type_keeps_zero_result(
+    executor, grafx_database
+):
+    with grafx_database.begin("write") as writer:
+        writer.execute("CREATE NODE TABLE Entity(id STRING, PRIMARY KEY(id))")
+        writer.execute(
+            "CREATE REL TABLE contradicts__Decision__Decision(FROM Decision TO Decision)"
+        )
+        writer.execute("CREATE (:Entity {id:'e1'})")
+    query = (
+        "MATCH (n:Entity) OPTIONAL MATCH (n)<-[c:contradicts]-() RETURN n.id, COUNT(c)"
+    )
+    assert executor.execute_read_only(BOARD_ID, query)["rows"] == [["e1", 0]]
+
+
+def test_transient_reader_lane_timeout_retries_on_the_next_participant() -> None:
+    resolutions: list[str] = []
+
+    class BusyLane:
+        def execute(self, _query: str, _params: object) -> object:
+            raise GrafxLeaseTimeout("reader lane is busy")
+
+    class HealthyLane:
+        def execute(self, _query: str, _params: object) -> object:
+            return type("Result", (), {"columns": ("value",), "rows": ((7,),)})()
+
+    lanes = iter((BusyLane(), HealthyLane()))
+
+    def resolve(board_id: str) -> Any:
+        resolutions.append(board_id)
+        return next(lanes)
+
+    envelope = CommunityGrafxCypherExecutor(resolve).execute_read_only(
+        BOARD_ID,
+        "RETURN 7 AS value",
+    )
+
+    assert envelope["rows"] == [[7]]
+    assert resolutions == [BOARD_ID, BOARD_ID]
 
 
 class TestThePulseEnvelope:
@@ -149,7 +218,7 @@ class TestTheTwoOPathConversion:
         assert isinstance(path["_NODES"], list)
         assert isinstance(path["_RELS"], list)
         assert [node["id"] for node in path["_NODES"]] == ["d1", "d2"]
-        assert path["_RELS"][0]["_LABEL"] == "supersedes"
+        assert path["_RELS"][0]["_LABEL"] == "supersedes__Decision__Decision"
         # The opaque identities inside stay exactly as the engine gave them.
         assert set(path["_NODES"][0]["_ID"]) == {"offset", "table"}
 
@@ -162,7 +231,9 @@ class TestTheTwoOPathConversion:
         try:
             with database.begin("write") as schema:
                 schema.execute("CREATE NODE TABLE Decision(id STRING, PRIMARY KEY(id))")
-                schema.execute("CREATE REL TABLE supersedes(FROM Decision TO Decision)")
+                schema.execute(
+                    "CREATE REL TABLE supersedes__Decision__Decision(FROM Decision TO Decision)"
+                )
             with database.begin("write") as writer:
                 for value in ("d1", "d2", "d3"):
                     writer.execute(f"CREATE (:Decision {{id: '{value}'}})")
@@ -170,7 +241,7 @@ class TestTheTwoOPathConversion:
                     writer.execute(
                         f"MATCH (a:Decision {{id: '{source}'}}), "
                         f"(b:Decision {{id: '{target}'}}) "
-                        "CREATE (a)-[:supersedes]->(b)"
+                        "CREATE (a)-[:supersedes__Decision__Decision]->(b)"
                     )
 
             bounded = CommunityGrafxCypherExecutor(
@@ -336,7 +407,9 @@ class TestTheScopeExecute:
             revalidate_fence=fence,
             node_types=("Decision",),
             relationship_pairs=(("supersedes", "Decision", "Decision"),),
-            relationship_table_resolver=lambda edge, source, target: edge,
+            relationship_table_resolver=lambda edge, source, target: (
+                f"{edge}__{source}__{target}"
+            ),
         )
         return await provider.begin(BOARD_ID)
 

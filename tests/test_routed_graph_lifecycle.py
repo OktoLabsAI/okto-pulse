@@ -23,6 +23,7 @@ from okto_pulse.core.kg.safe_write_lifecycle import (
     STEP_CHECKPOINT,
     STEP_CLOSE_REOPEN_PROBE,
     STEP_FLUSH,
+    STEP_FSYNC,
 )
 
 from okto_pulse.community.adapters import routed_graph_lifecycle as lifecycle_module
@@ -256,15 +257,16 @@ def test_durability_steps_dispatch_without_nested_writer_acquisition(
 
     ordinary = lifecycle.apply_step("board-1", "board_graph", STEP_FLUSH)
     checkpoint = lifecycle.apply_step("board-1", "board_graph", STEP_CHECKPOINT)
+    fsync = lifecycle.apply_step("board-1", "board_graph", STEP_FSYNC)
     destructive = lifecycle.apply_step(
         "board-1", "board_graph", STEP_CLOSE_REOPEN_PROBE
     )
 
-    assert ordinary.ok and checkpoint.ok and destructive.ok
-    assert resolver.acquire_count == 3
-    assert resolver.revalidate_count == 3
+    assert ordinary.ok and checkpoint.ok and fsync.ok and destructive.ok
+    assert resolver.acquire_count == 4
+    assert resolver.revalidate_count == 4
     assert [event[0] for event in events].count("operation.enter") == 1
-    assert [event[0] for event in events].count("mutation.enter") == 2
+    assert [event[0] for event in events].count("mutation.enter") == 3
     for index, event in enumerate(events):
         if event[0] == f"{backend}.apply_step_unguarded":
             assert events[index - 1] == ("revalidate", event[1], True)

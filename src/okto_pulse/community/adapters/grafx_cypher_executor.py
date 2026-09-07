@@ -3,8 +3,10 @@
 Core owns the query contract.  It normalizes, validates, injects the terminal
 LIMIT and bounds variable-length paths before the executor is ever called, and
 it decides whether the canonical filter applies.  This adapter therefore adds
-no grammar of its own: it opens one Grafx read snapshot, runs what Core handed
-it, and shapes the answer into the Pulse envelope.
+no grammar of its own: it resolves proven logical relationship names against
+the Community-owned physical layout, opens one Grafx read snapshot, runs the
+statement, and shapes the answer into the Pulse envelope. The same name resolver
+is used by transactional reads/writes; ambiguous patterns are never narrowed.
 
 Two things are genuinely this layer's job.  The first is the paired read: Tier
 Power compares a canonical projection against its all-layer baseline, and the
@@ -19,10 +21,12 @@ in the engine is a tuple in the contract.
 from __future__ import annotations
 
 import time
+from contextlib import AbstractContextManager, nullcontext
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from okto_grafx import Database
+from okto_grafx.errors import GrafxLeaseTimeout
 from okto_pulse.core.kg.tier_power import (
     MAX_TRAVERSAL_DEPTH,
     auto_bound_var_length_path,
@@ -45,6 +49,9 @@ from okto_pulse.community.adapters.grafx_graph_transaction import (
 from okto_pulse.community.adapters.grafx_relationship_layout import (
     resolve_relationship_table,
 )
+from okto_pulse.community.adapters.grafx_relationship_query import (
+    translate_logical_relationships,
+)
 
 DatabaseResolver = Callable[[str], Database]
 ReadOnlyBatchItem = tuple[str, dict[str, Any] | None, int]
@@ -53,7 +60,6 @@ ReadOnlyBatchItem = tuple[str, dict[str, Any] | None, int]
 # matched by shape: converting every tuple would silently rewrite values the
 # contract says are tuples, and matching by heuristic would drift.
 _PATH_SEQUENCE_KEYS = ("_NODES", "_RELS")
-
 
 # Both published names now resolve to the shared policy.  Delegating rather
 # than re-deriving is the point of the module: this executor used to fence the
@@ -97,11 +103,18 @@ def pulse_value(value: Any) -> Any:
 class CommunityGrafxCypherExecutor:
     """Grafx implementation of the read-only CypherExecutor port."""
 
-    def __init__(self, database_resolver: DatabaseResolver) -> None:
+    def __init__(self, database_resolver: DatabaseResolver, *,
+                 read_database_scope: Callable[[str], AbstractContextManager[Database]] | None = None) -> None:
         # The executor resolves a database but never owns its lifecycle: the
         # composition root decides which generation a board reads from, and a
         # reader must not be able to close a handle other readers share.
         self._database_resolver = database_resolver
+        self._read_database_scope = read_database_scope
+
+    def _read_scope(self, board_id: str) -> AbstractContextManager[Database]:
+        if self._read_database_scope is not None:
+            return self._read_database_scope(board_id)
+        return nullcontext(self._database_resolver(board_id))
 
     @staticmethod
     def relationship_table_name(
@@ -118,7 +131,8 @@ class CommunityGrafxCypherExecutor:
         cleaned = normalize_cypher_unicode(cypher)
         validate_cypher_read_only(cleaned)
         cleaned = auto_inject_limit(cleaned, max_rows)
-        return auto_bound_var_length_path(cleaned, MAX_TRAVERSAL_DEPTH)
+        cleaned = auto_bound_var_length_path(cleaned, MAX_TRAVERSAL_DEPTH)
+        return translate_logical_relationships(cleaned)
 
     @staticmethod
     def _envelope(
@@ -150,20 +164,30 @@ class CommunityGrafxCypherExecutor:
         max_rows: int = 1000,
     ) -> dict:
         cleaned = self._prepare(cypher, max_rows=max_rows)
-        database = self._database_resolver(board_id)
         started = time.monotonic()
-        try:
-            result = database.execute(cleaned, _grafx_query_parameters(params))
-            return self._envelope(
-                result,
-                max_rows=max_rows,
-                started=started,
-            )
-        except Exception as exc:
-            mapped = map_grafx_error(exc, operation="read_only_query")
-            if mapped is exc:
-                raise
-            raise mapped from exc
+        for attempt in range(2):
+            scope = self._read_scope(board_id)
+            try:
+                with scope as database:
+                    result = database.execute(cleaned, _grafx_query_parameters(params))
+                    return self._envelope(
+                        result,
+                        max_rows=max_rows,
+                        started=started,
+                    )
+            except GrafxLeaseTimeout as exc:
+                if attempt == 0:
+                    continue
+                mapped = map_grafx_error(exc, operation="read_only_query")
+                if mapped is exc:
+                    raise
+                raise mapped from exc
+            except Exception as exc:
+                mapped = map_grafx_error(exc, operation="read_only_query")
+                if mapped is exc:
+                    raise
+                raise mapped from exc
+        raise AssertionError("unreachable Grafx read retry state")
 
     def execute_read_only_pair(
         self,
@@ -184,30 +208,39 @@ class CommunityGrafxCypherExecutor:
 
         primary = self._prepare(primary_cypher, max_rows=max_rows)
         comparison = self._prepare(comparison_cypher, max_rows=max_rows)
-        database = self._database_resolver(board_id)
-        try:
-            with database.transaction("read") as reader:
-                primary_started = time.monotonic()
-                prepared_params = _grafx_query_parameters(params)
-                primary_result = reader.execute(primary, prepared_params)
-                primary_envelope = self._envelope(
-                    primary_result,
-                    max_rows=max_rows,
-                    started=primary_started,
-                )
-                comparison_started = time.monotonic()
-                comparison_result = reader.execute(comparison, prepared_params)
-                comparison_envelope = self._envelope(
-                    comparison_result,
-                    max_rows=max_rows,
-                    started=comparison_started,
-                )
-        except Exception as exc:
-            mapped = map_grafx_error(exc, operation="read_only_query")
-            if mapped is exc:
-                raise
-            raise mapped from exc
-        return {"primary": primary_envelope, "comparison": comparison_envelope}
+        for attempt in range(2):
+            scope = self._read_scope(board_id)
+            try:
+                with scope as database, database.transaction("read") as reader:
+                    primary_started = time.monotonic()
+                    prepared_params = _grafx_query_parameters(params)
+                    primary_result = reader.execute(primary, prepared_params)
+                    primary_envelope = self._envelope(
+                        primary_result,
+                        max_rows=max_rows,
+                        started=primary_started,
+                    )
+                    comparison_started = time.monotonic()
+                    comparison_result = reader.execute(comparison, prepared_params)
+                    comparison_envelope = self._envelope(
+                        comparison_result,
+                        max_rows=max_rows,
+                        started=comparison_started,
+                    )
+            except GrafxLeaseTimeout as exc:
+                if attempt == 0:
+                    continue
+                mapped = map_grafx_error(exc, operation="read_only_query")
+                if mapped is exc:
+                    raise
+                raise mapped from exc
+            except Exception as exc:
+                mapped = map_grafx_error(exc, operation="read_only_query")
+                if mapped is exc:
+                    raise
+                raise mapped from exc
+            return {"primary": primary_envelope, "comparison": comparison_envelope}
+        raise AssertionError("unreachable Grafx paired-read retry state")
 
     def execute_read_only_batch(
         self,
@@ -232,22 +265,31 @@ class CommunityGrafxCypherExecutor:
         ]
         if not prepared:
             return []
-        database = self._database_resolver(board_id)
-        envelopes: list[dict[str, Any]] = []
-        try:
-            with database.transaction("read") as reader:
-                for cypher, params, max_rows in prepared:
-                    started = time.monotonic()
-                    result = reader.execute(cypher, params)
-                    envelopes.append(
-                        self._envelope(result, max_rows=max_rows, started=started)
-                    )
-        except Exception as exc:
-            mapped = map_grafx_error(exc, operation="read_only_query")
-            if mapped is exc:
-                raise
-            raise mapped from exc
-        return envelopes
+        for attempt in range(2):
+            scope = self._read_scope(board_id)
+            envelopes: list[dict[str, Any]] = []
+            try:
+                with scope as database, database.transaction("read") as reader:
+                    for cypher, params, max_rows in prepared:
+                        started = time.monotonic()
+                        result = reader.execute(cypher, params)
+                        envelopes.append(
+                            self._envelope(result, max_rows=max_rows, started=started)
+                        )
+            except GrafxLeaseTimeout as exc:
+                if attempt == 0:
+                    continue
+                mapped = map_grafx_error(exc, operation="read_only_query")
+                if mapped is exc:
+                    raise
+                raise mapped from exc
+            except Exception as exc:
+                mapped = map_grafx_error(exc, operation="read_only_query")
+                if mapped is exc:
+                    raise
+                raise mapped from exc
+            return envelopes
+        raise AssertionError("unreachable Grafx batch-read retry state")
 
     def is_supported(self) -> bool:
         return True

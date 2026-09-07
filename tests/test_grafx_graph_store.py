@@ -11,7 +11,7 @@ from typing import Any
 import okto_grafx
 import pytest
 from okto_grafx import Timestamp
-from okto_grafx.errors import GrafxStorageError
+from okto_grafx.errors import GrafxLeaseTimeout, GrafxStorageError
 from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphLockContention,
     GraphUnavailable,
@@ -93,6 +93,46 @@ def real_store(tmp_path_factory: pytest.TempPathFactory):
 
 def _missing_board(board_id: str) -> Any:
     raise KeyError(board_id)
+
+
+def test_snapshot_reads_retry_on_an_independent_reader_resolver() -> None:
+    write_resolutions: list[str] = []
+    read_resolutions: list[str] = []
+
+    class BusyDatabase:
+        def begin(self, _mode: str) -> object:
+            raise GrafxLeaseTimeout("reader participant is busy")
+
+    class Reader:
+        def __enter__(self) -> Reader:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+    class HealthyDatabase:
+        def begin(self, mode: str) -> Reader:
+            assert mode == "read"
+            return Reader()
+
+    lanes = iter((BusyDatabase(), HealthyDatabase()))
+    store = CommunityGrafxGraphStore(
+        lambda board_id: write_resolutions.append(board_id),
+        _Fence(),
+        read_database_resolver=lambda board_id: (
+            read_resolutions.append(board_id) or next(lanes)
+        ),
+    )
+
+    result = store._read(
+        BOARD_ID,
+        operation="focused_read",
+        callback=lambda _reader: "ok",
+    )
+
+    assert result == "ok"
+    assert read_resolutions == [BOARD_ID, BOARD_ID]
+    assert write_resolutions == []
 
 
 def _attrs(

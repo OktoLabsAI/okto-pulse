@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import okto_grafx
 import pytest
 from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphCapabilityUnavailable,
@@ -104,6 +105,73 @@ def _pool(root: Path, connector: _Connector) -> CommunityGrafxDatabasePool:
     return CommunityGrafxDatabasePool(root, connect=connector)
 
 
+def test_read_only_pool_opens_a_snapshot_participant(root: Path) -> None:
+    calls: list[dict[str, object]] = []
+
+    def connect(path: Path, **options: object) -> _FakeDatabase:
+        calls.append(dict(options))
+        return _FakeDatabase(
+            path,
+            int(options["page_size"]),
+            str(options["descriptor_revalidation"]),
+        )
+
+    pool = CommunityGrafxDatabasePool(root, connect=connect, read_only=True)
+
+    database = pool.get(root / "board-reader", page_size=PAGE_SIZE)
+
+    assert database is pool.get(root / "board-reader", page_size=PAGE_SIZE)
+    assert pool.read_only is True
+    assert calls == [
+        {
+            "page_size": PAGE_SIZE,
+            "descriptor_revalidation": "strict",
+            "read_only": True,
+        }
+    ]
+
+
+def test_read_only_pool_remains_available_while_writer_participant_is_busy(
+    root: Path,
+) -> None:
+    path = root / "board-reader-writer-concurrency"
+    writer_pool = CommunityGrafxDatabasePool(root, connect=okto_grafx.connect)
+    reader_pool = CommunityGrafxDatabasePool(
+        root,
+        connect=okto_grafx.connect,
+        read_only=True,
+    )
+    writer = writer_pool.get(path, page_size=PAGE_SIZE)
+    with writer.begin("write") as transaction:
+        transaction.execute("CREATE NODE TABLE Item(id STRING, PRIMARY KEY(id))")
+        transaction.execute("CREATE (:Item {id: 'durable'})")
+    writer.checkpoint()
+    reader = reader_pool.get(path, page_size=PAGE_SIZE)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def occupy_writer_participant() -> None:
+        with writer._transactions._participant_section():
+            entered.set()
+            assert release.wait(timeout=10.0)
+
+    occupant = threading.Thread(target=occupy_writer_participant, daemon=True)
+    occupant.start()
+    assert entered.wait(timeout=5.0)
+    started = time.monotonic()
+    try:
+        result = reader.execute("MATCH (n:Item) RETURN n.id")
+    finally:
+        release.set()
+        occupant.join(timeout=10.0)
+        reader_pool.close(path)
+        writer_pool.close(path)
+
+    assert result.rows == (("durable",),)
+    assert time.monotonic() - started < 5.0
+    assert occupant.is_alive() is False
+
+
 def _make_junction(link: Path, target: Path) -> bool:
     completed = subprocess.run(
         ["cmd", "/c", "mklink", "/J", str(link), str(target)],
@@ -174,6 +242,82 @@ class TestOneHandlePerDatabase:
         assert all(handle is results[0] for handle in results)
         # The whole point: eight callers, one open.
         assert len(connector.calls) == 1
+
+    def test_closed_unleased_handle_is_reopened_instead_of_returned(
+        self, root: Path
+    ) -> None:
+        connector = _Connector()
+        pool = _pool(root, connector)
+        stale = pool.get(root / "board-a", page_size=PAGE_SIZE)
+        stale.close()
+
+        reopened = pool.get(root / "board-a", page_size=PAGE_SIZE)
+
+        assert reopened is not stale
+        assert reopened.closed is False
+        assert len(connector.calls) == 2
+        assert len(pool) == 1
+
+    def test_closed_leased_handle_fails_closed_without_reopening(
+        self, root: Path
+    ) -> None:
+        connector = _Connector()
+        pool = _pool(root, connector)
+        lease = pool.acquire(root / "board-a", page_size=PAGE_SIZE)
+        lease.database.close()
+
+        with pytest.raises(GrafxDatabasePoolError) as refused:
+            pool.get(root / "board-a", page_size=PAGE_SIZE)
+
+        assert refused.value.reason == "pool_closed_handle_pinned"
+        assert len(connector.calls) == 1
+        assert len(pool) == 1
+        lease.release()
+
+    def test_fully_closed_leased_handle_is_replaced_without_cross_generation_unpin(
+        self, root: Path
+    ) -> None:
+        connector = _Connector()
+        pool = _pool(root, connector)
+        stale_lease = pool.acquire(root / "board-a", page_size=PAGE_SIZE)
+        stale = stale_lease.database
+        stale.close()
+        # The real Grafx Database exposes this proof after every lower resource
+        # has been released.  A bare ``closed`` flag alone remains insufficient.
+        stale.close_complete = True
+
+        replacement_lease = pool.acquire(root / "board-a", page_size=PAGE_SIZE)
+
+        assert replacement_lease.database is not stale
+        assert replacement_lease.database.closed is False
+        assert len(connector.calls) == 2
+        assert pool.pin_count(root / "board-a") == 1
+
+        # Releasing the stale generation must not decrement the replacement.
+        assert stale_lease.release() is True
+        assert pool.pin_count(root / "board-a") == 1
+        assert replacement_lease.release() is True
+        assert pool.pin_count(root / "board-a") == 0
+
+    def test_real_fully_closed_handle_recovers_in_process(self, root: Path) -> None:
+        pool = CommunityGrafxDatabasePool(root)
+        path = root / "board-real"
+        stale_lease = pool.acquire(path, page_size=PAGE_SIZE)
+        stale = stale_lease.database
+
+        stale.close()
+        assert stale.closed is True
+        assert stale.close_complete is True
+
+        replacement_lease = pool.acquire(path, page_size=PAGE_SIZE)
+
+        assert replacement_lease.database is not stale
+        assert replacement_lease.database.closed is False
+        assert pool.pin_count(path) == 1
+        stale_lease.release()
+        assert pool.pin_count(path) == 1
+        replacement_lease.release()
+        assert pool.close(path) is True
 
 
 class TestGeometryIsPartOfIdentity:

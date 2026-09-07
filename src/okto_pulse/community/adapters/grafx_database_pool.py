@@ -1,11 +1,12 @@
-"""One Grafx handle per database, shared safely, and never one too many.
+"""One Grafx handle per database and access role, shared safely.
 
-Opening the same Grafx database twice is not a performance problem, it is a
-correctness one: a second handle on a live path takes a file lock and fails, and
-readers that share a generation must share the handle that owns it.  So the pool
-keeps exactly one handle per canonical path, and the page size is part of that
-identity -- the same path asked for under a different geometry is a
-configuration mistake, not a second entry.
+Each pool keeps exactly one handle per canonical path, and the page size is part
+of that identity -- the same path asked for under a different geometry is a
+configuration mistake, not a second entry.  A composition may deliberately own
+one writable pool and one read-only pool for the same path.  Grafx gives those
+handles independent participant sections, so a large writer commit cannot
+starve foreground snapshot reads; durable writer/commit fencing remains inside
+Grafx and is not weakened by that separation.
 
 Two invariants are load-bearing and both are about what the pool refuses to do.
 
@@ -53,6 +54,8 @@ from okto_pulse.community.adapters.graph_backend_binding import (
     admit_grafx_database,
 )
 from okto_pulse.community.config import (
+    PULSE_GRAFX_DEFAULT_BUFFER_POOL_MB,
+    validate_grafx_buffer_pool_mb,
     validate_grafx_descriptor_revalidation,
     validate_grafx_page_size,
 )
@@ -145,6 +148,9 @@ class CommunityGrafxDatabasePool:
         connect: Any = None,
         max_entries: int | None = None,
         descriptor_revalidation: str = "strict",
+        read_only: bool = False,
+        buffer_pool_mb: int = PULSE_GRAFX_DEFAULT_BUFFER_POOL_MB,
+        constructor_options: dict[str, Any] | None = None,
     ) -> None:
         root = Path(os.path.abspath(Path(os.fspath(kg_base_dir)).expanduser()))
         if not root.is_absolute():
@@ -166,6 +172,24 @@ class CommunityGrafxDatabasePool:
         self._root = root
         self._connect = connect
         self._max_entries = max_entries
+        if not isinstance(read_only, bool):
+            raise GrafxDatabasePoolError(
+                "The Grafx pool access role must be a boolean.",
+                reason="pool_read_only_invalid",
+                read_only=type(read_only).__name__,
+            )
+        self._read_only = read_only
+        from okto_pulse.community.adapters.grafx_settings_catalog import validate_options
+
+        self._constructor_options = validate_options({} if constructor_options is None else constructor_options)
+        try:
+            self._buffer_pool_mb = validate_grafx_buffer_pool_mb(buffer_pool_mb)
+        except ValueError as failure:
+            raise GrafxDatabasePoolError(
+                "The Grafx buffer pool budget must be a positive integer in MiB.",
+                reason="pool_buffer_pool_mb_invalid",
+                buffer_pool_mb=buffer_pool_mb,
+            ) from failure
         try:
             self._descriptor_revalidation = validate_grafx_descriptor_revalidation(
                 descriptor_revalidation
@@ -241,6 +265,23 @@ class CommunityGrafxDatabasePool:
 
         return self._descriptor_revalidation
 
+    @property
+    def read_only(self) -> bool:
+        """Whether every handle opened by this pool is a snapshot-only participant."""
+
+        return self._read_only
+
+    @property
+    def buffer_pool_mb(self) -> int:
+        """The immutable per-handle budget used by every open in this pool."""
+
+        return self._buffer_pool_mb
+
+    @property
+    def constructor_options(self) -> dict[str, Any]:
+        """Return a detached copy; live pooled handles cannot be reconfigured."""
+        return dict(self._constructor_options)
+
     def open_unpooled(
         self,
         path: str | os.PathLike[str],
@@ -297,8 +338,59 @@ class CommunityGrafxDatabasePool:
                         pooled_page_size=entry.page_size,
                         requested_page_size=configured,
                     )
-                entry.used_at = self._tick()
-                return entry.database
+                if getattr(entry.database, "closed", False) is True:
+                    # Grafx may seal its own facade after a failed transaction
+                    # cleanup.  Once ``close_complete`` proves that every lower
+                    # resource is gone, outstanding pins can only refer to that
+                    # terminal Python object: they cannot perform more I/O and
+                    # must not keep the whole application unavailable forever.
+                    #
+                    # ``close()`` is an idempotent resume door in Grafx.  A
+                    # terminal-but-still-draining handle gets one chance to
+                    # finish before we decide whether it is safe to detach.
+                    close_complete = getattr(entry.database, "close_complete", None)
+                    if close_complete is False:
+                        closer = getattr(entry.database, "close", None)
+                        if callable(closer):
+                            try:
+                                closer()
+                            except Exception as failure:
+                                raise GrafxDatabasePoolError(
+                                    "Finalizing a terminal pooled Grafx database failed.",
+                                    reason="pool_closed_handle_finalize_failed",
+                                    path=str(contained),
+                                    pins=entry.pins,
+                                    error_type=type(failure).__name__,
+                                ) from failure
+                        close_complete = getattr(
+                            entry.database, "close_complete", None
+                        )
+                    if entry.pins > 0 and close_complete is not True:
+                        raise GrafxDatabasePoolError(
+                            "The pooled Grafx database is closed while still leased.",
+                            reason="pool_closed_handle_pinned",
+                            path=str(contained),
+                            pins=entry.pins,
+                        )
+                    if close_complete is False:
+                        raise GrafxDatabasePoolError(
+                            "The terminal pooled Grafx database is still draining.",
+                            reason="pool_closed_handle_draining",
+                            path=str(contained),
+                            pins=entry.pins,
+                        )
+                    # A process-local handle may already be terminal even though
+                    # its durable generation is healthy.  Forget that terminal
+                    # object under the same pool lock and perform one ordinary
+                    # admitted open below; never route this state through WAL
+                    # recovery and never hand the closed object to a caller.
+                    # A later release from the detached object is generation-safe
+                    # in ``_release_lease`` and cannot decrement the replacement.
+                    del self._entries[key]
+                    entry = None
+                else:
+                    entry.used_at = self._tick()
+                    return entry.database
             # Room is made BEFORE opening, so the bound is never briefly
             # exceeded and a failed eviction costs no new handle.
             self._make_room_for(contained)
@@ -365,7 +457,15 @@ class CommunityGrafxDatabasePool:
                 return False
             lease._released = True
             entry = self._entries.get(lease._key)
-            if entry is not None and entry.pins > 0:
+            # A fully closed handle may have been detached and replaced while
+            # this old lease was still alive.  Match the object as well as the
+            # canonical path so releasing the old generation cannot unpin the
+            # new one.
+            if (
+                entry is not None
+                and entry.database is lease._database
+                and entry.pins > 0
+            ):
                 entry.pins -= 1
             return True
 
@@ -405,11 +505,23 @@ class CommunityGrafxDatabasePool:
 
             connect = okto_grafx.connect
         try:
-            database = connect(
-                path,
-                page_size=page_size,
-                descriptor_revalidation=self._descriptor_revalidation,
-            )
+            options: dict[str, object] = {
+                **self._constructor_options,
+                "page_size": page_size,
+                "descriptor_revalidation": self._descriptor_revalidation,
+            }
+            # Keep the historical factory signature at the unchanged 64 MiB
+            # default. An explicit non-default budget must be supported by the
+            # connector: never retry without it and silently discard the cap.
+            if self._buffer_pool_mb != PULSE_GRAFX_DEFAULT_BUFFER_POOL_MB:
+                options["buffer_budget_bytes"] = self._buffer_pool_mb * 1024 * 1024
+            # Preserve the historical connector call for writable pools.  Some
+            # injected connectors intentionally expose only that narrow shape.
+            # The explicit flag is needed only by the dedicated foreground
+            # reader pool.
+            if self._read_only:
+                options["read_only"] = True
+            database = connect(path, **options)
         except Exception as failure:
             raise GrafxDatabasePoolError(
                 "Opening the Grafx database failed.",

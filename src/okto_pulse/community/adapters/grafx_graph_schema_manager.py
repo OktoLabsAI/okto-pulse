@@ -66,6 +66,7 @@ class CommunityGrafxGraphSchemaManager:
         database_resolver: DatabaseResolver,
         revalidate_fence: FenceRevalidator,
         *,
+        read_database_resolver: DatabaseResolver | None = None,
         admission: AdmissionValidator | None = None,
         candidate_path_resolver: CandidatePathResolver | None = None,
         candidate_activator: CandidateActivator | None = None,
@@ -73,6 +74,7 @@ class CommunityGrafxGraphSchemaManager:
         rebuild_batch_size: int = 256,
     ) -> None:
         self._database_resolver = database_resolver
+        self._read_database_resolver = read_database_resolver or database_resolver
         self._revalidate_fence = revalidate_fence
         self._admission = admission
         self._candidate_path_resolver = candidate_path_resolver
@@ -82,6 +84,11 @@ class CommunityGrafxGraphSchemaManager:
 
     def _database(self, board_id: str):
         database = self._database_resolver(board_id)
+        require_pulse_grafx_admission(board_id, database, self._admission)
+        return database
+
+    def _read_database(self, board_id: str):
+        database = self._read_database_resolver(board_id)
         require_pulse_grafx_admission(board_id, database, self._admission)
         return database
 
@@ -165,7 +172,7 @@ class CommunityGrafxGraphSchemaManager:
     async def current_version(self, board_id: str) -> str:
         board_id = _require_board_id(board_id)
         try:
-            database = self._database(board_id)
+            database = self._read_database(board_id)
             return (
                 read_current_grafx_schema_version(database)
                 or PULSE_GRAFX_SCHEMA_MANIFEST.schema_version
@@ -181,7 +188,7 @@ class CommunityGrafxGraphSchemaManager:
         expected = PULSE_GRAFX_SCHEMA_MANIFEST.schema_version
         current: str | None = None
         try:
-            database = self._database(board_id)
+            database = self._read_database(board_id)
             current = read_current_grafx_schema_version(database)
             validate_current_grafx_schema(database)
             if current != expected:

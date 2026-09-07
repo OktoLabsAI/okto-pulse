@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import stat
+from collections.abc import Callable
 from pathlib import Path
 
+from okto_grafx.errors import GrafxRecoveryRefused, GrafxUnsupportedOperation
 from okto_pulse.core.kg.interfaces.graph_errors import GraphError
 from okto_pulse.core.kg.interfaces.graph_lifecycle import (
     GraphHandle,
@@ -40,6 +43,37 @@ from okto_pulse.community.adapters.grafx_schema_bootstrap import (
 )
 
 _IDENTITY_FILENAME = "grafx.meta"
+_LOG = logging.getLogger(__name__)
+RecoveryCallback = Callable[[str], object]
+
+
+def _log_checkpoint_refusal(board_id: str, failure: BaseException) -> None:
+    """Record bounded native dimensions without exposing paths or payload values."""
+
+    details = getattr(failure, "details", {})
+    if not isinstance(details, dict):
+        details = {}
+    def dimension(value: object) -> str | None:
+        if value is None:
+            return None
+        if type(value) is str and len(value) <= 80 and all(
+            character.isascii() and (character.isalnum() or character in "_.-")
+            for character in value
+        ):
+            return value
+        return "redacted"
+    _LOG.error(
+        "kg.grafx.checkpoint_refused board=%s raw_type=%s code=%s "
+        "field=%s operation=%s component=%s state=%s reason=%s",
+        board_id,
+        type(failure).__name__,
+        dimension(getattr(failure, "code", None)),
+        dimension(details.get("field")),
+        dimension(details.get("operation")),
+        dimension(details.get("component")),
+        dimension(details.get("state")),
+        dimension(details.get("reason")),
+    )
 
 
 def _require_board_id(board_id: object) -> str:
@@ -70,17 +104,101 @@ class CommunityGrafxGraphLifecycle:
         revalidate_fence: FenceRevalidator,
         *,
         admission: AdmissionValidator | None = None,
+        recover_latched_checkpoint: RecoveryCallback | None = None,
     ) -> None:
         self._database_resolver = database_resolver
         self._path_resolver = path_resolver
         self._close_callback = close_callback
         self._revalidate_fence = revalidate_fence
         self._admission = admission
+        self._recover_latched_checkpoint = recover_latched_checkpoint
 
     def _database(self, board_id: str):
         database = self._database_resolver(board_id)
         require_pulse_grafx_admission(board_id, database, self._admission)
         return database
+
+    @staticmethod
+    def _is_transparently_recoverable_checkpoint(exc: BaseException) -> bool:
+        """Recognize only Grafx's explicit durable-recovery latch.
+
+        ``unsupported_operation`` is intentionally excluded.  It also represents
+        process-local states such as an already-closed handle; treating those as WAL
+        damage can close a healthy shared pool and interfere with concurrent work.
+        Stale closed handles are replaced by the pool before dispatch, while every
+        other unsupported operation remains a normal fail-closed capability error.
+        """
+
+        return (
+            isinstance(exc, GrafxRecoveryRefused)
+            and exc.details.get("field") == "recovery_required"
+        )
+
+    def _checkpoint_with_transparent_recovery(
+        self,
+        board_id: str,
+        database: object,
+    ) -> None:
+        """Retry one checkpoint after the bounded native Grafx recovery path.
+
+        Production calls this method only from the routed CHECKPOINT lifecycle
+        step, while its exclusive Board mutation window and Core write fence
+        are held.  The callback snapshots the WAL, closes the pooled handle,
+        lets Grafx recover on writable open, verifies every scope and performs
+        a cold-reopen probe.  Eligibility is limited to Grafx's explicit
+        durable-recovery latch.
+        """
+
+        try:
+            database.checkpoint()  # type: ignore[attr-defined]
+            return
+        except (GrafxRecoveryRefused, GrafxUnsupportedOperation) as failure:
+            _log_checkpoint_refusal(board_id, failure)
+            if (
+                not self._is_transparently_recoverable_checkpoint(failure)
+                or self._recover_latched_checkpoint is None
+            ):
+                raise
+        except Exception as failure:
+            _log_checkpoint_refusal(board_id, failure)
+            raise
+
+        _LOG.warning(
+            "kg.grafx.checkpoint_auto_recovery_started board=%s",
+            board_id,
+        )
+        self._revalidate_fence(board_id, "checkpoint_auto_recovery")
+        recovery = self._recover_latched_checkpoint(board_id)
+        status = getattr(recovery, "status", None)
+        reason = getattr(recovery, "reason", None)
+        successful = status == "recovered" or (
+            status == "skipped" and reason == "Grafx recovery found no WAL work"
+        )
+        if not successful:
+            _LOG.error(
+                "kg.grafx.checkpoint_auto_recovery_failed board=%s "
+                "status=%s reason=%s",
+                board_id,
+                status,
+                reason,
+            )
+            raise RuntimeError(
+                "Grafx transparent checkpoint recovery failed "
+                f"(status={status!r}, reason={reason!r})"
+            )
+
+        self._revalidate_fence(board_id, "checkpoint_auto_recovery_reopen")
+        recovered_database = self._database(board_id)
+        validate_current_grafx_schema(recovered_database)
+        self._revalidate_fence(board_id, "checkpoint_auto_recovery_retry")
+        recovered_database.checkpoint()
+        _LOG.info(
+            "kg.grafx.checkpoint_auto_recovery_completed board=%s status=%s "
+            "quarantine_id=%s",
+            board_id,
+            status,
+            getattr(recovery, "quarantine_id", None),
+        )
 
     async def open(self, board_id: str) -> GraphHandle:
         board_id = _require_board_id(board_id)
@@ -243,7 +361,7 @@ class CommunityGrafxGraphLifecycle:
                 self._revalidate_fence(board_id, "checkpoint")
                 database = self._database(board_id)
                 self._revalidate_fence(board_id, "checkpoint")
-                database.checkpoint()
+                self._checkpoint_with_transparent_recovery(board_id, database)
             elif step == STEP_FLUSH:
                 self._revalidate_fence(board_id, "flush")
                 database = self._database(board_id)
@@ -255,7 +373,7 @@ class CommunityGrafxGraphLifecycle:
                 self._revalidate_fence(board_id, "flush")
                 database.flush()
                 self._revalidate_fence(board_id, "checkpoint")
-                database.checkpoint()
+                self._checkpoint_with_transparent_recovery(board_id, database)
             return GraphLifecycleStepResult(ok=True)
         except Exception as exc:
             mapped = map_grafx_error(exc, operation=f"lifecycle_{step}")

@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import math
 import time
+from contextlib import AbstractContextManager, nullcontext
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, NoReturn, TypeVar
 
 from okto_grafx import Database, Timestamp, VectorValue
-from okto_grafx.errors import GrafxError
+from okto_grafx.errors import GrafxError, GrafxLeaseTimeout
 from okto_pulse.core.domain.code_traceability_kg import (
     CODE_TRACEABILITY_KG_SUBTYPES,
 )
@@ -218,19 +219,35 @@ class CommunityGrafxGraphStore:
         self,
         database_resolver: DatabaseResolver,
         revalidate_fence: FenceRevalidator,
+        *,
+        read_database_resolver: DatabaseResolver | None = None,
+        read_database_scope: Callable[[str], AbstractContextManager[Database]] | None = None,
     ) -> None:
         if not callable(database_resolver):
             raise ValueError("database_resolver must be callable")
         if not callable(revalidate_fence):
             raise ValueError("revalidate_fence must be callable")
+        if read_database_resolver is not None and not callable(read_database_resolver):
+            raise ValueError("read_database_resolver must be callable")
         self._database_resolver = database_resolver
+        self._read_database_resolver = read_database_resolver or database_resolver
+        self._read_database_scope = read_database_scope
         self._revalidate_fence = revalidate_fence
-        self._vector_provider = CommunityGrafxBoardVectorSearch(database_resolver)
+        self._vector_provider = CommunityGrafxBoardVectorSearch(
+            self._read_database_resolver
+        )
 
     def _resolve(self, board_id: str, *, operation: str) -> Database:
         wanted = _invalid_board_id(board_id)
         try:
             return self._database_resolver(wanted)
+        except Exception as exc:
+            _raise_mapped(exc, operation=operation)
+
+    def _resolve_read(self, board_id: str, *, operation: str) -> Database:
+        wanted = _invalid_board_id(board_id)
+        try:
+            return self._read_database_resolver(wanted)
         except Exception as exc:
             _raise_mapped(exc, operation=operation)
 
@@ -247,14 +264,28 @@ class CommunityGrafxGraphStore:
         operation: str,
         callback: Callable[[Any], _T],
     ) -> _T:
-        database = self._resolve(board_id, operation=operation)
-        try:
-            with database.begin("read") as reader:
-                return callback(reader)
-        except GraphError:
-            raise
-        except Exception as exc:
-            _raise_mapped(exc, operation=operation)
+        # A read-only resolver may rotate across independent Grafx reader
+        # participants.  Retrying one snapshot read after a transient section
+        # timeout is safe (the callback cannot write) and prevents a busy or
+        # stalled lane from becoming an operator-visible outage.
+        for attempt in range(2):
+            scope = (
+                self._read_database_scope(_invalid_board_id(board_id))
+                if self._read_database_scope is not None else
+                nullcontext(self._resolve_read(board_id, operation=operation))
+            )
+            try:
+                with scope as database, database.begin("read") as reader:
+                    return callback(reader)
+            except GrafxLeaseTimeout as exc:
+                if attempt == 0:
+                    continue
+                _raise_mapped(exc, operation=operation)
+            except GraphError:
+                raise
+            except Exception as exc:
+                _raise_mapped(exc, operation=operation)
+        raise AssertionError("unreachable Grafx read retry state")
 
     def _write(
         self,
@@ -1339,7 +1370,7 @@ class CommunityGrafxGraphStore:
         return result
 
     def list_schema_objects(self, board_id: str) -> tuple[str, ...]:
-        database = self._resolve(board_id, operation="list_schema_objects")
+        database = self._resolve_read(board_id, operation="list_schema_objects")
         try:
             validate_current_grafx_schema(database)
             logical_relationships = introspect_logical_relationships(database)
@@ -1361,7 +1392,7 @@ class CommunityGrafxGraphStore:
     ) -> tuple[str, ...]:
         if node_type not in NODE_TYPES:
             return ()
-        database = self._resolve(board_id, operation="list_node_properties")
+        database = self._resolve_read(board_id, operation="list_node_properties")
         return introspect_node_properties(database, node_type)
 
     def capabilities(self) -> GraphCapabilities:
