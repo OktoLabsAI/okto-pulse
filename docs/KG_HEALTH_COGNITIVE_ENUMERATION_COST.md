@@ -70,3 +70,28 @@ and the scoped whitespace check passed.
 No consolidation, redrive, rebuild, graph reset or historical-debt cleanup was
 performed. Reserved cognitive ledger SHA256 remains
 `4AFF1AB6EE6C6E621C6598148154A04298500B8DA92EBF0F5E90AD081B2217F4`.
+
+## Deployment and honest end-to-end boundary
+
+Community commit `3e95746` was pushed to the integration branch. Pulse PID
+7896 shut down gracefully (one board closed, zero failures); PID 2816 now
+source-loads the correction with Pulse 0.3.3 and Grafx 0.0.4. This is not a
+new globally installed wheel or a PyPI release.
+
+The first UI load after restart remained poor: graph HTTP 200 in 41.276 s,
+census HTTP 200 in 60.643 s. The observer's 60-second response wait expired;
+the original request completed normally and was not restarted or duplicated.
+Recorded phases: schema 17.639 s, stats nodes 12.887 s, node counts 7.527 s,
+edge counts 22.473 s; subgraph nodes 30.577 s and edges 10.486 s. These cold,
+overlapping phases are not an isolated before/after comparison with the warm
+profile, and do not demonstrate a global UI improvement.
+
+The UI displayed 500 / 2779 nodes. Pagination subsequently added 500 unique
+nodes and 897 edges, HTTP 200, 69 layouts considered / 65 scanned / 4 skipped /
+zero failures; UI displayed 1000 / 2779. The combined pagination-and-pending
+verification took 4.156 s (not the graph request alone). REST still reports
+21 pending, zero in progress, 19 consolidated; ledger hash unchanged.
+
+Full cold-load latency remains unresolved. The next profiling target is the
+remaining overlapping native admission/endpoint-resolution and Health source
+work, not disabling Health, suppressing validation, or consuming benchmark specs.
