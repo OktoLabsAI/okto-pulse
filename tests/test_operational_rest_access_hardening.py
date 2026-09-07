@@ -350,6 +350,15 @@ BOARD_SURFACES = [
     ("GET", "/api/v1/kg/queue/drilldown?board_id=board-b", None),
     ("GET", "/api/v1/kg/queue/dead-letter?board_id=board-b", None),
     (
+        "POST",
+        "/api/v1/kg/queue/dead-letter/redrive",
+        {
+            "board_id": "board-b",
+            "dead_letter_ids": ["dlq-1"],
+            "process_now": False,
+        },
+    ),
+    (
         "GET",
         "/api/v1/kg/cognitive-pending/candidate-decisions?board_id=board-b",
         None,
@@ -424,6 +433,11 @@ BOARD_SURFACES = [
 ]
 
 WRITE_SURFACES = [
+    (
+        "POST",
+        "/api/v1/kg/queue/dead-letter/redrive",
+        {"board_id": "board-b", "dead_letter_ids": ["dlq-1"], "process_now": False},
+    ),
     (
         "POST",
         "/api/v1/kg/board-b/cognitive-readiness/skip",
@@ -531,6 +545,7 @@ WRITE_SURFACES = [
         "orphan-backfill",
         "queue-drilldown",
         "dead-letter",
+        "dead-letter-redrive",
         "cognitive-candidates",
         "cognitive-badges",
         "cognitive-pending",
@@ -780,6 +795,7 @@ def test_canonical_debt_valid_filters_preserve_rest_pagination() -> None:
     ("method", "path", "payload"),
     WRITE_SURFACES,
     ids=[
+        "dead-letter-redrive",
         "cognitive-skip",
         "cognitive-clear",
         "canonical-debt-retry",

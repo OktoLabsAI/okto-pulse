@@ -34,6 +34,21 @@ export interface DeadLetterListResponse {
   offset: number;
 }
 
+export interface DeadLetterRedriveResponse {
+  success: boolean;
+  blocked: boolean;
+  mutated: boolean;
+  scope: 'generic' | 'code_traceability' | 'all';
+  requested: number | null;
+  selected: number;
+  requeued_count: number;
+  already_queued_count: number;
+  process_now_mode?: string | null;
+  remaining?: number | null;
+  batches?: number | null;
+  stop_reason?: string | null;
+}
+
 const BASE = '/api/v1';
 
 export async function getDeadLetterRows(
@@ -54,6 +69,55 @@ export async function getDeadLetterRows(
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }));
     throw new Error(err.detail || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+export async function redriveDeadLetterRows(
+  boardId: string,
+  deadLetterIds: string[],
+  scope: 'generic' | 'code_traceability' = 'generic',
+): Promise<DeadLetterRedriveResponse> {
+  const resp = await fetch(`${BASE}/kg/queue/dead-letter/redrive`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      board_id: boardId,
+      dead_letter_ids: deadLetterIds,
+      scope,
+      process_now: true,
+    }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    const detail = err?.detail;
+    const message = typeof detail === 'string'
+      ? detail
+      : detail?.message || detail?.reason || err?.message || `HTTP ${resp.status}`;
+    throw new Error(message);
+  }
+  return resp.json();
+}
+
+export async function redriveAllDeadLetterRows(
+  boardId: string,
+): Promise<DeadLetterRedriveResponse> {
+  const resp = await fetch(`${BASE}/kg/queue/dead-letter/redrive`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      board_id: boardId,
+      redrive_all: true,
+      process_now: true,
+    }),
+  });
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    const detail = err?.detail;
+    const message = typeof detail === 'string'
+      ? detail
+      : detail?.message || detail?.reason || err?.message || `HTTP ${resp.status}`;
+    throw new Error(message);
   }
   return resp.json();
 }

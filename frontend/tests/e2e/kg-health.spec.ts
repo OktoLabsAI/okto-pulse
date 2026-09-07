@@ -42,9 +42,10 @@ const HEALTH_FIXTURE = {
 };
 
 const RUNTIME_SETTINGS_FIXTURE = {
-  kg_kuzu_buffer_pool_mb: 512,
-  kg_kuzu_max_db_size_gb: 32,
-  kg_connection_pool_size: 4,
+  kg_graph_backend: 'grafx',
+  kg_global_graph_backend: 'grafx',
+  kg_grafx_page_size: 8192,
+  kg_grafx_descriptor_revalidation: 'generation',
   kg_queue_max_concurrent_workers: 4,
   kg_queue_min_interval_ms: 100,
   kg_queue_claim_timeout_s: 300,
