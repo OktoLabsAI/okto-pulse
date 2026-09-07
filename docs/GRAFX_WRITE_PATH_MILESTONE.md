@@ -73,3 +73,26 @@ changes remain outside this milestone. No wheel, PyPI release, main merge or
 global installation is implied. The live process needs an orderly restart to
 load the edge_exists restoration; previously live delivery fixes must not be
 replayed merely because their source milestone is now recorded.
+
+### Live source deployment
+
+Community `31b8439` and Core `c4a01bf` were pushed to their existing feature
+branches. Pulse PID 35808 closed Board and Global handles with zero failed Board
+closes and reached terminal state before PID 9544 started. The latter serves
+Pulse 0.3.3 with Grafx 0.0.4 source and the edge_exists restoration; no wheel was
+rebuilt. This restart also loads the prior checkpoint-log sanitization.
+
+First UI Refresh: census HTTP 200 in 41.316 s, 2779 canonical nodes / 4424 edges.
+The graph exceeded the observer's 55-second response wait, then completed HTTP
+200 without Retry/restart; the page showed 500 / total 2779. Server graph phases
+were nodes 33.101 s and edges 26.185 s. The timeout was an observation boundary,
+not evidence that the process or request had stopped. Cold load remains a known
+unresolved latency issue; this is not a successful cold-performance result.
+
+The subsequent Load more (500+) returned HTTP 200 in 861 ms, 500 unique node IDs,
+897 edges and zero failed edge tables (69 considered, 65 scanned, 4 skipped for
+page types). UI showed 1000 / total 2779. This verifies the paginated read path
+after deployment, not production write throughput or a controlled A/B ratio.
+The pending-spec ledger SHA256 remains
+`4AFF1AB6EE6C6E621C6598148154A04298500B8DA92EBF0F5E90AD081B2217F4`.
+No consolidation, redrive, rebuild or data reset was initiated.
