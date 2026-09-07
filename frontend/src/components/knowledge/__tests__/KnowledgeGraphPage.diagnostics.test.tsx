@@ -1,17 +1,29 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as kgApi from '@/services/kg-api';
 import * as kgHealthApi from '@/services/kg-health-api';
-import { GraphVisibilityMismatchState, KnowledgeGraphPage } from '../KnowledgeGraphPage';
+import {
+  GraphVisibilityMismatchState,
+  KnowledgeGraphPage,
+  resolveGraphTotalNodeCount,
+} from '../KnowledgeGraphPage';
 import type { GraphMetadata } from '@/services/kg-api';
 import type { KGHealth } from '@/services/kg-health-api';
 import type { KGEdge, KGNode } from '@/types/knowledge-graph';
+import { EmptyState } from '../EmptyState';
 
 const permissionHas = vi.hoisted(() => vi.fn((_flag: string) => true));
 vi.mock('@/hooks/usePermissions', () => ({
   usePermissions: () => ({ preset: 'Full Control', isLoading: false, error: null, ownerReviewRequired: false, has: permissionHas }),
 }));
+
+// Exercise real authority logic without importing every traceability panel or
+// the help modal's Markdown/Mermaid bundle into these orchestration tests.
+vi.mock('@/components/code-traceability', async () => (
+  await vi.importActual('@/components/code-traceability/useCodeTraceabilityAuthority')
+));
+vi.mock('../KGHelpModal', () => ({ KGHelpModal: () => null }));
 
 vi.mock('../GraphCanvas', () => ({
   GraphCanvas: ({ nodes, edges }: { nodes: KGNode[]; edges: KGEdge[] }) => (
@@ -27,14 +39,16 @@ vi.mock('../GraphControlsPanel', () => ({
     nodeCount,
     visibleNodeCount,
     nodeTypeCounts,
+    totalNodeCount,
   }: {
     subView: string;
     nodeCount: number;
     visibleNodeCount: number;
     nodeTypeCounts?: Record<string, number>;
+    totalNodeCount?: number;
   }) => (
     <div data-testid="mock-graph-controls">
-      controls: {subView}; loaded: {nodeCount}; visible: {visibleNodeCount}; counts: {nodeTypeCounts?.Decision ?? 'pending'}
+      controls: {subView}; loaded: {nodeCount}; visible: {visibleNodeCount}; counts: {nodeTypeCounts?.Decision ?? 'pending'}; total: {totalNodeCount ?? 'pending'}
     </div>
   ),
 }));
@@ -44,7 +58,9 @@ vi.mock('../KGSyncIndicator', () => ({
 }));
 
 vi.mock('../KGRefreshButton', () => ({
-  KGRefreshButton: () => <button type="button">Refresh</button>,
+  KGRefreshButton: ({ onRefresh }: { onRefresh: () => void }) => (
+    <button type="button" onClick={onRefresh}>Refresh</button>
+  ),
 }));
 
 vi.mock('../NodeDetailPanel', () => ({
@@ -167,6 +183,16 @@ describe('GraphVisibilityMismatchState', () => {
 });
 
 describe('KnowledgeGraphPage — historical completion release', () => {
+  it('uses the graph-layer stats census when health metrics are unavailable', () => {
+    expect(resolveGraphTotalNodeCount({
+      schema_version: '1.0',
+      node_counts_by_type: { Decision: 2, Entity: 3 },
+      edge_counts_by_type: {},
+      avg_confidence: 0.9,
+      pending_queue_count: 0,
+    }, { ...health, total_nodes: 0 })).toBe(5);
+  });
+
   it('renders the graph without waiting for the slower diagnostics', async () => {
     const stats = {
       schema_version: '1.0',
@@ -205,7 +231,7 @@ describe('KnowledgeGraphPage — historical completion release', () => {
     });
   });
 
-  it('does not refetch the graph when diagnostic permissions become available', async () => {
+  it('does not refetch the graph or census when diagnostic permissions become available', async () => {
     let healthAllowed = false;
     permissionHas.mockImplementation((flag: string) => (
       flag === 'kg.operations.health.read' ? healthAllowed : true
@@ -216,7 +242,7 @@ describe('KnowledgeGraphPage — historical completion release', () => {
       metadata: { edge_read_status: 'ok' },
       next_cursor: null,
     });
-    vi.spyOn(kgApi, 'getStats').mockResolvedValue({
+    const statsRead = vi.spyOn(kgApi, 'getStats').mockResolvedValue({
       schema_version: '1.0',
       node_counts_by_type: {},
       edge_counts_by_type: {},
@@ -234,6 +260,54 @@ describe('KnowledgeGraphPage — historical completion release', () => {
 
     await waitFor(() => expect(healthRead).toHaveBeenCalledTimes(1));
     expect(graph).toHaveBeenCalledTimes(1);
+    expect(statsRead).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh graph' }));
+    await waitFor(() => expect(statsRead).toHaveBeenCalledTimes(2));
+    expect(graph).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not refresh from an onboarding request after it was unmounted', async () => {
+    let release!: () => void;
+    vi.spyOn(kgApi, 'getHistoricalProgress').mockImplementation(() => new Promise((resolve) => {
+      release = () => resolve(completedHistorical);
+    }));
+    const onRefresh = vi.fn();
+    const { unmount } = render(<EmptyState boardId="board-123" onRefresh={onRefresh} />);
+    unmount();
+    await act(async () => { release(); });
+    expect(onRefresh).not.toHaveBeenCalled();
+  });
+
+  it('publishes census before slow health and ignores a previous board response', async () => {
+    const stats = (count: number) => ({
+      schema_version: '1.0',
+      node_counts_by_type: { Decision: count },
+      edge_counts_by_type: {},
+      avg_confidence: 0.9,
+      pending_queue_count: 0,
+    });
+    let releaseOld!: () => void;
+    vi.spyOn(kgApi, 'getSubgraph').mockResolvedValue({
+      nodes: [],
+      edges: [], metadata: { edge_read_status: 'ok' }, next_cursor: null,
+    });
+    const statsRead = vi.spyOn(kgApi, 'getStats')
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        releaseOld = () => resolve(stats(99));
+      }))
+      .mockResolvedValue(stats(2));
+    vi.spyOn(kgApi, 'getHistoricalProgress').mockResolvedValue(completedHistorical);
+    vi.spyOn(kgHealthApi, 'getKGHealth').mockImplementation(() => new Promise(() => {}));
+
+    const { rerender } = render(<KnowledgeGraphPage boardId="board-old" />);
+    await waitFor(() => expect(statsRead).toHaveBeenCalledTimes(1));
+    rerender(<KnowledgeGraphPage boardId="board-new" />);
+    await waitFor(() => {
+      expect(screen.getByTestId('mock-graph-controls')).toHaveTextContent('counts: 2; total: 2');
+    });
+    await act(async () => { releaseOld(); });
+    await waitFor(() => expect(statsRead).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId('mock-graph-controls')).toHaveTextContent('counts: 2; total: 2');
   });
 
   it('renders the KG shell instead of the historical onboarding once backfill is terminal', async () => {

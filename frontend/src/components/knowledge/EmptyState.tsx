@@ -31,7 +31,9 @@ export function EmptyState({ boardId, onRefresh }: Props) {
   // Check if there's already a consolidation in progress on mount
   useEffect(() => {
     if (!boardId || permissions.isLoading || !canReadHistorical) return;
+    let active = true;
     kgApi.getHistoricalProgress(boardId).then((p) => {
+      if (!active) return;
       if (p.enabled) {
         setProgressInfo(p);
         if (kgApi.isHistoricalProgressTerminal(p)) {
@@ -41,7 +43,10 @@ export function EmptyState({ boardId, onRefresh }: Props) {
         }
       }
     }).catch(() => {});
-    return () => stopPolling();
+    return () => {
+      active = false;
+      stopPolling();
+    };
   }, [boardId, canReadHistorical, permissions.isLoading]);
 
   const startPolling = () => {
