@@ -2,7 +2,26 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from okto_pulse.community.api import kg_routes
+
+
+def test_relation_pairs_keep_order_and_distinct_layouts_without_duplicates():
+    first = ("r", "A", "B")
+    reverse = ("r", "B", "A")
+    other = ("other", "A", "B")
+    assert kg_routes._relation_pairs(
+        [first, first, other], [("r", [("A", "B"), ("B", "A"), ("B", "A")])]
+    ) == [first, other, reverse]
+
+
+def test_real_contract_supersedes_layout_is_visited_once():
+    from okto_pulse.core.kg.schema_contract import MULTI_REL_TYPES, REL_TYPES
+
+    pairs = kg_routes._relation_pairs(REL_TYPES, MULTI_REL_TYPES)
+    assert pairs.count(("supersedes", "Decision", "Decision")) == 1
+    assert len(pairs) == len(set(pairs))
 
 
 class _RelationshipAwareExecutor:
@@ -245,6 +264,32 @@ def test_edge_counts_sum_physical_endpoint_tables_by_logical_name(monkeypatch) -
     assert diagnostics["edge_count_tables_failed"] == 0
     assert f"MATCH (a:Requirement)-[r:{first}]->(b:Entity)" in executor.queries[0]
     assert f"MATCH (a:Decision)-[r:{second}]->(b:Entity)" in executor.queries[1]
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_duplicate_schema_layout_does_not_inflate_census(monkeypatch, batched):
+    from okto_pulse.core.kg import schema_contract
+
+    monkeypatch.setattr(schema_contract, "REL_TYPES", [("supersedes", "Decision", "Decision")])
+    monkeypatch.setattr(schema_contract, "MULTI_REL_TYPES", [
+        ("supersedes", [("Decision", "Decision"), ("Requirement", "Requirement")]),
+    ])
+    executor = _RelationshipAwareExecutor({
+        "supersedes__Decision__Decision": [[1]],
+        "supersedes__Requirement__Requirement": [[2]],
+    })
+    if batched:
+        def batch(board, statements):
+            assert len(statements) == 2
+            return [executor.execute_read_only(board, query, params, max_rows=limit)
+                    for query, params, limit in statements]
+        executor.execute_read_only_batch = batch
+    monkeypatch.setattr(kg_routes, "resolve_cypher_executor", lambda: executor)
+    counts, diagnostics = kg_routes._count_edges_by_type("board-1")
+    assert counts == {"supersedes": 3}
+    assert len(executor.queries) == 2
+    assert diagnostics["edge_count_tables_scanned"] == 2
+    assert diagnostics["edge_count_tables_failed"] == 0
 
 
 def test_edge_counts_use_one_optional_read_batch(monkeypatch) -> None:

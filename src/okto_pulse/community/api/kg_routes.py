@@ -833,7 +833,11 @@ def _relation_pairs(
     for rel_name, pairs in multi_rel_types:
         for from_type, to_type in pairs:
             rel_pairs.append((rel_name, from_type, to_type))
-    return rel_pairs
+    # The same layout may appear in both declarations (for example supersedes
+    # Decision -> Decision). Visit it once, retaining first-encounter order and
+    # every distinct logical type/direction/endpoint pair. Duplicate declarations
+    # are not parallel edges and must not inflate census or verification totals.
+    return list(dict.fromkeys(rel_pairs))
 
 
 def _count_nodes_by_type(
