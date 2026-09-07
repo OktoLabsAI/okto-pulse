@@ -215,6 +215,77 @@ def _graph_state(database: Any) -> tuple[object, object]:
     return _nodes(database), _edges(database)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("node_count", [8, 32])
+async def test_edge_creation_seeks_endpoints_without_cartesian_heap_scan(
+    grafx_database: Any,
+    fence: _DeterministicFence,
+    monkeypatch: pytest.MonkeyPatch,
+    node_count: int,
+) -> None:
+    provider = _provider(grafx_database, fence)
+    with grafx_database.begin("write") as transaction:
+        for index in range(node_count):
+            transaction.execute(
+                "CREATE (:Entity {id: $id})", {"id": f"entity-{index}"},
+            )
+    params = {"from_id": "entity-0", "to_id": f"entity-{node_count - 1}"}
+    old_transaction = grafx_database.begin("write")
+    try:
+        old_endpoints = old_transaction.execute(
+            "MATCH (a:Entity), (b:Entity) "
+            "WHERE a.id = $from_id AND b.id = $to_id "
+            "CREATE (a)-[:supports]->(b) RETURN a.id, b.id",
+            params,
+        )
+    finally:
+        old_transaction.rollback()
+    scope = await provider.begin(BOARD_ID)
+    raw_transaction = scope._transaction
+    original_execute = Transaction.execute
+    results: list[Any] = []
+
+    def record(transaction: Any, statement: str, params: Any = None) -> Any:
+        result = original_execute(transaction, statement, params)
+        if transaction is raw_transaction:
+            results.append(result)
+        return result
+
+    monkeypatch.setattr(Transaction, "execute", record)
+    try:
+        assert scope.create_edge(
+            "supports", "Entity", "Entity", params["from_id"], params["to_id"],
+            {"rule_id": "indexed", "confidence": 0.75},
+        )
+        created = results[-1]
+        assert created.rows == old_endpoints.rows == (
+            (params["from_id"], params["to_id"]),
+        )
+        assert created.statistics.get("rows_scanned", 0) == 0
+        assert created.statistics["rows_seeked"] == 2
+        # Current native planning already pushes down the legacy WHERE form.
+        # Explicit endpoint binding is equivalent, not a new speedup claim.
+        assert old_endpoints.statistics.get("rows_scanned", 0) == 0
+        assert old_endpoints.statistics["rows_seeked"] == 2
+        assert scope.edge_exists(
+            "supports", "Entity", "Entity", params["from_id"], params["to_id"],
+            "indexed",
+        )
+        # Existence examines the selected source's edge, not every Entity.
+        assert results[-1].statistics.get("rows_scanned", 0) <= 1
+        assert not scope.edge_exists(
+            "supports", "Entity", "Entity", params["from_id"], params["to_id"],
+            "another-rule",
+        )
+        assert not scope.create_edge(
+            "supports", "Entity", "Entity", params["from_id"], "missing", {},
+        )
+    finally:
+        await scope.rollback()
+    assert _edges(grafx_database) == ()
+    assert grafx_database.verify("all").findings == ()
+
+
 async def _seed_graph(provider: Any) -> None:
     async with await provider.begin(BOARD_ID) as scope:
         scope.create_node(

@@ -23,6 +23,10 @@ from okto_pulse.core.kg.interfaces.graph_errors import (
 )
 
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+from okto_pulse.community.adapters.grafx_global_indexes import (
+    ensure_grafx_global_digest_source_index,
+    validate_grafx_global_digest_source_index,
+)
 from okto_pulse.community.adapters.grafx_schema_manifest import (
     EMBEDDING_DIMENSION,
     EMBEDDING_STORAGE_DTYPE,
@@ -269,7 +273,7 @@ def _failure(
 ) -> GraphError:
     error_type = GraphIndexUnavailable if index else GraphCapabilityUnavailable
     return error_type(
-        "The Grafx Global Discovery vector contract is not satisfied.",
+        f"The Grafx Global Discovery vector contract is not satisfied ({reason}).",
         details={
             "backend": "okto_grafx",
             "operation": operation,
@@ -434,14 +438,22 @@ def ensure_current_grafx_global_schema(
     manifest: GrafxGlobalSchemaManifest = PULSE_GRAFX_GLOBAL_SCHEMA,
     revalidate_fence: MutationFence | None = None,
 ) -> GrafxGlobalBootstrapResult:
-    """Create only missing Global objects in one transaction and validate cold truth."""
+    """Create missing Global objects, then activate the exact digest source index.
+
+    The physical index has its own fenced transaction after durable schema
+    creation. Existing databases receive it even when their schema is complete.
+    """
 
     try:
         preflight = _preflight(database, manifest)
+        validate_grafx_global_digest_source_index(database)
         if preflight.complete:
+            changed = ensure_grafx_global_digest_source_index(
+                database, revalidate_fence=revalidate_fence
+            )
             return GrafxGlobalBootstrapResult(
                 logical_fingerprint=manifest.logical_fingerprint,
-                changed=False,
+                changed=changed,
             )
         transaction = database.begin("write")
         try:
@@ -473,6 +485,9 @@ def ensure_current_grafx_global_schema(
                 operation=_BOOTSTRAP_OPERATION,
             )
         validate_current_grafx_global_schema(database, manifest=manifest)
+        ensure_grafx_global_digest_source_index(
+            database, revalidate_fence=revalidate_fence
+        )
         return GrafxGlobalBootstrapResult(
             logical_fingerprint=manifest.logical_fingerprint,
             changed=True,
@@ -501,9 +516,16 @@ def certify_grafx_global_vector_indexes(
     *,
     manifest: GrafxGlobalSchemaManifest = PULSE_GRAFX_GLOBAL_SCHEMA,
 ) -> tuple[GrafxVectorIndexStatus, ...]:
-    """Cold-verify and correlate all four public vector/index views."""
+    """Cold-verify coverage and correlate public views at one publication LSN.
+
+    Native built-through watermarks are table-local: unrelated index DDL can
+    advance publication without changing HNSW. A lower watermark is accepted
+    only together with verify(all)'s full heap/index coverage proof, matching
+    healthy public views, and an unchanged publication across the whole probe.
+    """
 
     try:
+        published_lsn = database.transactions.published_lsn()
         validate_current_grafx_global_schema(database, manifest=manifest)
         report = database.verify("all")
         if report.findings:
@@ -515,7 +537,6 @@ def certify_grafx_global_vector_indexes(
             )
         vectors = database.vectors
         indexes = database.indexes
-        published_lsn = database.transactions.published_lsn()
         catalog = database.catalog.catalog
         statuses: list[GrafxVectorIndexStatus] = []
         for table_name, column_name, expected_space in _vector_targets(manifest):
@@ -528,6 +549,11 @@ def certify_grafx_global_vector_indexes(
                 for index, column in enumerate(table.columns)
                 if column.name == column_name
             )
+            # Cheap public views deliberately omit cold header watermarks.
+            # Read the durable header explicitly; never infer zero/current LSN
+            # from an absent observation or warm the entire index by scanning.
+            durable_index = database.read_index_status(vector_index.name)
+            built_lsn = durable_index.built_through_lsn
             observed = {
                 "dimension": space.dimension,
                 "metric": space.metric.value,
@@ -542,9 +568,23 @@ def certify_grafx_global_vector_indexes(
                 "generic_stale": generic_index.stale,
                 "index_stale_reason": vector_index.stale_reason,
                 "generic_stale_reason": generic_index.stale_reason,
-                "index_lsn": vector_index.built_through_lsn,
-                "generic_lsn": generic_index.built_through_lsn,
+                "header_stale": durable_index.stale,
+                "header_stale_reason": durable_index.stale_reason,
+                "header_definition_matches": durable_index.definition == generic_index.definition,
+                "header_file_matches": durable_index.file == generic_index.file == vector_index.file,
+                "vector_watermark_matches": vector_index.built_through_lsn is None or (
+                    type(vector_index.built_through_lsn) is int
+                    and vector_index.built_through_lsn == built_lsn
+                ),
+                "generic_watermark_matches": generic_index.built_through_lsn is None or (
+                    type(generic_index.built_through_lsn) is int
+                    and generic_index.built_through_lsn == built_lsn
+                ),
+                "index_lsn": built_lsn,
+                "generic_lsn": built_lsn,
                 "published_lsn": published_lsn,
+                "watermark_valid": type(built_lsn) is int
+                and 0 <= built_lsn <= published_lsn,
             }
             expected = {
                 "dimension": expected_space.dimension,
@@ -560,9 +600,16 @@ def certify_grafx_global_vector_indexes(
                 "generic_stale": False,
                 "index_stale_reason": None,
                 "generic_stale_reason": None,
-                "index_lsn": published_lsn,
-                "generic_lsn": published_lsn,
+                "header_stale": False,
+                "header_stale_reason": None,
+                "header_definition_matches": True,
+                "header_file_matches": True,
+                "vector_watermark_matches": True,
+                "generic_watermark_matches": True,
+                "index_lsn": built_lsn,
+                "generic_lsn": built_lsn,
                 "published_lsn": published_lsn,
+                "watermark_valid": True,
             }
             if observed != expected:
                 raise _failure(
@@ -585,8 +632,17 @@ def certify_grafx_global_vector_indexes(
                     storage_dtype=space.storage_dtype,
                     stale=False,
                     stale_reason=None,
-                    built_through_lsn=published_lsn,
+                    built_through_lsn=built_lsn,
                 )
+            )
+        current_lsn = database.transactions.published_lsn()
+        if current_lsn != published_lsn:
+            raise _failure(
+                "verification_snapshot_changed",
+                operation=_STATUS_OPERATION,
+                index=True,
+                verified_from_lsn=published_lsn,
+                observed_lsn=current_lsn,
             )
         return tuple(statuses)
     except GraphError:

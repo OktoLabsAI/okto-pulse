@@ -166,6 +166,96 @@ def test_grafx_global_providers_cover_exact_core_protocols(tmp_path: Path) -> No
     assert isinstance(recovery, GlobalDiscoveryRecovery)
 
 
+def test_digest_link_probes_start_from_digest_and_preserve_duplicate_foreign_links(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from okto_grafx.domain.query.plan import IndexSeek, TraverseRelationship
+
+    slot = _DatabaseSlot(tmp_path / "global.grafx")
+    runtime = _runtime(slot)
+    runtime.bootstrap()
+    database = slot.resolve()
+    statements = []
+    execute = runtime._execute_on_database
+
+    def capture(db, statement, params, *, operation, write):
+        statements.append((statement, params, operation, write))
+        return execute(db, statement, params, operation=operation, write=write)
+
+    monkeypatch.setattr(runtime, "_execute_on_database", capture)
+    try:
+        with database.begin("write") as transaction:
+            transaction.execute(
+                "CREATE (:Board {board_id:'b1'}), (:Board {board_id:'b2'})"
+            )
+            for index in range(32):
+                transaction.execute(
+                    "CREATE (:DecisionDigest {id:$id, board_id:'b1'})",
+                    {"id": f"d{index}"},
+                )
+                transaction.execute(
+                    "MATCH (b:Board {board_id:'b1'}), (d:DecisionDigest {id:$id}) "
+                    "CREATE (b)-[:CONTAINS_DECISION]->(d)",
+                    {"id": f"d{index}"},
+                )
+            # Existing correct duplicate plus a physically possible foreign-board edge.
+            transaction.execute(
+                "MATCH (b:Board), (d:DecisionDigest {id:'d0'}) "
+                "CREATE (b)-[:CONTAINS_DECISION]->(d)"
+            )
+
+        before = database.transactions.published_lsn()
+        runtime.link_board_digest(board_id="b1", digest_id="d0")
+        assert database.transactions.published_lsn() == before
+        query, params, operation, write = statements[-1]
+        assert operation == "link_board_digest_preflight" and not write
+        result = database.execute(query, params)
+        assert result.rows == ((2,),)  # Count all duplicates, not merely existence.
+        assert result.statistics["rows_seeked"] == 1
+        assert result.statistics["rows_scanned"] == 3  # Only this digest's inbound edges.
+        nodes = tuple(database.explain(query).walk())
+        seek = next(node for node in nodes if isinstance(node, IndexSeek))
+        traversal = next(
+            node for node in nodes if isinstance(node, TraverseRelationship)
+        )
+        assert seek.table.name == "DecisionDigest" and seek.key_columns == ("id",)
+        assert traversal.source == "d" and traversal.target == "b"
+        assert traversal.direction.value == "incoming"
+
+        old_query = (
+            "MATCH (b:Board {board_id:$board_id})-[r:CONTAINS_DECISION]->"
+            "(d:DecisionDigest {id:$digest_id}) RETURN count(r)"
+        )
+        old_result = database.execute(old_query, params)
+        assert old_result.rows == result.rows
+        assert old_result.statistics["rows_scanned"] == 33
+
+        statements.clear()
+        assert runtime.normalize_board_digest_link(board_id="b1", digest_id="d0") == 3
+        inbound_query = "MATCH (d:DecisionDigest {id:'d0'})<-[r:CONTAINS_DECISION]-(b:Board) RETURN b.board_id"
+        assert database.execute(inbound_query).rows == (("b1",),)
+        assert database.execute(
+            "MATCH (d:DecisionDigest {id:'d1'})<-[r:CONTAINS_DECISION]-(b:Board) RETURN b.board_id"
+        ).rows == (("b1",),)
+        digest_traversals = [
+            statement
+            for statement, _, _, _ in statements
+            if "[r:CONTAINS_DECISION]" in statement
+        ]
+        assert len(digest_traversals) == 2
+        assert all(
+            statement.startswith("MATCH (d:DecisionDigest {id: $digest_id})<-")
+            for statement in digest_traversals
+        )
+        with pytest.raises(GraphError):
+            runtime.link_board_digest(board_id="b2", digest_id="d1")
+        with pytest.raises(GraphError):
+            runtime.normalize_board_digest_link(board_id="b2", digest_id="d0")
+        assert database.execute(inbound_query).rows == (("b1",),)
+    finally:
+        slot.close()
+
+
 def test_runtime_all_19_methods_and_exhaustive_search_are_real(
     tmp_path: Path,
     monkeypatch,
@@ -229,7 +319,7 @@ def test_runtime_all_19_methods_and_exhaustive_search_are_real(
         )
 
     statement = runtime.execute(
-        "MATCH (d:DecisionDigest {id: $digest_id}) " "RETURN d.embedding, d.created_at",
+        "MATCH (d:DecisionDigest {id: $digest_id}) RETURN d.embedding, d.created_at",
         {"digest_id": "digest-a"},
     )
     assert isinstance(statement.rows[0][0], list)

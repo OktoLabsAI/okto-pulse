@@ -100,7 +100,14 @@ def test_global_manifest_bootstrap_status_and_cold_reopen(tmp_path: Path) -> Non
         assert tuple((item.table, item.column, item.space) for item in statuses) == (
             expected_mapping
         )
-        assert all(item.built_through_lsn == committed_lsn for item in statuses)
+        assert all(0 <= item.built_through_lsn <= committed_lsn for item in statuses)
+        assert all(
+            item.built_through_lsn
+            == database.vectors.index(item.space).built_through_lsn
+            for item in statuses
+        )
+        # Secondary-index DDL advanced publication, not unrelated HNSW data.
+        assert any(item.built_through_lsn < committed_lsn for item in statuses)
         assert database.verify("all").findings == ()
 
     with connect(root) as reopened:

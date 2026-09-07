@@ -54,6 +54,9 @@ from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
 from okto_pulse.community.adapters.grafx_relationship_layout import (
     resolve_relationship_table,
 )
+from okto_pulse.community.adapters.grafx_relationship_query import (
+    translate_logical_relationships,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,20 +70,6 @@ _LOGICAL_RELATIONSHIP_PROPERTY_SCAN = re.compile(
     r"(?P=relationship_alias)\.layer\s*,\s*"
     r"(?P=relationship_alias)\.rule_id\s*;?\s*\Z",
     re.IGNORECASE | re.DOTALL,
-)
-_NODE_ALIAS_LABEL = re.compile(
-    r"\(\s*(?P<alias>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*"
-    r"(?P<label>[A-Za-z_][A-Za-z0-9_]*)\b"
-)
-_TYPED_LOGICAL_RELATIONSHIP = re.compile(
-    r"\(\s*(?P<left_alias>[A-Za-z_][A-Za-z0-9_]*)"
-    r"(?:\s*:\s*(?P<left_label>[A-Za-z_][A-Za-z0-9_]*))?[^()]*\)\s*"
-    r"(?P<left_arrow><-|-)[ \t\r\n]*\[[ \t\r\n]*"
-    r"(?:[A-Za-z_][A-Za-z0-9_]*[ \t\r\n]*)?:[ \t\r\n]*"
-    r"(?P<logical_type>[A-Za-z_][A-Za-z0-9_]*)\b[^\]]*\][ \t\r\n]*"
-    r"(?P<right_arrow>->|-)[ \t\r\n]*"
-    r"\(\s*(?P<right_alias>[A-Za-z_][A-Za-z0-9_]*)"
-    r"(?:\s*:\s*(?P<right_label>[A-Za-z_][A-Za-z0-9_]*))?[^()]*\)"
 )
 _IDENTITY_PROPERTIES = frozenset({"id", "source_session_id"})
 # The relational projection materializes exactly these two node tables; naming them keeps the
@@ -538,63 +527,12 @@ class _GrafxTransactionScope:
         )
 
     def _translate_typed_logical_relationships(self, statement: str) -> str:
-        """Resolve endpoint-typed logical relationship names without widening Cypher.
-
-        The two endpoint labels select exactly one table in the immutable Pulse
-        layout.  Labels may be present on the relationship pattern itself or on
-        earlier ``MATCH`` clauses that bind the aliases used by ``CREATE``.
-        Literals and comments are blanked before scanning, so text that merely
-        resembles a pattern is never rewritten.
-        """
-
-        code = strip_comments_and_literals(statement)
-        labels_by_alias: dict[str, set[str]] = {}
-        for node_match in _NODE_ALIAS_LABEL.finditer(code):
-            labels_by_alias.setdefault(node_match.group("alias"), set()).add(
-                node_match.group("label")
-            )
-
-        def resolved_label(alias: str, local: str | None) -> str | None:
-            if local is not None:
-                return local
-            candidates = labels_by_alias.get(alias, set())
-            return next(iter(candidates)) if len(candidates) == 1 else None
-
-        replacements: list[tuple[int, int, str]] = []
-        for relationship_match in _TYPED_LOGICAL_RELATIONSHIP.finditer(code):
-            left_label = resolved_label(
-                relationship_match.group("left_alias"),
-                relationship_match.group("left_label"),
-            )
-            right_label = resolved_label(
-                relationship_match.group("right_alias"),
-                relationship_match.group("right_label"),
-            )
-            if left_label is None or right_label is None:
-                continue
-            left_arrow = relationship_match.group("left_arrow")
-            right_arrow = relationship_match.group("right_arrow")
-            if left_arrow == "-" and right_arrow == "->":
-                from_type, to_type = left_label, right_label
-            elif left_arrow == "<-" and right_arrow == "-":
-                from_type, to_type = right_label, left_label
-            else:
-                continue
-            logical_type = relationship_match.group("logical_type")
-            if (logical_type, from_type, to_type) not in self._relationship_pairs:
-                continue
-            physical = self._relationship_table_resolver(
-                logical_type,
-                from_type,
-                to_type,
-            )
-            start, end = relationship_match.span("logical_type")
-            replacements.append((start, end, physical))
-
-        translated = statement
-        for start, end, physical in reversed(replacements):
-            translated = f"{translated[:start]}{physical}{translated[end:]}"
-        return translated
+        """Use the same endpoint proof as the standalone read-only executor."""
+        return translate_logical_relationships(
+            statement,
+            relationship_pairs=self._relationship_pairs,
+            resolver=self._relationship_table_resolver,
+        )
 
     def _catalog(self) -> Any:
         """Return this scope's catalog snapshot, captured from the public API once.
@@ -1359,6 +1297,9 @@ class _GrafxTransactionScope:
             from_type,
             to_type,
         )
+        # Keep endpoint equalities leading. Inline node maps plus a WHERE on
+        # r.rule_id place that residual before the node equalities in Grafx's
+        # conservative planner, preventing the source PK seek.
         predicate = "a.id = $from_id AND b.id = $to_id"
         params: dict[str, Any] = {"from_id": from_id, "to_id": to_id}
         if rule_id is not None:
@@ -1405,8 +1346,8 @@ class _GrafxTransactionScope:
             **{f"value_{index}": value for index, value in enumerate(values.values())},
         }
         result = self._mutation(
-            f"MATCH (a:{from_type}), (b:{to_type}) "
-            "WHERE a.id = $from_id AND b.id = $to_id "
+            f"MATCH (a:{from_type} {{id: $from_id}}), "
+            f"(b:{to_type} {{id: $to_id}}) "
             f"CREATE (a)-[:{physical}{properties}]->(b) RETURN a.id, b.id",
             params,
             operation="create_edge",
@@ -1446,8 +1387,8 @@ class _GrafxTransactionScope:
             attrs,
         )
         endpoints = self._query(
-            "MATCH (source:Entity), (target:Entity) "
-            "WHERE source.id = $source_id AND target.id = $target_id "
+            "MATCH (source:Entity {id: $source_id}), "
+            "(target:Entity {id: $target_id}) "
             "RETURN source.id, target.id LIMIT 1",
             {"source_id": source_id, "target_id": target_id},
             operation="reconcile_spec_lineage_endpoints",
@@ -1905,8 +1846,8 @@ class _GrafxTransactionScope:
             **{f"value_{index}": value for index, value in enumerate(attrs.values())},
         }
         result = self._query(
-            "MATCH (source:Entity), (target:Entity) "
-            "WHERE source.id = $source_id AND target.id = $target_id "
+            "MATCH (source:Entity {id: $source_id}), "
+            "(target:Entity {id: $target_id}) "
             f"CREATE (source)-[:{physical}{properties}]->(target) "
             "RETURN source.id, target.id",
             params,

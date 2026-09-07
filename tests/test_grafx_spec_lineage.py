@@ -514,6 +514,48 @@ async def test_reconcile_is_create_first_exact_and_returns_complete_receipt(
 
 
 @pytest.mark.asyncio
+async def test_reconcile_uses_identity_anchored_endpoint_seeks(
+    lineage_harness: _Harness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never rebuild the two Entity endpoints through a Cartesian heap scan."""
+
+    await _seed(lineage_harness)
+    scope = await lineage_harness.provider.begin(BOARD_ID)
+    raw_transaction = scope._transaction
+    original_execute = Transaction.execute
+    endpoint_statements: list[str] = []
+
+    def record_endpoint_statements(
+        transaction: Any,
+        statement: str,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        if transaction is raw_transaction and "source.id, target.id" in statement:
+            endpoint_statements.append(statement)
+        return original_execute(transaction, statement, params)
+
+    monkeypatch.setattr(Transaction, "execute", record_endpoint_statements)
+    scope.reconcile_spec_lineage_parent(
+        SPEC_ID,
+        REFINEMENT_ID,
+        _edge_attrs(REFINEMENT_RULE, "session-indexed-endpoints"),
+    )
+    await scope.rollback()
+
+    assert len(endpoint_statements) == 2
+    assert all(
+        "MATCH (source:Entity {id: $source_id}), "
+        "(target:Entity {id: $target_id})" in statement
+        for statement in endpoint_statements
+    )
+    assert all(
+        "MATCH (source:Entity), (target:Entity)" not in statement
+        for statement in endpoint_statements
+    )
+
+
+@pytest.mark.asyncio
 async def test_reconcile_retry_is_idempotent_and_retry_receipt_owns_no_edge(
     lineage_harness: _Harness,
 ) -> None:

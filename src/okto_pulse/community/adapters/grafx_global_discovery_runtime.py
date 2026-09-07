@@ -680,8 +680,8 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                 database = self._database()
                 present = self._execute_on_database(
                     database,
-                    "MATCH (b:Board {board_id: $board_id})-"
-                    "[r:CONTAINS_DECISION]->(d:DecisionDigest {id: $digest_id}) "
+                    "MATCH (d:DecisionDigest {id: $digest_id})<-"
+                    "[r:CONTAINS_DECISION]-(b:Board {board_id: $board_id}) "
                     "RETURN count(r)",
                     {"board_id": board_id, "digest_id": digest_id},
                     operation="link_board_digest_preflight",
@@ -736,8 +736,8 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                     )
                 inbound = self._execute_on_database(
                     database,
-                    "MATCH (b:Board)-[r:CONTAINS_DECISION]->"
-                    "(d:DecisionDigest {id: $digest_id}) RETURN count(r)",
+                    "MATCH (d:DecisionDigest {id: $digest_id})<-"
+                    "[r:CONTAINS_DECISION]-(b:Board) RETURN count(r)",
                     {"digest_id": digest_id},
                     operation="normalize_board_digest_link_preflight",
                     write=False,
@@ -746,8 +746,8 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                 if removed:
                     self._execute_on_database(
                         database,
-                        "MATCH (:Board)-[r:CONTAINS_DECISION]->"
-                        "(d:DecisionDigest {id: $digest_id}) DELETE r",
+                        "MATCH (d:DecisionDigest {id: $digest_id})<-"
+                        "[r:CONTAINS_DECISION]-(:Board) DELETE r",
                         {"digest_id": digest_id},
                         operation="normalize_board_digest_link",
                         write=True,
@@ -780,34 +780,63 @@ class CommunityGrafxGlobalDiscoveryRuntime:
         with self._lock:
             try:
                 database = self._database()
-                params = {
-                    "board_id": board_id,
-                    "expected_digest_ids": list(expected_digest_ids),
-                }
-                predicate = (
-                    "b.board_id = $board_id AND ("
-                    "coalesce(d.board_id, '') <> $board_id OR "
-                    "NOT (d.id IN $expected_digest_ids))"
-                )
-                before = self._execute_on_database(
-                    database,
-                    "MATCH (b:Board)-[r:CONTAINS_DECISION]->"
-                    f"(d:DecisionDigest) WHERE {predicate} RETURN count(r)",
-                    params,
-                    operation="delete_invalid_digest_links_preflight",
-                    write=False,
-                )
-                count = _count_row(before.rows)
-                if count:
-                    self._execute_on_database(
-                        database,
-                        "MATCH (b:Board)-[r:CONTAINS_DECISION]->"
-                        f"(d:DecisionDigest) WHERE {predicate} DELETE r",
-                        params,
-                        operation="delete_invalid_digest_links",
-                        write=True,
+                # The complete expected set is authority, not a native list
+                # parameter. Splitting NOT IN into independent batches would
+                # delete valid links belonging to every other batch.
+                expected = frozenset(expected_digest_ids)
+                self._fence("delete_invalid_digest_links_preflight")
+                transaction = database.begin("write")
+                try:
+                    before = transaction.execute(
+                        "MATCH (b:Board {board_id: $board_id})-"
+                        "[r:CONTAINS_DECISION]->(d:DecisionDigest) "
+                        "RETURN d.id, d.board_id, count(r)",
+                        {"board_id": board_id},
                     )
-                return count
+                    # Native result/memory budgets fail closed; do not apply
+                    # LIMIT or treat a partial inventory as complete. Finish
+                    # validation before staging any DELETE. OCC protects the
+                    # same write snapshot through publication of every chunk.
+                    invalid: list[str] = []
+                    count = 0
+                    for row in before.rows:
+                        if (
+                            len(row) != 3 or not isinstance(row[0], str)
+                            or type(row[2]) is not int or row[2] < 1
+                        ):
+                            raise _capability(
+                                "digest_link_inventory_invalid",
+                                operation="delete_invalid_digest_links_preflight",
+                            )
+                        digest_id, owner_board_id, link_count = row
+                        if owner_board_id != board_id or digest_id not in expected:
+                            invalid.append(digest_id)
+                            count += link_count
+                    if not invalid:
+                        transaction.rollback()
+                        return 0
+                    for start in range(0, len(invalid), 512):
+                        self._fence("delete_invalid_digest_links")
+                        transaction.execute(
+                            "MATCH (b:Board {board_id: $board_id})-"
+                            "[r:CONTAINS_DECISION]->(d:DecisionDigest) "
+                            "WHERE d.id IN $invalid_digest_ids DELETE r",
+                            {
+                                "board_id": board_id,
+                                "invalid_digest_ids": invalid[start:start + 512],
+                            },
+                        )
+                    self._fence("commit")
+                    report = transaction.commit()
+                    if not report.durable:
+                        raise _capability(
+                            "commit_not_published", operation="delete_invalid_digest_links",
+                        )
+                    return count
+                except BaseException:
+                    if transaction.active:
+                        transaction.rollback()
+                    raise
             except GraphError:
                 raise
             except Exception as exc:
