@@ -63,6 +63,11 @@ layer/superseded/tombstone policy, CT exclusion at both anchor and neighbour,
 invalid input refusal before I/O, operation-window forwarding, missing provider
 capability and `max_rows=1` with an isolated first center.
 
-Native source under test includes scalar-PK optimization `9420b49`; no runtime
-restart or package publication is implied by these checkout tests. The active
-Pulse process has not yet loaded this filter correction.
+Native source under test includes scalar-PK optimization `9420b49`. A subsequent
+controlled restart on 2026-09-07 loaded the filter correction into Pulse PID 18604:
+startup verified the Community source path and availability of the filtered
+method on both store and routed facade. The live KG read returned HTTP 200 with
+500 nodes, 703 edges and zero failed edge tables; UI pagination reached 1000 nodes.
+This validates deployment and ordinary graph reads, not all filter combinations
+over live MCP: that contract is covered by the real-engine integration tests
+above. No cognitive spec was consumed or package published.
