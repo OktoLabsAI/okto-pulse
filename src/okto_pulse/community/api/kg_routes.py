@@ -22,6 +22,14 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from okto_pulse.core.kg import cypher_templates as tpl
+from okto_pulse.core.kg.interfaces.graph_errors import (
+    GraphCapabilityUnavailable,
+    GraphCorruption,
+    GraphError,
+    GraphInvalidQuery,
+    GraphUnavailable,
+    graph_memory_pressure_retry_after_seconds,
+)
 from okto_pulse.core.kg.kg_service import (
     KGToolError,
     get_kg_service,
@@ -1607,6 +1615,22 @@ async def cypher_query(
             e.message,
             e.code,
         )
+    except GraphError as exc:
+        # Provider errors already crossed the edition's backend-neutral mapping.
+        # Invalid syntax/plans are client errors, not an unhandled ASGI exception
+        # or a signal to rebuild/recover a healthy graph.
+        status = 500
+        if isinstance(exc, GraphInvalidQuery):
+            status = 400
+        elif isinstance(exc, (GraphUnavailable, GraphCapabilityUnavailable, GraphCorruption)):
+            status = 503
+        retry_after = graph_memory_pressure_retry_after_seconds(exc)
+        if retry_after is not None:
+            status = 503
+        response = _problem(status, exc.code, str(exc), exc.code)
+        if retry_after is not None:
+            response.headers["Retry-After"] = str(retry_after)
+        return response
 
 
 @router.get("/schema")

@@ -197,3 +197,54 @@ async def test_cypher_complete_ct_grant_bypasses_materialization_guard(
     )
 
     assert payload == {"rows": [[CT_ID]]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_name,status,public_code", [
+    ("GrafxParseError", 400, "graph_invalid_query"),
+    ("GrafxPlanError", 400, "graph_invalid_query"),
+    ("GrafxLeaseTimeout", 503, "graph_lock_contention"),
+    ("GrafxCorruptionDetected", 503, "graph_corruption"),
+    ("GrafxUnsupportedOperation", 503, "graph_capability_unavailable"),
+    ("GrafxBufferBudgetExceeded", 503, "graph_memory_pressure"),
+    ("GrafxError", 500, "graph_error"),
+])
+async def test_native_query_refusal_is_structured_and_never_bypasses_auth(
+    monkeypatch, native_name, status, public_code,
+):
+    import json
+    from okto_grafx import errors
+    from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+
+    calls = []
+    original = getattr(errors, native_name)("private query payload must not leak")
+    mapped = map_grafx_error(original, operation="read_only_query")
+    assert mapped.code == public_code
+
+    def refused(*_args, **_kwargs):
+        calls.append(1)
+        raise mapped from original
+
+    monkeypatch.setattr(kg_routes, "execute_cypher_read_only", refused)
+    response = await kg_routes.cypher_query(
+        BOARD_ID, cypher="RETURN unsupported_function(1)",
+        actor=_actor(ct_read=True), uow=SimpleNamespace(),
+    )
+    assert response.status_code == status
+    assert response.media_type == "application/problem+json"
+    payload = json.loads(response.body)
+    assert payload["status"] == status
+    assert payload["type"] == f"/errors/{public_code}"
+    assert "private query payload" not in payload["detail"]
+    if native_name == "GrafxBufferBudgetExceeded":
+        assert response.headers["Retry-After"] == "60"
+    else:
+        assert "Retry-After" not in response.headers
+    assert calls == [1]
+    with pytest.raises(HTTPException) as denied:
+        await kg_routes.cypher_query(
+            BOARD_ID, cypher="RETURN unsupported_function(1)",
+            actor=_actor(ct_read=False), uow=SimpleNamespace(),
+        )
+    assert denied.value.status_code == 403
+    assert calls == [1]
