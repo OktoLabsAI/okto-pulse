@@ -93,3 +93,26 @@ SHA256 `4AFF1AB6EE6C6E621C6598148154A04298500B8DA92EBF0F5E90AD081B2217F4`.
 
 See also [census request isolation](KG_CENSUS_REQUEST_ISOLATION.md). Other dirty
 integration changes in the checkout are not part of this selected checkpoint.
+
+## Accumulated native deployment — 2026-09-07
+
+Pulse 0.3.3 PID 36660 loads Grafx `c0cc3e1` and `0fee5b4` from the source
+checkout, following terminal shutdown of PID 24152 with graphs closed cleanly.
+The former removes unused vector materialization in the Health optional-degree
+query; the latter eliminates repeated healthy MVCC suffix walks during full
+post-flush verification. Neither changes the backend-neutral Core or writer rules.
+
+Real UI smoke: first graph response 500 nodes/703 edges in 28.756 s after restart;
+the single +500 action returned another 500 nodes/897 edges in 1.396 s. Both were
+HTTP 200 with zero failed edge tables. The rendered UI showed 1000 / 2779 nodes.
+A separate authenticated canonical stats GET took 2.579 s and counted 2779 nodes,
+4424 edges and 69 layouts without failure. These are observations of different
+pages/conditions, not a controlled speedup claim. First-load latency remains open.
+
+The startup wait included embedding-library preload; it is not counted as graph
+request latency. No repeated restart/load was performed to improve the sample.
+Production cognitive API remained pending=21, in_progress=0, consolidated=19,
+failed=0, total=40; its ledger SHA256 above was unchanged. No consolidation,
+redrive, rebuild, delivery replay or reset was initiated. Overlay closed after
+visual verification. Native details: Grafx
+`docs/VERIFICATION_VERSION_SUFFIXES_0_0_4.md`.
