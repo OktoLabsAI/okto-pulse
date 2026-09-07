@@ -48,3 +48,20 @@ No PyPI publication, main merge, graph reset or DLQ redrive is part of this
 checkpoint. Packaged frontend assets are built from the current local Community
 worktree, which still contains other integration work; this is not a clean release
 artifact claim.
+
+## Live frontend verification
+
+Controlled deployment after the correction: Pulse PID 26560, API 8100 and MCP
+8101, default data home made explicit through `DATA_DIR`. Previous PID 18604
+reported global close and one board close with zero errors (75 ms). The browser
+loaded `/assets/index-CIG6q9cO.js`; TypeScript and production build passed, with
+packaged tree SHA256
+`7435cd528f0755affd64004946496a6db35fe315fc48bffcef1ce5bd85bb770d`.
+
+The new browser navigation recorded exactly **one** census request despite
+permission hydration. Graph 500: 45.340 s; census: 53.187 s. Thus the duplicate is
+removed, but the cold latency is **not solved**, nor improved in this observation.
+No causal percentage speedup is claimed. Clicking `Load more (500+)` then returned
+500 unique page nodes and 897 edges in 2.292 s, HTTP 200, 66 edge tables scanned,
+4 skipped by page type, zero failed. The UI reached 1000 nodes, total 2779.
+Final cognitive read remained pending 21 / in progress 0 / consolidated 19.
