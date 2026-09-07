@@ -138,6 +138,26 @@ def _relationship_table_name(
     return str(resolver(board_id, logical_type, from_type, to_type))
 
 
+def _relationship_table_names(
+    executor: Any,
+    board_id: str,
+    layouts: Sequence[tuple[str, str, str]],
+) -> dict[tuple[str, str, str], str]:
+    """Optionally resolve a complete group; leave scalar diagnostics on refusal."""
+    resolver = getattr(executor, "relationship_table_names", None)
+    if not layouts or not callable(resolver):
+        return {}
+    try:
+        names = list(resolver(board_id, layouts))
+        if len(names) != len(layouts) or any(not isinstance(name, str) or not name for name in names):
+            return {}
+        return dict(zip(layouts, names, strict=True))
+    except Exception:
+        # Never use a partial prefix or guess logical names after a route error.
+        # The original scalar resolver reports each individual refusal below.
+        return {}
+
+
 def _kg_actor(
     *,
     user_id: str,
@@ -660,6 +680,13 @@ def _fetch_edges_for_nodes(
         # table: each relationship statement receives only ids that can inhabit that endpoint.
         untyped_ids = node_ids - known_ids
 
+        mapped_names = _relationship_table_names(cypher_executor, board_id, [
+            pair for pair in rel_pairs
+            if not (include_code_traceability and node_types_by_id is not None
+                    and not (ids_by_type.get(pair[1], set()) | untyped_ids)
+                    and not (ids_by_type.get(pair[2], set()) | untyped_ids))
+        ])
+
         edges = []
         seen: set[tuple[str, str, str]] = set()  # (rel, src, tgt) dedup
         pending: list[tuple[str, str, str, str, dict[str, Any] | None]] = []
@@ -677,7 +704,7 @@ def _fetch_edges_for_nodes(
                     diagnostics["edge_tables_skipped_by_page_type"] += 1
                     continue
                 diagnostics["edge_tables_scanned"] += 1
-                physical_rel = _relationship_table_name(
+                physical_rel = mapped_names.get((rel_name, from_type, to_type)) or _relationship_table_name(
                     cypher_executor,
                     board_id,
                     rel_name,
@@ -913,10 +940,11 @@ def _count_edges_by_type(
         cypher_executor = resolve_cypher_executor()
         edge_counts: dict[str, int] = {}
         pending: list[tuple[str, str, dict[str, Any] | None]] = []
+        mapped_names = _relationship_table_names(cypher_executor, board_id, rel_pairs)
         for rel_name, from_type, to_type in rel_pairs:
             diagnostics["edge_count_tables_scanned"] += 1
             try:
-                physical_rel = _relationship_table_name(
+                physical_rel = mapped_names.get((rel_name, from_type, to_type)) or _relationship_table_name(
                     cypher_executor,
                     board_id,
                     rel_name,

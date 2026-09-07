@@ -697,6 +697,26 @@ class CommunityRoutedCypherExecutor:
             return logical_type
         return str(resolver(logical_type, from_type, to_type))
 
+    def relationship_table_names(
+        self,
+        board_id: str,
+        layouts: Sequence[tuple[str, str, str]],
+    ) -> list[str]:
+        """Map one operation's manifest using one freshly acquired board route.
+
+        Names are pure provider layout metadata, not retained authority. Query
+        execution still acquires its own route/window and storage snapshot.
+        Nothing is cached across calls, boards or generation transitions.
+        """
+        if not layouts:
+            return []
+        with self._operation_window(board_id):
+            provider = self._provider(board_id)
+            resolver = getattr(provider, "relationship_table_name", None)
+            if not callable(resolver):
+                return [logical for logical, _source, _target in layouts]
+            return [str(resolver(*layout)) for layout in layouts]
+
     def execute_read_only(
         self,
         board_id: str,
