@@ -64,3 +64,20 @@ worker signalling/direct batch, permission denial, confirmations and refreshing
 after an HTTP failure. They do not mutate the live board. Live redrive and
 consolidation are intentionally not used as deployment smoke tests: the 21
 pending specs remain reserved for benchmarks.
+
+Accumulated source deployment: Pulse PID 24152 replaced PID 18920 only after
+terminal shutdown and both ports were free; graph close reported zero failures.
+The 78 packaged assets match the build (tree SHA256
+`373c5fe492565aa1e7769354072da7eb7977414b16a94e6078579b04fd15461c`).
+API 8100 and MCP 8101 are owned by the new PID. `/health` reports healthy/0.3.3;
+runtime Settings returns Grafx and page size 8192, with no pending restart.
+The browser serves `/assets/index-igFxIQ1X.js`, including the final refusal copy.
+KG displayed 500 of 2779 canonical nodes. The live board inspector returned an
+empty consolidation DLQ and disabled Redrive all; Settings/inspector were closed
+without saving or submitting any redrive. Empty consolidation DLQ is not a
+claim that Global/policy DLQs or cognitive pending items are empty.
+
+The cognitive ledger remains byte-identical (SHA256
+`4AFF1AB6EE6C6E621C6598148154A04298500B8DA92EBF0F5E90AD081B2217F4`).
+This deployment loads source checkouts, not a newly published/installed wheel.
+Cold KG latency and end-to-end write performance remain separate open work.
