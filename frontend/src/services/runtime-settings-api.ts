@@ -1,16 +1,17 @@
 /**
  * API client for the runtime settings endpoint shipped in 0.1.4.
  *
- * Backs the "Settings" menu (graph database memory tuning knobs). Reads and writes
+ * Backs the "Settings" menu (Grafx runtime knobs). Reads and writes
  * persist through the backend's settings_service and only take effect on
  * the next process restart because graph database startup settings are constructor-time.
  */
 
 export interface RuntimeSettingsValues {
-  // Graph DB tab — restart-required on change.
-  kg_kuzu_buffer_pool_mb: number;
-  kg_kuzu_max_db_size_gb: number;
-  kg_connection_pool_size: number;
+  // Grafx tab — restart-required on change.
+  kg_grafx_page_size: number;
+  kg_grafx_descriptor_revalidation: 'strict' | 'generation';
+  kg_grafx_buffer_pool_mb?: number;
+  kg_grafx_options?: Record<string, number | string | null>;
   // Event Queue tab — hot-reload (no restart needed).
   // Spec bdcda842 v0.2.0+: 5 new settings exposed by the worker pool.
   kg_queue_max_concurrent_workers: number;
@@ -26,6 +27,10 @@ export interface RuntimeSettingsValues {
 }
 
 export interface RuntimeSettings extends RuntimeSettingsValues {
+  grafx_settings_catalog?: GrafxSettingDescriptor[];
+  // Configured routing defaults. Existing per-scope bindings remain authoritative.
+  kg_graph_backend: 'ladybug' | 'grafx';
+  kg_global_graph_backend: 'ladybug' | 'grafx';
   /**
    * Persisted/configured values that are not necessarily active yet.
    *
@@ -36,6 +41,17 @@ export interface RuntimeSettings extends RuntimeSettingsValues {
   desired_values?: Partial<RuntimeSettingsValues>;
   // Toggled APENAS by Graph DB tab changes (graph database startup-time).
   restart_required: boolean;
+}
+
+export interface GrafxSettingDescriptor {
+  name: string;
+  default: number | string | boolean | null;
+  description: string;
+  editable: boolean;
+  alias?: string | null;
+  choices?: string[] | null;
+  nullable: boolean;
+  kind: string;
 }
 
 export type RuntimeSettingsPatch = Partial<RuntimeSettingsValues> & {
@@ -52,9 +68,7 @@ export type RuntimeSettingsPatch = Partial<RuntimeSettingsValues> & {
  * para mutar (grupos storage/wal/index do guard). Hoje só o max DB size é
  * exposto nesta UI; wal/index entram aqui se um dia ganharem campo.
  */
-export const MIGRATION_PLAN_KEYS = [
-  'kg_kuzu_max_db_size_gb',
-] as const satisfies ReadonlyArray<keyof RuntimeSettingsValues>;
+export const MIGRATION_PLAN_KEYS = [] as const;
 
 /**
  * Keys that gate the amber "Restart required" banner. Mudar qualquer um
@@ -62,9 +76,10 @@ export const MIGRATION_PLAN_KEYS = [
  * constructor-time). Demais keys (kg_queue_*) são hot-reload.
  */
 export const GRAPH_DB_KEYS = [
-  'kg_kuzu_buffer_pool_mb',
-  'kg_kuzu_max_db_size_gb',
-  'kg_connection_pool_size',
+  'kg_grafx_page_size',
+  'kg_grafx_descriptor_revalidation',
+  'kg_grafx_buffer_pool_mb',
+  'kg_grafx_options',
 ] as const satisfies ReadonlyArray<keyof RuntimeSettingsValues>;
 
 export const EVENT_QUEUE_KEYS = [

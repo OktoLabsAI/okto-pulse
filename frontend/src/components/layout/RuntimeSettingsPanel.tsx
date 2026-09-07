@@ -1,10 +1,9 @@
 /**
- * Runtime Settings panel — Graph DB | Event Queue (spec bdcda842).
+ * Runtime Settings panel — Grafx | Event Queue | Decay Tick.
  *
  * Two-tab layout:
- *   * **Graph DB** (default tab): graph database memory tuning. Changing any field
- *     here flips ``restart_required`` because the database is
- *     constructor-time. Banner amber sinaliza isso.
+ *   * **Grafx** (default tab): storage geometry and descriptor validation.
+ *     Changes are constructor-time and therefore require a restart.
  *   * **Event Queue** (new in v0.2.0): consolidation queue throughput
  *     knobs (max workers, throttle, claim timeout, max attempts, alert
  *     threshold) + Live Queue Health panel polling /api/v1/kg/queue/health
@@ -22,10 +21,10 @@ import toast from 'react-hot-toast';
 import {
   getRuntimeSettings,
   putRuntimeSettings,
-  MIGRATION_PLAN_KEYS,
   type RuntimeSettings,
   type RuntimeSettingsPatch,
   type RuntimeSettingsValues,
+  type GrafxSettingDescriptor,
 } from '@/services/runtime-settings-api';
 import {
   getQueueHealth,
@@ -37,6 +36,7 @@ import { DeadLetterInspectorModal } from '@/components/knowledge/DeadLetterInspe
 import { useDashboardStore } from '@/store/dashboard';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { usePermissions } from '@/hooks/usePermissions';
+import { GrafxAdvancedSettings, SettingHelp } from './GrafxAdvancedSettings';
 
 interface RuntimeSettingsPanelProps {
   onClose: () => void;
@@ -49,13 +49,17 @@ interface RuntimeSettingsPanelProps {
 // runtime knobs (graph storage, queue, decay tick).
 type ActiveTab = 'graphdb' | 'eventqueue' | 'decaytick';
 
-const GRAPH_DB_MAX_SIZE_GB_OPTIONS = [2, 4, 8, 16, 32, 64] as const;
+const GRAFX_PAGE_SIZE_OPTIONS = [4096, 8192, 16384, 32768] as const;
 
-const RANGES: Record<keyof RuntimeSettingsValues, { min: number; max: number }> = {
-  // Graph DB tab
-  kg_kuzu_buffer_pool_mb: { min: 128, max: 512 },
-  kg_kuzu_max_db_size_gb: { min: 2, max: 64 },
-  kg_connection_pool_size: { min: 1, max: 32 },
+type NumericSettingKey = Exclude<
+  keyof RuntimeSettingsValues,
+  'kg_grafx_descriptor_revalidation' | 'kg_grafx_options'
+>;
+
+const RANGES: Record<NumericSettingKey, { min: number; max: number }> = {
+  // Grafx tab
+  kg_grafx_page_size: { min: 4096, max: 32768 },
+  kg_grafx_buffer_pool_mb: { min: 1, max: Number.MAX_SAFE_INTEGER },
   // Event Queue tab
   kg_queue_max_concurrent_workers: { min: 1, max: 16 },
   kg_queue_min_interval_ms: { min: 0, max: 1000 },
@@ -68,17 +72,15 @@ const RANGES: Record<keyof RuntimeSettingsValues, { min: number; max: number }> 
   kg_decay_tick_max_age_days: { min: 0, max: 365 },
 };
 
-// Non-graph baseline: embedding singleton (~120 MB) + query caches (~100 MB) +
-// Python/FastAPI runtime (~300 MB) + session/transaction state (~100 MB).
-const BUDGET_BASELINE_MB = 620;
 const HEALTH_POLL_INTERVAL_MS = 2000;
 
-type DraftState = RuntimeSettingsValues;
+type DraftState = Required<RuntimeSettingsValues>;
 
 const ZERO_DRAFT: DraftState = {
-  kg_kuzu_buffer_pool_mb: 0,
-  kg_kuzu_max_db_size_gb: 0,
-  kg_connection_pool_size: 0,
+  kg_grafx_page_size: 0,
+  kg_grafx_descriptor_revalidation: 'generation',
+  kg_grafx_buffer_pool_mb: 64,
+  kg_grafx_options: {},
   kg_queue_max_concurrent_workers: 0,
   kg_queue_min_interval_ms: 0,
   kg_queue_claim_timeout_s: 0,
@@ -95,11 +97,21 @@ function snapshotDraft(data: RuntimeSettings): DraftState {
     ...data,
     ...(data.desired_values ?? {}),
   };
-  const out: DraftState = { ...ZERO_DRAFT };
-  for (const key of Object.keys(ZERO_DRAFT) as Array<keyof DraftState>) {
-    out[key] = editableValues[key];
-  }
-  return out;
+  return {
+    kg_grafx_page_size: editableValues.kg_grafx_page_size,
+    kg_grafx_descriptor_revalidation:
+      editableValues.kg_grafx_descriptor_revalidation,
+    kg_grafx_buffer_pool_mb: editableValues.kg_grafx_buffer_pool_mb ?? 64,
+    kg_grafx_options: editableValues.kg_grafx_options ?? {},
+    kg_queue_max_concurrent_workers: editableValues.kg_queue_max_concurrent_workers,
+    kg_queue_min_interval_ms: editableValues.kg_queue_min_interval_ms,
+    kg_queue_claim_timeout_s: editableValues.kg_queue_claim_timeout_s,
+    kg_queue_max_attempts: editableValues.kg_queue_max_attempts,
+    kg_queue_alert_threshold: editableValues.kg_queue_alert_threshold,
+    kg_decay_tick_interval_minutes: editableValues.kg_decay_tick_interval_minutes,
+    kg_decay_tick_staleness_days: editableValues.kg_decay_tick_staleness_days,
+    kg_decay_tick_max_age_days: editableValues.kg_decay_tick_max_age_days,
+  };
 }
 
 export function RuntimeSettingsPanel({
@@ -114,15 +126,15 @@ export function RuntimeSettingsPanel({
   // Draft state lets the user type freely without triggering saves;
   // shared across both tabs so Save persists partial PUTs in one shot.
   const [draft, setDraft] = useState<DraftState>(ZERO_DRAFT);
+  const [grafxCatalog, setGrafxCatalog] = useState<GrafxSettingDescriptor[]>([]);
+  const [graphProviders, setGraphProviders] = useState({
+    board: 'grafx',
+    global: 'grafx',
+  });
   // True once a successful PUT happens AND the changes touched a Graph DB
   // key (graph database startup-time). Event Queue mutations never set this.
   const [restartRequired, setRestartRequired] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>(initialTab);
-  // KG-01.5 (KGConfigChangeGuard): mudar um setting do grupo storage
-  // (kg_kuzu_max_db_size_gb) exige um migration_plan_ref no PUT — sem ele o
-  // backend responde 400 migration_plan_required. O campo só aparece quando
-  // um setting guarded diverge do valor carregado.
-  const [migrationPlanRef, setMigrationPlanRef] = useState('');
   // Spec ed17b1fe (Wave 2 NC 1ede3471) — DLQ Inspector modal state.
   const [showDeadLetter, setShowDeadLetter] = useState(false);
   const currentBoard = useDashboardStore((s) => s.currentBoard);
@@ -159,6 +171,11 @@ export function RuntimeSettingsPanel({
         const editableValues = snapshotDraft(data);
         setValues(editableValues);
         setDraft(editableValues);
+        setGrafxCatalog(data.grafx_settings_catalog ?? []);
+        setGraphProviders({
+          board: data.kg_graph_backend,
+          global: data.kg_global_graph_backend,
+        });
         setRestartRequired(data.restart_required);
       })
       .catch((err) => {
@@ -204,25 +221,30 @@ export function RuntimeSettingsPanel({
     };
   }, [activeTab, currentBoard, canReadKGHealth]);
 
-  const budgetMb =
-    draft.kg_connection_pool_size * draft.kg_kuzu_buffer_pool_mb +
-    BUDGET_BASELINE_MB;
-
   const outOfRange = useMemo(() => {
-    return (Object.keys(RANGES) as Array<keyof typeof RANGES>).some((key) => {
+    if (Object.entries(draft.kg_grafx_options).some(([key, value]) => {
+      const item = grafxCatalog.find((entry) => entry.name === key);
+      if (!item || !item.editable) return true;
+      if (value === null) return !item.nullable;
+      if (item.choices) return !item.choices.includes(String(value));
+      return typeof value !== 'number' || !Number.isFinite(value)
+        || Math.abs(value) > Number.MAX_SAFE_INTEGER
+        || (!key.endsWith('_seconds') && !Number.isInteger(value));
+    })) return true;
+    return (Object.keys(RANGES) as NumericSettingKey[]).some((key) => {
       const v = draft[key];
       const { min, max } = RANGES[key];
       if (
-        key === 'kg_kuzu_max_db_size_gb'
-        && !GRAPH_DB_MAX_SIZE_GB_OPTIONS.includes(v as typeof GRAPH_DB_MAX_SIZE_GB_OPTIONS[number])
+        key === 'kg_grafx_page_size'
+        && !GRAFX_PAGE_SIZE_OPTIONS.includes(v as typeof GRAFX_PAGE_SIZE_OPTIONS[number])
       ) {
         return true;
       }
-      return !Number.isFinite(v) || v < min || v > max;
+      return !Number.isSafeInteger(v) || v < min || v > max;
     });
-  }, [draft]);
+  }, [draft, grafxCatalog]);
 
-  const onInputChange = (key: keyof DraftState, raw: string) => {
+  const onInputChange = (key: NumericSettingKey, raw: string) => {
     const parsed = Number(raw);
     setDraft((d) => ({
       ...d,
@@ -230,29 +252,17 @@ export function RuntimeSettingsPanel({
     }));
   };
 
-  const migrationPlanRequired = useMemo(() => {
-    if (!values) return false;
-    return MIGRATION_PLAN_KEYS.some((key) => draft[key] !== values[key]);
-  }, [draft, values]);
-  const migrationPlanMissing =
-    migrationPlanRequired && migrationPlanRef.trim() === '';
-
   const buildPatch = (): RuntimeSettingsPatch => {
-    const patch = Object.fromEntries(
+    return Object.fromEntries(
       (Object.keys(ZERO_DRAFT) as Array<keyof DraftState>)
         .filter((key) => values === null || draft[key] !== values[key])
         .map((key) => [key, draft[key]]),
     ) as RuntimeSettingsPatch;
-    if (migrationPlanRequired) {
-      patch.migration_plan_ref = migrationPlanRef.trim();
-    }
-    return patch;
   };
 
   const onReset = () => {
     if (!values) return;
     setDraft({ ...values });
-    setMigrationPlanRef('');
   };
 
   // Bug fix (Playwright E2E reproduzido):
@@ -267,7 +277,7 @@ export function RuntimeSettingsPanel({
   const inFlightRef = useRef(false);
 
   const onSave = async () => {
-    if (!canWriteRuntime || outOfRange || migrationPlanMissing || inFlightRef.current) return;
+    if (!canWriteRuntime || outOfRange || inFlightRef.current) return;
     inFlightRef.current = true;
     setSaving(true);
     try {
@@ -276,7 +286,6 @@ export function RuntimeSettingsPanel({
       setValues(editableValues);
       setDraft(editableValues);
       setRestartRequired(resp.restart_required);
-      setMigrationPlanRef('');
       if (resp.restart_required) {
         toast.success('Settings saved — restart required for Graph DB changes');
       } else {
@@ -301,7 +310,6 @@ export function RuntimeSettingsPanel({
       !canWriteRuntime
       || !canRunKGTick
       || outOfRange
-      || migrationPlanMissing
       || inFlightRef.current
       || tickInProgress
     ) return;
@@ -316,7 +324,6 @@ export function RuntimeSettingsPanel({
       setValues(editableValues);
       setDraft(editableValues);
       setRestartRequired(resp.restart_required);
-      setMigrationPlanRef('');
       try {
         await triggerKGTick();
         toast.success('Settings saved. Tick started.');
@@ -345,7 +352,7 @@ export function RuntimeSettingsPanel({
       onClick={onClose}
     >
       <div
-        className="relative w-[640px] max-w-[92vw] bg-white dark:bg-gray-900 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-800 overflow-hidden"
+        className="relative w-[760px] max-w-[92vw] max-h-[92vh] overflow-y-auto bg-white dark:bg-gray-900 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-800"
         onClick={(e) => e.stopPropagation()}
         data-testid="runtime-settings-panel"
       >
@@ -373,9 +380,9 @@ export function RuntimeSettingsPanel({
             className="px-6 py-2.5 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800/50 text-xs text-amber-900 dark:text-amber-200"
             data-testid="restart-required-banner"
           >
-            <strong>Restart required.</strong> New values persist but only
+            <strong>Restart required.</strong> Grafx settings are persisted but only
             take effect after restarting the Okto Pulse process
-            (Graph DB startup-time).
+            (Grafx startup-time).
           </div>
         )}
 
@@ -407,10 +414,13 @@ export function RuntimeSettingsPanel({
           <GraphDBTab
             draft={draft}
             onChange={onInputChange}
-            budgetMb={budgetMb}
-            migrationPlanRequired={migrationPlanRequired}
-            migrationPlanRef={migrationPlanRef}
-            onMigrationPlanRefChange={setMigrationPlanRef}
+            onDescriptorChange={(value) => setDraft((current) => ({
+              ...current,
+              kg_grafx_descriptor_revalidation: value,
+            }))}
+            providers={graphProviders}
+            catalog={grafxCatalog}
+            onOptionsChange={(value) => setDraft((current) => ({ ...current, kg_grafx_options: value }))}
           />
         ) : activeTab === 'eventqueue' ? (
           <EventQueueTab
@@ -434,15 +444,13 @@ export function RuntimeSettingsPanel({
           </button>
           <button
             onClick={onSave}
-            disabled={loading || saving || !canWriteRuntime || outOfRange || migrationPlanMissing}
+            disabled={loading || saving || !canWriteRuntime || outOfRange}
             className="px-3 py-1.5 text-xs font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg disabled:opacity-50"
             data-testid="save-runtime-settings"
             title={
               !canWriteRuntime
                 ? 'Requires runtime.settings.write'
-                : migrationPlanMissing
-                  ? 'Changing the max DB size requires a migration plan (Graph DB tab)'
-                  : undefined
+                : undefined
             }
           >
             {saving ? 'Saving…' : 'Save'}
@@ -450,7 +458,7 @@ export function RuntimeSettingsPanel({
           {activeTab === 'decaytick' && (
             <button
               onClick={onSaveAndRunNow}
-              disabled={loading || saving || !canWriteRuntime || !canRunKGTick || outOfRange || migrationPlanMissing || tickInProgress}
+              disabled={loading || saving || !canWriteRuntime || !canRunKGTick || outOfRange || tickInProgress}
               className="px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 inline-flex items-center gap-1"
               data-testid="save-and-run-now"
               title={
@@ -507,7 +515,7 @@ function TabsNav({ activeTab, onChange }: TabsNavProps) {
         >
           <span className="inline-flex items-center gap-1.5">
             <Settings size={12} />
-            Graph DB
+            Grafx
           </span>
         </button>
         <button
@@ -544,7 +552,7 @@ function TabsNav({ activeTab, onChange }: TabsNavProps) {
 
 interface DecayTickTabProps {
   draft: DraftState;
-  onChange: (key: keyof DraftState, raw: string) => void;
+  onChange: (key: NumericSettingKey, raw: string) => void;
 }
 
 /**
@@ -606,82 +614,63 @@ function DecayTickTab({ draft, onChange }: DecayTickTabProps) {
 
 interface GraphDBTabProps {
   draft: DraftState;
-  onChange: (key: keyof DraftState, raw: string) => void;
-  budgetMb: number;
-  migrationPlanRequired: boolean;
-  migrationPlanRef: string;
-  onMigrationPlanRefChange: (raw: string) => void;
+  onChange: (key: NumericSettingKey, raw: string) => void;
+  onDescriptorChange: (value: 'strict' | 'generation') => void;
+  providers: { board: string; global: string };
+  catalog: GrafxSettingDescriptor[];
+  onOptionsChange: (value: DraftState['kg_grafx_options']) => void;
 }
 
 function GraphDBTab({
   draft,
   onChange,
-  budgetMb,
-  migrationPlanRequired,
-  migrationPlanRef,
-  onMigrationPlanRefChange,
+  onDescriptorChange,
+  providers,
+  catalog,
+  onOptionsChange,
 }: GraphDBTabProps) {
   return (
     <div className="px-6 py-5 space-y-4">
-      <SettingField
-        label="Graph DB buffer pool per board (MB)"
-        description="Recommended 512 MB for Ladybug HNSW commits. Safe default: 512."
-        value={draft.kg_kuzu_buffer_pool_mb}
-        range={RANGES.kg_kuzu_buffer_pool_mb}
-        onChange={(v) => onChange('kg_kuzu_buffer_pool_mb', v)}
-        testId="input-buffer-pool-mb"
-      />
-      <GraphMaxDbSizeField
-        label="Graph DB max database size per board (GB)"
-        description="Ladybug requires a power-of-2 size in bytes. Default: 2 GB."
-        value={draft.kg_kuzu_max_db_size_gb}
-        onChange={(v) => onChange('kg_kuzu_max_db_size_gb', v)}
-        testId="input-max-db-size-gb"
-      />
-      {migrationPlanRequired && (
-        <div
-          className="px-3 py-2.5 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50 rounded-lg space-y-1.5"
-          data-testid="migration-plan-field"
-        >
-          <label className="text-xs font-medium text-amber-900 dark:text-amber-200 block">
-            Migration plan (required)
-          </label>
-          <p className="text-[10px] text-amber-800/80 dark:text-amber-300/80">
-            Changing the max database size is a storage-group change guarded
-            by KGConfigChangeGuard: describe or reference the migration plan
-            (ticket, doc or a short justification). Sent as
-            migration_plan_ref and recorded in the audit log.
-          </p>
-          <input
-            type="text"
-            maxLength={256}
-            value={migrationPlanRef}
-            onChange={(e) => onMigrationPlanRefChange(e.target.value)}
-            placeholder="e.g. board X growth plan — approved 2026-07-10"
-            data-testid="input-migration-plan-ref"
-            className="w-full text-xs px-2 py-1 border rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border-amber-300 dark:border-amber-700 placeholder:text-gray-400"
-          />
-        </div>
-      )}
-      <SettingField
-        label="Connection pool cap (simultaneous boards)"
-        description="Boards kept alive in the LRU cache."
-        value={draft.kg_connection_pool_size}
-        range={RANGES.kg_connection_pool_size}
-        onChange={(v) => onChange('kg_connection_pool_size', v)}
-        testId="input-pool-size"
+      <div
+        className="grid grid-cols-2 gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
+        data-testid="grafx-provider-status"
+      >
+        <span>Board graph: <strong>{formatProvider(providers.board)}</strong></span>
+        <span>Global discovery: <strong>{formatProvider(providers.global)}</strong></span>
+      </div>
+
+      <GrafxPageSizeField
+        value={draft.kg_grafx_page_size}
+        onChange={(v) => onChange('kg_grafx_page_size', v)}
       />
 
-      <div
-        className="mt-4 px-3 py-2 bg-gray-50 dark:bg-gray-800 rounded-lg text-xs text-gray-600 dark:text-gray-300"
-        data-testid="budget-display"
-      >
-        <strong>Estimated budget:</strong>{' '}
-        {draft.kg_connection_pool_size} × {draft.kg_kuzu_buffer_pool_mb} +{' '}
-        {BUDGET_BASELINE_MB} = <strong>{budgetMb} MB</strong>
-        <span className="text-gray-400">
-          {' '}committed (non-graph baseline {BUDGET_BASELINE_MB} MB)
-        </span>
+      <div>
+        <label className="text-xs font-medium text-gray-700 dark:text-gray-300 block mb-0.5">
+          Descriptor revalidation
+          <SettingHelp label="Descriptor revalidation" text={catalog.find((item) => item.name === 'descriptor_revalidation')?.description ?? 'Generation is faster for Pulse-owned directories. Strict checks cached descriptor identities for shared/forensic use. Both preserve WAL, OCC and snapshots. Restart required.'} />
+        </label>
+        <p className="text-[10px] text-gray-400 mb-1.5">
+          Generation is faster for directories exclusively managed by Pulse. Strict revalidates every cached descriptor and is intended for forensic or externally shared directories.
+        </p>
+        <select
+          value={draft.kg_grafx_descriptor_revalidation}
+          onChange={(event) => onDescriptorChange(event.target.value as 'strict' | 'generation')}
+          data-testid="input-descriptor-revalidation"
+          className="w-full text-xs px-2 py-1.5 border rounded bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border-gray-300 dark:border-gray-600"
+        >
+          <option value="generation">Generation — recommended for Pulse</option>
+          <option value="strict">Strict — maximum descriptor checking</option>
+        </select>
+      </div>
+
+      <SettingField label="Buffer pool per handle (MiB)"
+        description="64 MiB default. One writer + two readers can use 3× this capacity per board; this is not total process RAM. Restart required."
+        value={draft.kg_grafx_buffer_pool_mb} range={RANGES.kg_grafx_buffer_pool_mb}
+        onChange={(v) => onChange('kg_grafx_buffer_pool_mb', v)} testId="input-grafx-buffer-pool-mb" />
+      <GrafxAdvancedSettings catalog={catalog} value={draft.kg_grafx_options} onChange={onOptionsChange} />
+
+      <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[10px] text-blue-900 dark:border-blue-800/50 dark:bg-blue-900/20 dark:text-blue-200">
+        Page size is fixed for an existing Grafx generation. A changed value applies only to newly created generations after restart; existing bindings keep their recorded geometry. Native WAL recovery remains automatic and fail-closed.
       </div>
     </div>
   );
@@ -689,7 +678,7 @@ function GraphDBTab({
 
 interface EventQueueTabProps {
   draft: DraftState;
-  onChange: (key: keyof DraftState, raw: string) => void;
+  onChange: (key: NumericSettingKey, raw: string) => void;
   isActive: boolean;
   onOpenDeadLetterInspector: () => void;
   canReadQueue: boolean;
@@ -950,59 +939,60 @@ function useQueueHealth(active: boolean): QueueHealth | null {
   return health;
 }
 
-interface GraphMaxDbSizeFieldProps {
-  label: string;
-  description: string;
+interface GrafxPageSizeFieldProps {
   value: number;
   onChange: (raw: string) => void;
-  testId: string;
 }
 
-function GraphMaxDbSizeField({
-  label,
-  description,
+function GrafxPageSizeField({
   value,
   onChange,
-  testId,
-}: GraphMaxDbSizeFieldProps) {
+}: GrafxPageSizeFieldProps) {
   const currentIndex = Math.max(
     0,
-    GRAPH_DB_MAX_SIZE_GB_OPTIONS.findIndex((option) => option === value),
+    GRAFX_PAGE_SIZE_OPTIONS.findIndex((option) => option === value),
   );
   const displayed =
-    GRAPH_DB_MAX_SIZE_GB_OPTIONS[currentIndex] ?? GRAPH_DB_MAX_SIZE_GB_OPTIONS[0];
+    GRAFX_PAGE_SIZE_OPTIONS[currentIndex] ?? GRAFX_PAGE_SIZE_OPTIONS[0];
 
   return (
     <div>
       <label className="text-xs font-medium text-gray-700 dark:text-gray-200 block mb-0.5">
-        {label}
+        Page size
+        <SettingHelp label="Page size" text="Physical page size in bytes. Larger pages trade I/O granularity for memory and write amplification. A change applies only to new generations after restart; existing databases keep their stored geometry." />
       </label>
-      <p className="text-[10px] text-gray-400 mb-1.5">{description}</p>
+      <p className="text-[10px] text-gray-400 mb-1.5">
+        Physical Grafx page geometry. 8192 bytes is the Pulse default.
+      </p>
       <div className="flex items-center gap-3">
         <input
           type="range"
           min={0}
-          max={GRAPH_DB_MAX_SIZE_GB_OPTIONS.length - 1}
+          max={GRAFX_PAGE_SIZE_OPTIONS.length - 1}
           step={1}
           value={currentIndex}
           onChange={(e) => {
             const idx = Number(e.target.value);
-            onChange(String(GRAPH_DB_MAX_SIZE_GB_OPTIONS[idx]));
+            onChange(String(GRAFX_PAGE_SIZE_OPTIONS[idx]));
           }}
-          data-testid={testId}
+          data-testid="input-grafx-page-size"
           className="flex-1 accent-blue-600"
         />
-        <span className="w-14 text-xs font-semibold tabular-nums text-gray-700 dark:text-gray-100">
-          {displayed} GB
+        <span className="w-20 text-xs font-semibold tabular-nums text-gray-700 dark:text-gray-100">
+          {displayed} bytes
         </span>
       </div>
       <div className="mt-1 flex justify-between text-[9px] text-gray-400">
-        {GRAPH_DB_MAX_SIZE_GB_OPTIONS.map((option) => (
+        {GRAFX_PAGE_SIZE_OPTIONS.map((option) => (
           <span key={option}>{option}</span>
         ))}
       </div>
     </div>
   );
+}
+
+function formatProvider(provider: string): string {
+  return provider.toLowerCase() === 'grafx' ? 'Okto Grafx' : provider;
 }
 
 interface SettingFieldProps {
@@ -1027,6 +1017,7 @@ function SettingField({
     <div>
       <label className="text-xs font-medium text-gray-700 dark:text-gray-200 block mb-0.5">
         {label}
+        <SettingHelp label={label} text={description} />
       </label>
       <p className="text-[10px] text-gray-400 mb-1.5">{description}</p>
       <div className="flex items-center gap-2">
@@ -1044,7 +1035,7 @@ function SettingField({
           }`}
         />
         <span className="text-[10px] text-gray-400">
-          {range.min}-{range.max}
+          {range.max === Number.MAX_SAFE_INTEGER ? `≥ ${range.min}` : `${range.min}-${range.max}`}
         </span>
       </div>
     </div>

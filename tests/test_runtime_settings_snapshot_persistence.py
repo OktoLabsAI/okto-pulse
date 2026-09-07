@@ -88,17 +88,19 @@ async def test_runtime_settings_preserve_effective_contract_and_expose_desired(
         kg_connection_pool_size=2,
     )
     effective = {
-        key: int(getattr(settings, key))
+        key: service._validate_runtime_setting_value(key, getattr(settings, key))
         for key in service.RUNTIME_KEYS
     }
 
-    async def _effective() -> dict[str, int]:
+    async def _effective() -> dict[str, Any]:
         return dict(effective)
 
-    async def _persisted(_db: Any) -> dict[str, int]:
+    async def _persisted(_db: Any) -> dict[str, Any]:
         return {
             "kg_kuzu_buffer_pool_mb": 128,
             "kg_connection_pool_size": 1,
+            "kg_grafx_page_size": 16384,
+            "kg_grafx_descriptor_revalidation": "strict",
         }
 
     monkeypatch.setattr(service, "_read_effective_runtime_settings", _effective)
@@ -111,5 +113,7 @@ async def test_runtime_settings_preserve_effective_contract_and_expose_desired(
     assert result["kg_connection_pool_size"] == 2
     assert result["desired_values"]["kg_kuzu_buffer_pool_mb"] == 128
     assert result["desired_values"]["kg_connection_pool_size"] == 1
+    assert result["desired_values"]["kg_grafx_page_size"] == 16384
+    assert result["desired_values"]["kg_grafx_descriptor_revalidation"] == "strict"
     assert result["restart_required"] is True
     RuntimeSettingsResponse(**result)

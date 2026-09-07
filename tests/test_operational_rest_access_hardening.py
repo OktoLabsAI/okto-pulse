@@ -130,6 +130,10 @@ class _Downstream:
 
 def _runtime_settings(**updates):
     values = {
+        "kg_graph_backend": "grafx",
+        "kg_global_graph_backend": "grafx",
+        "kg_grafx_page_size": 8192,
+        "kg_grafx_descriptor_revalidation": "generation",
         "kg_kuzu_buffer_pool_mb": 256,
         "kg_kuzu_max_db_size_gb": 8,
         "kg_connection_pool_size": 4,

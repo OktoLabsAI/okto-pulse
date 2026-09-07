@@ -62,6 +62,7 @@ _CROSS_EDITION_CONTRACT_EXPECTATION: tuple[str, ...] = (
     "okto_pulse.core.inbound.spec_dependency_error",
     "okto_pulse.core.kg.async_bridge",
     "okto_pulse.core.kg.board_rebuild_adapter",
+    "okto_pulse.core.kg.blocking_io.run_blocking_graph_io",
     "okto_pulse.core.kg.board_source_store",
     "okto_pulse.core.kg.canonical_cognitive_preservation",
     "okto_pulse.core.kg.candidate_decision_store",

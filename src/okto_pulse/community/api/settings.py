@@ -13,6 +13,8 @@ so writes only take effect on the next process restart. The response includes
 
 from __future__ import annotations
 
+from typing import Any, Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
@@ -27,7 +29,12 @@ from okto_pulse.core.application.use_cases.operational_rest import (
 from okto_pulse.core.application.use_cases.base import PermissionDeniedError
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_principal
-from okto_pulse.community.config import validate_graph_db_max_size_gb
+from okto_pulse.community.config import (
+    validate_grafx_buffer_pool_mb,
+    validate_grafx_page_size,
+    validate_graph_db_max_size_gb,
+)
+from okto_pulse.community.adapters.grafx_settings_catalog import validate_options
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.domain.runtime_settings import (
@@ -47,7 +54,18 @@ class RuntimeSettingsResponse(BaseModel):
     used while a constructor-time change is waiting for restart.
     """
 
-    # Graph runtime tab - legacy public field names, restart-required on change.
+    # Active providers are informational. Existing per-scope bindings remain
+    # authoritative and cannot be changed from this general settings surface.
+    kg_graph_backend: Literal["ladybug", "grafx"]
+    kg_global_graph_backend: Literal["ladybug", "grafx"]
+    # Grafx settings consumed when the graph composition is built.
+    kg_grafx_page_size: int
+    kg_grafx_descriptor_revalidation: Literal["strict", "generation"]
+    kg_grafx_buffer_pool_mb: int = 64
+    kg_grafx_options: dict[str, Any] = Field(default_factory=dict)
+    grafx_settings_catalog: list[dict[str, Any]] = Field(default_factory=list)
+    # Legacy public fields remain in the wire contract for older clients, but
+    # are no longer presented by the Grafx-oriented Settings UI.
     kg_kuzu_buffer_pool_mb: int
     kg_kuzu_max_db_size_gb: int
     kg_connection_pool_size: int
@@ -67,7 +85,7 @@ class RuntimeSettingsResponse(BaseModel):
     kg_decay_tick_interval_minutes: int
     kg_decay_tick_staleness_days: int
     kg_decay_tick_max_age_days: int
-    desired_values: dict[str, int] = Field(default_factory=dict)
+    desired_values: dict[str, Any] = Field(default_factory=dict)
     restart_required: bool
 
 
@@ -79,7 +97,13 @@ class RuntimeSettingsPayload(BaseModel):
     or equal to`` / ``less than or equal to`` message for violations.
     """
 
-    # Graph runtime tab - legacy public field names.
+    # Grafx startup-time settings. Page geometry applies to newly-created
+    # generations; existing generation bindings retain their stored geometry.
+    kg_grafx_page_size: int | None = Field(default=None, strict=True, ge=4096, le=32768)
+    kg_grafx_descriptor_revalidation: Literal["strict", "generation"] | None = None
+    kg_grafx_buffer_pool_mb: int | None = Field(default=None, strict=True, ge=1)
+    kg_grafx_options: dict[str, Any] | None = None
+    # Legacy public fields remain accepted for API compatibility.
     kg_kuzu_buffer_pool_mb: int | None = Field(default=None, ge=128, le=512)
     kg_kuzu_max_db_size_gb: int | None = Field(default=None, ge=2, le=64)
     kg_connection_pool_size: int | None = Field(default=None, ge=1, le=32)
@@ -111,6 +135,23 @@ class RuntimeSettingsPayload(BaseModel):
         if value is None:
             return value
         return validate_graph_db_max_size_gb(value)
+
+    @field_validator("kg_grafx_options")
+    @classmethod
+    def _validate_grafx_options(cls, value: dict[str, Any] | None):
+        return None if value is None else validate_options(value)
+
+    @field_validator("kg_grafx_buffer_pool_mb")
+    @classmethod
+    def _validate_grafx_buffer(cls, value: int | None):
+        return None if value is None else validate_grafx_buffer_pool_mb(value)
+
+    @field_validator("kg_grafx_page_size")
+    @classmethod
+    def _validate_grafx_page_size(cls, value: int | None) -> int | None:
+        if value is None:
+            return value
+        return validate_grafx_page_size(value)
 
 
 @router.get("/settings/runtime", response_model=RuntimeSettingsResponse)
@@ -176,4 +217,6 @@ async def put_runtime(
                 "audit_event": exc.audit_event,
             },
         ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return RuntimeSettingsResponse(**data)

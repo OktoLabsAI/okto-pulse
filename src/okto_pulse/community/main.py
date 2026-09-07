@@ -908,6 +908,19 @@ def create_community_app():
         )
 
         await apply_persisted_settings_to_core_settings()
+        # The app factory registers lazy graph providers before async SQLite
+        # hydration. Recompose them from the hydrated snapshot BEFORE seeding
+        # or starting workers; otherwise a saved constructor setting is shown
+        # as effective while pools still contain the pre-hydration defaults.
+        configure_community_kg_registry(
+            _rc_session_factory,
+            settings=runtime_composition.settings_provider.get_settings_snapshot(),
+            auth_context_factory=create_mcp_auth_factory(
+                _mcp_auth_get_agent,
+                _rc_session_factory,
+                session_scope_factory=_cancel_safe_rc_scope,
+            ),
+        )
         _log_native_runtime_budget()
 
         from okto_pulse.community.adapters.kg_events import (

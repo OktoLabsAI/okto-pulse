@@ -27,9 +27,10 @@ vi.mock('@/hooks/usePermissions', () => ({
 }));
 
 const FRESH_SETTINGS: runtimeApi.RuntimeSettings = {
-  kg_kuzu_buffer_pool_mb: 512,
-  kg_kuzu_max_db_size_gb: 2,
-  kg_connection_pool_size: 4,
+  kg_graph_backend: 'grafx',
+  kg_global_graph_backend: 'grafx',
+  kg_grafx_page_size: 8192,
+  kg_grafx_descriptor_revalidation: 'generation',
   kg_queue_max_concurrent_workers: 4,
   kg_queue_min_interval_ms: 100,
   kg_queue_claim_timeout_s: 300,
@@ -81,34 +82,57 @@ afterEach(() => {
 // ----------------------------------------------------------------------
 
 describe('AC11 — Tabs preserve drafts on switch', () => {
-  test('renderiza Graph DB tab por default', async () => {
+  test('persists advanced options and keeps the desired draft while restart is pending', async () => {
+    const catalog: runtimeApi.GrafxSettingDescriptor[] = [{ name: 'max_result_rows', default: null,
+      description: 'A row budget refuses instead of truncating results.', editable: true,
+      nullable: true, kind: 'number' }];
+    vi.mocked(runtimeApi.getRuntimeSettings).mockResolvedValue({ ...FRESH_SETTINGS, grafx_settings_catalog: catalog });
+    vi.mocked(runtimeApi.putRuntimeSettings).mockImplementation(async (patch) => ({ ...FRESH_SETTINGS,
+      grafx_settings_catalog: catalog, desired_values: patch, restart_required: true }));
+    render(<RuntimeSettingsPanel onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId('input-grafx-buffer-pool-mb')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Advanced Grafx settings (1)'));
+    fireEvent.change(screen.getByTestId('grafx-option-max_result_rows'), { target: { value: '1500' } });
+    fireEvent.change(screen.getByTestId('input-grafx-buffer-pool-mb'), { target: { value: '128' } });
+    fireEvent.click(screen.getByTestId('tab-eventqueue'));
+    fireEvent.click(screen.getByTestId('tab-graphdb'));
+    expect(screen.getByTestId('grafx-option-max_result_rows')).toHaveValue(1500);
+    fireEvent.click(screen.getByTestId('save-runtime-settings'));
+    await waitFor(() => expect(runtimeApi.putRuntimeSettings).toHaveBeenCalledWith({
+      kg_grafx_buffer_pool_mb: 128, kg_grafx_options: { max_result_rows: 1500 },
+    }));
+    await waitFor(() => expect(screen.getByTestId('grafx-option-max_result_rows')).toHaveValue(1500));
+  });
+
+  test('renderiza Grafx tab por default sem controles legados', async () => {
     render(<RuntimeSettingsPanel onClose={() => {}} />);
     await waitFor(() => {
-      expect(screen.getByTestId('input-buffer-pool-mb')).toBeInTheDocument();
+      expect(screen.getByTestId('input-grafx-page-size')).toBeInTheDocument();
     });
     expect(screen.getByTestId('tab-graphdb')).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByTestId('tab-eventqueue')).toHaveAttribute('aria-selected', 'false');
+    expect(screen.getAllByText('Okto Grafx')).toHaveLength(2);
+    expect(screen.getByTestId('input-grafx-buffer-pool-mb')).toHaveValue(64);
+    expect(screen.queryByText(/max database size/i)).not.toBeInTheDocument();
   });
 
-  test('switching para Event Queue tab preserva drafts não-salvos do Graph DB', async () => {
+  test('switching para Event Queue preserva draft do Grafx', async () => {
     render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-buffer-pool-mb'));
+    await waitFor(() => screen.getByTestId('input-grafx-page-size'));
 
-    const bufferInput = screen.getByTestId('input-buffer-pool-mb') as HTMLInputElement;
-    fireEvent.change(bufferInput, { target: { value: '128' } });
-    expect(bufferInput.value).toBe('128');
+    fireEvent.change(screen.getByTestId('input-grafx-page-size'), { target: { value: '2' } });
+    expect(screen.getByText('16384 bytes')).toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('tab-eventqueue'));
     await waitFor(() => screen.getByTestId('input-max-workers'));
 
     fireEvent.click(screen.getByTestId('tab-graphdb'));
-    const restoredBuffer = screen.getByTestId('input-buffer-pool-mb') as HTMLInputElement;
-    expect(restoredBuffer.value).toBe('128');
+    expect(screen.getByText('16384 bytes')).toBeInTheDocument();
   });
 
-  test('Event Queue draft sobrevive switch para Graph DB e volta', async () => {
+  test('Event Queue draft sobrevive switch para Grafx e volta', async () => {
     render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-buffer-pool-mb'));
+    await waitFor(() => screen.getByTestId('input-grafx-page-size'));
 
     fireEvent.click(screen.getByTestId('tab-eventqueue'));
     await waitFor(() => screen.getByTestId('input-max-workers'));
@@ -118,7 +142,7 @@ describe('AC11 — Tabs preserve drafts on switch', () => {
     expect(workersInput.value).toBe('8');
 
     fireEvent.click(screen.getByTestId('tab-graphdb'));
-    await waitFor(() => screen.getByTestId('input-buffer-pool-mb'));
+    await waitFor(() => screen.getByTestId('input-grafx-page-size'));
     fireEvent.click(screen.getByTestId('tab-eventqueue'));
 
     const restoredWorkers = screen.getByTestId('input-max-workers') as HTMLInputElement;
@@ -128,10 +152,9 @@ describe('AC11 — Tabs preserve drafts on switch', () => {
   test('Save persiste drafts de AMBAS as tabs em um único PUT', async () => {
     const putSpy = vi.mocked(runtimeApi.putRuntimeSettings);
     render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-buffer-pool-mb'));
+    await waitFor(() => screen.getByTestId('input-grafx-page-size'));
 
-    // Edit Graph DB field
-    fireEvent.change(screen.getByTestId('input-buffer-pool-mb'), { target: { value: '256' } });
+    fireEvent.change(screen.getByTestId('input-descriptor-revalidation'), { target: { value: 'strict' } });
     // Switch to Event Queue, edit there
     fireEvent.click(screen.getByTestId('tab-eventqueue'));
     await waitFor(() => screen.getByTestId('input-max-workers'));
@@ -142,7 +165,7 @@ describe('AC11 — Tabs preserve drafts on switch', () => {
     await waitFor(() => expect(putSpy).toHaveBeenCalled());
     const lastCallPayload = putSpy.mock.calls[0][0];
     expect(lastCallPayload).toEqual({
-      kg_kuzu_buffer_pool_mb: 256,
+      kg_grafx_descriptor_revalidation: 'strict',
       kg_queue_max_concurrent_workers: 8,
     });
   });
@@ -152,19 +175,19 @@ describe('AC11 — Tabs preserve drafts on switch', () => {
       ...FRESH_SETTINGS,
       restart_required: true,
       desired_values: {
-        kg_kuzu_buffer_pool_mb: 256,
+        kg_grafx_page_size: 16384,
       },
     });
 
     const firstMount = render(<RuntimeSettingsPanel onClose={() => {}} />);
     await waitFor(() =>
-      expect(screen.getByTestId('input-buffer-pool-mb')).toHaveValue(256),
+      expect(screen.getByText('16384 bytes')).toBeInTheDocument(),
     );
     firstMount.unmount();
 
     render(<RuntimeSettingsPanel onClose={() => {}} />);
     await waitFor(() =>
-      expect(screen.getByTestId('input-buffer-pool-mb')).toHaveValue(256),
+      expect(screen.getByText('16384 bytes')).toBeInTheDocument(),
     );
     expect(runtimeApi.getRuntimeSettings).toHaveBeenCalledTimes(2);
   });
@@ -174,19 +197,18 @@ describe('AC11 — Tabs preserve drafts on switch', () => {
       ...FRESH_SETTINGS,
       restart_required: true,
       desired_values: {
-        kg_kuzu_buffer_pool_mb: 256,
+        kg_grafx_descriptor_revalidation: 'strict',
       },
     });
 
     render(<RuntimeSettingsPanel onClose={() => {}} />);
-    const bufferInput = await screen.findByTestId('input-buffer-pool-mb');
-    expect(bufferInput).toHaveValue(256);
+    const descriptor = await screen.findByTestId('input-descriptor-revalidation');
+    expect(descriptor).toHaveValue('strict');
 
-    fireEvent.change(bufferInput, { target: { value: '128' } });
-    expect(bufferInput).toHaveValue(128);
+    fireEvent.change(descriptor, { target: { value: 'generation' } });
     fireEvent.click(screen.getByText('Reset'));
 
-    expect(bufferInput).toHaveValue(256);
+    expect(descriptor).toHaveValue('strict');
   });
 
   test('após PUT o draft e a baseline seguem desired_values retornado', async () => {
@@ -194,117 +216,36 @@ describe('AC11 — Tabs preserve drafts on switch', () => {
       ...FRESH_SETTINGS,
       restart_required: true,
       desired_values: {
-        kg_kuzu_buffer_pool_mb: 256,
+        kg_grafx_descriptor_revalidation: 'strict',
       },
     });
 
     render(<RuntimeSettingsPanel onClose={() => {}} />);
-    const bufferInput = await screen.findByTestId('input-buffer-pool-mb');
-    fireEvent.change(bufferInput, { target: { value: '384' } });
+    const descriptor = await screen.findByTestId('input-descriptor-revalidation');
+    fireEvent.change(descriptor, { target: { value: 'strict' } });
     fireEvent.click(screen.getByTestId('save-runtime-settings'));
 
-    await waitFor(() => expect(bufferInput).toHaveValue(256));
+    await waitFor(() => expect(descriptor).toHaveValue('strict'));
 
-    fireEvent.change(bufferInput, { target: { value: '128' } });
+    fireEvent.change(descriptor, { target: { value: 'generation' } });
     fireEvent.click(screen.getByText('Reset'));
-    expect(bufferInput).toHaveValue(256);
+    expect(descriptor).toHaveValue('strict');
   });
 
-  test('Graph DB max database size usa slider com valores válidos do Ladybug', async () => {
+  test('page size usa somente as geometrias válidas do Grafx', async () => {
     const putSpy = vi.mocked(runtimeApi.putRuntimeSettings);
     render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-max-db-size-gb'));
+    await waitFor(() => screen.getByTestId('input-grafx-page-size'));
 
-    const maxDbSlider = screen.getByTestId('input-max-db-size-gb') as HTMLInputElement;
-    expect(maxDbSlider.type).toBe('range');
+    const pageSizeSlider = screen.getByTestId('input-grafx-page-size') as HTMLInputElement;
+    expect(pageSizeSlider.type).toBe('range');
 
-    fireEvent.change(maxDbSlider, { target: { value: '3' } }); // 16 GB
-    // KG-01.5: mudar max DB size (grupo storage) agora exige preencher o
-    // migration plan antes do Save — contrato do KGConfigChangeGuard.
-    await waitFor(() => screen.getByTestId('input-migration-plan-ref'));
-    fireEvent.change(screen.getByTestId('input-migration-plan-ref'), {
-      target: { value: 'teste: resize aprovado' },
-    });
+    fireEvent.change(pageSizeSlider, { target: { value: '2' } });
     fireEvent.click(screen.getByTestId('save-runtime-settings'));
 
     await waitFor(() => expect(putSpy).toHaveBeenCalled());
     const lastCallPayload = putSpy.mock.calls[0][0];
-    expect(lastCallPayload.kg_kuzu_max_db_size_gb).toBe(16);
-  });
-});
-
-// ----------------------------------------------------------------------
-// KG-01.5 — migration plan obrigatório para mudanças do grupo storage
-// ----------------------------------------------------------------------
-
-describe('KG-01.5 — migration_plan_ref para mudanças de storage', () => {
-  test('campo não aparece sem mudança de storage; aparece ao mudar max DB size e bloqueia Save até preencher', async () => {
-    render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-max-db-size-gb'));
-
-    // Sem mudança de storage: campo ausente, Save habilitado.
-    expect(screen.queryByTestId('migration-plan-field')).not.toBeInTheDocument();
-    expect(screen.getByTestId('save-runtime-settings')).not.toBeDisabled();
-
-    // Mudar max DB size (slider idx 3 = 16 GB, valor carregado = 2 GB).
-    fireEvent.change(screen.getByTestId('input-max-db-size-gb'), { target: { value: '3' } });
-
-    // Campo aparece e Save fica disabled até o plano ser preenchido.
-    await waitFor(() => screen.getByTestId('migration-plan-field'));
-    expect(screen.getByTestId('save-runtime-settings')).toBeDisabled();
-
-    fireEvent.change(screen.getByTestId('input-migration-plan-ref'), {
-      target: { value: 'plano: crescimento do board X' },
-    });
-    expect(screen.getByTestId('save-runtime-settings')).not.toBeDisabled();
-  });
-
-  test('PUT inclui migration_plan_ref quando storage mudou', async () => {
-    const putSpy = vi.mocked(runtimeApi.putRuntimeSettings);
-    render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-max-db-size-gb'));
-
-    fireEvent.change(screen.getByTestId('input-max-db-size-gb'), { target: { value: '2' } }); // 8 GB
-    await waitFor(() => screen.getByTestId('input-migration-plan-ref'));
-    fireEvent.change(screen.getByTestId('input-migration-plan-ref'), {
-      target: { value: '  plano aprovado 2026-07-10  ' },
-    });
-    fireEvent.click(screen.getByTestId('save-runtime-settings'));
-
-    await waitFor(() => expect(putSpy).toHaveBeenCalled());
-    const payload = putSpy.mock.calls[0][0];
-    expect(payload.kg_kuzu_max_db_size_gb).toBe(8);
-    // trim aplicado antes do envio
-    expect(payload.migration_plan_ref).toBe('plano aprovado 2026-07-10');
-  });
-
-  test('mudanças fora do grupo storage NÃO exibem o campo nem enviam migration_plan_ref', async () => {
-    const putSpy = vi.mocked(runtimeApi.putRuntimeSettings);
-    render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-buffer-pool-mb'));
-
-    fireEvent.change(screen.getByTestId('input-buffer-pool-mb'), { target: { value: '256' } });
-    expect(screen.queryByTestId('migration-plan-field')).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByTestId('save-runtime-settings'));
-    await waitFor(() => expect(putSpy).toHaveBeenCalled());
-    expect(putSpy.mock.calls[0][0].migration_plan_ref).toBeUndefined();
-  });
-
-  test('Reset limpa o plano e re-esconde o campo', async () => {
-    render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-max-db-size-gb'));
-
-    fireEvent.change(screen.getByTestId('input-max-db-size-gb'), { target: { value: '3' } });
-    await waitFor(() => screen.getByTestId('migration-plan-field'));
-    fireEvent.change(screen.getByTestId('input-migration-plan-ref'), {
-      target: { value: 'rascunho' },
-    });
-
-    fireEvent.click(screen.getByText('Reset'));
-    await waitFor(() =>
-      expect(screen.queryByTestId('migration-plan-field')).not.toBeInTheDocument(),
-    );
+    expect(lastCallPayload.kg_grafx_page_size).toBe(16384);
   });
 });
 
@@ -316,7 +257,7 @@ describe('AC12 — Live Queue Health polling lifecycle', () => {
   test('Event Queue tab faz fetch inicial + polling 2s', async () => {
     const healthSpy = vi.mocked(healthApi.getQueueHealth);
     render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-buffer-pool-mb'));
+    await waitFor(() => screen.getByTestId('input-grafx-page-size'));
 
     expect(healthSpy).not.toHaveBeenCalled();
 
@@ -338,7 +279,7 @@ describe('AC12 — Live Queue Health polling lifecycle', () => {
   test('Switching para Graph DB para o polling imediatamente', async () => {
     const healthSpy = vi.mocked(healthApi.getQueueHealth);
     render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-buffer-pool-mb'));
+    await waitFor(() => screen.getByTestId('input-grafx-page-size'));
 
     fireEvent.click(screen.getByTestId('tab-eventqueue'));
     await waitFor(() => expect(healthSpy).toHaveBeenCalledTimes(1));
@@ -356,7 +297,7 @@ describe('AC12 — Live Queue Health polling lifecycle', () => {
   test('Close modal (unmount) cancela polling sem network leak', async () => {
     const healthSpy = vi.mocked(healthApi.getQueueHealth);
     const { unmount } = render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-buffer-pool-mb'));
+    await waitFor(() => screen.getByTestId('input-grafx-page-size'));
 
     fireEvent.click(screen.getByTestId('tab-eventqueue'));
     await waitFor(() => expect(healthSpy).toHaveBeenCalledTimes(1));
@@ -372,7 +313,7 @@ describe('AC12 — Live Queue Health polling lifecycle', () => {
 
   test('Live Health panel exibe métricas do health response', async () => {
     render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-buffer-pool-mb'));
+    await waitFor(() => screen.getByTestId('input-grafx-page-size'));
 
     fireEvent.click(screen.getByTestId('tab-eventqueue'));
     await waitFor(() => screen.getByTestId('live-queue-health-panel'));
@@ -398,7 +339,7 @@ describe('AC12 — Live Queue Health polling lifecycle', () => {
 describe('Decay Tick tab — f9732afc', () => {
   test('Decay Tick tab renderiza 3 fields persistidos', async () => {
     render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-buffer-pool-mb'));
+    await waitFor(() => screen.getByTestId('input-grafx-page-size'));
 
     fireEvent.click(screen.getByTestId('tab-decaytick'));
     await waitFor(() => screen.getByTestId('input-tick-interval-minutes'));
@@ -415,7 +356,7 @@ describe('Decay Tick tab — f9732afc', () => {
     const putSpy = vi.mocked(runtimeApi.putRuntimeSettings);
 
     render(<RuntimeSettingsPanel onClose={() => {}} />);
-    await waitFor(() => screen.getByTestId('input-buffer-pool-mb'));
+    await waitFor(() => screen.getByTestId('input-grafx-page-size'));
 
     // Initially on graphdb tab — Save and run now should not exist.
     expect(screen.queryByTestId('save-and-run-now')).not.toBeInTheDocument();
