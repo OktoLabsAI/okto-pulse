@@ -149,6 +149,23 @@ def _build(
     )
 
 
+def test_schema_manager_receives_the_same_scoped_reader_scheduler(tmp_path, monkeypatch):
+    original = composition.CommunityGrafxGraphSchemaManager
+    captured = []
+
+    def schema_factory(*args, **kwargs):
+        captured.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(composition, "CommunityGrafxGraphSchemaManager", schema_factory)
+    _build(tmp_path / "kg", _GrafxConnector())
+    assert len(captured) == 1
+    scope = captured[0]["read_database_scope"]
+    resolver = captured[0]["read_database_resolver"]
+    assert scope.__self__ is resolver.__self__
+    assert scope.__func__ is composition._GrafxBoardAccess.read_database_scope
+
+
 def _publish_ladybug_binding(
     bundle: composition.CommunityRoutedBoardGraphComposition,
     board_id: str,

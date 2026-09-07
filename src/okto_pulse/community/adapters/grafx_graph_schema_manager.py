@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,7 @@ class CommunityGrafxGraphSchemaManager:
         revalidate_fence: FenceRevalidator,
         *,
         read_database_resolver: DatabaseResolver | None = None,
+        read_database_scope: Callable[[str], AbstractContextManager[Any]] | None = None,
         admission: AdmissionValidator | None = None,
         candidate_path_resolver: CandidatePathResolver | None = None,
         candidate_activator: CandidateActivator | None = None,
@@ -75,6 +77,7 @@ class CommunityGrafxGraphSchemaManager:
     ) -> None:
         self._database_resolver = database_resolver
         self._read_database_resolver = read_database_resolver or database_resolver
+        self._read_database_scope = read_database_scope
         self._revalidate_fence = revalidate_fence
         self._admission = admission
         self._candidate_path_resolver = candidate_path_resolver
@@ -91,6 +94,20 @@ class CommunityGrafxGraphSchemaManager:
         database = self._read_database_resolver(board_id)
         require_pulse_grafx_admission(board_id, database, self._admission)
         return database
+
+    @contextmanager
+    def _read_scope(self, board_id: str) -> Iterator[Any]:
+        """Charge the lane through admission and the complete metadata read.
+
+        This is scheduling only, not a retained route or a new snapshot proof.
+        Legacy constructors keep their existing resolver/admission behavior.
+        """
+        if self._read_database_scope is None:
+            yield self._read_database(board_id)
+            return
+        with self._read_database_scope(board_id) as database:
+            require_pulse_grafx_admission(board_id, database, self._admission)
+            yield database
 
     def _bootstrap(self, board_id: str, database):
         self._revalidate_fence(board_id, "bootstrap")
@@ -172,11 +189,11 @@ class CommunityGrafxGraphSchemaManager:
     async def current_version(self, board_id: str) -> str:
         board_id = _require_board_id(board_id)
         try:
-            database = self._read_database(board_id)
-            return (
-                read_current_grafx_schema_version(database)
-                or PULSE_GRAFX_SCHEMA_MANIFEST.schema_version
-            )
+            with self._read_scope(board_id) as database:
+                return (
+                    read_current_grafx_schema_version(database)
+                    or PULSE_GRAFX_SCHEMA_MANIFEST.schema_version
+                )
         except GraphError:
             raise
         except Exception as exc:
@@ -188,9 +205,9 @@ class CommunityGrafxGraphSchemaManager:
         expected = PULSE_GRAFX_SCHEMA_MANIFEST.schema_version
         current: str | None = None
         try:
-            database = self._read_database(board_id)
-            current = read_current_grafx_schema_version(database)
-            validate_current_grafx_schema(database)
+            with self._read_scope(board_id) as database:
+                current = read_current_grafx_schema_version(database)
+                validate_current_grafx_schema(database)
             if current != expected:
                 return SchemaValidationResult(
                     board_id=board_id,

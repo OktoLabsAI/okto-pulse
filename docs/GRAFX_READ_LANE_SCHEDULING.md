@@ -81,3 +81,34 @@ UI 1000 / total 2779. The pending-spec ledger remained byte-identical. No global
 wheel was rebuilt and no package was published. The source milestone includes
 the independent-reader dependencies. The later checkpoint-log sanitization is
 source-tested but was not a reason to restart this live process.
+
+## Metadata scheduling coverage — follow-up 2026-09-07
+
+`CommunityGrafxGraphSchemaManager.current_version` and `validate` now reserve the
+same read-lane scheduler through resolution, route/page-size admission and all
+metadata reads. Their legacy constructor remains supported. Bootstrap/migration
+still use the writer resolver and fences, never the new reader scope. This is
+load accounting, not a metadata cache or a claim that separate catalog calls
+now constitute an atomic snapshot. Existing validation/refusal semantics remain.
+
+The discriminating test holds lane 0, starts a schema read in lane 1, and checks
+that both remain charged during admission, version read and schema validation.
+Open, admission, read, validation, cleanup and KeyboardInterrupt failures release
+the schema reservation without releasing its peer. The composition test proves
+the schema manager receives the same scheduler as the other read adapters.
+
+This closes a concrete unscoped caller used by Health. It does not establish a
+measured global latency gain or resolve the cold-open investigation. A live
+25-second aligned profile of PID 9544 still showed overlapping Health work;
+Refresh returned graph/stats HTTP 200 in 4.224/5.796 s. Earlier 15/30-second
+captures did not overlap the actual click and are not attribution evidence.
+The running settings were confirmed through the settings API: generation
+descriptor revalidation, 8192-byte pages, 64 MiB per handle, no advanced overrides
+and no pending settings restart. No setting was changed. The new metadata scope
+is not yet deployed by this observation.
+
+Final validation: 96 tests passed in 9.04 s across read-lane scheduling,
+operational providers and routed composition; Ruff passed for all changed Python
+files. The earlier 94-test run overlaps this one. No production spec was used.
+This small metadata extension is queued for accumulated deployment, not claimed
+loaded in PID 9544.

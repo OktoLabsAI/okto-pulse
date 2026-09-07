@@ -158,3 +158,82 @@ def test_base_exception_does_not_leak_board_state():
         with lanes.reserve("board"):
             raise KeyboardInterrupt()
     assert not lanes._active
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation,failure", [
+    (operation, failure)
+    for operation in ("current_version", "validate")
+    for failure in (None, "open", "admission", "read", "interrupt", "cleanup")
+] + [("validate", "validate")])
+async def test_schema_reads_charge_lane_through_admission_and_cleanup(
+    monkeypatch, operation, failure,
+):
+    from okto_pulse.community.adapters import grafx_graph_schema_manager as module
+
+    lanes = GrafxReadLanes(2)
+    database = SimpleNamespace(identity=SimpleNamespace(page_size=8192))
+    selected = []
+    events = []
+    target = module.PULSE_GRAFX_SCHEMA_MANIFEST.schema_version
+
+    def step(name):
+        assert lanes._active["board"] == [1, 1]
+        events.append(name)
+        if failure == name:
+            raise RuntimeError("injected schema refusal")
+
+    @contextmanager
+    def reserve(board):
+        with lanes.reserve(board) as lane:
+            selected.append(lane)
+            step("open")
+            try:
+                yield database
+            finally:
+                step("cleanup")
+
+    def admit(board, db):
+        assert board == "board" and db is database
+        step("admission")
+
+    def read(db):
+        assert db is database
+        step("read")
+        if failure == "interrupt":
+            raise KeyboardInterrupt()
+        return target
+
+    def validate(db):
+        assert db is database
+        step("validate")
+
+    def forbidden(*_args):
+        raise AssertionError("metadata scope must own reader selection")
+
+    monkeypatch.setattr(module, "read_current_grafx_schema_version", read)
+    monkeypatch.setattr(module, "validate_current_grafx_schema", validate)
+    manager = module.CommunityGrafxGraphSchemaManager(
+        forbidden, forbidden, read_database_resolver=forbidden,
+        read_database_scope=reserve, admission=admit,
+    )
+    with lanes.reserve("board") as busy:
+        assert busy == 0
+        if failure == "interrupt":
+            with pytest.raises(KeyboardInterrupt):
+                await getattr(manager, operation)("board")
+        elif failure and operation == "current_version":
+            with pytest.raises(Exception, match="schema refusal|failed"):
+                await manager.current_version("board")
+        else:
+            result = await getattr(manager, operation)("board")
+            if operation == "validate":
+                assert result.valid is (failure is None)
+            else:
+                assert result == target
+        assert lanes._active["board"] == [1, 0]
+    assert selected == [1]
+    assert not lanes._active
+    assert ("cleanup" in events) is (failure != "open")
+    if failure == "admission":
+        assert "read" not in events

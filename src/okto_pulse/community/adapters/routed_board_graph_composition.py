@@ -1190,6 +1190,7 @@ def build_community_routed_board_graph_composition(
         access.database,
         access.write_fence,
         read_database_resolver=access.read_database,
+        read_database_scope=access.read_database_scope,
         admission=access.admission,
     )
     grafx_runtime = CommunityGrafxGraphRuntimeStore(
