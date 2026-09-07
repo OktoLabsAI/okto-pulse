@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from time import perf_counter
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
@@ -63,6 +64,7 @@ from okto_pulse.core.application.use_cases.code_traceability_kg_access import (
     require_code_traceability_safe_arbitrary_query,
 )
 from okto_pulse.core.kg.cursor_codec import decode_cursor, encode_cursor
+from okto_pulse.core.kg.blocking_io import run_blocking_graph_io
 from okto_pulse.community.api.auth_deps import get_current_user, get_realm_id, require_user
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.repositories import PulseUnitOfWork
@@ -98,6 +100,20 @@ router = APIRouter(prefix="/kg", tags=["knowledge-graph"])
 __all__ = ["decode_cursor", "encode_cursor", "router"]
 
 logger = logging.getLogger("okto_pulse.api.kg_routes")
+
+
+class _InvalidSubgraphCursor(ValueError):
+    """Carry only paged-node cursor failures across the blocking I/O boundary."""
+
+
+def _record_read_phase(board_id: str, operation: str, phase: str, started: float) -> float:
+    """Report elapsed work without logging queries, row content or credentials."""
+    finished = perf_counter()
+    logger.info(
+        "kg.read.phase board=%s operation=%s phase=%s duration_ms=%.1f",
+        board_id, operation, phase, (finished - started) * 1000,
+    )
+    return finished
 
 
 def _relationship_table_name(
@@ -485,60 +501,75 @@ async def get_subgraph(
 
     svc = get_kg_service()
     try:
+        phase_started = perf_counter()
         ct_access = await _code_traceability_kg_read_access(
             actor=actor,
             board_id=board_id,
             uow=uow,
         )
+        dispatched = _record_read_phase(board_id, "subgraph", "authority", phase_started)
         ct_visibility_kwargs = (
             {} if ct_access.allowed else {"include_code_traceability": False}
         )
-        layer = normalize_graph_layer(graph_layer)
-        if center:
-            # Spec 849d6292 (FR6/AC5): the centered branch MUST scope to the
-            # requested layer too — default canonical never leaks working.
-            rows = svc.get_related_context(
-                board_id,
-                center,
-                max_rows=limit,
-                graph_layer=layer,
-                **ct_visibility_kwargs,
-            )
-            next_cursor: str | None = None
-        else:
-            try:
-                rows = svc.get_all_nodes(
+        def _load_subgraph() -> tuple[
+            str,
+            list[dict[str, Any]],
+            str | None,
+            list[dict[str, Any]],
+            dict[str, Any],
+        ]:
+            started = _record_read_phase(board_id, "subgraph", "dispatch", dispatched)
+            layer = normalize_graph_layer(graph_layer)
+            if center:
+                # Spec 849d6292 (FR6/AC5): the centered branch MUST scope to the
+                # requested layer too — default canonical never leaks working.
+                rows = svc.get_related_context(
                     board_id,
-                    min_confidence=0.0,
-                    min_relevance=min_relevance,
+                    center,
                     max_rows=limit,
-                    cursor=cursor or None,
-                    node_type=type or None,
                     graph_layer=layer,
                     **ct_visibility_kwargs,
                 )
-            except ValueError as exc:
-                return _problem(
-                    410,
-                    "Gone",
-                    f"cursor is invalid or corrupted: {exc}",
-                    "invalid_cursor",
-                )
-            next_cursor = _next_cursor_for(rows, limit)
+                next_cursor: str | None = None
+            else:
+                try:
+                    rows = svc.get_all_nodes(
+                        board_id,
+                        min_confidence=0.0,
+                        min_relevance=min_relevance,
+                        max_rows=limit,
+                        cursor=cursor or None,
+                        node_type=type or None,
+                        graph_layer=layer,
+                        **ct_visibility_kwargs,
+                    )
+                except ValueError as exc:
+                    raise _InvalidSubgraphCursor(str(exc)) from exc
+                next_cursor = _next_cursor_for(rows, limit)
 
-        node_ids = {_node_id(r) for r in rows if _node_id(r)}
-        node_types_by_id = {
-            str(row["id"]): str(row["node_type"])
-            for row in rows
-            if isinstance(row, dict) and row.get("id") and row.get("node_type")
-        }
-        edges, edge_metadata = _fetch_edges_for_nodes(
-            board_id,
-            node_ids,
-            node_types_by_id=node_types_by_id,
-            **ct_visibility_kwargs,
+            started = _record_read_phase(board_id, "subgraph", "nodes", started)
+
+            node_ids = {_node_id(r) for r in rows if _node_id(r)}
+            node_types_by_id = {
+                str(row["id"]): str(row["node_type"])
+                for row in rows
+                if isinstance(row, dict) and row.get("id") and row.get("node_type")
+            }
+            edges, edge_metadata = _fetch_edges_for_nodes(
+                board_id,
+                node_ids,
+                node_types_by_id=node_types_by_id,
+                **ct_visibility_kwargs,
+            )
+            _record_read_phase(board_id, "subgraph", "edges", started)
+            return layer, rows, next_cursor, edges, edge_metadata
+
+        layer, rows, next_cursor, edges, edge_metadata = (
+            await run_blocking_graph_io(
+                _load_subgraph,
+                task_name=f"community.kg.subgraph.read:{board_id}",
+            )
         )
-
         return {
             "nodes": rows,
             "edges": edges,
@@ -551,6 +582,13 @@ async def get_subgraph(
                 **edge_metadata,
             },
         }
+    except _InvalidSubgraphCursor as exc:
+        return _problem(
+            410,
+            "Gone",
+            f"cursor is invalid or corrupted: {exc}",
+            "invalid_cursor",
+        )
     except KGToolError as e:
         return _handle_kg_error(e)
 
@@ -1069,59 +1107,75 @@ async def get_stats(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Board KG stats: counts, confidence, pending."""
+    phase_started = perf_counter()
     ct_access = await _code_traceability_kg_read_access(
         actor=actor,
         board_id=board_id,
         uow=uow,
     )
+    dispatched = _record_read_phase(board_id, "stats", "authority", phase_started)
     ct_visibility_kwargs = (
         {} if ct_access.allowed else {"include_code_traceability": False}
     )
     svc = get_kg_service()
     try:
-        layer = normalize_graph_layer(graph_layer)
-        ver = svc.get_schema_version(board_id)
-        all_nodes = svc.get_all_nodes(
-            board_id,
-            min_confidence=0.0,
-            min_relevance=min_relevance,
-            max_rows=1000,
-            graph_layer=layer,
-            **ct_visibility_kwargs,
+        def _load_stats() -> dict[str, Any]:
+            started = _record_read_phase(board_id, "stats", "dispatch", dispatched)
+            layer = normalize_graph_layer(graph_layer)
+            ver = svc.get_schema_version(board_id)
+            started = _record_read_phase(board_id, "stats", "schema", started)
+            all_nodes = svc.get_all_nodes(
+                board_id,
+                min_confidence=0.0,
+                min_relevance=min_relevance,
+                max_rows=1000,
+                graph_layer=layer,
+                **ct_visibility_kwargs,
+            )
+            started = _record_read_phase(board_id, "stats", "nodes", started)
+            from okto_pulse.core.kg.schema_contract import NODE_TYPES
+
+            node_counts = _count_nodes_by_type(
+                board_id,
+                NODE_TYPES,
+                svc,
+                min_relevance=min_relevance,
+                graph_layer=layer,
+                **ct_visibility_kwargs,
+            )
+            started = _record_read_phase(board_id, "stats", "node_counts", started)
+            total_conf = 0.0
+            total_relevance = 0.0
+            for node in all_nodes:
+                total_conf += float(node.get("source_confidence") or 0.0)
+                total_relevance += float(node.get("relevance_score") or 0.0)
+            edge_counts, edge_metadata = _count_edges_by_type(
+                board_id,
+                **ct_visibility_kwargs,
+            )
+            _record_read_phase(board_id, "stats", "edge_counts", started)
+            return {
+                "schema_version": ver,
+                "graph_schema_version": ver,
+                "node_counts_by_type": node_counts,
+                "edge_counts_by_type": edge_counts,
+                "avg_confidence": (
+                    round(total_conf / len(all_nodes), 2) if all_nodes else 0.0
+                ),
+                "avg_relevance": (
+                    round(total_relevance / len(all_nodes), 4) if all_nodes else 0.0
+                ),
+                "pending_queue_count": 0,
+                "last_consolidation_at": None,
+                "min_relevance": min_relevance,
+                "graph_layer": layer,
+                **edge_metadata,
+            }
+
+        return await run_blocking_graph_io(
+            _load_stats,
+            task_name=f"community.kg.stats.read:{board_id}",
         )
-        from okto_pulse.core.kg.schema_contract import NODE_TYPES
-        node_counts = _count_nodes_by_type(
-            board_id,
-            NODE_TYPES,
-            svc,
-            min_relevance=min_relevance,
-            graph_layer=layer,
-            **ct_visibility_kwargs,
-        )
-        total_conf = 0.0
-        total_relevance = 0.0
-        for n in all_nodes:
-            total_conf += float(n.get("source_confidence") or 0.0)
-            total_relevance += float(n.get("relevance_score") or 0.0)
-        edge_counts, edge_metadata = _count_edges_by_type(
-            board_id,
-            **ct_visibility_kwargs,
-        )
-        return {
-            "schema_version": ver,
-            "graph_schema_version": ver,
-            "node_counts_by_type": node_counts,
-            "edge_counts_by_type": edge_counts,
-            "avg_confidence": round(total_conf / len(all_nodes), 2) if all_nodes else 0.0,
-            "avg_relevance": (
-                round(total_relevance / len(all_nodes), 4) if all_nodes else 0.0
-            ),
-            "pending_queue_count": 0,
-            "last_consolidation_at": None,
-            "min_relevance": min_relevance,
-            "graph_layer": layer,
-            **edge_metadata,
-        }
     except KGToolError as e:
         return _handle_kg_error(e)
 
