@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -155,6 +156,46 @@ async def test_graph_filters_ct_nodes_and_edge_endpoints_for_explicit_deny(
     assert [node["id"] for node in payload["nodes"]] == [LEGACY_ID]
     assert payload["edges"] == []
     assert observed == {"edges": False}
+
+
+@pytest.mark.asyncio
+async def test_graph_page_runs_native_reads_outside_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _ProjectionService()
+    event_loop_thread = threading.get_ident()
+    observed_threads: list[int] = []
+    original_get_all_nodes = service.get_all_nodes
+
+    def _get_all_nodes(*args, **kwargs):
+        observed_threads.append(threading.get_ident())
+        return original_get_all_nodes(*args, **kwargs)
+
+    def _edges(_board_id: str, _node_ids: set[str], **_kwargs):
+        observed_threads.append(threading.get_ident())
+        return [], {"edge_read_status": "ok"}
+
+    service.get_all_nodes = _get_all_nodes  # type: ignore[method-assign]
+    monkeypatch.setattr(kg_routes, "get_kg_service", lambda: service)
+    monkeypatch.setattr(kg_routes, "_fetch_edges_for_nodes", _edges)
+
+    payload = await kg_routes.get_subgraph(
+        BOARD_ID,
+        center="",
+        depth=2,
+        limit=100,
+        cursor="",
+        min_relevance=0.0,
+        type="",
+        graph_layer="canonical",
+        actor=_actor(ct_read=True),
+        uow=SimpleNamespace(),
+    )
+
+    assert len(payload["nodes"]) == 2
+    assert len(observed_threads) == 2
+    assert all(thread_id != event_loop_thread for thread_id in observed_threads)
+    assert len(set(observed_threads)) == 1
 
 
 @pytest.mark.asyncio

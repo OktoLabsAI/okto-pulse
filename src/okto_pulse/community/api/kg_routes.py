@@ -405,24 +405,31 @@ async def list_nodes(
     )
     svc = get_kg_service()
     try:
-        layer = normalize_graph_layer(graph_layer)
-        rows = svc.get_all_nodes(
-            board_id,
-            min_confidence=min_confidence,
-            min_relevance=min_relevance,
-            max_rows=limit,
-            cursor=cursor or None,
-            node_type=type or None,
-            graph_layer=layer,
-            **ct_visibility_kwargs,
-        )
-        total_hint = svc.count_all_nodes(
-            board_id,
-            min_confidence=min_confidence,
-            min_relevance=min_relevance,
-            node_type=type or None,
-            graph_layer=layer,
-            **ct_visibility_kwargs,
+        def _load_node_page() -> tuple[str, list[dict[str, Any]], int]:
+            layer = normalize_graph_layer(graph_layer)
+            rows = svc.get_all_nodes(
+                board_id,
+                min_confidence=min_confidence,
+                min_relevance=min_relevance,
+                max_rows=limit,
+                cursor=cursor or None,
+                node_type=type or None,
+                graph_layer=layer,
+                **ct_visibility_kwargs,
+            )
+            total_hint = svc.count_all_nodes(
+                board_id,
+                min_confidence=min_confidence,
+                min_relevance=min_relevance,
+                node_type=type or None,
+                graph_layer=layer,
+                **ct_visibility_kwargs,
+            )
+            return layer, rows, total_hint
+
+        layer, rows, total_hint = await run_blocking_graph_io(
+            _load_node_page,
+            task_name=f"community.kg.nodes.read:{board_id}",
         )
         return {
             "nodes": rows,
@@ -460,10 +467,13 @@ async def get_node_detail(
     )
     svc = get_kg_service()
     try:
-        result = svc.get_node_detail(
-            board_id,
-            node_id,
-            **ct_visibility_kwargs,
+        result = await run_blocking_graph_io(
+            lambda: svc.get_node_detail(
+                board_id,
+                node_id,
+                **ct_visibility_kwargs,
+            ),
+            task_name=f"community.kg.node_detail.read:{board_id}",
         )
         if result is None:
             return _problem(404, "Not Found", f"Node {node_id} not found")
@@ -1072,8 +1082,14 @@ async def find_similar(
         return _problem(400, "Bad Request", "topic query parameter is required")
     svc = get_kg_service()
     try:
-        results = svc.find_similar_decisions(
-            board_id, topic, top_k=top_k, min_similarity=min_similarity,
+        results = await run_blocking_graph_io(
+            lambda: svc.find_similar_decisions(
+                board_id,
+                topic,
+                top_k=top_k,
+                min_similarity=min_similarity,
+            ),
+            task_name=f"community.kg.similar.read:{board_id}",
         )
         return {"results": results, "total": len(results)}
     except KGToolError as e:
@@ -1098,7 +1114,10 @@ async def get_supersedence(
     )
     svc = get_kg_service()
     try:
-        return svc.get_supersedence_chain(board_id, decision_id)
+        return await run_blocking_graph_io(
+            lambda: svc.get_supersedence_chain(board_id, decision_id),
+            task_name=f"community.kg.supersedence.read:{board_id}",
+        )
     except KGToolError as e:
         return _handle_kg_error(e)
 
@@ -1122,8 +1141,13 @@ async def find_contradictions(
     )
     svc = get_kg_service()
     try:
-        results = svc.find_contradictions(
-            board_id, node_id=node_id or None, max_rows=limit,
+        results = await run_blocking_graph_io(
+            lambda: svc.find_contradictions(
+                board_id,
+                node_id=node_id or None,
+                max_rows=limit,
+            ),
+            task_name=f"community.kg.contradictions.read:{board_id}",
         )
         return {"contradictions": results, "total": len(results)}
     except KGToolError as e:
@@ -1685,13 +1709,16 @@ async def cypher_query(
         except PermissionDeniedError as exc:
             raise RESTAdapterContract.http_error(exc) from exc
     try:
-        result = execute_cypher_read_only(
-            board_id,
-            cypher,
-            params,
-            max_rows=max_rows,
-            timeout_ms=timeout_ms,
-            include_working=include_working,
+        result = await run_blocking_graph_io(
+            lambda: execute_cypher_read_only(
+                board_id,
+                cypher,
+                params,
+                max_rows=max_rows,
+                timeout_ms=timeout_ms,
+                include_working=include_working,
+            ),
+            task_name=f"community.kg.cypher.read:{board_id}",
         )
         return result
     except TierPowerError as e:
