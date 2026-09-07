@@ -610,7 +610,10 @@ async def test_enumerate_orders_deterministically(store):
     assert [(r.node_id, r.generation) for r in again] == keys
 
 
-async def test_enumerate_returns_full_revision_history_and_validates_fingerprint(store):
+@pytest.mark.parametrize("corrupt_revision", [1, 2])
+async def test_enumerate_returns_full_revision_history_and_validates_fingerprint(
+    store, corrupt_revision,
+):
     adapter, factory = store
     await adapter.append(_record("learning_history", title="zero"))
     await adapter.append(
@@ -631,11 +634,61 @@ async def test_enumerate_returns_full_revision_history_and_validates_fingerprint
         row = (
             await session.execute(
                 select(KGCognitiveSourceRevision).where(
-                    KGCognitiveSourceRevision.source_revision == 2
+                    KGCognitiveSourceRevision.source_revision == corrupt_revision
                 )
             )
         ).scalar_one()
         row.record_fingerprint = "0" * 64
+        await session.commit()
+    with pytest.raises(CognitiveSourceConflict) as excinfo:
+        await adapter.enumerate(BOARD)
+    assert excinfo.value.failure_reason == "cognitive_source_fingerprint_mismatch"
+
+
+@pytest.mark.parametrize("stored_fingerprint", ["", None, "0" * 64])
+def test_revision_decoder_refuses_missing_or_wrong_storage_fingerprint(stored_fingerprint):
+    from okto_pulse.community.adapters.sqlalchemy_kg_cognitive_source import _revision_record
+
+    base = _new_pending_base("invalid-digest")
+    row = KGCognitiveSourceRevision(
+        source_revision=1, payload={"title": "pending", "content": "body"},
+        evidence_refs=[], record_fingerprint=stored_fingerprint,
+    )
+    with pytest.raises(CognitiveSourceConflict) as excinfo:
+        _revision_record(base, row)
+    assert excinfo.value.failure_reason == "cognitive_source_fingerprint_mismatch"
+
+
+async def test_enumeration_hashes_each_revision_once_without_trusting_storage(
+    store, monkeypatch,
+):
+    from okto_pulse.community.adapters import sqlalchemy_kg_cognitive_source as adapter_module
+    from okto_pulse.core.ports import kg_cognitive_source as policy
+
+    adapter, factory = store
+    await adapter.append(_record("hash-once", title="zero"))
+    await adapter.append(_record("hash-once", source_revision=1, title="one"))
+    await adapter.append(_record("hash-once", source_revision=2, title="two"))
+    canonical = policy.canonical_cognitive_source_fingerprint
+    calls = []
+
+    def counted(**kwargs):
+        calls.append(kwargs["payload"]["title"])
+        return canonical(**kwargs)
+
+    monkeypatch.setattr(policy, "canonical_cognitive_source_fingerprint", counted)
+    monkeypatch.setattr(adapter_module, "canonical_cognitive_source_fingerprint", counted)
+    records = await adapter.enumerate(BOARD)
+    assert calls == ["zero", "one", "two"]
+    assert [r.source_revision for r in records] == [0, 1, 2]
+    assert all(r.record_fingerprint for r in records)
+
+    # Re-read fresh content, including superseded history, not cached digests.
+    async with factory() as session:
+        row = (await session.execute(select(KGCognitiveSourceRevision).where(
+            KGCognitiveSourceRevision.source_revision == 1,
+        ))).scalar_one()
+        row.payload = {**row.payload, "title": "tampered"}
         await session.commit()
     with pytest.raises(CognitiveSourceConflict) as excinfo:
         await adapter.enumerate(BOARD)

@@ -118,26 +118,12 @@ def _revision_record(
 ) -> CognitiveSourceRecord:
     evidence_refs = tuple(str(ref) for ref in (row.evidence_refs or []))
     payload = dict(row.payload or {})
-    expected = _fingerprint(
-        board_id=str(base.board_id),
-        node_id=str(base.node_id),
-        node_type=str(base.node_type),
-        generation=int(base.generation),
-        payload=payload,
-        evidence_refs=evidence_refs,
-    )
-    if str(row.record_fingerprint) != expected:
-        raise CognitiveSourceConflict(
-            "cognitive_source_fingerprint_mismatch",
-            board_id=str(base.board_id),
-            node_id=str(base.node_id),
-            remediation=(
-                "The immutable cognitive revision ledger failed its canonical "
-                "fingerprint check; repair the relational source before replay."
-            ),
-        )
     committed = row.committed_at
-    return CognitiveSourceRecord(
+    # The DTO computes the canonical fingerprint from this freshly decoded
+    # payload. Compare that result with storage instead of serializing the
+    # same revision twice. This is not a cache or trust in the stored digest:
+    # every historical revision is still verified before enumeration returns.
+    record = CognitiveSourceRecord(
         node_id=str(base.node_id),
         board_id=str(base.board_id),
         node_type=str(base.node_type),
@@ -149,8 +135,18 @@ def _revision_record(
         ),
         committed_at=committed.isoformat() if committed is not None else None,
         source_revision=int(row.source_revision),
-        record_fingerprint=expected,
     )
+    if str(row.record_fingerprint) != record.record_fingerprint:
+        raise CognitiveSourceConflict(
+            "cognitive_source_fingerprint_mismatch",
+            board_id=str(base.board_id),
+            node_id=str(base.node_id),
+            remediation=(
+                "The immutable cognitive revision ledger failed its canonical "
+                "fingerprint check; repair the relational source before replay."
+            ),
+        )
+    return record
 
 
 def _conflict(
