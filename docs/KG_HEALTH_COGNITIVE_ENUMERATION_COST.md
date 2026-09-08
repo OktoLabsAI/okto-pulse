@@ -153,3 +153,21 @@ payload mutation, exact hash work counts and no unsafe fallback.
 Windows rebooted at 2026-09-07 21:19:53 local time; PID 1792 and service listeners
 were absent afterward. No cause is inferred. The reserved-spec ledger stayed
 byte-identical. Restart/deployment validation is recorded separately below.
+
+### Loaded runtime checkpoint
+
+After confirming the old process was absent and both ports free, Pulse 0.3.3
+started as PID 31060, source-loading Community `a0b3c9f`, Core `64ff2b2` and Grafx
+`8a466c7` (0.0.4). Explicit DATA_DIR remains the default user data home. The normal
+launcher contains no diagnostic monkeypatches. Both listeners are ready and
+`/health` returns healthy / 0.3.3. This is not a global wheel installation.
+
+The UI renders 500 / 2779 nodes with no loading indicator. Browser resource
+timings for the first post-restart opening are graph 6.666 s, census 6.754 s,
+Health 3.983 s. These are not a controlled A/B against earlier cold openings;
+the response observer used an incorrect path suffix and captured no bodies.
+No requests were replayed to manufacture that missing observation. A separate
+authenticated stats check returned HTTP 200 in 3.042 s. Cognitive pending API:
+21 pending, zero in progress, 19 consolidated, zero failed/skipped, total 40.
+The cognitive ledger retains its exact SHA256 above. No production consolidation,
+replay, redrive, rebuild, reset or debt cleanup was initiated.
