@@ -1211,13 +1211,6 @@ def _require_indexes(candidate: Database, phase: str) -> None:
             count=len(stale_indexes),
         )
     registered = _backend_call(lambda: candidate.indexes.indexes(), boundary_phase)
-    if len(registered) != EXPECTED_INDEX_TOTAL:
-        raise _divergence(
-            f"candidate_index_count_{phase}",
-            phase=boundary_phase,
-            expected=EXPECTED_INDEX_TOTAL,
-            observed=len(registered),
-        )
     registered_names = tuple(view.name for view in registered)
     folded_registered_names = tuple(name.casefold() for name in registered_names)
     if len(set(folded_registered_names)) != len(folded_registered_names):
@@ -1231,6 +1224,22 @@ def _require_indexes(candidate: Database, phase: str) -> None:
             lambda: candidate.catalog.catalog.tables(), boundary_phase
         )
     }
+    from okto_pulse.community.adapters.grafx_auxiliary_indexes import (
+        certified_base_indexes, certified_index_file,
+    )
+
+    # Optional known access paths cannot substitute for missing base indexes.
+    # Their definition/coverage is checked before excluding them from the exact
+    # base inventory. Unknown extras remain subject to the original refusal.
+    registered = certified_base_indexes(registered, catalog_tables, phase=phase)
+    registered_names = tuple(view.name for view in registered)
+    if len(registered) != EXPECTED_INDEX_TOTAL:
+        raise _divergence(
+            f"candidate_index_count_{phase}",
+            phase=boundary_phase,
+            expected=EXPECTED_INDEX_TOTAL,
+            observed=len(registered),
+        )
     expected: dict[str, tuple[str, int, str, tuple[int, ...], str, int, str]] = {}
 
     def expect(
@@ -1322,9 +1331,12 @@ def _require_indexes(candidate: Database, phase: str) -> None:
                 for name in sorted(observed_names - set(expected))[:8]
             ],
         )
+    certified_files = {}
     for view in registered:
         definition = view.definition
-        wanted = expected[view.name]
+        physical_file = certified_index_file(view, phase=phase)
+        certified_files[view.name] = physical_file
+        wanted = (physical_file, *expected[view.name][1:])
         observed = (
             view.file,
             definition.table_id,
@@ -1393,7 +1405,7 @@ def _require_indexes(candidate: Database, phase: str) -> None:
     for view in vectors:
         space = wanted[view.space_name]
         expected_name = f"vector_{space.node_type}_{space.name}"
-        expected_file = f"index/{expected_name}.idx"
+        expected_file = certified_files[expected_name]
         if view.stale or view.stale_reason is not None:
             raise _divergence(
                 f"candidate_vector_index_stale_{phase}",

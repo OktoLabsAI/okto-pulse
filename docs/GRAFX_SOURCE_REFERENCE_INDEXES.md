@@ -1,4 +1,4 @@
-# Exact source-reference indexes: staged integration
+# Exact source-reference indexes
 
 ## Evidence and scope — 2026-09-07
 
@@ -16,7 +16,7 @@ cache or on-disk format is needed. Repeated source lookup can avoid a full table
 scan; it remains proportional to matching historical versions/bucket work, not
 guaranteed O(1) under arbitrary duplicate history or hash collisions.
 
-## Implemented helper, not yet connected to bootstrap
+## Additive Community policy
 
 `grafx_source_indexes.ensure_pulse_grafx_source_indexes` defines Community-owned
 `pulse_source_<node type>` exact hash indexes on `source_artifact_ref` for the
@@ -48,16 +48,46 @@ visibility remain entirely native.
   read-only cold open requires checkpoint completeness, and public registry views
   are captured snapshots rather than live collections. No native rule was weakened.
 
-## Required integration before deployment
+## Integration checkpoint — 2026-09-07
 
-1. Reconcile the schema-evolution index certification with explicit known optional
-   access paths. It currently requires an exact base inventory; do not bypass this
-   check or broadly accept arbitrary extra indexes. Known ordered/source families
-   need their own definition and coverage validation before exclusion from the
-   base count. Missing base indexes and malformed extras must still fail.
-2. Connect source-index ensure to the fenced Community bootstrap before a fresh
-   BoardMeta stamp; prove restart/idempotence and existing-board convergence.
-3. Run the accumulated schema/index integration slice and deploy together with
+The helper is now connected to the normal fenced bootstrap after ordered-page
+indexes and before a fresh BoardMeta stamp. Existing boards gain missing indexes
+without changing their metadata stamp; a second pass is a no-op. A source-index
+fence failure leaves a fresh board unstamped and a subsequent authorized pass
+converges normally. No graph rows or cognitive state are rebuilt by this step.
+
+Schema evolution now separates a **closed** set of known optional indexes from
+the required base inventory only after validating their physical definitions and
+coverage: Pulse ordered-page indexes, Pulse source indexes and native automatic
+RecordId indexes for the manifest's node tables. Unknown names, including unknown
+suffixes under a known prefix, remain refused. Removing a base index cannot be
+masked by adding a valid auxiliary with the same total inventory count.
+
+A real-bootstrap test exposed a pre-existing certification mismatch: native
+indexes use nonced physical generation files, while the old verifier expected
+only `index/<logical-name>.idx`. Certification now derives the exact file through
+Grafx's `index_generation_file` when the definition has a nonzero nonce and checks
+the active view's matching integer nonce/state. Legacy nonce-zero files retain
+their exact naming requirement. The vector facade's file must agree with its
+certified underlying index. Arbitrary files and mismatched generations remain
+refused. Native publication, WAL and recovery are unchanged.
+
+Validation so far: initial combined schema/source/ordered slice had 72 passes and
+the certification mismatch above; after correction 34 focused/real-bootstrap/
+existing-inventory tests passed in 61.32 s. The final generation-file mutants plus
+bounded-output slice passed 40 tests in 6.73 s. Counts overlap. Read-only inspection
+of all 183 currently installed board indexes also passes the corrected inventory
+certification. This metadata/coverage check does not substitute for `verify(all)`.
+
+The populated schema-migration/cold-reopen/no-op regression passed in 41.60 s as
+the single accumulated migration check before deployment. The current runtime has
+not yet loaded source-index activation; deployment evidence follows separately.
+
+## Deployment sequence
+
+1. Populated schema-migration regression completed.
+2. Preserve a quiescent board copy before the additive index activation.
+3. Deploy together with
    the pending bounded two-hop output change. Record source identities and live
    read-only verification; do not consume any of the 21 reserved specs.
 

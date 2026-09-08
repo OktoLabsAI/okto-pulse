@@ -298,6 +298,17 @@ def test_empty_bootstrap_is_exact_second_call_is_noop_and_reopen_is_stable(
             index.generation_state == "active" for index in ordered_indexes.values()
         )
         assert all(index.stale is False for index in ordered_indexes.values())
+        source_indexes = {
+            index.name: index for index in database.indexes.indexes()
+            if index.name.startswith("pulse_source_")
+        }
+        assert set(source_indexes) == {
+            f"pulse_source_{table.name.lower()}"
+            for table in PULSE_GRAFX_SCHEMA_MANIFEST.nodes
+        }
+        assert all(index.columns == ("source_artifact_ref",) for index in source_indexes.values())
+        from okto_pulse.community.adapters.grafx_schema_evolution import _require_indexes
+        _require_indexes(database, "bootstrap")
         assert _meta_row(database) == (_BOARD_ID, "0.5.0", _STAMP, None, None)
         assert database.verify("all").findings == ()
 
