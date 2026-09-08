@@ -1039,16 +1039,22 @@ class CommunityGrafxGraphStore:
                         include_code_traceability=include_code_traceability,
                     ):
                         continue
-                    second = [] if max_depth == 1 else [
-                        (hop2, rel2)
-                        for hop2, rel2 in neighbours(hop1)
-                        if self._visible_neighbour(
-                            hop2,
-                            graph_layer=layer,
-                            include_superseded=filters.include_superseded,
-                            include_code_traceability=include_code_traceability,
-                        )
-                    ]
+                    second = []
+                    if max_depth != 1:
+                        remaining = filters.max_rows - len(answer)
+                        for hop2, rel2 in neighbours(hop1):
+                            # Read/validate the entire selected adjacency and evaluate
+                            # visibility even after the result prefix is full. Only
+                            # the temporary output list is bounded; late refusals,
+                            # statement budgets and the graph frontier are unchanged.
+                            visible = self._visible_neighbour(
+                                hop2,
+                                graph_layer=layer,
+                                include_superseded=filters.include_superseded,
+                                include_code_traceability=include_code_traceability,
+                            )
+                            if visible and len(second) < remaining:
+                                second.append((hop2, rel2))
                     if not second:
                         answer.append(
                             [

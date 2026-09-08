@@ -71,3 +71,42 @@ method on both store and routed facade. The live KG read returned HTTP 200 with
 This validates deployment and ordinary graph reads, not all filter combinations
 over live MCP: that contract is covered by the real-engine integration tests
 above. No cognitive spec was consumed or package published.
+
+## Bounded second-hop output materialization — 2026-09-07
+
+The existing selected two-hop residual exposed unnecessary output allocation:
+with `max_rows=50`, a high-degree hop1 still accumulated every visible second-hop
+tuple and constructed every eight-column answer row before truncating to 50.
+The adapter now retains at most `max_rows - len(answer)` second-hop tuples.
+The result therefore never constructs the discarded output tail.
+
+The full selected adjacency is still queried and decoded, and visibility is
+evaluated for every neighbour even after the prefix is full. Late failures still
+refuse the operation. No additional center/layout is visited and none of the
+previously visited statements is skipped. Ordering, parallel-edge multiplicity,
+null extension, the per-statement budgets and read transaction are unchanged.
+This is Community output assembly, not a native graph algorithm or Core change.
+
+The temporary selected/output tail is O(remaining result limit), instead of
+O(second-hop degree). The full adjacency cache, native results and validation
+remain degree-dependent; this does **not** eliminate layout query fan-out or
+claim O(limit) total operation memory/time.
+
+Six new synthetic boundary tests plus the existing real-Grafx/filter suite
+passed: 25 tests in 25.56 s. The tests count projected second-hop titles (50
+instead of 10,000), confirm all 10,000 visibility evaluations, remaining capacity
+after a null row, early result-frontier stopping, optional null extension and
+failure at the final neighbour despite a full result prefix. Existing real-engine
+tests retain direction/type/depth, parallel-edge and Core-to-facade coverage.
+Ruff and the scoped whitespace check passed.
+
+An isolated `tracemalloc` comparison used the exact prior method from `f50636b`
+and the candidate, degree 10,000 / limit 50. All four ordered outputs matched.
+Peak allocations inside the callback were 1,974,075 / 1,934,312 bytes for the
+baseline and 13,216 / 13,208 bytes for bounded output. The synthetic input
+inventory was allocated before tracing and no graph I/O occurred: these are
+temporary assembly allocations, **not** whole-process memory or a live latency
+benchmark. No further consolidation, redrive or production graph write occurred.
+
+Deployment boundary: source prepared for the next accumulated runtime update.
+Pulse PID 31060 predates this change; it is not hot-loaded or globally installed.
