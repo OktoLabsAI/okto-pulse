@@ -76,23 +76,56 @@ Validation so far: initial combined schema/source/ordered slice had 72 passes an
 the certification mismatch above; after correction 34 focused/real-bootstrap/
 existing-inventory tests passed in 61.32 s. The final generation-file mutants plus
 bounded-output slice passed 40 tests in 6.73 s. Counts overlap. Read-only inspection
-of all 183 currently installed board indexes also passes the corrected inventory
+of all 183 pre-activation board indexes also passes the corrected inventory
 certification. This metadata/coverage check does not substitute for `verify(all)`.
 
 The populated schema-migration/cold-reopen/no-op regression passed in 41.60 s as
-the single accumulated migration check before deployment. The current runtime has
-not yet loaded source-index activation; deployment evidence follows separately.
+the single accumulated migration check before deployment.
 
-## Deployment sequence
+## Deployment completed — 2026-09-07
 
-1. Populated schema-migration regression completed.
-2. Preserve a quiescent board copy before the additive index activation.
-3. Deploy together with
-   the pending bounded two-hop output change. Record source identities and live
-   read-only verification; do not consume any of the 21 reserved specs.
+Pulse PID 31060 was stopped gracefully and its terminal exit, process absence and
+free API/MCP ports were confirmed before replacement. A quiescent board copy was
+preserved at Grafx `.grafx-tmp/pre-source-index-board-20260907`: 972 files,
+197,369,632 bytes, every file SHA256-matched to the source. No files were deleted.
 
-Pulse PID 31060 does not load or create these indexes. No production DDL, graph
-write, consolidation, redrive, rebuild, reset, wheel install or PyPI publication
-was performed for this proof. Startup/admission memory and additional index-write
-cost must be recorded when integrated; the observed seek reduction is not yet
-a demonstrated end-to-end write speedup.
+Pulse 0.3.3 PID 23228 now runs Community `a5a5c3c`, Core `64ff2b2` and Grafx
+`425bcc4` from source. This also loads the bounded two-hop output change. It is
+not a global wheel install or a PyPI release. Normal bootstrap activated all 11
+source indexes. There are 11 new index files totaling 5,873,664 bytes; no buffer
+budget was raised. This is additional index storage and write-maintenance work,
+not a free optimization. Whole-process peak admission memory and whole-write
+overhead have not been isolated.
+
+Immediately after DDL, a raw read-only diagnostic correctly refused admission
+because the WAL was not checkpoint-complete. No manual checkpoint or writable
+diagnostic was used. A normal UI graph read succeeded, and subsequent native
+read-only admission succeeded in 0.753 s. The Community reader admission path
+already handles this specific condition using a single-flight recheck, normal
+write fence and native checkpoint before retrying the lane; the observation is
+consistent with automatic maintenance, without a captured trace identifying the
+exact checkpoint caller. No logical consolidation or repair was replayed.
+
+Read-only comparison against the quiescent pre-index copy:
+
+| Source lookup | Before: rows scanned / seconds | After: candidates sought / seconds |
+| --- | ---: | ---: |
+| Entity | 953 / 0.1256 | 1 / 0.0384 |
+| Decision | 203 / 0.0241 | 1 / 0.0042 |
+| Bug | 3 / 0.0037 | 1 / 0.0042 |
+
+Each pair returned an identical one-row result digest. These are single samples
+from different physical copies/cache states, not controlled end-to-end speedups;
+the demonstrated improvement is removing full-table source-reference scans.
+Live inventory certification passed. Native `verify(all)` completed clean in
+8.080 s: 14,850 pages, 8,739 records, zero findings.
+
+The normal browser KG opening returned HTTP 200 for graph and stats: 500 nodes,
+703 edges, zero failed edge tables; totals were 2,779 nodes and 4,424 edges.
+The UI displayed the total. Browser resource times were 11.900 s for graph and
+7.590 s for stats, not a controlled comparison or a global UI acceleration claim.
+The cognitive ledger stayed at 21 pending, zero in progress, 19 consolidated,
+zero failed/skipped, total 40, with unchanged SHA256
+`4AFF1AB6EE6C6E621C6598148154A04298500B8DA92EBF0F5E90AD081B2217F4`.
+No consolidation, redrive, rebuild, reset or replay of the seven prior repairs
+was triggered. The remaining specs remain reserved for write benchmarks.

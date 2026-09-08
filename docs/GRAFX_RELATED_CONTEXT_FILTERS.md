@@ -108,5 +108,9 @@ inventory was allocated before tracing and no graph I/O occurred: these are
 temporary assembly allocations, **not** whole-process memory or a live latency
 benchmark. No further consolidation, redrive or production graph write occurred.
 
-Deployment boundary: source prepared for the next accumulated runtime update.
-Pulse PID 31060 predates this change; it is not hot-loaded or globally installed.
+Deployment checkpoint (2026-09-07): the accumulated source update is loaded by
+Pulse PID 23228, Community `a5a5c3c`, together with source-reference indexes.
+Graph/stats UI reads passed without edge-table failures and the 21 reserved
+specs remained untouched. See `GRAFX_SOURCE_REFERENCE_INDEXES.md` for deployment
+and native integrity evidence. This is not a global wheel/PyPI installation or
+a controlled live two-hop latency benchmark.
