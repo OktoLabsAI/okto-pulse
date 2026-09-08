@@ -610,9 +610,10 @@ async def test_enumerate_orders_deterministically(store):
     assert [(r.node_id, r.generation) for r in again] == keys
 
 
+@pytest.mark.parametrize("method", ["enumerate", "enumerate_latest_verified"])
 @pytest.mark.parametrize("corrupt_revision", [1, 2])
 async def test_enumerate_returns_full_revision_history_and_validates_fingerprint(
-    store, corrupt_revision,
+    store, corrupt_revision, method,
 ):
     adapter, factory = store
     await adapter.append(_record("learning_history", title="zero"))
@@ -641,7 +642,7 @@ async def test_enumerate_returns_full_revision_history_and_validates_fingerprint
         row.record_fingerprint = "0" * 64
         await session.commit()
     with pytest.raises(CognitiveSourceConflict) as excinfo:
-        await adapter.enumerate(BOARD)
+        await getattr(adapter, method)(BOARD)
     assert excinfo.value.failure_reason == "cognitive_source_fingerprint_mismatch"
 
 
@@ -693,6 +694,108 @@ async def test_enumeration_hashes_each_revision_once_without_trusting_storage(
     with pytest.raises(CognitiveSourceConflict) as excinfo:
         await adapter.enumerate(BOARD)
     assert excinfo.value.failure_reason == "cognitive_source_fingerprint_mismatch"
+
+
+async def test_latest_verified_matches_full_digest_and_scopes_generations(store):
+    from okto_pulse.core.kg.rebuild_sources import cognitive_durable_digest_from_rows
+    from okto_pulse.core.ports.kg_cognitive_source import LatestVerifiedCognitiveSourceReader
+
+    adapter, _ = store
+    assert isinstance(adapter, LatestVerifiedCognitiveSourceReader)
+    for node_id, generation in (("b", 0), ("a", 1), ("a", 0)):
+        for revision in range(3):
+            await adapter.append(_record(
+                node_id, generation=generation, source_revision=revision,
+                title=f"revision {revision}",
+            ))
+    history = await adapter.enumerate(BOARD)
+    latest = await adapter.enumerate_latest_verified(BOARD)
+    assert len(history) == 9
+    assert len(latest) == 3
+    assert latest == latest_cognitive_source_records(history)
+    assert cognitive_durable_digest_from_rows(latest) == cognitive_durable_digest_from_rows(history)
+    assert await adapter.enumerate_latest_verified("other-board") == ()
+    # Frozen DTO does not imply an immutable nested payload. Consumer still audits it.
+    latest[0].payload["title"] = "tampered after return"
+    with pytest.raises(CognitiveSourceConflict):
+        cognitive_durable_digest_from_rows(latest)
+
+
+async def test_latest_verified_audits_history_once_and_constructs_only_heads(store, monkeypatch):
+    from collections import Counter
+    from okto_pulse.core.ports import kg_cognitive_source as policy
+
+    adapter, _ = store
+    for revision, title in enumerate(("zero", "one", "two")):
+        await adapter.append(_record("audit-once", source_revision=revision, title=title))
+    canonical = policy.canonical_cognitive_source_fingerprint
+    calls = []
+
+    def counted(**kwargs):
+        calls.append(kwargs["payload"]["title"])
+        return canonical(**kwargs)
+
+    monkeypatch.setattr(policy, "canonical_cognitive_source_fingerprint", counted)
+    latest = latest_cognitive_source_records(await adapter.enumerate_latest_verified(BOARD))
+    assert [r.source_revision for r in latest] == [2]
+    assert Counter(calls) == {"zero": 1, "one": 1, "two": 3}
+    calls.clear()
+    assert latest_cognitive_source_records(await adapter.enumerate(BOARD)) == latest
+    assert Counter(calls) == {"zero": 2, "one": 2, "two": 2}
+
+
+async def test_latest_verified_preserves_legacy_base_only_read(store):
+    adapter, factory = store
+    await adapter.append(_record("legacy"))
+    async with factory() as session:
+        await session.execute(text("DROP TABLE kg_cognitive_source_revisions"))
+        await session.commit()
+    assert await adapter.enumerate_latest_verified(BOARD) == latest_cognitive_source_records(
+        await adapter.enumerate(BOARD)
+    )
+
+
+@pytest.mark.parametrize("fingerprint", ["", None, "0" * 64])
+async def test_latest_verified_refuses_invalid_historical_digest(store, monkeypatch, fingerprint):
+    from okto_pulse.community.adapters import sqlalchemy_kg_cognitive_source as module
+
+    adapter, _ = store
+    for revision in range(3):
+        await adapter.append(_record("bad-history", source_revision=revision, title=str(revision)))
+    original = module._load_revision_rows
+
+    async def corrupt(*args):
+        rows = await original(*args)
+        rows[0].record_fingerprint = fingerprint
+        return rows
+
+    monkeypatch.setattr(module, "_load_revision_rows", corrupt)
+    with pytest.raises(CognitiveSourceConflict, match="cognitive_source_fingerprint_mismatch"):
+        await adapter.enumerate_latest_verified(BOARD)
+
+
+async def test_latest_verified_refuses_divergent_duplicate_revision(store, monkeypatch):
+    from okto_pulse.community.adapters import sqlalchemy_kg_cognitive_source as module
+
+    adapter, _ = store
+    for revision in range(3):
+        await adapter.append(_record("duplicate", source_revision=revision, title=str(revision)))
+    original = module._load_revision_rows
+
+    async def duplicate(*args):
+        rows = await original(*args)
+        valid = _record("duplicate", source_revision=1, title="different valid payload")
+        row = rows[0]
+        extra = KGCognitiveSourceRevision(
+            cognitive_source_id=row.cognitive_source_id, source_revision=1,
+            payload=dict(valid.payload), evidence_refs=list(valid.evidence_refs),
+            record_fingerprint=valid.record_fingerprint, committed_at=row.committed_at,
+        )
+        return (*rows, extra)
+
+    monkeypatch.setattr(module, "_load_revision_rows", duplicate)
+    with pytest.raises(CognitiveSourceConflict, match="cognitive_source_revision_conflict"):
+        await adapter.enumerate_latest_verified(BOARD)
 
 
 async def test_append_queries_only_revision_metadata_with_large_history(

@@ -95,3 +95,61 @@ verification took 4.156 s (not the graph request alone). REST still reports
 Full cold-load latency remains unresolved. The next profiling target is the
 remaining overlapping native admission/endpoint-resolution and Health source
 work, not disabling Health, suppressing validation, or consuming benchmark specs.
+
+## Audited latest-head capability (2026-09-07)
+
+A trace aligned with the first KG opening on PID 1792 identified the full
+`kg_cognitive_source_revisions` ORM read (2.374 s elapsed, 1.156 s thread CPU).
+The simultaneous 35-second GIL-only capture had 977 samples and zero errors.
+Among JSON-encoding leaves in the source-diagnostic Health worker, 93 traversed
+`latest_cognitive_source_records` and 64 traversed historical DTO construction.
+Samples are not wall-time percentages; pool admission and native reads also
+overlap. This supports removing duplicate history work, not attributing all
+cold-load latency to this adapter.
+
+Core now defines optional, backend-neutral `LatestVerifiedCognitiveSourceReader`.
+`_cognitive_durable_digest` selects it when available, otherwise retains the
+full enumeration contract. Capability failures propagate without fallback.
+Community's `enumerate_latest_verified` reads the same complete scoped ledger,
+normalizes raw row mappings, and uses the unchanged Core latest-row validator
+to check every canonical fingerprint and duplicate revision before selecting
+heads. Only selected heads become DTOs. The digest consumer still revalidates
+those DTOs, including mutable nested payloads. Full `enumerate` stays unchanged
+for consumers that need history. The legacy missing-revision-table read remains.
+
+No stored hash is trusted, no historical row is skipped, and no cross-call
+cache is introduced. Empty/None/wrong revision digests and superseded corruption
+still fail. No schema, append, graph transaction, authority or persistence
+change is involved. Core remains agnostic to Grafx and SQLAlchemy.
+
+This remains O(history) validation and ORM hydration, not an O(heads) read.
+For N historical records and H heads, it removes N-H DTO constructions and
+canonical serializations from enumeration plus latest selection. With this
+board's N=5424 and H=290, that is another 5134 redundant serializations removed,
+separate from the earlier decoder correction above.
+
+Read-only live-source comparison (`mode=ro&uri=true`), in execution order:
+
+| Path | DTOs returned | Enumeration (s) | Including Core digest (s) |
+| --- | ---: | ---: | ---: |
+| Full history | 5424 | 7.247 | 11.876 |
+| Audited latest | 290 | 6.968 | 7.561 |
+| Audited latest | 290 | 6.634 | 7.255 |
+| Full history | 5424 | 5.792 | 9.695 |
+
+All four final digests equal
+`8a39bd1c2b4e364880fa9e6794b82aed635748fca42ba1be9e2a76c85c4b6b2a`,
+count 290. OS cache and concurrent tests are uncontrolled; this is output parity
+and a structural work reduction, not a controlled global/UI speedup claim.
+
+Core port/rebuild-source tests: 107 passed in 33.46 s. Initial Community adapter
+run: 42 passed, one test NameError caused by an incorrect test edit (not a runtime
+failure); corrected and all five affected cases passed in 11.78 s after reboot.
+The slices overlap and are not a single distinct combined count. Coverage
+includes digest/order parity, generations/board scope, complete history, legacy
+table absence, missing/bad hashes, divergent duplicate revisions, post-return
+payload mutation, exact hash work counts and no unsafe fallback.
+
+Windows rebooted at 2026-09-07 21:19:53 local time; PID 1792 and service listeners
+were absent afterward. No cause is inferred. The reserved-spec ledger stayed
+byte-identical. Restart/deployment validation is recorded separately below.

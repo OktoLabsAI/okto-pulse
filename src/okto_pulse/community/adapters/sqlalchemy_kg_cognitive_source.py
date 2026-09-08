@@ -27,6 +27,7 @@ from okto_pulse.core.ports.kg_cognitive_source import (
     CognitiveSourceRecord,
     canonical_cognitive_source_fingerprint,
     decide_cognitive_source_append,
+    latest_cognitive_source_records,
 )
 
 logger = logging.getLogger("okto_pulse.community.kg_cognitive_source")
@@ -147,6 +148,43 @@ def _revision_record(
             ),
         )
     return record
+
+
+def _enumeration_values(
+    base: KGCognitiveSource,
+    revision: KGCognitiveSourceRevision | None = None,
+) -> dict[str, Any]:
+    """Decode the same record fields without constructing historical DTOs.
+
+    These local mappings are not trusted attestations. The canonical latest-row
+    selector will verify every mapping, including all unselected history, before
+    any selected DTO can leave the adapter.
+    """
+    row = base if revision is None else revision
+    committed = row.committed_at
+    values = {
+        "node_id": str(base.node_id),
+        "board_id": str(base.board_id),
+        "node_type": str(base.node_type),
+        "generation": int(base.generation),
+        "payload": dict(row.payload or {}),
+        "evidence_refs": tuple(str(ref) for ref in (row.evidence_refs or [])),
+        "source_session_id": str(row.source_session_id) if row.source_session_id else None,
+        "committed_at": committed.isoformat() if committed is not None else None,
+        "source_revision": 0 if revision is None else int(revision.source_revision),
+    }
+    if revision is not None:
+        fingerprint = str(revision.record_fingerprint)
+        if not fingerprint:
+            # The generic selector permits an absent digest on a raw base row.
+            # A persisted revision never has that compatibility exemption.
+            raise CognitiveSourceConflict(
+                "cognitive_source_fingerprint_mismatch",
+                board_id=str(base.board_id),
+                node_id=str(base.node_id),
+            )
+        values["record_fingerprint"] = fingerprint
+    return values
 
 
 def _conflict(
@@ -567,6 +605,17 @@ class CommunitySqlAlchemyCognitiveSourceStore:
             return tuple(_base_record(row) for row in rows)
 
     async def enumerate(self, board_id: str) -> tuple[CognitiveSourceRecord, ...]:
+        return await self._enumerate(board_id, latest_only=False)
+
+    async def enumerate_latest_verified(
+        self, board_id: str
+    ) -> tuple[CognitiveSourceRecord, ...]:
+        """Audit all history, then construct DTOs only for selected current heads."""
+        return await self._enumerate(board_id, latest_only=True)
+
+    async def _enumerate(
+        self, board_id: str, *, latest_only: bool
+    ) -> tuple[CognitiveSourceRecord, ...]:
         try:
             async with self._session_factory() as session:
                 bases = (
@@ -592,6 +641,17 @@ class CommunitySqlAlchemyCognitiveSourceStore:
                     session,
                     tuple(base_by_id),
                 )
+                if latest_only:
+                    def candidates():
+                        for base in bases:
+                            yield _enumeration_values(base)
+                        for revision in revisions:
+                            yield _enumeration_values(
+                                base_by_id[str(revision.cognitive_source_id)], revision
+                            )
+
+                    selected = latest_cognitive_source_records(candidates())
+                    return tuple(CognitiveSourceRecord(**values) for values in selected)
                 records = [_base_record(base) for base in bases]
                 records.extend(
                     _revision_record(base_by_id[str(row.cognitive_source_id)], row)
@@ -613,7 +673,11 @@ class CommunitySqlAlchemyCognitiveSourceStore:
         except SQLAlchemyError as exc:
             if _is_missing_revision_ledger(exc):
                 try:
-                    return await self._enumerate_base_only(board_id)
+                    records = await self._enumerate_base_only(board_id)
+                    return (
+                        latest_cognitive_source_records(records)
+                        if latest_only else records
+                    )
                 except SQLAlchemyError as fallback_exc:
                     exc = fallback_exc
             logger.error(
