@@ -121,6 +121,8 @@ previously installed wheels predate this validator-only alignment.
 3. Opt-in native full-text search and neutral support/readiness contracts.
 4. Vector fallback attribution and specialized hybrid retrieval without semantic loss.
 5. Homogeneous bulk writes and a proven neutral same-board concurrency policy.
+   The first, Community-only [Global candidate batch implementation](GRAFX_RECOVERY_BATCHING.md)
+   follows checkpoint `5e13e45`; transfer/Board worker adoption remains pending.
 6. Bounded analytics/projections, efficient transport and operational provenance.
 
 Use bounded, fixed workloads and grouped regressions; do not consume all reserved

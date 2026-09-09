@@ -67,6 +67,7 @@ from okto_pulse.community.adapters.grafx_global_operational import (
     validate_plain_global_artifact,
 )
 from okto_pulse.community.adapters.grafx_schema_manifest import EMBEDDING_DIMENSION
+from okto_pulse.community.adapters.grafx_global_recovery_batch import RECOVERY_DIGEST_BATCH_SIZE
 
 CandidateDatabaseFactory = Callable[[Path], Database]
 SnapshotFingerprintProvider = Callable[[], str]
@@ -2284,26 +2285,23 @@ class CommunityGrafxGlobalDiscoveryRecovery:
                 decision_count=len(board.digests),
                 synced_at=_FIXED_TIMESTAMP,
             )
-            for digest in sorted(
-                board.digests,
-                key=lambda item: item.original_node_id,
-            ):
+            ordered_digests = sorted(board.digests, key=lambda item: item.original_node_id)
+            for offset in range(0, len(ordered_digests), RECOVERY_DIGEST_BATCH_SIZE):
                 self._fence("recovery_materialize", call_fence)
-                physical_id = _digest_id(board.board_id, digest.original_node_id)
-                runtime.upsert_decision_digest(
-                    digest_id=physical_id,
+                rows = tuple({
+                    "digest_id": _digest_id(board.board_id, digest.original_node_id),
+                    "board_id": board.board_id,
+                    "original_node_id": digest.original_node_id,
+                    "title": digest.title,
+                    "summary": digest.summary,
+                    "node_type": digest.node_type,
+                    "graph_layer": digest.graph_layer,
+                    "embedding": _vector(digest.embedding),
+                    "created_at": _FIXED_TIMESTAMP,
+                } for digest in ordered_digests[offset:offset + RECOVERY_DIGEST_BATCH_SIZE])
+                runtime.create_recovery_digest_batch(
                     board_id=board.board_id,
-                    original_node_id=digest.original_node_id,
-                    title=digest.title,
-                    summary=digest.summary,
-                    node_type=digest.node_type,
-                    graph_layer=digest.graph_layer,
-                    embedding=_vector(digest.embedding),
-                    created_at=_FIXED_TIMESTAMP,
-                )
-                runtime.link_board_digest(
-                    board_id=board.board_id,
-                    digest_id=physical_id,
+                    rows=rows,
                 )
 
     @staticmethod

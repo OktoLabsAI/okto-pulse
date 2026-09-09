@@ -49,6 +49,7 @@
 | [`docs/TOKEN-USAGE.md`](docs/TOKEN-USAGE.md) | Measured MCP context cost for agents |
 | [`docs/kg-health.md`](docs/kg-health.md) | Knowledge Graph health signals and triage |
 | [`docs/GRAFX_V005_ADOPTION.md`](docs/GRAFX_V005_ADOPTION.md) | Grafx 0.0.5 adoption, optional capability boundary, Settings and validation checkpoint |
+| [`docs/GRAFX_RECOVERY_BATCHING.md`](docs/GRAFX_RECOVERY_BATCHING.md) | Bounded Global recovery writes, rollback/fencing guarantees and remaining batch opportunities |
 
 ## What is Okto Pulse?
 

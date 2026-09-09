@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +32,10 @@ from okto_pulse.community.adapters.global_discovery_layout import (
     GlobalDiscoveryLayoutError,
 )
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+from okto_pulse.community.adapters.grafx_global_recovery_batch import (
+    UncommittedRecoveryBatchBudget,
+    create_recovery_digest_batch,
+)
 from okto_pulse.community.adapters.grafx_global_discovery import (
     certify_grafx_global_vector_indexes,
     ensure_current_grafx_global_schema,
@@ -435,6 +439,34 @@ class CommunityGrafxGlobalDiscoveryRuntime:
             except Exception as exc:
                 mapped = map_grafx_error(exc, operation="upsert_decision_digest")
                 raise mapped from exc
+
+    def create_recovery_digest_batch(
+        self, *, board_id: str, rows: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Community-only extension for a private recovery candidate, not live upserts."""
+        with self._lock:
+            try:
+                self._fence("recovery_materialize")
+                create_recovery_digest_batch(
+                    self._database(), board_id=board_id, rows=rows, fence=self._fence,
+                )
+            except UncommittedRecoveryBatchBudget:
+                # Only a proved rollback before any commit permits splitting.
+                # Keep configured budgets and every ordinary mutation fence.
+                if len(rows) > 1:
+                    middle = len(rows) // 2
+                    self.create_recovery_digest_batch(board_id=board_id, rows=rows[:middle])
+                    self.create_recovery_digest_batch(board_id=board_id, rows=rows[middle:])
+                else:
+                    # A one-row transaction budget cannot hold node + link.
+                    # Preserve the original candidate-only path in that case;
+                    # full generation verification is still required to promote.
+                    self.upsert_decision_digest(**dict(rows[0]))
+                    self.link_board_digest(board_id=board_id, digest_id=rows[0]["digest_id"])
+            except GraphError:
+                raise
+            except Exception as exc:
+                raise map_grafx_error(exc, operation="global_recovery_batch") from exc
 
     def _derived_relationship_count(
         self,
