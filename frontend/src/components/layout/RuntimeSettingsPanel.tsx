@@ -60,6 +60,7 @@ const RANGES: Record<NumericSettingKey, { min: number; max: number }> = {
   // Grafx tab
   kg_grafx_page_size: { min: 4096, max: 32768 },
   kg_grafx_buffer_pool_mb: { min: 1, max: Number.MAX_SAFE_INTEGER },
+  kg_grafx_read_participants: { min: 1, max: 8 },
   // Event Queue tab
   kg_queue_max_concurrent_workers: { min: 1, max: 16 },
   kg_queue_min_interval_ms: { min: 0, max: 1000 },
@@ -80,6 +81,7 @@ const ZERO_DRAFT: DraftState = {
   kg_grafx_page_size: 0,
   kg_grafx_descriptor_revalidation: 'generation',
   kg_grafx_buffer_pool_mb: 64,
+  kg_grafx_read_participants: 2,
   kg_grafx_options: {},
   kg_queue_max_concurrent_workers: 0,
   kg_queue_min_interval_ms: 0,
@@ -102,6 +104,7 @@ function snapshotDraft(data: RuntimeSettings): DraftState {
     kg_grafx_descriptor_revalidation:
       editableValues.kg_grafx_descriptor_revalidation,
     kg_grafx_buffer_pool_mb: editableValues.kg_grafx_buffer_pool_mb ?? 64,
+    kg_grafx_read_participants: editableValues.kg_grafx_read_participants ?? 2,
     kg_grafx_options: editableValues.kg_grafx_options ?? {},
     kg_queue_max_concurrent_workers: editableValues.kg_queue_max_concurrent_workers,
     kg_queue_min_interval_ms: editableValues.kg_queue_min_interval_ms,
@@ -664,9 +667,13 @@ function GraphDBTab({
       </div>
 
       <SettingField label="Buffer pool per handle (MiB)"
-        description="64 MiB default. One writer + two readers can use 3× this capacity per board; this is not total process RAM. Restart required."
+        description="64 MiB default. Multiply by one writer plus the configured readers, and by resident boards. Global handles add their own allowance. This is not total process RAM. Restart required."
         value={draft.kg_grafx_buffer_pool_mb} range={RANGES.kg_grafx_buffer_pool_mb}
         onChange={(v) => onChange('kg_grafx_buffer_pool_mb', v)} testId="input-grafx-buffer-pool-mb" />
+      <SettingField label="Board read participants"
+        description="Independent read handles per board (1–8; default 2). More handles allow overlapping snapshot reads but multiply page caches, index caches and descriptors. This does not change commit serialization or writer authority. Restart required."
+        value={draft.kg_grafx_read_participants} range={RANGES.kg_grafx_read_participants}
+        onChange={(v) => onChange('kg_grafx_read_participants', v)} testId="input-grafx-read-participants" />
       <GrafxAdvancedSettings catalog={catalog} value={draft.kg_grafx_options} onChange={onOptionsChange} />
 
       <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[10px] text-blue-900 dark:border-blue-800/50 dark:bg-blue-900/20 dark:text-blue-200">

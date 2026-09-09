@@ -29,6 +29,21 @@ BOARD_ID = "grafx-executor-board"
 PATH_QUERY = "MATCH path = (a:Decision)-[r:supersedes]->(b:Decision) RETURN path"
 
 
+def test_scalar_page_parameter_conversion_keeps_nested_datetime_and_detachment():
+    from okto_pulse.community.adapters.grafx_graph_transaction import _grafx_query_parameters
+
+    ids = [f"id-{i}" for i in range(500)]
+    source = {"ids": ids, "nested": [{"at": datetime(2026, 9, 1, tzinfo=UTC)}],
+              "scalars": (None, True, 1, 1.5)}
+    converted = _grafx_query_parameters(source)
+    assert converted["ids"] == ids
+    assert converted["ids"] is not ids
+    assert isinstance(converted["nested"][0]["at"], okto_grafx.Timestamp)
+    assert converted["scalars"] == source["scalars"]
+    ids.append("later")
+    assert len(converted["ids"]) == 500
+
+
 class _RecordingFence:
     """Records every fence revalidation so a test can name the phase."""
 

@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Any
 
 EXPECTED_VERSION = "0.3.3"
-EXPECTED_GRAFX_VERSION = "0.0.1"
+EXPECTED_GRAFX_VERSION = "0.0.5"
 EXPECTED_MCP_TOOL_COUNT = 338
 EXPECTED_CANONICAL_TOOL_COUNT = 330
 EXPECTED_TOOL_ALIAS_COUNT = 8
@@ -655,7 +655,7 @@ core_dist = metadata.distribution("okto-pulse-core")
 community_dist = metadata.distribution("okto-pulse")
 grafx_dist = metadata.distribution("okto-grafx")
 assert core_dist.version == community_dist.version == "0.3.3"
-assert grafx_dist.version == "0.0.1"
+assert grafx_dist.version == "0.0.5"
 for distribution in (core_dist, community_dist, grafx_dist):
     root = Path(distribution.locate_file("")).resolve()
     assert under(root, venv), (distribution.metadata["Name"], root, venv)

@@ -972,10 +972,13 @@ def build_community_routed_board_graph_composition(
     connector = grafx_connect
     if connector is None:
         connector = getattr(grafx_pool, "_connect", None)
-    # Two lazy read-only handles are enough to keep the KG projection and its
-    # concurrent stats/health probes independent from a large writer commit,
-    # while keeping the memory envelope bounded and explicit.  Each pool owns
-    # one handle per Board path and therefore one Grafx participant section.
+    # Bounded lazy participants, not a change to writer coordination. Each
+    # resident board can retain (read_participants + 1) independent caches.
+    from okto_pulse.community.config import validate_grafx_read_participants
+
+    read_participants = validate_grafx_read_participants(
+        getattr(settings, "kg_grafx_read_participants", 2)
+    )
     grafx_read_pools = tuple(
         CommunityGrafxDatabasePool(
             binding_store.root,
@@ -986,7 +989,7 @@ def build_community_routed_board_graph_composition(
             buffer_pool_mb=configured_buffer_pool_mb,
             constructor_options=getattr(settings, "kg_grafx_options", {}),
         )
-        for _lane in range(2)
+        for _lane in range(read_participants)
     )
     access = _GrafxBoardAccess(
         resolver,

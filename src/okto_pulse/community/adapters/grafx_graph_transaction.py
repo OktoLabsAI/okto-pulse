@@ -273,6 +273,11 @@ def _grafx_query_parameter_value(value: Any) -> Any:
     so adapt that impedance mismatch recursively before entering the engine.
     """
 
+    # KG pages repeat scalar endpoint IDs across relationship layouts. These
+    # exact immutable built-ins need neither datetime conversion nor container
+    # dispatch. Do not bypass traversal for subclasses or retain caller containers.
+    if value is None or type(value) in (str, int, float, bool):
+        return value
     if isinstance(value, datetime):
         return _timestamp_from_iso(value)
     if isinstance(value, Mapping):

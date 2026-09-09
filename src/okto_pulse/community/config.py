@@ -80,6 +80,13 @@ def validate_grafx_buffer_pool_mb(value: object) -> int:
     return value
 
 
+def validate_grafx_read_participants(value: object) -> int:
+    """Bound independently owned Board readers; never a writer-policy toggle."""
+    if type(value) is not int or not 1 <= value <= 8:
+        raise ValueError("kg_grafx_read_participants must be an integer between 1 and 8")
+    return value
+
+
 def _equivalent_setting_values(left: object, right: object) -> bool:
     """Compare settings as integers while leaving invalid input to Pydantic."""
 
@@ -173,6 +180,7 @@ class CommunitySettings(CoreSettings, BaseSettings):
     # Each writer/read lane owns its own buffer pool. This is a per-handle
     # budget, not a process-wide cap; the three ordinary lanes can use 3x it.
     kg_grafx_buffer_pool_mb: int = PULSE_GRAFX_DEFAULT_BUFFER_POOL_MB
+    kg_grafx_read_participants: int = 2
     kg_grafx_options: dict = Field(default_factory=dict)
     # Pulse owns Grafx's generation directories and replaces them only with every handle closed,
     # which is the closed lifecycle required by Grafx's generation policy.  Keep strict available
@@ -320,6 +328,16 @@ class CommunitySettings(CoreSettings, BaseSettings):
     @classmethod
     def _validate_grafx_descriptor_revalidation(cls, value: object) -> str:
         return validate_grafx_descriptor_revalidation(value)
+
+    @field_validator("kg_grafx_read_participants", mode="before")
+    @classmethod
+    def _validate_grafx_read_participants(cls, value: object) -> int:
+        if isinstance(value, str):
+            try:
+                value = int(value)
+            except ValueError:
+                pass
+        return validate_grafx_read_participants(value)
 
     @model_validator(mode="after")
     def _validate_grafx_constructor_options(self):

@@ -234,7 +234,8 @@ class CommunityGrafxGraphStore:
         self._read_database_scope = read_database_scope
         self._revalidate_fence = revalidate_fence
         self._vector_provider = CommunityGrafxBoardVectorSearch(
-            self._read_database_resolver
+            self._read_database_resolver,
+            read_database_scope=read_database_scope,
         )
 
     def _resolve(self, board_id: str, *, operation: str) -> Database:

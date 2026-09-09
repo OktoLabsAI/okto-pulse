@@ -33,6 +33,7 @@ from okto_pulse.core import (
 )
 from okto_pulse.community.config import (
     validate_grafx_buffer_pool_mb,
+    validate_grafx_read_participants,
     validate_grafx_descriptor_revalidation,
     validate_grafx_page_size,
     validate_graph_db_max_size_gb,
@@ -89,6 +90,7 @@ GRAFX_GRAPH_DB_KEYS: tuple[str, ...] = (
     "kg_grafx_page_size",
     "kg_grafx_descriptor_revalidation",
     "kg_grafx_buffer_pool_mb",
+    "kg_grafx_read_participants",
     "kg_grafx_options",
 )
 GRAPH_DB_KEYS: tuple[str, ...] = LEGACY_GRAPH_DB_KEYS + GRAFX_GRAPH_DB_KEYS
@@ -169,6 +171,8 @@ def _validate_runtime_setting_value(key: str, value: Any) -> Any:
         return validate_options(json.loads(value) if isinstance(value, str) else value)
     if key == "kg_grafx_buffer_pool_mb":
         return validate_grafx_buffer_pool_mb(int(value) if isinstance(value, str) else value)
+    if key == "kg_grafx_read_participants":
+        return validate_grafx_read_participants(int(value) if isinstance(value, str) else value)
     if key == "kg_grafx_page_size":
         return validate_grafx_page_size(int(value) if isinstance(value, str) else value)
 

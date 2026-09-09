@@ -10,6 +10,21 @@ const catalog: GrafxSettingDescriptor[] = [
 ];
 
 describe('Grafx advanced settings', () => {
+  it('keeps zero cache retention distinct from an unset HNSW limit', () => {
+    const changed = vi.fn();
+    const controls: GrafxSettingDescriptor[] = [
+      { name: 'index_key_cache_pages', default: 64, nullable: false, editable: true, kind: 'number', description: 'Zero disables retention, not index execution.' },
+      { name: 'vector_hnsw_total_memory_budget_bytes', default: null, nullable: true, editable: true, kind: 'number', description: 'Logical HNSW budget per handle, not process RAM.' },
+    ];
+    render(<GrafxAdvancedSettings catalog={controls} value={{}} onChange={changed} />);
+    fireEvent.change(screen.getByTestId('grafx-option-index_key_cache_pages'), { target: { value: '0' } });
+    expect(changed).toHaveBeenLastCalledWith({ index_key_cache_pages: 0 });
+    fireEvent.change(screen.getByTestId('grafx-option-vector_hnsw_total_memory_budget_bytes'), { target: { value: '4096' } });
+    expect(changed).toHaveBeenLastCalledWith({ vector_hnsw_total_memory_budget_bytes: 4096 });
+    fireEvent.focus(screen.getByRole('button', { name: 'About vector_hnsw_total_memory_budget_bytes' }));
+    expect(screen.getByRole('tooltip')).toHaveTextContent('not process RAM');
+  });
+
   it('renders editable and managed options with help, preserving sibling overrides', () => {
     const changed = vi.fn();
     const { rerender } = render(<GrafxAdvancedSettings catalog={catalog} value={{ vector_math: 'pure' }} onChange={changed} />);

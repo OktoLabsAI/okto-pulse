@@ -11,6 +11,7 @@ export interface RuntimeSettingsValues {
   kg_grafx_page_size: number;
   kg_grafx_descriptor_revalidation: 'strict' | 'generation';
   kg_grafx_buffer_pool_mb?: number;
+  kg_grafx_read_participants?: number;
   kg_grafx_options?: Record<string, number | string | null>;
   // Event Queue tab — hot-reload (no restart needed).
   // Spec bdcda842 v0.2.0+: 5 new settings exposed by the worker pool.
@@ -79,6 +80,7 @@ export const GRAPH_DB_KEYS = [
   'kg_grafx_page_size',
   'kg_grafx_descriptor_revalidation',
   'kg_grafx_buffer_pool_mb',
+  'kg_grafx_read_participants',
   'kg_grafx_options',
 ] as const satisfies ReadonlyArray<keyof RuntimeSettingsValues>;
 

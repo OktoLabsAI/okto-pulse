@@ -48,6 +48,7 @@
 | [`docs/RELEASE-NOTES.md`](docs/RELEASE-NOTES.md) | Full changeset per version |
 | [`docs/TOKEN-USAGE.md`](docs/TOKEN-USAGE.md) | Measured MCP context cost for agents |
 | [`docs/kg-health.md`](docs/kg-health.md) | Knowledge Graph health signals and triage |
+| [`docs/GRAFX_V005_ADOPTION.md`](docs/GRAFX_V005_ADOPTION.md) | Grafx 0.0.5 adoption, optional capability boundary, Settings and validation checkpoint |
 
 ## What is Okto Pulse?
 
@@ -454,13 +455,21 @@ If running in Docker, expose the MCP listener with `MCP_HOST=0.0.0.0` and publis
 </details>
 
 <details>
-<summary>Graph database reports lock, WAL or size errors</summary>
+<summary>Grafx reports lock, WAL or page-geometry errors</summary>
 
 First confirm that only one `okto-pulse serve` process is using the same data directory. Then open board settings and check:
 
-- Graph DB buffer pool size
-- Graph DB max database size per board
+- configured Board and Global Discovery providers
+- Grafx page size (fixed for each existing generation)
+- Grafx descriptor revalidation mode (`generation` for Pulse-managed paths;
+  `strict` for forensic or externally shared paths)
 - KG health and dead-letter metrics
+
+The DLQ Inspector in **Settings → Event Queue** can redrive an individual row or
+all accessible rows after their root cause is fixed. `Redrive all` requires an
+explicit UI confirmation and drains the board DLQ through bounded 200-row
+transactions. Both modes are permission-gated, idempotent and wake the
+consolidation worker.
 
 Use the contextual error message as the source of truth when reporting an issue.
 

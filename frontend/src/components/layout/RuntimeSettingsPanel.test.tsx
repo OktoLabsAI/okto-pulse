@@ -94,12 +94,13 @@ describe('AC11 — Tabs preserve drafts on switch', () => {
     fireEvent.click(screen.getByText('Advanced Grafx settings (1)'));
     fireEvent.change(screen.getByTestId('grafx-option-max_result_rows'), { target: { value: '1500' } });
     fireEvent.change(screen.getByTestId('input-grafx-buffer-pool-mb'), { target: { value: '128' } });
+    fireEvent.change(screen.getByTestId('input-grafx-read-participants'), { target: { value: '3' } });
     fireEvent.click(screen.getByTestId('tab-eventqueue'));
     fireEvent.click(screen.getByTestId('tab-graphdb'));
     expect(screen.getByTestId('grafx-option-max_result_rows')).toHaveValue(1500);
     fireEvent.click(screen.getByTestId('save-runtime-settings'));
     await waitFor(() => expect(runtimeApi.putRuntimeSettings).toHaveBeenCalledWith({
-      kg_grafx_buffer_pool_mb: 128, kg_grafx_options: { max_result_rows: 1500 },
+      kg_grafx_buffer_pool_mb: 128, kg_grafx_options: { max_result_rows: 1500 }, kg_grafx_read_participants: 3,
     }));
     await waitFor(() => expect(screen.getByTestId('grafx-option-max_result_rows')).toHaveValue(1500));
   });
@@ -113,6 +114,7 @@ describe('AC11 — Tabs preserve drafts on switch', () => {
     expect(screen.getByTestId('tab-eventqueue')).toHaveAttribute('aria-selected', 'false');
     expect(screen.getAllByText('Okto Grafx')).toHaveLength(2);
     expect(screen.getByTestId('input-grafx-buffer-pool-mb')).toHaveValue(64);
+    expect(screen.getByTestId('input-grafx-read-participants')).toHaveValue(2);
     expect(screen.queryByText(/max database size/i)).not.toBeInTheDocument();
   });
 

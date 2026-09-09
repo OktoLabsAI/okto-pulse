@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from types import MappingProxyType
 
 from okto_grafx import Database, VectorValue
@@ -232,10 +233,18 @@ def _needs_exact(page: Sequence[dict], *, top_k: int) -> bool:
 class CommunityGrafxBoardVectorSearch:
     """Board-scoped implementation of the existing vector-search operation."""
 
-    def __init__(self, database_resolver: DatabaseResolver) -> None:
+    def __init__(
+        self,
+        database_resolver: DatabaseResolver,
+        *,
+        read_database_scope: Callable[[str], AbstractContextManager[Database]] | None = None,
+    ) -> None:
         if not callable(database_resolver):
             raise ValueError("database_resolver must be callable")
+        if read_database_scope is not None and not callable(read_database_scope):
+            raise ValueError("read_database_scope must be callable")
         self._database_resolver = database_resolver
+        self._read_database_scope = read_database_scope
 
     def vector_search(
         self,
@@ -279,8 +288,15 @@ class CommunityGrafxBoardVectorSearch:
         try:
             # Resolve once.  Both reads use the same fixed snapshot so a
             # concurrent commit cannot split the page from its exact oracle.
-            database = self._database_resolver(wanted_board)
-            with database.begin("read") as reader:
+            # Charge the selected lane through exact fallback, shaping and
+            # transaction cleanup, not only participant resolution. Standalone
+            # consumers retain the existing resolver-only contract.
+            scope = (
+                self._read_database_scope(wanted_board)
+                if self._read_database_scope is not None
+                else nullcontext(self._database_resolver(wanted_board))
+            )
+            with scope as database, database.begin("read") as reader:
                 result = reader.execute(
                     _indexed_statement(node_type, space), parameters
                 )

@@ -36,6 +36,53 @@ def test_every_native_config_option_has_one_reviewed_ui_policy_and_help():
     assert validate_options({key: DEFAULTS[key] for key in EDITABLE})
 
 
+def test_v005_memory_controls_are_editable_and_zero_cache_is_not_null():
+    options = {
+        "vector_hnsw_memory_budget_bytes": 1048576,
+        "vector_hnsw_total_memory_budget_bytes": 4194304,
+        "index_key_cache_pages": 0,
+        "index_key_cache_bytes": 0,
+    }
+    assert validate_options(options) == options
+    rows = {row["name"]: row for row in settings_catalog()}
+    for key in options:
+        assert rows[key]["editable"] is True
+        assert rows[key]["kind"] == "number"
+    for key in ("vector_hnsw_memory_budget_bytes", "vector_hnsw_total_memory_budget_bytes"):
+        assert validate_options({key: None}) == {key: None}
+        with pytest.raises(ValueError):
+            validate_options({key: 0})
+    for key in ("index_key_cache_pages", "index_key_cache_bytes"):
+        with pytest.raises(ValueError):
+            validate_options({key: None})
+
+
+@pytest.mark.parametrize("options", [
+    {"index_key_cache_pages": 65537},
+    {"index_key_cache_bytes": 2**31 + 1},
+    {"vector_hnsw_memory_budget_bytes": True},
+    {"vector_hnsw_total_memory_budget_bytes": -1},
+])
+def test_v005_memory_controls_refuse_invalid_configuration(options):
+    with pytest.raises(ValidationError):
+        RuntimeSettingsPayload(kg_grafx_options=options)
+
+
+@pytest.mark.parametrize("value", [0, 9, -1, True, 2.0, "2"])
+def test_read_participant_api_refuses_invalid_or_coerced_values(value):
+    with pytest.raises(ValidationError):
+        RuntimeSettingsPayload(kg_grafx_read_participants=value)
+
+
+def test_read_participant_env_and_persistence_keep_bounded_integer_contract(monkeypatch):
+    monkeypatch.setenv("KG_GRAFX_READ_PARTICIPANTS", "4")
+    assert CommunitySettings(_env_file=None).kg_grafx_read_participants == 4
+    assert service._validate_runtime_setting_value("kg_grafx_read_participants", "4") == 4
+    for invalid in ("9", True, 1.5):
+        with pytest.raises(ValueError):
+            service._validate_runtime_setting_value("kg_grafx_read_participants", invalid)
+
+
 @pytest.mark.parametrize(
     "options",
     [
@@ -120,6 +167,7 @@ async def test_save_read_restart_and_clear_options_without_mutating_active_snaps
                 db,
                 {
                     "kg_grafx_buffer_pool_mb": 128,
+                    "kg_grafx_read_participants": 3,
                     "kg_grafx_options": desired,
                 },
             )
@@ -127,11 +175,14 @@ async def test_save_read_restart_and_clear_options_without_mutating_active_snaps
             assert response["kg_grafx_options"] == {}
             assert response["desired_values"]["kg_grafx_options"] == desired
             assert response["restart_required"] is True
+            assert response["kg_grafx_read_participants"] == 2
+            assert response["desired_values"]["kg_grafx_read_participants"] == 3
             saved = await db.get(AppSetting, "kg_grafx_options")
             assert '"max_result_rows": 900' in saved.value
         await service.apply_persisted_settings_to_core_settings()
         assert configured[0].kg_grafx_options == desired
         assert configured[0].kg_grafx_buffer_pool_mb == 128
+        assert configured[0].kg_grafx_read_participants == 3
         calls = []
 
         def connect(path, **options):
@@ -186,14 +237,16 @@ def test_native_pool_receives_query_limits(tmp_path):
         pool.close_all()
 
 
-def test_all_editable_options_reach_composed_writer_and_reader_lanes(tmp_path):
+@pytest.mark.parametrize("readers", [1, 2, 8])
+def test_all_editable_options_reach_composed_writer_and_reader_lanes(tmp_path, readers):
     from okto_pulse.community.adapters.routed_graph_composition import (
         build_community_routed_graph_composition,
     )
 
     options = {key: DEFAULTS[key] for key in EDITABLE}
     settings = CommunitySettings(
-        _env_file=None, data_dir=str(tmp_path), kg_grafx_options=options
+        _env_file=None, data_dir=str(tmp_path), kg_grafx_options=options,
+        kg_grafx_read_participants=readers,
     )
     calls = []
 
@@ -210,6 +263,7 @@ def test_all_editable_options_reach_composed_writer_and_reader_lanes(tmp_path):
         settings=settings, grafx_connect=connect
     )
     assert bundle.global_graph.grafx_pool is bundle.board.grafx_pool
+    assert len(bundle.board.grafx_read_pools) == readers
     for pool in (bundle.board.grafx_pool, *bundle.board.grafx_read_pools):
         try:
             from pathlib import Path

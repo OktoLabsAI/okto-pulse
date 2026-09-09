@@ -35,7 +35,7 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
 
     assert Path(core_mcp_server.__file__).resolve().is_relative_to(module.CORE_REPO)
     assert module.EXPECTED_VERSION == "0.3.3"
-    assert module.EXPECTED_GRAFX_VERSION == "0.0.1"
+    assert module.EXPECTED_GRAFX_VERSION == "0.0.5"
     assert module.GRAFX_WHEEL_ENV == "OKTO_E2E_GRAFX_WHEEL"
     assert module.GRAFX_REPO_ENV == "OKTO_E2E_GRAFX_REPO"
     assert module.EXPECTED_MCP_TOOL_COUNT == live_tool_count == 338

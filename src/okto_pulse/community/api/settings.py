@@ -62,6 +62,7 @@ class RuntimeSettingsResponse(BaseModel):
     kg_grafx_page_size: int
     kg_grafx_descriptor_revalidation: Literal["strict", "generation"]
     kg_grafx_buffer_pool_mb: int = 64
+    kg_grafx_read_participants: int = Field(default=2, strict=True, ge=1, le=8)
     kg_grafx_options: dict[str, Any] = Field(default_factory=dict)
     grafx_settings_catalog: list[dict[str, Any]] = Field(default_factory=list)
     # Legacy public fields remain in the wire contract for older clients, but
@@ -102,6 +103,7 @@ class RuntimeSettingsPayload(BaseModel):
     kg_grafx_page_size: int | None = Field(default=None, strict=True, ge=4096, le=32768)
     kg_grafx_descriptor_revalidation: Literal["strict", "generation"] | None = None
     kg_grafx_buffer_pool_mb: int | None = Field(default=None, strict=True, ge=1)
+    kg_grafx_read_participants: int | None = Field(default=None, strict=True, ge=1, le=8)
     kg_grafx_options: dict[str, Any] | None = None
     # Legacy public fields remain accepted for API compatibility.
     kg_kuzu_buffer_pool_mb: int | None = Field(default=None, ge=128, le=512)

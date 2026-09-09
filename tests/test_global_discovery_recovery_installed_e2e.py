@@ -1,7 +1,7 @@
 """Installed-wheel, real-HTTP acceptance for recovery and Global Outbox DLQ.
 
 This is intentionally artifact-first.  It builds the current Pulse worktrees plus
-an explicit Grafx 0.0.1 candidate, installs only those wheels into isolated virtual
+an explicit Grafx 0.0.5 candidate, installs only those wheels into isolated virtual
 environments, starts the installed CLI's dual API/MCP server on loopback ports, and
 drives the public Streamable HTTP MCP surface.  Controlled fixture injections are
 declared in the sibling JSON manifest; there are no direct FastMCP ``.fn`` calls in
@@ -58,7 +58,7 @@ FINAL_WHEEL_DIR_ENV = "OKTO_E2E_FINAL_WHEEL_DIR"
 FINAL_CORE_WHEEL_SHA256_ENV = "OKTO_E2E_FINAL_CORE_WHEEL_SHA256"
 FINAL_COMMUNITY_WHEEL_SHA256_ENV = "OKTO_E2E_FINAL_COMMUNITY_WHEEL_SHA256"
 FINAL_GRAFX_WHEEL_SHA256_ENV = "OKTO_E2E_FINAL_GRAFX_WHEEL_SHA256"
-EXPECTED_GRAFX_VERSION = "0.0.1"
+EXPECTED_GRAFX_VERSION = "0.0.5"
 BOARD_CENSUS_SIZE = 1_500
 EXPECTED_TOOL_COUNT = 338
 EXPECTED_CANONICAL_TOOL_COUNT = 330
@@ -280,7 +280,7 @@ def _resolve_grafx_candidate_wheel(
     """Use an explicit wheel or build one explicit local Grafx checkout.
 
     The installed acceptance never falls back to an index.  That keeps the
-    pre-publication Pulse gate on the exact candidate that will become 0.0.1,
+    Pulse gate on the exact 0.0.5 artifact,
     while ``OKTO_E2E_FINAL_WHEEL_DIR`` remains the governed Core/Community pair.
     """
 
@@ -314,7 +314,7 @@ def _resolve_grafx_candidate_wheel(
         return staged_wheel
 
     assert repo_raw, (
-        "the unpublished okto-grafx 0.0.1 candidate must be explicit: set "
+        "the okto-grafx 0.0.5 artifact must be explicit: set "
         f"{GRAFX_WHEEL_ENV} to its wheel or {GRAFX_REPO_ENV} to its source checkout"
     )
     source_repo = Path(repo_raw).expanduser().resolve()
@@ -508,7 +508,7 @@ assert "okto_pulse/community/frontend_dist/index.html" in community_files
 assert "okto_pulse/community/adapters/global_discovery_recovery_worker.py" in community_files
 requirements = [str(requirement).lower() for requirement in (community.requires or ())]
 assert any(
-    row.replace(" ", "") == "okto-grafx[accel]==0.0.1"
+    row.replace(" ", "") == "okto-grafx[accel]==0.0.5"
     for row in requirements
 ), requirements
 for direct_dependency in (
@@ -787,15 +787,15 @@ def test_final_wheel_mode_reuses_pair_and_authenticates_grafx_before_install(
     community_wheel = final_pair / "okto_pulse-0.3.3-py3-none-any.whl"
     core_wheel.write_bytes(b"governed-core")
     community_wheel.write_bytes(b"governed-community")
-    grafx_wheel = tmp_path / "okto_grafx-0.0.1-py3-none-any.whl"
+    grafx_wheel = tmp_path / "okto_grafx-0.0.5-py3-none-any.whl"
     with zipfile.ZipFile(grafx_wheel, "w") as archive:
         archive.writestr(
-            "okto_grafx-0.0.1.dist-info/METADATA",
+            "okto_grafx-0.0.5.dist-info/METADATA",
             "\n".join(
                 (
                     "Metadata-Version: 2.4",
                     "Name: okto-grafx",
-                    "Version: 0.0.1",
+                    "Version: 0.0.5",
                     "Provides-Extra: accel",
                     'Requires-Dist: numpy>=1.24; extra == "accel"',
                     'Requires-Dist: google-crc32c>=1.5; extra == "accel"',
@@ -1009,7 +1009,7 @@ requirements = [
     str(requirement).lower().replace(" ", "")
     for requirement in (distribution("okto-pulse").requires or ())
 ]
-assert "okto-grafx[accel]==0.0.1" in requirements, requirements
+assert "okto-grafx[accel]==0.0.5" in requirements, requirements
 print(json.dumps({
     "backends": {"board": board.backend, "global": global_route.backend},
     "board_table_count": len(board_tables),

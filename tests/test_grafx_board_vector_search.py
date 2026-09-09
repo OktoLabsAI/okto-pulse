@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from contextlib import contextmanager
 from pathlib import Path
 
 import okto_grafx
@@ -39,6 +40,75 @@ RESULT_KEYS = {
     "kind_of",
     "similarity",
 }
+
+
+@pytest.mark.parametrize("failure", [None, "open", "indexed", "exact", "cleanup", "interrupt"])
+def test_vector_scope_owns_lane_through_fallback_and_cleanup(failure):
+    from okto_pulse.community.adapters.grafx_read_lanes import GrafxReadLanes
+
+    lanes = GrafxReadLanes(2)
+    events = []
+
+    def step(name):
+        assert lanes._active["board"] == [1, 1]
+        events.append(name)
+        if failure == name:
+            raise RuntimeError("injected scoped vector failure")
+
+    class Reader:
+        def __enter__(self):
+            step("begin")
+            return self
+
+        def execute(self, statement, parameters):
+            step("indexed" if "similarity(" in statement else "exact")
+            if failure == "interrupt":
+                raise KeyboardInterrupt()
+            return _Result(())
+
+        def __exit__(self, *_exc):
+            step("cleanup")
+
+    @contextmanager
+    def scope(board):
+        with lanes.reserve(board) as lane:
+            assert lane == 1
+            step("open")
+            try:
+                yield _Database(Reader())
+            finally:
+                step("release")
+
+    def forbidden(_board):
+        raise AssertionError("scoped selection must not resolve a second lane")
+
+    adapter = CommunityGrafxBoardVectorSearch(forbidden, read_database_scope=scope)
+    with lanes.reserve("board"):
+        if failure is None:
+            assert adapter.vector_search("board", "Decision", _vector(1), 5, 0) == []
+            assert events == ["open", "begin", "indexed", "exact", "cleanup", "release"]
+        else:
+            expected = KeyboardInterrupt if failure == "interrupt" else Exception
+            with pytest.raises(expected):
+                adapter.vector_search("board", "Decision", _vector(1), 5, 0)
+        assert lanes._active["board"] == [1, 0]
+    assert not lanes._active
+
+
+def test_graph_store_forwards_its_scope_to_vector_provider():
+    from okto_pulse.community.adapters.grafx_graph_store import CommunityGrafxGraphStore
+
+    @contextmanager
+    def scope(_board):
+        yield _Database(_Reader())
+
+    store = CommunityGrafxGraphStore(lambda _: None, lambda *_: None, read_database_scope=scope)
+    assert store._vector_provider._read_database_scope is scope
+
+
+def test_vector_scope_requires_callable():
+    with pytest.raises(ValueError, match="read_database_scope"):
+        CommunityGrafxBoardVectorSearch(lambda _: None, read_database_scope=object())
 
 
 def _vector(first: float, second: float = 0.0) -> list[float]:
