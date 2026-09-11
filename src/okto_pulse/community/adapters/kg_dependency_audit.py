@@ -1,9 +1,8 @@
 """Ladybug/Kùzu dependency audit (spec R05-C, IMP4).
 
-Documents the Ladybug/Kùzu (the ``import ladybug as kuzu`` graph-DB binary) as
-COMMUNITY-LOCAL ownership: the Community edition registers the KG graph adapters
-behind the #06 ports. In the CORE the Ladybug imports must be absent after the
-R05-E/R12 physical move + dependency cleanup.
+Ladybug/Kuzu is retired. No Core or Community runtime may import its driver.
+The historical audit function name is retained for boundary-report consumers;
+it performs static inspection only and does not expose a graph provider.
 
 The audit FAILS if the core exposes the Ladybug dependency in any module.
 Read-only static analysis; imports nothing heavy.
@@ -15,7 +14,7 @@ import re
 from pathlib import Path
 
 #: Core modules permitted to import ``ladybug``. The set is intentionally empty:
-#: Ladybug/Kuzu is now a Community adapter dependency, not a core runtime import.
+#: No edition is permitted to reintroduce the retired native runtime.
 LADYBUG_LEDGERED_CORE_MODULES: frozenset[str] = frozenset()
 
 _LADYBUG_IMPORT = re.compile(r"^\s*import\s+ladybug\b", re.MULTILINE)
@@ -23,7 +22,7 @@ _LADYBUG_IMPORT = re.compile(r"^\s*import\s+ladybug\b", re.MULTILINE)
 
 def audit_ladybug_ownership(core_pkg: Path) -> dict:
     """Scan ``core_pkg`` (the ``okto_pulse/core`` package dir) for ``ladybug``
-    imports and reconcile against the ledger. ``ownership`` is Community-local;
+    imports and reconcile against the ledger. ``ownership`` is retired;
     ``ok`` is False when any core module imports Ladybug."""
     ladybug_files: list[str] = []
     for py in core_pkg.rglob("*.py"):
@@ -40,7 +39,7 @@ def audit_ladybug_ownership(core_pkg: Path) -> dict:
         f for f in ladybug_files if f not in LADYBUG_LEDGERED_CORE_MODULES
     )
     return {
-        "ownership": "community-local",
+        "ownership": "retired",
         "core_ladybug_files": sorted(ladybug_files),
         "ledgered": sorted(LADYBUG_LEDGERED_CORE_MODULES),
         "offenders": offenders,

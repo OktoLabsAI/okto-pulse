@@ -579,7 +579,9 @@ def test_policy_authorities_and_public_surface_are_frozen() -> None:
     assert "separate development lineage" in specification
     assert "out-of-place rebuild" in specification
     assert "never bound or activated" in specification
-    assert CATALOG_FORMAT_VERSION == 1
+    # The pinned Grafx 0.0.5 uses catalog format 2. This does not change the
+    # Pulse logical schema versions or authorize an in-place migration.
+    assert CATALOG_FORMAT_VERSION == 2
     assert "rebuild_grafx_schema_candidate" not in okto_grafx.__all__
     assert "GrafxSchemaCandidateResult" not in okto_grafx.__all__
 

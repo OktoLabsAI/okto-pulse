@@ -1,23 +1,23 @@
 from __future__ import annotations
 
 import ast
-import importlib.util
 import inspect
-import json
 import textwrap
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 
 import okto_pulse.core.ports.global_discovery_recovery_control as recovery_contract
 import okto_pulse.community.adapters.coordination as coordination_module
-import okto_pulse.community.adapters.global_discovery_recovery as recovery_module
 import okto_pulse.community.adapters.global_discovery_recovery_worker as worker_module
 from okto_pulse.community.adapters.coordination import CommunityLocalWriteLockPort
-from okto_pulse.community.adapters.global_discovery_recovery import (
-    CommunityGlobalDiscoveryRecoveryError,
+from okto_pulse.community.adapters.grafx_global_discovery_recovery import (
+    CommunityGrafxGlobalDiscoveryRecovery,
+    CommunityGrafxGlobalDiscoveryFenceError,
+    CommunityGrafxGlobalDiscoveryRecoveryError,
 )
+from okto_grafx import connect
+from test_grafx_global_discovery_providers import _DatabaseSlot, _board_seed, _runtime, _tree_bytes
 from okto_pulse.community.adapters.global_discovery_recovery_worker import (
     CommunityGlobalDiscoveryRecoveryNativeOperation,
 )
@@ -41,26 +41,26 @@ from okto_pulse.core.kg.rebuild_generation import generate_kg_generation_id
 from okto_pulse.core.kg.single_writer_lock import KGSingleWriterLock
 
 
-_HELPERS: ModuleType | None = None
-
-
 def _required(owner: object, name: str):
     value = getattr(owner, name, None)
     assert value is not None, f"R5 contract is missing {name}"
     return value
 
 
-def _adapter_helpers() -> ModuleType:
-    global _HELPERS
-    if _HELPERS is not None:
-        return _HELPERS
-    path = Path(__file__).with_name("test_global_discovery_recovery_adapter.py")
-    spec = importlib.util.spec_from_file_location("_r5_writer_adapter_helpers", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    _HELPERS = module
-    return module
+def _build_recovery(live: Path, revalidate=lambda phase: None):
+    slot = _DatabaseSlot(live)
+    _runtime(slot).bootstrap()
+    slot.close()
+    return CommunityGrafxGlobalDiscoveryRecovery(
+        lambda: live,
+        lambda path: connect(path, vector_exact_scan_threshold=4096),
+        slot.close,
+        revalidate,
+    )
+
+
+def _boards():
+    return (_board_seed("board-1", "node-1"),)
 
 
 def test_native_operation_acquires_shared_lease_inside_sql_fence_and_releases_reverse(
@@ -281,12 +281,9 @@ def test_injected_reindex_adapter_cannot_mutate_without_durable_global_lease(
 def test_writer_lease_loss_before_pointer_replace_preserves_live_generation(
     tmp_path: Path,
 ) -> None:
-    helpers = _adapter_helpers()
-    live = tmp_path / "global" / "discovery.lbug"
-    live.parent.mkdir(parents=True)
-    live.write_bytes(b"original-primary")
-    live.with_name(live.name + ".wal").write_bytes(b"original-wal")
-    adapter, _runtime, _created = helpers._build_adapter(live)  # noqa: SLF001
+    live = tmp_path / "global" / "discovery.grafx"
+    adapter = _build_recovery(live)
+    original = _tree_bytes(live)
     before = adapter.inspect_live_artifact()
     run_id = "gdr_r5_lease_loss"
     attempt_id = _required(recovery_contract, "recovery_attempt_id")(run_id, 1)
@@ -295,52 +292,45 @@ def test_writer_lease_loss_before_pointer_replace_preserves_live_generation(
         raise GlobalDiscoveryWriterFenceLost()
 
     with pytest.raises(
-        (GlobalDiscoveryWriterFenceLost, CommunityGlobalDiscoveryRecoveryError)
+        CommunityGrafxGlobalDiscoveryFenceError
     ) as refused:
         adapter.rebuild_candidate_and_cutover(
             run_id=run_id,
             epoch=1,
             attempt_id=attempt_id,
             expected_live_sha256=before.sha256,
-            boards=helpers._boards(),  # noqa: SLF001
+            boards=_boards(),
             fence_check=lost_lease,
         )
 
-    assert getattr(refused.value, "code", "") in {
-        "global_discovery_writer_fence_lost",
-        "global_discovery_candidate_build_failed",
-    }
+    assert isinstance(refused.value.__cause__, GlobalDiscoveryWriterFenceLost)
     assert read_active_generation(live) is None
-    assert live.read_bytes() == b"original-primary"
-    assert live.with_name(live.name + ".wal").read_bytes() == b"original-wal"
+    assert _tree_bytes(live) == original
 
 
-def test_late_cancel_fence_after_completed_journal_cannot_mask_success(
+def test_late_fence_loss_preserves_completed_journal_for_authorized_reconciliation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    helpers = _adapter_helpers()
-    live = tmp_path / "global" / "discovery.lbug"
-    live.parent.mkdir(parents=True)
-    live.write_bytes(b"original-primary")
-    adapter, _runtime, _created = helpers._build_adapter(live)  # noqa: SLF001
+    live = tmp_path / "global" / "discovery.grafx"
+    adapter = _build_recovery(live)
     before = adapter.inspect_live_artifact()
     run_id = "gdr_r5_terminal_truth"
     attempt_id = _required(recovery_contract, "recovery_attempt_id")(run_id, 1)
     completed_written = False
-    write_journal = recovery_module._write_journal_with_directory_fsync  # noqa: SLF001
+    write_journal = adapter._write_attempt_journal
 
     def tracking_write(*args, **kwargs):
         nonlocal completed_written
-        supported = write_journal(*args, **kwargs)
+        document = write_journal(*args, **kwargs)
         payload = args[1]
         if payload.get("phase") == "completed":
             completed_written = True
-        return supported
+        return document
 
     monkeypatch.setattr(
-        recovery_module,
-        "_write_journal_with_directory_fsync",
+        adapter,
+        "_write_attempt_journal",
         tracking_write,
     )
 
@@ -348,96 +338,106 @@ def test_late_cancel_fence_after_completed_journal_cannot_mask_success(
         if completed_written:
             raise GlobalDiscoveryWriterFenceLost()
 
-    result = adapter.rebuild_candidate_and_cutover(
+    arguments = dict(
         run_id=run_id,
         epoch=1,
         attempt_id=attempt_id,
         expected_live_sha256=before.sha256,
-        boards=helpers._boards(),  # noqa: SLF001
+        boards=_boards(),
         fence_check=cancel_after_terminal,
     )
-
+    adapter.rebuild_candidate_and_cutover(**arguments)
+    # The Grafx leaf must not bypass authority for final native readback. Its
+    # durable success remains reconcilable by an authorized worker afterwards.
+    with pytest.raises(CommunityGrafxGlobalDiscoveryFenceError):
+        adapter.recover_and_cutover(**arguments)
     assert completed_written is True
+    active = read_active_generation(live)
+    assert active is not None
+    result = adapter.reconcile_attempt_terminal_truth(**{**arguments, "fence_check": lambda: None})
+    assert result is not None
     assert result.outcome == "completed"
-    assert read_active_generation(live) is not None
+    assert read_active_generation(live) == active
 
 
 @pytest.mark.parametrize(
     ("loss_phase", "pointer_replaced"),
-    [("prepared", False), ("pointer_switched", True)],
+    [("recovery_cutover", False), ("recovery_readback", True)],
 )
-def test_exact_fence_loss_stops_at_durable_phase_and_same_epoch_reconciles(
+def test_exact_fence_loss_preserves_publication_and_reconciles_safely(
     tmp_path: Path,
     loss_phase: str,
     pointer_replaced: bool,
 ) -> None:
-    helpers = _adapter_helpers()
-    live = tmp_path / "global" / "discovery.lbug"
-    live.parent.mkdir(parents=True)
-    live.write_bytes(b"original-primary")
-    live.with_name(live.name + ".wal").write_bytes(b"original-wal")
-    adapter, _runtime, _created = helpers._build_adapter(live)  # noqa: SLF001
+    live = tmp_path / "global" / "discovery.grafx"
+    lost = False
+
+    def lose_at_phase(phase):
+        nonlocal lost
+        lost = lost or phase == loss_phase
+        if lost:
+            raise GlobalDiscoveryWriterFenceLost()
+
+    adapter = _build_recovery(live, lose_at_phase)
+    original = _tree_bytes(live)
     before = adapter.inspect_live_artifact()
     run_id = f"gdr_r5_fence_{loss_phase}"
     attempt_id = _required(recovery_contract, "recovery_attempt_id")(run_id, 1)
-    journal_path = (
-        live.parent
-        / "quarantine"
-        / "global-discovery"
-        / Path(attempt_id)
-        / "recovery_journal.json"
-    )
-
-    def lose_at_phase() -> None:
-        if not journal_path.exists():
-            return
-        payload = json.loads(journal_path.read_text(encoding="utf-8"))
-        if payload.get("phase") == loss_phase:
-            raise GlobalDiscoveryWriterFenceLost()
-
     with pytest.raises(
-        (GlobalDiscoveryWriterFenceLost, CommunityGlobalDiscoveryRecoveryError)
+        CommunityGrafxGlobalDiscoveryFenceError
     ) as refused:
         adapter.rebuild_candidate_and_cutover(
             run_id=run_id,
             epoch=1,
             attempt_id=attempt_id,
             expected_live_sha256=before.sha256,
-            boards=helpers._boards(),  # noqa: SLF001
-            fence_check=lose_at_phase,
+            boards=_boards(),
+            fence_check=lambda: None,
         )
 
-    assert getattr(refused.value, "code", "") == (
-        "global_discovery_writer_fence_lost"
-    )
-    durable = json.loads(journal_path.read_text(encoding="utf-8"))
-    assert durable["phase"] == loss_phase
+    assert isinstance(refused.value.__cause__, GlobalDiscoveryWriterFenceLost)
+    assert _tree_bytes(live) == original
     active = read_active_generation(live)
     assert (active is not None) is pointer_replaced
+    # Grafx publishes a certified manifest before pointer replacement; unlike
+    # the removed backend, intermediate phases are not mutable journal rows.
+    manifests = list(live.parent.glob("discovery.generations/*/generation_manifest.json"))
+    assert manifests
+    adapter._revalidate_fence = lambda phase: None
 
     deadline_resolution = adapter.reconcile_attempt_terminal_truth(
         run_id=run_id,
         epoch=1,
         attempt_id=attempt_id,
         expected_live_sha256=before.sha256,
-        boards=helpers._boards(),  # noqa: SLF001
+        boards=_boards(),
         fence_check=lambda: None,
     )
     if pointer_replaced:
         assert deadline_resolution is not None
         assert deadline_resolution.outcome == "completed"
     else:
-        # A prepared candidate has not crossed the pointer boundary.  Deadline
+        # A certified candidate has not crossed the pointer boundary. Deadline
         # reconciliation must never turn it into fresh post-budget work.
         assert deadline_resolution is None
         assert read_active_generation(live) is None
+        # An unpublished native candidate is retained, never overwritten by a
+        # same-attempt retry. A successor epoch gets an independent generation.
+        with pytest.raises(CommunityGrafxGlobalDiscoveryRecoveryError) as existing:
+            adapter.rebuild_candidate_and_cutover(
+                run_id=run_id, epoch=1, attempt_id=attempt_id,
+                expected_live_sha256=before.sha256, boards=_boards(),
+                fence_check=lambda: None,
+            )
+        assert existing.value.code == "global_discovery_candidate_generation_already_exists"
+        attempt_id = recovery_contract.recovery_attempt_id(run_id, 2)
 
     reconciled = adapter.rebuild_candidate_and_cutover(
         run_id=run_id,
-        epoch=1,
+        epoch=1 if pointer_replaced else 2,
         attempt_id=attempt_id,
         expected_live_sha256=before.sha256,
-        boards=helpers._boards(),  # noqa: SLF001
+        boards=_boards(),
         fence_check=lambda: None,
     )
     assert reconciled.outcome == "completed"

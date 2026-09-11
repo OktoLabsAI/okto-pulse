@@ -178,14 +178,13 @@ def _lifecycle(
         "operation_window": operation,
         "mutation_window_unguarded": mutation,
         "revalidate_write_fence": fence,
-        **_defaults("ladybug", events),
         **_defaults("grafx", events),
     }
     kwargs.update(overrides)
     return CommunityRoutedGraphLifecycle(resolver, **kwargs)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("backend", ["ladybug", "grafx"])
+@pytest.mark.parametrize("backend", ["grafx"])
 async def test_open_resolves_one_immutable_route_and_dispatches_exact_backend(
     tmp_path: Path,
     backend: str,
@@ -208,7 +207,7 @@ async def test_open_resolves_one_immutable_route_and_dispatches_exact_backend(
     assert events[-1] == ("operation.exit", "board-1")
 
 
-@pytest.mark.parametrize("backend", ["ladybug", "grafx"])
+@pytest.mark.parametrize("backend", ["grafx"])
 @pytest.mark.parametrize("operation", ["close", "rebuild", "purge"])
 async def test_destructive_async_operations_revalidate_fence_and_physical_route(
     tmp_path: Path,
@@ -245,7 +244,7 @@ async def test_destructive_async_operations_revalidate_fence_and_physical_route(
     assert events[0] == ("mutation.enter", "board-1", phase)
 
 
-@pytest.mark.parametrize("backend", ["ladybug", "grafx"])
+@pytest.mark.parametrize("backend", ["grafx"])
 def test_durability_steps_dispatch_without_nested_writer_acquisition(
     tmp_path: Path,
     backend: str,
@@ -276,7 +275,7 @@ async def test_route_is_not_reselected_when_resolver_preference_changes(
     tmp_path: Path,
 ) -> None:
     events: list[Any] = []
-    ladybug = _snapshot(tmp_path, backend="ladybug", generation="g-pinned")
+    ladybug = _snapshot(tmp_path, backend="grafx", generation="g-pinned")
     grafx = _snapshot(tmp_path, backend="grafx", generation="g-new")
     resolver = _Resolver(ladybug, events)
 
@@ -295,8 +294,7 @@ async def test_route_is_not_reselected_when_resolver_preference_changes(
     lifecycle = _lifecycle(
         resolver,
         events,
-        ladybug_open_unguarded=pinned_open,
-        grafx_open_unguarded=lambda _snapshot: pytest.fail("route was reselected"),
+        grafx_open_unguarded=pinned_open,
     )
 
     await lifecycle.open("board-1")
@@ -354,7 +352,7 @@ async def test_fence_failure_cleans_window_and_never_dispatches(
     tmp_path: Path,
 ) -> None:
     events: list[Any] = []
-    snapshot = _snapshot(tmp_path, backend="ladybug")
+    snapshot = _snapshot(tmp_path, backend="grafx")
     resolver = _Resolver(snapshot, events)
 
     def lost_fence(board_id: str, phase: str) -> None:
@@ -377,11 +375,11 @@ async def test_fence_failure_cleans_window_and_never_dispatches(
     assert names == ["mutation.enter", "acquire", "fence", "mutation.exit"]
 
 
-async def test_close_all_starts_both_board_backends_once_and_does_not_route(
+async def test_close_all_propagates_failure_without_routing(
     tmp_path: Path,
 ) -> None:
     events: list[Any] = []
-    resolver = _Resolver(_snapshot(tmp_path, backend="ladybug"), events)
+    resolver = _Resolver(_snapshot(tmp_path, backend="grafx"), events)
 
     def failed_ladybug() -> None:
         events.append(("ladybug.all",))
@@ -390,18 +388,18 @@ async def test_close_all_starts_both_board_backends_once_and_does_not_route(
     async def closed_grafx() -> None:
         events.append(("grafx.all",))
         await asyncio.sleep(0)
+        raise RuntimeError("grafx close failed")
 
     lifecycle = _lifecycle(
         resolver,
         events,
-        ladybug_close_all_unguarded=failed_ladybug,
         grafx_close_all_unguarded=closed_grafx,
     )
 
-    with pytest.raises(RuntimeError, match="ladybug close failed"):
+    with pytest.raises(RuntimeError, match="grafx close failed"):
         await lifecycle.close(None)
 
-    assert events.count(("ladybug.all",)) == 1
+    assert events.count(("ladybug.all",)) == 0
     assert events.count(("grafx.all",)) == 1
     assert resolver.acquire_count == 0
     assert not any(event[0].endswith(".enter") for event in events)
@@ -416,7 +414,7 @@ async def test_missing_first_boot_binding_fails_without_creation_or_fallback(
         details={"reason": "binding_missing"},
     )
     resolver = _Resolver(
-        _snapshot(tmp_path, backend="ladybug"),
+        _snapshot(tmp_path, backend="grafx"),
         events,
         acquire_failure=failure,
     )
@@ -501,7 +499,7 @@ def test_router_satisfies_canonical_core_graph_lifecycle_protocol(
     tmp_path: Path,
 ) -> None:
     events: list[Any] = []
-    resolver = _Resolver(_snapshot(tmp_path, backend="ladybug"), events)
+    resolver = _Resolver(_snapshot(tmp_path, backend="grafx"), events)
     lifecycle = _lifecycle(resolver, events)
 
     assert isinstance(lifecycle, GraphLifecycle)

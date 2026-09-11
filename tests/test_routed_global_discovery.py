@@ -43,9 +43,7 @@ from okto_pulse.community.adapters.routed_global_discovery import (
 )
 
 
-def _snapshot(
-    tmp_path: Path, *, backend: str = "ladybug"
-) -> CommunityGraphRouteSnapshot:
+def _snapshot(tmp_path: Path, *, backend: str = "grafx") -> CommunityGraphRouteSnapshot:
     anchor = (
         tmp_path
         / "global"
@@ -333,21 +331,13 @@ class _RuntimeHarness:
             global_lock=self.lock,
             revalidate_write_fence=self.fence_phases.append,
             statement_is_write=lambda statement: statement.startswith("CREATE"),
-            ladybug_session_factory=self.ladybug_factory,
             grafx_session_factory=self.grafx_factory,
-            ladybug_state=lambda snapshot, generation: state(
-                "ladybug", snapshot, generation
-            ),
             grafx_state=lambda snapshot, generation: state(
                 "grafx", snapshot, generation
             ),
-            ladybug_materialization_paths=lambda snapshot: paths("ladybug", snapshot),
             grafx_materialization_paths=lambda snapshot: paths("grafx", snapshot),
-            ladybug_close_unguarded=lambda snapshot: close("ladybug", snapshot),
             grafx_close_unguarded=lambda snapshot: close("grafx", snapshot),
-            ladybug_purge_unguarded=purge,
             grafx_purge_unguarded=purge,
-            ladybug_privacy_erase_unguarded=privacy,
             grafx_privacy_erase_unguarded=privacy,
         )
 
@@ -378,15 +368,15 @@ def test_state_is_inspect_only_non_opening_and_missing_is_unavailable(
 
 
 def test_runtime_pins_one_selected_route_and_never_falls_back(tmp_path: Path) -> None:
-    snapshot = _snapshot(tmp_path, backend="ladybug")
+    snapshot = _snapshot(tmp_path, backend="grafx")
     resolver = _Resolver(snapshot)
     harness = _RuntimeHarness(resolver)
 
     result = harness.runtime.execute("MATCH (n) RETURN n")
 
     assert result.rows == (("MATCH (n) RETURN n",),)
-    assert harness.ladybug_factory.snapshots == [snapshot]
-    assert harness.grafx_factory.entered == 0
+    assert harness.grafx_factory.snapshots == [snapshot]
+    assert harness.ladybug_factory.entered == 0
     assert resolver.acquire_calls == 1
     assert resolver.revalidations[-1] == (snapshot, True)
 
@@ -415,7 +405,7 @@ def test_runtime_refuses_route_drift_before_physical_dispatch(tmp_path: Path) ->
     assert factory.exited == 1
 
 
-def test_reads_skip_writer_revalidation_but_search_uses_writer_lane(
+def test_reads_and_digest_search_skip_writer_revalidation(
     tmp_path: Path,
 ) -> None:
     resolver = _Resolver(_snapshot(tmp_path))
@@ -436,7 +426,6 @@ def test_reads_skip_writer_revalidation_but_search_uses_writer_lane(
 
     assert harness.fence_phases == [
         "global_statement_write",
-        "global_digest_search",
     ]
     assert harness.lock.entries == harness.lock.exits
     assert harness.lock.depth == 0
@@ -607,9 +596,6 @@ def _recovery(
     return CommunityRoutedGlobalDiscoveryRecovery(
         resolver,  # type: ignore[arg-type]
         global_lock=lock or _TracingRLock(),
-        ladybug_factory=(
-            factory if resolver.current.backend == "ladybug" else wrong_backend
-        ),
         grafx_factory=(
             factory if resolver.current.backend == "grafx" else wrong_backend
         ),
@@ -816,7 +802,7 @@ def test_runtime_and_recovery_share_the_injected_lock_and_match_core_ports(
     assert shared_lock.depth == 0
 
 
-@pytest.mark.parametrize("backend", ["ladybug", "grafx"])
+@pytest.mark.parametrize("backend", ["grafx"])
 def test_recovery_worker_extensions_route_one_selected_leaf_with_exact_arguments(
     tmp_path: Path,
     backend: str,
@@ -839,7 +825,6 @@ def test_recovery_worker_extensions_route_one_selected_leaf_with_exact_arguments
     recovery = CommunityRoutedGlobalDiscoveryRecovery(
         resolver,  # type: ignore[arg-type]
         global_lock=_TracingRLock(),
-        ladybug_factory=selected_factory if backend == "ladybug" else wrong_factory,
         grafx_factory=selected_factory if backend == "grafx" else wrong_factory,
         validate_authenticated_transition=lambda **_kwargs: False,
     )

@@ -87,7 +87,7 @@ _DEFAULT_METRICS_BEACON_INTERVAL_SECONDS = 3600.0
 def _log_native_runtime_budget() -> None:
     """Publish one structured post-composition native runtime budget event."""
 
-    from okto_pulse.community.adapters.kg_runtime import (
+    from okto_pulse.community.adapters.graph_runtime_budget import (
         build_native_runtime_budget_snapshot,
     )
 
@@ -130,8 +130,8 @@ _EMBEDDING_PRELOAD_TASKS: set[asyncio.Task[None]] = set()
 def _enable_native_crash_diagnostics() -> None:
     """Enable Python's fatal-signal traceback without blocking startup.
 
-    Ladybug/Kuzu executes in a native extension.  A process-level access
-    violation bypasses Python exception handlers; ``faulthandler`` preserves
+    Native extensions in the local ML/acceleration stack can fail outside
+    Python exception handlers; ``faulthandler`` preserves
     the Python stacks of every thread in stderr so a repeated native crash has
     an actionable call site.  Some embedded/service hosts expose no usable
     stderr file descriptor, so diagnostics remain best-effort.

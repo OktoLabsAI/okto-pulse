@@ -182,10 +182,10 @@ class CommunityGraphRouteResolver:
         open_grafx_database: GrafxDatabaseOpener | None = None,
         lock_timeout_seconds: float = 10.0,
     ) -> None:
-        if board_backend not in {"ladybug", "grafx"}:
-            raise ValueError("board_backend must be 'ladybug' or 'grafx'")
-        if global_backend not in {"ladybug", "grafx"}:
-            raise ValueError("global_backend must be 'ladybug' or 'grafx'")
+        if board_backend != "grafx":
+            raise ValueError("Community board_backend must be 'grafx'")
+        if global_backend != "grafx":
+            raise ValueError("Community global_backend must be 'grafx'")
         self._store = binding_store
         self._root = binding_store.root
         self._board_backend = board_backend
@@ -756,11 +756,11 @@ class CommunityGraphRouteResolver:
         if ladybug_kind == "file" and grafx_present:
             self._raise_ambiguous(scope=scope, scope_id=board_id)
         if ladybug_kind == "file":
-            return _DetectedRoute(
-                backend="ladybug",
-                generation=_INITIAL_GENERATION,
-                binding_path=ladybug,
-                page_size=None,
+            raise _unavailable(
+                "graph_backend_retired_files_preserved",
+                operation="initialize_board_route",
+                scope=scope,
+                scope_id=board_id,
             )
         if not grafx_present:
             return None
@@ -807,7 +807,12 @@ class CommunityGraphRouteResolver:
         if ladybug_artifacts and grafx_artifacts:
             self._raise_ambiguous(scope=scope, scope_id=scope_id)
         if ladybug_artifacts:
-            return self._detect_global_ladybug(ladybug_anchor)
+            raise _unavailable(
+                "graph_backend_retired_files_preserved",
+                operation="initialize_global_route",
+                scope="global",
+                scope_id="global",
+            )
         if not grafx_artifacts:
             return None
         return self._detect_global_grafx(grafx_root, supplied_grafx=supplied_grafx)
@@ -835,35 +840,6 @@ class CommunityGraphRouteResolver:
             )
             is not None
             for suffix in _LADYBUG_SIDECAR_SUFFIXES
-        )
-
-    def _detect_global_ladybug(self, anchor: Path) -> _DetectedRoute:
-        scope: GraphBindingScope = "global"
-        scope_id = "global"
-        anchor_kind = self._path_kind(anchor, scope=scope, scope_id=scope_id)
-        if anchor_kind not in {None, "file"}:
-            self._raise_ambiguous(scope=scope, scope_id=scope_id)
-        if anchor_kind == "file":
-            self._require_no_alias(anchor, scope=scope, scope_id=scope_id)
-        self._authenticated_active(
-            anchor,
-            expected="file",
-            scope=scope,
-            scope_id=scope_id,
-            require_physical=True,
-        )
-        generation_kind = self._path_kind(
-            generations_root(anchor), scope=scope, scope_id=scope_id
-        )
-        if generation_kind not in {None, "directory"}:
-            self._raise_ambiguous(scope=scope, scope_id=scope_id)
-        if anchor_kind != "file":
-            self._raise_ambiguous(scope=scope, scope_id=scope_id)
-        return _DetectedRoute(
-            backend="ladybug",
-            generation=_INITIAL_GENERATION,
-            binding_path=anchor,
-            page_size=None,
         )
 
     def _detect_global_grafx(
@@ -966,6 +942,13 @@ class CommunityGraphRouteResolver:
         *,
         require_active_physical: bool,
     ) -> CommunityGraphRouteSnapshot:
+        if binding.backend != "grafx":
+            raise _unavailable(
+                "graph_backend_retired_files_preserved",
+                operation="authenticate_graph_route",
+                scope=binding.scope,
+                scope_id=binding.scope_id,
+            )
         expected = "directory" if binding.backend == "grafx" else "file"
         if binding.scope == "board":
             self._require_expected_path(

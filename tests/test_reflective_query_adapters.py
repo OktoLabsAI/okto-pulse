@@ -7,8 +7,8 @@ import pytest
 from fastmcp import Client
 
 from okto_pulse.community.adapters.hybrid_search import (
-    KuzuGraphExpander,
-    KuzuVectorSeedProvider,
+    CommunityGraphExpander,
+    CommunityVectorSeedProvider,
 )
 from okto_pulse.community.adapters.reflective_query import (
     CommunityDeterministicReflectiveCritic,
@@ -51,9 +51,7 @@ class _GraphStore:
         include_superseded=False,
         graph_layer="all",
     ):
-        self.calls.append(
-            (board_id, node_type, top_k, min_similarity, graph_layer)
-        )
+        self.calls.append((board_id, node_type, top_k, min_similarity, graph_layer))
         return [
             {
                 "node_id": "n-1",
@@ -92,7 +90,7 @@ class _Executor:
 def test_vector_seed_uses_injected_public_ports_and_stable_dedup():
     graph = _GraphStore()
     embedding = _Embedding()
-    provider = KuzuVectorSeedProvider(
+    provider = CommunityVectorSeedProvider(
         graph_store=graph,
         embedding_provider=embedding,
         min_similarity=0.4,
@@ -112,10 +110,8 @@ def test_vector_seed_uses_injected_public_ports_and_stable_dedup():
 
 
 def test_graph_expander_uses_multiple_seed_ids_without_null_seed_placeholder():
-    executor = _Executor(
-        rows=[("neighbor", "Entity", "N", 2, 0.9)]
-    )
-    expander = KuzuGraphExpander(executor)
+    executor = _Executor(rows=[("neighbor", "Entity", "N", 2, 0.9)])
+    expander = CommunityGraphExpander(executor)
 
     rows = expander.expand(
         board_id="b1",
@@ -140,6 +136,38 @@ def test_graph_expander_uses_multiple_seed_ids_without_null_seed_placeholder():
             edges=("DROP_TABLE",),
             max_hops=1,
         )
+
+
+def test_expansion_uses_one_batch_snapshot_and_keeps_shortest_unique_neighbors():
+    class Batched:
+        def __init__(self):
+            self.calls = []
+
+        def execute_read_only_batch(self, board_id, statements):
+            self.calls.append((board_id, statements))
+            assert all(
+                "(src:" in statement and "*1.." not in statement
+                for statement, _params, _limit in statements
+            )
+            assert all(limit == 1000 for _statement, _params, limit in statements)
+            return [
+                {
+                    "rows": [
+                        ("n", "Decision", "N", 3, 0.7),
+                        ("n", "Decision", "N", 1, 0.7),
+                    ]
+                }
+            ]
+
+    executor = Batched()
+    rows = CommunityGraphExpander(executor).expand(
+        board_id="b1",
+        seed_ids=("seed",),
+        edges=("depends_on",),
+        max_hops=3,
+    )
+    assert len(executor.calls) == 1
+    assert [(row.node_id, row.hop_distance) for row in rows] == [("n", 1)]
 
 
 def test_community_retrieval_and_no_llm_critic_are_real_providers():
@@ -223,31 +251,32 @@ def test_deterministic_critic_fails_closed_on_empty_and_weak_evidence():
     assert weak.suggested_action is CriticAction.REJECT
 
 
-def test_real_kuzu_multiple_seed_expansion_round_trip(tmp_path, monkeypatch):
+def test_real_grafx_multiple_seed_expansion_round_trip(tmp_path, monkeypatch, request):
     """TR-4: exercise the actual Community graph runtime, not a mock."""
 
-    monkeypatch.setenv("KG_BASE_DIR", str(tmp_path / "kg"))
-    monkeypatch.setenv("KG_CLEANUP_ENABLED", "false")
-    from okto_pulse.community.adapters import kg_runtime
-    from okto_pulse.community.adapters.kuzu_cypher_executor import (
-        CommunityKuzuCypherExecutor,
-    )
-    from okto_pulse.community.adapters.kuzu_graph_store import (
-        CommunityKuzuGraphStore,
+    import okto_grafx
+    from okto_pulse.community.adapters.grafx_graph_store import CommunityGrafxGraphStore
+    from okto_pulse.community.adapters.grafx_cypher_executor import (
+        CommunityGrafxCypherExecutor,
     )
 
-    board_id = "reflective-real-kuzu"
-    monkeypatch.setattr(kg_runtime, "_kg_base_dir", lambda: tmp_path / "kg")
-    kg_runtime.bootstrap_board_graph(board_id)
-    store = CommunityKuzuGraphStore()
-    for node_id in ("seed-a", "seed-b", "neighbor"):
+    board_id = "reflective-real-grafx"
+    database = okto_grafx.connect(tmp_path / "grafx", page_size=8192)
+    request.addfinalizer(database.close)
+    store = CommunityGrafxGraphStore(
+        lambda _board: database, lambda _board, _phase: None
+    )
+    store.bootstrap(board_id)
+    for node_id in ("seed-a", "seed-b", "neighbor", "working-bridge", "far"):
         store.create_node(
             board_id,
             "Decision",
             node_id,
             {
                 "title": node_id,
-                "graph_layer": "canonical",
+                "graph_layer": "working"
+                if node_id == "working-bridge"
+                else "canonical",
                 "maturity_status": "canonical_eligible",
                 "source_confidence": 1.0,
                 "relevance_score": 1.0,
@@ -261,19 +290,36 @@ def test_real_kuzu_multiple_seed_expansion_round_trip(tmp_path, monkeypatch):
         {"confidence": 0.9, "layer": "deterministic"},
     )
 
+    for source, target in (("neighbor", "working-bridge"), ("working-bridge", "far")):
+        store.create_edge(board_id, "depends_on", source, target, {"confidence": 0.9})
+    store.create_edge(board_id, "supersedes", "seed-b", "far", {"confidence": 0.9},
+                      from_type="Decision", to_type="Decision")
     try:
-        rows = KuzuGraphExpander(CommunityKuzuCypherExecutor()).expand(
+        rows = CommunityGraphExpander(
+            CommunityGrafxCypherExecutor(lambda _board: database)
+        ).expand(
             board_id=board_id,
             seed_ids=("seed-a", "seed-b"),
             edges=("depends_on",),
             max_hops=1,
             graph_layer="canonical",
         )
-        assert [(row.node_id, row.hop_distance) for row in rows] == [
-            ("neighbor", 1)
+        assert [(row.node_id, row.hop_distance) for row in rows] == [("neighbor", 1)]
+        expanded = CommunityGraphExpander(
+            CommunityGrafxCypherExecutor(lambda _board: database)
+        ).expand(
+            board_id=board_id,
+            seed_ids=("seed-a", "seed-b"),
+            edges=("depends_on",),
+            max_hops=3,
+            graph_layer="canonical",
+        )
+        assert [(row.node_id, row.hop_distance) for row in expanded] == [
+            ("neighbor", 1),
+            ("far", 3),
         ]
     finally:
-        kg_runtime.close_all_connections(board_id)
+        database.close()
 
 
 def test_operational_kg_resource_describes_the_real_reflective_loop() -> None:
@@ -305,7 +351,6 @@ async def test_community_registry_mcp_real_retrieval_reaches_rejected_terminal(
     """TR-3: full Community composition -> MCP -> Kuzu -> critic terminal."""
 
     import okto_pulse.core.infra.config as core_config
-    from okto_pulse.community.adapters import kg_runtime
     from okto_pulse.community.adapters.composition import (
         configure_community_kg_registry,
         require_community_routed_graph_composition,
@@ -325,7 +370,6 @@ async def test_community_registry_mcp_real_retrieval_reaches_rejected_terminal(
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("KG_BASE_DIR", str(kg_root))
     monkeypatch.setenv("KG_CLEANUP_ENABLED", "false")
-    monkeypatch.setattr(kg_runtime, "_kg_base_dir", lambda: kg_root)
 
     class _AuthContext:
         async def get_agent_id(self) -> str:
@@ -362,8 +406,21 @@ async def test_community_registry_mcp_real_retrieval_reaches_rejected_terminal(
             board_id
         )
         await registry.graph_schema_manager.ensure_bootstrapped(board_id)
+        # Prove the real vector path before exercising the time-bounded MCP
+        # state machine; schema/read-handle warmup is not a performance gate.
+        assert (
+            registry.graph_store.vector_search(
+                board_id,
+                "Decision",
+                [1.0] + [0.0] * 383,
+                5,
+                0.5,
+                graph_layer="canonical",
+            )
+            == []
+        )
         assert registry.require_reflective_retrieval().identity == (
-            "community-kuzu-reflective-retrieval"
+            "community-graph-reflective-retrieval"
         )
         assert registry.require_reflective_critic().identity == (
             "community-deterministic-reflective-critic"
@@ -425,9 +482,9 @@ async def test_community_registry_mcp_real_retrieval_reaches_rejected_terminal(
             "community-deterministic-reflective-critic"
         )
         assert payload["retrieval"]["identity"] == (
-            "community-kuzu-reflective-retrieval"
+            "community-graph-reflective-retrieval"
         )
     finally:
-        kg_runtime.close_all_connections(board_id)
+        await registry.graph_lifecycle.close(None)
         reset_registry_for_tests()
         core_config.configure_settings(original_settings)

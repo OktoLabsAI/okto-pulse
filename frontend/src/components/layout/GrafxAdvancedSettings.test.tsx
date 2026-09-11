@@ -5,11 +5,17 @@ import type { GrafxSettingDescriptor } from '@/services/runtime-settings-api';
 
 const catalog: GrafxSettingDescriptor[] = [
   { name: 'max_result_rows', default: null, nullable: true, editable: true, kind: 'number', description: 'Maximum returned rows. Exhaustion refuses instead of silently truncating.' },
-  { name: 'vector_math', default: 'auto', nullable: false, editable: true, kind: 'select', choices: ['auto', 'pure', 'numpy'], description: 'NumPy requires the acceleration dependency and can affect floating-point ties.' },
+  { name: 'vector_math', default: 'numpy', nullable: false, editable: true, kind: 'select', choices: ['auto', 'pure', 'numpy'], description: 'NumPy is installed by default and can affect floating-point ties.' },
   { name: 'path', default: ':memory:', nullable: false, editable: false, kind: 'managed', description: 'Pulse owns generation paths; this cannot bypass route authority.' },
 ];
 
 describe('Grafx advanced settings', () => {
+  it('shows the NumPy catalog default without creating an explicit override', () => {
+    const changed = vi.fn();
+    render(<GrafxAdvancedSettings catalog={catalog} value={{}} onChange={changed} />);
+    expect(screen.getByTestId('grafx-option-vector_math')).toHaveValue('numpy');
+    expect(changed).not.toHaveBeenCalled();
+  });
   it('keeps zero cache retention distinct from an unset HNSW limit', () => {
     const changed = vi.fn();
     const controls: GrafxSettingDescriptor[] = [

@@ -1,4 +1,4 @@
-"""Final frozen M-PULSE-5 matrix: eight functions and thirty-two cases."""
+"""Grafx physical-transfer contracts retained after native backend retirement."""
 
 from __future__ import annotations
 
@@ -33,7 +33,6 @@ from logical_transfer_matrix_support import (
     dense_global_corpus,
     endpoint_database,
     endpoint_schema,
-    expected_ladybug_filename,
     export_database,
     export_generation,
     failing_file_nodes,
@@ -264,12 +263,10 @@ def test_grafx_endpoint_map_contract(
 @pytest.mark.parametrize(
     ("scope", "origin_backend", "destination_backend"),
     [
-        ("board", "ladybug", "grafx"),
-        ("board", "grafx", "ladybug"),
-        ("global_discovery", "ladybug", "grafx"),
-        ("global_discovery", "grafx", "ladybug"),
+        ("board", "grafx", "grafx"),
+        ("global_discovery", "grafx", "grafx"),
     ],
-    ids=("board-l2g", "board-g2l", "global-l2g", "global-g2l"),
+    ids=("board-g2g", "global-g2g"),
 )
 def test_canonical_roundtrip(
     tmp_path: Path,
@@ -290,9 +287,6 @@ def test_canonical_roundtrip(
         batch_size=5,
         temporary_parent=temporary_parent,
     )
-    if origin_backend == "ladybug":
-        assert origin_sink.candidate_path == origin
-        assert origin_sink.database_path == origin / expected_ladybug_filename(scope)
 
     database = open_generation_database(origin_backend, origin, scope, read_only=True)
     candidate = tmp_path / "candidate"
@@ -321,11 +315,6 @@ def test_canonical_roundtrip(
     assert report.fingerprint == corpus.fingerprint
     assert destination.abort_calls == 0
     assert destination.finalize_calls == 1
-    if destination_backend == "ladybug":
-        assert destination.candidate_path == candidate
-        assert destination.database_path == (
-            candidate / expected_ladybug_filename(scope)
-        )
 
     restored = export_generation(
         destination_backend,
@@ -361,8 +350,6 @@ def test_canonical_roundtrip(
 @pytest.mark.parametrize(
     ("backend", "scope"),
     [
-        ("ladybug", "board"),
-        ("ladybug", "global_discovery"),
         ("grafx", "board"),
         ("grafx", "global_discovery"),
     ],
@@ -534,11 +521,7 @@ def test_community_batches_are_bounded_and_cleanup_is_total(
 @pytest.mark.parametrize(
     ("backend", "fault"),
     [
-        ("ladybug", "write"),
         ("grafx", "write"),
-        ("ladybug", "import"),
-        ("ladybug", "checkpoint"),
-        ("ladybug", "reopen"),
         ("grafx", "import"),
         ("grafx", "checkpoint"),
         ("grafx", "reopen"),
@@ -701,12 +684,10 @@ def test_atomic_logical_graph_file(
 @pytest.mark.parametrize(
     ("backend", "corrupt"),
     [
-        ("ladybug", False),
-        ("ladybug", True),
         ("grafx", False),
         ("grafx", True),
     ],
-    ids=("ladybug-clean", "ladybug-corrupt", "grafx-clean", "grafx-corrupt"),
+    ids=("grafx-clean", "grafx-corrupt"),
 )
 def test_restore_out_of_place_preserves_previous_generation(
     tmp_path: Path,
@@ -773,8 +754,6 @@ def test_restore_out_of_place_preserves_previous_generation(
         )
         assert restored.counts == corpus.counts
         assert restored.fingerprint == corpus.fingerprint
-        if backend == "ladybug":
-            assert sink.database_path.name == expected_ladybug_filename(scope)
 
     assert tree_digest(previous) == previous_digest
     still_previous = export_generation(

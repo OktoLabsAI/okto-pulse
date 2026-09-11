@@ -5,7 +5,7 @@ builds the edition's storage + embedding + base registry + reranker wiring.
 adapters — never the core Onda A concretes (FileSystemStorageProvider /
 InMemory* / SentenceTransformer* / CrossEncoder). The base registry supplies the
 Onda A slots so ``configure_kg_registry(base_registry=...)`` does NOT instantiate
-core embedded defaults; Community also fills the Ladybug/Kuzu graph slots before
+core embedded defaults; Community also fills the graph slots before
 the registry is exposed to core consumers.
 
 R05-D (Onda B): the composition now ALSO supplies the three DATA providers —
@@ -247,7 +247,7 @@ def _apply_quarantine_restore(
     filesystem adapter. The shared routing bundle injects its sole resolver;
     until then the optional Core slot remains absent and fails closed on use."""
     if graph_route_resolver is None:
-        # Never reconstruct a Ladybug-only provider as a routing fallback.
+        # Never reconstruct a graph-only provider as a routing fallback.
         # The slot is optional specifically so the later shared bundle can
         # activate it atomically with resolver/pool/facade composition.
         base.quarantine_restore = None
@@ -269,18 +269,12 @@ def build_community_routed_quarantine_restore(
 ):
     """Build restore routing from explicitly shared graph dependencies.
 
-    The resolver is intentionally mandatory.  The Grafx factory may be absent
-    while an installation is still Ladybug-only; the routed adapter then fails
-    closed only if a Grafx manifest/binding is actually selected.  A future
-    shared composition bundle supplies both without this helper constructing a
-    second resolver or pool.
+    The resolver is mandatory. A missing Grafx factory fails closed on restore;
+    this helper never constructs a second resolver, pool or alternate backend.
     """
 
     if graph_route_resolver is None:
         raise TypeError("graph_route_resolver is required")
-    from okto_pulse.community.adapters.quarantine_restore import (
-        CommunityQuarantineRestore,
-    )
     from okto_pulse.community.adapters.routed_quarantine_restore import (
         CommunityRoutedQuarantineRestore,
     )
@@ -288,10 +282,6 @@ def build_community_routed_quarantine_restore(
     return CommunityRoutedQuarantineRestore(
         graph_route_resolver,
         quarantine_root=Path(kg_base_dir) / "quarantine",
-        ladybug=CommunityQuarantineRestore(
-            base_dir=Path(kg_base_dir),
-            extra_serve_lock_dirs=(Path(data_dir),),
-        ),
         grafx_factory=grafx_restore_factory,
     )
 

@@ -57,8 +57,6 @@ CORE_DISTRIBUTION = "okto-pulse-core"
 COMMUNITY_DISTRIBUTION = "okto-pulse"
 EXPECTED_VERSION = "0.3.3"
 LEGACY_QUEUE_ONLY_SUPPORTED_SOFTWARE_VERSIONS = frozenset({"0.3.2", EXPECTED_VERSION})
-LADYBUG_DISTRIBUTION = "ladybug"
-EXPECTED_LADYBUG_VERSION = "0.16.0"
 GRAFX_DISTRIBUTION = "okto-grafx"
 EXPECTED_GRAFX_VERSION = "0.0.5"
 SQLALCHEMY_DISTRIBUTION = "SQLAlchemy"
@@ -592,20 +590,8 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--expected-core-version", default=EXPECTED_VERSION)
     parser.add_argument("--expected-community-version", default=EXPECTED_VERSION)
     parser.add_argument(
-        "--expected-ladybug-version",
-        default=EXPECTED_LADYBUG_VERSION,
-    )
-    parser.add_argument(
         "--expected-grafx-version",
         default=EXPECTED_GRAFX_VERSION,
-    )
-    parser.add_argument(
-        "--expected-kuzu-version",
-        default=None,
-        help=(
-            "Deprecated alias for --expected-ladybug-version; no Kuzu "
-            "distribution is required."
-        ),
     )
     parser.add_argument(
         "--expected-sqlalchemy-version",
@@ -631,16 +617,6 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--poll-seconds", type=float, default=0.10)
     parser.add_argument("--batch-size", type=int, default=5)
     args = parser.parse_args(argv)
-    if args.expected_kuzu_version is not None:
-        if (
-            args.expected_ladybug_version != EXPECTED_LADYBUG_VERSION
-            and args.expected_ladybug_version != args.expected_kuzu_version
-        ):
-            parser.error(
-                "--expected-kuzu-version aliases --expected-ladybug-version; "
-                "conflicting expected versions were supplied"
-            )
-        args.expected_ladybug_version = args.expected_kuzu_version
     if not args.inspect_install and not args.expected_install_fingerprint:
         parser.error(
             "--execute/--rehearsal-copy-of requires --expected-install-fingerprint"
@@ -766,7 +742,6 @@ def _install_evidence(
     *,
     core_version: str,
     community_version: str,
-    ladybug_version: str,
     grafx_version: str,
     sqlalchemy_version: str,
     aiosqlite_version: str,
@@ -781,12 +756,6 @@ def _install_evidence(
             COMMUNITY_DISTRIBUTION,
             community_version,
             include_python=True,
-        ),
-        _distribution_evidence(
-            LADYBUG_DISTRIBUTION,
-            ladybug_version,
-            include_python=True,
-            require_native=True,
         ),
         _distribution_evidence(
             GRAFX_DISTRIBUTION,
@@ -6922,7 +6891,7 @@ async def _snapshot_closed_board_storage(
 ) -> dict[str, str]:
     """Drain readers, close composed native pools, and hash inside that fence."""
 
-    from okto_pulse.community.adapters.kg_runtime import (
+    from okto_pulse.community.adapters.graph_operation_guards import (
         board_storage_mutation_window,
     )
 
@@ -15890,7 +15859,7 @@ _BINDING_KEYS = frozenset(
         "binding_sha256",
     }
 )
-_BINDING_BACKENDS = frozenset({"ladybug", "grafx"})
+_BINDING_BACKENDS = frozenset({"grafx"})
 _BINDING_PORTABLE_FORBIDDEN = frozenset('<>:"|?*')
 _BINDING_WINDOWS_RESERVED = frozenset(
     {
@@ -16194,6 +16163,7 @@ def _board_backend_decision(
         for suffix in _BINDING_LADYBUG_SIDECAR_SUFFIXES
     }
     ladybug_present = _BINDING_LADYBUG_FILENAME in names
+    _require(not ladybug_present, "offline_graph_backend_retired_files_preserved")
     _require(ladybug_present or not (names & sidecar_names), f"{_BINDING_CODE}_missing")
     for name in names:
         path = board_root / name
@@ -16750,7 +16720,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     evidence = _install_evidence(
         core_version=args.expected_core_version,
         community_version=args.expected_community_version,
-        ladybug_version=args.expected_ladybug_version,
         grafx_version=args.expected_grafx_version,
         sqlalchemy_version=args.expected_sqlalchemy_version,
         aiosqlite_version=args.expected_aiosqlite_version,

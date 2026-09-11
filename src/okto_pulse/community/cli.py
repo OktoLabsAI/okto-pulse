@@ -863,7 +863,7 @@ def cmd_init(args, *, owned_serve_lock: object | None = None):
         finally:
             # ``init`` is a complete runtime lifecycle, not just a relational
             # migration command.  The demo consolidation and the primary-board
-            # bootstrap both leave Ladybug Database handles in the process-wide
+            # bootstrap both leave graph Database handles in the process-wide
             # cache.  Closing only SQLite lets interpreter teardown strand recent
             # commits in graph.lbug.wal (and can make strict WAL replay reject the
             # fresh Demo graph).  Reuse the same checkpoint+close boundary as the
@@ -2316,7 +2316,7 @@ def cmd_kg_restore(args):
     emit_json: bool = bool(getattr(args, "json", False))
 
     # The composition-owned slot is the only CLI factory.  In particular, the
-    # command must not reconstruct the Ladybug adapter from settings: doing so
+    # command must not reconstruct the graph adapter from settings: doing so
     # would bypass persisted Board routing and silently misroute Grafx data.
     service = _configure_kg_restore_cold_registry().require_quarantine_restore()
 
@@ -2706,7 +2706,7 @@ def main():
     # NC-8 (spec 7f23535f) — dedup-entities migration
     sub_dedup = kg_subparsers.add_parser(
         "dedup-entities",
-        help="Consolidate duplicate Kuzu nodes per (node_type, source_artifact_ref)",
+        help="Consolidate duplicate graph nodes per (node_type, source_artifact_ref)",
     )
     sub_dedup.add_argument("board_id", help="Target board UUID")
     sub_dedup.add_argument(

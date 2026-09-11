@@ -212,6 +212,8 @@ class _EngineTransaction:
 
     def execute(self, statement: str, params: dict[str, Any]) -> object:
         assert self.active
+        if statement == "RETURN $value":
+            return SimpleNamespace(columns=("value",), rows=((params["value"],),))
         assert statement.startswith("CREATE")
         assert params == {"id": "node-1"}
         self.events.append("engine_execute")
@@ -329,7 +331,6 @@ def _assembly(
     pool = _PoolProbe(events, lease)
     facade = routed.CommunityRoutedGraphTransaction(
         resolver,  # type: ignore[arg-type]
-        ladybug=ladybug,  # type: ignore[arg-type]
         grafx_pool=pool,  # type: ignore[arg-type]
         operation_window=window,
         mutation_recorder=mutation_recorder,
@@ -348,52 +349,12 @@ def _assembly(
 
 
 @pytest.mark.asyncio
-async def test_ladybug_capture_prepares_before_auto_commit_write(
-    tmp_path: Path,
-) -> None:
-    events: list[str] = []
-    recorder = _MutationRecorderProbe(events)
-    facade, routed_events, window, resolver, *_rest = _assembly(
-        tmp_path,
-        backend="ladybug",
-        mutation_recorder=recorder,
-    )
-    recorder.events = routed_events
-
-    scope = await facade.begin(BOARD_ID)
-    result = scope.execute("CREATE (n {id: $value})", {"value": "node-1"})
-
-    assert result.rows == (("node-1",),)
-    assert routed_events[-3:] == [
-        "capture_prepare:ladybug",
-        "ladybug_execute:CREATE (n {id: $value})",
-        "capture_committed:mutation-1",
-    ]
-    assert recorder.prepared == [
-        {
-            "board_id": BOARD_ID,
-            "binding_sha256": resolver.snapshot.binding_sha256,
-            "backend": "ladybug",
-            "transaction_id": recorder.prepared[0]["transaction_id"],
-            "family": "execute",
-            "payload": recorder.prepared[0]["payload"],
-        }
-    ]
-    payload = recorder.prepared[0]["payload"]
-    assert isinstance(payload, dict)
-    assert payload["parameter_names"] == ["value"]
-    assert "CREATE" not in repr(payload)
-    assert window.active
-    await scope.commit()
-
-
-@pytest.mark.asyncio
 async def test_capture_ignores_read_only_statement(tmp_path: Path) -> None:
     events: list[str] = []
     recorder = _MutationRecorderProbe(events)
     facade, routed_events, *_rest = _assembly(
         tmp_path,
-        backend="ladybug",
+        backend="grafx",
         mutation_recorder=recorder,
     )
     recorder.events = routed_events
@@ -511,90 +472,24 @@ async def test_grafx_context_commit_failure_cleans_up_with_or_without_capture(
 
 
 @pytest.mark.asyncio
-async def test_ladybug_route_holds_one_window_until_commit_and_forwards_scope(
-    tmp_path: Path,
-) -> None:
-    facade, events, window, resolver, ladybug, *_rest = _assembly(
-        tmp_path,
-        backend="ladybug",
-    )
-
-    scope = await facade.begin(BOARD_ID)
-    result = scope.execute("RETURN $value", {"value": 11})
-
-    assert result.rows == ((11,),)
-    assert window.active
-    assert resolver.acquire_calls == 1
-    assert ladybug.begin_calls == 1
-    assert events == [
-        "window_enter",
-        "route_acquire",
-        "ladybug_begin",
-        "ladybug_execute:RETURN $value",
-    ]
-
-    await scope.commit()
-    await scope.commit()
-    await scope.rollback()
-
-    assert events[-2:] == ["ladybug_commit", "window_exit"]
-    assert window.exits == 1
-
-
-@pytest.mark.asyncio
-async def test_ladybug_context_rollback_releases_after_delegate_terminal(
-    tmp_path: Path,
-) -> None:
-    facade, events, window, *_rest = _assembly(tmp_path, backend="ladybug")
-
-    with pytest.raises(RuntimeError, match="body failure"):
-        async with await facade.begin(BOARD_ID):
-            assert window.active
-            raise RuntimeError("body failure")
-
-    assert events[-3:] == ["ladybug_aenter", "ladybug_rollback", "window_exit"]
-
-
-@pytest.mark.asyncio
-async def test_ladybug_failed_terminal_retains_window_until_retry_succeeds(
-    tmp_path: Path,
-) -> None:
-    facade, events, window, _resolver, ladybug, *_rest = _assembly(
-        tmp_path,
-        backend="ladybug",
-    )
-    failure = OSError("connection is still open")
-    ladybug.scope.rollback_failure = failure
-    scope = await facade.begin(BOARD_ID)
-
-    with pytest.raises(OSError) as raised:
-        await scope.rollback()
-
-    assert raised.value is failure
-    assert window.active
-    assert "window_exit" not in events
-
-    ladybug.scope.rollback_failure = None
-    await scope.rollback()
-    assert events[-2:] == ["ladybug_rollback", "window_exit"]
-
-
-@pytest.mark.asyncio
 async def test_begin_cancellation_is_preserved_and_releases_unowned_window(
     tmp_path: Path,
 ) -> None:
-    facade, events, window, _resolver, ladybug, *_rest = _assembly(
-        tmp_path,
-        backend="ladybug",
+    facade, events, window, _resolver, _ladybug, transaction, database, *_rest = (
+        _assembly(
+            tmp_path,
+            backend="grafx",
+        )
     )
     cancellation = asyncio.CancelledError("cancel begin")
-    ladybug.begin_failure = cancellation
+    transaction.active = False
+    database.begin_failure = cancellation
 
     with pytest.raises(asyncio.CancelledError) as raised:
         await facade.begin(BOARD_ID)
 
     assert raised.value is cancellation
-    assert events[-2:] == ["ladybug_begin", "window_exit"]
+    assert events[-2:] == ["pool_release", "window_exit"]
     assert not window.active
 
 

@@ -14,6 +14,7 @@ from okto_pulse.core.kg.interfaces.cypher_executor import CypherExecutor
 from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphCapabilityUnavailable,
     GraphCorruption,
+    GraphUnavailable,
 )
 from okto_pulse.core.kg.interfaces.graph_recovery import (
     GraphRecovery,
@@ -450,7 +451,6 @@ def test_semantic_store_explicitly_forwards_every_protocol_method(
     getattr(grafx, method).side_effect = selected_call
     facade = CommunityRoutedSemanticGraphStore(
         resolver,  # type: ignore[arg-type]
-        ladybug=ladybug,
         grafx=grafx,
         operation_window=windows.operation,
     )
@@ -482,13 +482,12 @@ def test_semantic_capabilities_are_the_conservative_backend_intersection() -> No
     grafx.capabilities.return_value = GraphCapabilities(True, False, True)
     facade = CommunityRoutedSemanticGraphStore(
         resolver,  # type: ignore[arg-type]
-        ladybug=ladybug,
         grafx=grafx,
         operation_window=windows.operation,
     )
 
-    assert facade.capabilities() == GraphCapabilities(True, False, False)
-    ladybug.capabilities.assert_called_once_with()
+    assert facade.capabilities() == GraphCapabilities(True, False, True)
+    ladybug.capabilities.assert_not_called()
     grafx.capabilities.assert_called_once_with()
     assert events == []
 
@@ -508,7 +507,6 @@ def test_semantic_mutation_is_prepared_before_selected_auto_commit_provider() ->
     grafx.create_node.side_effect = create_node
     facade = CommunityRoutedSemanticGraphStore(
         resolver,  # type: ignore[arg-type]
-        ladybug=ladybug,
         grafx=grafx,
         operation_window=windows.operation,
         mutation_recorder=recorder,
@@ -540,17 +538,16 @@ def test_semantic_mutation_is_prepared_before_selected_auto_commit_provider() ->
 def test_semantic_read_does_not_touch_mutation_recorder() -> None:
     events: list[tuple[Any, ...]] = []
     resolver = _RouteResolver(
-        {"board-l": _snapshot("board-l", "ladybug", generation="legacy-4")},
+        {"board-l": _snapshot("board-l", "grafx", generation="legacy-4")},
         events,
     )
     windows = _Windows(events)
     ladybug = Mock(name="ladybug_store")
     grafx = Mock(name="grafx_store")
     recorder = _MutationRecorder(events)
-    ladybug.get_schema_version.return_value = "0.5.0"
+    grafx.get_schema_version.return_value = "0.5.0"
     facade = CommunityRoutedSemanticGraphStore(
         resolver,  # type: ignore[arg-type]
-        ladybug=ladybug,
         grafx=grafx,
         operation_window=windows.operation,
         mutation_recorder=recorder,
@@ -565,7 +562,7 @@ def test_two_boards_select_distinct_persisted_backends_and_generations() -> None
     events: list[tuple[Any, ...]] = []
     resolver = _RouteResolver(
         {
-            "board-l": _snapshot("board-l", "ladybug", generation="legacy-4"),
+            "board-l": _snapshot("board-l", "grafx", generation="generation-4"),
             "board-g": _snapshot("board-g", "grafx", generation="grafx-9"),
         },
         events,
@@ -573,20 +570,18 @@ def test_two_boards_select_distinct_persisted_backends_and_generations() -> None
     windows = _Windows(events)
     ladybug = Mock()
     grafx = Mock()
-    ladybug.get_schema_version.return_value = "ladybug-version"
-    grafx.get_schema_version.return_value = "grafx-version"
+    grafx.get_schema_version.side_effect = lambda board: f"version:{board}"
     facade = CommunityRoutedSemanticGraphStore(
         resolver,  # type: ignore[arg-type]
-        ladybug=ladybug,
         grafx=grafx,
         operation_window=windows.operation,
     )
 
-    assert facade.get_schema_version("board-l") == "ladybug-version"
-    assert facade.get_schema_version("board-g") == "grafx-version"
-    ladybug.get_schema_version.assert_called_once_with("board-l")
-    grafx.get_schema_version.assert_called_once_with("board-g")
-    assert ("route", "ladybug", "legacy-4") in events
+    assert facade.get_schema_version("board-l") == "version:board-l"
+    assert facade.get_schema_version("board-g") == "version:board-g"
+    assert grafx.get_schema_version.call_args_list == [call("board-l"), call("board-g")]
+    ladybug.get_schema_version.assert_not_called()
+    assert ("route", "grafx", "generation-4") in events
     assert ("route", "grafx", "grafx-9") in events
 
 
@@ -623,8 +618,8 @@ def test_persisted_bindings_override_current_resolver_backend_setting(
     )
     changed_settings_resolver = CommunityGraphRouteResolver(
         binding_store,
-        board_backend="ladybug",
-        global_backend="ladybug",
+        board_backend="grafx",
+        global_backend="grafx",
         grafx_page_size=8192,
     )
     ladybug = Mock()
@@ -638,16 +633,14 @@ def test_persisted_bindings_override_current_resolver_backend_setting(
 
     facade = CommunityRoutedSemanticGraphStore(
         changed_settings_resolver,
-        ladybug=ladybug,
         grafx=grafx,
         operation_window=operation_window,
     )
 
-    assert facade.get_schema_version("board-l") == "ladybug"
+    with pytest.raises(GraphUnavailable):
+        facade.get_schema_version("board-l")
     assert facade.get_schema_version("board-g") == "grafx"
-    assert changed_settings_resolver.acquire_board_route("board-l").generation == (
-        "ladybug-3"
-    )
+    assert ladybug_path.read_bytes() == b"ladybug"
     assert changed_settings_resolver.acquire_board_route("board-g").generation == (
         "grafx-8"
     )
@@ -668,7 +661,6 @@ def test_cypher_single_and_paired_reads_pin_one_route_and_one_window_each() -> N
     grafx.execute_read_only_pair.return_value = paired
     facade = CommunityRoutedCypherExecutor(
         resolver,  # type: ignore[arg-type]
-        ladybug=ladybug,
         grafx=grafx,
         operation_window=windows.operation,
     )
@@ -718,7 +710,6 @@ def test_cypher_batch_pins_one_route_and_one_complete_window() -> None:
     grafx.execute_read_only_batch.return_value = expected
     facade = CommunityRoutedCypherExecutor(
         resolver,  # type: ignore[arg-type]
-        ladybug=ladybug,
         grafx=grafx,
         operation_window=windows.operation,
     )
@@ -749,13 +740,12 @@ def test_cypher_support_is_conservative_and_probes_both_backends(
     grafx.is_supported.return_value = grafx_supported
     facade = CommunityRoutedCypherExecutor(
         _RouteResolver({}, events),  # type: ignore[arg-type]
-        ladybug=ladybug,
         grafx=grafx,
         operation_window=_Windows(events).operation,
     )
 
-    assert facade.is_supported() is expected
-    ladybug.is_supported.assert_called_once_with()
+    assert facade.is_supported() is grafx_supported
+    ladybug.is_supported.assert_not_called()
     grafx.is_supported.assert_called_once_with()
     assert events == []
 
@@ -766,7 +756,7 @@ async def test_schema_manager_forwards_all_methods_inside_complete_async_window(
 ):
     events: list[tuple[Any, ...]] = []
     resolver = _RouteResolver(
-        {"board-l": _snapshot("board-l", "ladybug", generation="legacy-2")},
+        {"board-l": _snapshot("board-l", "grafx", generation="legacy-2")},
         events,
     )
     windows = _Windows(events)
@@ -779,13 +769,12 @@ async def test_schema_manager_forwards_all_methods_inside_complete_async_window(
         current_version="0.5.0",
         expected_version="0.5.0",
     )
-    ladybug.ensure_bootstrapped = AsyncMock(return_value=None)
-    ladybug.migrate = AsyncMock(return_value=migration)
-    ladybug.current_version = AsyncMock(return_value="0.5.0")
-    ladybug.validate = AsyncMock(return_value=validation)
+    grafx.ensure_bootstrapped = AsyncMock(return_value=None)
+    grafx.migrate = AsyncMock(return_value=migration)
+    grafx.current_version = AsyncMock(return_value="0.5.0")
+    grafx.validate = AsyncMock(return_value=validation)
     facade = CommunityRoutedGraphSchemaManager(
         resolver,  # type: ignore[arg-type]
-        ladybug=ladybug,
         grafx=grafx,
         operation_window=windows.operation,
     )
@@ -795,11 +784,10 @@ async def test_schema_manager_forwards_all_methods_inside_complete_async_window(
     assert await facade.current_version("board-l") == "0.5.0"
     assert await facade.validate("board-l") is validation
 
-    ladybug.ensure_bootstrapped.assert_awaited_once_with("board-l")
-    ladybug.migrate.assert_awaited_once_with("board-l")
-    ladybug.current_version.assert_awaited_once_with("board-l")
-    ladybug.validate.assert_awaited_once_with("board-l")
-    assert grafx.mock_calls == []
+    grafx.ensure_bootstrapped.assert_awaited_once_with("board-l")
+    grafx.migrate.assert_awaited_once_with("board-l")
+    grafx.current_version.assert_awaited_once_with("board-l")
+    grafx.validate.assert_awaited_once_with("board-l")
     assert resolver.acquire_calls == ["board-l"] * 4
     assert events.count(("operation_enter", "board-l")) == 4
     assert events.count(("operation_exit", "board-l")) == 4
@@ -817,13 +805,10 @@ def _runtime_facade(
 ) -> CommunityRoutedGraphRuntimeStore:
     return CommunityRoutedGraphRuntimeStore(
         resolver,  # type: ignore[arg-type]
-        ladybug=ladybug,
         grafx=grafx,
         operation_window=windows.operation,
         mutation_window=windows.mutation,
-        ladybug_purge_unguarded=ladybug_purge or Mock(name="ladybug_purge"),
         grafx_purge_unguarded=grafx_purge or Mock(name="grafx_purge"),
-        ladybug_erase_unguarded=ladybug_erase or Mock(name="ladybug_erase"),
         grafx_erase_unguarded=grafx_erase or Mock(name="grafx_erase"),
     )
 
@@ -912,7 +897,6 @@ def test_runtime_budget_never_routes_or_touches_either_backend() -> None:
         windows,
         ladybug,
         grafx,
-        ladybug_erase=ladybug_erase,
         grafx_erase=grafx_erase,
     )
 
@@ -934,7 +918,7 @@ def test_runtime_budget_never_routes_or_touches_either_backend() -> None:
 async def test_recovery_uses_inspect_and_holds_mutation_window_across_await() -> None:
     events: list[tuple[Any, ...]] = []
     resolver = _RouteResolver(
-        {"board-l": _snapshot("board-l", "ladybug", generation="legacy-5")},
+        {"board-l": _snapshot("board-l", "grafx", generation="legacy-5")},
         events,
     )
     windows = _StrictWindows(events)
@@ -950,22 +934,19 @@ async def test_recovery_uses_inspect_and_holds_mutation_window_across_await() ->
         events.append(("provider_recovery", board_id))
         return report
 
-    ladybug_recovery = AsyncMock(side_effect=recover)
-    grafx_recovery = AsyncMock()
+    grafx_recovery = AsyncMock(side_effect=recover)
     facade = CommunityRoutedGraphRecovery(
         resolver,  # type: ignore[arg-type]
-        ladybug_recovery_unguarded=ladybug_recovery,
         grafx_recovery_unguarded=grafx_recovery,
         mutation_window=windows.mutation,
     )
 
     assert await facade.recover_wal_only("board-l") is report
-    ladybug_recovery.assert_awaited_once_with("board-l")
-    grafx_recovery.assert_not_awaited()
+    grafx_recovery.assert_awaited_once_with("board-l")
     assert events == [
         ("mutation_enter", "board-l", "recover_wal_only"),
         ("inspect", "board-l"),
-        ("route", "ladybug", "legacy-5"),
+        ("route", "grafx", "legacy-5"),
         ("provider_recovery", "board-l"),
         ("mutation_exit", "board-l", "recover_wal_only"),
     ]
@@ -999,7 +980,6 @@ async def test_nested_provider_mutation_windows_are_detected_for_purge_and_recov
     )
     recovery = CommunityRoutedGraphRecovery(
         resolver,  # type: ignore[arg-type]
-        ladybug_recovery_unguarded=AsyncMock(),
         grafx_recovery_unguarded=guarded_recovery,
         mutation_window=windows.mutation,
     )
@@ -1031,7 +1011,6 @@ def test_missing_binding_returns_only_the_runtime_contracts_that_can_fail_closed
         windows,
         ladybug,
         grafx,
-        ladybug_erase=ladybug_erase,
         grafx_erase=grafx_erase,
     )
 
@@ -1065,7 +1044,6 @@ async def test_missing_binding_recovery_returns_stable_failed_report() -> None:
     grafx_recovery = AsyncMock()
     facade = CommunityRoutedGraphRecovery(
         resolver,  # type: ignore[arg-type]
-        ladybug_recovery_unguarded=ladybug_recovery,
         grafx_recovery_unguarded=grafx_recovery,
         mutation_window=windows.mutation,
     )
@@ -1108,6 +1086,9 @@ def test_privacy_erase_is_an_all_storage_admin_sweep_even_without_binding(
             calls.append((backend, board_id, reason))
             removed = physical[backend]
             physical[backend] = False
+            physical["ladybug"] = (
+                False  # Opaque residues are owned by the single physical eraser.
+            )
             return GraphPurgeResult(
                 board_id=board_id,
                 removed=removed,
@@ -1128,7 +1109,6 @@ def test_privacy_erase_is_an_all_storage_admin_sweep_even_without_binding(
         windows,
         ladybug,
         grafx,
-        ladybug_erase=ladybug_erase,
         grafx_erase=grafx_erase,
     )
 
@@ -1139,9 +1119,7 @@ def test_privacy_erase_is_an_all_storage_admin_sweep_even_without_binding(
     assert retry.status == "not_found" and retry.not_found is True
     assert physical == {"ladybug": False, "grafx": False}
     assert calls == [
-        ("ladybug", "board-m", "right_to_erasure"),
         ("grafx", "board-m", "right_to_erasure"),
-        ("ladybug", "board-m", "right_to_erasure_retry"),
         ("grafx", "board-m", "right_to_erasure_retry"),
     ]
     assert ladybug.mock_calls == grafx.mock_calls == []
@@ -1208,7 +1186,6 @@ def test_privacy_erase_partial_failure_stays_failed_and_retry_can_converge() -> 
         windows,
         ladybug,
         grafx,
-        ladybug_erase=ladybug_eraser,
         grafx_erase=grafx_eraser,
     )
 
@@ -1222,11 +1199,8 @@ def test_privacy_erase_partial_failure_stays_failed_and_retry_can_converge() -> 
         call("board-g", reason="privacy"),
         call("board-g", reason="privacy_retry"),
     ]
-    assert ladybug_eraser.call_args_list == [
-        call("board-g", reason="privacy"),
-        call("board-g", reason="privacy_retry"),
-    ]
-    assert order == ["grafx", "ladybug", "grafx", "ladybug"]
+    assert ladybug_eraser.call_args_list == []
+    assert order == ["grafx", "grafx"]
     assert ladybug.erase_board_graph.call_count == 0
     assert grafx.erase_board_graph.call_count == 0
 
@@ -1247,7 +1221,6 @@ def test_route_corruption_propagates_without_provider_or_privacy_mutation() -> N
         windows,
         ladybug,
         grafx,
-        ladybug_erase=ladybug_erase,
         grafx_erase=grafx_erase,
     )
 
@@ -1276,7 +1249,6 @@ def test_ordinary_route_failure_propagates_and_releases_operation_window() -> No
     grafx.execute_read_only.side_effect = RuntimeError("provider-failed")
     facade = CommunityRoutedCypherExecutor(
         resolver,  # type: ignore[arg-type]
-        ladybug=ladybug,
         grafx=grafx,
         operation_window=windows.operation,
     )
@@ -1311,7 +1283,6 @@ def test_invalid_route_snapshot_never_crosses_into_a_provider(
     grafx = Mock()
     facade = CommunityRoutedSemanticGraphStore(
         resolver,  # type: ignore[arg-type]
-        ladybug=ladybug,
         grafx=grafx,
         operation_window=windows.operation,
     )
@@ -1333,19 +1304,16 @@ async def test_missing_binding_never_falls_back_for_ordinary_facades() -> None:
     grafx = Mock()
     store = CommunityRoutedSemanticGraphStore(
         resolver,  # type: ignore[arg-type]
-        ladybug=ladybug,
         grafx=grafx,
         operation_window=windows.operation,
     )
     cypher = CommunityRoutedCypherExecutor(
         resolver,  # type: ignore[arg-type]
-        ladybug=ladybug,
         grafx=grafx,
         operation_window=windows.operation,
     )
     schema = CommunityRoutedGraphSchemaManager(
         resolver,  # type: ignore[arg-type]
-        ladybug=ladybug,
         grafx=grafx,
         operation_window=windows.operation,
     )
@@ -1369,36 +1337,29 @@ def test_facades_structurally_satisfy_the_unchanged_core_protocols() -> None:
     provider = Mock()
     semantic = CommunityRoutedSemanticGraphStore(
         resolver,  # type: ignore[arg-type]
-        ladybug=provider,
         grafx=provider,
         operation_window=windows.operation,
     )
     cypher = CommunityRoutedCypherExecutor(
         resolver,  # type: ignore[arg-type]
-        ladybug=provider,
         grafx=provider,
         operation_window=windows.operation,
     )
     schema = CommunityRoutedGraphSchemaManager(
         resolver,  # type: ignore[arg-type]
-        ladybug=provider,
         grafx=provider,
         operation_window=windows.operation,
     )
     runtime = CommunityRoutedGraphRuntimeStore(
         resolver,  # type: ignore[arg-type]
-        ladybug=provider,
         grafx=provider,
         operation_window=windows.operation,
         mutation_window=windows.mutation,
-        ladybug_purge_unguarded=Mock(),
         grafx_purge_unguarded=Mock(),
-        ladybug_erase_unguarded=Mock(),
         grafx_erase_unguarded=Mock(),
     )
     recovery = CommunityRoutedGraphRecovery(
         resolver,  # type: ignore[arg-type]
-        ladybug_recovery_unguarded=AsyncMock(),
         grafx_recovery_unguarded=AsyncMock(),
         mutation_window=windows.mutation,
     )
@@ -1414,16 +1375,11 @@ def test_unguarded_mutation_callbacks_are_required_private_facade_seams() -> Non
     runtime_parameters = signature(CommunityRoutedGraphRuntimeStore).parameters
     recovery_parameters = signature(CommunityRoutedGraphRecovery).parameters
     for name in (
-        "ladybug_purge_unguarded",
         "grafx_purge_unguarded",
-        "ladybug_erase_unguarded",
         "grafx_erase_unguarded",
     ):
         assert runtime_parameters[name].default is Parameter.empty
-    for name in (
-        "ladybug_recovery_unguarded",
-        "grafx_recovery_unguarded",
-    ):
+    for name in ("grafx_recovery_unguarded",):
         assert recovery_parameters[name].default is Parameter.empty
 
     assert "_BoardMutationOperation" not in facade_module.__all__
@@ -1499,24 +1455,23 @@ def test_unguarded_mutation_callbacks_are_required_private_facade_seams() -> Non
         ),
     ],
 )
-def test_every_routed_ladybug_semantic_mutation_revalidates_its_write_fence(
+def test_every_routed_grafx_semantic_mutation_revalidates_its_write_fence(
     method: str,
     phase: str,
     invoke,
 ) -> None:
     events: list[tuple[Any, ...]] = []
     resolver = _RouteResolver(
-        {"board-l": _snapshot("board-l", "ladybug", generation="legacy-1")},
+        {"board-l": _snapshot("board-l", "grafx", generation="legacy-1")},
         events,
     )
     ladybug = Mock()
     grafx = Mock()
-    getattr(ladybug, method).side_effect = lambda *_args, **_kwargs: events.append(
+    getattr(grafx, method).side_effect = lambda *_args, **_kwargs: events.append(
         ("provider_mutation", method)
     )
     facade = CommunityRoutedSemanticGraphStore(
         resolver,  # type: ignore[arg-type]
-        ladybug=ladybug,
         grafx=grafx,
         operation_window=_Windows(events).operation,
         revalidate_write_fence=lambda board_id, observed_phase: events.append(
@@ -1530,16 +1485,13 @@ def test_every_routed_ladybug_semantic_mutation_revalidates_its_write_fence(
     assert events.index(("write_fence", "board-l", phase)) < events.index(
         ("provider_mutation", method)
     )
-    assert grafx.mock_calls == []
 
 
 @pytest.mark.asyncio
-async def test_every_routed_ladybug_schema_mutation_revalidates_its_write_fence() -> (
-    None
-):
+async def test_every_routed_grafx_schema_mutation_revalidates_its_write_fence() -> None:
     events: list[tuple[Any, ...]] = []
     resolver = _RouteResolver(
-        {"board-l": _snapshot("board-l", "ladybug", generation="legacy-1")},
+        {"board-l": _snapshot("board-l", "grafx", generation="legacy-1")},
         events,
     )
     ladybug = Mock()
@@ -1552,11 +1504,10 @@ async def test_every_routed_ladybug_schema_mutation_revalidates_its_write_fence(
         events.append(("provider_mutation", "migrate", board_id))
         return {"migrated": True}
 
-    ladybug.ensure_bootstrapped = ensure
-    ladybug.migrate = migrate
+    grafx.ensure_bootstrapped = ensure
+    grafx.migrate = migrate
     facade = CommunityRoutedGraphSchemaManager(
         resolver,  # type: ignore[arg-type]
-        ladybug=ladybug,
         grafx=grafx,
         operation_window=_Windows(events).operation,
         revalidate_write_fence=lambda board_id, phase: events.append(
@@ -1579,4 +1530,3 @@ async def test_every_routed_ladybug_schema_mutation_revalidates_its_write_fence(
     assert events.index(migrate_fence) < events.index(
         ("provider_mutation", "migrate", "board-l")
     )
-    assert grafx.mock_calls == []

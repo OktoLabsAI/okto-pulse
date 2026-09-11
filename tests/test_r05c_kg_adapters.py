@@ -131,7 +131,9 @@ def test_ts_e49513c1_synthetic_core_importing_community_is_detectable(tmp_path):
 # ===========================================================================
 def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
     from okto_pulse.community.adapters.composition import build_community_base_registry
-    from okto_pulse.community.adapters.kg import build_community_graph_providers
+    from okto_pulse.community.adapters.routed_graph_composition import (
+        build_community_routed_graph_composition,
+    )
     from okto_pulse.core.kg.interfaces.graph_lifecycle import GraphLifecycle
     from okto_pulse.core.kg.interfaces.graph_runtime_store import GraphRuntimeStore
     from okto_pulse.core.kg.interfaces.graph_schema_manager import GraphSchemaManager
@@ -141,8 +143,13 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
         GlobalDiscoveryRecovery,
     )
 
-    providers = build_community_graph_providers()
+    from okto_pulse.community.config import CommunitySettings
+
+    providers = build_community_routed_graph_composition(
+        settings=CommunitySettings()
+    ).registry_providers()
     assert set(providers) == {
+        "quarantine_restore",
         "graph_store",
         "cypher_executor",
         "graph_transaction",
@@ -162,12 +169,10 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
     assert callable(providers["global_discovery_runtime"].state)
     assert callable(providers["global_discovery_runtime"].execute)
     assert isinstance(providers["global_discovery_recovery"], GlobalDiscoveryRecovery)
-    assert (
-        providers["global_discovery_recovery"]._global_runtime
-        is providers["global_discovery_runtime"]
-    )
     # They are the Community classes (registered behind the ports).
-    assert type(providers["graph_store"]).__name__ == "CommunityKuzuGraphStore"
+    assert (
+        type(providers["graph_store"]).__name__ == "CommunityRoutedSemanticGraphStore"
+    )
 
     # include_graph defaults to wiring the graph slots into the base registry.
     base = build_community_base_registry()
@@ -189,58 +194,10 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
 
 
 def test_fcc03c_kg_runtime_closes_global_discovery_through_runtime_port():
-    source = (COMMUNITY_PKG / "adapters" / "kg_runtime.py").read_text(encoding="utf-8")
+    source = (COMMUNITY_PKG / "adapters" / "kg_shutdown.py").read_text(encoding="utf-8")
 
     assert "close_global_connection" not in source
-    assert "require_global_discovery_runtime().close()" in source
-
-
-def test_ts_f7b7374d_graph_transaction_scope_uses_community_runtime(monkeypatch):
-    from okto_pulse.community.adapters import kg_runtime
-    from okto_pulse.community.adapters.kuzu_graph_transaction import (
-        CommunityKuzuGraphTransaction,
-    )
-
-    class FakeConn:
-        def __init__(self):
-            self.executed = []
-
-        def execute(self, cypher, params=None):
-            self.executed.append((cypher, params))
-            return {"ok": True}
-
-    class FakeBoardConnection:
-        def __init__(self):
-            self.db = object()
-            self.conn = FakeConn()
-            self.close_count = 0
-
-        def close(self):
-            self.close_count += 1
-
-    fake_connection = FakeBoardConnection()
-    opened = []
-
-    def fake_open_board_connection(board_id):
-        opened.append(board_id)
-        return fake_connection
-
-    monkeypatch.setattr(kg_runtime, "open_board_connection", fake_open_board_connection)
-
-    async def drive():
-        scope = await CommunityKuzuGraphTransaction().begin("board-transaction")
-        result = scope.execute("CREATE (n:Decision {id: $id})", {"id": "n1"})
-        await scope.commit()
-        await scope.commit()
-        return result
-
-    result = asyncio.run(drive())
-    assert result.rows == ()
-    assert opened == ["board-transaction"]
-    assert fake_connection.conn.executed == [
-        ("CREATE (n:Decision {id: $id})", {"id": "n1"})
-    ]
-    assert fake_connection.close_count == 1
+    assert "composition.global_graph.close_all_on_shutdown()" in source
 
 
 # ===========================================================================
@@ -345,7 +302,7 @@ def test_ts_9ee86cb6_cli_seed_bootstrap_migrated_to_port():
 # ===========================================================================
 def test_ts_6145a84f_dependency_audit_real_core_is_ledgered():
     report = audit_ladybug_ownership(CORE_PKG)
-    assert report["ownership"] == "community-local"
+    assert report["ownership"] == "retired"
     assert report["ok"] is True, f"non-ledgered Ladybug import: {report['offenders']}"
     assert report["offenders"] == []
     # the core must no longer expose Ladybug at all; the Community runtime owns it.
@@ -370,7 +327,7 @@ def test_ts_6145a84f_dependency_audit_flags_new_ladybug_import(tmp_path):
 # ts_a6c30200 — schema/layer/safety invariants through the Community store.
 # ===========================================================================
 def test_ts_a6c30200_schema_layer_safety_invariants():
-    from okto_pulse.community.adapters.kg import CommunityKuzuGraphStore
+    from okto_pulse.community.adapters.grafx_graph_store import CommunityGrafxGraphStore
     from okto_pulse.core.kg.schema_contract import (
         EDGE_LAYERS,
         NODE_TYPES,
@@ -379,7 +336,7 @@ def test_ts_a6c30200_schema_layer_safety_invariants():
         vector_index_name,
     )
 
-    store = CommunityKuzuGraphStore()
+    store = CommunityGrafxGraphStore(lambda _board: None, lambda _board, _phase: None)
     # get_schema_info is pure metadata (no graph connection) — invariants only.
     info = store.get_schema_info("any-board", include_internal=True)
     assert info["schema_version"] == SCHEMA_VERSION  # schema version invariant

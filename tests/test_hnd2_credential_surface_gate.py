@@ -44,8 +44,7 @@ def test_hnd2_credential_surface_gate_blocks_printing_agent_api_key(tmp_path):
     rogue = tmp_path / "okto_pulse" / "community" / "rogue.py"
     rogue.parent.mkdir(parents=True)
     rogue.write_text(
-        "def leak(agent):\n"
-        "    print(agent.api_key)\n",
+        "def leak(agent):\n    print(agent.api_key)\n",
         encoding="utf-8",
     )
 
@@ -101,7 +100,6 @@ def test_hnd2_init_reveals_returned_key_but_not_persisted_marker(
     import okto_pulse.community.adapters.relational_schema_lifecycle as lifecycle
     import okto_pulse.community.adapters.sqlalchemy_database as database
     import okto_pulse.community.config as community_config
-    import okto_pulse.community.adapters.kg_runtime as kg_runtime
     import okto_pulse.community.main as community_main
     import okto_pulse.community.seed as community_seed
     import okto_pulse.core.services.application_kg as application_kg
@@ -185,11 +183,6 @@ def test_hnd2_init_reveals_returned_key_but_not_persisted_marker(
     )
     monkeypatch.setattr(
         application_kg, "get_current_provider_registry", lambda: registry
-    )
-    monkeypatch.setattr(
-        kg_runtime,
-        "board_kuzu_path",
-        lambda _board_id: tmp_path / "graph",
     )
 
     async def fake_bootstrap_board_graph(_board_id: str) -> tuple[str, str]:

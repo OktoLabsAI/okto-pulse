@@ -31,7 +31,6 @@ from okto_pulse.community.adapters.graph_backend_binding import (
 from okto_pulse.community.adapters.graph_route_resolver import (
     CommunityGraphRouteResolver,
 )
-from okto_pulse.community.adapters.kg_wal_recovery import wal_only_quarantine
 from okto_pulse.community.adapters.routed_quarantine_restore import (
     CommunityGrafxSnapshotRestoreFactory,
     CommunityRoutedQuarantineRestore,
@@ -127,8 +126,8 @@ def _resolver(
 
     return store, CommunityGraphRouteResolver(
         store,
-        board_backend="ladybug",
-        global_backend="ladybug",
+        board_backend="grafx",
+        global_backend="grafx",
         grafx_page_size=PAGE_SIZE,
         open_grafx_database=open_database if opened is not None else None,
     )
@@ -246,24 +245,6 @@ def _grafx_directory_quarantine(
     return directory
 
 
-def _produced_ladybug_wal_quarantine(root: Path) -> tuple[Path, Path, str]:
-    graph_path = root / "boards" / BOARD_ID / "graph.lbug"
-    graph_path.parent.mkdir(parents=True)
-    graph_path.write_bytes(b"main")
-    graph_path.with_name("graph.lbug.wal").write_bytes(b"wal-bytes")
-    graph_path.with_name("graph.lbug.shadow").write_bytes(b"shadow-bytes")
-
-    result = wal_only_quarantine(
-        BOARD_ID,
-        "routed-restore-ratchet",
-        graph_path=graph_path,
-    )
-
-    assert result.ok is True
-    assert result.quarantine_id is not None
-    return graph_path, root / "quarantine" / result.quarantine_id, result.quarantine_id
-
-
 def _legacy_interrupted_quarantine(
     root: Path,
     *,
@@ -305,12 +286,11 @@ def _routed(
     return CommunityRoutedQuarantineRestore(
         resolver,
         quarantine_root=root / "quarantine",
-        ladybug=ladybug,
         grafx_factory=factory if grafx is not None else None,
     )
 
 
-def test_missing_binding_accepts_only_strict_ladybug_without_opening(
+def test_missing_binding_rejects_retired_quarantine_without_opening(
     tmp_path: Path,
 ) -> None:
     _ladybug_quarantine(tmp_path)
@@ -320,38 +300,11 @@ def test_missing_binding_accepts_only_strict_ladybug_without_opening(
         board_dir=store.board_ladybug_path(BOARD_ID).parent,
     )
 
-    plan = _routed(tmp_path, resolver, ladybug).plan("q_ladybug")
+    with pytest.raises(QuarantineRestoreError, match="Retired|unsupported"):
+        _routed(tmp_path, resolver, ladybug).plan("q_ladybug")
 
-    assert plan.board_id == BOARD_ID
-    assert ladybug.plan_calls == ["q_ladybug"]
+    assert ladybug.plan_calls == []
     assert not (tmp_path / "boards").exists()
-
-
-def test_real_ladybug_wal_producer_routes_with_authenticated_inventory(
-    tmp_path: Path,
-) -> None:
-    graph_path, directory, quarantine_id = _produced_ladybug_wal_quarantine(tmp_path)
-    _store, resolver = _resolver(tmp_path)
-    adapter = build_community_routed_quarantine_restore(
-        kg_base_dir=str(tmp_path),
-        data_dir=str(tmp_path),
-        graph_route_resolver=resolver,
-        grafx_restore_factory=None,
-    )
-
-    plan = adapter.plan(quarantine_id)
-
-    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["kind"] == "kg_wal_only_quarantine"
-    assert manifest["files"] == ["graph.lbug.wal", "graph.lbug.shadow"]
-    assert all(type(item["size"]) is int for item in manifest["planned_files"])
-    assert all(len(item["sha256"]) == 64 for item in manifest["planned_files"])
-    assert plan.board_id == BOARD_ID
-    assert Path(plan.board_dir) == graph_path.parent
-    assert [entry.name for entry in plan.files] == [
-        "graph.lbug.shadow",
-        "graph.lbug.wal",
-    ]
 
 
 @pytest.mark.parametrize(
@@ -397,14 +350,14 @@ def test_legacy_interrupted_checkpoint_refuses_conflicting_board_identities(
     _store, resolver = _resolver(tmp_path)
     ladybug = _RecordingRestore(board_id=LEGACY_BOARD_ID, board_dir=graph_path.parent)
 
-    with pytest.raises(QuarantineRestoreError, match="inconsistent board identity"):
+    with pytest.raises(QuarantineRestoreError, match="Retired|unsupported"):
         _routed(tmp_path, resolver, ladybug).apply(quarantine_id)
 
     assert ladybug.apply_calls == []
     assert graph_path.read_bytes() == b"other-live-board-must-survive"
 
 
-def test_legacy_interrupted_checkpoint_routes_exact_producer_sidecars(
+def test_legacy_interrupted_checkpoint_refuses_even_exact_producer_sidecars(
     tmp_path: Path,
 ) -> None:
     graph_path, quarantine_id = _legacy_interrupted_quarantine(
@@ -415,67 +368,7 @@ def test_legacy_interrupted_checkpoint_routes_exact_producer_sidecars(
     _store, resolver = _resolver(tmp_path)
     ladybug = _RecordingRestore(board_id=LEGACY_BOARD_ID, board_dir=graph_path.parent)
 
-    plan = _routed(tmp_path, resolver, ladybug).plan(quarantine_id)
-
-    assert plan.board_id == LEGACY_BOARD_ID
-    assert ladybug.plan_calls == [quarantine_id]
-
-
-@pytest.mark.parametrize(
-    "mutation",
-    [
-        "quarantine_id",
-        "main_untouched",
-        "error",
-        "graph_path",
-        "main_file",
-        "planned_size",
-        "planned_digest",
-        "moved_order",
-        "payload_tamper",
-        "namespace_extra",
-        "extra_field",
-    ],
-)
-def test_real_ladybug_wal_schema_tamper_fails_before_provider(
-    tmp_path: Path,
-    mutation: str,
-) -> None:
-    graph_path, directory, quarantine_id = _produced_ladybug_wal_quarantine(tmp_path)
-    manifest_path = directory / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if mutation == "quarantine_id":
-        manifest["quarantine_id"] = "different"
-    elif mutation == "main_untouched":
-        manifest["main_untouched"] = False
-    elif mutation == "error":
-        manifest["error"] = "partial move"
-    elif mutation == "graph_path":
-        manifest["graph_path"] = str(
-            tmp_path / "alternate" / "boards" / BOARD_ID / "graph.lbug"
-        )
-    elif mutation == "main_file":
-        manifest["main_file"] = "graph.lbug.wal"
-    elif mutation == "planned_size":
-        manifest["planned_files"][0]["size"] += 1
-    elif mutation == "planned_digest":
-        manifest["planned_files"][0]["sha256"] = "0" * 64
-    elif mutation == "moved_order":
-        manifest["files"] = list(reversed(manifest["files"]))
-    elif mutation == "payload_tamper":
-        (directory / manifest["files"][0]).write_bytes(b"changed")
-    elif mutation == "namespace_extra":
-        (directory / "graph.lbug").write_bytes(b"must-never-be-restored")
-    elif mutation == "extra_field":
-        manifest["unknown"] = "not-canonical"
-    else:  # pragma: no cover - parametrization is closed above
-        raise AssertionError(mutation)
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-
-    _store, resolver = _resolver(tmp_path)
-    ladybug = _RecordingRestore(board_id=BOARD_ID, board_dir=graph_path.parent)
-
-    with pytest.raises(QuarantineRestoreError):
+    with pytest.raises(QuarantineRestoreError, match="Retired|unsupported"):
         _routed(tmp_path, resolver, ladybug).plan(quarantine_id)
 
     assert ladybug.plan_calls == []
@@ -497,7 +390,7 @@ def test_unproven_old_ladybug_wal_kind_is_not_a_legacy_escape(
         board_dir=store.board_ladybug_path(BOARD_ID).parent,
     )
 
-    with pytest.raises(QuarantineRestoreError, match="kind is unsupported"):
+    with pytest.raises(QuarantineRestoreError, match="Retired|unsupported"):
         _routed(tmp_path, resolver, ladybug).plan("q_old_kind")
 
     assert ladybug.plan_calls == []
@@ -511,7 +404,9 @@ def test_missing_binding_refuses_grafx_before_factory_or_open(tmp_path: Path) ->
     grafx = _RecordingRestore(board_id=BOARD_ID, board_dir=path)
     factory_calls: list[object] = []
 
-    with pytest.raises(QuarantineRestoreError, match="no persisted Board binding"):
+    with pytest.raises(
+        QuarantineRestoreError, match="persisted Board route was refused"
+    ):
         _routed(
             tmp_path,
             resolver,
@@ -524,7 +419,7 @@ def test_missing_binding_refuses_grafx_before_factory_or_open(tmp_path: Path) ->
     assert not store.board_grafx_path(BOARD_ID, "generation-1").exists()
 
 
-@pytest.mark.parametrize("bound_backend", ["ladybug", "grafx"])
+@pytest.mark.parametrize("bound_backend", ["grafx"])
 def test_persisted_binding_is_authoritative_and_mismatch_never_falls_back(
     tmp_path: Path,
     bound_backend: str,
@@ -544,7 +439,7 @@ def test_persisted_binding_is_authoritative_and_mismatch_never_falls_back(
     ladybug = _RecordingRestore(board_id=BOARD_ID, board_dir=bound_path.parent)
     grafx = _RecordingRestore(board_id=BOARD_ID, board_dir=bound_path)
 
-    with pytest.raises(QuarantineRestoreError, match="conflicts"):
+    with pytest.raises(QuarantineRestoreError, match="Retired|unsupported"):
         _routed(tmp_path, resolver, ladybug, grafx).plan(quarantine_id)
 
     assert ladybug.plan_calls == []
@@ -596,7 +491,6 @@ def test_concrete_grafx_factory_pins_dry_run_to_snapshot_without_open(
     adapter = CommunityRoutedQuarantineRestore(
         resolver,
         quarantine_root=tmp_path / "quarantine",
-        ladybug=ladybug,
         grafx_factory=factory,
     )
 
@@ -692,54 +586,6 @@ def test_grafx_directory_tamper_and_duplicate_inventory_fail_before_factory(
     assert factory_calls == []
 
 
-def test_apply_reclassifies_and_reinspects_instead_of_reusing_dry_run(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    directory = _ladybug_quarantine(tmp_path)
-    store, resolver = _resolver(tmp_path)
-    ladybug_path = _bind_ladybug(store)
-    inspections: list[str] = []
-    inspect_route = resolver.inspect_board_route
-
-    def inspect(board_id: str):
-        inspections.append(board_id)
-        return inspect_route(board_id)
-
-    monkeypatch.setattr(resolver, "inspect_board_route", inspect)
-    ladybug = _RecordingRestore(board_id=BOARD_ID, board_dir=ladybug_path.parent)
-    adapter = _routed(tmp_path, resolver, ladybug)
-    adapter.plan("q_ladybug")
-
-    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    manifest.update(
-        {
-            "format": "pulse_grafx_quarantine/1",
-            "kind": "grafx_wal_only",
-            "database_path": str(
-                tmp_path / "boards" / BOARD_ID / "grafx" / "generation-1"
-            ),
-            "main_untouched": True,
-            "complete": True,
-            "files": [
-                {
-                    "relative_path": "wal/000000000001.wal",
-                    "size_bytes": 1,
-                    "sha256": "0" * 64,
-                }
-            ],
-        }
-    )
-    (directory / "payload").mkdir()
-    (directory / "graph.lbug").unlink()
-    (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-
-    with pytest.raises(QuarantineRestoreError, match="conflicts"):
-        adapter.apply("q_ladybug")
-    assert ladybug.apply_calls == []
-    assert inspections == [BOARD_ID, BOARD_ID]
-
-
 @pytest.mark.parametrize(
     ("mutation", "reason"),
     [
@@ -785,28 +631,6 @@ def test_duplicate_or_stripped_mixed_markers_fail_before_provider(
 
     with pytest.raises(QuarantineRestoreError, match=reason):
         _routed(tmp_path, resolver, ladybug).plan("q_ladybug")
-    assert ladybug.plan_calls == []
-
-
-def test_ladybug_manifest_with_database_path_is_rejected_as_hybrid(
-    tmp_path: Path,
-) -> None:
-    directory = _ladybug_quarantine(tmp_path)
-    manifest_path = directory / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["database_path"] = str(
-        tmp_path / "boards" / BOARD_ID / "grafx" / "generation-1"
-    )
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    store, resolver = _resolver(tmp_path)
-    ladybug = _RecordingRestore(
-        board_id=BOARD_ID,
-        board_dir=store.board_ladybug_path(BOARD_ID).parent,
-    )
-
-    with pytest.raises(QuarantineRestoreError, match="Grafx markers"):
-        _routed(tmp_path, resolver, ladybug).plan("q_ladybug")
-
     assert ladybug.plan_calls == []
 
 
@@ -867,7 +691,7 @@ def test_oversize_manifest_and_alternate_payload_fail_before_provider(
 
     directory = _ladybug_quarantine(tmp_path, "q_poison")
     (directory / "payload").mkdir()
-    with pytest.raises(QuarantineRestoreError, match="payload does not match"):
+    with pytest.raises(QuarantineRestoreError, match="Retired|unsupported"):
         adapter.plan("q_poison")
     assert ladybug.plan_calls == []
 
@@ -917,7 +741,7 @@ def test_missing_binding_refuses_aliased_ladybug_destination(
         reject_target,
     )
 
-    with pytest.raises(QuarantineRestoreError, match="target crosses"):
+    with pytest.raises(QuarantineRestoreError, match="Retired|unsupported"):
         _routed(tmp_path, resolver, ladybug).plan("q_ladybug")
     assert ladybug.plan_calls == []
 

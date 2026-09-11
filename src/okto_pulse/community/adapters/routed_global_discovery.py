@@ -259,7 +259,7 @@ def _require_global_snapshot(snapshot: CommunityGraphRouteSnapshot) -> None:
             snapshot,
             reason="graph_route_snapshot_scope_invalid",
         )
-    if snapshot.backend not in {"ladybug", "grafx"}:
+    if snapshot.backend != "grafx":
         raise _invalid_global_snapshot(
             snapshot,
             reason="graph_route_snapshot_backend_invalid",
@@ -290,11 +290,10 @@ def _missing_runtime_state(*, generation: str | None) -> GraphRuntimeState:
 def _select_backend(
     snapshot: CommunityGraphRouteSnapshot,
     *,
-    ladybug: _ProviderT,
     grafx: _ProviderT,
 ) -> _ProviderT:
     _require_global_snapshot(snapshot)
-    return ladybug if snapshot.backend == "ladybug" else grafx
+    return grafx
 
 
 def _immutable_recovery_binding_matches(
@@ -325,31 +324,17 @@ class CommunityRoutedGlobalDiscoveryRuntime:
         global_lock: GlobalDiscoverySharedLock,
         revalidate_write_fence: Callable[[str], None],
         statement_is_write: Callable[[str], bool],
-        ladybug_session_factory: GlobalRuntimeSessionFactory,
         grafx_session_factory: GlobalRuntimeSessionFactory,
-        ladybug_state: RuntimeStateCallback,
         grafx_state: RuntimeStateCallback,
-        ladybug_materialization_paths: MaterializationPathsCallback,
         grafx_materialization_paths: MaterializationPathsCallback,
-        ladybug_close_unguarded: StandaloneCloseCallback,
         grafx_close_unguarded: StandaloneCloseCallback,
-        ladybug_purge_unguarded: StandalonePurgeCallback,
         grafx_purge_unguarded: StandalonePurgeCallback,
-        ladybug_privacy_erase_unguarded: StandalonePrivacyEraseCallback,
         grafx_privacy_erase_unguarded: StandalonePrivacyEraseCallback,
     ) -> None:
         self._resolver = resolver
         self._global_lock = global_lock
         self._revalidate_write_fence = revalidate_write_fence
         self._statement_is_write = statement_is_write
-        self._ladybug = _RuntimeBackend(
-            session_factory=ladybug_session_factory,
-            state=ladybug_state,
-            materialization_paths=ladybug_materialization_paths,
-            close_unguarded=ladybug_close_unguarded,
-            purge_unguarded=ladybug_purge_unguarded,
-            privacy_erase_unguarded=ladybug_privacy_erase_unguarded,
-        )
         self._grafx = _RuntimeBackend(
             session_factory=grafx_session_factory,
             state=grafx_state,
@@ -363,7 +348,6 @@ class CommunityRoutedGlobalDiscoveryRuntime:
     def _backend(self, snapshot: CommunityGraphRouteSnapshot) -> _RuntimeBackend:
         return _select_backend(
             snapshot,
-            ladybug=self._ladybug,
             grafx=self._grafx,
         )
 
@@ -546,9 +530,7 @@ class CommunityRoutedGlobalDiscoveryRuntime:
         min_similarity: float,
         exhaustive: bool = False,
     ) -> list[dict[str, Any]]:
-        # Ladybug's connection-local LOAD VECTOR writes its WAL even though the
-        # semantic operation is a read.  Route both backends through the writer
-        # lane so the public contract cannot vary with the selected engine.
+        # Grafx similarity search is a read and does not acquire writer authority.
         return self._call_runtime(
             "search_decision_digests",
             query_vector,
@@ -558,7 +540,7 @@ class CommunityRoutedGlobalDiscoveryRuntime:
             min_similarity=min_similarity,
             exhaustive=exhaustive,
             phase="global_digest_search",
-            write=True,
+            write=False,
         )
 
     def list_schema_objects(self) -> tuple[str, ...]:
@@ -845,13 +827,11 @@ class CommunityRoutedGlobalDiscoveryRecovery:
         resolver: CommunityGraphRouteResolver,
         *,
         global_lock: GlobalDiscoverySharedLock,
-        ladybug_factory: RecoveryProviderFactory,
         grafx_factory: RecoveryProviderFactory,
         validate_authenticated_transition: RecoveryRouteTransitionValidator,
     ) -> None:
         self._resolver = resolver
         self._global_lock = global_lock
-        self._ladybug_factory = ladybug_factory
         self._grafx_factory = grafx_factory
         self._validate_authenticated_transition = validate_authenticated_transition
 
@@ -866,7 +846,6 @@ class CommunityRoutedGlobalDiscoveryRecovery:
     ) -> RecoveryWorkerExtensionProvider:
         factory = _select_backend(
             snapshot,
-            ladybug=self._ladybug_factory,
             grafx=self._grafx_factory,
         )
         return factory(snapshot)

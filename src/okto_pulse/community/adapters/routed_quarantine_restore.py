@@ -62,25 +62,6 @@ _RESTORE_OPERATION = "restore_operation.json"
 _GRAFX_WAL_FORMAT = "pulse_grafx_quarantine/1"
 _GRAFX_WAL_KINDS = frozenset({"grafx_wal_only", "grafx_restore_backup"})
 _GRAFX_WAL_RELATIVE_RE = re.compile(r"wal/[0-9]{12}\.wal\Z")
-_LADYBUG_WAL_KIND = "kg_wal_only_quarantine"
-_LADYBUG_FILE_NAMES = frozenset(
-    {
-        "graph.lbug",
-        "graph.lbug.wal",
-        "graph.lbug.shadow",
-        "graph.lbug.wal.checkpoint",
-    }
-)
-_LADYBUG_WAL_FILE_NAMES = _LADYBUG_FILE_NAMES - {"graph.lbug"}
-_LADYBUG_INTERRUPTED_KIND = "legacy_interrupted_checkpoint"
-_LADYBUG_INTERRUPTED_FILE_NAMES = frozenset(
-    {"graph.lbug.shadow", "graph.lbug.wal.checkpoint"}
-)
-_LADYBUG_INTERRUPTED_TEXT_RE = re.compile(
-    r"\ASidecars orfaos de checkpoint interrompido movidos automaticamente "
-    r"para destravar a abertura de (?P<graph_path>.+)\. "
-    r"Main file preservado no lugar\. Arquivos: (?P<files>.+)\.\Z"
-)
 _GRAFX_EXCLUSIVE_MARKERS = frozenset(
     {
         "format",
@@ -97,22 +78,6 @@ _GRAFX_EXCLUSIVE_MARKERS = frozenset(
 _LADYBUG_EXCLUSIVE_MARKERS = frozenset(
     {"graph_path", "planned_files", "main_file", "original_board_dir"}
 )
-_LADYBUG_WAL_FIELDS = frozenset(
-    {
-        "kind",
-        "quarantine_id",
-        "board_id",
-        "reason",
-        "created_at",
-        "graph_path",
-        "planned_files",
-        "files",
-        "main_untouched",
-        "main_file",
-        "error",
-    }
-)
-_LADYBUG_WAL_INVENTORY_FIELDS = frozenset({"name", "size", "sha256"})
 
 ManifestBackend = Literal["ladybug", "grafx"]
 
@@ -353,7 +318,6 @@ class CommunityRoutedQuarantineRestore:
         resolver: CommunityGraphRouteResolver,
         *,
         quarantine_root: str | os.PathLike[str],
-        ladybug: _RestoreProvider,
         grafx_factory: GrafxRestoreFactory | None,
     ) -> None:
         if resolver is None:
@@ -362,7 +326,6 @@ class CommunityRoutedQuarantineRestore:
         self._root = Path(os.path.abspath(Path(quarantine_root).expanduser()))
         if self._root == self._root.parent or not self._root.name:
             raise ValueError("quarantine_root is too broad")
-        self._ladybug = ladybug
         self._grafx_factory = grafx_factory
 
     def plan(self, quarantine_id: str) -> RestorePlan:
@@ -434,25 +397,15 @@ class CommunityRoutedQuarantineRestore:
 
     def _select(self, quarantine_id: str) -> _SelectedRestore:
         classification = self._classify(quarantine_id)
+        if classification.backend != "grafx":
+            raise _refused(
+                "This quarantine belongs to a retired graph backend; its files are preserved",
+                quarantine_id=quarantine_id,
+                board_id=classification.board_id,
+            )
         try:
             snapshot = self._resolver.inspect_board_route(classification.board_id)
         except GraphCapabilityUnavailable as failure:
-            if failure.details.get("reason") == "binding_missing":
-                if classification.backend != "ladybug":
-                    raise _refused(
-                        "Grafx quarantine has no persisted Board binding",
-                        quarantine_id=quarantine_id,
-                        board_id=classification.board_id,
-                    ) from failure
-                self._require_legacy_target_safe(
-                    classification.board_id,
-                    quarantine_id=quarantine_id,
-                )
-                self._validate_missing_binding_manifest(
-                    classification,
-                    quarantine_id=quarantine_id,
-                )
-                return _SelectedRestore(classification, None, self._ladybug)
             raise _refused(
                 "persisted Board route was refused",
                 quarantine_id=quarantine_id,
@@ -487,57 +440,14 @@ class CommunityRoutedQuarantineRestore:
             self._provider_for_snapshot(snapshot, quarantine_id=quarantine_id),
         )
 
-    def _require_legacy_target_safe(
-        self,
-        board_id: str,
-        *,
-        quarantine_id: str,
-    ) -> None:
-        target = self._root.parent / "boards" / board_id
-        try:
-            reject_filesystem_alias_ancestry(target)
-        except (OSError, ValueError) as failure:
-            raise _refused(
-                "legacy Ladybug restore target crosses a filesystem alias",
-                quarantine_id=quarantine_id,
-                board_id=board_id,
-            ) from failure
-
-    def _validate_missing_binding_manifest(
-        self,
-        classification: _ManifestRoute,
-        *,
-        quarantine_id: str,
-    ) -> None:
-        document = classification.document
-        if document is None or document.get("kind") not in {
-            _LADYBUG_WAL_KIND,
-            _LADYBUG_INTERRUPTED_KIND,
-        }:
-            return
-        recorded_path = _required_absolute_path(
-            document.get("graph_path"),
-            quarantine_id=quarantine_id,
-            label="Ladybug WAL quarantine graph_path",
-        )
-        expected_path = (
-            self._root.parent / "boards" / classification.board_id / "graph.lbug"
-        )
-        if not _same_path(recorded_path, expected_path):
-            raise _refused(
-                "Ladybug WAL quarantine path conflicts with its legacy target",
-                quarantine_id=quarantine_id,
-                board_id=classification.board_id,
-            )
-
     def _provider_for_snapshot(
         self,
         snapshot: CommunityGraphRouteSnapshot,
         *,
         quarantine_id: str,
     ) -> _RestoreProvider:
-        if snapshot.backend == "ladybug":
-            return self._ladybug
+        if snapshot.backend != "grafx":
+            raise _refused("graph backend is retired", quarantine_id=quarantine_id)
         factory = self._grafx_factory
         if factory is None:
             raise _refused(
@@ -566,7 +476,7 @@ class CommunityRoutedQuarantineRestore:
         if (
             snapshot.scope != "board"
             or snapshot.scope_id != board_id
-            or snapshot.backend not in {"ladybug", "grafx"}
+            or snapshot.backend != "grafx"
             or (snapshot.backend == "grafx" and snapshot.page_size is None)
         ):
             if quarantine_id is None:
@@ -585,24 +495,6 @@ class CommunityRoutedQuarantineRestore:
     ) -> None:
         document = classification.document
         if document is None:
-            return
-        if classification.backend == "ladybug":
-            if document.get("kind") not in {
-                _LADYBUG_WAL_KIND,
-                _LADYBUG_INTERRUPTED_KIND,
-            }:
-                return
-            recorded_path = _required_absolute_path(
-                document.get("graph_path"),
-                quarantine_id=quarantine_id,
-                label="Ladybug WAL quarantine graph_path",
-            )
-            if not _same_path(recorded_path, snapshot.active_path):
-                raise _refused(
-                    "Ladybug WAL quarantine path conflicts with the persisted Board binding",
-                    quarantine_id=quarantine_id,
-                    board_id=classification.board_id,
-                )
             return
         recorded_path = _required_absolute_path(
             document.get("database_path"), quarantine_id=quarantine_id
@@ -643,12 +535,10 @@ class CommunityRoutedQuarantineRestore:
             self._validate_backend_namespace(directory, route, quarantine_id)
             return route
         if text_present:
-            route = self._classify_legacy_text(
-                manifest_text,
+            raise _refused(
+                "Retired quarantine format; files preserved",
                 quarantine_id=quarantine_id,
             )
-            self._validate_backend_namespace(directory, route, quarantine_id)
-            return route
         raise _refused(
             "quarantine has no recognised manifest",
             quarantine_id=quarantine_id,
@@ -781,12 +671,10 @@ class CommunityRoutedQuarantineRestore:
                 "quarantine manifest format is unsupported",
                 quarantine_id=quarantine_id,
             )
-        self._reject_hybrid_markers(
-            document,
-            backend="ladybug",
+        raise _refused(
+            "Retired or unsupported quarantine format; files preserved",
             quarantine_id=quarantine_id,
         )
-        return self._classify_ladybug_json(document, quarantine_id)
 
     @staticmethod
     def _reject_hybrid_markers(
@@ -992,306 +880,12 @@ class CommunityRoutedQuarantineRestore:
         return board_id
 
     @staticmethod
-    def _classify_ladybug_json(
-        document: Mapping[str, object], quarantine_id: str
-    ) -> _ManifestRoute:
-        kind = document.get("kind")
-        if kind not in {None, _LADYBUG_WAL_KIND}:
-            raise _refused(
-                "Ladybug quarantine kind is unsupported",
-                quarantine_id=quarantine_id,
-            )
-        if kind == _LADYBUG_WAL_KIND:
-            board_id = CommunityRoutedQuarantineRestore._validate_ladybug_wal_header(
-                document,
-                quarantine_id,
-            )
-            return _ManifestRoute("ladybug", board_id, _MANIFEST_JSON, document)
-
-        affected = document.get("affected_paths_relative")
-        if (
-            document.get("quarantine_id") != quarantine_id
-            or document.get("graph_type") != "board_graph"
-            or type(affected) is not list
-            or not affected
-            or type(document.get("files_moved")) is not int
-            or document.get("files_moved") != len(affected)
-        ):
-            raise _refused(
-                "Ladybug quarantine header is incomplete",
-                quarantine_id=quarantine_id,
-            )
-        board_id = _required_board_id(
-            document.get("board_id"), quarantine_id=quarantine_id
-        )
-        names: list[str] = []
-        for value in affected:
-            if type(value) is not str:
-                raise _refused(
-                    "Ladybug quarantine inventory is invalid",
-                    quarantine_id=quarantine_id,
-                )
-            relative = PurePosixPath(value)
-            if (
-                relative.is_absolute()
-                or len(relative.parts) != 1
-                or relative.as_posix() != value
-                or value not in _LADYBUG_FILE_NAMES
-            ):
-                raise _refused(
-                    "Ladybug quarantine inventory is not canonical",
-                    quarantine_id=quarantine_id,
-                )
-            names.append(value)
-        if len(names) != len(set(names)):
-            raise _refused(
-                "Ladybug quarantine inventory contains duplicates",
-                quarantine_id=quarantine_id,
-            )
-        return _ManifestRoute("ladybug", board_id, _MANIFEST_JSON, document)
-
-    @staticmethod
-    def _validate_ladybug_wal_header(
-        document: Mapping[str, object],
-        quarantine_id: str,
-    ) -> str:
-        if set(document) != _LADYBUG_WAL_FIELDS:
-            raise _refused(
-                "Ladybug WAL quarantine schema is not canonical",
-                quarantine_id=quarantine_id,
-            )
-        board_id = _required_board_id(
-            document.get("board_id"), quarantine_id=quarantine_id
-        )
-        reason = document.get("reason")
-        created_at = document.get("created_at")
-        planned = document.get("planned_files")
-        moved = document.get("files")
-        if (
-            document.get("quarantine_id") != quarantine_id
-            or document.get("main_untouched") is not True
-            or document.get("error") is not None
-            or type(reason) is not str
-            or not reason.strip()
-            or type(created_at) is not str
-            or not created_at.strip()
-            or type(planned) is not list
-            or not planned
-            or type(moved) is not list
-            or not moved
-        ):
-            raise _refused(
-                "Ladybug WAL quarantine header is incomplete or non-terminal",
-                quarantine_id=quarantine_id,
-            )
-
-        graph_path = _required_absolute_path(
-            document.get("graph_path"),
-            quarantine_id=quarantine_id,
-            label="Ladybug WAL quarantine graph_path",
-        )
-        try:
-            reject_filesystem_alias_ancestry(graph_path)
-        except (OSError, ValueError) as failure:
-            raise _refused(
-                "Ladybug WAL quarantine graph_path crosses a filesystem alias",
-                quarantine_id=quarantine_id,
-            ) from failure
-        if (
-            graph_path.name != "graph.lbug"
-            or graph_path.parent.name != board_id
-            or document.get("main_file") != graph_path.name
-        ):
-            raise _refused(
-                "Ladybug WAL quarantine main path or identity is invalid",
-                quarantine_id=quarantine_id,
-            )
-
-        planned_names: list[str] = []
-        for raw in planned:
-            if type(raw) is not dict or set(raw) != _LADYBUG_WAL_INVENTORY_FIELDS:
-                raise _refused(
-                    "Ladybug WAL quarantine planned inventory is invalid",
-                    quarantine_id=quarantine_id,
-                )
-            name = raw.get("name")
-            size = raw.get("size")
-            digest = raw.get("sha256")
-            if (
-                type(name) is not str
-                or name not in _LADYBUG_WAL_FILE_NAMES
-                or name in planned_names
-                or type(size) is not int
-                or size < 0
-                or type(digest) is not str
-                or _SHA256_RE.fullmatch(digest) is None
-            ):
-                raise _refused(
-                    "Ladybug WAL quarantine planned inventory is invalid or duplicated",
-                    quarantine_id=quarantine_id,
-                )
-            planned_names.append(name)
-
-        moved_names: list[str] = []
-        for name in moved:
-            if (
-                type(name) is not str
-                or name not in _LADYBUG_WAL_FILE_NAMES
-                or name in moved_names
-            ):
-                raise _refused(
-                    "Ladybug WAL quarantine moved inventory is invalid or duplicated",
-                    quarantine_id=quarantine_id,
-                )
-            moved_names.append(name)
-        if moved_names != planned_names:
-            raise _refused(
-                "Ladybug WAL quarantine planned and moved inventories differ",
-                quarantine_id=quarantine_id,
-            )
-        return board_id
-
-    @staticmethod
-    def _classify_legacy_text(path: Path, *, quarantine_id: str) -> _ManifestRoute:
-        encoded = _plain_file_bytes(path, quarantine_id=quarantine_id)
-        try:
-            text = encoded.decode("utf-8")
-        except UnicodeError as failure:
-            raise _refused(
-                "legacy Ladybug manifest is not UTF-8",
-                quarantine_id=quarantine_id,
-            ) from failure
-        match = _LADYBUG_INTERRUPTED_TEXT_RE.fullmatch(text)
-        if match is None or not quarantine_id.startswith("interrupted-checkpoint-"):
-            raise _refused(
-                "legacy Ladybug text manifest is not recognised",
-                quarantine_id=quarantine_id,
-            )
-
-        declared_files = tuple(match.group("files").split(", "))
-        if (
-            not declared_files
-            or len(declared_files) != len(set(declared_files))
-            or not set(declared_files).issubset(_LADYBUG_INTERRUPTED_FILE_NAMES)
-        ):
-            raise _refused(
-                "legacy Ladybug text manifest declares an invalid sidecar inventory",
-                quarantine_id=quarantine_id,
-            )
-
-        graph_path = _required_absolute_path(
-            match.group("graph_path"),
-            quarantine_id=quarantine_id,
-            label="legacy Ladybug text manifest graph_path",
-        )
-        quarantine_identities = {
-            value.lower() for value in _UUID_RE.findall(quarantine_id)
-        }
-        text_identities = {value.lower() for value in _UUID_RE.findall(text)}
-        path_board_id = graph_path.parent.name
-        if (
-            graph_path.name != "graph.lbug"
-            or _UUID_RE.fullmatch(path_board_id) is None
-            or quarantine_identities != {path_board_id.lower()}
-            or text_identities != {path_board_id.lower()}
-            or not quarantine_id.startswith(
-                f"interrupted-checkpoint-{path_board_id}-"
-            )
-        ):
-            raise _refused(
-                "legacy Ladybug text manifest has an inconsistent board identity",
-                quarantine_id=quarantine_id,
-            )
-        try:
-            reject_filesystem_alias_ancestry(graph_path)
-        except (OSError, ValueError) as failure:
-            raise _refused(
-                "legacy Ladybug text manifest graph_path crosses a filesystem alias",
-                quarantine_id=quarantine_id,
-            ) from failure
-        return _ManifestRoute(
-            "ladybug",
-            path_board_id,
-            _MANIFEST_TEXT,
-            {
-                "kind": _LADYBUG_INTERRUPTED_KIND,
-                "graph_path": str(graph_path),
-                "files": declared_files,
-            },
-        )
-
-    @staticmethod
     def _validate_backend_namespace(
         directory: Path,
         route: _ManifestRoute,
         quarantine_id: str,
     ) -> None:
         entries = {entry.name: entry for entry in directory.iterdir()}
-        if route.backend == "ladybug":
-            allowed_metadata = {_MANIFEST_JSON, _MANIFEST_TEXT, _RESTORE_OPERATION}
-            payload_names = set(entries).difference(allowed_metadata)
-            document = route.document
-            if document is not None and document.get("kind") is None:
-                expected = set(document.get("affected_paths_relative", []))
-                if payload_names != expected:
-                    raise _refused(
-                        "Ladybug quarantine payload does not match its inventory",
-                        quarantine_id=quarantine_id,
-                    )
-            elif document is not None and document.get("kind") == _LADYBUG_WAL_KIND:
-                expected = set(document.get("files", []))
-                if payload_names != expected:
-                    raise _refused(
-                        "Ladybug WAL quarantine payload does not match its moved inventory",
-                        quarantine_id=quarantine_id,
-                    )
-            elif (
-                document is not None
-                and document.get("kind") == _LADYBUG_INTERRUPTED_KIND
-            ):
-                expected = set(document.get("files", []))
-                if payload_names != expected:
-                    raise _refused(
-                        "legacy Ladybug sidecar payload does not match its declared inventory",
-                        quarantine_id=quarantine_id,
-                    )
-            if not payload_names or not payload_names.issubset(_LADYBUG_FILE_NAMES):
-                raise _refused(
-                    "Ladybug quarantine contains an alternate-backend payload",
-                    quarantine_id=quarantine_id,
-                )
-            for name in payload_names:
-                try:
-                    if not stat.S_ISREG(entries[name].lstat().st_mode):
-                        raise OSError(name)
-                except OSError as failure:
-                    raise _refused(
-                        "Ladybug quarantine payload is not a plain file",
-                        quarantine_id=quarantine_id,
-                    ) from failure
-            if document is not None and document.get("kind") == _LADYBUG_WAL_KIND:
-                planned = {
-                    str(item["name"]): item
-                    for item in document["planned_files"]
-                    if type(item) is dict
-                }
-                for name in payload_names:
-                    try:
-                        size, digest = _plain_file_fingerprint(entries[name])
-                    except OSError as failure:
-                        raise _refused(
-                            "Ladybug WAL quarantine payload could not be authenticated",
-                            quarantine_id=quarantine_id,
-                            payload=name,
-                        ) from failure
-                    expected = planned[name]
-                    if size != expected["size"] or digest != expected["sha256"]:
-                        raise _refused(
-                            "Ladybug WAL quarantine payload failed size or digest integrity",
-                            quarantine_id=quarantine_id,
-                            payload=name,
-                        )
-            return
 
         allowed = {_MANIFEST_JSON, _RESTORE_OPERATION}
         if route.manifest_format == GRAFX_DIRECTORY_QUARANTINE_FORMAT:

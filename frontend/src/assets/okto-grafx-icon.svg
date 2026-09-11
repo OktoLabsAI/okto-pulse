@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1254 1254" role="img" aria-label="Okto Grafx">
+  <title>Okto Grafx</title>
+  <desc>Minimal graph database icon in the Okto Pulse and Okto Nexus visual family, with transparent background.</desc>
+  <defs>
+    <linearGradient id="grafxGradient" gradientUnits="userSpaceOnUse" x1="210" y1="1040" x2="1045" y2="250">
+      <stop offset="0%" stop-color="#16cce8"/>
+      <stop offset="38%" stop-color="#2f83f5"/>
+      <stop offset="72%" stop-color="#6250f2"/>
+      <stop offset="100%" stop-color="#9b2cf0"/>
+    </linearGradient>
+    <mask id="frameMask" maskUnits="userSpaceOnUse" x="0" y="0" width="1254" height="1254">
+      <rect width="1254" height="1254" fill="white"/>
+      <circle cx="1017" cy="407" r="82" fill="black"/>
+      <circle cx="435" cy="935" r="79" fill="black"/>
+    </mask>
+  </defs>
+
+  <!-- No background element: the SVG is fully transparent outside the strokes. -->
+
+  <!-- Open octagonal frame -->
+  <path
+    d="M 650 1057
+       L 760 1057
+       Q 806 1057 840 1024
+       L 1012 852
+       Q 1033 831 1033 786
+       L 1033 460
+       L 1010 388
+       L 846 224
+       Q 813 203 770 203
+       L 492 203
+       Q 448 203 416 235
+       L 229 422
+       Q 210 442 210 482
+       L 210 774
+       Q 210 818 240 848
+       L 410 1018
+       Q 448 1057 496 1057
+       L 540 1057"
+    fill="none"
+    stroke="url(#grafxGradient)"
+    stroke-width="44"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    mask="url(#frameMask)"
+  />
+
+  <!-- Graph connections. Endpoints stop at node rings so interiors remain transparent. -->
+  <g fill="none" stroke="url(#grafxGradient)" stroke-width="28" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="384.7" y1="563.4" x2="547.5" y2="427.2"/>
+    <line x1="397.6" y1="606.6" x2="547.6" y2="624.2"/>
+    <line x1="603.2" y1="446.9" x2="622.1" y2="543.7"/>
+    <line x1="719.6" y1="586.9" x2="966.5" y2="437.5"/>
+    <line x1="707.9" y1="698.5" x2="799.4" y2="784.1"/>
+    <line x1="587.5" y1="711.8" x2="467.7" y2="887.1"/>
+  </g>
+
+  <!-- Graph nodes -->
+  <g fill="none" stroke="url(#grafxGradient)" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="640" cy="635" r="93" stroke-width="30"/>
+    <circle cx="592" cy="390" r="58" stroke-width="26"/>
+    <circle cx="341" cy="600" r="57" stroke-width="26"/>
+    <circle cx="1017" cy="407" r="59" stroke-width="26"/>
+    <circle cx="841" cy="823" r="57" stroke-width="26"/>
+    <circle cx="435" cy="935" r="58" stroke-width="26"/>
+  </g>
+</svg>

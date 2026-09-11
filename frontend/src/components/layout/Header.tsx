@@ -24,6 +24,7 @@ import {
 import { PresetListModal } from '@/components/permissions';
 import { KnowledgeGraphPage } from '@/components/knowledge';
 import { RuntimeSettingsPanel } from '@/components/layout/RuntimeSettingsPanel';
+import { GrafxBranding } from '@/components/shared/GrafxBranding';
 import { MetricsSettingsPanel } from '@/components/layout/MetricsSettingsPanel';
 import { useCurrentBoard } from '@/store/dashboard';
 import pulseWordmark from '@/assets/pulse-wordmark.svg';
@@ -802,10 +803,11 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
       {showKnowledgeGraph && currentBoard && (
         <div className="fixed inset-0 z-50 flex flex-col bg-white dark:bg-surface-950">
           <div className="flex items-center justify-between px-4 py-3 border-b border-surface-200 dark:border-gray-800">
-            <div className="flex items-center gap-2">
-              <Network size={18} className="text-blue-500" />
+            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+              <Network size={18} className="shrink-0 text-blue-500" />
               <h2 className="text-lg font-semibold text-surface-900 dark:text-white">Knowledge Graph</h2>
               <span className="text-sm text-gray-500 dark:text-gray-400">/ {currentBoard.name}</span>
+              <GrafxBranding />
             </div>
             <button
               onClick={() => setShowKnowledgeGraph(false)}
@@ -841,6 +843,7 @@ export function Header({ onCreateBoard, onOpenAgents, onShareBoard, onRefreshBoa
               <p className="text-sm text-surface-500 dark:text-surface-400 mt-1">
                 Community Edition — v{__APP_VERSION__}
               </p>
+              <GrafxBranding className="mt-3" />
               <p className="text-[11px] text-surface-400 dark:text-surface-500 mt-0.5">
                 Elastic License 2.0 + SaaS/Branding Addendum + Trademark Policy
               </p>

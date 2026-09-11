@@ -3400,7 +3400,7 @@ class CommunityGrafxGraphTransaction:
         transaction = None
         try:
             transaction = database.begin("write")
-        except Exception as exc:
+        except BaseException as exc:
             # The pin was taken before this ran, so it is this path's job to
             # give it back -- but only if the engine left no transaction behind.
             # A transaction that somehow survived still owns the handle.
@@ -3408,6 +3408,8 @@ class CommunityGrafxGraphTransaction:
                 transaction is None or not getattr(transaction, "active", False)
             ):
                 _release_quietly(release, exc)
+            if not isinstance(exc, Exception):
+                raise
             mapped = map_grafx_error(exc, operation="begin")
             if mapped is exc:
                 raise

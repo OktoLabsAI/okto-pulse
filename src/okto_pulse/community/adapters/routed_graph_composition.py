@@ -78,11 +78,11 @@ class _GrafxRestoreBoundary:
         self,
         board: CommunityRoutedBoardGraphComposition,
         *,
-        ladybug_restore: Any,
+        serve_fence: Any,
         connect: GrafxConnector | None,
     ) -> None:
         self._board = board
-        self._ladybug_restore = ladybug_restore
+        self._serve_fence = serve_fence
         self._connect = connect
         self._active_board = threading.local()
 
@@ -137,13 +137,12 @@ class _GrafxRestoreBoundary:
             QuarantineRestoreErrorCode,
         )
 
-        from okto_pulse.community.adapters import kg_runtime
+        from okto_pulse.community.adapters import graph_operation_guards as kg_runtime
 
-        # Reuse the exact lock-directory policy and live-owner parser of the
-        # Ladybug restore adapter.  The fence is held for the complete Grafx
+        # Retain the shared lock-directory policy and live-owner parser.  The fence is held for the complete Grafx
         # swap, so a server cannot start between the liveness probe and rename.
-        with self._ladybug_restore._serve_lock_fence(board_id) as directories:
-            live_owner = self._ladybug_restore._live_serve_lock(
+        with self._serve_fence._serve_lock_fence(board_id) as directories:
+            live_owner = self._serve_fence._live_serve_lock(
                 allow_owned_serve_lock=True,
                 serve_lock_mutex_held=True,
                 serve_lock_directories=directories,
@@ -251,18 +250,18 @@ def build_community_routed_graph_composition(
     ):
         raise RuntimeError("routed_graph_shared_authority_mismatch")
 
-    from okto_pulse.community.adapters.quarantine_restore import (
-        CommunityQuarantineRestore,
+    from okto_pulse.community.adapters.graph_restore_serve_fence import (
+        GraphRestoreServeFence,
     )
 
     data_dir = Path(getattr(settings, "data_dir", settings.kg_base_dir))
-    ladybug_restore = CommunityQuarantineRestore(
+    serve_fence = GraphRestoreServeFence(
         base_dir=board.binding_store.root,
         extra_serve_lock_dirs=(data_dir,),
     )
     restore_boundary = _GrafxRestoreBoundary(
         board,
-        ladybug_restore=ladybug_restore,
+        serve_fence=serve_fence,
         connect=grafx_connect,
     )
     grafx_restore_factory = CommunityGrafxSnapshotRestoreFactory(
@@ -277,7 +276,6 @@ def build_community_routed_graph_composition(
     quarantine_restore = CommunityRoutedQuarantineRestore(
         board.resolver,
         quarantine_root=board.binding_store.root / "quarantine",
-        ladybug=ladybug_restore,
         grafx_factory=grafx_restore_factory,
     )
     schema_manager = CommunityInitializingGraphSchemaManager(board)

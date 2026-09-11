@@ -80,6 +80,47 @@ Ruff F checks and whitespace validation passed. JUnit receipt:
 2. Board rebuild workers: identify homogeneous groups without changing artifact
    acknowledgement, cancellation/resumption or saga boundaries.
 
-No backfill or real board consolidation is part of this development test. This
-wave is not installed into the local Pulse automatically; the installed artifact
-receipt from the earlier checkpoint remains a distinct baseline.
+No backfill or real board consolidation is part of this development test.
+
+## Local installation and installed-artifact validation — 2026-09-09
+
+Installed Community checkpoint `6b42bd9eabf9c4c41f0b3169653b6aa540e7ca96`
+(Pulse 0.3.3), paired with Core 0.3.3 at `9303f9852a5d0e42037fd8565823543caca60fcb`
+and Grafx 0.0.5 at `8c3f6f2a6be8c8bdcdd15113fd5f37b2b965a173`.
+Both local installations were updated: Python 3.13 user-site and the isolated
+uv `okto-pulse` tool. Core/Grafx were already the correct artifacts and did not
+need replacement. No publication or version bump was performed.
+
+Community wheel SHA256:
+`cc71dd8022a9979ff7c96eb31c64bb981dd41194fbe9febbfcc69f9f718b6459`.
+Artifacts and reproducible runner:
+`D:/Projetos/Techridy/okto_grafx/.grafx-tmp/pulse-batch-6b42bd9/`.
+
+- An isolated candidate installation passed **21 tests in 94.06 seconds**:
+  all 20 batch tests and authenticated recovery/cutover/idempotency. The runner
+  disables source-activating conftest and proves that product imports come from
+  installed site-packages, not repository source. JUnit: `installed-tests.xml`
+  in the artifact directory.
+- Both actual local installations independently passed app construction, complete
+  native Settings catalog coverage, reader isolation during an uncommitted write,
+  visibility after durable commit and reader-lease release.
+- Both also passed a disposable three-digest full recovery, cold verification,
+  generation promotion, exact node/link counts, vector retrieval and idempotent
+  replay. Observed times for that recovery/search/replay sequence were 15.60 s
+  (user-site) and 11.17 s (uv). These tiny smoke timings are **not** a controlled
+  performance comparison or a real-board throughput estimate.
+- Byte parity checks before/after execution matched all 397 Community, 825 Core
+  and 186 Grafx package files to the exact wheels in both installations.
+- The uv environment passed dependency checks (121 packages). Preexisting
+  unrelated dependency conflicts in shared Python were not modified.
+
+The first C: test attempt failed with `device_full` (13 passed, one failure,
+seven errors); the independent smoke also refused an allocation. C: had only
+about 0.38 GB free. That failed JUnit is retained as
+`installed-tests-device-full.xml`. Repeating the unchanged product tests with
+temporary databases on D: passed; no quotas/timeouts or product code were relaxed,
+and no user files were removed. Free disk space before running production on C:.
+
+This validates installed libraries/adapters, not browser UI or the running server
+lifespan. No workers, backfill or actual board consolidation were started, and the
+default Pulse data home was not used. Pulse remains stopped (no 8100/8101 listener).

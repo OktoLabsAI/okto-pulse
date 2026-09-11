@@ -33,7 +33,7 @@ from okto_pulse.community.adapters.logical_transfer_schema import (
 )
 
 
-BACKENDS = ("ladybug", "grafx")
+BACKENDS = ("grafx",)
 SCOPES = ("board", "global_discovery")
 SAMPLE_MICROS = 1_787_878_923_456_789
 
@@ -306,10 +306,6 @@ def make_physical_source(
 ) -> Any:
     from okto_pulse.community.adapters import logical_transfer_factories
 
-    if backend == "ladybug":
-        return logical_transfer_factories.make_ladybug_logical_source(
-            database, scope=scope
-        )
     if backend == "grafx":
         return logical_transfer_factories.make_grafx_logical_source(
             database,
@@ -330,10 +326,6 @@ def make_physical_sink(
 ) -> Any:
     from okto_pulse.community.adapters import logical_transfer_factories
 
-    if backend == "ladybug":
-        return logical_transfer_factories.make_ladybug_logical_sink(
-            candidate_path, scope=scope
-        )
     if backend == "grafx":
         return logical_transfer_factories.make_grafx_logical_sink(
             candidate_path,
@@ -368,21 +360,9 @@ def seed_generation(
     return sink
 
 
-def expected_ladybug_filename(scope: str) -> str:
-    if scope == "board":
-        from okto_pulse.community.adapters.kg_runtime import GRAPH_DB_FILENAME
-
-        return GRAPH_DB_FILENAME
-    from okto_pulse.community.adapters.global_discovery_runtime import (
-        GLOBAL_DISCOVERY_FILENAME,
-    )
-
-    return GLOBAL_DISCOVERY_FILENAME
 
 
 def generation_database_path(backend: str, generation: Path, scope: str) -> Path:
-    if backend == "ladybug":
-        return generation / expected_ladybug_filename(scope)
     return generation
 
 
@@ -393,24 +373,6 @@ def open_generation_database(
     *,
     read_only: bool,
 ) -> Any:
-    if backend == "ladybug":
-        import ladybug
-
-        database = ladybug.Database(
-            str(generation_database_path(backend, generation, scope)),
-            read_only=read_only,
-        )
-        if not read_only:
-            from okto_pulse.community.adapters.kg_runtime import (
-                load_vector_extension,
-            )
-
-            connection = ladybug.Connection(database)
-            try:
-                load_vector_extension(connection, install=False)
-            finally:
-                connection.close()
-        return database
 
     from okto_grafx import connect
 
@@ -492,30 +454,6 @@ def native_insert_node(
     node_type = schema.node_type(node.type_name)
     names = tuple(property_names or node.properties)
     declared = {prop.name: prop for prop in node_type.properties}
-    if backend == "ladybug":
-        import ladybug
-
-        from okto_pulse.community.adapters.kg_runtime import load_vector_extension
-        from okto_pulse.community.adapters.ladybug_logical_sink import (
-            logical_to_native,
-        )
-
-        connection = ladybug.Connection(database)
-        try:
-            load_vector_extension(connection, install=False)
-            assignments = ", ".join(
-                f"{name}: $p{position}" for position, name in enumerate(names)
-            )
-            parameters = {
-                f"p{position}": logical_to_native(node.properties[name], declared[name])
-                for position, name in enumerate(names)
-            }
-            connection.execute(
-                f"CREATE (:{node.type_name} {{{assignments}}})", parameters
-            )
-        finally:
-            connection.close()
-        return
 
     from okto_pulse.community.adapters.grafx_logical_sink import _native_value
 

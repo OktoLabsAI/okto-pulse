@@ -11,11 +11,10 @@ from __future__ import annotations
 
 import logging
 from contextlib import AbstractContextManager
-from typing import Any, Protocol, Self
+from typing import Any, Protocol
 
 from okto_pulse.core.kg.interfaces.graph_errors import GraphCorruption
 from okto_pulse.core.kg.interfaces.graph_transaction import (
-    GraphTransaction,
     GraphTransactionScope,
 )
 from okto_pulse.core.services.application_kg import (
@@ -37,7 +36,9 @@ from okto_pulse.community.adapters.graph_route_resolver import (
     CommunityGraphRouteResolver,
     CommunityGraphRouteSnapshot,
 )
-from okto_pulse.community.adapters.kg_runtime import board_graph_operation_window
+from okto_pulse.community.adapters.graph_operation_guards import (
+    board_graph_operation_window,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,7 @@ def _require_board_snapshot(
             board_id=board_id,
             reason="graph_route_snapshot_scope_invalid",
         )
-    if snapshot.backend not in {"ladybug", "grafx"}:
+    if snapshot.backend != "grafx":
         raise _invalid_snapshot(
             snapshot,
             board_id=board_id,
@@ -141,70 +142,6 @@ def _require_board_snapshot(
             board_id=board_id,
             reason="grafx_route_page_size_missing",
         )
-
-
-class _WindowedGraphTransactionScope:
-    """Delegate one Ladybug scope while retaining the outer operation window."""
-
-    __slots__ = ("_delegate", "_terminal", "_window", "terminal_release_error")
-
-    def __init__(
-        self,
-        delegate: GraphTransactionScope,
-        window: _OperationWindowLease,
-    ) -> None:
-        self._delegate = delegate
-        self._window = window
-        self._terminal = False
-        # Ladybug statements auto-commit.  A failure after its scope has closed
-        # must not be reported as a retryable transaction failure, so a later
-        # operation-window release fault is retained as resource evidence.
-        self.terminal_release_error: BaseException | None = None
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._delegate, name)
-
-    def _release_after_commit(self) -> None:
-        try:
-            self._window.release()
-        except BaseException as failure:  # noqa: BLE001 - commit already terminal
-            self.terminal_release_error = failure
-            logger.warning(
-                "kg.routed_graph_transaction.release_failed "
-                "backend=ladybug phase=commit commit_durable=true error_type=%s",
-                type(failure).__name__,
-                extra={
-                    "event": "kg.routed_graph_transaction.release_failed",
-                    "backend": "ladybug",
-                    "phase": "commit",
-                    "commit_durable": True,
-                    "error_type": type(failure).__name__,
-                },
-            )
-
-    async def commit(self) -> None:
-        if self._terminal:
-            return
-        await self._delegate.commit()
-        self._terminal = True
-        self._release_after_commit()
-
-    async def rollback(self) -> None:
-        if self._terminal:
-            return
-        await self._delegate.rollback()
-        self._terminal = True
-        self._window.release()
-
-    async def __aenter__(self) -> Self:
-        await self._delegate.__aenter__()
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        if exc and exc[0] is not None:
-            await self.rollback()
-        else:
-            await self.commit()
 
 
 class _GrafxTerminalResources:
@@ -238,7 +175,6 @@ class CommunityRoutedGraphTransaction:
         self,
         resolver: CommunityGraphRouteResolver,
         *,
-        ladybug: GraphTransaction,
         grafx_pool: CommunityGrafxDatabasePool,
         operation_window: BoardGraphOperationWindowFactory = (
             board_graph_operation_window
@@ -246,7 +182,6 @@ class CommunityRoutedGraphTransaction:
         mutation_recorder: BoardRolloutMutationRecorder | None = None,
     ) -> None:
         self._resolver = resolver
-        self._ladybug = ladybug
         self._grafx_pool = grafx_pool
         self._operation_window = operation_window
         self._mutation_recorder = mutation_recorder
@@ -280,13 +215,6 @@ class CommunityRoutedGraphTransaction:
             # consulted as a fallback.
             snapshot = self._resolver.acquire_board_route(board_id)
             _require_board_snapshot(snapshot, board_id=board_id)
-
-            if snapshot.backend == "ladybug":
-                scope = await self._ladybug.begin(board_id)
-                return self._capture(
-                    _WindowedGraphTransactionScope(scope, window),
-                    snapshot,
-                )
 
             # The route validator above proves this for type checkers and for
             # runtime safety before the pool sees persisted geometry.

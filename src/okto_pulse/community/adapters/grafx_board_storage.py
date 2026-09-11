@@ -153,8 +153,35 @@ def grafx_board_privacy_storage_present(scope: GrafxBoardPrivacyScope) -> bool:
     else:
         return True
     return bool(
-        _binding_artifacts(scope) or _privacy_directory_quarantine_artifacts(scope)
+        _binding_artifacts(scope)
+        or _privacy_directory_quarantine_artifacts(scope)
+        or _retired_board_artifacts(scope)
     )
+
+
+def _retired_board_artifacts(scope: GrafxBoardPrivacyScope) -> tuple[Path, ...]:
+    """Opaque historical files, touched only by explicit privacy erasure.
+
+    No retired driver is opened. Preserve the original board-owned namespace
+    and preflight every alias before the first deletion, including sidecars.
+    """
+    reject_filesystem_alias_ancestry(scope.board_root)
+    if not scope.board_root.exists():
+        return ()
+    targets = tuple(
+        sorted(
+            (
+                path
+                for path in scope.board_root.iterdir()
+                if path.name == "graph.lbug" or path.name.startswith("graph.lbug.")
+            ),
+            key=lambda path: path.name,
+        )
+    )
+    for path in targets:
+        if is_filesystem_alias(path):
+            raise ValueError("retired_board_privacy_alias_refused")
+    return targets
 
 
 def _privacy_directory_quarantine_artifacts(
@@ -213,6 +240,7 @@ def erase_grafx_board_privacy_storage(
 
     _revalidate_privacy_scope(scope)
     quarantine_artifacts = _privacy_directory_quarantine_artifacts(scope)
+    retired_artifacts = _retired_board_artifacts(scope)
     removed = 0
     files, directories = remove_contained_tree(
         scope.grafx_root,
@@ -220,6 +248,14 @@ def erase_grafx_board_privacy_storage(
         before_mutation=before_mutation,
     )
     removed += files + directories
+
+    for artifact in retired_artifacts:
+        files, directories = remove_contained_tree(
+            artifact,
+            base_dir=scope.board_root,
+            before_mutation=before_mutation,
+        )
+        removed += files + directories
 
     for artifact in quarantine_artifacts:
         files, directories = remove_contained_tree(

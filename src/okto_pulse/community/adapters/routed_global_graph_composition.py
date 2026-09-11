@@ -6,10 +6,9 @@ Board graph and builds the Global runtime/recovery leaves around those exact
 objects.  Nothing in this module consults settings after composition and no read
 or constructor initializes a route.
 
-There are three distinct authorities here:
+There are two distinct authorities here:
 
 * Core's Global writer lease is only *revalidated* by runtime operations;
-* Ladybug's process writer is still acquired by the Ladybug physical runtime;
 * ``global_lock`` serializes runtime, recovery, privacy and shutdown within this
   process and is the same injected ``threading.RLock`` everywhere.
 
@@ -48,9 +47,6 @@ from okto_pulse.community.adapters.filesystem_erasure import (
     remove_contained_tree,
     validate_scope_id,
 )
-from okto_pulse.community.adapters.global_discovery_bootstrap_marker import (
-    bootstrap_marker_path,
-)
 from okto_pulse.community.adapters.global_discovery_layout import (
     GENERATION_MANIFEST_FILENAME,
     active_pointer_path,
@@ -58,14 +54,8 @@ from okto_pulse.community.adapters.global_discovery_layout import (
     generation_graph_path,
     generations_root,
 )
-from okto_pulse.community.adapters.global_discovery_recovery import (
-    CommunityGlobalDiscoveryRecovery,
-)
-from okto_pulse.community.adapters.global_discovery_recovery import (
-    _physical_generation_id as _ladybug_recovery_generation_id,
-)
-from okto_pulse.community.adapters.global_discovery_runtime import (
-    CommunityGlobalDiscoveryRuntime,
+from okto_pulse.community.adapters.global_privacy_projection import (
+    GlobalPrivacyProjection,
 )
 from okto_pulse.community.adapters.grafx_database_pool import (
     CommunityGrafxDatabasePool,
@@ -140,7 +130,6 @@ class _RuntimeLike(Protocol):
     def flush_after_write_batch(self) -> None: ...
 
 
-RuntimeFactory = Callable[[Path], CommunityGlobalDiscoveryRuntime]
 GrafxConnect = Callable[..., Any]
 FenceRevalidator = Callable[[str], None]
 QuarantineTargets = Callable[
@@ -261,58 +250,6 @@ class _GlobalAdministrationBinding:
             raise RuntimeError("global_graph_administration_unbound")
         close_active()
         return privacy(snapshot, board_id, reason, survivor_board_ids)
-
-
-class _LadybugGlobalRuntimeManager:
-    """Retain the one persistent Ladybug Global runtime without opening on read."""
-
-    def __init__(self, runtime_factory: RuntimeFactory | None = None) -> None:
-        self._runtime_factory = runtime_factory or (
-            lambda path: CommunityGlobalDiscoveryRuntime(
-                graph_path_provider=lambda: path,
-            )
-        )
-        self._runtimes: dict[str, CommunityGlobalDiscoveryRuntime] = {}
-
-    def runtime_for(
-        self,
-        snapshot: CommunityGraphRouteSnapshot,
-    ) -> CommunityGlobalDiscoveryRuntime:
-        key = _canonical_path(snapshot.anchor_path)
-        runtime = self._runtimes.get(key)
-        if runtime is None:
-            runtime = self._runtime_factory(snapshot.anchor_path)
-            self._runtimes[key] = runtime
-        return runtime
-
-    def runtime_for_path(self, path: Path) -> CommunityGlobalDiscoveryRuntime:
-        key = _canonical_path(path)
-        runtime = self._runtimes.get(key)
-        if runtime is None:
-            runtime = self._runtime_factory(path)
-            self._runtimes[key] = runtime
-        return runtime
-
-    def close_snapshot(self, snapshot: CommunityGraphRouteSnapshot) -> None:
-        runtime = self._runtimes.get(_canonical_path(snapshot.anchor_path))
-        if runtime is not None:
-            runtime.close()
-
-    def close_all(self) -> int:
-        failures: list[BaseException] = []
-        closed = 0
-        for runtime in tuple(self._runtimes.values()):
-            try:
-                runtime.close()
-            except Exception as failure:  # noqa: BLE001 - attempt every handle
-                failures.append(failure)
-            else:
-                closed += 1
-        if failures:
-            raise CommunityGlobalGraphShutdownError(
-                ladybug_failures=tuple(failures),
-            )
-        return closed
 
 
 class _GrafxGlobalPoolManager:
@@ -483,48 +420,6 @@ class _GrafxRuntimeSessionFactory:
             holder.release()
 
 
-class _LadybugRuntimeSessionFactory:
-    def __init__(
-        self,
-        manager: _LadybugGlobalRuntimeManager,
-        administration: _GlobalAdministrationBinding,
-    ) -> None:
-        self._manager = manager
-        self._administration = administration
-
-    @contextmanager
-    def __call__(
-        self,
-        snapshot: CommunityGraphRouteSnapshot,
-    ) -> Iterator[CommunityGlobalDiscoveryRuntimeOperationSession]:
-        runtime = self._manager.runtime_for(snapshot)
-        yield CommunityGlobalDiscoveryRuntimeOperationSession(
-            runtime=runtime,
-            # These callbacks are unguarded with respect to the routed Global
-            # lock/Core lease.  Ladybug intentionally still takes its own
-            # process-wide physical writer and lifecycle gate.
-            post_write_verification_scope_unguarded=(
-                runtime.post_write_verification_scope
-            ),
-            flush_after_write_batch_unguarded=runtime.flush_after_write_batch,
-            close_unguarded=runtime.close,
-            purge_unguarded=lambda reason: self._administration.purge(
-                snapshot,
-                close_active=runtime.close,
-                reason=reason,
-            ),
-            erase_storage_for_privacy_unguarded=lambda board_id, reason, survivors: (
-                self._administration.privacy(
-                    snapshot,
-                    close_active=runtime.close,
-                    board_id=board_id,
-                    reason=reason,
-                    survivor_board_ids=survivors,
-                )
-            ),
-        )
-
-
 class _SnapshotFingerprintBinding:
     def __init__(self) -> None:
         self._provider: Callable[[], str] | None = None
@@ -544,26 +439,6 @@ class _SnapshotFingerprintBinding:
         if not value:
             raise RuntimeError("global_discovery_snapshot_fingerprint_unavailable")
         return value
-
-
-class _LadybugRecoveryFactory:
-    def __init__(
-        self,
-        manager: _LadybugGlobalRuntimeManager,
-        fingerprint: _SnapshotFingerprintBinding,
-    ) -> None:
-        self._manager = manager
-        self._fingerprint = fingerprint
-
-    def __call__(
-        self,
-        snapshot: CommunityGraphRouteSnapshot,
-    ) -> CommunityGlobalDiscoveryRecovery:
-        return CommunityGlobalDiscoveryRecovery(
-            global_runtime=self._manager.runtime_for(snapshot),
-            graph_path_provider=lambda: snapshot.anchor_path,
-            snapshot_fingerprint_provider=self._fingerprint.current,
-        )
 
 
 class _GrafxRecoveryFactory:
@@ -730,15 +605,7 @@ def _validate_authenticated_recovery_transition(
             else:
                 return False
         else:
-            # Ladybug's durable generation manifest predates the explicit
-            # ``kind`` field.  Refuse a Grafx/ad-hoc vocabulary there.
-            if kind is not None:
-                return False
-            expected_generation = _ladybug_recovery_generation_id(
-                run_id=run_id,
-                epoch=epoch,
-                attempt_id=attempt_id,
-            )
+            return False
     except (TypeError, ValueError):
         return False
     return observed.active_generation == expected_generation and _same_path(
@@ -797,7 +664,6 @@ class _GlobalPurgeCoordinator:
         *,
         binding_store: CommunityGraphBackendBindingStore,
         resolver: CommunityGraphRouteResolver,
-        ladybug: _LadybugGlobalRuntimeManager,
         grafx: _GrafxGlobalPoolManager,
         revalidate_write_fence: FenceRevalidator,
         quarantine_targets: QuarantineTargets | None,
@@ -805,7 +671,6 @@ class _GlobalPurgeCoordinator:
         self._binding_path = binding_store.root / "global" / GLOBAL_BINDING_FILENAME
         self._storage_root = binding_store.root
         self._resolver = resolver
-        self._ladybug = ladybug
         self._grafx = grafx
         self._revalidate_write_fence = revalidate_write_fence
         self._quarantine_targets = quarantine_targets or self._default_quarantine
@@ -838,14 +703,6 @@ class _GlobalPurgeCoordinator:
         snapshot: CommunityGraphRouteSnapshot,
     ) -> tuple[Path, ...]:
         targets = list(global_layout_targets(snapshot.anchor_path))
-        if snapshot.backend == "ladybug":
-            marker = bootstrap_marker_path(snapshot.anchor_path)
-            try:
-                marker.lstat()
-            except FileNotFoundError:
-                pass
-            else:
-                targets.append(marker)
         unique: list[Path] = []
         for target in targets:
             if _same_path(target, self._binding_path):
@@ -870,10 +727,7 @@ class _GlobalPurgeCoordinator:
         try:
             self._revalidate_write_fence("purge_global_discovery")
             self._resolver.revalidate_snapshot(snapshot, require_physical=False)
-            if snapshot.backend == "ladybug":
-                self._ladybug.close_snapshot(snapshot)
-            else:
-                self._grafx.close_all()
+            self._grafx.close_all()
             targets = self._targets(snapshot)
             if not targets:
                 return GraphPurgeResult(
@@ -969,9 +823,7 @@ class _PrivacyRuntimeFacade:
     ) -> Any:
         return self._runtime.execute(statement, params)
 
-    _timestamp_expression = staticmethod(
-        CommunityGlobalDiscoveryRuntime._timestamp_expression
-    )
+    _timestamp_expression = staticmethod(GlobalPrivacyProjection._timestamp_expression)
 
 
 class _GlobalPrivacyCoordinator:
@@ -980,7 +832,6 @@ class _GlobalPrivacyCoordinator:
         *,
         binding_store: CommunityGraphBackendBindingStore,
         resolver: CommunityGraphRouteResolver,
-        ladybug: _LadybugGlobalRuntimeManager,
         grafx: _GrafxGlobalPoolManager,
         grafx_sessions: _GrafxRuntimeSessionFactory,
         revalidate_write_fence: FenceRevalidator,
@@ -988,7 +839,6 @@ class _GlobalPrivacyCoordinator:
         self._binding_store = binding_store
         self._binding_path = binding_store.root / "global" / GLOBAL_BINDING_FILENAME
         self._resolver = resolver
-        self._ladybug = ladybug
         self._grafx = grafx
         self._grafx_sessions = grafx_sessions
         self._revalidate_write_fence = revalidate_write_fence
@@ -1012,9 +862,6 @@ class _GlobalPrivacyCoordinator:
         self,
         snapshot: CommunityGraphRouteSnapshot,
     ) -> Iterator[_RuntimeLike]:
-        if snapshot.backend == "ladybug":
-            yield self._ladybug.runtime_for(snapshot)
-            return
         with self._grafx_sessions(snapshot) as session:
             yield session.runtime
 
@@ -1031,7 +878,7 @@ class _GlobalPrivacyCoordinator:
         # cascade would make physical privacy dependent on call ordering and
         # would refuse the exact administrative case this capability owns.
         rows: dict[str, list[list[Any]]] = {}
-        normalize = CommunityGlobalDiscoveryRuntime._privacy_snapshot_value
+        normalize = GlobalPrivacyProjection._privacy_snapshot_value
         for name, statement in _PRIVACY_STATEMENTS.items():
             result = runtime.execute(statement)
             rows[name] = [[normalize(value) for value in row] for row in result.rows]
@@ -1044,7 +891,7 @@ class _GlobalPrivacyCoordinator:
             }
         )
         authority.discard(board_id)
-        return CommunityGlobalDiscoveryRuntime._build_privacy_survivor_snapshot(
+        return GlobalPrivacyProjection._build_privacy_survivor_snapshot(
             board_id=board_id,
             rows=rows,
             survivor_board_ids=authority,
@@ -1067,7 +914,7 @@ class _GlobalPrivacyCoordinator:
             )
         except FileNotFoundError:
             return None
-        CommunityGlobalDiscoveryRuntime._validate_privacy_survivor_snapshot(
+        GlobalPrivacyProjection._validate_privacy_survivor_snapshot(
             document,
             board_id=board_id,
         )
@@ -1111,30 +958,25 @@ class _GlobalPrivacyCoordinator:
                 raise RuntimeError("global_discovery_privacy_survivor_source_missing")
             durable = current
         elif current is not None:
-            merged = CommunityGlobalDiscoveryRuntime._merge_privacy_survivor_rows(
+            merged = GlobalPrivacyProjection._merge_privacy_survivor_rows(
                 journal_rows=durable["rows"],
                 current_rows=current["rows"],
             )
-            durable = CommunityGlobalDiscoveryRuntime._build_privacy_survivor_snapshot(
+            durable = GlobalPrivacyProjection._build_privacy_survivor_snapshot(
                 board_id=board_id,
                 rows=merged,
                 survivor_board_ids=set(durable["survivor_board_ids"]),
             )
         self._write_journal(journal_path, durable)
-        CommunityGlobalDiscoveryRuntime._validate_privacy_survivor_snapshot(
+        GlobalPrivacyProjection._validate_privacy_survivor_snapshot(
             durable,
             board_id=board_id,
         )
         return durable, journal_path
 
     def _close_both(self) -> tuple[int, int]:
-        ladybug_closed = 0
         grafx_closed = 0
         failures: list[BaseException] = []
-        try:
-            ladybug_closed = self._ladybug.close_all()
-        except Exception as failure:  # noqa: BLE001 - attempt both engines
-            failures.append(failure)
         try:
             grafx_closed = self._grafx.close_all()
         except Exception as failure:  # noqa: BLE001 - attempt both engines
@@ -1143,7 +985,7 @@ class _GlobalPrivacyCoordinator:
             raise CommunityGlobalGraphShutdownError(
                 administration_failures=tuple(failures),
             )
-        return ladybug_closed, grafx_closed
+        return 0, grafx_closed
 
     def _erase_dual_layout(
         self,
@@ -1186,11 +1028,6 @@ class _GlobalPrivacyCoordinator:
         self,
         snapshot: CommunityGraphRouteSnapshot,
     ) -> Iterator[_RuntimeLike]:
-        if snapshot.backend == "ladybug":
-            runtime = self._ladybug.runtime_for_path(snapshot.anchor_path)
-            runtime.bootstrap()
-            yield runtime
-            return
         if snapshot.page_size is None:
             raise RuntimeError("grafx_route_page_size_missing")
         holder = _RotatingGrafxLease(
@@ -1235,11 +1072,9 @@ class _GlobalPrivacyCoordinator:
             binding=binding,
         )
         with self._fresh_bound_runtime(snapshot) as runtime:
-            restored = (
-                CommunityGlobalDiscoveryRuntime._restore_privacy_survivor_snapshot(
-                    _PrivacyRuntimeFacade(runtime),
-                    survivors,
-                )
+            restored = GlobalPrivacyProjection._restore_privacy_survivor_snapshot(
+                _PrivacyRuntimeFacade(runtime),
+                survivors,
             )
             runtime.flush_after_write_batch()
             observed = self._capture(
@@ -1276,14 +1111,12 @@ class CommunityGlobalGraphRouteInitializer:
         *,
         resolver: CommunityGraphRouteResolver,
         routed_runtime: CommunityRoutedGlobalDiscoveryRuntime,
-        ladybug: _LadybugGlobalRuntimeManager,
         grafx: _GrafxGlobalPoolManager,
         global_lock: _GlobalLock,
         revalidate_write_fence: FenceRevalidator,
     ) -> None:
         self._resolver = resolver
         self._routed_runtime = routed_runtime
-        self._ladybug = ladybug
         self._grafx = grafx
         self._global_lock = global_lock
         self._revalidate_write_fence = revalidate_write_fence
@@ -1292,13 +1125,6 @@ class CommunityGlobalGraphRouteInitializer:
         self, candidate: CommunityGraphRouteCandidate
     ) -> object | None:
         self._revalidate_write_fence("initialize_global_route")
-        if candidate.backend == "ladybug":
-            runtime = self._ladybug.runtime_for_path(candidate.anchor_path)
-            try:
-                runtime.bootstrap()
-            finally:
-                runtime.close()
-            return None
         if candidate.page_size is None:
             raise RuntimeError("grafx_route_page_size_missing")
         holder = _RotatingGrafxLease(
@@ -1343,11 +1169,9 @@ class CommunityGlobalGraphShutdownError(RuntimeError):
     def __init__(
         self,
         *,
-        ladybug_failures: tuple[BaseException, ...] = (),
         grafx_failures: tuple[tuple[Path, BaseException], ...] = (),
         administration_failures: tuple[BaseException, ...] = (),
     ) -> None:
-        self.ladybug_failures = ladybug_failures
         self.grafx_failures = grafx_failures
         self.administration_failures = administration_failures
         super().__init__("global_graph_shutdown_partial")
@@ -1357,23 +1181,16 @@ class CommunityGlobalGraphShutdown:
     def __init__(
         self,
         *,
-        ladybug: _LadybugGlobalRuntimeManager,
         grafx: _GrafxGlobalPoolManager,
         global_lock: _GlobalLock,
     ) -> None:
-        self._ladybug = ladybug
         self._grafx = grafx
         self._global_lock = global_lock
 
     def __call__(self) -> dict[str, int]:
         with self._global_lock:
-            ladybug_closed = 0
             grafx_closed = 0
             failures: list[BaseException] = []
-            try:
-                ladybug_closed = self._ladybug.close_all()
-            except Exception as failure:  # noqa: BLE001 - attempt both engines
-                failures.append(failure)
             try:
                 grafx_closed = self._grafx.close_all()
             except Exception as failure:  # noqa: BLE001 - attempt both engines
@@ -1383,7 +1200,6 @@ class CommunityGlobalGraphShutdown:
                     administration_failures=tuple(failures),
                 )
             return {
-                "ladybug_closed": ladybug_closed,
                 "grafx_closed": grafx_closed,
             }
 
@@ -1415,7 +1231,6 @@ def build_community_routed_global_graph_composition(
     grafx_pool: CommunityGrafxDatabasePool,
     global_lock: threading.RLock,
     revalidate_write_fence: FenceRevalidator | None = None,
-    ladybug_runtime_factory: RuntimeFactory | None = None,
     grafx_connect: GrafxConnect | None = None,
     quarantine_targets: QuarantineTargets | None = None,
 ) -> CommunityRoutedGlobalGraphComposition:
@@ -1426,10 +1241,8 @@ def build_community_routed_global_graph_composition(
     if global_lock is None:
         raise TypeError("global_lock is required")
     revalidate = revalidate_write_fence or _default_fence_revalidator
-    ladybug = _LadybugGlobalRuntimeManager(ladybug_runtime_factory)
     grafx = _GrafxGlobalPoolManager(grafx_pool)
     administration = _GlobalAdministrationBinding()
-    ladybug_sessions = _LadybugRuntimeSessionFactory(ladybug, administration)
     grafx_sessions = _GrafxRuntimeSessionFactory(
         resolver=resolver,
         pool_manager=grafx,
@@ -1439,7 +1252,6 @@ def build_community_routed_global_graph_composition(
     purge = _GlobalPurgeCoordinator(
         binding_store=binding_store,
         resolver=resolver,
-        ladybug=ladybug,
         grafx=grafx,
         revalidate_write_fence=revalidate,
         quarantine_targets=quarantine_targets,
@@ -1447,44 +1259,28 @@ def build_community_routed_global_graph_composition(
     privacy = _GlobalPrivacyCoordinator(
         binding_store=binding_store,
         resolver=resolver,
-        ladybug=ladybug,
         grafx=grafx,
         grafx_sessions=grafx_sessions,
         revalidate_write_fence=revalidate,
     )
     administration.bind(purge=purge, privacy=privacy)
 
-    def ladybug_state(
-        snapshot: CommunityGraphRouteSnapshot,
-        generation: str | None,
-    ) -> Any:
-        return ladybug.runtime_for(snapshot).state(generation=generation)
-
     runtime = CommunityRoutedGlobalDiscoveryRuntime(
         resolver,
         global_lock=global_lock,
         revalidate_write_fence=revalidate,
         statement_is_write=statement_is_write,
-        ladybug_session_factory=ladybug_sessions,
         grafx_session_factory=grafx_sessions,
-        ladybug_state=ladybug_state,
         grafx_state=_grafx_state,
-        ladybug_materialization_paths=lambda snapshot: ladybug.runtime_for(
-            snapshot
-        ).materialization_observation_paths(),
         grafx_materialization_paths=_grafx_materialization_paths,
-        ladybug_close_unguarded=ladybug.close_snapshot,
         grafx_close_unguarded=lambda _snapshot: grafx.close_all(),
-        ladybug_purge_unguarded=purge,
         grafx_purge_unguarded=purge,
-        ladybug_privacy_erase_unguarded=privacy,
         grafx_privacy_erase_unguarded=privacy,
     )
     fingerprint = _SnapshotFingerprintBinding()
     recovery = _ComposedRoutedGlobalDiscoveryRecovery(
         resolver,
         global_lock=global_lock,
-        ladybug_factory=_LadybugRecoveryFactory(ladybug, fingerprint),
         grafx_factory=_GrafxRecoveryFactory(
             resolver=resolver,
             pool_manager=grafx,
@@ -1497,13 +1293,11 @@ def build_community_routed_global_graph_composition(
     initializer = CommunityGlobalGraphRouteInitializer(
         resolver=resolver,
         routed_runtime=runtime,
-        ladybug=ladybug,
         grafx=grafx,
         global_lock=global_lock,
         revalidate_write_fence=revalidate,
     )
     shutdown = CommunityGlobalGraphShutdown(
-        ladybug=ladybug,
         grafx=grafx,
         global_lock=global_lock,
     )

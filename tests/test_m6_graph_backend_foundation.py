@@ -21,10 +21,7 @@ from okto_pulse.community.adapters.graph_backend_binding import (
     CommunityGraphBackendBindingStore,
     admit_grafx_database,
 )
-from okto_pulse.community.config import (
-    CommunitySettings,
-    CommunitySettingsAliasConflict,
-)
+from okto_pulse.community.config import CommunitySettings
 
 
 class _FakeGrafxDatabase:
@@ -53,78 +50,13 @@ def _grafx_database(path: Path, *, page_size: int = 8192) -> _FakeGrafxDatabase:
     return _FakeGrafxDatabase(path, page_size=page_size)
 
 
-def test_settings_default_to_ladybug_and_safe_grafx_geometry(tmp_path: Path) -> None:
+def test_settings_default_to_grafx_and_safe_grafx_geometry(tmp_path: Path) -> None:
     settings = CommunitySettings(data_dir=str(tmp_path), _env_file=None)
 
-    assert settings.kg_graph_backend == "ladybug"
-    assert settings.kg_global_graph_backend == "ladybug"
+    assert settings.kg_graph_backend == "grafx"
+    assert settings.kg_global_graph_backend == "grafx"
     assert settings.kg_grafx_page_size == 8192
     assert settings.kg_grafx_descriptor_revalidation == "generation"
-    assert settings.kg_ladybug_buffer_pool_mb == settings.kg_kuzu_buffer_pool_mb
-    assert (
-        settings.kg_global_ladybug_buffer_pool_mb
-        == settings.kg_global_kuzu_buffer_pool_mb
-    )
-    assert settings.kg_ladybug_max_db_size_gb == settings.kg_kuzu_max_db_size_gb
-
-
-def test_settings_accept_only_semantically_identical_ladybug_aliases(
-    tmp_path: Path,
-) -> None:
-    canonical = CommunitySettings(
-        data_dir=str(tmp_path),
-        kg_ladybug_buffer_pool_mb=384,
-        kg_global_ladybug_buffer_pool_mb=256,
-        kg_ladybug_max_db_size_gb=8,
-        _env_file=None,
-    )
-    identical_pair = CommunitySettings(
-        data_dir=str(tmp_path),
-        kg_ladybug_buffer_pool_mb=384,
-        kg_kuzu_buffer_pool_mb=384,
-        _env_file=None,
-    )
-
-    assert canonical.kg_kuzu_buffer_pool_mb == 384
-    assert canonical.kg_global_kuzu_buffer_pool_mb == 256
-    assert canonical.kg_kuzu_max_db_size_gb == 8
-    assert identical_pair.kg_kuzu_buffer_pool_mb == 384
-
-    with pytest.raises(CommunitySettingsAliasConflict) as captured:
-        CommunitySettings(
-            data_dir=str(tmp_path),
-            kg_ladybug_buffer_pool_mb=384,
-            kg_kuzu_buffer_pool_mb=256,
-            _env_file=None,
-        )
-    assert captured.value.code == "community_settings_alias_conflict"
-    assert captured.value.source == "init"
-
-
-def test_settings_reject_conflicting_aliases_from_environment(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.setenv("KG_LADYBUG_MAX_DB_SIZE_GB", "8")
-    monkeypatch.setenv("KG_KUZU_MAX_DB_SIZE_GB", "4")
-
-    with pytest.raises(CommunitySettingsAliasConflict) as captured:
-        CommunitySettings(data_dir=str(tmp_path), _env_file=None)
-
-    assert captured.value.source == "environment"
-
-
-def test_settings_reject_conflicting_aliases_from_dotenv(tmp_path: Path) -> None:
-    dotenv = tmp_path / ".env"
-    dotenv.write_text(
-        "KG_LADYBUG_BUFFER_POOL_MB=384\nKG_KUZU_BUFFER_POOL_MB=256\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(CommunitySettingsAliasConflict) as captured:
-        CommunitySettings(data_dir=str(tmp_path), _env_file=dotenv)
-
-    assert captured.value.source == "dotenv"
 
 
 @pytest.mark.parametrize("page_size", [512, 2048, 4095, 5000, 65536])

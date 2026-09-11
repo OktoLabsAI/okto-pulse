@@ -189,7 +189,7 @@ async def shutdown_kg_then_db(
             failures.append(exc)
 
     # Board ``close(None)`` is intentionally Board-only.  The routed Global
-    # lifecycle owns separate Ladybug/Grafx handles and must be attempted even
+    # lifecycle owns separate graph handles and must be attempted even
     # when Board cleanup failed.  Legacy/non-composed test shells have no
     # bundle and retain the historical Board-only behaviour.
     routed_graph = None
@@ -583,7 +583,7 @@ def create_app(
                         "db_close_skipped": True,
                     },
                 )
-            # Release LadybugDB handles explicitly on graceful shutdown.
+            # Release Grafx handles explicitly on graceful shutdown.
             # Relying on interpreter teardown can leave WAL sidecars as the
             # only holder of recent writes; a later bootstrap probe may then
             # see a corrupt WAL and previously attempted an automatic purge.

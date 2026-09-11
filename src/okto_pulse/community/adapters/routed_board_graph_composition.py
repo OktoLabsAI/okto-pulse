@@ -18,7 +18,6 @@ whole engine scope.
 from __future__ import annotations
 
 import os
-import secrets
 import threading
 from okto_pulse.community.adapters.grafx_read_lanes import GrafxReadLanes
 from collections.abc import Callable, Iterator
@@ -42,14 +41,12 @@ from okto_pulse.core.kg.interfaces.graph_lifecycle import (
 from okto_pulse.core.kg.interfaces.graph_recovery import WalRecoveryReport
 from okto_pulse.core.kg.interfaces.graph_runtime_store import (
     GraphPurgeResult,
-    GraphRuntimeObservationState,
 )
-from okto_pulse.core.kg.interfaces.storage_ref import StorageRef
 from okto_pulse.core.services.application_kg import (
     revalidate_board_graph_write_lease,
 )
 
-from okto_pulse.community.adapters import kg_runtime
+from okto_pulse.community.adapters import graph_operation_guards as kg_runtime
 from okto_pulse.community.adapters.grafx_board_storage import (
     grafx_board_storage_ref,
 )
@@ -82,12 +79,6 @@ from okto_pulse.community.adapters.grafx_schema_bootstrap import (
 from okto_pulse.community.adapters.graph_backend_binding import (
     CommunityGraphBackendBindingStore,
 )
-from okto_pulse.community.adapters.graph_rollout_comparison import (
-    CommunityBoardGraphShadowCycleAdapter,
-)
-from okto_pulse.community.adapters.graph_rollout_coordinator import (
-    CommunityBoardGraphRolloutCoordinator,
-)
 from okto_pulse.community.adapters.graph_rollout_journal import (
     CommunityGraphRolloutJournal,
     CommunityGraphRolloutMutationRecorder,
@@ -96,20 +87,6 @@ from okto_pulse.community.adapters.graph_route_resolver import (
     CommunityGraphRouteCandidate,
     CommunityGraphRouteResolver,
     CommunityGraphRouteSnapshot,
-)
-from okto_pulse.community.adapters.kg_wal_recovery import CommunityGraphRecovery
-from okto_pulse.community.adapters.kuzu_cypher_executor import (
-    CommunityKuzuCypherExecutor,
-)
-from okto_pulse.community.adapters.kuzu_graph_runtime_store import (
-    CommunityKuzuGraphRuntimeStore,
-)
-from okto_pulse.community.adapters.kuzu_graph_schema_manager import (
-    CommunityKuzuGraphSchemaManager,
-)
-from okto_pulse.community.adapters.kuzu_graph_store import CommunityKuzuGraphStore
-from okto_pulse.community.adapters.kuzu_graph_transaction import (
-    CommunityKuzuGraphTransaction,
 )
 from okto_pulse.community.adapters.routed_board_graph_facades import (
     CommunityRoutedCypherExecutor,
@@ -140,12 +117,11 @@ _ROLLOUT_ADMIN_MUTATION_PHASES = frozenset(
         "graph_lifecycle_rebuild",
         "graph_lifecycle_purge",
         "purge_board_graph",
-        "graph_recovery_ladybug",
         "graph_recovery_grafx",
     }
 )
 _ROLLOUT_INSPECT_ONLY_ADMIN_PHASES = frozenset(
-    {"graph_recovery_ladybug", "graph_recovery_grafx"}
+    {"graph_recovery_grafx"}
 )
 
 
@@ -548,7 +524,7 @@ class _GrafxBoardAccess:
             require_physical=phase != "privacy_erase",
             allow_erased=phase == "privacy_erase",
         )
-        if snapshot is not None and snapshot.backend not in {"ladybug", "grafx"}:
+        if snapshot is not None and snapshot.backend != "grafx":
             raise _route_failure("board_route_backend_invalid", board_id=board_id)
 
     def _all_pools(self) -> tuple[CommunityGrafxDatabasePool, ...]:
@@ -629,111 +605,6 @@ class _GrafxBoardAccess:
         )
 
 
-class _LadybugRuntimeMutations:
-    def __init__(
-        self,
-        resolver: CommunityBoardRouteSessionResolver,
-        runtime: CommunityKuzuGraphRuntimeStore,
-        path_guard: Callable[[str], None],
-    ) -> None:
-        self.resolver = resolver
-        self.runtime = runtime
-        self.path_guard = path_guard
-
-    def _revalidate(self, board_id: str, *, phase: str) -> None:
-        revalidate_board_graph_write_lease(board_id, failure_phase=phase)
-        snapshot = self.resolver.revalidate_session_authority(
-            board_id,
-            require_physical=False,
-            allow_erased=True,
-        )
-        if snapshot is not None and snapshot.backend not in {"ladybug", "grafx"}:
-            raise _route_failure("board_route_backend_invalid", board_id=board_id)
-        self.path_guard(board_id)
-
-    def purge(self, board_id: str, *, reason: str) -> GraphPurgeResult:
-        before = self.runtime.graph_state(board_id)
-        try:
-            self._revalidate(board_id, phase="runtime_purge_ladybug")
-            affected, _quarantine = (
-                kg_runtime.purge_board_graph_storage_with_receipt_unguarded(
-                    board_id,
-                    reason=reason,
-                )
-            )
-        except Exception as failure:  # noqa: BLE001 - return Core failure receipt
-            return GraphPurgeResult(
-                board_id=board_id,
-                removed=False,
-                not_found=False,
-                status="failed",
-                reason=reason,
-                backend=CommunityKuzuGraphRuntimeStore._BACKEND,
-                error_code=type(failure).__name__,
-            )
-        after = self.runtime.graph_state(board_id)
-        if after.normalized_state is not GraphRuntimeObservationState.CONFIRMED_ABSENT:
-            return GraphPurgeResult(
-                board_id=board_id,
-                removed=False,
-                not_found=False,
-                status="failed",
-                reason=reason,
-                backend=CommunityKuzuGraphRuntimeStore._BACKEND,
-                error_code=(
-                    "purge_did_not_remove_existing_graph"
-                    if before.exists
-                    else "purge_absence_unverified"
-                ),
-            )
-        return GraphPurgeResult(
-            board_id=board_id,
-            removed=bool(affected),
-            not_found=not bool(affected),
-            status="purged" if affected else "not_found",
-            reason=reason,
-            backend=CommunityKuzuGraphRuntimeStore._BACKEND,
-        )
-
-    def erase(self, board_id: str, *, reason: str) -> GraphPurgeResult:
-        before = self.runtime.graph_state(board_id)
-        try:
-            self._revalidate(board_id, phase="runtime_privacy_erase_ladybug")
-            affected = kg_runtime.erase_board_graph_storage_for_privacy_unguarded(
-                board_id,
-                reason=reason,
-            )
-        except Exception as failure:  # noqa: BLE001 - return Core failure receipt
-            return GraphPurgeResult(
-                board_id=board_id,
-                removed=False,
-                not_found=False,
-                status="failed",
-                reason=reason,
-                backend=CommunityKuzuGraphRuntimeStore._BACKEND,
-                error_code=type(failure).__name__,
-            )
-        after = self.runtime.graph_state(board_id)
-        if after.normalized_state is not GraphRuntimeObservationState.CONFIRMED_ABSENT:
-            return GraphPurgeResult(
-                board_id=board_id,
-                removed=False,
-                not_found=False,
-                status="failed",
-                reason=reason,
-                backend=CommunityKuzuGraphRuntimeStore._BACKEND,
-                error_code="physical_erasure_absence_unverified",
-            )
-        return GraphPurgeResult(
-            board_id=board_id,
-            removed=bool(affected),
-            not_found=not before.exists and not bool(affected),
-            status="erased" if affected else "not_found",
-            reason=reason,
-            backend=CommunityKuzuGraphRuntimeStore._BACKEND,
-        )
-
-
 @dataclass(frozen=True, slots=True)
 class CommunityRoutedBoardGraphComposition:
     """All Board graph ports plus the shared physical routing identities."""
@@ -749,7 +620,6 @@ class CommunityRoutedBoardGraphComposition:
     graph_lifecycle: CommunityRoutedGraphLifecycle
     graph_runtime_store: CommunityRoutedGraphRuntimeStore
     graph_recovery: CommunityRoutedGraphRecovery
-    graph_rollout_coordinator: CommunityBoardGraphRolloutCoordinator
     _initialize_physical: Callable[[CommunityGraphRouteCandidate], object | None]
     _rematerialize_physical: Callable[[CommunityGraphRouteCandidate], object | None]
 
@@ -777,17 +647,9 @@ class CommunityRoutedBoardGraphComposition:
         """Create/adopt and publish one Board route, only when explicitly called."""
 
         phase = "initialize_board_route"
-        from okto_pulse.community.adapters.ladybug_writer import (
-            ladybug_writer_scope,
-        )
-
-        # Privacy invalidation enters this same writer authority before its
-        # exclusive close window. Retain the writer across the tombstone check,
-        # discovery/materialization, publication and revalidation so privacy
-        # cannot enter between them. A first Ladybug bootstrap registers a
-        # normal close-guard reader, so this door intentionally retains the
-        # common writer facet without entering the exclusive close facet.
-        with ladybug_writer_scope(scope=board_id, phase=phase):
+        # Fence privacy and initialization with the same per-board storage
+        # window, without serializing independent boards process-wide.
+        with kg_runtime.board_storage_mutation_window(board_id, phase=phase):
             revalidate_board_graph_write_lease(
                 board_id,
                 failure_phase=phase,
@@ -807,11 +669,7 @@ class CommunityRoutedBoardGraphComposition:
         """Adopt physical storage without creating an absent Board target."""
 
         phase = "adopt_existing_board_route"
-        from okto_pulse.community.adapters.ladybug_writer import (
-            ladybug_writer_scope,
-        )
-
-        with ladybug_writer_scope(scope=board_id, phase=phase):
+        with kg_runtime.board_storage_mutation_window(board_id, phase=phase):
             revalidate_board_graph_write_lease(
                 board_id,
                 failure_phase=phase,
@@ -958,7 +816,9 @@ def build_community_routed_board_graph_composition(
     if grafx_pool.buffer_pool_mb != configured_buffer_pool_mb:
         raise ValueError("the shared Grafx pool buffer budget must match settings")
     if grafx_pool.constructor_options != getattr(settings, "kg_grafx_options", {}):
-        raise ValueError("the shared Grafx pool constructor options must match settings")
+        raise ValueError(
+            "the shared Grafx pool constructor options must match settings"
+        )
     rollout_mutation_recorder = CommunityGraphRolloutMutationRecorder(
         binding_store.root
     )
@@ -1036,19 +896,7 @@ def build_community_routed_board_graph_composition(
             )
             return
 
-        # The callback runs before a Ladybug administrative operation and has
-        # no matching post-call seam.  Retaining this record as ``prepared`` is
-        # intentional: the next fixed full-state snapshot resolves whether the
-        # operation changed data, while its allocation moves the high-water so
-        # a stale candidate cannot be cut over.
-        rollout_mutation_recorder.prepare_mutation(
-            board_id=board_id,
-            binding_sha256=observed.binding_sha256,
-            backend="ladybug",
-            transaction_id=f"admin-{secrets.token_hex(16)}",
-            family="administrative_write",
-            payload={"phase": phase},
-        )
+        raise _route_failure("graph_backend_retired_files_preserved", board_id=board_id)
 
     def invalidate_rollout_for_privacy(
         board_id: str,
@@ -1107,21 +955,6 @@ def build_community_routed_board_graph_composition(
             backend="rollout",
         )
 
-    def require_ladybug_runtime_path(board_id: str) -> None:
-        expected = binding_store.board_ladybug_path(board_id)
-        try:
-            observed = kg_runtime.board_kuzu_path(board_id)
-        except Exception as failure:
-            raise _route_failure(
-                "ladybug_runtime_path_unavailable",
-                board_id=board_id,
-            ) from failure
-        if not _same_path(expected, observed):
-            raise _route_failure(
-                "ladybug_runtime_path_mismatch",
-                board_id=board_id,
-            )
-
     @contextmanager
     def board_route_session(board_id: str) -> Iterator[None]:
         with resolver.board_route_session(board_id):
@@ -1130,9 +963,6 @@ def build_community_routed_board_graph_composition(
             except GraphCapabilityUnavailable as failure:
                 if failure.details.get("reason") != "binding_missing":
                     raise
-            else:
-                if snapshot.backend == "ladybug":
-                    require_ladybug_runtime_path(board_id)
             yield
 
     @contextmanager
@@ -1156,29 +986,9 @@ def build_community_routed_board_graph_composition(
     def lifecycle_mutation_window(board_id: str, *, phase: str) -> Iterator[None]:
         with board_route_session(board_id):
             snapshot = resolver.inspect_board_route(board_id)
-            # Core's logical Board writer lease and Ladybug's process-wide
-            # native single-writer constraint are distinct authorities.  Only
-            # the Ladybug route needs the native (logically re-entrant) gate;
-            # Grafx retains the backend-neutral exclusive close window.
-            physical_window = (
-                kg_runtime.board_storage_mutation_window
-                if snapshot.backend == "ladybug"
-                else kg_runtime.board_storage_mutation_window_unguarded
-            )
+            physical_window = kg_runtime.board_storage_mutation_window_unguarded
             with physical_window(board_id, phase=phase):
                 yield
-
-    ladybug_store = CommunityKuzuGraphStore()
-    ladybug_cypher = CommunityKuzuCypherExecutor()
-    ladybug_transaction = CommunityKuzuGraphTransaction()
-    ladybug_schema = CommunityKuzuGraphSchemaManager()
-    ladybug_runtime = CommunityKuzuGraphRuntimeStore()
-    ladybug_mutations = _LadybugRuntimeMutations(
-        resolver,
-        ladybug_runtime,
-        require_ladybug_runtime_path,
-    )
-    ladybug_recovery = CommunityGraphRecovery()
 
     grafx_store = CommunityGrafxGraphStore(
         access.database,
@@ -1187,7 +997,8 @@ def build_community_routed_board_graph_composition(
         read_database_scope=access.read_database_scope,
     )
     grafx_cypher = CommunityGrafxCypherExecutor(
-        access.read_database, read_database_scope=access.read_database_scope,
+        access.read_database,
+        read_database_scope=access.read_database_scope,
     )
     grafx_schema = CommunityGrafxGraphSchemaManager(
         access.database,
@@ -1201,9 +1012,6 @@ def build_community_routed_board_graph_composition(
         access.close,
         access.runtime_fence,
         board_storage_root_resolver=access.board_root,
-        configured_max_bytes=lambda: int(
-            getattr(settings, "kg_ladybug_max_db_size_gb", 2) * 1024**3
-        ),
     )
     grafx_recovery = CommunityGrafxGraphRecovery(
         quarantine_root=binding_store.root / "quarantine",
@@ -1221,162 +1029,6 @@ def build_community_routed_board_graph_composition(
         admission=access.admission,
         recover_latched_checkpoint=grafx_recovery.recover_wal_only_unguarded,
     )
-
-    def require_ladybug_snapshot(
-        snapshot: CommunityGraphRouteSnapshot,
-        *,
-        require_physical: bool,
-    ) -> str:
-        if snapshot.scope != "board" or snapshot.backend != "ladybug":
-            raise _route_failure(
-                "ladybug_board_route_required",
-                board_id=snapshot.scope_id,
-            )
-        expected = binding_store.board_ladybug_path(snapshot.scope_id)
-        if not _same_path(snapshot.active_path, expected):
-            raise _route_failure(
-                "ladybug_board_path_mismatch",
-                board_id=snapshot.scope_id,
-            )
-        require_ladybug_runtime_path(snapshot.scope_id)
-        resolver.require_exact_session_snapshot(
-            snapshot,
-            require_physical=require_physical,
-        )
-        return snapshot.scope_id
-
-    async def ladybug_open(snapshot: CommunityGraphRouteSnapshot) -> GraphHandle:
-        board_id = require_ladybug_snapshot(snapshot, require_physical=True)
-        with kg_runtime.registered_raw_connection(board_id) as (_database, connection):
-            result = connection.execute(
-                "CALL SHOW_TABLES() WHERE name = 'BoardMeta' RETURN name"
-            )
-            try:
-                if not result.has_next():
-                    raise GraphCorruption(
-                        "The routed Ladybug Board graph has no BoardMeta table.",
-                        details={
-                            "operation": "open_routed_ladybug_board",
-                            "reason": "board_meta_missing",
-                            "board_id": board_id,
-                        },
-                    )
-            finally:
-                result.close()
-            result = connection.execute(
-                "MATCH (m:BoardMeta {board_id: $bid}) RETURN m.schema_version",
-                {"bid": board_id},
-            )
-            try:
-                if not result.has_next():
-                    raise GraphCorruption(
-                        "The routed Ladybug Board graph has no BoardMeta row.",
-                        details={
-                            "operation": "open_routed_ladybug_board",
-                            "reason": "board_meta_row_missing",
-                            "board_id": board_id,
-                        },
-                    )
-                row = result.get_next()
-                if not row or not row[0]:
-                    raise GraphCorruption(
-                        "The routed Ladybug Board graph has no schema version.",
-                        details={
-                            "operation": "open_routed_ladybug_board",
-                            "reason": "board_meta_schema_version_missing",
-                            "board_id": board_id,
-                        },
-                    )
-            finally:
-                result.close()
-        return GraphHandle(
-            board_id=board_id,
-            storage_ref=StorageRef(f"board:{board_id}", "community_local_graph"),
-            opened=True,
-            status="opened",
-            locked=False,
-            quarantined=False,
-        )
-
-    async def ladybug_close(snapshot: CommunityGraphRouteSnapshot) -> None:
-        # The outer lifecycle mutation window already drained readers and
-        # closed both the connection pool and cached Database.
-        require_ladybug_snapshot(snapshot, require_physical=True)
-
-    async def ladybug_rebuild(
-        snapshot: CommunityGraphRouteSnapshot,
-    ) -> RebuildReport:
-        board_id = require_ladybug_snapshot(snapshot, require_physical=True)
-        try:
-            kg_runtime.ensure_board_graph_bootstrapped_unguarded(board_id)
-        except Exception as failure:  # noqa: BLE001 - structured lifecycle evidence
-            return RebuildReport(
-                board_id=board_id,
-                status="failed",
-                steps=("close_all_connections",),
-                reason=str(failure),
-            )
-        return RebuildReport(
-            board_id=board_id,
-            status="rebuilt",
-            steps=(
-                "close_all_connections",
-                "ensure_board_graph_bootstrapped",
-            ),
-        )
-
-    async def ladybug_purge(
-        snapshot: CommunityGraphRouteSnapshot,
-        *,
-        reason: str,
-    ) -> PurgeReport:
-        board_id = require_ladybug_snapshot(snapshot, require_physical=True)
-        affected, quarantine = (
-            kg_runtime.purge_board_graph_storage_with_receipt_unguarded(
-                board_id,
-                reason=reason,
-            )
-        )
-        return PurgeReport(
-            board_id=board_id,
-            status="purged" if affected else "noop",
-            reason=reason,
-            affected_storage_refs=tuple(
-                StorageRef(
-                    f"board:{board_id}:artifact:{index}",
-                    "community_local_graph",
-                )
-                for index, _path in enumerate(affected)
-            ),
-            quarantined=bool(affected),
-            quarantine_ref=quarantine,
-        )
-
-    def ladybug_step(
-        snapshot: CommunityGraphRouteSnapshot,
-        graph_type: str,
-        step: str,
-    ) -> GraphLifecycleStepResult:
-        board_id = require_ladybug_snapshot(snapshot, require_physical=True)
-        result = kg_runtime.apply_ladybug_lifecycle_step_unguarded(
-            board_id,
-            graph_type,
-            step,
-        )
-        return GraphLifecycleStepResult(
-            ok=bool(getattr(result, "ok", False)),
-            detail=getattr(result, "detail", None),
-        )
-
-    async def ladybug_close_all() -> None:
-        from okto_pulse.community.adapters.graph_connection_pool import (
-            close_all_board_connections,
-        )
-
-        close_all_board_connections()
-        # This closes only the per-board Ladybug cache.  The Global singleton
-        # lives in another module and is intentionally untouched here.
-        kg_runtime.close_board_db_cache(board_id=None)
 
     async def grafx_open(snapshot: CommunityGraphRouteSnapshot) -> GraphHandle:
         resolver.require_exact_session_snapshot(snapshot, require_physical=True)
@@ -1428,18 +1080,6 @@ def build_community_routed_board_graph_composition(
     async def grafx_close_all() -> None:
         access.close(None)
 
-    async def ladybug_recover(board_id: str) -> WalRecoveryReport:
-        snapshot = resolver.current_board_snapshot(board_id, require_physical=False)
-        if snapshot is None:
-            raise _route_failure("board_route_required", board_id=board_id)
-        rollout_administrative_write_fence(
-            board_id,
-            "graph_recovery_ladybug",
-            snapshot,
-        )
-        require_ladybug_runtime_path(board_id)
-        return await ladybug_recovery.recover_wal_only_unguarded(board_id)
-
     async def grafx_recover(board_id: str) -> WalRecoveryReport:
         snapshot = resolver.current_board_snapshot(board_id, require_physical=False)
         if snapshot is None:
@@ -1459,7 +1099,6 @@ def build_community_routed_board_graph_composition(
 
     graph_store = CommunityRoutedSemanticGraphStore(
         resolver,
-        ladybug=ladybug_store,
         grafx=grafx_store,
         operation_window=operation_window,
         revalidate_write_fence=lambda board_id, phase: (
@@ -1469,20 +1108,17 @@ def build_community_routed_board_graph_composition(
     )
     cypher_executor = CommunityRoutedCypherExecutor(
         resolver,
-        ladybug=ladybug_cypher,
         grafx=grafx_cypher,
         operation_window=operation_window,
     )
     graph_schema_manager = CommunityRoutedGraphSchemaManager(
         resolver,
-        ladybug=ladybug_schema,
         grafx=grafx_schema,
         operation_window=operation_window,
         revalidate_write_fence=rollout_administrative_write_fence,
     )
     graph_transaction = CommunityRoutedGraphTransaction(
         resolver,
-        ladybug=ladybug_transaction,
         grafx_pool=grafx_pool,
         # A GraphTransaction is opened in the async orchestration context but
         # its blocking engine work (including terminal commit/rollback) runs
@@ -1499,12 +1135,6 @@ def build_community_routed_board_graph_composition(
         operation_window=operation_window,
         mutation_window_unguarded=lifecycle_mutation_window,
         revalidate_write_fence=rollout_administrative_write_fence,
-        ladybug_open_unguarded=ladybug_open,
-        ladybug_close_unguarded=ladybug_close,
-        ladybug_rebuild_unguarded=ladybug_rebuild,
-        ladybug_purge_unguarded=ladybug_purge,
-        ladybug_apply_step_unguarded=ladybug_step,
-        ladybug_close_all_unguarded=ladybug_close_all,
         grafx_open_unguarded=grafx_open,
         grafx_close_unguarded=grafx_close,
         grafx_rebuild_unguarded=grafx_rebuild,
@@ -1514,13 +1144,10 @@ def build_community_routed_board_graph_composition(
     )
     graph_runtime_store = CommunityRoutedGraphRuntimeStore(
         resolver,
-        ladybug=ladybug_runtime,
         grafx=grafx_runtime,
         operation_window=operation_window,
         mutation_window=mutation_window,
-        ladybug_purge_unguarded=ladybug_mutations.purge,
         grafx_purge_unguarded=grafx_runtime.purge_board_graph,
-        ladybug_erase_unguarded=ladybug_mutations.erase,
         grafx_erase_unguarded=grafx_erase,
         rollout_erase_unguarded=invalidate_rollout_for_privacy,
         rollout_finalize_erase_unguarded=finalize_rollout_privacy_storage,
@@ -1528,15 +1155,8 @@ def build_community_routed_board_graph_composition(
     )
     graph_recovery = CommunityRoutedGraphRecovery(
         resolver,
-        ladybug_recovery_unguarded=ladybug_recover,
         grafx_recovery_unguarded=grafx_recover,
         mutation_window=mutation_window,
-    )
-    graph_rollout_coordinator = CommunityBoardGraphRolloutCoordinator(
-        binding_store,
-        CommunityBoardGraphShadowCycleAdapter(connector=connector),
-        mutation_window=mutation_window,
-        grafx_page_size=configured_page_size,
     )
 
     def create_board_physical(
@@ -1549,42 +1169,6 @@ def build_community_routed_board_graph_composition(
                 "board_initialization_candidate_scope_invalid",
                 board_id=candidate.scope_id,
             )
-        if candidate.backend == "ladybug":
-            expected = binding_store.board_ladybug_path(candidate.scope_id)
-            if not _same_path(candidate.binding_path, expected):
-                raise _route_failure(
-                    "ladybug_initialization_path_mismatch",
-                    board_id=candidate.scope_id,
-                )
-            require_ladybug_runtime_path(candidate.scope_id)
-            revalidate_board_graph_write_lease(
-                candidate.scope_id,
-                failure_phase=(
-                    "rematerialize_board_route_after_purge"
-                    if close_window_owned
-                    else "initialize_board_route"
-                ),
-            )
-            if close_window_owned:
-                handle = kg_runtime.rematerialize_board_graph_unguarded(
-                    candidate.scope_id
-                )
-            else:
-                from okto_pulse.community.adapters.ladybug_writer import (
-                    ladybug_writer_scope,
-                )
-
-                with ladybug_writer_scope(
-                    scope=candidate.scope_id,
-                    phase="initialize_board_route",
-                ):
-                    handle = kg_runtime.bootstrap_board_graph(candidate.scope_id)
-            if not _same_path(handle.path, candidate.binding_path):
-                raise _route_failure(
-                    "ladybug_initialization_result_mismatch",
-                    board_id=candidate.scope_id,
-                )
-            return None
         if candidate.backend != "grafx" or candidate.page_size is None:
             raise _route_failure(
                 "board_initialization_backend_invalid",
@@ -1623,7 +1207,6 @@ def build_community_routed_board_graph_composition(
         graph_lifecycle=graph_lifecycle,
         graph_runtime_store=graph_runtime_store,
         graph_recovery=graph_recovery,
-        graph_rollout_coordinator=graph_rollout_coordinator,
         _initialize_physical=initialize_physical,
         _rematerialize_physical=rematerialize_physical,
     )

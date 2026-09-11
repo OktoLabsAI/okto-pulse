@@ -36,6 +36,15 @@ def test_every_native_config_option_has_one_reviewed_ui_policy_and_help():
     assert validate_options({key: DEFAULTS[key] for key in EDITABLE})
 
 
+def test_accelerated_defaults_are_published_without_overwriting_explicit_pure():
+    rows = {row["name"]: row for row in settings_catalog()}
+    assert rows["codec"]["default"] == rows["vector_math"]["default"] == "numpy"
+    assert validate_options({"codec": "pure", "vector_math": "pure"}) == {
+        "codec": "pure", "vector_math": "pure",
+    }
+    assert validate_options({}) == {}
+
+
 def test_v005_memory_controls_are_editable_and_zero_cache_is_not_null():
     options = {
         "vector_hnsw_memory_budget_bytes": 1048576,

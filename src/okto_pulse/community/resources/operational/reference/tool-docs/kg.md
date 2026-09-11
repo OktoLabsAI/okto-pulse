@@ -10,7 +10,7 @@ Full long-form documentation (args, returns, examples, enum prose) for `okto_pul
 
 Drop an in-flight session without committing.
 
-No compensating delete is applied — commit was never called, so LadybugDB
+No compensating delete is applied — commit was never called, so Okto Grafx
 has no partial writes. The session is marked aborted and removed from
 the in-memory registry.
 
@@ -26,7 +26,7 @@ Returns:
 Add an edge candidate to an open session.
 
 Endpoints (from_candidate_id / to_candidate_id) must reference either
-another in-session node candidate OR an existing LadybugDB node via the
+another in-session node candidate OR an existing Okto Grafx node via the
 'kg:' prefix (kg:decision_abc123).
 
 Cognitive agents may only propose judgement edges: supersedes,
@@ -98,7 +98,7 @@ Returns:
 
 ## `okto_pulse_kg_commit_consolidation`
 
-Atomically commit the session: LadybugDB writes + audit row + outbox event.
+Atomically commit the session: Okto Grafx writes + audit row + outbox event.
 
 agent_overrides map candidate_id → ReconciliationHint for cases where
 the agent's semantic reasoning produces a different op than the
@@ -392,7 +392,7 @@ Returns:
 
 ## `okto_pulse_kg_get_similar_nodes`
 
-Fetch existing LadybugDB nodes similar to an in-session candidate.
+Fetch existing Okto Grafx nodes similar to an in-session candidate.
 
 MVP uses title-prefix match as a deterministic fallback; production
 replaces with HNSW k-NN via vector index (card 00dae72a).

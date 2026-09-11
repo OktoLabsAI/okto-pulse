@@ -43,9 +43,9 @@ async def test_boot_persisted_settings_replace_composed_snapshot(
 ) -> None:
     async def _persisted(_db: object) -> dict[str, int]:
         return {
-            "kg_kuzu_buffer_pool_mb": 128,
+            "kg_grafx_buffer_pool_mb": 128,
             "kg_kuzu_max_db_size_gb": 2,
-            "kg_connection_pool_size": 1,
+            "kg_grafx_read_participants": 1,
         }
 
     monkeypatch.setattr(service, "_load_persisted_rows", _persisted)
@@ -56,8 +56,8 @@ async def test_boot_persisted_settings_replace_composed_snapshot(
     )
     settings = CommunitySettings(
         data_dir=str(tmp_path),
-        kg_kuzu_buffer_pool_mb=256,
-        kg_connection_pool_size=2,
+        kg_grafx_buffer_pool_mb=256,
+        kg_grafx_read_participants=2,
     )
     composition = _composition(settings)
     service._boot_snapshot.clear()
@@ -65,13 +65,12 @@ async def test_boot_persisted_settings_replace_composed_snapshot(
         with runtime_composition_scope(composition):
             applied = await service.apply_persisted_settings_to_core_settings()
 
-            assert applied["kg_kuzu_buffer_pool_mb"] == 128
-            assert applied["kg_connection_pool_size"] == 1
-            assert get_settings().kg_kuzu_buffer_pool_mb == 128
-            assert get_settings().kg_connection_pool_size == 1
+            assert applied["kg_grafx_buffer_pool_mb"] == 128
+            assert applied["kg_grafx_read_participants"] == 1
+            assert get_settings().kg_grafx_buffer_pool_mb == 128
+            assert get_settings().kg_grafx_read_participants == 1
             assert (
-                composition.settings_provider.get_settings_snapshot()
-                is get_settings()
+                composition.settings_provider.get_settings_snapshot() is get_settings()
             )
     finally:
         service._boot_snapshot.clear()
@@ -84,8 +83,8 @@ async def test_runtime_settings_preserve_effective_contract_and_expose_desired(
 ) -> None:
     settings = CommunitySettings(
         data_dir=str(tmp_path),
-        kg_kuzu_buffer_pool_mb=256,
-        kg_connection_pool_size=2,
+        kg_grafx_buffer_pool_mb=256,
+        kg_grafx_read_participants=2,
     )
     effective = {
         key: service._validate_runtime_setting_value(key, getattr(settings, key))
@@ -97,8 +96,8 @@ async def test_runtime_settings_preserve_effective_contract_and_expose_desired(
 
     async def _persisted(_db: Any) -> dict[str, Any]:
         return {
-            "kg_kuzu_buffer_pool_mb": 128,
-            "kg_connection_pool_size": 1,
+            "kg_grafx_buffer_pool_mb": 128,
+            "kg_grafx_read_participants": 1,
             "kg_grafx_page_size": 16384,
             "kg_grafx_descriptor_revalidation": "strict",
         }
@@ -109,10 +108,10 @@ async def test_runtime_settings_preserve_effective_contract_and_expose_desired(
 
     result = await service.get_runtime_settings(object())
 
-    assert result["kg_kuzu_buffer_pool_mb"] == 256
-    assert result["kg_connection_pool_size"] == 2
-    assert result["desired_values"]["kg_kuzu_buffer_pool_mb"] == 128
-    assert result["desired_values"]["kg_connection_pool_size"] == 1
+    assert result["kg_grafx_buffer_pool_mb"] == 256
+    assert result["kg_grafx_read_participants"] == 2
+    assert result["desired_values"]["kg_grafx_buffer_pool_mb"] == 128
+    assert result["desired_values"]["kg_grafx_read_participants"] == 1
     assert result["desired_values"]["kg_grafx_page_size"] == 16384
     assert result["desired_values"]["kg_grafx_descriptor_revalidation"] == "strict"
     assert result["restart_required"] is True

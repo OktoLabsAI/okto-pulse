@@ -1,11 +1,20 @@
 """Operation-local layout grouping never becomes a retained route authority."""
+
 from types import SimpleNamespace
 
 import pytest
 
-from okto_pulse.community.adapters.routed_board_graph_facades import CommunityRoutedCypherExecutor
+from okto_pulse.community.adapters.routed_board_graph_facades import (
+    CommunityRoutedCypherExecutor,
+)
 from okto_pulse.community.api import kg_routes
-from test_routed_board_graph_facades import _RouteResolver, _Windows, _snapshot, _missing_binding
+from okto_pulse.core.kg.interfaces.graph_errors import GraphCorruption
+from test_routed_board_graph_facades import (
+    _RouteResolver,
+    _Windows,
+    _snapshot,
+    _missing_binding,
+)
 
 
 LAYOUTS = [("r", "A", "B"), ("s", "B", "C"), ("t", "D", "D")]
@@ -13,14 +22,19 @@ LAYOUTS = [("r", "A", "B"), ("s", "B", "C"), ("t", "D", "D")]
 
 def test_facade_acquires_once_per_call_and_reacquires_before_query():
     events = []
-    routes = _RouteResolver({"board": _snapshot("board", "grafx", generation="1")}, events)
+    routes = _RouteResolver(
+        {"board": _snapshot("board", "grafx", generation="1")}, events
+    )
     provider = SimpleNamespace(
         relationship_table_name=lambda *parts: "__".join(parts),
         execute_read_only=lambda *args, **kw: {"rows": [[1]]},
     )
-    facade = CommunityRoutedCypherExecutor(routes, ladybug=provider, grafx=provider,
-                                          operation_window=_Windows(events).operation)
-    assert facade.relationship_table_names("board", LAYOUTS) == ["__".join(x) for x in LAYOUTS]
+    facade = CommunityRoutedCypherExecutor(
+        routes, grafx=provider, operation_window=_Windows(events).operation
+    )
+    assert facade.relationship_table_names("board", LAYOUTS) == [
+        "__".join(x) for x in LAYOUTS
+    ]
     assert routes.acquire_calls == ["board"]
     assert events[0] == ("operation_enter", "board")
     assert events[-1] == ("operation_exit", "board")
@@ -33,15 +47,20 @@ def test_facade_acquires_once_per_call_and_reacquires_before_query():
     assert events[-1] == ("operation_exit", "board")
 
 
-def test_facade_provider_switch_and_legacy_names_are_not_cached():
+def test_facade_revalidates_and_refuses_a_retired_route():
     events = []
-    routes = _RouteResolver({"board": _snapshot("board", "grafx", generation="1")}, events)
-    facade = CommunityRoutedCypherExecutor(routes, ladybug=SimpleNamespace(),
+    routes = _RouteResolver(
+        {"board": _snapshot("board", "grafx", generation="1")}, events
+    )
+    facade = CommunityRoutedCypherExecutor(
+        routes,
         grafx=SimpleNamespace(relationship_table_name=lambda *p: "__".join(p)),
-        operation_window=_Windows(events).operation)
+        operation_window=_Windows(events).operation,
+    )
     assert facade.relationship_table_names("board", LAYOUTS)[0] == "r__A__B"
     routes.routes["board"] = _snapshot("board", "ladybug", generation="2")
-    assert facade.relationship_table_names("board", LAYOUTS) == ["r", "s", "t"]
+    with pytest.raises(GraphCorruption):
+        facade.relationship_table_names("board", LAYOUTS)
     assert facade.relationship_table_names("unknown", []) == []
     assert routes.acquire_calls == ["board", "board"]
 
@@ -78,9 +97,11 @@ class Executor:
 @pytest.fixture
 def install(monkeypatch):
     monkeypatch.setattr(kg_routes, "_relation_pairs", lambda *_: LAYOUTS)
+
     def use(executor):
         monkeypatch.setattr(kg_routes, "resolve_cypher_executor", lambda: executor)
         return executor
+
     return use
 
 
@@ -115,14 +136,18 @@ def test_failed_route_never_falls_back_to_logical_query(install):
 def test_graph_maps_only_eligible_page_layouts_and_keeps_visibility(install):
     executor = install(Executor())
     _edges, diagnostics = kg_routes._fetch_edges_for_nodes(
-        "board", {"a"}, node_types_by_id={"a": "A"})
+        "board", {"a"}, node_types_by_id={"a": "A"}
+    )
     assert executor.groups == [("board", LAYOUTS[:1])]
     assert not executor.singles
     assert diagnostics["edge_tables_skipped_by_page_type"] == 2
     assert executor.queries[0][1] == {"from_node_ids": ("a",), "to_node_ids": ()}
     executor.groups.clear()
     executor.queries.clear()
-    kg_routes._fetch_edges_for_nodes("board", {"a"}, node_types_by_id={"a": "A"},
-                                    include_code_traceability=False)
+    kg_routes._fetch_edges_for_nodes(
+        "board", {"a"}, node_types_by_id={"a": "A"}, include_code_traceability=False
+    )
     assert executor.groups == [("board", LAYOUTS)]
-    assert all(p == {"include_code_traceability": False} for _, p, _ in executor.queries)
+    assert all(
+        p == {"include_code_traceability": False} for _, p, _ in executor.queries
+    )

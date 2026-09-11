@@ -189,9 +189,9 @@ The embeddings power the similarity-based queries — "find cards like this
 one", "what supersedes decision X", semantic search in Global Discovery.
 The vector index is an HNSW inside the local graph database, so nothing leaves the machine.
 
-### 5. Graph (LadybugDB)
+### 5. Graph (Okto Grafx)
 
-Finally the worker writes typed nodes and edges to a LadybugDB graph database.
+Finally the worker writes typed nodes and edges to an Okto Grafx graph database.
 Existing nodes are updated (not duplicated) when the content hash changes,
 and supersedence chains keep the full history queryable. Once this step
 commits, the new state is visible on the canvas the next time the page

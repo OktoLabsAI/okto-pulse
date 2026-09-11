@@ -1,10 +1,58 @@
 # Grafx 0.0.5 adoption in Pulse 0.3.3
 
+Next coordinated query update: [Grafx 0.0.6 migration](GRAFX_V006_QUERY_MIGRATION.md).
+
 2026-09-09. First implementation checkpoint; the broader adoption assessment is
 not complete. No graph rebuild, cognitive consolidation or data reset is part of
 this checkpoint.
 
 ## Architecture agreement
+
+### September 10: default acceleration and UI attribution
+
+The latest local Grafx 0.0.5 revision installs NumPy and google-crc32c as base
+dependencies (`[accel]` remains compatible). Community consumes the native catalog:
+`codec` and `vector_math` now show `numpy` by default in Menu > Settings.
+Existing explicit `pure`/`auto` overrides remain unchanged; changing constructor
+options requires a runtime restart. NumPy vector arithmetic retains its documented
+tolerance; page encoding remains byte-identical. No database migration is required.
+
+Settings, About and the Knowledge Graph header now show **Powered by Okto Grafx**
+using the supplied, bundled SVG. Attribution stays visible while graph content is
+loading or unavailable, and uses one shared accessible component with fixed icon
+dimensions. No external image request or Core/provider coupling is introduced.
+
+Validation: 43 backend Settings/persistence tests and 67 frontend tests passed
+(attribution, NumPy defaults, preserved overrides, Settings, Header and KG
+diagnostics). TypeScript/Vite build and packaged frontend synchronization passed.
+The SVG is an exact copy of the supplied asset (SHA256
+`a7fda36cc11dd6c29e0883b83b062e34b0d57222fd69b6e494bb26f789ea2aaa`).
+Build/install evidence lives in the paired Grafx checkout's
+`.grafx-tmp/accel-default/`; source completion does not mean an already-running
+Pulse process has loaded these changes.
+
+The built wheels also passed a clean staged-install smoke: exact package bytes,
+base dependency metadata, complete Settings catalog, independent reader visibility,
+durable writes, recovery/cold verification, generation promotion, vector search,
+idempotency and reopen. All 120 staged dependencies passed `uv pip check`. The
+recovery portion completed in 23.94 s on disposable data; this is smoke evidence,
+not a production performance benchmark.
+
+After explicit stop/update/restart approval, both local entry-point environments
+(Python 3.13 user install and the uv tool environment) received these exact wheels:
+
+- Grafx 0.0.5: SHA256 `4f09d7e3ba1b8c7b716aa0b278bea2f39428db68fea71b27f56521f3b4bffcc5`.
+- Pulse 0.3.3: SHA256 `2f3004ddbffabf986b255770c6dd1c7d9268f70727a2b7fab0dbbb84ac52a2f7`.
+
+Installed-file parity, NumPy catalog defaults and retained pure overrides passed
+in both environments; all 120 uv tool dependencies passed `uv pip check`. Pulse
+was restarted with explicit `DATA_DIR=C:/Users/jpamb/.okto-pulse`. No database reset,
+manual rebuild or configuration-override rewrite was performed.
+Post-restart verification: PID 4892 owns both 8100 and 8101, frontend HTTP 200,
+and the served `/assets/index-Dvt1-ZTD.js` contains both Grafx attribution and the
+bundled SVG. Startup logs confirmed the Grafx board route without an error traceback.
+
+### Adapter boundary
 
 Core may evolve, but its contracts must remain implementable by other databases.
 Keep native types, index names, constructor options, physical IDs and provider
@@ -113,7 +161,10 @@ deselected (full isolated release/launcher runs and marked E2E/slow/stress cases
 were not repeated). An initial run exposed inherited backend environment values
 and missing explicit artifact inputs for the long gates; the focused run clears
 only its process environment and does not change operator configuration. The
-previously installed wheels predate this validator-only alignment.
+previously installed wheels predated this validator-only alignment. They have
+since been replaced by checkpoint `6b42bd9`; see the
+[installed-artifact validation receipt](GRAFX_RECOVERY_BATCHING.md#local-installation-and-installed-artifact-validation--2026-09-09)
+for the new package identity, recovery tests and local disk-space warning.
 
 1. Global Discovery read participants with lifecycle drain and generation/privacy
    protection; do not simply remove the shared lock.

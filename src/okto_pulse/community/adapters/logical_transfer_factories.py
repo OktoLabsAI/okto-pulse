@@ -59,7 +59,6 @@ class LogicalTransferScope:
     name: str
     schema: LogicalSchema
     relationship_tables: Mapping[LayoutIdentity, str]
-    ladybug_filename: str
 
 
 def logical_transfer_scope(scope: str) -> LogicalTransferScope:
@@ -76,20 +75,13 @@ def logical_transfer_scope(scope: str) -> LogicalTransferScope:
             detail=f"{scope!r} is not one of {SCOPES}",
         )
     if scope == SCOPE_BOARD:
-        from okto_pulse.community.adapters.kg_runtime import GRAPH_DB_FILENAME
-
         schema = board_logical_schema()
         tables: dict[LayoutIdentity, str] = {
             (entry.logical_type, entry.from_type, entry.to_type): entry.physical_table
             for entry in PULSE_RELATIONSHIP_LAYOUT.entries
         }
         expected = BOARD_RELATIONSHIP_TABLES
-        filename = GRAPH_DB_FILENAME
     else:
-        from okto_pulse.community.adapters.global_discovery_runtime import (
-            GLOBAL_DISCOVERY_FILENAME,
-        )
-
         schema = global_logical_schema()
         tables = {
             (
@@ -100,14 +92,12 @@ def logical_transfer_scope(scope: str) -> LogicalTransferScope:
             for relation in PULSE_GRAFX_GLOBAL_SCHEMA.relationships
         }
         expected = GLOBAL_RELATIONSHIP_TABLES
-        filename = GLOBAL_DISCOVERY_FILENAME
 
     _require_no_layout_drift(scope, schema, tables, expected)
     return LogicalTransferScope(
         name=scope,
         schema=schema,
         relationship_tables=tables,
-        ladybug_filename=filename,
     )
 
 
@@ -145,37 +135,6 @@ def _require_no_layout_drift(
             "relationship table map names an empty physical table",
             detail=f"{scope}: {empty}",
         )
-
-
-def make_ladybug_logical_source(database: Any, *, scope: str) -> Any:
-    """Read one Ladybug database as this scope's logical graph."""
-
-    from okto_pulse.community.adapters.ladybug_logical_source import (
-        LadybugLogicalSnapshotSource,
-    )
-
-    contract = logical_transfer_scope(scope)
-    return LadybugLogicalSnapshotSource(database, contract.schema)
-
-
-def make_ladybug_logical_sink(candidate_root: str | Path, *, scope: str) -> Any:
-    """Write this scope's logical graph into a new Ladybug candidate.
-
-    The filename comes from the scope, not from this call: a Board runtime
-    resolves graph.lbug and a Global generation discovery.lbug, and a candidate
-    under any other name is one no runtime would ever find.
-    """
-
-    from okto_pulse.community.adapters.ladybug_logical_sink import (
-        LadybugLogicalCandidateSink,
-    )
-
-    contract = logical_transfer_scope(scope)
-    return LadybugLogicalCandidateSink(
-        candidate_root,
-        contract.schema,
-        database_filename=contract.ladybug_filename,
-    )
 
 
 def make_grafx_logical_source(
@@ -236,6 +195,4 @@ __all__ = [
     "logical_transfer_scope",
     "make_grafx_logical_sink",
     "make_grafx_logical_source",
-    "make_ladybug_logical_sink",
-    "make_ladybug_logical_source",
 ]

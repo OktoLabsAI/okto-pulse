@@ -247,12 +247,12 @@ COMMUNITY_ADAPTER_PROVENANCE_REGISTRY: tuple[AdapterProvenanceRegistration, ...]
     AdapterProvenanceRegistration(
         adapter_key="community_graph_transaction",
         owner="okto-pulse-community/graph",
-        implementation_module="okto_pulse.community.adapters.kuzu_graph_transaction",
-        implementation_symbol="CommunityKuzuGraphTransaction",
+        implementation_module="okto_pulse.community.adapters.routed_graph_transaction",
+        implementation_symbol="CommunityRoutedGraphTransaction",
         port_module="okto_pulse.core.kg.interfaces.graph_transaction",
         port_symbol="GraphTransaction",
-        dependencies=("ladybug",),
-        contract_test="tests/test_f09_graph_adapters.py::test_f09_native_cursor_is_materialized_and_closed_in_community",
+        dependencies=("okto-grafx",),
+        contract_test="tests/test_grafx_graph_transaction.py::test_begin_and_commit_publish_one_real_grafx_transaction",
     ),
 )
 

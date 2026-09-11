@@ -198,12 +198,8 @@ def _adapter_classifiers():
     from okto_pulse.community.adapters.grafx_global_discovery_runtime import (
         _statement_is_write as grafx_global,
     )
-    from okto_pulse.community.adapters.kuzu_graph_transaction import (
-        _statement_is_write as ladybug,
-    )
 
     return {
-        "ladybug_transaction": ladybug,
         "grafx_executor": grafx_executor,
         "grafx_global_discovery": grafx_global,
     }
@@ -260,38 +256,6 @@ def test_converging_the_allowlist_removes_only_an_unnecessary_fence() -> None:
     assert statement_is_write("CALL db.awaitIndexes()") is True
     assert statement_is_write("CALL { CALL SHOW_TABLES() } RETURN 1") is True
     assert statement_is_write("CALL SHOW_TABLES(); CREATE (n)") is True
-
-
-def test_a_vector_read_stays_a_writer_operation_on_the_ladybug_global_path() -> None:
-    """``LOAD VECTOR`` writes Ladybug's WAL, so the allowlist must not free it.
-
-    ``search_decision_digests`` issues ``CALL QUERY_VECTOR_INDEX``.  The shared
-    policy now calls that a read, which is correct for the statement itself --
-    but the Ladybug Global runtime still has to take the writer token, because
-    loading the extension mutates. This is the interaction the convergence
-    could plausibly have broken.
-    """
-
-    from okto_pulse.community.adapters.global_discovery_runtime import (
-        _statement_requires_vector_extension,
-    )
-
-    vector_read = "CALL QUERY_VECTOR_INDEX('Decision', 'idx', $vector, 8)"
-
-    assert statement_is_write(vector_read) is False
-    assert _statement_requires_vector_extension(vector_read) is True
-    # A read that touches no vector still costs nothing.
-    assert _statement_requires_vector_extension("MATCH (n) RETURN n") is False
-
-
-def test_the_ladybug_transaction_still_exports_its_historic_names() -> None:
-    from okto_pulse.community.adapters import kuzu_graph_transaction as ladybug
-
-    assert ladybug._statement_is_write is statement_is_write
-    assert ladybug._statement_kind is statement_kind
-    assert ladybug._PROVEN_READ_ONLY_CALLS == PROVEN_READ_ONLY_CALLS
-    assert "_statement_is_write" in ladybug.__all__
-    assert "_statement_kind" in ladybug.__all__
 
 
 def test_the_policy_module_does_not_load_an_engine() -> None:

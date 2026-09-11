@@ -37,6 +37,7 @@ import { useDashboardStore } from '@/store/dashboard';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { usePermissions } from '@/hooks/usePermissions';
 import { GrafxAdvancedSettings, SettingHelp } from './GrafxAdvancedSettings';
+import { GrafxBranding } from '@/components/shared/GrafxBranding';
 
 interface RuntimeSettingsPanelProps {
   onClose: () => void;
@@ -374,6 +375,7 @@ export function RuntimeSettingsPanel({
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
             Knowledge Graph runtime tuning
           </p>
+          <GrafxBranding className="mt-2" />
         </div>
 
         <TabsNav activeTab={activeTab} onChange={setActiveTab} />

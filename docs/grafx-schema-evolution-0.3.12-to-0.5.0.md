@@ -12,7 +12,10 @@ is required by `EVOLUTION_PLAN_CODEX.md` sections 9.3.6 and 9.5: a physical
 format change uses export/import or a new generation, and the previous schema
 must have a logical migrator plus an `n-1/n` fixture. Accordingly:
 
-- Grafx `CATALOG_FORMAT_VERSION` remains 1;
+- This Community operation does not change Grafx's catalog format. The original
+  implementation used format 1; validation with the pinned Grafx 0.0.5 uses
+  `CATALOG_FORMAT_VERSION = 2`. Pulse logical schema versions are independent
+  of that engine format, and this unit does not authorize in-place conversion;
 - heap rows, catalog encoding, `TableDef`, indexes and the public Grafx package
   surface do not change;
 - raw `ALTER`, a generic migration framework and arbitrary schema deltas remain
@@ -462,15 +465,17 @@ without widening this unit.
     fingerprint match the reopened candidate.
 12. **Regression:** M-PULSE-3A/B/C, fresh bootstrap, query compatibility, raw
     `ALTER` refusal, public API, Ruff, formatter and diff checks remain green;
-    Grafx catalog/heap/API snapshots and `CATALOG_FORMAT_VERSION = 1` are
-    unchanged. One explicit assertion compares fresh bootstrap, repeated
+    Grafx catalog/heap/API snapshots and the installed catalog format are
+    unchanged by this operation (currently format 2 in Grafx 0.0.5).
+    One explicit assertion compares fresh bootstrap, repeated
     bootstrap and predecessor rebuild and requires all three to equal the same
     target schema fingerprint.
 
 ## Explicit non-goals
 
 - no in-place row/catalog/index evolution;
-- no public Grafx schema mutation API or catalog v2;
+- no new public Grafx schema mutation API or engine catalog format introduced
+  by this Community operation;
 - no Kuzu/Ladybug reader or portable migration artifact;
 - no generic version graph, transform registry, resume or repair;
 - no provider activation, router/binding write, directory rename or cutover;

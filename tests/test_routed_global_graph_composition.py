@@ -23,12 +23,6 @@ from okto_pulse.community.adapters.global_discovery_layout import (
     canonical_sha256,
     generation_graph_path,
 )
-from okto_pulse.community.adapters.global_discovery_recovery import (
-    _physical_generation_id as _ladybug_recovery_generation_id,
-)
-from okto_pulse.community.adapters.global_discovery_runtime import (
-    CommunityGlobalDiscoveryRuntime,
-)
 from okto_pulse.community.adapters.grafx_database_pool import (
     CommunityGrafxDatabasePool,
 )
@@ -50,7 +44,6 @@ from okto_pulse.community.adapters.routed_global_graph_composition import (
     CommunityGlobalGraphShutdown,
     CommunityGlobalGraphShutdownError,
     _GlobalPrivacyCoordinator,
-    _GlobalPurgeCoordinator,
     _RotatingGrafxLease,
     _validate_authenticated_recovery_transition,
     build_community_routed_global_graph_composition,
@@ -65,7 +58,7 @@ def _binding_manifest(root: Path) -> Path:
 def _snapshot(
     root: Path,
     *,
-    backend: str = "ladybug",
+    backend: str = "grafx",
     active_generation: str | None = None,
 ) -> CommunityGraphRouteSnapshot:
     anchor = (
@@ -226,7 +219,6 @@ def test_builder_retains_shared_dependency_identity_and_does_not_initialize(
         grafx_pool=pool,  # type: ignore[arg-type]
         global_lock=lock,
         revalidate_write_fence=lambda _phase: None,
-        ladybug_runtime_factory=runtime_factory,  # type: ignore[arg-type]
     )
 
     assert bundle.binding_store is store
@@ -244,8 +236,7 @@ def test_builder_retains_shared_dependency_identity_and_does_not_initialize(
     assert resolver.inspect_calls == 1
     assert resolver.acquire_calls == 0
     assert pool.acquire_calls == 0
-    assert len(created) == 1
-    assert created[0].bootstrap_calls == 0
+    assert created == []
 
 
 def test_grafx_operation_lease_rotates_without_leaking_a_pin(tmp_path: Path) -> None:
@@ -396,74 +387,6 @@ def test_recovery_transition_requires_exact_authenticated_attempt_manifest(
     )
 
 
-def test_ladybug_recovery_transition_requires_deterministic_generation(
-    tmp_path: Path,
-) -> None:
-    initial = _snapshot(tmp_path, backend="ladybug")
-    run_id = "gdr_run_5678"
-    epoch = 3
-    attempt_id = recovery_attempt_id(run_id, epoch)
-    generation = _ladybug_recovery_generation_id(
-        run_id=run_id,
-        epoch=epoch,
-        attempt_id=attempt_id,
-    )
-    active = generation_graph_path(initial.anchor_path, generation)
-    active.parent.mkdir(parents=True)
-    body = {
-        "layout_version": 1,
-        "generation_id": generation,
-        "run_id": run_id,
-        "epoch": epoch,
-        "attempt_id": attempt_id,
-    }
-    manifest_sha = canonical_sha256(body)
-    (active.parent / "generation_manifest.json").write_text(
-        json.dumps({**body, "manifest_sha256": manifest_sha}),
-        encoding="utf-8",
-    )
-    observed = replace(
-        initial,
-        active_path=active,
-        active_generation=generation,
-        active_manifest_sha256=manifest_sha,
-        route_sha256="d" * 64,
-    )
-
-    assert _validate_authenticated_recovery_transition(
-        initial=initial,
-        previous=initial,
-        observed=observed,
-        run_id=run_id,
-        epoch=epoch,
-        attempt_id=attempt_id,
-    )
-
-    forged_generation = "gdr_run_5678_attempt_999"
-    forged_active = generation_graph_path(initial.anchor_path, forged_generation)
-    forged_active.parent.mkdir(parents=True)
-    forged_body = {**body, "generation_id": forged_generation}
-    forged_sha = canonical_sha256(forged_body)
-    (forged_active.parent / "generation_manifest.json").write_text(
-        json.dumps({**forged_body, "manifest_sha256": forged_sha}),
-        encoding="utf-8",
-    )
-    assert not _validate_authenticated_recovery_transition(
-        initial=initial,
-        previous=initial,
-        observed=replace(
-            observed,
-            active_path=forged_active,
-            active_generation=forged_generation,
-            active_manifest_sha256=forged_sha,
-            route_sha256="e" * 64,
-        ),
-        run_id=run_id,
-        epoch=epoch,
-        attempt_id=attempt_id,
-    )
-
-
 def test_privacy_capture_structurally_excludes_a_present_target() -> None:
     class Runtime:
         def execute(self, statement: str, params=None):
@@ -521,77 +444,13 @@ def test_privacy_capture_structurally_excludes_a_present_target() -> None:
     assert captured["rows"]["contains_decision"] == [["survivor", "survivor-digest"]]
 
 
-def test_ladybug_purge_quarantines_only_selected_layout_and_preserves_binding(
-    tmp_path: Path,
-) -> None:
-    snapshot = _snapshot(tmp_path)
-    global_root = tmp_path / "global"
-    global_root.mkdir(parents=True)
-    binding_path = _binding_manifest(tmp_path)
-    binding = b"immutable-binding"
-    binding_path.write_bytes(binding)
-    snapshot.anchor_path.write_bytes(b"main")
-    snapshot.anchor_path.with_name(snapshot.anchor_path.name + ".wal").write_bytes(
-        b"wal"
-    )
-    (global_root / "active_generation.json").write_text("{}", encoding="utf-8")
-    generation_root = global_root / "discovery.generations" / "gdr_old_1234"
-    generation_root.mkdir(parents=True)
-    (generation_root / snapshot.anchor_path.name).write_bytes(b"old")
-    grafx_residue = global_root / "grafx" / "other-backend"
-    grafx_residue.mkdir(parents=True)
-    (grafx_residue / "grafx.meta").write_text("keep", encoding="utf-8")
-
-    resolver = _Resolver(snapshot)
-
-    class Ladybug:
-        closes = 0
-
-        def close_snapshot(self, _snapshot) -> None:
-            self.closes += 1
-
-    class Grafx:
-        def close_all(self) -> int:
-            raise AssertionError("unselected Grafx must not be closed by purge")
-
-    def quarantine(_snapshot, targets: tuple[Path, ...], _reason: str) -> int:
-        moved = 0
-        for target in targets:
-            if target.is_dir():
-                shutil.rmtree(target)
-            else:
-                target.unlink()
-            moved += 1
-        return moved
-
-    ladybug = Ladybug()
-    purge = _GlobalPurgeCoordinator(
-        binding_store=_BindingStore(tmp_path),  # type: ignore[arg-type]
-        resolver=resolver,  # type: ignore[arg-type]
-        ladybug=ladybug,  # type: ignore[arg-type]
-        grafx=Grafx(),  # type: ignore[arg-type]
-        revalidate_write_fence=lambda _phase: None,
-        quarantine_targets=quarantine,
-    )
-
-    receipt = purge(snapshot, "manual")
-
-    assert receipt.status == "purged"
-    assert ladybug.closes == 1
-    assert binding_path.read_bytes() == binding
-    assert grafx_residue.is_dir()
-    assert not snapshot.anchor_path.exists()
-    assert not (global_root / "active_generation.json").exists()
-    assert not (global_root / "discovery.generations").exists()
-
-
 def test_real_grafx_purge_then_bootstrap_rematerializes_exact_bound_route(
     tmp_path: Path,
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
     resolver = CommunityGraphRouteResolver(
         store,
-        board_backend="ladybug",
+        board_backend="grafx",
         global_backend="grafx",
         grafx_page_size=PULSE_GRAFX_DEFAULT_PAGE_SIZE,
     )
@@ -637,119 +496,6 @@ def test_real_grafx_purge_then_bootstrap_rematerializes_exact_bound_route(
     bundle.close_all_on_shutdown()
 
 
-def test_privacy_sweeps_both_layouts_restores_survivors_and_keeps_binding(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    snapshot = _snapshot(tmp_path)
-    global_root = tmp_path / "global"
-    global_root.mkdir(parents=True)
-    binding_path = _binding_manifest(tmp_path)
-    binding = b"authenticated-binding"
-    binding_path.write_bytes(binding)
-    (global_root / "graph_backend_binding.json.lock").write_text("", encoding="utf-8")
-    (global_root / ".graph_route_initialization.lock").write_text("", encoding="utf-8")
-    snapshot.anchor_path.write_bytes(b"ladybug")
-    (global_root / "quarantine" / "global-discovery").mkdir(parents=True)
-    (global_root / "quarantine" / "global-discovery" / "secret").write_bytes(b"target")
-    (global_root / "grafx" / "generation-1").mkdir(parents=True)
-    (global_root / "grafx" / "generation-1" / "grafx.meta").write_bytes(b"target")
-
-    store = _BindingStore(tmp_path)
-    resolver = _Resolver(snapshot)
-
-    class Manager:
-        def close_all(self) -> int:
-            return 1
-
-    class Runtime:
-        def __init__(self) -> None:
-            self.statements: list[str] = []
-            self.flushes = 0
-
-        def execute(self, statement: str, params=None):
-            del params
-            self.statements.append(statement)
-            return type("Result", (), {"rows": ()})()
-
-        def flush_after_write_batch(self) -> None:
-            self.flushes += 1
-
-    runtime = Runtime()
-    coordinator = _GlobalPrivacyCoordinator(
-        binding_store=store,  # type: ignore[arg-type]
-        resolver=resolver,  # type: ignore[arg-type]
-        ladybug=Manager(),  # type: ignore[arg-type]
-        grafx=Manager(),  # type: ignore[arg-type]
-        grafx_sessions=object(),  # type: ignore[arg-type]
-        revalidate_write_fence=lambda _phase: None,
-    )
-    survivors = CommunityGlobalDiscoveryRuntime._build_privacy_survivor_snapshot(
-        board_id="deleted-board",
-        rows={
-            "boards": [
-                [
-                    "survivor",
-                    "Survivor",
-                    "summary",
-                    [0.0],
-                    0,
-                    0,
-                    0,
-                    "2026-08-28T00:00:00Z",
-                ]
-            ],
-            "topics": [],
-            "entities": [],
-            "digests": [],
-            "has_topic": [],
-            "mentions_entity": [],
-            "contains_decision": [],
-            "decision_mentions_entity": [],
-            "decision_derives_from": [],
-        },
-        survivor_board_ids={"survivor"},
-    )
-    journal = tmp_path / ".global-privacy-survivors-test.json"
-    journal.write_text(json.dumps(survivors), encoding="utf-8")
-    monkeypatch.setattr(
-        coordinator,
-        "_durable_survivors",
-        lambda *_args, **_kwargs: (survivors, journal),
-    )
-
-    @contextmanager
-    def fresh(_snapshot):
-        yield runtime
-
-    monkeypatch.setattr(coordinator, "_fresh_bound_runtime", fresh)
-    monkeypatch.setattr(
-        coordinator,
-        "_capture",
-        lambda *_args, **_kwargs: survivors,
-    )
-
-    receipt = coordinator(
-        snapshot,
-        "deleted-board",
-        "privacy",
-        ("survivor",),
-    )
-
-    assert receipt["status"] == "purged"
-    assert binding_path.read_bytes() == binding
-    assert (global_root / "graph_backend_binding.json.lock").exists()
-    assert (global_root / ".graph_route_initialization.lock").exists()
-    assert not snapshot.anchor_path.exists()
-    assert not (global_root / "grafx").exists()
-    assert not (global_root / "quarantine").exists()
-    assert not journal.exists()
-    assert any(
-        statement.startswith("CREATE (n:Board") for statement in runtime.statements
-    )
-    assert runtime.flushes == 1
-
-
 @pytest.mark.parametrize("inside_verification_scope", [False, True])
 def test_real_grafx_privacy_handles_present_target_and_dual_layout(
     tmp_path: Path,
@@ -758,7 +504,7 @@ def test_real_grafx_privacy_handles_present_target_and_dual_layout(
     store = CommunityGraphBackendBindingStore(tmp_path)
     resolver = CommunityGraphRouteResolver(
         store,
-        board_backend="ladybug",
+        board_backend="grafx",
         global_backend="grafx",
         grafx_page_size=PULSE_GRAFX_DEFAULT_PAGE_SIZE,
     )
@@ -845,11 +591,10 @@ def test_shutdown_attempts_ladybug_and_grafx_before_reporting_failure() -> None:
     class Grafx:
         def close_all(self) -> int:
             calls.append("grafx")
-            return 2
+            raise RuntimeError("grafx-close")
 
     lock = threading.RLock()
     shutdown = CommunityGlobalGraphShutdown(
-        ladybug=Ladybug(),  # type: ignore[arg-type]
         grafx=Grafx(),  # type: ignore[arg-type]
         global_lock=lock,
     )
@@ -857,4 +602,4 @@ def test_shutdown_attempts_ladybug_and_grafx_before_reporting_failure() -> None:
     with pytest.raises(CommunityGlobalGraphShutdownError):
         shutdown()
 
-    assert calls == ["ladybug", "grafx"]
+    assert calls == ["grafx"]

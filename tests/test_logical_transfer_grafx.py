@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 
 import pytest
 from okto_grafx import Transaction, connect
+from okto_grafx.errors import GrafxQueryError
 from okto_pulse.core.kg.logical_transfer import (
     LOGICAL_NULL,
     LogicalNodeType,
@@ -108,8 +110,19 @@ def test_grafx_endpoint_map_contract(
 
         monkeypatch.setattr(Transaction, "scan_rows_v1", failing_scan)
     elif case == "dangling_endpoint":
-        with database.begin("write") as writer:
-            writer.execute("MATCH (a:A {id: 'a1'}) DELETE a")
+        # The current engine correctly refuses to manufacture an orphan through
+        # DELETE. Preserve the corruption/readback guard via explicit scan fault
+        # injection, without weakening referential integrity in production.
+        with pytest.raises(GrafxQueryError, match="live relationships"):
+            with database.begin("write") as writer:
+                writer.execute("MATCH (a:A {id: 'a1'}) DELETE a")
+        original_scan = Transaction.scan_rows_v1
+
+        def missing_endpoint_scan(transaction, table, *, limit, cursor=None):
+            page = original_scan(transaction, table, limit=limit, cursor=cursor)
+            return replace(page, rows=()) if table == "A" else page
+
+        monkeypatch.setattr(Transaction, "scan_rows_v1", missing_endpoint_scan)
 
     if case == "success":
         snapshot = source.open_snapshot()

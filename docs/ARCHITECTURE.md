@@ -6,7 +6,7 @@ Package layout, the core/edition ownership boundary, and every adapter Community
 The `okto-pulse` package is the Community edition runtime for
 `okto-pulse-core`. Core owns the domain, application services, REST/MCP
 contracts and pure backend ports. Community owns the local runtime composition:
-CLI, frontend bundle, local auth, storage, SQLite/LadybugDB wiring, telemetry
+CLI, frontend bundle, local auth, storage, SQLite/Grafx wiring, telemetry
 adapters and operational MCP resource overlays.
 
 Community declares `fastmcp`, `uvicorn[standard]` and
@@ -45,7 +45,7 @@ cleanup removed direct application-use-case imports of KG internals, transport
 schemas, permission helpers and SQLAlchemy mutation helpers by adding
 application-facing core facades. Community's role is unchanged: it packages the
 updated core engine and supplies local-first adapters such as SQLite,
-LadybugDB/Kuzu, filesystem storage, local ML providers, telemetry files and the
+Grafx, filesystem storage, local ML providers, telemetry files and the
 frontend bundle.
 
 | AF-11 concern | Core responsibility | Community responsibility |
@@ -67,7 +67,7 @@ or registering local-first adapters. Core owns `IMPORT_BOUNDARY_BASELINE_LEDGER`
 the import-boundary gate, transition rules and singleton runtime ownership
 checks; each accepted non-relational baseline needs owner, reason, removal criterion,
 source spec/wave and risk. Community owns adapter-specific debt for
-local concrete dependencies such as SQLite, LadybugDB/Kuzu, filesystem storage,
+local concrete dependencies such as SQLite, Grafx, filesystem storage,
 local ML providers and telemetry beacon sending. When a concrete dependency is
 needed for the local runtime, wire it through a core port and register it in
 Community instead of normalizing a new core baseline. The existing
@@ -103,8 +103,8 @@ release oracle is:
 | Historical private reach-in baseline | `32` |
 | Current private reach-in budget | `0` |
 | Current governed private reach-ins | `0` |
-| Current full Community->Core import inventory | `1241` |
-| Inventory classification | `public_contract=1241`, `governed_temporary_reach_in=0` |
+| Current full Community->Core import inventory | `1193` |
+| Inventory classification | `public_contract=1193`, `governed_temporary_reach_in=0` |
 | Boundary violations | `0` violations, `0` stale ledger entries, `0` incomplete ledger entries, `0` baseline-growth violations |
 | Burn-down progression | `32 -> 21 -> 10 -> 0` after AF42 inventory, lifecycle/auth/MCP, then complete Community ORM ownership |
 | Community release command | `python -m pytest tests/test_af21_core_import_boundary.py tests/test_af25_docs_truthfulness.py tests/test_af33_capstone_community_readiness.py tests/test_af35_s1_community_adapters.py tests/test_af35_s2_community_kg_operational_adapters.py tests/test_af41_runtime_dependency_ownership.py tests/test_af41_serving_boundary.py tests/test_r06_mcp_auth_context_community.py tests/test_r08a_mcp_auth_adapter.py tests/test_cli_init.py tests/test_cli_kg_backfill.py tests/test_hnd2_credential_surface_gate.py tests/test_r01c_imp4_schema_lifecycle_orchestrator.py tests/test_r16b_relational_schema_migrator.py tests/test_r16c_data_bootstrapper.py -q` -> `105 passed` |
@@ -197,13 +197,10 @@ Adapter source map:
   `community/adapters/code_traceability_kg_sql.py` without inspecting source
   repositories.
 - KG data and graph runtime: `community/adapters/data.py`,
-  `community/adapters/memory.py`, `community/adapters/kg.py`,
-  `community/adapters/kg_runtime.py`,
-  `community/adapters/board_graph_runtime.py`,
-  `community/adapters/global_discovery_runtime.py`,
-  `community/adapters/ladybug_writer.py`,
-  `community/adapters/graph_*`, `community/adapters/kg_*` and
-  `community/adapters/kuzu_*`.
+  `community/adapters/memory.py`, `community/adapters/grafx_*`,
+  `community/adapters/routed_*`, `community/adapters/graph_operation_guards.py`,
+  `community/adapters/global_privacy_projection.py` and
+  `community/adapters/graph_runtime_budget.py`.
 - ML search helpers: `community/adapters/embedding.py` and
   `community/adapters/rerank.py`; orchestration lives in
   `community/adapters/hybrid_search.py` and
@@ -294,30 +291,28 @@ slot — and unfilled slots **fail closed** (`R-P2-03A-D`), never silently defau
 
 | Core interface | Community adapter |
 |---|---|
-| `SemanticGraphStore` | `CommunityKuzuGraphStore` |
-| `GraphTransactionScope` / `GraphTransaction` | `CommunityKuzuGraphTransaction` — active adapter; `CommunityGrafxGraphTransaction` — complete M-PULSE-1 structured surface, not registered in production composition pending the complete provider bundle |
-| `GraphLifecycle` · `GraphRuntimeStore` · `GraphSchemaManager` | `CommunityKuzuGraphLifecycle` · `CommunityKuzuGraphRuntimeStore` · `CommunityKuzuGraphSchemaManager` |
-| `CypherExecutor` | `CommunityKuzuCypherExecutor` |
-| `GlobalDiscoveryRuntime` | `CommunityGlobalDiscoveryRuntime` |
-| `GlobalDiscoveryRecovery` | `CommunityGlobalDiscoveryRecovery` (+ preparation and worker modules) |
-| `GraphRecovery` · `QuarantineRestore` | `CommunityGraphRecovery` (WAL salvage) · `CommunityQuarantineRestore` |
-| board graph handle & pooling | `BoardConnection` / `BoardGraphHandle` in `kg_runtime.py` · `ConnectionPool` · `GraphMemoryPressure` · `LadybugWriterLease` |
+| `SemanticGraphStore` | `CommunityRoutedSemanticGraphStore` → `CommunityGrafxGraphStore` |
+| `GraphTransactionScope` / `GraphTransaction` | `CommunityRoutedGraphTransaction` → `CommunityGrafxGraphTransaction`; pinned transaction-scoped handle and durable commit receipts |
+| `GraphLifecycle` · `GraphRuntimeStore` · `GraphSchemaManager` | Routed lifecycle/store/schema facades → Grafx implementations |
+| `CypherExecutor` | `CommunityRoutedCypherExecutor` → `CommunityGrafxCypherExecutor` |
+| `GlobalDiscoveryRuntime` | `CommunityRoutedGlobalDiscoveryRuntime` → `CommunityGrafxGlobalDiscoveryRuntime` |
+| `GlobalDiscoveryRecovery` | `CommunityRoutedGlobalDiscoveryRecovery` → `CommunityGrafxGlobalDiscoveryRecovery` (+ relational preparation and worker modules) |
+| `GraphRecovery` · `QuarantineRestore` | Routed recovery/restore → Grafx WAL and directory-quarantine recovery |
+| board graph handle & pooling | `CommunityGrafxDatabasePool`, independent read participants and per-board lifetime pins in `graph_operation_guards.py`; no native global writer mutex |
 | `AuditRepository` | `CommunityAuditRepository` |
 | `SessionStore` · `CacheBackend` · `RateLimiter` | `CommunityInMemorySessionStore` · `CommunityInMemoryCache` · `CommunityInMemoryRateLimiter` |
 | `RebuildAuditArtifactStore` (+ resolver) · `CognitivePendingWorkProvider` | `CommunityFileSystemRebuildAuditArtifactStore` · `…Resolver` · `CommunityFileSystemCognitivePendingWorkProvider` |
 | `EmbeddingProvider` · `Reranker` | `CommunitySentenceTransformerProvider` / `CommunityStubEmbeddingProvider` · `CommunityCrossEncoderReranker` |
 | `ReflectiveRetrievalPort` · `ReflectiveCriticPort` · `ReflectiveTelemetryPort` | `CommunityReflectiveRetrieval` · `CommunityDeterministicReflectiveCritic` · `CommunityReflectiveTelemetry` |
-| `HopPlanner` / hybrid search | `KuzuVectorSeedProvider` · `KuzuGraphExpander` |
+| `HopPlanner` / hybrid search | `CommunityVectorSeedProvider` · `CommunityGraphExpander` |
 | `KGConfig` · `EventBus` | `CommunityKGConfig` · `CommunityOutboxEventBus` |
 | composition of every KG slot | `CommunityKgComposition` |
 
-The inactive M-PULSE-3A helper `grafx_schema_introspection.list_node_properties()` reads one
-public, immutable Grafx catalog snapshot. It preserves the current Pulse tuple contract without
-registering a Grafx `SemanticGraphStore`. M-PULSE-3B adds the inactive
-`grafx_relationship_layout` manifest: each closed logical endpoint pair maps bijectively to one
-single-pair physical table, and read-only introspection validates that layout while returning only
-logical names and endpoint pairs. It does not run DDL, rewrite queries, or activate composition;
-schema versions, bootstrap, and the complete provider remain separate milestones.
+Grafx is the only Community graph implementation. The active schema introspection
+uses a public immutable catalog; the relationship layout maps logical endpoint
+pairs to physical tables without exposing that storage detail to Core. See
+[Grafx-only runtime and retirement](GRAFX_ONLY_COMMUNITY.md) for configuration,
+data preservation and removed legacy entry points.
 
 **Knowledge Graph — governance & operations**
 

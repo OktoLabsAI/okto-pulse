@@ -1413,7 +1413,7 @@ function explainRecoveryState(state: string | null, reason: string | null): stri
 
 function graphBackendLabel(route: KGGraphStorageRoute | null): string {
   if (route?.backend === 'grafx') return 'Okto Grafx';
-  if (route?.backend === 'ladybug') return 'LadybugDB';
+  if (route?.backend === 'ladybug') return 'Retired graph backend';
   if (route?.binding_status === 'missing') return 'Not bound';
   return 'Backend unavailable';
 }

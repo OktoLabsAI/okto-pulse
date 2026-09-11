@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from okto_pulse.community.adapters import kg_runtime
+from okto_pulse.community.adapters import graph_operation_guards as kg_runtime
 from okto_pulse.community.adapters.board_rebuild_ingestion import (
     CommunityBoardRebuildIngestionAdapter,
 )
@@ -26,7 +26,6 @@ def _settings(root: Path, *, board: str = "grafx", global_: str = "grafx"):
         kg_graph_backend=board,
         kg_global_graph_backend=global_,
         kg_grafx_page_size=8192,
-        kg_ladybug_max_db_size_gb=2,
     )
 
 

@@ -30,8 +30,8 @@ export interface RuntimeSettingsValues {
 export interface RuntimeSettings extends RuntimeSettingsValues {
   grafx_settings_catalog?: GrafxSettingDescriptor[];
   // Configured routing defaults. Existing per-scope bindings remain authoritative.
-  kg_graph_backend: 'ladybug' | 'grafx';
-  kg_global_graph_backend: 'ladybug' | 'grafx';
+  kg_graph_backend: 'grafx';
+  kg_global_graph_backend: 'grafx';
   /**
    * Persisted/configured values that are not necessarily active yet.
    *

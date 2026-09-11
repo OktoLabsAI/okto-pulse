@@ -48,7 +48,7 @@ def test_worker_shutdown_closes_board_grafx_then_global_from_same_bundle(
     bundle = SimpleNamespace(
         binding_store=SimpleNamespace(root=tmp_path),
         grafx_pool=SimpleNamespace(pooled_paths=lambda: tuple(sorted(pooled))),
-        board=SimpleNamespace(graph_lifecycle=_Lifecycle()),
+        board=SimpleNamespace(graph_lifecycle=_Lifecycle(), grafx_read_pools=()),
         global_graph=_Global(),
     )
     registry = SimpleNamespace(_community_routed_graph_composition=bundle)
@@ -58,7 +58,7 @@ def test_worker_shutdown_closes_board_grafx_then_global_from_same_bundle(
         lambda: registry,
     )
 
-    summary = kg_shutdown._close_all_graphs_with_writer_lease(runtime=_Runtime())
+    summary = kg_shutdown.close_all_graphs_on_shutdown()
 
     assert events == ["board", "global"]
     assert pooled == set()
@@ -91,7 +91,7 @@ def test_worker_shutdown_attempts_global_after_routed_board_close_failure(
     bundle = SimpleNamespace(
         binding_store=SimpleNamespace(root=tmp_path),
         grafx_pool=SimpleNamespace(pooled_paths=lambda: (str(board_path),)),
-        board=SimpleNamespace(graph_lifecycle=_Lifecycle()),
+        board=SimpleNamespace(graph_lifecycle=_Lifecycle(), grafx_read_pools=()),
         global_graph=_Global(),
     )
     registry = SimpleNamespace(_community_routed_graph_composition=bundle)
@@ -101,7 +101,7 @@ def test_worker_shutdown_attempts_global_after_routed_board_close_failure(
         lambda: registry,
     )
 
-    summary = kg_shutdown._close_all_graphs_with_writer_lease(runtime=_Runtime())
+    summary = kg_shutdown.close_all_graphs_on_shutdown()
 
     assert events == ["board", "global"]
     assert summary["boards_closed"] == 0

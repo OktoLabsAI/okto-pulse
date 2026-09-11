@@ -157,37 +157,6 @@ class TestDerivationRefusesAMissingPrimaryKey:
             )
 
 
-class TestTimestampConversionIsExact:
-    """A float multiply loses a microsecond at the far end of the range."""
-
-    def convert(self, moment):
-        from okto_pulse.community.adapters.ladybug_logical_source import (
-            timestamp_to_logical,
-        )
-
-        return timestamp_to_logical(moment, owner="T.when").micros
-
-    def test_the_last_representable_instant_keeps_its_microsecond(self) -> None:
-        import datetime as dt
-
-        moment = dt.datetime(9999, 12, 31, 23, 59, 59, 999999, tzinfo=dt.timezone.utc)
-        # int(total_seconds() * 1e6) answers 253402300800000000 here: one micro
-        # too many, because the product exceeds 2**53.
-        assert self.convert(moment) == 253402300799999999
-
-    def test_a_pre_epoch_instant_is_exact(self) -> None:
-        import datetime as dt
-
-        moment = dt.datetime(1900, 1, 1, 0, 0, 0, 1, tzinfo=dt.timezone.utc)
-        assert self.convert(moment) == -2208988799999999
-
-    def test_the_ordinary_case_is_unchanged(self) -> None:
-        import datetime as dt
-
-        moment = dt.datetime(2026, 8, 28, 1, 2, 3, 456789, tzinfo=dt.timezone.utc)
-        assert self.convert(moment) == 1787878923456789
-
-
 class TestVectorPropertyToSpaceIsDerivedNotGuessed:
     """VECTOR_INDEXES names WHICH column is the vector; the type does not."""
 

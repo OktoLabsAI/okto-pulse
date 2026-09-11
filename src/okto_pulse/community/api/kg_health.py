@@ -135,6 +135,8 @@ class StorageFootprintProxy(BaseModel):
 class NativeRuntimeBudgetRequested(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    read_participants: int | None = None
+
     board_buffer_pool_mb: int | None = None
     global_buffer_pool_mb: int | None = None
     max_db_size_gb: int | None = None
@@ -151,6 +153,8 @@ class NativeRuntimeBudgetNormalized(BaseModel):
 
 class NativeRuntimeBudgetEffective(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    read_participants: int | None = None
 
     board_buffer_pool_mb: int | None = None
     global_buffer_pool_mb: int | None = None
@@ -174,6 +178,9 @@ class NativeRuntimeBudgetSources(BaseModel):
 
 class NativeRuntimeBudgetProcessEnvelope(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    buffer_pool_per_board_mb: int | None = None
+    total_process_bound_available: bool = False
 
     resident_board_slots: int | None = None
     resident_board_count: int | None = None

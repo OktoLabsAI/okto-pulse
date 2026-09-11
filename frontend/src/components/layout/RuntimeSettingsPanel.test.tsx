@@ -107,6 +107,7 @@ describe('AC11 — Tabs preserve drafts on switch', () => {
 
   test('renderiza Grafx tab por default sem controles legados', async () => {
     render(<RuntimeSettingsPanel onClose={() => {}} />);
+    expect(screen.getByText('Powered by Okto Grafx')).toBeInTheDocument();
     await waitFor(() => {
       expect(screen.getByTestId('input-grafx-page-size')).toBeInTheDocument();
     });

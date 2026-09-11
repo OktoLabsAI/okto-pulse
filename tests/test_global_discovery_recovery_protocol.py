@@ -11,10 +11,6 @@ from okto_pulse.core.kg.interfaces.global_discovery_recovery import (
 )
 from typing_extensions import get_protocol_members
 
-from okto_pulse.community.adapters.global_discovery_recovery import (
-    CommunityGlobalDiscoveryRecovery,
-)
-
 
 class _OldOnlyProvider:
     """A provider that predates the unified entry (no ``recover_and_cutover``)."""
@@ -46,9 +42,3 @@ def test_old_only_provider_is_rejected_by_isinstance():
 
 def test_complete_provider_is_accepted_by_isinstance():
     assert isinstance(_CompleteProvider(), GlobalDiscoveryRecovery)
-
-
-def test_production_adapter_satisfies_the_protocol():
-    # The real Community adapter must satisfy the updated protocol.
-    assert hasattr(CommunityGlobalDiscoveryRecovery, "recover_and_cutover")
-    assert hasattr(CommunityGlobalDiscoveryRecovery, "rebuild_candidate_and_cutover")

@@ -45,9 +45,7 @@ NOW = datetime(2026, 7, 21, 12, tzinfo=timezone.utc)
 
 @pytest_asyncio.fixture
 async def sweep_db(tmp_path):
-    engine = create_async_engine(
-        f"sqlite+aiosqlite:///{tmp_path / 'card8-sweep.db'}"
-    )
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'card8-sweep.db'}")
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
@@ -159,12 +157,16 @@ async def test_tick_schedule_is_unique_and_never_resets_active_checkpoint(
             0,
         )
         rows = (
-            await session.execute(
-                select(ConsolidationQueue).where(
-                    ConsolidationQueue.work_kind == "stale_sweep"
+            (
+                await session.execute(
+                    select(ConsolidationQueue).where(
+                        ConsolidationQueue.work_kind == "stale_sweep"
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(rows) == 1
 
 
@@ -193,16 +195,23 @@ async def test_page_children_and_checkpoint_rollback_and_replay_atomically(
         receipt = await adapter.stage_stale_sweep_batch(session, request)
         assert receipt.action is StaleSweepRunAction.ADVANCED
         assert receipt.enqueued == 2
-        assert len(
-            (await session.execute(select(ArtifactDeletionTombstone))).scalars().all()
-        ) == 2
+        assert (
+            len(
+                (await session.execute(select(ArtifactDeletionTombstone)))
+                .scalars()
+                .all()
+            )
+            == 2
+        )
         await session.rollback()
 
     async with factory() as session:
         row = await session.get(ConsolidationQueue, "sweep-card8")
         assert row.status == "claimed"
         assert row.payload == {"cursor": "", "budget": 2, "attempt": 0}
-        assert (await session.execute(select(ArtifactDeletionTombstone))).scalars().all() == []
+        assert (
+            await session.execute(select(ArtifactDeletionTombstone))
+        ).scalars().all() == []
         assert (
             await session.execute(
                 select(ConsolidationQueue).where(
@@ -224,13 +233,17 @@ async def test_page_children_and_checkpoint_rollback_and_replay_atomically(
             "attempt": 0,
         }
         tombstones = (
-            await session.execute(
-                select(ArtifactDeletionTombstone).order_by(
-                    ArtifactDeletionTombstone.artifact_type,
-                    ArtifactDeletionTombstone.artifact_id,
+            (
+                await session.execute(
+                    select(ArtifactDeletionTombstone).order_by(
+                        ArtifactDeletionTombstone.artifact_type,
+                        ArtifactDeletionTombstone.artifact_id,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert [
             (row.artifact_type, row.artifact_id, row.generation, row.delete_event_id)
             for row in tombstones
@@ -249,12 +262,16 @@ async def test_page_children_and_checkpoint_rollback_and_replay_atomically(
             ),
         ]
         intents = (
-            await session.execute(
-                select(ConsolidationQueue).where(
-                    ConsolidationQueue.work_kind == "stale_reconcile"
+            (
+                await session.execute(
+                    select(ConsolidationQueue).where(
+                        ConsolidationQueue.work_kind == "stale_reconcile"
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(intents) == 2
         assert {row.delete_event_id for row in intents} == {
             row.delete_event_id for row in tombstones
@@ -352,14 +369,18 @@ async def test_stale_claim_cannot_leak_tombstone_intent_or_checkpoint(sweep_db) 
         await session.rollback()
 
     async with factory() as session:
-        assert (await session.execute(select(ArtifactDeletionTombstone))).scalars().all() == []
+        assert (
+            await session.execute(select(ArtifactDeletionTombstone))
+        ).scalars().all() == []
         row = await session.get(ConsolidationQueue, "sweep-card8")
         assert row.status == "claimed"
         assert row.payload["cursor"] == ""
 
 
 @pytest.mark.asyncio
-async def test_degraded_reschedule_preserves_cursor_and_synthetic_epoch(sweep_db) -> None:
+async def test_degraded_reschedule_preserves_cursor_and_synthetic_epoch(
+    sweep_db,
+) -> None:
     factory, adapter = sweep_db
     cursor = '["card","card-a"]'
     async with factory() as session:
@@ -479,15 +500,19 @@ async def test_committed_replay_reuses_epoch_one_and_reports_no_new_intent(
 
     async with factory() as session:
         tombstones = (
-            await session.execute(select(ArtifactDeletionTombstone))
-        ).scalars().all()
+            (await session.execute(select(ArtifactDeletionTombstone))).scalars().all()
+        )
         intents = (
-            await session.execute(
-                select(ConsolidationQueue).where(
-                    ConsolidationQueue.work_kind == "stale_reconcile"
+            (
+                await session.execute(
+                    select(ConsolidationQueue).where(
+                        ConsolidationQueue.work_kind == "stale_reconcile"
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert len(tombstones) == 1
         assert len(intents) == 1
         expected_event = f"catchup:{BOARD_ID}:card:card-replay:epoch:1"
@@ -581,20 +606,28 @@ async def test_later_sweep_reconstitutes_drained_intent_at_original_timestamp(
             )
         ).scalar_one()
         tombstones = (
-            await session.execute(
-                select(ArtifactDeletionTombstone).where(
-                    ArtifactDeletionTombstone.artifact_id == candidate.artifact_id
+            (
+                await session.execute(
+                    select(ArtifactDeletionTombstone).where(
+                        ArtifactDeletionTombstone.artifact_id == candidate.artifact_id
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         transitions = (
-            await session.execute(
-                select(KGTakedownStateEvent).where(
-                    KGTakedownStateEvent.delete_event_id == delete_event_id,
-                    KGTakedownStateEvent.state == "intent_created",
+            (
+                await session.execute(
+                    select(KGTakedownStateEvent).where(
+                        KGTakedownStateEvent.delete_event_id == delete_event_id,
+                        KGTakedownStateEvent.state == "intent_created",
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
     assert len(tombstones) == 1
     assert tombstones[0].delete_event_id == delete_event_id
@@ -769,19 +802,31 @@ async def test_real_processor_resumes_bounded_checkpoint_before_final_coordinato
 
 
 @pytest.mark.asyncio
-async def test_stale_sweep_keyset_query_executes_on_ladybug_016(monkeypatch) -> None:
+async def test_stale_sweep_keyset_query_executes_on_grafx(
+    monkeypatch, tmp_path, request
+) -> None:
     """Guard the bounded Core query against the installed graph dialect."""
 
-    import ladybug
+    import okto_grafx
     from types import SimpleNamespace
 
-    from okto_pulse.community.adapters.graph_ddl import build_node_ddl
     from okto_pulse.core.kg import canonical_stale_reconciler as reconciler
 
-    database = ladybug.Database(":memory:")
-    connection = ladybug.Connection(database)
+    database = okto_grafx.connect(tmp_path / "stale-query")
+    request.addfinalizer(database.close)
+    connection = database.begin("write")
+    request.addfinalizer(
+        lambda transaction=connection: (
+            transaction.rollback() if transaction.active else None
+        )
+    )
     for node_type in ("Decision", "Requirement"):
-        connection.execute(build_node_ddl(node_type))
+        connection.execute(
+            f"CREATE NODE TABLE {node_type}(id STRING, source_artifact_ref STRING, "
+            "graph_layer STRING, maturity_status STRING, revocation_reason STRING, "
+            "relevance_score DOUBLE, title STRING, content STRING, context STRING, "
+            "justification STRING, source_span_quote STRING, PRIMARY KEY(id))"
+        )
     rows = (
         ("Decision", "d1", "card:b"),
         ("Decision", "d2", "test:a:scenario:1"),
@@ -800,6 +845,9 @@ async def test_stale_sweep_keyset_query_executes_on_ladybug_016(monkeypatch) -> 
             },
         )
 
+    connection.commit()
+    connection = database
+
     class _Scope:
         async def __aenter__(self):
             return self
@@ -809,11 +857,7 @@ async def test_stale_sweep_keyset_query_executes_on_ladybug_016(monkeypatch) -> 
 
         def execute(self, query: str, params: dict):
             result = connection.execute(query, params)
-            materialized = []
-            while result.has_next():
-                materialized.append(tuple(result.get_next()))
-            result.close()
-            return SimpleNamespace(rows=tuple(materialized))
+            return SimpleNamespace(rows=tuple(tuple(row) for row in result.rows))
 
     class _Transaction:
         async def begin(self, _board_id: str):

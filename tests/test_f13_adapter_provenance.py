@@ -11,7 +11,7 @@ from okto_pulse.community.adapters.adapter_provenance import (
     COMMUNITY_ADAPTER_PROVENANCE_REGISTRY,
     audit_community_adapter_provenance,
 )
-from okto_pulse.community.adapters.hybrid_search import KuzuGraphExpander
+from okto_pulse.community.adapters.hybrid_search import CommunityGraphExpander
 
 from repo_layout import resolve_core_repo
 
@@ -25,9 +25,7 @@ def test_f13_full_inventory_contains_only_public_core_contracts() -> None:
     assert report["ok"] is True, report
     assert report["bridge_count"] == 0
     assert report["ledger_count"] == 0
-    assert report["registration_count"] == len(
-        COMMUNITY_ADAPTER_PROVENANCE_REGISTRY
-    )
+    assert report["registration_count"] == len(COMMUNITY_ADAPTER_PROVENANCE_REGISTRY)
     assert report["registration_violations"] == ()
     assert report["inventory_count"] > 500
     assert report["inventory_by_classification"] == {
@@ -49,7 +47,7 @@ def test_f13_nominal_af35_facade_is_removed() -> None:
 
 
 def test_f13_direct_adapters_import_without_private_core_service_modules() -> None:
-    script = r'''
+    script = r"""
 import builtins
 import os
 from pathlib import Path
@@ -84,7 +82,7 @@ assert community_origin.is_relative_to(Path(os.environ["C1_EXPECTED_COMMUNITY_SR
 assert "site-packages" not in str(core_origin).lower()
 assert "site-packages" not in str(community_origin).lower()
 print("f13-private-core-isolation-ok")
-'''
+"""
     core_src = resolve_core_repo(ROOT) / "src"
     env = os.environ.copy()
     env["C1_EXPECTED_CORE_SRC"] = str(core_src)
@@ -112,7 +110,7 @@ print("f13-private-core-isolation-ok")
 
 def test_f13_graph_expander_requires_explicit_community_composition() -> None:
     with pytest.raises(ValueError, match="cypher_executor_required"):
-        KuzuGraphExpander(None)
+        CommunityGraphExpander(None)
 
     executor = object()
-    assert KuzuGraphExpander(executor)._executor is executor
+    assert CommunityGraphExpander(executor)._executor is executor

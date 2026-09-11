@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 from okto_pulse.core import CoreSettings
-from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import DotEnvSettingsSource
 
@@ -18,36 +18,14 @@ from okto_pulse.community.adapters.telemetry_effect_config import (
     COMMUNITY_DEFAULT_METRICS_BEACON_URL,
 )
 
-GRAPH_DB_MAX_SIZE_GB_VALUES: tuple[int, ...] = (2, 4, 8, 16, 32, 64)
 DataDirOrigin = Literal["explicit", "DATA_DIR", "OKTO_PULSE_HOME", "default"]
-GraphBackend = Literal["ladybug", "grafx"]
+GraphBackend = Literal["grafx"]
 GrafxDescriptorRevalidation = Literal["strict", "generation"]
 
 PULSE_GRAFX_DEFAULT_PAGE_SIZE = 8192
 PULSE_GRAFX_MIN_PAGE_SIZE = 4096
 PULSE_GRAFX_MAX_PAGE_SIZE = 32768
 PULSE_GRAFX_DEFAULT_BUFFER_POOL_MB = 64
-
-_LADYBUG_SETTING_ALIASES: tuple[tuple[str, str], ...] = (
-    ("kg_ladybug_buffer_pool_mb", "kg_kuzu_buffer_pool_mb"),
-    ("kg_global_ladybug_buffer_pool_mb", "kg_global_kuzu_buffer_pool_mb"),
-    ("kg_ladybug_max_db_size_gb", "kg_kuzu_max_db_size_gb"),
-)
-
-
-class CommunitySettingsAliasConflict(ValueError):
-    """A canonical Ladybug setting disagrees with its compatibility name."""
-
-    code = "community_settings_alias_conflict"
-
-    def __init__(self, canonical_name: str, legacy_name: str, *, source: str) -> None:
-        self.canonical_name = canonical_name
-        self.legacy_name = legacy_name
-        self.source = source
-        super().__init__(
-            f"{canonical_name} conflicts with compatibility setting "
-            f"{legacy_name} in {source}"
-        )
 
 
 def validate_grafx_page_size(value: int) -> int:
@@ -83,53 +61,8 @@ def validate_grafx_buffer_pool_mb(value: object) -> int:
 def validate_grafx_read_participants(value: object) -> int:
     """Bound independently owned Board readers; never a writer-policy toggle."""
     if type(value) is not int or not 1 <= value <= 8:
-        raise ValueError("kg_grafx_read_participants must be an integer between 1 and 8")
-    return value
-
-
-def _equivalent_setting_values(left: object, right: object) -> bool:
-    """Compare settings as integers while leaving invalid input to Pydantic."""
-
-    try:
-        return int(str(left).strip()) == int(str(right).strip())
-    except (TypeError, ValueError):
-        return left == right
-
-
-def _reject_alias_conflicts(
-    values: dict[str, object],
-    *,
-    environment: dict[str, object],
-    dotenv: dict[str, object],
-) -> None:
-    """Reject ambiguous aliases within each settings-precedence source."""
-
-    sources = (
-        ("init", {str(key).casefold(): value for key, value in values.items()}),
-        ("environment", environment),
-        ("dotenv", dotenv),
-    )
-    for canonical_name, legacy_name in _LADYBUG_SETTING_ALIASES:
-        for source_name, source_values in sources:
-            canonical = canonical_name.casefold()
-            legacy = legacy_name.casefold()
-            if canonical not in source_values or legacy not in source_values:
-                continue
-            if not _equivalent_setting_values(
-                source_values[canonical], source_values[legacy]
-            ):
-                raise CommunitySettingsAliasConflict(
-                    canonical_name,
-                    legacy_name,
-                    source=source_name,
-                )
-
-
-def validate_graph_db_max_size_gb(value: int) -> int:
-    if value not in GRAPH_DB_MAX_SIZE_GB_VALUES:
         raise ValueError(
-            "kg_kuzu_max_db_size_gb must be one of "
-            "2, 4, 8, 16, 32, 64 GB (a power of 2)"
+            "kg_grafx_read_participants must be an integer between 1 and 8"
         )
     return value
 
@@ -171,11 +104,11 @@ class CommunitySettings(CoreSettings, BaseSettings):
     mcp_admission_retry_after_ms: int = Field(500, ge=1, le=60_000)
     cors_origins: str = "*"
     kg_base_dir: str = "~/.okto-pulse"
-    # Backend selection is explicit for both routing domains.  The defaults
-    # preserve the installed Community behavior; a persisted per-scope binding
-    # remains authoritative once the M-PULSE-6 router acquires it.
-    kg_graph_backend: GraphBackend = "ladybug"
-    kg_global_graph_backend: GraphBackend = "ladybug"
+    # Community has one supported graph backend. Core contracts remain neutral.
+    # Persisted bindings are still authenticated; legacy files are never silently
+    # reinterpreted as Grafx or discarded while initializing a new route.
+    kg_graph_backend: GraphBackend = "grafx"
+    kg_global_graph_backend: GraphBackend = "grafx"
     kg_grafx_page_size: int = PULSE_GRAFX_DEFAULT_PAGE_SIZE
     # Each writer/read lane owns its own buffer pool. This is a per-handle
     # budget, not a process-wide cap; the three ordinary lanes can use 3x it.
@@ -194,42 +127,12 @@ class CommunitySettings(CoreSettings, BaseSettings):
     kg_embedding_mode: str = COMMUNITY_DEFAULT_EMBEDDING_MODE
     kg_embedding_model: str = COMMUNITY_DEFAULT_EMBEDDING_MODEL
     kg_embedding_dim: int = COMMUNITY_DEFAULT_EMBEDDING_DIM
-    # Each open Ladybug Database owns its own native buffer pool.  Conservative
+    # Each open graph Database owns its own native buffer pool.  Conservative
     # defaults keep a local multi-board process below the former 4 x 512 MB
     # baseline while persisted/operator overrides remain backwards compatible.
-    kg_kuzu_buffer_pool_mb: int = Field(
-        256,
-        ge=128,
-        le=512,
-        validation_alias=AliasChoices(
-            "kg_kuzu_buffer_pool_mb",
-            "kg_ladybug_buffer_pool_mb",
-        ),
-    )
     # Global Discovery is a separate Database and does not need the full board
     # write budget.  It is intentionally environment/config-only for now; the
     # legacy runtime-settings API continues to govern the board pool unchanged.
-    kg_global_kuzu_buffer_pool_mb: int = Field(
-        128,
-        ge=128,
-        le=512,
-        validation_alias=AliasChoices(
-            "kg_global_kuzu_buffer_pool_mb",
-            "kg_global_ladybug_buffer_pool_mb",
-        ),
-    )
-    kg_kuzu_max_db_size_gb: int = Field(
-        2,
-        ge=2,
-        le=64,
-        validation_alias=AliasChoices(
-            "kg_kuzu_max_db_size_gb",
-            "kg_ladybug_max_db_size_gb",
-        ),
-    )
-    kg_connection_pool_size: int = Field(2, ge=1, le=32)
-    kg_wal_salvage_enabled: bool = True
-    kg_wal_only_recovery_enabled: bool = True
     kg_decay_tick_batch_size: int = 200
     kg_write_barrier_mode: str = "soft"
     mcp_legacy_coverage: bool = Field(
@@ -272,16 +175,6 @@ class CommunitySettings(CoreSettings, BaseSettings):
             else None
         )
         dotenv_values = dotenv_source() if dotenv_source is not None else {}
-        raw_dotenv_values = (
-            dict(getattr(dotenv_source, "env_vars", {}))
-            if dotenv_source is not None
-            else {}
-        )
-        _reject_alias_conflicts(
-            prepared,
-            environment={key.casefold(): value for key, value in os.environ.items()},
-            dotenv={key.casefold(): value for key, value in raw_dotenv_values.items()},
-        )
         dotenv_data_dir = str(dotenv_values.get("data_dir") or "").strip()
 
         if supplied_data_dir:
@@ -303,11 +196,6 @@ class CommunitySettings(CoreSettings, BaseSettings):
         prepared["data_dir"] = resolved_data_dir
         prepared["data_dir_origin"] = origin
         super().__init__(**prepared)
-
-    @field_validator("kg_kuzu_max_db_size_gb")
-    @classmethod
-    def _validate_graph_db_max_size_gb(cls, value: int) -> int:
-        return validate_graph_db_max_size_gb(value)
 
     @field_validator("kg_grafx_page_size")
     @classmethod
@@ -341,31 +229,16 @@ class CommunitySettings(CoreSettings, BaseSettings):
 
     @model_validator(mode="after")
     def _validate_grafx_constructor_options(self):
-        from okto_pulse.community.adapters.grafx_settings_catalog import validate_options
+        from okto_pulse.community.adapters.grafx_settings_catalog import (
+            validate_options,
+        )
 
         self.kg_grafx_options = validate_options(
-            self.kg_grafx_options, page_size=self.kg_grafx_page_size,
+            self.kg_grafx_options,
+            page_size=self.kg_grafx_page_size,
             buffer_pool_mb=self.kg_grafx_buffer_pool_mb,
         )
         return self
-
-    @property
-    def kg_ladybug_buffer_pool_mb(self) -> int:
-        """Provider-neutral spelling of the legacy board pool setting."""
-
-        return self.kg_kuzu_buffer_pool_mb
-
-    @property
-    def kg_global_ladybug_buffer_pool_mb(self) -> int:
-        """Provider-neutral spelling of the legacy Global pool setting."""
-
-        return self.kg_global_kuzu_buffer_pool_mb
-
-    @property
-    def kg_ladybug_max_db_size_gb(self) -> int:
-        """Provider-neutral spelling of the legacy storage-limit setting."""
-
-        return self.kg_kuzu_max_db_size_gb
 
     @property
     def cors_origins_list(self) -> list[str]:

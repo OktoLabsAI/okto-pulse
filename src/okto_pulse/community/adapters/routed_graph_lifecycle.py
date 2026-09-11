@@ -152,7 +152,7 @@ def _require_board_snapshot(
             board_id=board_id,
             reason="graph_route_snapshot_scope_invalid",
         )
-    if snapshot.backend not in {"ladybug", "grafx"}:
+    if snapshot.backend != "grafx":
         raise _invalid_snapshot(
             snapshot,
             board_id=board_id,
@@ -201,12 +201,6 @@ class CommunityRoutedGraphLifecycle:
         operation_window: BoardGraphOperationWindowFactory,
         mutation_window_unguarded: BoardGraphLifecycleMutationWindowUnguardedFactory,
         revalidate_write_fence: BoardGraphWriteFenceRevalidator,
-        ladybug_open_unguarded: _OpenCallback,
-        ladybug_close_unguarded: _CloseCallback,
-        ladybug_rebuild_unguarded: _RebuildCallback,
-        ladybug_purge_unguarded: _PurgeCallback,
-        ladybug_apply_step_unguarded: _StepCallback,
-        ladybug_close_all_unguarded: _CloseAllCallback,
         grafx_open_unguarded: _OpenCallback,
         grafx_close_unguarded: _CloseCallback,
         grafx_rebuild_unguarded: _RebuildCallback,
@@ -218,14 +212,6 @@ class CommunityRoutedGraphLifecycle:
         self._operation_window = operation_window
         self._mutation_window_unguarded = mutation_window_unguarded
         self._revalidate_write_fence = revalidate_write_fence
-        self._ladybug = _PhysicalLifecycleCallbacks(
-            open_unguarded=ladybug_open_unguarded,
-            close_unguarded=ladybug_close_unguarded,
-            rebuild_unguarded=ladybug_rebuild_unguarded,
-            purge_unguarded=ladybug_purge_unguarded,
-            apply_step_unguarded=ladybug_apply_step_unguarded,
-            close_all_unguarded=ladybug_close_all_unguarded,
-        )
         self._grafx = _PhysicalLifecycleCallbacks(
             open_unguarded=grafx_open_unguarded,
             close_unguarded=grafx_close_unguarded,
@@ -243,7 +229,7 @@ class CommunityRoutedGraphLifecycle:
         # this same snapshot and is never allowed to select a replacement.
         snapshot = self._resolver.acquire_board_route(board_id)
         _require_board_snapshot(snapshot, board_id=board_id)
-        callbacks = self._ladybug if snapshot.backend == "ladybug" else self._grafx
+        callbacks = self._grafx
         return snapshot, callbacks
 
     def _revalidate_mutation(
@@ -297,7 +283,6 @@ class CommunityRoutedGraphLifecycle:
         """
 
         tasks = (
-            asyncio.create_task(_invoke_physical(self._ladybug.close_all_unguarded)),
             asyncio.create_task(_invoke_physical(self._grafx.close_all_unguarded)),
         )
         results = await asyncio.gather(*tasks, return_exceptions=True)

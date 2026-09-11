@@ -101,9 +101,7 @@ def _facade(
     rollout_erase: Any = None,
     rollout_finalize: Any = None,
     rollout_write_fence: Any = None,
-    ladybug_erase: Any,
     grafx_erase: Any,
-    ladybug_purge: Any = None,
     grafx_purge: Any = None,
 ) -> CommunityRoutedGraphRuntimeStore:
     @contextmanager
@@ -121,23 +119,15 @@ def _facade(
 
     return CommunityRoutedGraphRuntimeStore(
         resolver,  # type: ignore[arg-type]
-        ladybug=object(),  # type: ignore[arg-type]
         grafx=object(),  # type: ignore[arg-type]
         operation_window=lambda _board_id: nullcontext(),
         mutation_window=mutation_window,
-        ladybug_purge_unguarded=ladybug_purge
-        or (
-            lambda _board_id, *, reason: _receipt(
-                reason=reason, backend="ladybug", removed=False
-            )
-        ),
         grafx_purge_unguarded=grafx_purge
         or (
             lambda _board_id, *, reason: _receipt(
                 reason=reason, backend="grafx", removed=False
             )
         ),
-        ladybug_erase_unguarded=ladybug_erase,
         grafx_erase_unguarded=grafx_erase,
         rollout_erase_unguarded=rollout_erase,
         rollout_finalize_erase_unguarded=rollout_finalize,
@@ -173,7 +163,6 @@ def test_purge_write_fence_runs_after_route_selection_before_physical_purge() ->
         events=events,
         active=active,
         rollout_write_fence=write_fence,
-        ladybug_erase=lambda *_args, **_kwargs: None,
         grafx_erase=lambda *_args, **_kwargs: None,
         grafx_purge=grafx_purge,
     )
@@ -214,7 +203,6 @@ def test_purge_write_fence_failure_blocks_physical_purge() -> None:
         events=events,
         active=active,
         rollout_write_fence=failing_write_fence,
-        ladybug_erase=lambda *_args, **_kwargs: None,
         grafx_erase=lambda *_args, **_kwargs: None,
         grafx_purge=forbidden_purge,
     )
@@ -226,7 +214,7 @@ def test_purge_write_fence_failure_blocks_physical_purge() -> None:
     assert not active
 
 
-def test_rollout_erasure_runs_first_and_aggregates_three_receipts() -> None:
+def test_rollout_erasure_runs_first_and_aggregates_storage_receipts() -> None:
     events: list[str] = []
     active: list[bool] = []
     resolver = _Resolver(_route(), events=events, active=active)
@@ -245,7 +233,6 @@ def test_rollout_erasure_runs_first_and_aggregates_three_receipts() -> None:
         events=events,
         active=active,
         rollout_erase=erase("rollout", removed=True),
-        ladybug_erase=erase("ladybug", removed=True),
         grafx_erase=erase("grafx", removed=False),
     )
 
@@ -265,7 +252,6 @@ def test_rollout_erasure_runs_first_and_aggregates_three_receipts() -> None:
         "rollout",
         "inspect",
         "grafx",
-        "ladybug",
         "window_exit",
     ]
     assert not active
@@ -300,7 +286,6 @@ def test_rollout_erasure_failure_blocks_every_physical_backend(
         events=events,
         active=active,
         rollout_erase=rollout_erase,
-        ladybug_erase=forbidden_backend,
         grafx_erase=forbidden_backend,
     )
 
@@ -315,11 +300,11 @@ def test_rollout_erasure_failure_blocks_every_physical_backend(
     assert not active
 
 
-def test_retry_after_rollout_absence_still_sweeps_both_physical_backends() -> None:
+def test_retry_after_rollout_absence_still_sweeps_physical_storage() -> None:
     events: list[str] = []
     active: list[bool] = []
     resolver = _Resolver(_missing_binding(), events=events, active=active)
-    present = {"rollout": True, "ladybug": True, "grafx": True}
+    present = {"rollout": True, "grafx": True}
 
     def erase(name: str):
         def operation(board_id: str, *, reason: str) -> GraphPurgeResult:
@@ -337,7 +322,6 @@ def test_retry_after_rollout_absence_still_sweeps_both_physical_backends() -> No
         events=events,
         active=active,
         rollout_erase=erase("rollout"),
-        ladybug_erase=erase("ladybug"),
         grafx_erase=erase("grafx"),
     )
 
@@ -348,18 +332,16 @@ def test_retry_after_rollout_absence_still_sweeps_both_physical_backends() -> No
     assert first.removed is True
     assert retry.status == "not_found"
     assert retry.not_found is True
-    assert present == {"rollout": False, "ladybug": False, "grafx": False}
+    assert present == {"rollout": False, "grafx": False}
     assert events == [
         "window_enter",
         "rollout",
         "inspect",
-        "ladybug",
         "grafx",
         "window_exit",
         "window_enter",
         "rollout",
         "inspect",
-        "ladybug",
         "grafx",
         "window_exit",
     ]
@@ -383,11 +365,6 @@ def test_partial_physical_failure_keeps_tombstone_until_retry_finalizes() -> Non
             backend="rollout",
             removed=changed,
         )
-
-    def ladybug_erase(board_id: str, *, reason: str) -> GraphPurgeResult:
-        assert tombstone["present"]
-        events.append("ladybug")
-        return _receipt(reason=reason, backend="ladybug", removed=False)
 
     def grafx_erase(board_id: str, *, reason: str) -> GraphPurgeResult:
         nonlocal grafx_attempts
@@ -415,7 +392,6 @@ def test_partial_physical_failure_keeps_tombstone_until_retry_finalizes() -> Non
         active=active,
         rollout_erase=invalidate,
         rollout_finalize=finalize,
-        ladybug_erase=ladybug_erase,
         grafx_erase=grafx_erase,
     )
 
@@ -434,13 +410,11 @@ def test_partial_physical_failure_keeps_tombstone_until_retry_finalizes() -> Non
         "invalidate",
         "inspect",
         "grafx",
-        "ladybug",
         "window_exit",
         "window_enter",
         "invalidate",
         "inspect",
         "grafx",
-        "ladybug",
         "finalize",
         "window_exit",
     ]

@@ -970,9 +970,9 @@ describe('KG recovery panel — health and cognitive rebuild state', () => {
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
 
     expect(await screen.findByTestId('kg-recovery-metric-board-graph'))
-      .toHaveTextContent('LadybugDB');
+      .toHaveTextContent('Retired graph backend');
     expect(screen.getByTestId('kg-recovery-metric-global-discovery'))
-      .toHaveTextContent('LadybugDB');
+      .toHaveTextContent('Retired graph backend');
   });
 
   it('surfaces an empty board graph explicitly when health total_nodes is zero', async () => {

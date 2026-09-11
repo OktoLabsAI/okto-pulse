@@ -20,7 +20,7 @@ Decision to have ≥1 linked task.
 Args:
     board_id: Board ID
     spec_id: Spec ID
-    title: Decision title (e.g. "Use LadybugDB embedded over Neo4j")
+    title: Decision title (e.g. "Use Okto Grafx embedded over Neo4j")
     rationale: Why this choice was made
     context: When/where this applies (optional)
     alternatives_considered: Pipe-separated list of alternatives (e.g. "Neo4j|DuckDB")

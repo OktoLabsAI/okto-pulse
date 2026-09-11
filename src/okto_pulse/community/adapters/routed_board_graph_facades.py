@@ -118,13 +118,10 @@ def _select_board_provider(
     snapshot: CommunityGraphRouteSnapshot,
     *,
     board_id: str,
-    ladybug: _ProviderT,
     grafx: _ProviderT,
 ) -> _ProviderT:
     if snapshot.scope != "board" or snapshot.scope_id != board_id:
         raise _invalid_board_route(snapshot, board_id=board_id)
-    if snapshot.backend == "ladybug":
-        return ladybug
     if snapshot.backend == "grafx":
         return grafx
     raise _invalid_board_route(snapshot, board_id=board_id)
@@ -233,14 +230,12 @@ class CommunityRoutedSemanticGraphStore:
         self,
         resolver: CommunityGraphRouteResolver,
         *,
-        ladybug: SemanticGraphStore,
         grafx: SemanticGraphStore,
         operation_window: BoardGraphOperationWindowFactory,
         revalidate_write_fence: BoardGraphWriteFenceRevalidator | None = None,
         mutation_recorder: BoardRolloutMutationRecorder | None = None,
     ) -> None:
         self._resolver = resolver
-        self._ladybug = ladybug
         self._grafx = grafx
         self._operation_window = operation_window
         self._revalidate_write_fence = revalidate_write_fence or (
@@ -253,7 +248,6 @@ class CommunityRoutedSemanticGraphStore:
         return _select_board_provider(
             snapshot,
             board_id=board_id,
-            ladybug=self._ladybug,
             grafx=self._grafx,
         )
 
@@ -267,7 +261,6 @@ class CommunityRoutedSemanticGraphStore:
         provider = _select_board_provider(
             snapshot,
             board_id=board_id,
-            ladybug=self._ladybug,
             grafx=self._grafx,
         )
         self._revalidate_write_fence(board_id, phase)
@@ -350,8 +343,13 @@ class CommunityRoutedSemanticGraphStore:
                     details={"operation": "find_by_artifact_filtered"},
                 )
             return operation(
-                board_id, artifact_id, filters, rel_types=rel_types,
-                direction=direction, max_depth=max_depth, graph_layer=graph_layer,
+                board_id,
+                artifact_id,
+                filters,
+                rel_types=rel_types,
+                direction=direction,
+                max_depth=max_depth,
+                graph_layer=graph_layer,
                 include_code_traceability=include_code_traceability,
             )
 
@@ -471,19 +469,7 @@ class CommunityRoutedSemanticGraphStore:
             return self._provider(board_id).list_node_properties(board_id, node_type)
 
     def capabilities(self) -> GraphCapabilities:
-        ladybug = self._ladybug.capabilities()
-        grafx = self._grafx.capabilities()
-        return GraphCapabilities(
-            indexed_similarity=(
-                ladybug.indexed_similarity and grafx.indexed_similarity
-            ),
-            schema_introspection=(
-                ladybug.schema_introspection and grafx.schema_introspection
-            ),
-            mutable_indexed_attributes=(
-                ladybug.mutable_indexed_attributes and grafx.mutable_indexed_attributes
-            ),
-        )
+        return self._grafx.capabilities()
 
     def create_node(
         self,
@@ -665,12 +651,10 @@ class CommunityRoutedCypherExecutor:
         self,
         resolver: CommunityGraphRouteResolver,
         *,
-        ladybug: _PairedCypherExecutor,
         grafx: _PairedCypherExecutor,
         operation_window: BoardGraphOperationWindowFactory,
     ) -> None:
         self._resolver = resolver
-        self._ladybug = ladybug
         self._grafx = grafx
         self._operation_window = operation_window
 
@@ -678,7 +662,6 @@ class CommunityRoutedCypherExecutor:
         return _select_board_provider(
             self._resolver.acquire_board_route(board_id),
             board_id=board_id,
-            ladybug=self._ladybug,
             grafx=self._grafx,
         )
 
@@ -771,9 +754,7 @@ class CommunityRoutedCypherExecutor:
             ]
 
     def is_supported(self) -> bool:
-        ladybug = bool(self._ladybug.is_supported())
-        grafx = bool(self._grafx.is_supported())
-        return ladybug and grafx
+        return bool(self._grafx.is_supported())
 
 
 class CommunityRoutedGraphSchemaManager:
@@ -783,13 +764,11 @@ class CommunityRoutedGraphSchemaManager:
         self,
         resolver: CommunityGraphRouteResolver,
         *,
-        ladybug: GraphSchemaManager,
         grafx: GraphSchemaManager,
         operation_window: BoardGraphOperationWindowFactory,
         revalidate_write_fence: BoardGraphWriteFenceRevalidator | None = None,
     ) -> None:
         self._resolver = resolver
-        self._ladybug = ladybug
         self._grafx = grafx
         self._operation_window = operation_window
         self._revalidate_write_fence = revalidate_write_fence or (
@@ -800,7 +779,6 @@ class CommunityRoutedGraphSchemaManager:
         return _select_board_provider(
             self._resolver.acquire_board_route(board_id),
             board_id=board_id,
-            ladybug=self._ladybug,
             grafx=self._grafx,
         )
 
@@ -844,13 +822,10 @@ class CommunityRoutedGraphRuntimeStore:
         self,
         resolver: CommunityGraphRouteResolver,
         *,
-        ladybug: GraphRuntimeStore,
         grafx: GraphRuntimeStore,
         operation_window: BoardGraphOperationWindowFactory,
         mutation_window: BoardStorageMutationWindowFactory,
-        ladybug_purge_unguarded: _BoardMutationOperation,
         grafx_purge_unguarded: _BoardMutationOperation,
-        ladybug_erase_unguarded: _BoardMutationOperation,
         grafx_erase_unguarded: _BoardMutationOperation,
         rollout_erase_unguarded: _BoardMutationOperation | None = None,
         rollout_finalize_erase_unguarded: _BoardMutationOperation | None = None,
@@ -858,13 +833,10 @@ class CommunityRoutedGraphRuntimeStore:
         | None = None,
     ) -> None:
         self._resolver = resolver
-        self._ladybug = ladybug
         self._grafx = grafx
         self._operation_window = operation_window
         self._mutation_window = mutation_window
-        self._ladybug_purge_unguarded = ladybug_purge_unguarded
         self._grafx_purge_unguarded = grafx_purge_unguarded
-        self._ladybug_erase_unguarded = ladybug_erase_unguarded
         self._grafx_erase_unguarded = grafx_erase_unguarded
         self._rollout_erase_unguarded = rollout_erase_unguarded
         self._rollout_finalize_erase_unguarded = rollout_finalize_erase_unguarded
@@ -905,7 +877,6 @@ class CommunityRoutedGraphRuntimeStore:
         return _select_board_provider(
             self._resolver.inspect_board_route(board_id),
             board_id=board_id,
-            ladybug=self._ladybug,
             grafx=self._grafx,
         )
 
@@ -945,7 +916,6 @@ class CommunityRoutedGraphRuntimeStore:
             operation = _select_board_provider(
                 snapshot,
                 board_id=board_id,
-                ladybug=self._ladybug_purge_unguarded,
                 grafx=self._grafx_purge_unguarded,
             )
             write_fence = self._rollout_write_fence
@@ -979,23 +949,14 @@ class CommunityRoutedGraphRuntimeStore:
             except GraphCapabilityUnavailable as failure:
                 if not _is_missing_binding(failure):
                     raise
-                operations = (
-                    self._ladybug_erase_unguarded,
-                    self._grafx_erase_unguarded,
-                )
+                operations = (self._grafx_erase_unguarded,)
             else:
                 routed = _select_board_provider(
                     snapshot,
                     board_id=board_id,
-                    ladybug=self._ladybug_erase_unguarded,
                     grafx=self._grafx_erase_unguarded,
                 )
-                alternate = (
-                    self._grafx_erase_unguarded
-                    if snapshot.backend == "ladybug"
-                    else self._ladybug_erase_unguarded
-                )
-                operations = (routed, alternate)
+                operations = (routed,)
 
             # Privacy is an administrative all-storage sweep, not backend
             # fallback.  Both physical backends are attempted under this one
@@ -1065,12 +1026,10 @@ class CommunityRoutedGraphRecovery:
         self,
         resolver: CommunityGraphRouteResolver,
         *,
-        ladybug_recovery_unguarded: _BoardRecoveryOperation,
         grafx_recovery_unguarded: _BoardRecoveryOperation,
         mutation_window: BoardStorageMutationWindowFactory,
     ) -> None:
         self._resolver = resolver
-        self._ladybug_recovery_unguarded = ladybug_recovery_unguarded
         self._grafx_recovery_unguarded = grafx_recovery_unguarded
         self._mutation_window = mutation_window
 
@@ -1078,7 +1037,6 @@ class CommunityRoutedGraphRecovery:
         return _select_board_provider(
             self._resolver.inspect_board_route(board_id),
             board_id=board_id,
-            ladybug=self._ladybug_recovery_unguarded,
             grafx=self._grafx_recovery_unguarded,
         )
 
