@@ -132,5 +132,24 @@ In Core, using the same environment, run `python -m pytest -q --tb=short` with
 Normal conftest is enabled. In Community `frontend`, run
 `npm test -- --maxWorkers=2 src/components/knowledge src/components/layout/GrafxAdvancedSettings.test.tsx src/components/layout/RuntimeSettingsPanel.test.tsx`.
 
+## Branch integration checkpoint
+
+The subsequent commit/push checkpoint integrates the existing remote
+`feature/v0.3.3` history without force-push. The old Grafx 0.0.3 dependency pin is
+superseded by the tested 0.0.6 development pin and its existing local-wheel lock.
+This is not a PyPI release or an independently installable public dependency lock.
+
+Core retains the remote timestamp-cast pagination correction. Its service already
+binds the decoded cursor as a `datetime`; the imported test now asserts that current
+contract rather than an obsolete string parameter. The native Community executor
+test covers both direct timestamp parameters and `timestamp($cursor_ts)` wrappers.
+
+Focused post-merge evidence: Core cursor/query contracts **9 passed** (1.91 s,
+`pulse006-merge-core-final.xml`), Community native executor **32 passed** (11.85 s,
+`pulse006-merge-community-final.xml`). The initial obsolete string assertion remains
+recorded in `pulse006-merge-core.xml`; it was corrected, not skipped. The offline
+development-wheel lock check also passed. These checks complement, not replace,
+the broader pre-merge regression above.
+
 No production rebuild, redrive, cognitive consolidation, default data-directory
 mutation, global install/restart, commit or push is part of this validation.

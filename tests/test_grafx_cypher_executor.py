@@ -210,10 +210,11 @@ class TestThePulseEnvelope:
         assert rendered.endswith("Z")
         assert rendered.startswith("2026-08-28T01:02:03")
 
-    def test_a_datetime_parameter_is_normalized_for_grafx(self, executor) -> None:
+    @pytest.mark.parametrize("cursor_expression", ["$cursor_ts", "timestamp($cursor_ts)"])
+    def test_a_datetime_parameter_is_normalized_for_grafx(self, executor, cursor_expression) -> None:
         envelope = executor.execute_read_only(
             BOARD_ID,
-            "MATCH (d:Decision) WHERE d.created_at < $cursor_ts RETURN d.id",
+            f"MATCH (d:Decision) WHERE d.created_at < {cursor_expression} RETURN d.id",
             {"cursor_ts": datetime(2026, 9, 1, tzinfo=UTC)},
         )
 
