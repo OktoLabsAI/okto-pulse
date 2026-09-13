@@ -11,6 +11,11 @@ from pydantic import BaseModel, Field
 
 from okto_pulse.community.api.auth_deps import require_principal
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
+from okto_pulse.community.metrics_limits import (
+    DEFAULT_WINDOW_DAYS,
+    MIN_WINDOW_DAYS,
+    MAX_WINDOW_DAYS,
+)
 from okto_pulse.core import get_settings
 from okto_pulse.core.application.use_cases.authorize_operation import (
     AuthorizeOperationCommand,
@@ -118,7 +123,9 @@ def _public_event_error(
 
 @router.get("/metrics/local/summary")
 async def get_local_metrics_summary(
-    window_days: int = Query(default=30, ge=1, le=400),
+    window_days: int = Query(
+        default=DEFAULT_WINDOW_DAYS, ge=MIN_WINDOW_DAYS, le=MAX_WINDOW_DAYS
+    ),
     principal: Principal = Depends(require_principal),
 ):
     await _authorize_metrics(principal, "metrics.local.summary.read")

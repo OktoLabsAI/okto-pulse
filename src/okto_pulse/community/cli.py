@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+from okto_pulse.community.metrics_limits import DEFAULT_WINDOW_DAYS, validate_window_days
+
 # Default ports
 DEFAULT_API_PORT = 8100
 DEFAULT_MCP_PORT = 8101
@@ -1237,64 +1239,39 @@ def cmd_code_traceability(args):
 def cmd_status(args):
     """Show status of Okto Pulse Community."""
     from okto_pulse.community.config import CommunitySettings
-    from okto_pulse.community.serve_lock import inspect_serve_lock_identity
+    from okto_pulse.community.commands.status import collect_status, render_status
 
-    api_port = args.api_port
-    mcp_port = args.mcp_port
+    report = collect_status(
+        CommunitySettings(),
+        api_port=args.api_port,
+        mcp_port=args.mcp_port,
+        port_probe=_is_port_in_use,
+    )
+    exit_code = render_status(
+        report,
+        json_output=getattr(args, "json", False),
+        api_port=args.api_port,
+        mcp_port=args.mcp_port,
+    )
+    if exit_code:
+        raise SystemExit(exit_code)
 
-    settings = CommunitySettings()
-    data_path = Path(settings.data_dir)
-    db_path = data_path / "data" / "pulse.db"
 
-    print("Okto Pulse Community Status")
-    print(f"  Data dir: {data_path}")
-    print(f"  Source:   {settings.data_dir_origin}")
-    print(f"  Database: {db_path}")
-
-    if db_path.exists():
-        size_kb = db_path.stat().st_size / 1024
-        print(f"  DB size:  {size_kb:.1f} KB")
-
-        import sqlite3
-
-        conn = sqlite3.connect(str(db_path))
-        try:
-            boards = conn.execute("SELECT COUNT(*) FROM boards").fetchone()[0]
-            cards = conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
-            agents = conn.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
-            specs = conn.execute("SELECT COUNT(*) FROM specs").fetchone()[0]
-            print(f"  Boards:   {boards}")
-            print(f"  Cards:    {cards}")
-            print(f"  Specs:    {specs}")
-            print(f"  Agents:   {agents}")
-        except Exception:
-            print("  (tables not yet created — run 'okto-pulse init' first)")
-        finally:
-            conn.close()
-    else:
-        print("  Database not found — run 'okto-pulse init' first.")
-
-    api_up = _is_port_in_use(api_port)
-    mcp_up = _is_port_in_use(mcp_port)
-    identity = inspect_serve_lock_identity(settings)
-    identity_state = identity["state"]
-    if identity_state == "confirmed":
-        identity_label = f"confirmed (instance {identity['instance_id']})"
-    elif identity_state == "unreadable":
-        identity_label = "unreadable (serve lock cannot be verified)"
-    elif identity_state == "identity_mismatch":
-        identity_label = f"identity mismatch ({identity['reason']})"
-    elif api_up or mcp_up:
-        identity_label = f"unknown ({identity['reason']})"
-    else:
-        identity_label = f"stopped ({identity['reason']})"
-    print(f"  Runtime identity: {identity_label}")
-    print(f"\n  API server ({api_port}):  {'running' if api_up else 'stopped'}")
-    print(f"  MCP server ({mcp_port}):  {'running' if mcp_up else 'stopped'}")
+def _metrics_window_days(text: str) -> int:
+    try:
+        return validate_window_days(int(text))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def cmd_metrics(args):
     """Control metrics On/Off settings and local data."""
+    if args.metrics_command == "status":
+        try:
+            validate_window_days(args.window_days)
+        except ValueError as exc:
+            print(f"okto-pulse metrics status: error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
     from okto_pulse.community.adapters.telemetry_composition import (
         register_community_telemetry_runtime,
     )
@@ -2405,6 +2382,7 @@ def cmd_kg_restore(args):
 def cmd_reset(args):
     """Reset all data — delete DB and uploads, re-seed."""
     from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.community.commands.reset_graphs import plan_board_reset
     from okto_pulse.community.serve_lock import (
         ServeAlreadyRunningError,
         ServeInstanceLock,
@@ -2428,6 +2406,10 @@ def cmd_reset(args):
     _fail_fast_if_server_running("reset")
     try:
         with ServeInstanceLock(data_path).acquire() as owned_serve_lock:
+            # Resolve every owned graph and reject aliased paths before the
+            # SQLite catalog (our ownership evidence) or uploads are deleted.
+            graph_plan = plan_board_reset(settings, data_path / "data" / "pulse.db")
+            graph_plan.apply()
             for f in (data_path / "data").glob("pulse.db*"):
                 f.unlink()
                 print(f"  Deleted: {f}")
@@ -2517,6 +2499,9 @@ def main():
         "status", help="Show service status and DB metrics"
     )
     sub_status.add_argument(
+        "--json", action="store_true", help="Emit one machine-readable status object"
+    )
+    sub_status.add_argument(
         "--api-port",
         type=int,
         default=DEFAULT_API_PORT,
@@ -2595,7 +2580,9 @@ def main():
     )
 
     metrics_status = metrics_sub.add_parser("status", help="Show metrics status")
-    metrics_status.add_argument("--window-days", type=int, default=30)
+    metrics_status.add_argument(
+        "--window-days", type=_metrics_window_days, default=DEFAULT_WINDOW_DAYS
+    )
     metrics_status.set_defaults(func=cmd_metrics)
 
     metrics_enable = metrics_sub.add_parser(
@@ -2853,7 +2840,8 @@ def main():
         sub_traceability.print_help()
         sys.exit(1)
 
-    _print_banner()
+    if not (args.command == "status" and getattr(args, "json", False)):
+        _print_banner()
     args.func(args)
 
 
