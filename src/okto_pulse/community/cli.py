@@ -2734,6 +2734,14 @@ def main():
         _print_banner()
         sub_kg.print_help()
         sys.exit(1)
+    if (
+        args.command == "kg"
+        and args.kg_command == "subtype"
+        and not getattr(args, "subtype_command", None)
+    ):
+        _print_banner()
+        sub_subtype.print_help()
+        sys.exit(1)
     if args.command == "metrics" and not getattr(args, "metrics_command", None):
         _print_banner()
         sub_metrics.print_help()
