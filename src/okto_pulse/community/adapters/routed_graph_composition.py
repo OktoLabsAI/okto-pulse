@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import threading
+from okto_pulse.community.adapters.global_operation_gate import GlobalOperationGate
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -240,7 +241,8 @@ def build_community_routed_graph_composition(
         binding_store=board.binding_store,
         resolver=board.resolver,
         grafx_pool=board.grafx_pool,
-        global_lock=threading.RLock(),
+        global_lock=GlobalOperationGate(),
+        read_participants=len(board.grafx_read_pools),
         grafx_connect=grafx_connect,
     )
     if (

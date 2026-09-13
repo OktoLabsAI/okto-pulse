@@ -1,5 +1,38 @@
 # Grafx 0.0.6 query-language migration
 
+The subsequent [advanced-capability adoption](GRAFX_ADVANCED_ADOPTION_0_0_6.md)
+tracks native composed reads and the fixed next increments. It has its own
+qualification; the older acceptance receipts below do not certify that work.
+
+The September 12 follow-up documents [native result values and updating
+subqueries](GRAFX_NATIVE_RESULT_VALUES.md): qualified node/relationship/path
+observations, temporal serialization and fenced CALL/UNION writes. The historical
+acceptance counts below are not evidence for that later native-value change.
+
+## September 13 operational error contracts
+
+`GET /api/v1/kg/schema?board_id=<routed-board>` now runs blocking schema access
+off the event loop. Authorization still precedes access. Missing graph capability,
+unavailable routing or corruption return typed HTTP 503 problem responses instead
+of an unhandled 500. Invalid queries remain 400; bounded memory-pressure responses
+retain `Retry-After`. Omitting a board does not create a route or return an invented
+empty schema: integrations should pass the board whose schema they need.
+
+Direct spec creation requires the existing explicit `delivery_context` contract.
+Its neutral code-traceability failures now return HTTP 409 with the existing code
+and structured details, matching the other Community source endpoints. No default
+delivery context or admission bypass was added. Existing lineage errors retain
+their own contracts. These changes are Community-only; Core remains agnostic.
+
+The current affected regression passes 121 source tests and 158 installed-package
+tests (overlapping, not additive). A disposable real Pulse instance also exercised
+source create/update/delete, Settings catalog, schema, semantic search, API/MCP and
+recovery after an actual post-WAL-barrier writer exit. The next normal Pulse writer
+recovers the durable unpublished COMMIT without restarting Pulse; an isolated
+read alone need not force replay/publication. Native and public logical edge-table
+names differ by Community's declared mapping, not by data content. Full Grafx
+regression and comparative qualification remain separate delivery requirements.
+
 ## Coordinated consumer update
 
 Community now requires `okto-grafx[accel]==0.0.6`. Upgrade it together with the
@@ -62,14 +95,22 @@ coverage. The earlier 23-test `--noconftest` result is historical, not the curre
 bootstrap acceptance. Other historical Core modules still directly import removed
 test helpers, so neither result constitutes a full Core-suite pass.
 
-Before PyPI release, build wheels from the paired Core checkout and Grafx checkout
-into Grafx's `.grafx-tmp/language-wheel`, then resolve Community with:
+### Published Grafx dependency — September 13, 2026
+
+Community pins `okto-grafx[accel]==0.0.6`. The lock now resolves Grafx from PyPI,
+with the published wheel/sdist SHA-256 hashes and its `numpy`, `google-crc32c`
+and `tzdata` dependencies. It no longer requires a locally built Grafx wheel.
+The `accel` extra remains explicit; NumPy is also a base dependency of this release.
+
+Core 0.3.3 is still a paired local wheel, not a published PyPI release. Build that
+Core wheel into `.grafx-tmp/language-wheel` before reproducing the paired lock.
+Validate without upgrading unrelated packages:
 
 ```powershell
-uv lock --offline --find-links ../okto_grafx/.grafx-tmp/language-wheel --upgrade-package okto-grafx --upgrade-package okto-pulse-core
+uv lock --check --find-links ../okto_grafx/.grafx-tmp/language-wheel
 ```
 
-The current lock uses those local wheel sources, not an unpublished PyPI artifact.
-They must exist to reproduce the local integration build. Test the installed
-wheels in an isolated environment and verify module paths before claiming wheel
-acceptance. Release packaging must re-resolve the published artifacts separately.
+This does not publish Core or reinstall the active Pulse. The earlier integration
+receipts used local development wheels; they remain historical evidence. Test
+installed wheels in isolation and verify module paths before claiming installed
+acceptance. A future Core release must separately resolve its published artifact.

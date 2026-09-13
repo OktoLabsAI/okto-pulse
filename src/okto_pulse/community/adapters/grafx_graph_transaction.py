@@ -51,6 +51,7 @@ from okto_pulse.community.adapters.cypher_statement_policy import (
     strip_comments_and_literals,
 )
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+from okto_pulse.community.adapters.grafx_query_values import normalize_query_value as _normalize_value
 from okto_pulse.community.adapters.grafx_relationship_layout import (
     resolve_relationship_table,
 )
@@ -298,24 +299,6 @@ def _grafx_query_parameters(
     }
 
 
-def _normalize_value(value: Any) -> Any:
-    if isinstance(value, Timestamp):
-        rendered = datetime.fromtimestamp(
-            value.micros / 1_000_000,
-            tz=UTC,
-        ).isoformat(timespec="microseconds")
-        return rendered.replace("+00:00", "Z")
-    if isinstance(value, VectorValue):
-        return [_normalize_value(item) for item in value.values]
-    if isinstance(value, tuple):
-        return tuple(_normalize_value(item) for item in value)
-    if isinstance(value, list):
-        return [_normalize_value(item) for item in value]
-    if isinstance(value, dict):
-        return {str(key): _normalize_value(item) for key, item in value.items()}
-    return value
-
-
 def _contains_non_finite_number(value: Any) -> bool:
     if isinstance(value, float):
         return not math.isfinite(value)
@@ -531,12 +514,13 @@ class _GrafxTransactionScope:
             for physical in physical_tables
         )
 
-    def _translate_typed_logical_relationships(self, statement: str) -> str:
+    def _translate_typed_logical_relationships(self, statement: str, *, read_only: bool = False) -> str:
         """Use the same endpoint proof as the standalone read-only executor."""
         return translate_logical_relationships(
             statement,
             relationship_pairs=self._relationship_pairs,
             resolver=self._relationship_table_resolver,
+            read_only=read_only,
         )
 
     def _catalog(self) -> Any:
@@ -751,7 +735,9 @@ class _GrafxTransactionScope:
                 self._forget_catalog()
         try:
             prepared_params = _grafx_query_parameters(params)
-            translated = self._translate_typed_logical_relationships(statement)
+            translated = self._translate_typed_logical_relationships(
+                statement, read_only=not statement_is_write(statement),
+            )
             statements = self._expand_logical_relationship_property_scan(translated)
             results = tuple(
                 self._transaction.execute(candidate, prepared_params)
@@ -3399,7 +3385,8 @@ class CommunityGrafxGraphTransaction:
         database, release = _resolved_database(resolved)
         transaction = None
         try:
-            transaction = database.begin("write")
+            from okto_pulse.community.adapters.grafx_commit_provenance import begin_board_write
+            transaction = begin_board_write(database, board_id, "graph_transaction")
         except BaseException as exc:
             # The pin was taken before this ran, so it is this path's job to
             # give it back -- but only if the engine left no transaction behind.

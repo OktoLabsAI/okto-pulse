@@ -7,8 +7,9 @@ installation. See [the coordinated migration](GRAFX_V006_QUERY_MIGRATION.md).
 
 ## Consumer changes and boundary
 
-- Community requires `okto-grafx[accel]==0.0.6`; the local lock resolves the paired
-  Core/Grafx wheels, not an unpublished PyPI version.
+- Community requires `okto-grafx[accel]==0.0.6`. This September 10–11 checkpoint
+  used paired local Core/Grafx wheels. Since September 13, the current lock uses
+  the published Grafx artifact; Core remains local. See the migration document.
 - Core cancellation and canonical stale enumeration use provider-neutral `split`
   and zero-based `[0]` / `[1]`. Card aliases, child references and invalid empty
   owners retain their intended behavior. No Grafx import, feature flag, driver

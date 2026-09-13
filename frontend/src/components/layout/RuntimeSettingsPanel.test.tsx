@@ -82,6 +82,34 @@ afterEach(() => {
 // ----------------------------------------------------------------------
 
 describe('AC11 — Tabs preserve drafts on switch', () => {
+  test('enforces the Pulse query-value ceiling before any save request', async () => {
+    const catalog: runtimeApi.GrafxSettingDescriptor[] = [{ name: 'max_query_value_characters', default: 65536,
+      minimum: 1, maximum: 65536, description: 'Pulse default and hard ceiling: 65536 characters.',
+      editable: true, nullable: false, kind: 'number' }];
+    vi.mocked(runtimeApi.getRuntimeSettings).mockResolvedValue({ ...FRESH_SETTINGS, grafx_settings_catalog: catalog });
+    render(<RuntimeSettingsPanel onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId('grafx-option-max_query_value_characters')).toHaveValue(65536));
+    fireEvent.click(screen.getByText('Advanced Grafx settings (1)'));
+    const input = screen.getByTestId('grafx-option-max_query_value_characters');
+    const save = screen.getByTestId('save-runtime-settings');
+    expect(input).toHaveAttribute('min', '1');
+    expect(input).toHaveAttribute('max', '65536');
+    for (const invalid of ['65537', '1048576', '0', '-1', '1.5', '']) {
+      fireEvent.change(input, { target: { value: invalid } });
+      expect(save).toBeDisabled();
+      fireEvent.click(save);
+      expect(runtimeApi.putRuntimeSettings).not.toHaveBeenCalled();
+    }
+    fireEvent.change(input, { target: { value: '1' } });
+    expect(save).toBeEnabled();
+    fireEvent.change(input, { target: { value: '65536' } });
+    expect(save).toBeEnabled();
+    fireEvent.click(save);
+    await waitFor(() => expect(runtimeApi.putRuntimeSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ kg_grafx_options: { max_query_value_characters: 65536 } }),
+    ));
+  });
+
   test('persists advanced options and keeps the desired draft while restart is pending', async () => {
     const catalog: runtimeApi.GrafxSettingDescriptor[] = [{ name: 'max_result_rows', default: null,
       description: 'A row budget refuses instead of truncating results.', editable: true,

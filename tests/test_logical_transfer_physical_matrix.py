@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from okto_grafx import Transaction
+from okto_grafx.domain.errors import GrafxQueryError
 from okto_pulse.core.kg.logical_transfer import (
     LOGICAL_NULL,
     ArtifactIntegrityError,
@@ -186,15 +188,26 @@ def test_grafx_endpoint_map_contract(
     if case == "scan_failure":
         original_scan = Transaction.scan_rows_v1
 
-        def failing_scan(transaction, table, *, limit, cursor=None):
-            if table == "A_links_B":
+        def failing_scan(transaction, table, *, limit, cursor=None, kind=None):
+            if table == "A_links_B" and kind == "rel":
                 raise OSError("injected scan failure")
-            return original_scan(transaction, table, limit=limit, cursor=cursor)
+            return original_scan(transaction, table, limit=limit, cursor=cursor, kind=kind)
 
         monkeypatch.setattr(Transaction, "scan_rows_v1", failing_scan)
     elif case == "dangling_endpoint":
-        with database.begin("write") as writer:
-            writer.execute("MATCH (a:A {id: 'a1'}) DELETE a")
+        # Ordinary DELETE cannot manufacture an orphan in the current engine.
+        # Test that guarantee, then inject an incomplete endpoint scan to retain
+        # the adapter's corruption/refusal/cleanup contract.
+        with pytest.raises(GrafxQueryError, match="live relationships"):
+            with database.begin("write") as writer:
+                writer.execute("MATCH (a:A {id: 'a1'}) DELETE a")
+        original_scan = Transaction.scan_rows_v1
+
+        def missing_endpoint_scan(transaction, table, *, limit, cursor=None, kind=None):
+            page = original_scan(transaction, table, limit=limit, cursor=cursor, kind=kind)
+            return replace(page, rows=()) if table == "A" and kind == "node" else page
+
+        monkeypatch.setattr(Transaction, "scan_rows_v1", missing_endpoint_scan)
 
     if case == "success":
         snapshot = source.open_snapshot()
@@ -280,7 +293,7 @@ def test_canonical_roundtrip(
     temporary_parent = tmp_path / "endpoint-maps"
     temporary_parent.mkdir()
     origin = tmp_path / "origin"
-    origin_sink = seed_generation(
+    seed_generation(
         origin_backend,
         origin,
         corpus,

@@ -29,6 +29,21 @@ from okto_pulse.core.kg.interfaces.graph_errors import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_grafx_accel_pin_resolves_to_published_release_not_local_wheel():
+    import tomllib
+
+    manifest = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "okto-grafx[accel]==0.0.6" in manifest["project"]["dependencies"]
+    lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    grafx = next(package for package in lock["package"] if package["name"] == "okto-grafx")
+    assert grafx["version"] == "0.0.6"
+    assert grafx["source"] == {"registry": "https://pypi.org/simple"}
+    assert {item["name"] for item in grafx["dependencies"]} == {"google-crc32c", "numpy", "tzdata"}
+    assert grafx["wheels"][0]["hash"] == "sha256:0b98a1f9b20f68b88e9f8d53b655539b9a92fc7b667b2284c5a0361166382c46"
+    assert grafx["sdist"]["hash"] == "sha256:5d2623e1c76578efcc21ca59c51321a5a0c57b4eceac4d6da0f3f6680f872e7f"
+    assert "path" not in grafx["wheels"][0]
+
+
 def test_production_has_no_native_driver_import_or_dependency():
     import tomllib
 
@@ -231,7 +246,8 @@ from okto_pulse.community.adapters.routed_graph_composition import build_communi
 from okto_pulse.community.main import create_community_app
 settings = CommunitySettings(_env_file=None)
 bundle = build_community_routed_graph_composition(settings=settings)
-assert len(bundle.registry_providers()) == 10
+assert len(bundle.registry_providers()) == 13
+assert all(bundle.registry_providers()[name] is not None for name in ('ranked_graph_search', 'graph_history', 'graph_analytics'))
 from okto_pulse.core.infra.config import configure_settings
 configure_settings(lambda: settings)
 app = create_community_app()

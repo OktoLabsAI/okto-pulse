@@ -10,6 +10,10 @@ from typing import Any
 from okto_grafx.runtime.config import DatabaseConfig
 
 
+PULSE_MAX_QUERY_VALUE_CHARACTERS = 65_536
+BOUNDS = {"max_query_value_characters": (1, PULSE_MAX_QUERY_VALUE_CHARACTERS)}
+
+
 # Text is intentionally explicit: a new engine option needs a reviewed UI policy.
 HELP = {
     "path": "Database directory. Pulse resolves the active board/global generation; changing it here could bypass route authority.",
@@ -50,7 +54,7 @@ HELP = {
     "index_key_cache_bytes": "Maximum retained logical key-memo bytes per index, from 0 to 2147483648. This works together with the page limit; either limit set to zero disables retention. Reduce for many indexes or handles. This is not a process-wide RAM limit. Requires process restart.",
     "read_only": "Participant role. Pulse deliberately creates independent reader handles and a writer handle; a global toggle would break legitimate reads/writes. Managed per lane, not user-editable here.",
     "descriptor_revalidation": "generation avoids repeated namespace checks when Pulse exclusively owns generation directories. strict revalidates cached descriptors for externally shared or forensic operation, with more I/O cost. Neither mode relaxes WAL, OCC or snapshots.",
-    "max_query_value_characters": "Maximum characters admitted for a query value. Protects parsing/evaluation from oversized strings. Raising it permits more memory and CPU consumption.",
+    "max_query_value_characters": "Maximum characters per query string parameter or result value, not bytes. Pulse default and hard ceiling: 65536; accepts integers from 1 to 65536. Larger values are refused, never truncated. Lower limits can reject legitimate operations. Requires process restart.",
     "query_memory_budget_bytes": "Optional query-working-memory budget in bytes. Operators use bounded spill or a typed refusal as supported; this is separate from the page cache and transaction budget. Empty keeps native policy.",
 }
 
@@ -89,6 +93,12 @@ def validate_options(
             "Grafx options must contain only supported editable constructor keys"
         )
     for key, item in value.items():
+        if key in BOUNDS:
+            minimum, maximum = BOUNDS[key]
+            if type(item) is not int or not minimum <= item <= maximum:
+                raise ValueError(
+                    f"{key} must be an integer between {minimum} and {maximum} in Pulse"
+                )
         if (
             isinstance(item, (int, float))
             and not isinstance(item, bool)
@@ -118,6 +128,8 @@ def settings_catalog() -> list[dict[str, Any]]:
             alias=ALIASES.get(field.name),
             choices=CHOICES.get(field.name),
             nullable=DEFAULTS[field.name] is None,
+            minimum=BOUNDS[field.name][0] if field.name in BOUNDS else None,
+            maximum=BOUNDS[field.name][1] if field.name in BOUNDS else None,
             kind="select"
             if field.name in CHOICES
             else "number"

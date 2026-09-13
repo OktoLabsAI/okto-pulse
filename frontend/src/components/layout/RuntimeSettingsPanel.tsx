@@ -233,6 +233,8 @@ export function RuntimeSettingsPanel({
       if (item.choices) return !item.choices.includes(String(value));
       return typeof value !== 'number' || !Number.isFinite(value)
         || Math.abs(value) > Number.MAX_SAFE_INTEGER
+        || (item.minimum != null && value < item.minimum)
+        || (item.maximum != null && value > item.maximum)
         || (!key.endsWith('_seconds') && !Number.isInteger(value));
     })) return true;
     return (Object.keys(RANGES) as NumericSettingKey[]).some((key) => {
@@ -672,8 +674,8 @@ function GraphDBTab({
         description="64 MiB default. Multiply by one writer plus the configured readers, and by resident boards. Global handles add their own allowance. This is not total process RAM. Restart required."
         value={draft.kg_grafx_buffer_pool_mb} range={RANGES.kg_grafx_buffer_pool_mb}
         onChange={(v) => onChange('kg_grafx_buffer_pool_mb', v)} testId="input-grafx-buffer-pool-mb" />
-      <SettingField label="Board read participants"
-        description="Independent read handles per board (1–8; default 2). More handles allow overlapping snapshot reads but multiply page caches, index caches and descriptors. This does not change commit serialization or writer authority. Restart required."
+      <SettingField label="Board / Global read participants"
+        description="Independent read handles per board and for Global Discovery (1–8 each; default 2). More handles allow overlapping snapshot reads but multiply page caches, index caches and descriptors. Global keeps one writer plus this many reader handles. This does not change writer authority. Restart required."
         value={draft.kg_grafx_read_participants} range={RANGES.kg_grafx_read_participants}
         onChange={(v) => onChange('kg_grafx_read_participants', v)} testId="input-grafx-read-participants" />
       <GrafxAdvancedSettings catalog={catalog} value={draft.kg_grafx_options} onChange={onOptionsChange} />

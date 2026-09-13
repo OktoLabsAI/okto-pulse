@@ -48,7 +48,9 @@
 | [`docs/RELEASE-NOTES.md`](docs/RELEASE-NOTES.md) | Full changeset per version |
 | [`docs/TOKEN-USAGE.md`](docs/TOKEN-USAGE.md) | Measured MCP context cost for agents |
 | [`docs/kg-health.md`](docs/kg-health.md) | Knowledge Graph health signals and triage |
+| [`docs/DIAGRAM_CANVAS_AND_LINEAGE_UI.md`](docs/DIAGRAM_CANVAS_AND_LINEAGE_UI.md) | Architecture canvas margins, explicit lineage connection handles, status colors and isolated browser validation |
 | [`docs/GRAFX_V005_ADOPTION.md`](docs/GRAFX_V005_ADOPTION.md) | Grafx 0.0.5 adoption, optional capability boundary, Settings and validation checkpoint |
+| [`docs/GRAFX_ADVANCED_ADOPTION_0_0_6.md`](docs/GRAFX_ADVANCED_ADOPTION_0_0_6.md) | Grafx 0.0.6 adoption: composed reads, ranked search, independent Global readers, history/provenance and analytics; API/configuration contracts and validation evidence |
 | [`docs/GRAFX_RECOVERY_BATCHING.md`](docs/GRAFX_RECOVERY_BATCHING.md) | Bounded Global recovery writes, rollback/fencing guarantees and remaining batch opportunities |
 
 ## What is Okto Pulse?
@@ -492,7 +494,7 @@ human-first UI.
 
 ## Graph storage
 
-Community uses **Okto Grafx only** (`okto-grafx[accel]`). See [Grafx-only runtime, settings, retirement and data preservation](docs/GRAFX_ONLY_COMMUNITY.md). The Core remains storage-agnostic.
+Community uses **Okto Grafx only**, pinned to the published PyPI release `okto-grafx[accel]==0.0.6`. See [Grafx-only runtime, settings, retirement and data preservation](docs/GRAFX_ONLY_COMMUNITY.md). The Core remains storage-agnostic.
 
 ## SaaS Closure Audit
 

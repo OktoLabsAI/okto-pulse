@@ -12,10 +12,9 @@ Two things are genuinely this layer's job.  The first is the paired read: Tier
 Power compares a canonical projection against its all-layer baseline, and the
 two windows are only comparable if they were read from the SAME snapshot, so
 both statements run inside one transaction rather than one each.  The second is
-the M-PULSE-2O path value: Grafx returns `_NODES` and `_RELS` as tuples where
-Ladybug returns lists, so those two sequences -- and nothing else -- are
-converted.  Every other tuple stays a tuple, because a value that was a tuple
-in the engine is a tuple in the contract.
+the result boundary: native detached entities and temporal values are projected
+by the Community value adapter. Paths expose `_NODES` and `_RELS` lists; every
+other tuple stays a tuple, as declared by the Pulse envelope contract.
 """
 
 from __future__ import annotations
@@ -56,7 +55,7 @@ from okto_pulse.community.adapters.grafx_relationship_query import (
 DatabaseResolver = Callable[[str], Database]
 ReadOnlyBatchItem = tuple[str, dict[str, Any] | None, int]
 
-# The two path sequences Ladybug returns as lists. Named explicitly rather than
+# The two path sequences Pulse exposes as lists. Named explicitly rather than
 # matched by shape: converting every tuple would silently rewrite values the
 # contract says are tuples, and matching by heuristic would drift.
 _PATH_SEQUENCE_KEYS = ("_NODES", "_RELS")
@@ -132,7 +131,7 @@ class CommunityGrafxCypherExecutor:
         validate_cypher_read_only(cleaned)
         cleaned = auto_inject_limit(cleaned, max_rows)
         cleaned = auto_bound_var_length_path(cleaned, MAX_TRAVERSAL_DEPTH)
-        return translate_logical_relationships(cleaned)
+        return translate_logical_relationships(cleaned, read_only=True)
 
     @staticmethod
     def _envelope(

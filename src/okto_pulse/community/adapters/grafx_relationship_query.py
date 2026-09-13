@@ -1,7 +1,8 @@
 """Resolve proven logical relationship endpoint pairs at the adapter boundary.
 
-This is schema-name translation, not a query evaluator. Ambiguous patterns stay
-unchanged so the engine can refuse them instead of silently reading a subset.
+This is schema-name translation, not a query evaluator. Validated reads of
+recognized fixed patterns may use all declared physical type alternatives;
+writes retain the unique endpoint-pair rule. Unsupported syntax is unchanged.
 """
 
 from __future__ import annotations
@@ -73,8 +74,14 @@ def translate_logical_relationships(
     *,
     relationship_pairs: Iterable[tuple[str, str, str]] | None = None,
     resolver: Callable[[str, str, str], str] = resolve_relationship_table,
+    read_only: bool = False,
 ) -> str:
-    """Translate directed, fixed-length relationships with exactly one valid pair.
+    """Translate physical ownership without inventing a missing logical graph type.
+
+    Validated read-only callers may use the complete immutable physical type
+    alternative set. Native matching then retains endpoint, scope and direction
+    semantics without guessing labels from another lexical scope. Write callers
+    keep the unique-pair rule; type alternatives never grant write authority.
 
     Labels may be local or bound elsewhere under the same unambiguous alias. An
     anonymous/untyped endpoint is inferable only when the other endpoint and the
@@ -122,11 +129,17 @@ def translate_logical_relationships(
 
     replacements: list[tuple[int, int, str]] = []
     for match in _RELATIONSHIP.finditer(code):
+        logical = match.group("logical_type")
+        logical_pairs = {pair for pair in pairs if pair[0] == logical}
+        fallback = ("|".join(sorted({resolver(*pair) for pair in logical_pairs}))
+                    if read_only and logical_pairs else None)
         left, left_valid = label(match.group("left_alias"), match.group("left_label"))
         right, right_valid = label(
             match.group("right_alias"), match.group("right_label")
         )
         if not left_valid or not right_valid or (left is None and right is None):
+            if fallback is not None:
+                replacements.append((*match.span("logical_type"), fallback))
             continue
         arrows = match.group("left_arrow"), match.group("right_arrow")
         if arrows == ("-", "->"):
@@ -134,9 +147,9 @@ def translate_logical_relationships(
         elif arrows == ("<-", "-"):
             source, target = right, left
         else:
+            if fallback is not None:
+                replacements.append((*match.span("logical_type"), fallback))
             continue
-        logical = match.group("logical_type")
-        logical_pairs = {pair for pair in pairs if pair[0] == logical}
         candidates = set(
             pair
             for pair in logical_pairs
@@ -146,6 +159,8 @@ def translate_logical_relationships(
         if not candidates and len(logical_pairs) == 1:
             candidates = logical_pairs
         if len(candidates) != 1:
+            if fallback is not None:
+                replacements.append((*match.span("logical_type"), fallback))
             continue
         start, end = match.span("logical_type")
         replacements.append((start, end, resolver(*next(iter(candidates)))))

@@ -32,7 +32,7 @@ def build_native_runtime_budget_snapshot(
         sources={},
         process_envelope={
             "buffer_pool_per_board_mb": budget * (1 + readers),
-            "global_buffer_pool_mb": budget,
+            "global_buffer_pool_mb": budget * (1 + readers),
             "total_process_bound_available": False,
         },
     )

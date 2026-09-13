@@ -40,6 +40,7 @@ from okto_pulse.community.adapters.grafx_board_vector_search import (
     CommunityGrafxBoardVectorSearch,
 )
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+from okto_pulse.community.adapters.grafx_composed_reads import read_branches, read_frontier
 from okto_pulse.community.adapters.grafx_relationship_layout import (
     PULSE_RELATIONSHIP_LAYOUT,
     RelationshipLayoutEntry,
@@ -299,7 +300,8 @@ class CommunityGrafxGraphStore:
         if database is None:
             database = self._resolve(board_id, operation=operation)
         try:
-            transaction = database.begin("write")
+            from okto_pulse.community.adapters.grafx_commit_provenance import begin_board_write
+            transaction = begin_board_write(database, board_id, operation)
         except Exception as exc:
             _raise_mapped(exc, operation=operation)
 
@@ -907,32 +909,32 @@ class CommunityGrafxGraphStore:
             "neighbor.source_confidence, neighbor.graph_layer, "
             "neighbor.superseded_by, neighbor.revocation_reason, neighbor.kind_of"
         )
-        adjacent: list[tuple[_NodeView, str]] = []
+        branches: list[str] = []
+        owners: list[tuple[str, str]] = []
         for entry in self._incident_entries(node.node_type):
             if rel_types is not None and entry.logical_type not in rel_types:
                 continue
             if entry.from_type == node.node_type and direction != "incoming":
-                result = reader.execute(
+                branches.append(
                     f"MATCH (center:{entry.from_type})-[r:{entry.physical_table}]->"
                     f"(neighbor:{entry.to_type}) WHERE center.id = $node_id "
                     f"RETURN {projection}",
-                    {"node_id": node.node_id},
                 )
-                adjacent.extend(
-                    (_node_view(row, node_type=entry.to_type), entry.logical_type)
-                    for row in _rows(result)
-                )
+                owners.append((entry.to_type, entry.logical_type))
             if entry.to_type == node.node_type and direction != "outgoing":
-                result = reader.execute(
+                branches.append(
                     f"MATCH (neighbor:{entry.from_type})-[r:{entry.physical_table}]->"
                     f"(center:{entry.to_type}) WHERE center.id = $node_id "
                     f"RETURN {projection}",
-                    {"node_id": node.node_id},
                 )
-                adjacent.extend(
-                    (_node_view(row, node_type=entry.from_type), entry.logical_type)
-                    for row in _rows(result)
-                )
+                owners.append((entry.from_type, entry.logical_type))
+        adjacent: list[tuple[_NodeView, str]] = []
+        for branch, row in read_branches(reader, branches, {"node_id": node.node_id}):
+            node_type, relationship_type = owners[branch]
+            adjacent.append((
+                _node_view([_normalize_value(value) for value in row], node_type=node_type),
+                relationship_type,
+            ))
         return adjacent
 
     def find_by_artifact(
@@ -1103,31 +1105,34 @@ class CommunityGrafxGraphStore:
             return []
         physical = resolve_relationship_table("supersedes", wanted_type, wanted_type)
 
+        pattern = (
+            f"MATCH (current:{wanted_type} {{id:KEY}})-[r:{physical}]->"
+            f"(next:{wanted_type}) WHERE {tpl.active_read_filter_clause('current')} "
+            f"AND {tpl.active_read_filter_clause('next')} "
+        )
+        projection = "next.id, next.title, next.created_at, next.superseded_by, next.superseded_at"
+        single_query = pattern.replace("KEY", "$current_id") + f"RETURN {projection}"
+        batch_query = (
+            "UNWIND $frontier AS item " + pattern.replace("KEY", "item.id")
+            + f"RETURN item.ordinal AS __pulse_frontier, {projection}"
+        )
+
         def traverse(reader: Any) -> list[list]:
             answer: list[list] = []
             frontier = [decision_id]
             seen = {decision_id}
             for _depth in range(max_depth):
                 following: list[str] = []
-                for current_id in frontier:
-                    rows = _rows(
-                        reader.execute(
-                            f"MATCH (current:{wanted_type})-[r:{physical}]->"
-                            f"(next:{wanted_type}) WHERE current.id = $current_id "
-                            f"AND {tpl.active_read_filter_clause('current')} "
-                            f"AND {tpl.active_read_filter_clause('next')} "
-                            "RETURN next.id, next.title, next.created_at, "
-                            "next.superseded_by, next.superseded_at",
-                            {"current_id": current_id},
-                        )
-                    )
-                    for row in rows:
-                        node_id = row[0]
-                        if type(node_id) is not str or node_id in seen:
-                            continue
-                        seen.add(node_id)
-                        following.append(node_id)
-                        answer.append(row)
+                for native_row in read_frontier(
+                    reader, single_query=single_query, batch_query=batch_query, identities=frontier,
+                ):
+                    row = [_normalize_value(value) for value in native_row]
+                    node_id = row[0]
+                    if type(node_id) is not str or node_id in seen:
+                        continue
+                    seen.add(node_id)
+                    following.append(node_id)
+                    answer.append(row)
                 if not following:
                     break
                 frontier = following

@@ -94,3 +94,20 @@ def test_caller_relationship_authority_and_resolver_are_honored():
         relationship_pairs=(("edge", "A", "B"),),
         resolver=lambda *_: "custom_table",
     ) == query.replace(":edge", ":custom_table")
+
+
+@pytest.mark.parametrize("shape", ["(a)-[r:edge]->(b)", "(a)<-[r:edge]-(b)", "(a)-[r:edge]-(b)"])
+def test_read_only_uses_complete_alternatives_without_endpoint_guessing(shape):
+    query = f"MATCH {shape} RETURN r"
+    pairs = (("edge", "A", "B"), ("edge", "C", "D"))
+    def resolver(logical, source, target):
+        return f"{logical}_{source}_{target}"
+    assert translate_logical_relationships(query, relationship_pairs=pairs, resolver=resolver,
+        read_only=True) == query.replace(":edge", ":edge_A_B|edge_C_D")
+    assert translate_logical_relationships(query, relationship_pairs=pairs, resolver=resolver) == query
+
+
+def test_read_only_scope_does_not_borrow_labels_and_preserves_literal_text():
+    query = "MATCH(a:A) WITH 1 AS a CALL { MATCH(a)-[:edge]->(b) RETURN b } RETURN b, '[:edge]'"
+    assert translate_logical_relationships(query, relationship_pairs=(("edge","A","A"),("edge","B","B")),
+        resolver=lambda _, a, b: f"edge_{a}_{b}", read_only=True) == query.replace("-[:edge]->", "-[:edge_A_A|edge_B_B]->")

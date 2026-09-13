@@ -62,6 +62,7 @@ from okto_pulse.core.ports.knowledge_propagation import (
 from okto_pulse.core.domain.guideline_policy_transition import (
     PolicyTransitionRejected,
 )
+from okto_pulse.core.domain.code_traceability import CodeTraceabilityContractError
 from okto_pulse.core.domain.spec_validation import (
     SpecValidationConflictError,
 )
@@ -1084,6 +1085,13 @@ async def create_spec(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Board not found or not owned by user",
         )
+    except CodeTraceabilityContractError as exc:
+        # Preserve the existing code-traceability REST domain-error envelope.
+        # A missing delivery context is a refused command, not a server crash.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_error_dict(),
+        ) from exc
     except (
         ResourceLineageResolutionError,
         SpecLineagePreflightError,

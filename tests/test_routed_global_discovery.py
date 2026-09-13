@@ -426,6 +426,7 @@ def test_reads_and_digest_search_skip_writer_revalidation(
 
     assert harness.fence_phases == [
         "global_statement_write",
+        "global_statement_write",
     ]
     assert harness.lock.entries == harness.lock.exits
     assert harness.lock.depth == 0

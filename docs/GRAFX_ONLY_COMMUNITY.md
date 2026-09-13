@@ -1,6 +1,6 @@
 # Grafx-only Community
 
-Community uses `okto-grafx[accel]==0.0.5`. Ladybug/Kuzu is no longer a runtime,
+Community uses the published PyPI release `okto-grafx[accel]==0.0.6`. Ladybug/Kuzu is no longer a runtime,
 installation dependency, configurable backend, recovery implementation or
 logical-transfer endpoint. Core runtime and contracts remain unchanged and engine-agnostic: it
 continues to consume graph ports and explicit capability declarations.

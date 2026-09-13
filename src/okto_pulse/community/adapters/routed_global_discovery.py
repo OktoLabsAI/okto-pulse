@@ -6,18 +6,17 @@ keeps the same backend, anchor, generation and Grafx geometry until it is
 terminal.  Provider factories receive that snapshot explicitly; they must not
 consult current settings or try the other backend.
 
-The injected ``global_lock`` is deliberately shared by the runtime, recovery
-and shutdown composition.  It must be a re-entrant lock because Core's
-``post_write_verification_scope`` calls back into this runtime while retaining
-the complete flush/close/reopen/readback window.  No new ``ContextVar`` is
-used: the scoped provider is owned by the current thread while that shared
-lock is held.
+The injected Global gate is shared by runtime, recovery and shutdown. Ordinary
+operations hold shared lifetime pins; local writers retain their ordering, while
+independent reader sessions may overlap a writer verification scope. Lifecycle
+operations drain exclusively. A verification provider is owned by its thread,
+never borrowed by concurrent readers. Structural RLock-only compositions retain
+their serialized behavior when no independent read factory is provided.
 
 Grafx providers are supplied as operation sessions.  A session owns the pool
 pin for the complete operation and exposes explicit ``*_unguarded`` lifecycle
 callbacks, allowing close/reopen to rotate that pin without acquiring another
-Global guard or Core writer lease.  Ladybug uses the same seam so its physical
-writer/lifecycle guard can remain backend-contained.
+Global guard or Core writer lease. Read sessions never rotate the writer's pin.
 
 Recovery is different from an ordinary operation: its authorized cutover
 changes the active-generation pointer.  Its fence therefore accepts either
@@ -330,6 +329,7 @@ class CommunityRoutedGlobalDiscoveryRuntime:
         grafx_close_unguarded: StandaloneCloseCallback,
         grafx_purge_unguarded: StandalonePurgeCallback,
         grafx_privacy_erase_unguarded: StandalonePrivacyEraseCallback,
+        grafx_read_session_factory: GlobalRuntimeSessionFactory | None = None,
     ) -> None:
         self._resolver = resolver
         self._global_lock = global_lock
@@ -344,6 +344,11 @@ class CommunityRoutedGlobalDiscoveryRuntime:
             privacy_erase_unguarded=grafx_privacy_erase_unguarded,
         )
         self._active_verification: _ActiveVerificationScope | None = None
+        self._read_factory = grafx_read_session_factory
+
+    def _operation(self, *, write):
+        operation = getattr(self._global_lock, "operation", None)
+        return operation(write=write) if operation else self._global_lock
 
     def _backend(self, snapshot: CommunityGraphRouteSnapshot) -> _RuntimeBackend:
         return _select_backend(
@@ -356,6 +361,8 @@ class CommunityRoutedGlobalDiscoveryRuntime:
         if active is None:
             return None
         if active.owner_thread != threading.get_ident():
+            if self._read_factory is not None:
+                return None
             # The shared RLock prevents a foreign thread from reaching this
             # state.  Seeing it anyway means composition supplied a non-
             # re-entrant/non-exclusive object and must fail closed.
@@ -411,7 +418,7 @@ class CommunityRoutedGlobalDiscoveryRuntime:
         write: bool,
         **kwargs: object,
     ) -> Any:
-        with self._global_lock:
+        with self._operation(write=write):
             snapshot = self._acquire_live_snapshot()
             active = self._active_for_current_thread()
             if active is not None:
@@ -422,10 +429,13 @@ class CommunityRoutedGlobalDiscoveryRuntime:
                     require_physical=True,
                 )
                 method = getattr(active.session.runtime, method_name)
-                return method(*args, **kwargs)
+                result = method(*args, **kwargs)
+                self._revalidate_dispatch(snapshot, phase=phase, write=write, require_physical=True)
+                return result
 
             backend = self._backend(snapshot)
-            with backend.session_factory(snapshot) as session:
+            factory = self._read_factory if not write and self._read_factory else backend.session_factory
+            with factory(snapshot) as session:
                 self._revalidate_dispatch(
                     snapshot,
                     phase=phase,
@@ -433,7 +443,9 @@ class CommunityRoutedGlobalDiscoveryRuntime:
                     require_physical=True,
                 )
                 method = getattr(session.runtime, method_name)
-                return method(*args, **kwargs)
+                result = method(*args, **kwargs)
+                self._revalidate_dispatch(snapshot, phase=phase, write=write, require_physical=True)
+                return result
 
     def state(self, *, generation: str | None = None) -> GraphRuntimeState:
         """Inspect the persisted binding and physical metadata without opening."""
@@ -701,7 +713,7 @@ class CommunityRoutedGlobalDiscoveryRuntime:
     def post_write_verification_scope(self) -> Iterator[None]:
         """Pin one route/provider across flush, close/reopen and fresh reads."""
 
-        with self._global_lock:
+        with self._operation(write=True):
             active = self._active_for_current_thread()
             if active is not None:
                 self._revalidate_dispatch(

@@ -49,6 +49,9 @@ def test_registry_provider_set_is_one_complete_routed_bundle(tmp_path: Path) -> 
     providers = bundle.registry_providers()
 
     assert set(providers) == {
+        "ranked_graph_search",
+        "graph_history",
+        "graph_analytics",
         "graph_store",
         "cypher_executor",
         "graph_transaction",

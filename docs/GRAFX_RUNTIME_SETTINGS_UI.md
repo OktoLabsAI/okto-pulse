@@ -1,5 +1,50 @@
 # Grafx in Menu > Settings
 
+## Grafx 0.0.6 advanced adoption update
+
+The existing read-participant control now applies per Board **and** to Global
+Discovery (default 2, range 1–8, restart required). The label/help and health
+memory estimate include Global's one writer plus these independent readers.
+New ranked retrieval, history activation/retention and bounded analytics are
+explicit per-operation API capabilities, not constructor settings or silent
+startup migrations. Their complete options, limits, permissions and one-way
+activation cautions are in [Advanced adoption](GRAFX_ADVANCED_ADOPTION_0_0_6.md).
+No Settings checkbox implicitly builds text indexes, enables history or deletes
+retained versions.
+
+## Pulse query-value ceiling
+
+`max_query_value_characters` has a **default and hard maximum of 65536** in
+Pulse Community. Positive integers from 1 to 65536 are accepted; null, booleans,
+fractional numbers and larger limits are rejected. The limit counts characters,
+not bytes, per query string parameter or result value, not per whole transaction.
+Oversized values are refused, never truncated. Keeping this ceiling does not
+make an oversized consolidation payload succeed or automatically redrive it.
+
+Set it in **Menu > Settings > Grafx > Advanced Grafx settings**, in the runtime
+settings API as `kg_grafx_options: {"max_query_value_characters": 65536}`, or via
+`KG_GRAFX_OPTIONS='{"max_query_value_characters":65536}'`. Changes require restart;
+omitting the override keeps 65536. Lower limits can reject otherwise valid work.
+The catalog publishes `minimum: 1` and `maximum: 65536`; the UI prevents saving
+invalid drafts and backend validation independently rejects bypass attempts.
+Other catalog fields without Community bounds publish null for these metadata.
+
+An existing persisted options object violating this ceiling is ignored as a
+whole at startup with `settings.invalid_persisted_value`, using the validated
+base configuration instead. The stored object is not clamped or rewritten.
+Invalid environment options fail configuration validation. Reader and writer
+pools validate the same policy. This is Community-owned: Core remains agnostic,
+and standalone Grafx retains its wider native configuration range.
+
+Validation evidence (2026-09-13): 126 backend tests passed across query-value
+policy, settings catalog, snapshot persistence and database pools; 22 frontend
+tests passed across the advanced controls and runtime settings panel. Native
+boundary tests cover the default, explicit 65536 and a reduced limit, Unicode
+character counting, rejected oversized writes with rollback, independent readers
+and durable reopen. These tests use temporary databases, not user boards.
+
+## Original constructor inventory
+
 The Grafx tab now inventories all **36** `DatabaseConfig` fields of the integrated
 Grafx 0.0.4. A contract test compares the catalog to the native dataclass so new
 fields cannot silently disappear from the UI.

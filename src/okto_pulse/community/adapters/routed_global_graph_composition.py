@@ -9,8 +9,9 @@ or constructor initializes a route.
 There are two distinct authorities here:
 
 * Core's Global writer lease is only *revalidated* by runtime operations;
-* ``global_lock`` serializes runtime, recovery, privacy and shutdown within this
-  process and is the same injected ``threading.RLock`` everywhere.
+* ``global_lock`` is the same reentrant lifecycle gate throughout composition:
+  normal operations retain shared pins and destructive lifecycle calls drain
+  exclusively. Core writer ordering is not replaced by this gate.
 
 Grafx runtime sessions retain one pool lease for their complete scope.  A
 checkpoint close/reopen explicitly releases, closes and reacquires that lease,
@@ -61,6 +62,7 @@ from okto_pulse.community.adapters.grafx_database_pool import (
     CommunityGrafxDatabasePool,
     GrafxDatabaseLease,
 )
+from okto_pulse.community.adapters.grafx_read_lanes import GrafxReadLanes
 from okto_pulse.community.adapters.grafx_global_discovery_recovery import (
     CommunityGrafxGlobalDiscoveryRecovery,
 )
@@ -258,13 +260,17 @@ class _GrafxGlobalPoolManager:
     def __init__(self, pool: CommunityGrafxDatabasePool) -> None:
         self.pool = pool
         self._paths: dict[str, Path] = {}
+        self.readers: tuple[_GrafxGlobalPoolManager, ...] = ()
 
     def acquire(self, path: Path, *, page_size: int) -> GrafxDatabaseLease:
         lease = self.pool.acquire(path, page_size=page_size)
         self._paths[_canonical_path(path)] = Path(path)
         return lease
 
-    def close(self, path: Path) -> bool:
+    def close(self, path: Path, *, include_readers: bool = True) -> bool:
+        if include_readers:
+            for reader in self.readers:
+                reader.close(path)
         key = _canonical_path(path)
         closed = self.pool.close(path)
         if closed or key in self._paths:
@@ -274,6 +280,11 @@ class _GrafxGlobalPoolManager:
     def close_all(self) -> int:
         failures: list[tuple[Path, BaseException]] = []
         closed = 0
+        for reader in self.readers:
+            try:
+                closed += reader.close_all()
+            except CommunityGlobalGraphShutdownError as failure:
+                failures.extend(failure.grafx_failures)
         for key, path in tuple(self._paths.items()):
             try:
                 did_close = self.pool.close(path)
@@ -334,7 +345,9 @@ class _RotatingGrafxLease:
 
     def close(self) -> None:
         self.release()
-        self._manager.close(self._path)
+        # Rotating a writer handle does not retire independent reader handles.
+        # Destructive lifecycle callers use the manager's complete drain.
+        self._manager.close(self._path, include_readers=False)
 
 
 class _GrafxRuntimeSessionFactory:
@@ -1233,6 +1246,7 @@ def build_community_routed_global_graph_composition(
     revalidate_write_fence: FenceRevalidator | None = None,
     grafx_connect: GrafxConnect | None = None,
     quarantine_targets: QuarantineTargets | None = None,
+    read_participants: int = 0,
 ) -> CommunityRoutedGlobalGraphComposition:
     """Build Global routing from the exact shared dependencies supplied by caller."""
 
@@ -1249,6 +1263,32 @@ def build_community_routed_global_graph_composition(
         revalidate_write_fence=revalidate,
         administration=administration,
     )
+    from okto_pulse.community.config import validate_grafx_read_participants
+    read_factory = None
+    if read_participants:
+        count = validate_grafx_read_participants(read_participants)
+        if not callable(getattr(global_lock, "operation", None)):
+            raise ValueError("independent Global readers require an operation lifetime gate")
+        # Normal native participants can join the durable WAL without a reader
+        # acquiring a Core writer lease solely to checkpoint. The session's
+        # write fence always refuses: only read transactions are dispatched.
+        grafx.readers = tuple(_GrafxGlobalPoolManager(CommunityGrafxDatabasePool(
+            binding_store.root, connect=grafx_connect,
+            descriptor_revalidation=grafx_pool.descriptor_revalidation,
+            buffer_pool_mb=grafx_pool.buffer_pool_mb,
+            constructor_options=grafx_pool.constructor_options,
+        )) for _ in range(count))
+        def refuse_read_write(phase):
+            raise GraphCapabilityUnavailable("A Global reader session cannot write.", details={"phase": phase})
+        factories = tuple(_GrafxRuntimeSessionFactory(
+            resolver=resolver, pool_manager=reader, revalidate_write_fence=refuse_read_write,
+            administration=administration) for reader in grafx.readers)
+        lanes = GrafxReadLanes(count)
+        @contextmanager
+        def read_factory(snapshot):
+            with lanes.reserve("global") as lane:
+                with factories[lane](snapshot) as session:
+                    yield session
     purge = _GlobalPurgeCoordinator(
         binding_store=binding_store,
         resolver=resolver,
@@ -1271,6 +1311,7 @@ def build_community_routed_global_graph_composition(
         revalidate_write_fence=revalidate,
         statement_is_write=statement_is_write,
         grafx_session_factory=grafx_sessions,
+        grafx_read_session_factory=read_factory,
         grafx_state=_grafx_state,
         grafx_materialization_paths=_grafx_materialization_paths,
         grafx_close_unguarded=lambda _snapshot: grafx.close_all(),

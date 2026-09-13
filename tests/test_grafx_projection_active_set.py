@@ -7,7 +7,6 @@ visible after commit or none of it is, and a refusal never leaves a partial one 
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -990,7 +989,10 @@ async def test_session_cleanup_refuses_non_finite_preservation_before_delete(
             "nan-source",
             "nan-target",
             DEPENDENCY_RULE_A,
-            confidence=float("nan"),
+            # Stored non-finites are now refused by Grafx itself. The corrupt
+            # preservation receipt below must still refuse before deleting a
+            # perfectly valid edge; do not bypass the native storage boundary.
+            confidence=0.5,
         )
 
     preserved = ProjectionEdgeBeforeImage(
@@ -1018,7 +1020,7 @@ async def test_session_cleanup_refuses_non_finite_preservation_before_delete(
         {"from_id": "nan-source", "to_id": "nan-target"},
     ).rows
     assert len(rows) == 1
-    assert math.isnan(float(rows[0][0]))
+    assert rows[0][0] == 0.5
 
 
 @pytest.mark.asyncio

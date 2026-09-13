@@ -70,7 +70,8 @@ export function GrafxAdvancedSettings({ catalog, value, onChange }: {
               className="w-full rounded border p-1.5 text-xs bg-white dark:bg-gray-800 dark:border-gray-600">
               {item.choices.map((choice) => <option key={choice} value={choice}>{choice}</option>)}
             </select> : <input id={id} data-testid={id} aria-label={item.name} type="number"
-              min={item.name === 'vector_exact_scan_threshold' ? 0 : undefined}
+              min={item.minimum ?? (item.name === 'vector_exact_scan_threshold' ? 0 : undefined)}
+              max={item.maximum ?? undefined}
               step={item.name.endsWith('_seconds') ? 'any' : 1}
               value={typeof current === 'number' && !Number.isFinite(current) ? '' : String(current ?? '')}
               placeholder={item.nullable ? 'No configured cap' : undefined}

@@ -52,35 +52,38 @@ def _schema() -> LogicalSchema:
     )
 
 
-def _database(path: Path):
+def _database(path: Path, relation_table: str = "A_links_B"):
     database = connect(path, page_size=512)
+    database.ensure_identity_indexes()
     with database.begin("write") as schema:
         schema.execute("CREATE NODE TABLE A(id STRING, note STRING, PRIMARY KEY(id))")
         schema.execute("CREATE NODE TABLE B(id STRING, PRIMARY KEY(id))")
-        schema.execute("CREATE REL TABLE A_links_B(FROM A TO B, note STRING)")
+        schema.execute(f"CREATE REL TABLE {relation_table}(FROM A TO B, note STRING)")
     with database.begin("write") as writer:
         writer.execute("CREATE (:A {id: 'a1', note: NULL})")
         writer.execute("CREATE (:B {id: 'b1'})")
         writer.execute(
             "MATCH (a:A {id: 'a1'}), (b:B {id: 'b1'}) "
-            "CREATE (a)-[:A_links_B {note: ''}]->(b)"
+            f"CREATE (a)-[:{relation_table} {{note: ''}}]->(b)"
         )
     return database
 
 
 @pytest.mark.parametrize("case", ["success", "scan_failure", "dangling_endpoint"])
+@pytest.mark.parametrize("relation_table", ["A_links_B", "A"])
 def test_grafx_endpoint_map_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     case: str,
+    relation_table: str,
 ) -> None:
     temporary_parent = tmp_path / "endpoint-maps"
     temporary_parent.mkdir()
-    database = _database(tmp_path / "graph")
+    database = _database(tmp_path / "graph", relation_table)
     source = CommunityGrafxLogicalSnapshotSource(
         database,
         schema=_schema(),
-        relationship_tables={("links", "A", "B"): "A_links_B"},
+        relationship_tables={("links", "A", "B"): relation_table},
         scan_batch_size=1,
         temporary_parent=temporary_parent,
     )
@@ -103,10 +106,10 @@ def test_grafx_endpoint_map_contract(
     if case == "scan_failure":
         original_scan = Transaction.scan_rows_v1
 
-        def failing_scan(transaction, table, *, limit, cursor=None):
-            if table == "A_links_B":
+        def failing_scan(transaction, table, *, limit, cursor=None, kind=None):
+            if table == relation_table and kind == "rel":
                 raise OSError("injected scan failure")
-            return original_scan(transaction, table, limit=limit, cursor=cursor)
+            return original_scan(transaction, table, limit=limit, cursor=cursor, kind=kind)
 
         monkeypatch.setattr(Transaction, "scan_rows_v1", failing_scan)
     elif case == "dangling_endpoint":
@@ -118,9 +121,9 @@ def test_grafx_endpoint_map_contract(
                 writer.execute("MATCH (a:A {id: 'a1'}) DELETE a")
         original_scan = Transaction.scan_rows_v1
 
-        def missing_endpoint_scan(transaction, table, *, limit, cursor=None):
-            page = original_scan(transaction, table, limit=limit, cursor=cursor)
-            return replace(page, rows=()) if table == "A" else page
+        def missing_endpoint_scan(transaction, table, *, limit, cursor=None, kind=None):
+            page = original_scan(transaction, table, limit=limit, cursor=cursor, kind=kind)
+            return replace(page, rows=()) if table == "A" and kind == "node" else page
 
         monkeypatch.setattr(Transaction, "scan_rows_v1", missing_endpoint_scan)
 
@@ -186,3 +189,71 @@ def test_grafx_endpoint_map_contract(
     assert max(inserted_batch_sizes) <= 1
     assert list(temporary_parent.iterdir()) == []
     database.close()
+
+
+def test_same_spelling_extra_relationship_is_not_hidden_by_node_inventory(tmp_path):
+    database = _database(tmp_path / "graph")
+    try:
+        with database.begin("write") as tx:
+            tx.execute("CREATE REL TABLE B(FROM A TO B)")
+        source = CommunityGrafxLogicalSnapshotSource(
+            database, schema=_schema(), relationship_tables={("links","A","B"):"A_links_B"},
+            scan_batch_size=1,
+        )
+        with pytest.raises(LogicalSchemaError, match="catalog tables differ"):
+            source.open_snapshot()
+        assert not database._transactions._open
+    finally:
+        database.close()
+
+
+@pytest.mark.parametrize("action", ["SET a:Extra", "REMOVE a:A", "SET a:Extra REMOVE a:A"])
+def test_noncanonical_labels_refuse_before_logical_snapshot_is_exposed(tmp_path, action):
+    with _database(tmp_path / "graph") as database:
+        with database.begin("write") as tx:
+            tx.execute(f"MATCH(a:A) {action}")
+        before = database.execute("MATCH(a) RETURN a").rows
+        temporary_parent = tmp_path / "endpoint-maps"
+        temporary_parent.mkdir()
+        source = CommunityGrafxLogicalSnapshotSource(
+            database, schema=_schema(),
+            relationship_tables={("links", "A", "B"): "A_links_B"},
+            scan_batch_size=1, temporary_parent=temporary_parent,
+        )
+        with pytest.raises(LogicalSchemaError, match="label membership"):
+            unexpected = source.open_snapshot()
+            unexpected.close()
+        assert list(temporary_parent.iterdir()) == []
+        assert not database._transactions._open
+        after = database.execute("MATCH(a) RETURN a").rows
+        assert [(n.identity, n.labels, dict(n.properties)) for (n,) in after] == [
+            (n.identity, n.labels, dict(n.properties)) for (n,) in before
+        ]
+        assert database.verify("all").findings == ()
+
+
+def test_explicit_canonical_labels_and_held_transfer_snapshot_remain_valid(tmp_path):
+    with _database(tmp_path / "graph") as database:
+        with database.begin("write") as tx:
+            tx.execute("MATCH(a:A) SET a:Extra")
+        with database.begin("write") as tx:
+            tx.execute("MATCH(a:A) REMOVE a:Extra")
+        with database.begin("read") as tx:
+            assert tx.scan_rows_v1("A", kind="node", limit=1).rows[0].node_labels == ("A",)
+        source = CommunityGrafxLogicalSnapshotSource(
+            database, schema=_schema(),
+            relationship_tables={("links", "A", "B"): "A_links_B"}, scan_batch_size=1,
+        )
+        snapshot = source.open_snapshot()
+        try:
+            with database.begin("write") as tx:
+                tx.execute("MATCH(a:A) SET a:Extra")
+            assert [(n.type_name, n.key) for batch in snapshot.iter_nodes(batch_size=1)
+                    for n in batch] == [("A", "a1"), ("B", "b1")]
+            assert snapshot.counts().nodes == 2
+            with pytest.raises(LogicalSchemaError, match="label membership"):
+                unexpected = source.open_snapshot()
+                unexpected.close()
+        finally:
+            snapshot.close()
+        assert not database._transactions._open

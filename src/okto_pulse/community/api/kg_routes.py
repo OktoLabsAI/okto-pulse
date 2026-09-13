@@ -362,6 +362,22 @@ def _handle_kg_error(e: KGToolError) -> JSONResponse:
     return _problem(status, public_code, e.message, public_code)
 
 
+def _graph_problem(exc: GraphError) -> JSONResponse:
+    """Translate only failures already mapped through neutral provider contracts."""
+    status = 500
+    if isinstance(exc, GraphInvalidQuery):
+        status = 400
+    elif isinstance(exc, (GraphUnavailable, GraphCapabilityUnavailable, GraphCorruption)):
+        status = 503
+    retry_after = graph_memory_pressure_retry_after_seconds(exc)
+    if retry_after is not None:
+        status = 503
+    response = _problem(status, exc.code, str(exc), exc.code)
+    if retry_after is not None:
+        response.headers["Retry-After"] = str(retry_after)
+    return response
+
+
 # ---------------------------------------------------------------------------
 # ETag helpers
 # ---------------------------------------------------------------------------
@@ -1732,18 +1748,7 @@ async def cypher_query(
         # Provider errors already crossed the edition's backend-neutral mapping.
         # Invalid syntax/plans are client errors, not an unhandled ASGI exception
         # or a signal to rebuild/recover a healthy graph.
-        status = 500
-        if isinstance(exc, GraphInvalidQuery):
-            status = 400
-        elif isinstance(exc, (GraphUnavailable, GraphCapabilityUnavailable, GraphCorruption)):
-            status = 503
-        retry_after = graph_memory_pressure_retry_after_seconds(exc)
-        if retry_after is not None:
-            status = 503
-        response = _problem(status, exc.code, str(exc), exc.code)
-        if retry_after is not None:
-            response.headers["Retry-After"] = str(retry_after)
-        return response
+        return _graph_problem(exc)
 
 
 @router.get("/schema")
@@ -1772,8 +1777,16 @@ async def schema_info(
         )
     if board_id:
         await _ensure_board_access(board_id=board_id, actor=actor, uow=uow)
-    result = get_schema_info(board_id or "default", include_internal=include_internal)
-    return result
+    try:
+        return await run_blocking_graph_io(
+            lambda: get_schema_info(
+                board_id or "default", include_internal=include_internal,
+            ),
+            task_name=f"community.kg.schema.read:{board_id or 'default'}",
+        )
+    except GraphError as exc:
+        # No fallback to another board, synthetic schema or recovery on refusal.
+        return _graph_problem(exc)
 
 
 @router.get("/boards/{board_id}/pending")

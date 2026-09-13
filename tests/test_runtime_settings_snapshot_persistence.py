@@ -106,7 +106,10 @@ async def test_runtime_settings_preserve_effective_contract_and_expose_desired(
     monkeypatch.setattr(service, "_load_persisted_rows", _persisted)
     monkeypatch.setattr(service, "_read_boot_snapshot", lambda: dict(effective))
 
-    result = await service.get_runtime_settings(object())
+    # Own the edition settings just as the installed composition root does;
+    # this test must not depend on a repository conftest's global registry.
+    with runtime_composition_scope(_composition(settings)):
+        result = await service.get_runtime_settings(object())
 
     assert result["kg_grafx_buffer_pool_mb"] == 256
     assert result["kg_grafx_read_participants"] == 2

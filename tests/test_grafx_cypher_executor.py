@@ -235,8 +235,8 @@ class TestTheTwoOPathConversion:
         assert isinstance(path["_RELS"], list)
         assert [node["id"] for node in path["_NODES"]] == ["d1", "d2"]
         assert path["_RELS"][0]["_LABEL"] == "supersedes__Decision__Decision"
-        # The opaque identities inside stay exactly as the engine gave them.
-        assert set(path["_NODES"][0]["_ID"]) == {"offset", "table"}
+        # IDs now preserve database/kind and distinguish provisional observations.
+        assert set(path["_NODES"][0]["_ID"]) == {"offset", "table", "database", "kind", "provisional"}
 
     def test_the_injected_limit_stays_engine_side(self, tmp_path: Path) -> None:
         database = okto_grafx.connect(

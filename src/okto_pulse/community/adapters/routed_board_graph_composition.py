@@ -622,6 +622,9 @@ class CommunityRoutedBoardGraphComposition:
     graph_recovery: CommunityRoutedGraphRecovery
     _initialize_physical: Callable[[CommunityGraphRouteCandidate], object | None]
     _rematerialize_physical: Callable[[CommunityGraphRouteCandidate], object | None]
+    ranked_graph_search: Any | None = None
+    graph_history: Any | None = None
+    graph_analytics: Any | None = None
 
     def _require_route_materialization_allowed(self, board_id: str) -> None:
         """Refuse every route-creation door while privacy erasure is durable."""
@@ -705,6 +708,9 @@ class CommunityRoutedBoardGraphComposition:
             "graph_lifecycle": self.graph_lifecycle,
             "graph_runtime_store": self.graph_runtime_store,
             "graph_recovery": self.graph_recovery,
+            "ranked_graph_search": self.ranked_graph_search,
+            "graph_history": self.graph_history,
+            "graph_analytics": self.graph_analytics,
         }
 
 
@@ -959,7 +965,7 @@ def build_community_routed_board_graph_composition(
     def board_route_session(board_id: str) -> Iterator[None]:
         with resolver.board_route_session(board_id):
             try:
-                snapshot = resolver.inspect_board_route(board_id)
+                resolver.inspect_board_route(board_id)
             except GraphCapabilityUnavailable as failure:
                 if failure.details.get("reason") != "binding_missing":
                     raise
@@ -985,7 +991,7 @@ def build_community_routed_board_graph_composition(
     @contextmanager
     def lifecycle_mutation_window(board_id: str, *, phase: str) -> Iterator[None]:
         with board_route_session(board_id):
-            snapshot = resolver.inspect_board_route(board_id)
+            resolver.inspect_board_route(board_id)
             physical_window = kg_runtime.board_storage_mutation_window_unguarded
             with physical_window(board_id, phase=phase):
                 yield
@@ -995,6 +1001,22 @@ def build_community_routed_board_graph_composition(
         access.write_fence,
         read_database_resolver=access.read_database,
         read_database_scope=access.read_database_scope,
+    )
+    from okto_pulse.community.adapters.grafx_ranked_search import CommunityGrafxRankedSearch
+    from okto_pulse.community.adapters.grafx_observations import CommunityGrafxHistory, CommunityGrafxAnalytics
+    from okto_pulse.community.adapters.routed_graph_exploration import CommunityRoutedObservations
+    from okto_pulse.community.adapters.routed_graph_exploration import CommunityRoutedRankedSearch
+
+    def observations(provider):
+        return CommunityRoutedObservations(resolver, provider, operation_window=operation_window,
+                                          mutation_window=mutation_window, close=access.close)
+    history = observations(CommunityGrafxHistory(access.database, access.write_fence, read_database_scope=access.read_database_scope))
+    analytics = observations(CommunityGrafxAnalytics(access.read_database_scope))
+    ranked_search = CommunityRoutedRankedSearch(
+        resolver,
+        CommunityGrafxRankedSearch(access.database, access.write_fence,
+                                  read_database_scope=access.read_database_scope),
+        operation_window=operation_window, mutation_window=mutation_window, close=access.close,
     )
     grafx_cypher = CommunityGrafxCypherExecutor(
         access.read_database,
@@ -1209,6 +1231,9 @@ def build_community_routed_board_graph_composition(
         graph_recovery=graph_recovery,
         _initialize_physical=initialize_physical,
         _rematerialize_physical=rematerialize_physical,
+        ranked_graph_search=ranked_search,
+        graph_history=history,
+        graph_analytics=analytics,
     )
 
 

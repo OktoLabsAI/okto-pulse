@@ -45,6 +45,8 @@ export interface RuntimeSettings extends RuntimeSettingsValues {
 }
 
 export interface GrafxSettingDescriptor {
+  minimum?: number | null;
+  maximum?: number | null;
   name: string;
   default: number | string | boolean | null;
   description: string;

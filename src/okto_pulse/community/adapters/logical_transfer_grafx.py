@@ -166,8 +166,8 @@ class CommunityGrafxLogicalSnapshot:
     def iter_nodes(self, *, batch_size: int) -> Iterator[Sequence[LogicalNode]]:
         self._require_batch_size(batch_size)
         for node_type in self._schema.node_types:
-            table = self._catalog.table(node_type.name)
-            for page in _scan_pages(self._transaction, table.name, batch_size):
+            table = self._catalog.table(node_type.name, kind="node")
+            for page in _scan_pages(self._transaction, table.name, batch_size, kind="node"):
                 batch = tuple(
                     self._logical_node(table, node_type, row) for row in page.rows
                 )
@@ -178,8 +178,8 @@ class CommunityGrafxLogicalSnapshot:
         self._require_batch_size(batch_size)
         for layout in self._schema.relation_layouts:
             table_name = self._relationship_tables[layout.identity]
-            table = self._catalog.table(table_name)
-            for page in _scan_pages(self._transaction, table.name, batch_size):
+            table = self._catalog.table(table_name, kind="rel")
+            for page in _scan_pages(self._transaction, table.name, batch_size, kind="rel"):
                 batch = tuple(
                     self._logical_relation(table, layout, row) for row in page.rows
                 )
@@ -222,9 +222,9 @@ class CommunityGrafxLogicalSnapshot:
         endpoints = self._require_endpoints()
 
         for node_type in self._schema.node_types:
-            table = self._catalog.table(node_type.name)
+            table = self._catalog.table(node_type.name, kind="node")
             for page in _scan_pages(
-                self._transaction, table.name, self._scan_batch_size
+                self._transaction, table.name, self._scan_batch_size, kind="node"
             ):
                 entries: list[tuple[str, int, str]] = []
                 for row in page.rows:
@@ -237,9 +237,9 @@ class CommunityGrafxLogicalSnapshot:
                 endpoints.add_batch(entries)
 
         for layout in self._schema.relation_layouts:
-            table = self._catalog.table(self._relationship_tables[layout.identity])
+            table = self._catalog.table(self._relationship_tables[layout.identity], kind="rel")
             for page in _scan_pages(
-                self._transaction, table.name, self._scan_batch_size
+                self._transaction, table.name, self._scan_batch_size, kind="rel"
             ):
                 for row in page.rows:
                     relation = self._logical_relation(table, layout, row)
@@ -256,6 +256,14 @@ class CommunityGrafxLogicalSnapshot:
         )
 
     def _logical_node(self, table: Any, node_type: Any, row: Any) -> LogicalNode:
+        # Pulse's logical artifact carries one declared business type, not an
+        # arbitrary label set. Never silently erase native label mutations.
+        # _prepare checks the whole fixed snapshot before exposing any export.
+        if row.node_labels is not None and row.node_labels != (node_type.name,):
+            raise LogicalSchemaError(
+                "Grafx node label membership differs from the logical schema",
+                detail=f"{node_type.name}: {row.node_labels!r}",
+            )
         properties = {
             prop.name: _logical_value(
                 row.values[table.column_index(prop.name)],
@@ -432,10 +440,12 @@ def _scan_pages(
     transaction: Transaction,
     table_name: str,
     limit: int,
+    *,
+    kind: str,
 ) -> Iterator[ScanPageV1]:
     cursor = None
     while True:
-        page = transaction.scan_rows_v1(table_name, limit=limit, cursor=cursor)
+        page = transaction.scan_rows_v1(table_name, kind=kind, limit=limit, cursor=cursor)
         if len(page.rows) > limit:
             raise LogicalSchemaError(
                 "Grafx physical scan exceeded its requested bound",
@@ -452,10 +462,10 @@ def _validate_physical_schema(
     schema: LogicalSchema,
     relationship_tables: Mapping[LayoutIdentity, str],
 ) -> None:
-    expected_table_names = {node.name for node in schema.node_types} | set(
-        relationship_tables.values()
-    )
-    observed_table_names = {table.name for table in catalog.tables()}
+    expected_table_names = {("node", node.name) for node in schema.node_types} | {
+        ("rel", name) for name in relationship_tables.values()
+    }
+    observed_table_names = {(table.kind, table.name) for table in catalog.tables()}
     if observed_table_names != expected_table_names:
         raise LogicalSchemaError(
             "Grafx catalog tables differ from the logical transfer scope",
@@ -477,7 +487,7 @@ def _validate_physical_schema(
         )
 
     for node_type in schema.node_types:
-        table = catalog.table(node_type.name)
+        table = catalog.table(node_type.name, kind="node")
         if table.kind != "node" or table.primary_key != node_type.key:
             raise LogicalSchemaError(
                 "Grafx node table identity differs from the logical schema",
@@ -486,7 +496,7 @@ def _validate_physical_schema(
         _validate_columns(table.columns, node_type.properties, schema, table.name)
 
     for layout in schema.relation_layouts:
-        table = catalog.table(relationship_tables[layout.identity])
+        table = catalog.table(relationship_tables[layout.identity], kind="rel")
         if (
             table.kind != "rel"
             or table.from_table != layout.source_type

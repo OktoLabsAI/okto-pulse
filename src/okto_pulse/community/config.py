@@ -59,7 +59,7 @@ def validate_grafx_buffer_pool_mb(value: object) -> int:
 
 
 def validate_grafx_read_participants(value: object) -> int:
-    """Bound independently owned Board readers; never a writer-policy toggle."""
+    """Bound readers per Board and for Global; never a writer-policy toggle."""
     if type(value) is not int or not 1 <= value <= 8:
         raise ValueError(
             "kg_grafx_read_participants must be an integer between 1 and 8"

@@ -251,7 +251,8 @@ def test_grafx_operation_lease_rotates_without_leaking_a_pin(tmp_path: Path) -> 
             self.leases.append(lease)
             return lease
 
-        def close(self, path: Path) -> bool:
+        def close(self, path: Path, *, include_readers: bool = True) -> bool:
+            assert not include_readers
             del path
             self.closes += 1
             return True
