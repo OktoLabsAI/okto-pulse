@@ -494,6 +494,9 @@ human-first UI.
 
 ## Graph storage
 
+See [Cognitive Action Center: review knowledge gaps](docs/COGNITIVE_ACTION_CENTER.md)
+for the human review workflow, waiver effects, failed-processing navigation and permissions.
+
 Community uses **Okto Grafx only**, pinned to the published PyPI release `okto-grafx[accel]==0.0.6`. See [Grafx-only runtime, settings, retirement and data preservation](docs/GRAFX_ONLY_COMMUNITY.md). The Core remains storage-agnostic.
 
 ## SaaS Closure Audit

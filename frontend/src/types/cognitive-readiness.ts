@@ -17,7 +17,7 @@ export type ReadinessSignal =
   | 'terminal_history'
   | 'dlq';
 
-export type ReadinessSignalFilter = 'all' | ReadinessSignal;
+export type ReadinessSignalFilter = 'all' | 'attention' | 'deferred' | ReadinessSignal;
 
 export type ReadinessSignalSource = 'cognitive_item' | 'canonical_debt' | 'dlq';
 
@@ -32,6 +32,8 @@ export type ReadinessEffect =
   | 'ready';
 
 export interface CognitiveReadinessItem {
+  justification?: string | null;
+  actor?: string | null;
   artifact_id: string;
   source_ref_original: string;
   aliases: string[];

@@ -1,682 +1,1062 @@
-/**
- * Cognitive Action Center — operational view over the cognitive readiness
- * read-model (S3.3 / card 974f5146, spec 2731a346; mockup sm_35b21529).
- *
- * Read-only projection + the central skip/clear write-path. The UI NEVER
- * recomputes precedence or enforcement:
- *  - readiness_effect / precedence_explanation / blocking come from the backend;
- *  - "would block done" language is shown ONLY when would_block_done is true
- *    (enforcement active AND a gate-blocking tier) — blocking alone is readiness
- *    language, not gate-enforcement language;
- *  - technical blockers (DLQ / open canonical debt) are surfaced as technical
- *    and NEVER offer skip/no_action (the backend also rejects with 409);
- *  - terminal history is informational/non-blocking;
- *  - tasks/tests without reusable cognition are advisory/non-blocking;
- *  - a cognitive reason_code is visually separated from a technical error_cause;
- *  - justification / evidence_refs are audit detail, never bounded labels.
- */
-
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  AlertTriangle,
-  Brain,
-  CheckCircle2,
-  Clock,
-  RefreshCw,
-  Search,
-  ShieldAlert,
-  X,
-} from 'lucide-react';
-
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Brain, CheckCircle2, ExternalLink, RefreshCw, X } from "lucide-react";
 import {
   clearCognitiveSkip,
   getReadinessItems,
   getReadinessMetrics,
   recordCognitiveSkip,
-  ReadinessActionError,
-} from '@/services/cognitive-readiness-api';
+} from "@/services/cognitive-readiness-api";
 import {
   isRevisitRequiredReason,
   isTechnicalBlocker,
-  REVISIT_REQUIRED_REASON_CODES,
   SELECTABLE_REASON_CODES,
-  TERMINAL_REASON_CODES,
   type CognitiveReadinessItem,
   type CognitiveReadinessListResponse,
   type CognitiveReadinessMetrics,
-  type ReadinessEffect,
   type ReadinessSignalFilter,
-} from '@/types/cognitive-readiness';
-import { usePermissions } from '@/hooks/usePermissions';
+} from "@/types/cognitive-readiness";
+import { usePermissions } from "@/hooks/usePermissions";
+import { useDashboardApi } from "@/services/api";
+import { useDashboardStore } from "@/store/dashboard";
+import {
+  useModalStack,
+  type ModalStackEntry,
+} from "@/contexts/ModalStackContext";
+import { DeadLetterInspectorModal } from "./DeadLetterInspectorModal";
+import { ReadinessHelp } from "./ReadinessHelp";
 
-interface CognitiveActionCenterViewProps {
+interface Props {
   boardId: string;
+  boardName?: string;
   onClose: () => void;
+  onOpenHealth?: () => void;
 }
-
-const SIGNAL_FILTERS: { id: ReadinessSignalFilter; label: string }[] = [
-  { id: 'all', label: 'All signals' },
-  { id: 'cognitive_pending', label: 'Cognitive pending' },
-  { id: 'skipped', label: 'Skipped' },
-  { id: 'revisit_required', label: 'Revisit-required' },
-  { id: 'open_canonical_debt', label: 'Open canonical debt' },
-  { id: 'terminal_history', label: 'Terminal history' },
-  { id: 'dlq', label: 'DLQ' },
-];
-
-// Bounded readiness_effect → presentation. "blocks done" wording is reserved
-// for the would_block_done flag, NOT derived from blocking here.
-const EFFECT_META: Record<ReadinessEffect, { label: string; tone: string }> = {
-  blocking_technical: {
-    label: 'Technical blocker',
-    tone: 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300',
-  },
-  blocking_cognitive: {
-    label: 'Cognitive pending',
-    tone: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
-  },
-  blocking_revisit_lapsed: {
-    label: 'Revisit lapsed',
-    tone: 'bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300',
-  },
-  ready_skip: {
-    label: 'Skip valid',
-    tone: 'bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-300',
-  },
-  ready_committed: {
-    label: 'Committed',
-    tone: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
-  },
-  advisory: {
-    label: 'Advisory',
-    tone: 'bg-slate-100 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300',
-  },
-  ready: {
-    label: 'Ready',
-    tone: 'bg-slate-100 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300',
-  },
+const PAGE_SIZE = 25;
+const REASONS: Record<string, string> = {
+  no_reusable_learning: "No reusable knowledge in this work",
+  duplicate_bug: "Duplicate bug",
+  trivial_fix: "Trivial fix with no reusable learning",
+  root_cause_unconfirmed: "Root cause needs investigation",
+  evidence_insufficient: "More evidence is needed",
+  path_b_pending: "Alternative consolidation path is still pending",
+  external_context_missing: "Waiting for external context",
 };
+const SECTIONS: { id: ReadinessSignalFilter; label: string; help: string }[] = [
+  {
+    id: "attention",
+    label: "Needs attention",
+    help: "Pending consolidation, failed processing, graph updates awaiting completion and overdue reviews.",
+  },
+  {
+    id: "deferred",
+    label: "Waived or scheduled",
+    help: "Explicit waivers and future reviews. A waiver does not add knowledge to the graph.",
+  },
+  {
+    id: "terminal_history",
+    label: "History",
+    help: "Completed or terminal records. These records do not need another waiver.",
+  },
+  {
+    id: "all",
+    label: "All records",
+    help: "All source records. One artifact can have several records; counts are not unique artifacts.",
+  },
+];
+const FILTERS: { id: ReadinessSignalFilter; label: string }[] = [
+  { id: "cognitive_pending", label: "Awaiting consolidation" },
+  { id: "dlq", label: "Failed processing" },
+  { id: "open_canonical_debt", label: "Graph update pending" },
+  { id: "revisit_required", label: "Scheduled reviews" },
+  { id: "skipped", label: "Waivers" },
+];
+const button =
+  "inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 dark:border-slate-600 px-3 py-2 text-sm font-medium hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed";
+const primary = `${button} bg-violet-600 text-white border-violet-600 hover:bg-violet-700 dark:hover:bg-violet-700`;
+const input =
+  "rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 px-3 py-2 text-sm w-full";
 
-function effectMeta(effect: string) {
-  return (
-    EFFECT_META[effect as ReadinessEffect] ?? {
-      label: effect,
-      tone: 'bg-slate-100 text-slate-600 dark:bg-slate-800/60 dark:text-slate-300',
-    }
-  );
+export function artifactTarget(
+  item: CognitiveReadinessItem,
+): ModalStackEntry | null {
+  const [kind, ...rest] = item.artifact_id.split(":");
+  const id = rest.join(":");
+  if (!id) return null;
+  if (["card", "task", "test", "bug"].includes(kind))
+    return { type: "card", id };
+  if (["spec", "ideation", "refinement", "sprint", "story"].includes(kind))
+    return {
+      type: kind as "spec" | "ideation" | "refinement" | "sprint" | "story",
+      id,
+    };
+  return null;
+}
+function advice(item: CognitiveReadinessItem) {
+  if (item.signal === "terminal_history")
+    return {
+      label: "History — no action needed",
+      text: "This record is completed or terminal. Open the source to review its context; no waiver is needed.",
+      tone: "border-l-emerald-500 dark:border-l-emerald-400",
+    };
+  if (item.signal === "dlq")
+    return {
+      label: "Processing failed",
+      text: "An attempt failed and was moved to the failed-processing queue. Inspect its error before deciding whether to retry. A waiver cannot fix this.",
+      tone: "border-l-rose-500 dark:border-l-rose-400",
+    };
+  if (item.signal === "open_canonical_debt")
+    return {
+      label: "Graph update still pending",
+      text: "The authoritative graph update has not finished. Inspect Knowledge Graph Health and its recovery diagnostics; do not waive a technical failure.",
+      tone: "border-l-rose-500 dark:border-l-rose-400",
+    };
+  if (item.readiness_effect === "blocking_technical")
+    return {
+      label: "Related technical failure",
+      text: "Another record for this artifact has a technical failure. Inspect that failure first; this cognitive record cannot hide or resolve it.",
+      tone: "border-l-rose-500 dark:border-l-rose-400",
+    };
+  if (item.status === "skipped")
+    return {
+      label:
+        item.readiness_effect === "blocking_revisit_lapsed"
+          ? "Review is overdue"
+          : item.revisit_at
+            ? "Review scheduled"
+            : "Consolidation waived",
+      text: "No knowledge is produced by this waiver. Reconsider it to return this item to pending consolidation.",
+      tone: "border-l-sky-500 dark:border-l-sky-400",
+    };
+  return {
+    label:
+      item.status === "in_progress"
+        ? "Consolidation in progress"
+        : "Awaiting consolidation",
+    text: "Open the source and review its reusable decisions or learning. Follow the Pulse consolidation workflow with an agent. This page does not execute consolidation.",
+    tone: "border-l-amber-500 dark:border-l-amber-400",
+  };
 }
 
-export function CognitiveActionCenterView({
-  boardId,
-  onClose,
-}: CognitiveActionCenterViewProps) {
+/** Board identity resets forms and outstanding requests. No read initiates work. */
+export function CognitiveActionCenterView(props: Props) {
+  return <ActionCenter key={props.boardId} {...props} />;
+}
+function ActionCenter({ boardId, boardName, onClose, onOpenHealth }: Props) {
   const permissions = usePermissions(boardId);
-  const policyReady = (
-    !permissions.isLoading
-    && !permissions.error
-    && !permissions.ownerReviewRequired
-  );
-  const canReadCognitive = policyReady && permissions.has('kg.operations.cognitive.read');
-  const canSkipCognitive = policyReady && permissions.has('kg.operations.cognitive.skip');
-  const canClearCognitive = policyReady && permissions.has('kg.operations.cognitive.clear');
+  const ready =
+    !permissions.isLoading &&
+    !permissions.error &&
+    !permissions.ownerReviewRequired;
+  const canRead = ready && permissions.has("kg.operations.cognitive.read");
+  const canSkip = ready && permissions.has("kg.operations.cognitive.skip");
+  const canClear = ready && permissions.has("kg.operations.cognitive.clear");
+  const canQueue = ready && permissions.has("kg.operations.queue.read");
+  const canHealth = ready && permissions.has("kg.operations.health.read");
   const [data, setData] = useState<CognitiveReadinessListResponse | null>(null);
-  const [metrics, setMetrics] = useState<CognitiveReadinessMetrics | null>(null);
-  const [signal, setSignal] = useState<ReadinessSignalFilter>('all');
-  const [search, setSearch] = useState('');
-  const [activeSearch, setActiveSearch] = useState('');
+  const [metrics, setMetrics] = useState<CognitiveReadinessMetrics | null>(
+    null,
+  );
+  const [signal, setSignal] = useState<ReadinessSignalFilter>("attention");
+  const [search, setSearch] = useState("");
+  const [activeSearch, setActiveSearch] = useState("");
+  const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
+  const [metricsError, setMetricsError] = useState(false);
+  const [updated, setUpdated] = useState<string | null>(null);
+  const [notice, setNotice] = useState("");
+  const [dlq, setDlq] = useState(false);
+  const request = useRef<AbortController | null>(null);
+  const api = useDashboardApi();
+  const { push } = useModalStack();
+  const openCard = useDashboardStore((s) => s.openCardModal);
+  const [titles, setTitles] = useState<Record<string, string>>({});
   const fetchAll = useCallback(async () => {
-    if (!canReadCognitive) {
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
+    setData(null);
+    setTitles({});
+    setMetrics(null);
+    setError(null);
+    setMetricsError(false);
+    setLoading(true);
+    if (!canRead) {
       setLoading(false);
-      setError('You do not have permission to read cognitive readiness');
       return;
     }
-    setLoading(true);
-    setError(null);
-    try {
-      const [items, m] = await Promise.all([
-        getReadinessItems(boardId, {
-          signal,
-          search: activeSearch || undefined,
-          limit: 200,
-        }),
-        getReadinessMetrics(boardId),
-      ]);
-      setData(items);
-      setMetrics(m);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load readiness');
-    } finally {
-      setLoading(false);
-    }
-  }, [boardId, signal, activeSearch, canReadCognitive]);
-
+    const [items, stats] = await Promise.allSettled([
+      getReadinessItems(
+        boardId,
+        { signal, search: activeSearch || undefined, limit: PAGE_SIZE, offset },
+        controller.signal,
+      ),
+      getReadinessMetrics(boardId, controller.signal),
+    ]);
+    if (controller.signal.aborted) return;
+    if (items.status === "fulfilled") {
+      if (offset > 0 && items.value.summary.total <= offset) {
+        setOffset(0);
+        return;
+      }
+      setData(items.value);
+      setUpdated(new Date().toLocaleTimeString());
+    } else
+      setError(
+        items.reason instanceof Error
+          ? items.reason.message
+          : "Could not load readiness.",
+      );
+    if (stats.status === "fulfilled") setMetrics(stats.value);
+    else setMetricsError(true);
+    setLoading(false);
+  }, [boardId, signal, activeSearch, offset, canRead]);
   useEffect(() => {
-    if (permissions.isLoading) return;
-    void fetchAll();
+    if (!permissions.isLoading) void fetchAll();
+    return () => request.current?.abort();
   }, [fetchAll, permissions.isLoading]);
-
-  const enforcementActive = data?.summary.enforcement_active ?? false;
-
+  // Bounded visible-page title enrichment via existing authorized entity GETs.
+  useEffect(() => {
+    if (!canRead || !data) return;
+    let cancelled = false;
+    let cursor = 0;
+    const targets = [
+      ...new Map(
+        data.items.map((i) => [i.artifact_id, artifactTarget(i)]),
+      ).entries(),
+    ];
+    const getters = {
+      card: api.getCard,
+      spec: api.getSpec,
+      ideation: api.getIdeation,
+      refinement: api.getRefinement,
+      sprint: api.getSprint,
+      story: api.getStory,
+    };
+    const worker = async () => {
+      while (!cancelled && cursor < targets.length) {
+        const [key, target] = targets[cursor++];
+        if (!target || target.type === "kg_node") continue;
+        try {
+          const entity = await getters[target.type](encodeURIComponent(target.id));
+          if (!cancelled && entity.board_id === boardId && entity.title)
+            setTitles((old) => ({ ...old, [key]: entity.title }));
+        } catch {
+          /* Explicit reference fallback for unavailable/deleted/forbidden sources. */
+        }
+      }
+    };
+    for (let i = 0; i < 4; i++) void worker();
+    return () => {
+      cancelled = true;
+    };
+  }, [api, boardId, canRead, data]);
+  const choose = (value: ReadinessSignalFilter) => {
+    setSignal(value);
+    setOffset(0);
+    setNotice("");
+  };
+  const openArtifact = (item: CognitiveReadinessItem) => {
+    const target = artifactTarget(item);
+    if (!target) return;
+    if (target.type === "card") openCard(target.id);
+    push(target);
+  };
+  const changed = (message: string) => {
+    setNotice(message);
+    void fetchAll();
+  };
+  const section = SECTIONS.find((s) => s.id === signal);
   return (
     <div
-      className="flex flex-col h-full w-full bg-gray-50 dark:bg-gray-900"
       data-testid="cognitive-action-center"
+      className="h-full flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100"
     >
-      {/* Header */}
-      <div className="px-6 pt-5 pb-3 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between bg-white dark:bg-gray-900">
+      <header className="shrink-0 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-6 py-4 flex gap-4 items-start justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-white inline-flex items-center gap-2">
-            <Brain className="w-5 h-5 text-violet-500" />
-            Cognitive Action Center
-          </h2>
-          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-            Cognitive readiness signals, technical blockers and bounded metrics.{' '}
-            <span data-testid="cac-enforcement">
-              {enforcementActive
-                ? 'Done-gate enforcement is ACTIVE for this board.'
-                : 'Advisory only — done-gate enforcement is off for this board.'}
+          <div className="flex items-center gap-2 text-violet-600 dark:text-violet-400 text-sm font-medium">
+            <Brain size={18} />
+            Cognitive Action Center{" "}
+            <span className="text-slate-600 dark:text-slate-400">
+              / {boardName || "Current board"}
             </span>
+          </div>
+          <h1 className="text-xl sm:text-2xl font-semibold mt-1">
+            Resolve knowledge gaps
+          </h1>
+          <p className="text-sm text-slate-600 dark:text-slate-400 dark:text-slate-400 mt-1 max-w-3xl">
+            Review what is missing, inspect failed processing, or explain why
+            consolidation is not needed. Nothing runs simply by opening this
+            page.
           </p>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex gap-2 shrink-0">
           <button
-            type="button"
-            onClick={fetchAll}
-            disabled={loading}
-            className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-white/10 rounded-lg disabled:opacity-50"
-            title="Refresh"
-            data-testid="cac-refresh"
+            className={button}
+            onClick={() => void fetchAll()}
+            disabled={loading || !canRead}
             aria-label="Refresh readiness"
           >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw size={16} />
+            <span className="hidden sm:inline">Refresh</span>
           </button>
           <button
-            type="button"
+            className={button}
             onClick={onClose}
-            className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-white/10 rounded-lg"
             aria-label="Close action center"
           >
-            <X className="w-5 h-5" />
+            <X size={18} />
           </button>
         </div>
-      </div>
-
-      {/* Counters */}
-      <CounterRow metrics={metrics} />
-
-      {/* Filters + search */}
-      <div className="px-6 py-3 flex flex-wrap items-center gap-2 border-b border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900">
-        {SIGNAL_FILTERS.map((f) => (
-          <button
-            key={f.id}
-            type="button"
-            onClick={() => setSignal(f.id)}
-            data-testid={`cac-filter-${f.id}`}
-            className={`px-2.5 py-1 rounded-full text-xs font-medium border ${
-              signal === f.id
-                ? 'bg-violet-600 text-white border-violet-600'
-                : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-200 dark:border-gray-700 hover:border-violet-400'
-            }`}
-          >
-            {f.label}
-          </button>
-        ))}
-        <form
-          className="ml-auto relative"
-          onSubmit={(e) => {
-            e.preventDefault();
-            setActiveSearch(search.trim());
-          }}
-        >
-          <Search className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-gray-400" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="artifact_id / source_ref / reason_code"
-            data-testid="cac-search"
-            className="pl-7 pr-2 py-1 text-xs rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200 w-72"
-          />
-        </form>
-      </div>
-
-      {/* Body */}
-      <div className="flex-1 overflow-auto px-6 py-4">
-        {loading && !data && <p className="text-sm text-gray-500">Loading…</p>}
-
-        {error && (
-          <div className="py-8 text-center" data-testid="cac-error">
-            <p className="text-sm text-rose-600 dark:text-rose-400 mb-3">{error}</p>
-            <button
-              type="button"
-              onClick={fetchAll}
-              className="px-3 py-1.5 text-xs rounded-lg bg-violet-600 hover:bg-violet-700 text-white"
+      </header>
+      <div className="flex-1 min-h-0 overflow-auto">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-5 space-y-5">
+          <details className="rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-950/30 p-4">
+            <summary className="cursor-pointer font-medium">
+              How to use this center
+            </summary>
+            <ol className="grid md:grid-cols-3 gap-5 mt-4 text-sm list-decimal list-inside">
+              <li>
+                <strong>Understand the work.</strong>
+                <p className="mt-1">
+                  Open the source to review its decisions, evidence and reusable
+                  learning. Consolidation records that knowledge in the graph.
+                </p>
+              </li>
+              <li>
+                <strong>Choose the next step.</strong>
+                <p className="mt-1">
+                  Use an agent following the Pulse workflow for consolidation.
+                  For failures, inspect the failed-processing queue or KG Health
+                  before retrying.
+                </p>
+              </li>
+              <li>
+                <strong>Make an explicit decision.</strong>
+                <p className="mt-1">
+                  Only waive work when no consolidation is needed, or schedule a
+                  review if information is missing. Technical failures cannot be
+                  waived.
+                </p>
+              </li>
+            </ol>
+          </details>
+          {canRead && (
+            <div
+              className="grid grid-cols-3 gap-2 sm:gap-3"
+              aria-label="Board-wide summary"
             >
-              Retry
-            </button>
-          </div>
-        )}
-
-        {!loading && !error && data && data.items.length === 0 && (
-          <div className="py-12 text-center" data-testid="cac-empty-state">
-            <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-emerald-100 dark:bg-emerald-900/30 mb-3">
-              <CheckCircle2 className="w-7 h-7 text-emerald-600 dark:text-emerald-400" />
-            </div>
-            <h3 className="text-sm font-medium text-gray-900 dark:text-white mb-1">
-              No readiness signals
-            </h3>
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              Nothing pending, skipped, or blocking for this filter.
-            </p>
-          </div>
-        )}
-
-        {!error && data && data.items.length > 0 && (
-          <table className="w-full text-xs" data-testid="cac-table">
-            <thead className="bg-gray-50 dark:bg-gray-800 sticky top-0">
-              <tr className="text-left text-gray-500 dark:text-gray-400 uppercase tracking-wide">
-                <th className="px-3 py-2 font-medium">Artifact</th>
-                <th className="px-3 py-2 font-medium">Signal</th>
-                <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 font-medium">Cognitive reason</th>
-                <th className="px-3 py-2 font-medium">Technical cause</th>
-                <th className="px-3 py-2 font-medium">Readiness</th>
-                <th className="px-3 py-2 font-medium">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
-              {data.items.map((item, idx) => (
-                <ReadinessRow
-                  key={`${item.artifact_id}:${item.signal_source}:${idx}`}
-                  item={item}
-                  boardId={boardId}
-                  onChanged={fetchAll}
-                  canSkip={canSkipCognitive}
-                  canClear={canClearCognitive}
-                />
+              {(
+                [
+                  [
+                    "cognitive_pending",
+                    "Awaiting consolidation",
+                    metrics?.by_signal.cognitive_pending ??
+                      (metrics ? 0 : undefined),
+                    "Work with knowledge still to process. Counts are source records, not unique artifacts.",
+                  ],
+                  [
+                    "dlq",
+                    "Failed processing",
+                    metrics?.technical_dlq,
+                    "Failed processing attempts. Inspect the actual error in the queue before requeuing.",
+                  ],
+                  [
+                    "revisit_required",
+                    "Scheduled reviews",
+                    metrics?.by_signal.revisit_required ??
+                      (metrics ? 0 : undefined),
+                    `All time-limited waivers, including future reviews. ${metrics?.expired_revisit_skips ?? "Unknown number of"} overdue reviews are also in Needs attention.`,
+                  ],
+                ] as const
+              ).map(([id, label, count, help]) => (
+                <div
+                  key={id}
+                  className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4"
+                >
+                  <div className="text-sm text-slate-600 dark:text-slate-400">
+                    {label}
+                    <ReadinessHelp label={label}>{help}</ReadinessHelp>
+                  </div>
+                  <button
+                    className="text-3xl font-semibold mt-1 text-violet-600 dark:text-violet-400"
+                    data-testid={`cac-counter-${id}`}
+                    onClick={() => choose(id)}
+                    aria-label={`Filter: ${label}`}
+                  >
+                    {count ?? "—"}
+                  </button>
+                </div>
               ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      {/* Bounded metrics panel */}
-      <MetricsPanel metrics={metrics} />
-    </div>
-  );
-}
-
-function CounterRow({ metrics }: { metrics: CognitiveReadinessMetrics | null }) {
-  const tiles = [
-    {
-      key: 'cognitive_pending',
-      label: 'Cognitive pending',
-      value: metrics?.cognitive_pending_signals ?? 0,
-      icon: <Brain className="w-4 h-4" />,
-      tone: 'bg-amber-50 text-amber-800 dark:bg-amber-900/30 dark:text-amber-200',
-    },
-    {
-      key: 'expired_revisit',
-      label: 'Revisit expired',
-      value: metrics?.expired_revisit_skips ?? 0,
-      icon: <Clock className="w-4 h-4" />,
-      tone: 'bg-orange-50 text-orange-800 dark:bg-orange-900/30 dark:text-orange-200',
-    },
-    {
-      key: 'open_canonical_debt',
-      label: 'Open canonical debt',
-      value: metrics?.open_canonical_debt ?? 0,
-      icon: <ShieldAlert className="w-4 h-4" />,
-      tone: 'bg-rose-50 text-rose-800 dark:bg-rose-900/30 dark:text-rose-200',
-    },
-    {
-      key: 'dlq',
-      label: 'Technical DLQ',
-      value: metrics?.technical_dlq ?? 0,
-      icon: <AlertTriangle className="w-4 h-4" />,
-      tone: 'bg-rose-50 text-rose-800 dark:bg-rose-900/30 dark:text-rose-200',
-    },
-    {
-      key: 'terminal_history',
-      label: 'Terminal history',
-      value: metrics?.terminal_history ?? 0,
-      icon: <CheckCircle2 className="w-4 h-4" />,
-      tone: 'bg-emerald-50 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-200',
-    },
-  ];
-  return (
-    <div className="px-6 py-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 bg-gray-50 dark:bg-gray-900/40">
-      {tiles.map((t) => (
-        <div
-          key={t.key}
-          data-testid={`cac-counter-${t.key}`}
-          className={`rounded-lg p-3 ${t.tone}`}
-        >
-          <div className="flex items-center gap-1.5 mb-1">{t.icon}</div>
-          <div className="text-xs font-medium">{t.label}</div>
-          <div className="text-xl font-bold">{t.value}</div>
+            </div>
+          )}
+          <div className="text-sm flex flex-wrap justify-between gap-2 text-slate-600 dark:text-slate-400">
+            <span data-testid="cac-enforcement">
+              {!data
+                ? "Checking board completion policy…"
+                : data.summary.enforcement_active
+                  ? "Completion checks are active: marked items may prevent Done."
+                  : "Advisory mode: these records do not block Done on this board."}
+              <ReadinessHelp label="Completion policy">
+                Only the backend determines whether an item would block Done.
+                Advisory mode does not mean a technical failure has been
+                repaired.
+              </ReadinessHelp>
+            </span>
+            {updated && (
+              <span>Last loaded {updated} · Refresh for updates</span>
+            )}
+          </div>
+          <nav className="flex flex-wrap gap-2" aria-label="Readiness sections">
+            {SECTIONS.map((s) => (
+              <button
+                key={s.id}
+                className={s.id === signal ? primary : button}
+                aria-pressed={signal === s.id}
+                onClick={() => choose(s.id)}
+              >
+                {s.label}
+              </button>
+            ))}
+          </nav>
+          <p className="text-sm text-slate-600 dark:text-slate-400">
+            {section?.help ||
+              "Filtered board records. The summary above always covers the entire board."}
+          </p>
+          <div className="flex flex-wrap gap-3 items-end">
+            <label className="text-sm">
+              Focus on
+              <select
+                className={`${input} mt-1`}
+                aria-label="Record type"
+                value={FILTERS.some((f) => f.id === signal) ? signal : ""}
+                onChange={(e) =>
+                  choose(
+                    (e.target.value || "attention") as ReadinessSignalFilter,
+                  )
+                }
+              >
+                <option value="">Choose a specific record type</option>
+                {FILTERS.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <form
+              className="flex items-end gap-2 flex-1 min-w-60"
+              onSubmit={(e) => {
+                e.preventDefault();
+                setActiveSearch(search.trim());
+                setOffset(0);
+              }}
+            >
+              <label className="text-sm flex-1">
+                Find a reference
+                <ReadinessHelp label="Reference search">
+                  Search an artifact ID, source reference or reason code across
+                  the selected section. This search does not match source
+                  titles.
+                </ReadinessHelp>
+                <input
+                  className={`${input} mt-1`}
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Paste an artifact ID or reference"
+                />
+              </label>
+              <button className={button}>Search</button>
+            </form>
+            {(activeSearch || !section) && (
+              <button
+                className={button}
+                onClick={() => {
+                  setSearch("");
+                  setActiveSearch("");
+                  choose("attention");
+                }}
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+          {notice && (
+            <p
+              role="status"
+              className="rounded-lg bg-emerald-50 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200 p-3"
+            >
+              {notice}
+            </p>
+          )}
+          {!permissions.isLoading && !canRead && (
+            <p role="alert">
+              You do not have permission to view cognitive readiness. Ask a
+              board administrator for access.
+            </p>
+          )}
+          {canRead && metricsError && (
+            <p role="status" className="text-amber-600">
+              Board counters are unavailable. Records below can still be
+              reviewed.
+            </p>
+          )}
+          {loading && <p role="status">Loading readiness records…</p>}
+          {error && (
+            <div
+              role="alert"
+              data-testid="cac-error"
+              className="rounded-xl border border-rose-400 p-4"
+            >
+              <p>{error}</p>
+              <button
+                className={`${button} mt-2`}
+                onClick={() => void fetchAll()}
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          {canRead && data && !loading && (
+            <>
+              <p className="text-sm text-slate-600 dark:text-slate-400">
+                {data.summary.total === 0
+                  ? "0 records"
+                  : `${offset + 1}–${offset + data.items.length} of ${data.summary.total} records`}{" "}
+                · One artifact may have multiple processing records.
+              </p>
+              {data.items.length === 0 ? (
+                <div
+                  data-testid="cac-empty-state"
+                  className="rounded-xl border border-slate-200 dark:border-slate-800 p-10 text-center"
+                >
+                  <CheckCircle2 className="mx-auto text-emerald-500 mb-3" />
+                  <h2 className="font-semibold">
+                    {signal === "attention" && !activeSearch
+                      ? "Nothing needs attention here"
+                      : "No matching records"}
+                  </h2>
+                  <p className="text-sm text-slate-600 dark:text-slate-400 mt-2">
+                    {activeSearch
+                      ? "Try another reference or clear the filters."
+                      : "Check waived work, scheduled reviews or history in the other sections."}
+                  </p>
+                </div>
+              ) : (
+                <div data-testid="cac-table" className="space-y-3">
+                  {data.items.map((item, index) => (
+                    <ReadinessCard
+                      key={`${item.artifact_id}:${item.signal_source}:${index}`}
+                      item={item}
+                      boardId={boardId}
+                      title={titles[item.artifact_id]}
+                      canSkip={canSkip}
+                      canClear={canClear}
+                      onChanged={changed}
+                      onOpen={
+                        artifactTarget(item)
+                          ? () => openArtifact(item)
+                          : undefined
+                      }
+                      onQueue={canQueue ? () => setDlq(true) : undefined}
+                      onHealth={canHealth ? onOpenHealth : undefined}
+                    />
+                  ))}
+                </div>
+              )}
+              <nav
+                className="flex justify-end gap-2"
+                aria-label="Readiness pagination"
+              >
+                <button
+                  className={button}
+                  disabled={offset === 0}
+                  onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+                >
+                  Previous
+                </button>
+                <button
+                  className={button}
+                  disabled={offset + data.items.length >= data.summary.total}
+                  onClick={() => setOffset(offset + PAGE_SIZE)}
+                >
+                  Next
+                </button>
+              </nav>
+            </>
+          )}
+          {canRead && metrics && (
+            <details
+              data-testid="cac-metrics-panel"
+              className="border-t border-slate-200 dark:border-slate-800 pt-4 text-sm text-slate-600 dark:text-slate-400"
+            >
+              <summary className="cursor-pointer">
+                Technical metrics · {metrics.total} board-wide records
+              </summary>
+              <p className="my-2">
+                Diagnostic counts use internal categories; they are not a
+                measure of knowledge quality.
+              </p>
+              <pre
+                className="overflow-auto text-xs"
+                data-testid="cac-metric-reason_code"
+              >
+                {JSON.stringify(
+                  {
+                    status: metrics.by_status,
+                    readiness: metrics.by_readiness_effect,
+                    reasons: metrics.by_reason_code,
+                    age: metrics.by_age_bucket,
+                  },
+                  null,
+                  2,
+                )}
+              </pre>
+            </details>
+          )}
         </div>
-      ))}
+      </div>
+      {dlq && canQueue && (
+        <DeadLetterInspectorModal
+          boardId={boardId}
+          onClose={() => {
+            setDlq(false);
+            void fetchAll();
+          }}
+        />
+      )}
     </div>
   );
 }
 
-interface ReadinessRowProps {
+function ReadinessCard({
+  item,
+  boardId,
+  title,
+  canSkip,
+  canClear,
+  onChanged,
+  onOpen,
+  onQueue,
+  onHealth,
+}: {
   item: CognitiveReadinessItem;
   boardId: string;
-  onChanged: () => void;
+  title?: string;
   canSkip: boolean;
   canClear: boolean;
-}
-
-function ReadinessRow({ item, boardId, onChanged, canSkip, canClear }: ReadinessRowProps) {
-  const [skipping, setSkipping] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  onChanged: (message: string) => void;
+  onOpen?: () => void;
+  onQueue?: () => void;
+  onHealth?: () => void;
+}) {
+  const [action, setAction] = useState<"waive" | "reopen" | null>(null);
   const [busy, setBusy] = useState(false);
-  const technical = isTechnicalBlocker(item);
-  const meta = effectMeta(item.readiness_effect);
-  const aliasExtra = item.aliases.filter((a) => a !== item.source_ref_original);
-
-  const onClear = async () => {
-    if (!canClear) return;
+  const [error, setError] = useState("");
+  const technical =
+    isTechnicalBlocker(item) || item.readiness_effect === "blocking_technical";
+  const pending =
+    item.signal_source === "cognitive_item" &&
+    item.signal === "cognitive_pending" &&
+    ["pending", "failed"].includes(item.status || "");
+  const canWaive = canSkip && pending && !technical;
+  const canReopen =
+    canClear &&
+    item.signal_source === "cognitive_item" &&
+    item.status === "skipped" &&
+    item.signal !== "terminal_history";
+  const info = advice(item);
+  const submit = async (
+    reason?: string,
+    justification?: string,
+    revisitAt?: string,
+  ) => {
+    if (busy || (action === "waive" ? !canWaive : !canReopen)) return;
     setBusy(true);
-    setActionError(null);
+    setError("");
     try {
-      await clearCognitiveSkip(boardId, item.source_ref_original);
-      onChanged();
+      if (action === "waive")
+        await recordCognitiveSkip(boardId, {
+          sourceRef: item.source_ref_original,
+          reasonCode: reason!,
+          justification,
+          revisitAt,
+        });
+      else await clearCognitiveSkip(boardId, item.source_ref_original);
+      onChanged(
+        action === "waive"
+          ? "Waiver recorded. No knowledge was added to the graph by this action."
+          : "Waiver removed. The item is pending again; this action did not run consolidation.",
+      );
+      setAction(null);
     } catch (err) {
-      setActionError(_actionMessage(err));
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Action could not be completed. Refresh and review the current state.",
+      );
     } finally {
       setBusy(false);
     }
   };
-
-  const onSkipSubmit = async (reasonCode: string, justification: string, revisitAt: string) => {
-    if (!canSkip) return;
-    setBusy(true);
-    setActionError(null);
-    try {
-      await recordCognitiveSkip(boardId, {
-        sourceRef: item.source_ref_original,
-        reasonCode,
-        justification: justification || undefined,
-        revisitAt: revisitAt || undefined,
-      });
-      setSkipping(false);
-      onChanged();
-    } catch (err) {
-      setActionError(_actionMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
-    <>
-      <tr className="hover:bg-gray-50 dark:hover:bg-gray-800/50 align-top">
-        <td className="px-3 py-2">
-          <div
-            className="font-mono text-gray-900 dark:text-white truncate max-w-[200px]"
-            title={item.source_ref_original}
-          >
-            {item.artifact_id}
+    <article
+      className={`rounded-xl border border-slate-200 dark:border-slate-700 border-l-4 ${info.tone} bg-white dark:bg-slate-900 p-5`}
+    >
+      <div className="flex flex-col lg:flex-row gap-5 justify-between">
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-medium uppercase tracking-wide text-slate-600 dark:text-slate-400 mb-1">
+            {item.artifact_type} · {info.label}
           </div>
-          <div className="text-[10px] text-gray-400">{item.artifact_type}</div>
-          {aliasExtra.length > 0 && (
-            <div
-              className="text-[10px] text-gray-400"
-              data-testid="cac-aliases"
-              title={item.aliases.join(', ')}
+          {onOpen ? (
+            <button
+              onClick={onOpen}
+              className="text-left text-base font-semibold text-violet-700 dark:text-violet-300 hover:underline inline-flex items-start gap-2"
             >
-              aka {aliasExtra.join(', ')}
-            </div>
-          )}
-        </td>
-        <td className="px-3 py-2">
-          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300">
-            {item.signal}
-          </span>
-          <div className="text-[10px] text-gray-400 mt-0.5">{item.signal_source}</div>
-        </td>
-        <td className="px-3 py-2 text-gray-700 dark:text-gray-300">
-          {item.status ?? '—'}
-          {item.outcome_type && (
-            <div className="text-[10px] text-gray-400">{item.outcome_type}</div>
-          )}
-        </td>
-        {/* Cognitive reason — distinct from technical cause */}
-        <td className="px-3 py-2" data-testid="cac-reason-code">
-          {item.reason_code ? (
-            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
-              {item.reason_code}
-            </span>
+              {title || "Open source artifact"}
+              <ExternalLink size={16} className="shrink-0 mt-1" />
+            </button>
           ) : (
-            <span className="text-gray-300 dark:text-gray-600">—</span>
+            <h2 className="font-semibold">{title || "Source record"}</h2>
+          )}
+          <p className="text-xs text-slate-600 dark:text-slate-400 break-all mt-1">
+            {item.artifact_id}
+          </p>
+          {!title && (
+            <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">
+              Source title unavailable or still loading. Use the reference to
+              identify this work.
+            </p>
+          )}
+          <p className="text-sm mt-3 max-w-3xl">{info.text}</p>
+          {item.reason_code && (
+            <p className="text-sm mt-2" data-testid="cac-reason-code">
+              <strong>Reason: </strong>
+              {REASONS[item.reason_code] || item.reason_code}
+            </p>
+          )}
+          {item.justification && (
+            <p className="text-sm mt-2 whitespace-pre-wrap break-words">
+              <strong>Recorded justification: </strong>
+              {item.justification}
+            </p>
+          )}
+          {item.actor && (
+            <p className="text-xs text-slate-600 dark:text-slate-400 mt-1">
+              Decision recorded by {item.actor}
+            </p>
           )}
           {item.revisit_at && (
-            <div className="text-[10px] text-gray-400">revisit: {item.revisit_at}</div>
+            <p className="text-sm mt-2">
+              <strong>Review date: </strong>
+              {new Date(item.revisit_at).toLocaleString()} (your timezone)
+            </p>
           )}
-        </td>
-        {/* Technical error_cause — never a selectable reason */}
-        <td className="px-3 py-2" data-testid="cac-error-cause">
-          {item.error_cause ? (
-            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">
-              {item.error_cause}
-            </span>
-          ) : (
-            <span className="text-gray-300 dark:text-gray-600">—</span>
-          )}
-        </td>
-        <td className="px-3 py-2">
-          <span
-            className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${meta.tone}`}
-            title={JSON.stringify(item.precedence_explanation)}
+          <p
+            className="text-sm mt-2"
+            data-testid={
+              item.would_block_done ? "cac-would-block-done" : undefined
+            }
           >
-            {meta.label}
-          </span>
-          {item.would_block_done && (
-            <div
-              className="text-[10px] font-semibold text-rose-600 dark:text-rose-400 mt-0.5"
-              data-testid="cac-would-block-done"
+            <strong>Completion impact: </strong>
+            {item.would_block_done
+              ? "The backend reports this artifact would block Done."
+              : "This record does not currently block Done."}
+          </p>
+        </div>
+        <div className="flex flex-wrap lg:flex-col gap-2 lg:w-56 shrink-0">
+          {(item.signal === "dlq" ||
+            item.precedence_explanation.tier === "technical_dlq") &&
+            (onQueue ? (
+              <button className={primary} onClick={onQueue}>
+                Inspect failed processing
+              </button>
+            ) : (
+              <p className="text-sm text-slate-600 dark:text-slate-400">
+                Ask a board administrator with queue access to inspect this
+                failure.
+              </p>
+            ))}
+          {(item.signal === "open_canonical_debt" ||
+            item.precedence_explanation.tier === "canonical_debt_open") &&
+            (onHealth ? (
+              <button className={primary} onClick={onHealth}>
+                Open KG Health
+              </button>
+            ) : (
+              <p className="text-sm text-slate-600 dark:text-slate-400">
+                Open KG Health from the board menu, or ask an administrator to
+                review this graph update.
+              </p>
+            ))}
+          {onOpen && (
+            <button className={button} onClick={onOpen}>
+              Open source
+            </button>
+          )}
+          {canWaive && (
+            <button
+              data-testid="cac-skip-toggle"
+              className={button}
+              disabled={busy}
+              onClick={() => {
+                setAction("waive");
+                setError("");
+              }}
             >
-              WOULD BLOCK DONE
+              Waive or schedule review…
+            </button>
+          )}
+          {canReopen && (
+            <button
+              data-testid="cac-clear"
+              className={button}
+              disabled={busy}
+              onClick={() => {
+                setAction("reopen");
+                setError("");
+              }}
+            >
+              Reconsider waiver…
+            </button>
+          )}
+          {technical && (
+            <p
+              data-testid="cac-technical-no-skip"
+              className="text-xs text-rose-600 dark:text-rose-300"
+            >
+              Technical failures cannot be waived.
+            </p>
+          )}
+          {pending && !canSkip && !technical && (
+            <p className="text-xs text-slate-600 dark:text-slate-400">
+              You can review this item, but do not have permission to waive it.
+            </p>
+          )}
+        </div>
+      </div>
+      <details className="mt-4 text-xs text-slate-600 dark:text-slate-400">
+        <summary className="cursor-pointer">
+          Technical details and references
+        </summary>
+        <div className="mt-2 space-y-1 break-all">
+          <div>Source: {item.source_ref_original}</div>
+          <div data-testid="cac-aliases">
+            Aliases: {item.aliases.join(", ")}
+          </div>
+          <div>
+            Record: {item.signal_source} / {item.signal} / {item.status}
+          </div>
+          <div data-testid="cac-error-cause">
+            Technical category: {item.error_cause || "None"}
+          </div>
+        </div>
+        <pre className="whitespace-pre-wrap mt-2">
+          {JSON.stringify(item.precedence_explanation, null, 2)}
+        </pre>
+        <p className="mt-2">
+          The category is not the full error report. Use the failed-processing
+          inspector or KG Health for diagnostics.
+        </p>
+      </details>
+      {action && (
+        <div className="mt-4 border-t border-slate-200 dark:border-slate-700 pt-4">
+          {error && (
+            <p
+              role="alert"
+              data-testid="cac-action-error"
+              className="text-rose-600 mb-3"
+            >
+              {error}
+            </p>
+          )}
+          {action === "waive" ? (
+            <WaiverForm
+              busy={busy}
+              onSubmit={submit}
+              onCancel={() => setAction(null)}
+            />
+          ) : (
+            <div>
+              <h3 className="font-semibold">
+                Return this item to pending consolidation?
+              </h3>
+              <p className="text-sm mt-2">
+                This removes the current waiver reason and review date. It does
+                not reopen the Spec or task, erase graph data, or execute
+                consolidation here. Pending work may prevent Done when the board
+                policy requires it.
+              </p>
+              <div className="flex gap-2 mt-3">
+                <button
+                  className={primary}
+                  disabled={busy}
+                  onClick={() => void submit()}
+                >
+                  Confirm reconsideration
+                </button>
+                <button
+                  className={button}
+                  disabled={busy}
+                  onClick={() => setAction(null)}
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           )}
-        </td>
-        <td className="px-3 py-2">
-          {technical ? (
-            <span
-              className="text-[10px] text-rose-500"
-              data-testid="cac-technical-no-skip"
-              title="Technical blocker — resolve/reprocess it; not skippable as a cognitive reason."
-            >
-              Resolve technical
-            </span>
-          ) : item.status === 'skipped' && canClear ? (
-            <button
-              type="button"
-              onClick={onClear}
-              disabled={busy}
-              data-testid="cac-clear"
-              className="px-2 py-0.5 text-[10px] rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50"
-            >
-              Clear / reopen
-            </button>
-          ) : item.status !== 'skipped' && canSkip ? (
-            <button
-              type="button"
-              onClick={() => setSkipping((s) => !s)}
-              disabled={busy}
-              data-testid="cac-skip-toggle"
-              className="px-2 py-0.5 text-[10px] rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 disabled:opacity-50"
-            >
-              Skip…
-            </button>
-          ) : null}
-        </td>
-      </tr>
-      {(skipping || actionError) && (
-        <tr className="bg-gray-50 dark:bg-gray-800/30">
-          <td colSpan={7} className="px-4 py-3">
-            {actionError && (
-              <p
-                className="text-[11px] text-rose-600 dark:text-rose-400 mb-2"
-                data-testid="cac-action-error"
-              >
-                {actionError}
-              </p>
-            )}
-            {skipping && !technical && (
-              <SkipForm busy={busy} onCancel={() => setSkipping(false)} onSubmit={onSkipSubmit} />
-            )}
-          </td>
-        </tr>
+        </div>
       )}
-    </>
+    </article>
   );
 }
 
-interface SkipFormProps {
+function WaiverForm({
+  busy,
+  onSubmit,
+  onCancel,
+}: {
   busy: boolean;
+  onSubmit: (reason: string, justification: string, revisitAt?: string) => void;
   onCancel: () => void;
-  onSubmit: (reasonCode: string, justification: string, revisitAt: string) => void;
-}
-
-function SkipForm({ busy, onCancel, onSubmit }: SkipFormProps) {
-  const [reasonCode, setReasonCode] = useState<string>(SELECTABLE_REASON_CODES[0]);
-  const [justification, setJustification] = useState('');
-  const [revisitAt, setRevisitAt] = useState('');
-  const needsRevisit = isRevisitRequiredReason(reasonCode);
-
+}) {
+  const [reason, setReason] = useState("");
+  const [justification, setJustification] = useState("");
+  const [date, setDate] = useState("");
+  const [error, setError] = useState("");
+  const revisit = isRevisitRequiredReason(reason);
   return (
     <form
       data-testid="cac-skip-form"
-      className="flex flex-wrap items-end gap-2"
       onSubmit={(e) => {
         e.preventDefault();
-        onSubmit(reasonCode, justification, revisitAt);
+        const when = new Date(date);
+        if (!reason || !justification.trim()) {
+          setError("Choose a reason and explain your decision.");
+          return;
+        }
+        if (
+          revisit &&
+          (!date ||
+            !Number.isFinite(when.getTime()) ||
+            when.getTime() <= Date.now())
+        ) {
+          setError("Choose a future review date.");
+          return;
+        }
+        setError("");
+        onSubmit(
+          reason,
+          justification.trim(),
+          revisit ? when.toISOString() : undefined,
+        );
       }}
     >
-      <label className="text-[10px] text-gray-500 dark:text-gray-400">
-        Reason
-        <select
-          value={reasonCode}
-          onChange={(e) => setReasonCode(e.target.value)}
-          data-testid="cac-skip-reason"
-          className="block mt-0.5 text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-1.5 py-1"
-        >
-          <optgroup label="Terminal">
-            {TERMINAL_REASON_CODES.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </optgroup>
-          <optgroup label="Revisit-required">
-            {REVISIT_REQUIRED_REASON_CODES.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </optgroup>
-        </select>
-      </label>
-      {needsRevisit && (
-        <label className="text-[10px] text-gray-500 dark:text-gray-400">
-          Revisit at (ISO)
-          <input
-            value={revisitAt}
-            onChange={(e) => setRevisitAt(e.target.value)}
-            data-testid="cac-skip-revisit"
-            placeholder="2026-12-31T00:00:00Z"
-            className="block mt-0.5 text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-1.5 py-1 w-52"
+      <h3 className="font-semibold">
+        {revisit
+          ? "Schedule a review"
+          : "Record why consolidation is not needed"}
+      </h3>
+      <p className="text-sm my-2">
+        This records a waiver only. It does not consolidate knowledge, delete
+        the source, or repair a technical failure.{" "}
+        {revisit
+          ? "When the review date passes, the item needs attention again."
+          : "Without a review date, this waiver remains until explicitly reconsidered."}
+      </p>
+      <fieldset disabled={busy} className="grid md:grid-cols-2 gap-3">
+        <label className="text-sm">
+          Reason
+          <select
+            required
+            aria-label="Waiver reason"
+            data-testid="cac-skip-reason"
+            className={`${input} mt-1`}
+            value={reason}
+            onChange={(e) => {
+              setReason(e.target.value);
+              setError("");
+            }}
+          >
+            <option value="">Choose a reason…</option>
+            <optgroup label="No review date">
+              {SELECTABLE_REASON_CODES.filter(
+                (r) => !isRevisitRequiredReason(r),
+              ).map((r) => (
+                <option key={r} value={r}>
+                  {REASONS[r]}
+                </option>
+              ))}
+            </optgroup>
+            <optgroup label="Future review required">
+              {SELECTABLE_REASON_CODES.filter(isRevisitRequiredReason).map(
+                (r) => (
+                  <option key={r} value={r}>
+                    {REASONS[r]}
+                  </option>
+                ),
+              )}
+            </optgroup>
+          </select>
+        </label>
+        {revisit && (
+          <label className="text-sm">
+            Review date (your local timezone)
+            <input
+              required
+              type="datetime-local"
+              data-testid="cac-skip-revisit"
+              className={`${input} mt-1`}
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+            />
+          </label>
+        )}
+        <label className="text-sm md:col-span-2">
+          Why is this appropriate?
+          <ReadinessHelp label="Waiver justification">
+            Record enough context for another person to understand the decision.
+            Missing information needs a future review, not a permanent waiver.
+            Do not include secrets.
+          </ReadinessHelp>
+          <textarea
+            required
+            maxLength={4000}
+            rows={2}
+            data-testid="cac-skip-justification"
+            className={`${input} mt-1`}
+            value={justification}
+            onChange={(e) => setJustification(e.target.value)}
+            placeholder="Explain what you reviewed and why this decision is appropriate."
           />
         </label>
+      </fieldset>
+      {error && (
+        <p role="alert" className="text-rose-600 text-sm mt-2">
+          {error}
+        </p>
       )}
-      <label className="text-[10px] text-gray-500 dark:text-gray-400 flex-1 min-w-[160px]">
-        Justification (audit)
-        <input
-          value={justification}
-          onChange={(e) => setJustification(e.target.value)}
-          data-testid="cac-skip-justification"
-          className="block mt-0.5 text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-1.5 py-1 w-full"
-        />
-      </label>
-      <button
-        type="submit"
-        disabled={busy}
-        data-testid="cac-skip-confirm"
-        className="px-2.5 py-1 text-[11px] rounded bg-violet-600 hover:bg-violet-700 text-white disabled:opacity-50"
-      >
-        Confirm skip
-      </button>
-      <button
-        type="button"
-        onClick={onCancel}
-        className="px-2.5 py-1 text-[11px] rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300"
-      >
-        Cancel
-      </button>
+      <div className="flex gap-2 mt-3">
+        <button
+          className={primary}
+          data-testid="cac-skip-confirm"
+          disabled={busy}
+        >
+          {busy
+            ? "Saving…"
+            : revisit
+              ? "Confirm scheduled review"
+              : "Confirm waiver"}
+        </button>
+        <button
+          type="button"
+          className={button}
+          disabled={busy}
+          onClick={onCancel}
+        >
+          Cancel
+        </button>
+      </div>
     </form>
   );
-}
-
-function MetricsPanel({ metrics }: { metrics: CognitiveReadinessMetrics | null }) {
-  const groups = useMemo(() => {
-    if (!metrics) return [];
-    return [
-      { key: 'readiness_effect', label: 'By readiness', data: metrics.by_readiness_effect },
-      { key: 'status', label: 'By status', data: metrics.by_status },
-      { key: 'reason_code', label: 'By reason (bounded)', data: metrics.by_reason_code },
-      { key: 'age', label: 'By age', data: metrics.by_age_bucket },
-    ];
-  }, [metrics]);
-
-  if (!metrics) return null;
-  return (
-    <div
-      className="px-6 py-3 border-t border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900"
-      data-testid="cac-metrics-panel"
-    >
-      <div className="text-[10px] uppercase tracking-wide text-gray-400 mb-2">
-        Bounded readiness metrics ({metrics.total} signals)
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-        {groups.map((g) => (
-          <div key={g.key} data-testid={`cac-metric-${g.key}`}>
-            <div className="text-[10px] font-medium text-gray-500 dark:text-gray-400 mb-1">
-              {g.label}
-            </div>
-            <div className="flex flex-wrap gap-1">
-              {Object.entries(g.data).length === 0 ? (
-                <span className="text-[10px] text-gray-300 dark:text-gray-600">—</span>
-              ) : (
-                Object.entries(g.data).map(([label, count]) => (
-                  <span
-                    key={label}
-                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300"
-                  >
-                    <span className="font-mono">{label}</span>
-                    <span className="font-semibold">{count}</span>
-                  </span>
-                ))
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function _actionMessage(err: unknown): string {
-  if (err instanceof ReadinessActionError) {
-    if (err.status === 409) {
-      return `${err.message} (technical blocker — resolve it, don't skip).`;
-    }
-    return err.message;
-  }
-  return err instanceof Error ? err.message : 'Action failed';
 }
