@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { ModalStackProvider } from '@/contexts/ModalStackContext';
+import { ModalStackProvider, useModalStack } from '@/contexts/ModalStackContext';
 import type { SpecSummary } from '@/types';
 import { RefinementEvidenceMatrixNavigation } from '@/components/refinements/RefinementModal';
 import { ModalStackRenderer } from '../ModalStackRenderer';
@@ -62,6 +62,28 @@ function activateFocusedButtonWithEnter(button: HTMLButtonElement) {
 }
 
 describe('ModalStackRenderer Spec tab routing', () => {
+  it('keeps a Discovery board across nested modals and Back without changing the active board', () => {
+    function Navigation() {
+      const { push } = useModalStack();
+      return <>
+        <button onClick={() => push({ type: 'spec', id: 'source', boardId: 'discovery-board' })}>Source</button>
+        <button onClick={() => push({ type: 'spec', id: 'child' })}>Child</button>
+        <button onClick={() => push({ type: 'spec', id: 'source', boardId: 'active-board' })}>Other board</button>
+      </>;
+    }
+    render(<ModalStackProvider><Navigation /><ModalStackRenderer boardId="active-board" /></ModalStackProvider>);
+    fireEvent.click(screen.getByText('Source'));
+    expect(specModalSpy).toHaveBeenLastCalledWith(expect.objectContaining({ specId: 'source', boardId: 'discovery-board' }));
+    fireEvent.click(screen.getByText('Child'));
+    expect(specModalSpy).toHaveBeenLastCalledWith(expect.objectContaining({ specId: 'child', boardId: 'discovery-board' }));
+    fireEvent.click(screen.getByTestId('modal-stack-back'));
+    expect(specModalSpy).toHaveBeenLastCalledWith(expect.objectContaining({ specId: 'source', boardId: 'discovery-board' }));
+    fireEvent.click(screen.getByText('Other board'));
+    expect(specModalSpy).toHaveBeenLastCalledWith(expect.objectContaining({ specId: 'source', boardId: 'active-board' }));
+    fireEvent.click(screen.getByTestId('modal-stack-back'));
+    expect(specModalSpy).toHaveBeenLastCalledWith(expect.objectContaining({ specId: 'source', boardId: 'discovery-board' }));
+  });
+
   it('ts_e352303b — routes the real single-Spec keyboard action to its Evidence Matrix tab', () => {
     specModalSpy.mockClear();
     render(

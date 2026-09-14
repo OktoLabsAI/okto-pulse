@@ -59,6 +59,7 @@ from okto_pulse.core.application.use_cases.authorize_operation import (
     AuthorizeOperationCommand,
     AuthorizeOperationUseCase,
 )
+from okto_pulse.core.application.use_cases.kg_node_source import KGNodeSourceResult, ResolveKGNodeSourceUseCase
 from okto_pulse.core.application.use_cases.code_traceability_kg_access import (
     EvaluateCodeTraceabilityKGReadAccessUseCase,
     require_code_traceability_safe_arbitrary_query,
@@ -498,6 +499,34 @@ async def get_node_detail(
         if e.code == "not_found":
             return _problem(404, "Not Found", f"Node {node_id} not found")
         return _handle_kg_error(e)
+
+
+@router.get("/boards/{board_id}/nodes/{node_id}/source", response_model=KGNodeSourceResult)
+async def get_node_source(
+    board_id: str,
+    node_id: str,
+    actor: ActorContext = Depends(require_kg_board_actor),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Resolve one selected node's declared source, without expanding the graph.
+
+    Reuses the detail read's CT visibility gate, then separately authorizes the
+    owning artifact. No caller-supplied source ref can bypass that node read.
+    """
+    try:
+        node = await get_node_detail(board_id, node_id, actor=actor, uow=uow)
+        if isinstance(node, Response):
+            return node
+        return await ResolveKGNodeSourceUseCase().execute(
+            board_id=board_id,
+            source_artifact_ref=node.get("source_artifact_ref"),
+            actor=actor,
+            uow=uow,
+        )
+    except EntityNotFoundError:
+        return _problem(404, "Not Found", "Source is unavailable")
+    except GraphError as exc:
+        return _graph_problem(exc)
 
 
 @router.get("/boards/{board_id}/graph")

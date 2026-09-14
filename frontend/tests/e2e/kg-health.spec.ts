@@ -10,6 +10,16 @@ import { expect, test } from '@playwright/test';
 import { AxeBuilder } from '@axe-core/playwright';
 
 const HEALTH_FIXTURE = {
+  health_schema_version: '1.1',
+  materialization_state: 'materialized',
+  materialization_generation: 'kg-gen-1',
+  probe_reason_codes: {},
+  overall_state: 'healthy',
+  graph_state: 'healthy',
+  discovery_state: 'healthy',
+  metric_status: 'available',
+  current_kg_generation_id: null,
+  global_outbox_dead_letter_count: 0,
   queue_depth: 3,
   oldest_pending_age_s: 12.4,
   dead_letter_count: 0,
@@ -92,7 +102,21 @@ const EMPTY_COLUMNS_FIXTURE = {
   },
 };
 
-test('KGHealthView passa axe e abre Runtime Settings Decay Tick sem duplicar editor (TS13/KG-HS.4)', async ({ page }) => {
+test('KGHealthView passes accessibility, responsive navigation, help and settings integration', async ({ page }) => {
+  test.setTimeout(60_000);
+  const pageErrors: string[] = [];
+  const graphWrites: string[] = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  page.on('request', (request) => {
+    if (request.url().includes('/api/v1/kg/') && request.method() !== 'GET' && !request.url().includes('/rebuild/preflight')) {
+      graphWrites.push(request.url());
+    }
+  });
+  // No test action is ever allowed to write to a running Pulse backend.
+  await page.route('**/api/v1/**', (route, request) => {
+    if (request.method() === 'GET') return route.continue();
+    return route.fulfill({ status: 403, json: { detail: 'Unmocked writes blocked by the UI test' } });
+  });
   await page.addInitScript(() => {
     localStorage.setItem('okto.onboarding.completed.v1', 'true');
     localStorage.setItem('okto-pulse:metrics-opt-in-prompt-dismissed:1.1.0', new Date().toISOString());
@@ -107,6 +131,13 @@ test('KGHealthView passa axe e abre Runtime Settings Decay Tick sem duplicar edi
   await page.route('**/api/v1/kg/health*', (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(HEALTH_FIXTURE) }),
   );
+  await page.route('**/api/v1/kg/cognitive-pending?**', (route) => route.fulfill({ json: {
+    board_id: 'board-1', readonly: true, selected_kg_generation_id: null, legacy_mode: false,
+    counts: { pending: 0, in_progress: 0, consolidated: 0, skipped: 0, failed: 0, total: 0 }, items: [],
+  } }));
+  await page.route('**/api/v1/kg/boards/*/historical-consolidation/progress', (route) => route.fulfill({ json: {
+    enabled: true, status: 'inactive', total: 0, progress: 0, pending: 0, claimed: 0, paused: 0, failed: 0,
+  } }));
   await page.route('**/api/v1/kg/rebuild/preflight**', (route) =>
     route.fulfill({
       status: 200,
@@ -149,7 +180,7 @@ test('KGHealthView passa axe e abre Runtime Settings Decay Tick sem duplicar edi
     }),
   );
   await page.route('**/api/v1/settings/runtime', (route, request) => {
-    if (request.method() !== 'GET') return route.continue();
+    if (request.method() !== 'GET') return route.fallback();
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -160,7 +191,11 @@ test('KGHealthView passa axe e abre Runtime Settings Decay Tick sem duplicar edi
     route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ board_id: 'board-1', preset_name: 'test', flags: {} }),
+      body: JSON.stringify({ board_id: 'board-1', preset_name: 'test', owner_review_required: false, flags: {
+        kg: { operations: { health: { read: true }, cognitive: { read: true }, tick: { run: true },
+          rebuild: { preflight: true, confirm: true, run: true }, historical: { read: true, cancel: true } } },
+        runtime: { settings: { read: true } },
+      } }),
     }),
   );
   await page.route('**/api/v1/kg/boards/*/events', (route) =>
@@ -169,7 +204,7 @@ test('KGHealthView passa axe e abre Runtime Settings Decay Tick sem duplicar edi
   // Boards endpoint precisa retornar pelo menos 1 board para o currentBoard
   // ficar populado e o overlay sair do empty state.
   await page.route('**/api/v1/boards**', (route, request) => {
-    if (request.method() !== 'GET') return route.continue();
+    if (request.method() !== 'GET') return route.fallback();
     const url = new URL(request.url());
     const path = url.pathname.replace(/\/$/, '');
     if (path === '/api/v1/boards/board-1/columns') {
@@ -186,7 +221,10 @@ test('KGHealthView passa axe e abre Runtime Settings Decay Tick sem duplicar edi
         body: JSON.stringify(BOARD_FIXTURE),
       });
     }
-    if (path === '/api/v1/boards/board-1/topics' || path === '/api/v1/boards/board-1/stories') {
+    if (path === '/api/v1/boards/board-1/stories') {
+      return route.fulfill({ json: { items: [], total_filtered: 0, total_overall: 0, offset: 0, limit: 25, has_more: false } });
+    }
+    if (path === '/api/v1/boards/board-1/topics') {
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -213,19 +251,36 @@ test('KGHealthView passa axe e abre Runtime Settings Decay Tick sem duplicar edi
 
   const heading = page.getByRole('heading', { name: /KG Health Dashboard/i });
   await expect(heading).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole('heading', { name: 'Operational' })).toBeVisible();
   await expect(page.getByTestId('kg-open-decay-settings')).toBeVisible({ timeout: 10_000 });
 
-  const results = await new AxeBuilder({ page })
-    .include('[data-testid="kg-health-view"]')
-    .analyze();
-  const blocking = results.violations.filter((v) =>
-    ['critical', 'serious'].includes(v.impact ?? ''),
-  );
-  if (blocking.length > 0) {
-    // Diagnóstico amigável quando o teste falha
-    console.error('axe blocking violations:', JSON.stringify(blocking, null, 2));
+  const navigation = page.getByRole('navigation', { name: 'KG Health sections' });
+  const content = page.getByTestId('kg-health-scroll-content');
+  for (const width of [360, 768, 1440]) {
+    await page.setViewportSize({ width, height: 1000 });
+    for (const name of ['Processing & knowledge', 'Diagnostics', 'Recovery', 'Overview']) {
+      await navigation.getByRole('link', { name, exact: true }).click();
+      expect(await content.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    }
   }
-  expect(blocking).toHaveLength(0);
+  const dimensions = () => content.evaluate((el) => ({ width: el.scrollWidth, height: el.scrollHeight }));
+  const initialDimensions = await dimensions();
+  const help = page.getByRole('button', { name: 'Help: About indexed nodes' });
+  await help.focus();
+  await expect(page.getByRole('tooltip')).toBeVisible();
+  await expect(page.getByRole('tooltip')).toHaveCSS('position', 'fixed');
+  expect(await dimensions()).toEqual(initialDimensions);
+  await help.press('Escape');
+  await expect(page.getByRole('tooltip')).toHaveCount(0);
+
+  for (const dark of [false, true]) {
+    await page.evaluate((value) => document.documentElement.classList.toggle('dark', value), dark);
+    const results = await new AxeBuilder({ page })
+      .include('[data-testid="kg-health-view"]')
+      .analyze();
+    const blocking = results.violations.filter((v) => ['critical', 'serious'].includes(v.impact ?? ''));
+    expect(blocking, JSON.stringify(blocking, null, 2)).toHaveLength(0);
+  }
 
   await page.getByTestId('kg-open-decay-settings').click();
 
@@ -233,4 +288,6 @@ test('KGHealthView passa axe e abre Runtime Settings Decay Tick sem duplicar edi
   await expect(page.getByTestId('tab-decaytick')).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByTestId('input-tick-interval-minutes')).toBeVisible();
   await expect(heading).not.toBeVisible();
+  expect(pageErrors).toEqual([]);
+  expect(graphWrites).toEqual([]);
 });

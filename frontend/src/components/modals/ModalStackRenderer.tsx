@@ -37,13 +37,15 @@ interface Props {
   boardId: string;
 }
 
-export function ModalStackRenderer({ boardId }: Props) {
+export function ModalStackRenderer({ boardId: currentBoardId }: Props) {
   const api = useDashboardApi();
   const { stack, pop, clear } = useModalStack();
   const openCardInStore = useDashboardStore((s) => s.openCardModal);
   const closeCardInStore = useDashboardStore((s) => s.closeCardModal);
   const [storyTopics, setStoryTopics] = useState<TopicSummary[]>([]);
   const top = stack[stack.length - 1];
+  // Discovery can open an artifact from an accessible board other than the active one.
+  const boardId = top?.boardId ?? currentBoardId;
 
   useEffect(() => {
     if (top?.type !== 'story') return;
@@ -108,7 +110,7 @@ export function ModalStackRenderer({ boardId }: Props) {
           fetches by id might keep stale state. */}
       {top.type === 'card' && (
         <CardModal
-          key={`card-${top.id}`}
+          key={`card-${boardId}-${top.id}`}
           boardId={boardId}
           onClose={handleClose}
           onEscape={stack.length > 1 ? handleBack : handleClose}
@@ -116,7 +118,7 @@ export function ModalStackRenderer({ boardId }: Props) {
       )}
       {top.type === 'story' && (
         <StoryModal
-          key={`story-${top.id}`}
+          key={`story-${boardId}-${top.id}`}
           boardId={boardId}
           storyId={top.id}
           topics={storyTopics}
@@ -129,7 +131,7 @@ export function ModalStackRenderer({ boardId }: Props) {
       )}
       {top.type === 'spec' && (
         <SpecModal
-          key={`spec-${top.id}-${top.initialTab ?? 'default'}-${top.focusProjectNodeId ?? 'root'}`}
+          key={`spec-${boardId}-${top.id}-${top.initialTab ?? 'default'}-${top.focusProjectNodeId ?? 'root'}`}
           specId={top.id}
           boardId={boardId}
           initialTab={top.initialTab}
@@ -143,7 +145,7 @@ export function ModalStackRenderer({ boardId }: Props) {
       )}
       {top.type === 'ideation' && (
         <IdeationModal
-          key={`ideation-${top.id}`}
+          key={`ideation-${boardId}-${top.id}`}
           ideationId={top.id}
           boardId={boardId}
           onClose={handleClose}
@@ -155,7 +157,7 @@ export function ModalStackRenderer({ boardId }: Props) {
       )}
       {top.type === 'refinement' && (
         <RefinementModal
-          key={`refinement-${top.id}`}
+          key={`refinement-${boardId}-${top.id}`}
           refinementId={top.id}
           boardId={boardId}
           onClose={handleClose}
@@ -167,7 +169,7 @@ export function ModalStackRenderer({ boardId }: Props) {
       )}
       {top.type === 'sprint' && (
         <SprintModal
-          key={`sprint-${top.id}`}
+          key={`sprint-${boardId}-${top.id}`}
           sprintId={top.id}
           onClose={handleClose}
           onEscape={stack.length > 1 ? handleBack : handleClose}
@@ -175,7 +177,7 @@ export function ModalStackRenderer({ boardId }: Props) {
       )}
       {top.type === 'kg_node' && (
         <NodeDetailModal
-          key={`kg-${top.id}`}
+          key={`kg-${boardId}-${top.id}`}
           boardId={boardId}
           nodeId={top.id}
           onClose={handleClose}

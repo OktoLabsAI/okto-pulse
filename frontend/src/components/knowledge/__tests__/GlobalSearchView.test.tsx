@@ -143,6 +143,20 @@ beforeEach(() => {
 });
 
 describe('GlobalSearchView typed Discovery params', () => {
+  it('opens a search result in its own board and preserves the search input', async () => {
+    vi.mocked(discoveryApi.listIntents).mockResolvedValue([]);
+    vi.mocked(kgApi.globalSearch).mockResolvedValue({ results: [{
+      id: 'remote-node', board_id: 'other-board', title: 'Remote decision', summary: '',
+      node_type: 'Decision', similarity: 0.9, graph_layer: 'canonical',
+    }], total: 1, graph_layer: 'canonical' } as Awaited<ReturnType<typeof kgApi.globalSearch>>);
+    render(<GlobalSearchView boardId={BOARD} />);
+    fireEvent.change(screen.getByTestId('discovery-search-input'), { target: { value: 'remote decision' } });
+    fireEvent.click(screen.getByTestId('discovery-search-submit'));
+    fireEvent.click(await screen.findByTestId('global-search-result-remote-node'));
+    expect(mocks.pushModal).toHaveBeenCalledWith({ type: 'kg_node', id: 'remote-node', boardId: 'other-board' });
+    expect(screen.getByTestId('discovery-search-input')).toHaveValue('remote decision');
+  });
+
   it.each([false, true])(
     'shows a tool warning without claiming success (partial rows: %s)',
     async (hasPartialRows) => {
@@ -632,6 +646,7 @@ describe('GlobalSearchView typed Discovery params', () => {
     expect(mocks.pushModal).toHaveBeenCalledWith({
       type: 'spec',
       id: 'spec-parent',
+      boardId: BOARD,
     });
   });
 });

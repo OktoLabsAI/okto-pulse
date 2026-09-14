@@ -65,6 +65,23 @@ export async function getNodeDetail(boardId: string, nodeId: string) {
   return kgFetch<KGNode>(`/boards/${boardId}/nodes/${nodeId}`);
 }
 
+export interface KGNodeSource {
+  status: 'resolved' | 'missing_source' | 'unsupported' | 'unavailable';
+  source_artifact_ref: string | null;
+  target: {
+    board_id: string;
+    entity_type: 'spec' | 'refinement' | 'ideation' | 'sprint' | 'story' | 'card';
+    entity_kind: string;
+    entity_id: string;
+    title: string;
+    source_version: number | null;
+  } | null;
+}
+
+export async function getNodeSource(boardId: string, nodeId: string, signal?: AbortSignal) {
+  return kgFetch<KGNodeSource>(`/boards/${encodeURIComponent(boardId)}/nodes/${encodeURIComponent(nodeId)}/source`, { signal });
+}
+
 // Graph (for visualization)
 export interface GraphEdgeReadError {
   relationship?: string;

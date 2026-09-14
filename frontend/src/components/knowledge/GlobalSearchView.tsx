@@ -32,7 +32,6 @@ import type {
   DiscoverySpecChildSelectorValue,
   SpecChildType,
 } from '@/types/discovery';
-import { NodeDetailModal } from './NodeDetailModal';
 import { useModalStack } from '@/contexts/ModalStackContext';
 import { useDashboardStore } from '@/store/dashboard';
 
@@ -187,7 +186,6 @@ export function GlobalSearchView({ boardId }: Props) {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
-  const [selected, setSelected] = useState<SearchResult | null>(null);
   const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
   const [graphLayer, setGraphLayer] = useState<GraphLayerMode>('canonical');
   const resultsRef = useRef<HTMLDivElement | null>(null);
@@ -207,6 +205,9 @@ export function GlobalSearchView({ boardId }: Props) {
   // navigation. This view no longer owns any modal state.
   const { push: pushModal } = useModalStack();
   const openCardInStore = useDashboardStore((s) => s.openCardModal);
+  const openSearchNode = (result: SearchResult) => {
+    pushModal({ type: 'kg_node', id: result.id, boardId: result.board_id });
+  };
 
   const handleOpenEntity = (row: discoveryApi.IntentExecutionRow) => {
     const meta = (row.meta || {}) as Record<string, unknown>;
@@ -221,7 +222,8 @@ export function GlobalSearchView({ boardId }: Props) {
       // CardModal reads the id from the dashboard store, not props.
       openCardInStore(entityId);
     }
-    pushModal({ type: type as 'card' | 'spec' | 'ideation' | 'refinement' | 'sprint' | 'kg_node', id: entityId });
+    pushModal({ type: type as 'card' | 'spec' | 'ideation' | 'refinement' | 'sprint' | 'kg_node', id: entityId,
+      boardId: typeof meta.board_id === 'string' ? meta.board_id : boardId });
   };
   const [intentsOpen, setIntentsOpen] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true;
@@ -1421,7 +1423,7 @@ export function GlobalSearchView({ boardId }: Props) {
                             return (
                               <tr
                                 key={`${r.board_id}-${r.id}-${i}`}
-                                onClick={() => setSelected(r)}
+                                onClick={() => openSearchNode(r)}
                                 data-testid={`global-search-result-${r.id}`}
                                 className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50"
                               >
@@ -1519,7 +1521,7 @@ export function GlobalSearchView({ boardId }: Props) {
                           <button
                             key={`${r.board_id}-${r.id}-${i}`}
                             type="button"
-                            onClick={() => setSelected(r)}
+                            onClick={() => openSearchNode(r)}
                             title={`${nt} — ${r.title}`}
                             className="absolute -translate-x-1/2 -translate-y-1/2 h-6 w-6 rounded-full border border-black/20 dark:border-white/20 hover:scale-110 transition-transform focus:outline-none focus:ring-2 focus:ring-blue-400"
                             style={{
@@ -1555,13 +1557,6 @@ export function GlobalSearchView({ boardId }: Props) {
         })()}
       </section>
 
-      {selected && (
-        <NodeDetailModal
-          boardId={selected.board_id}
-          nodeId={selected.id}
-          onClose={() => setSelected(null)}
-        />
-      )}
     </div>
   );
 }

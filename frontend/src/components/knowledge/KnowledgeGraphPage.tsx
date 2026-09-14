@@ -40,6 +40,7 @@ import * as kgApi from '@/services/kg-api';
 import { getKGHealth, type KGHealth } from '@/services/kg-health-api';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { usePermissions } from '@/hooks/usePermissions';
+import { useOptionalModalStack } from '@/contexts/ModalStackContext';
 import { useCodeTraceabilityAuthority } from '@/components/code-traceability';
 
 interface Props {
@@ -175,6 +176,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<KGNode | null>(null);
   const [modalNode, setModalNode] = useState<KGNode | null>(null);
+  const modalStack = useOptionalModalStack();
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -476,11 +478,10 @@ export function KnowledgeGraphPage({ boardId }: Props) {
     };
   }, [sidebarWidth]);
 
-  const handleOpenSpec = useCallback((specRef: string) => {
-    if (typeof window !== 'undefined') {
-      window.location.href = `/specs/${specRef}`;
-    }
-  }, []);
+  const handleShowDetails = (node: KGNode) => {
+    if (modalStack) modalStack.push({ type: 'kg_node', id: node.id, boardId });
+    else setModalNode(node);
+  };
 
   // Do not mount onboarding (which can auto-refresh completed backfills) before
   // its status is known. Non-empty graphs never wait for diagnostics.
@@ -700,8 +701,8 @@ export function KnowledgeGraphPage({ boardId }: Props) {
               initialSelectedNodeId={selectedNode?.id ?? null}
               onClearFilters={handleClearFilters}
               onAdjustRelevance={handleAdjustRelevance}
-              onOpenSpec={handleOpenSpec}
-              onShowDetails={setModalNode}
+              boardId={boardId}
+              onShowDetails={handleShowDetails}
               refitTrigger={refitTrigger}
             />
           </>

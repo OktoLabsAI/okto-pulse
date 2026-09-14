@@ -60,32 +60,12 @@ describe('NodePreviewPanel — S5.2 / AC-8', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('shows Open in spec only when source_artifact_ref matches spec:<id> AND onOpenSpec is provided', () => {
-    const onOpenSpec = vi.fn();
-    const { getByTestId } = render(
-      <NodePreviewPanel node={NODE} onClose={() => {}} onOpenSpec={onOpenSpec} />,
-    );
-    const btn = getByTestId('kg-preview-open-spec');
-    fireEvent.click(btn);
-    expect(onOpenSpec).toHaveBeenCalledWith('abcd-1234');
-  });
-
-  it('hides Open in spec when source_artifact_ref does not match the spec: prefix', () => {
-    const { queryByTestId } = render(
-      <NodePreviewPanel
-        node={{ ...NODE, source_artifact_ref: 'pr:42' }}
-        onClose={() => {}}
-        onOpenSpec={vi.fn()}
-      />,
-    );
-    expect(queryByTestId('kg-preview-open-spec')).toBeNull();
-  });
-
-  it('hides Open in spec when onOpenSpec callback is not provided', () => {
-    const { queryByTestId } = render(
-      <NodePreviewPanel node={NODE} onClose={() => {}} />,
-    );
-    expect(queryByTestId('kg-preview-open-spec')).toBeNull();
+  it('shows source information without requiring Show more and does not guess a destination without board context', () => {
+    const { getByTestId, getByText, queryByRole } = render(<NodePreviewPanel node={NODE} onClose={() => {}} />);
+    expect(getByTestId('kg-node-source')).toBeInTheDocument();
+    expect(getByText('spec:abcd-1234')).toBeInTheDocument();
+    expect(queryByRole('button', { name: 'Open in spec' })).toBeNull();
+    expect(queryByRole('button', { name: 'Open source' })).toBeNull();
   });
 
   it('declares role="dialog" and an aria-label tied to the node title', () => {

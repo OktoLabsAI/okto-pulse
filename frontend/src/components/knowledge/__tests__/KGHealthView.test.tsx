@@ -227,6 +227,31 @@ afterEach(() => {
 });
 
 describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', () => {
+  it('orders overview, processing and diagnostics before exceptional recovery, without adding writes', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve({ ...baseHealth, overall_state: 'healthy' }));
+    render(<KGHealthView onClose={() => {}} />);
+    await screen.findByRole('heading', { name: 'Operational' });
+    const sections = ['overview', 'processing', 'diagnostics', 'recovery'].map((id) => document.getElementById(`kg-health-${id}`)!);
+    for (let i = 1; i < sections.length; i++) {
+      expect(sections[i - 1].compareDocumentPosition(sections[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    expect(screen.getByRole('navigation', { name: 'KG Health sections' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /^Recovery$/ })).toHaveAttribute('href', '#kg-health-recovery');
+    expect(screen.getByText('Powered by Okto Grafx')).toBeInTheDocument();
+    expect(kgHealthApi.runRebuildConfirm).not.toHaveBeenCalled();
+    expect(kgHealthApi.runRebuildRun).not.toHaveBeenCalled();
+    expect(kgHealthApi.cancelHistorical).not.toHaveBeenCalled();
+  });
+
+  it('does not claim a Grafx binding when storage routing is unavailable', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve({ ...baseHealth, graph_storage: undefined }));
+    render(<KGHealthView onClose={() => {}} />);
+    await screen.findByTestId('kg-health-overview');
+    expect(screen.queryByText('Powered by Okto Grafx')).not.toBeInTheDocument();
+  });
+
   it('fixa o contrato frontend em health schema 1.1', () => {
     expect(EXPECTED_KG_HEALTH_SCHEMA_VERSION).toBe('1.1');
   });

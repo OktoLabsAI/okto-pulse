@@ -62,6 +62,9 @@ import { triggerKGTick } from '@/services/kg-tick-api';
 import { KGHealthCognitivePendingPanel } from './KGHealthCognitivePendingPanel';
 import { CandidateDecisionPanel } from './CandidateDecisionPanel';
 import { usePermissions } from '@/hooks/usePermissions';
+import { GrafxBranding } from '@/components/shared/GrafxBranding';
+import { ReadinessHelp } from './ReadinessHelp';
+import { KGHealthOverview, KGHealthSectionHeading } from './KGHealthOverview';
 
 interface KGHealthViewProps {
   pollIntervalMs?: number;
@@ -203,7 +206,7 @@ export function KGHealthView({
 
   return (
     <div
-      className="flex flex-col h-full bg-surface-50 dark:bg-surface-950"
+      className="flex min-h-0 flex-col h-full bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-100"
       data-testid="kg-health-view"
     >
       <HeaderBar
@@ -213,8 +216,10 @@ export function KGHealthView({
         onRefresh={handleRefresh}
         onClose={onClose}
         canReadCognitive={canReadCognitive}
+        grafxActive={data?.graph_storage?.board?.backend === 'grafx'}
       />
-      <div className="flex-1 overflow-auto p-6">
+      <div className="min-h-0 flex-1 overflow-auto" data-testid="kg-health-scroll-content">
+        <div className="mx-auto max-w-[1600px] space-y-6 px-4 py-5 sm:px-6 sm:py-6">
         {schemaMismatch && (
           <SchemaBanner
             expected={EXPECTED_KG_HEALTH_SCHEMA_VERSION}
@@ -231,33 +236,59 @@ export function KGHealthView({
         {data && (
           <>
             {error && <InlineErrorBanner message={error.message} />}
-            <RecoveryPanel
-              boardId={boardId}
-              graphState={data.graph_state ?? null}
-              discoveryState={data.discovery_state ?? null}
-              overallState={data.overall_state ?? null}
-              currentGenerationId={data.current_kg_generation_id ?? null}
-              classificationReason={data.classification_reason ?? null}
-              totalNodes={data.total_nodes}
-              graphStorage={data.graph_storage ?? null}
-              pollIntervalMs={pollIntervalMs}
-              onCompleted={handleRefresh}
-              canPreflight={canRunRebuildPreflight}
-              canConfirm={canRunRebuildConfirm}
-              canRun={canRunRebuild}
-              canReadCognitive={canReadCognitive}
-              canReadHistorical={canReadHistorical}
-              canCancelHistorical={canCancelHistorical}
-            />
-            {canReadCognitive && (
-              <KGHealthCognitivePendingPanel
-                boardId={boardId}
-                selectedKgGenerationId={data.current_kg_generation_id ?? null}
-                pollIntervalMs={pollIntervalMs}
-              />
-            )}
-            {canReadCognitive && <CandidateDecisionPanel boardId={boardId} />}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            <KGHealthOverview health={data} stale={Boolean(error)} />
+            <nav aria-label="KG Health sections" className="sticky top-0 z-20 flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-white/95 p-1.5 shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900/95">
+              {[
+                ['overview', 'Overview'], ['processing', 'Processing & knowledge'],
+                ['diagnostics', 'Diagnostics'], ['recovery', 'Recovery'],
+              ].map(([id, label]) => (
+                <a key={id} href={`#kg-health-${id}`} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-600 hover:bg-sky-50 hover:text-sky-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-sky-300">{label}</a>
+              ))}
+            </nav>
+            <section id="kg-health-processing" aria-labelledby="kg-health-processing-title" className="scroll-mt-28 space-y-4">
+              <KGHealthSectionHeading id="kg-health-processing-title" eyebrow="01 · Knowledge work" title="Processing & pending work"
+                description="Track work waiting to reach the graph. These queues describe processing, not database integrity, and their counts may overlap." />
+              <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
+                <QueueDeadLetterCard
+                  queueDepth={data.queue_depth}
+                  oldestPendingAgeS={data.oldest_pending_age_s}
+                  deadLetterCount={data.dead_letter_count}
+                  globalOutboxDeadLetterCount={
+                    data.operational_domains?.global_outbox_dead_letter?.count
+                    ?? data.global_outbox_dead_letter_count
+                    ?? 0
+                  }
+                />
+                <CanonicalDebtCard summary={data.canonical_debt ?? null} layerCounts={data.kg_layer_counts ?? null} diagnostics={data.rebuild_diagnostics ?? null} />
+              </div>
+              {canReadCognitive && (
+                <>
+                  <KGHealthCognitivePendingPanel
+                    boardId={boardId}
+                    selectedKgGenerationId={data.current_kg_generation_id ?? null}
+                    pollIntervalMs={pollIntervalMs}
+                  />
+                  <CandidateDecisionPanel boardId={boardId} />
+                </>
+              )}
+            </section>
+            <section id="kg-health-diagnostics" aria-labelledby="kg-health-diagnostics-title" className="scroll-mt-28">
+              <KGHealthSectionHeading id="kg-health-diagnostics-title" eyebrow="02 · Inspect & maintain" title="Diagnostics & maintenance"
+                description="Inspect integrity signals, storage usage and relevance scheduling. Running a tick recalculates relevance; it does not rebuild the graph." />
+              <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
+                <div className="min-w-0 space-y-4">
+                  <KGHealthCard
+                    totalNodes={data.total_nodes}
+                    defaultScoreCount={data.default_score_count}
+                    defaultScoreRatio={data.default_score_ratio}
+                    avgRelevance={data.avg_relevance}
+                    contradictWarnCount={data.contradict_warn_count}
+                    metricStatus={data.metric_status ?? null}
+                    boardId={boardId}
+                    healthIssues={data.health_issues ?? []}
+                  />
+                  <StorageFootprintCard proxy={data.storage_footprint_proxy ?? null} />
+                </div>
               <SchemaTickCard
                 schemaVersion={data.schema_version}
                 healthSchemaVersion={data.health_schema_version ?? data.schema_version}
@@ -275,37 +306,37 @@ export function KGHealthView({
                 canRunTick={canRunTick}
                 canOpenDecayTickSettings={canReadRuntime}
               />
-              <QueueDeadLetterCard
-                queueDepth={data.queue_depth}
-                oldestPendingAgeS={data.oldest_pending_age_s}
-                deadLetterCount={data.dead_letter_count}
-                globalOutboxDeadLetterCount={
-                  data.operational_domains?.global_outbox_dead_letter?.count
-                  ?? data.global_outbox_dead_letter_count
-                  ?? 0
-                }
-              />
-              <KGHealthCard
-                totalNodes={data.total_nodes}
-                defaultScoreCount={data.default_score_count}
-                defaultScoreRatio={data.default_score_ratio}
-                avgRelevance={data.avg_relevance}
-                contradictWarnCount={data.contradict_warn_count}
-                metricStatus={data.metric_status ?? null}
+              </div>
+            </section>
+            <section id="kg-health-recovery" aria-labelledby="kg-health-recovery-title" className="scroll-mt-28 rounded-2xl border border-amber-200 bg-amber-50/40 p-4 dark:border-amber-900/60 dark:bg-amber-950/10 sm:p-6">
+              <KGHealthSectionHeading id="kg-health-recovery-title" eyebrow="03 · Exceptional operation" title="Recovery & rebuild"
+                description="Use only after reviewing the diagnosis. Stopping historical recovery, resolving cognitive debt and rebuilding storage are different actions." />
+              <div className="mb-5 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-relaxed text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-200">
+                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" aria-hidden />
+                <p><strong>Review before rebuilding.</strong> Preflight checks eligible sources; it does not start a rebuild. An actual rebuild promotes a new graph generation and can leave cognitive work pending. An absent rebuild generation alone is not a failure.</p>
+              </div>
+              <RecoveryPanel
                 boardId={boardId}
-                healthIssues={data.health_issues ?? []}
+                graphState={data.graph_state ?? null}
+                discoveryState={data.discovery_state ?? null}
+                overallState={data.overall_state ?? null}
+                currentGenerationId={data.current_kg_generation_id ?? null}
+                classificationReason={data.classification_reason ?? null}
+                totalNodes={data.total_nodes}
+                graphStorage={data.graph_storage ?? null}
+                pollIntervalMs={pollIntervalMs}
+                onCompleted={handleRefresh}
+                canPreflight={canRunRebuildPreflight}
+                canConfirm={canRunRebuildConfirm}
+                canRun={canRunRebuild}
+                canReadCognitive={canReadCognitive}
+                canReadHistorical={canReadHistorical}
+                canCancelHistorical={canCancelHistorical}
               />
-              <CanonicalDebtCard
-                summary={data.canonical_debt ?? null}
-                layerCounts={data.kg_layer_counts ?? null}
-                diagnostics={data.rebuild_diagnostics ?? null}
-              />
-              <StorageFootprintCard
-                proxy={data.storage_footprint_proxy ?? null}
-              />
-            </div>
+            </section>
           </>
         )}
+        </div>
       </div>
     </div>
   );
@@ -436,32 +467,36 @@ interface HeaderBarProps {
   onRefresh: () => void;
   onClose: () => void;
   canReadCognitive: boolean;
+  grafxActive: boolean;
 }
 
-function HeaderBar({ boardName, pollIntervalMs, lastFetchAt, onRefresh, onClose, canReadCognitive }: HeaderBarProps) {
+function HeaderBar({ boardName, pollIntervalMs, lastFetchAt, onRefresh, onClose, canReadCognitive, grafxActive }: HeaderBarProps) {
   const lastFetchLabel = lastFetchAt
     ? `last fetch ${Math.max(0, Math.floor((Date.now() - lastFetchAt.getTime()) / 1000))}s ago`
     : 'fetching...';
   const intervalLabel = `Polling ${Math.round(pollIntervalMs / 1000)}s`;
   return (
-    <div className="flex items-center justify-between border-b border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 px-6 py-3 shrink-0">
-      <div className="flex items-center gap-3">
-        <Activity className="text-emerald-500" aria-hidden />
-        <div>
-          <h1 className="text-lg font-bold text-surface-900 dark:text-white">KG Health Dashboard</h1>
-          <p className="text-xs text-surface-500 dark:text-surface-400">
+    <header className="shrink-0 border-b border-slate-200 bg-white px-4 py-4 dark:border-slate-800 dark:bg-slate-900 sm:px-6">
+      <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-4">
+      <div className="min-w-0 flex-1 basis-80">
+          <p className="mb-1 flex items-center gap-2 text-xs font-semibold text-sky-700 dark:text-sky-400"><Activity className="h-4 w-4" aria-hidden /> Knowledge Graph · Operations</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-white">KG Health Dashboard</h1>
+          <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Understand graph health, follow pending work and recover with confidence.</p>
+          <p className="mt-2 flex flex-wrap items-center gap-x-2 text-xs text-slate-500 dark:text-slate-400">
             Board: {boardName} · {intervalLabel} · {lastFetchLabel}
+            <ReadinessHelp label="About automatic refresh">This page refreshes observations while visible, without starting a rebuild or consolidation. Refresh does not retry failed jobs. If a refresh fails, previous data remains visible with a warning.</ReadinessHelp>
           </p>
-        </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-col gap-3 sm:items-end">
+        {grafxActive && <GrafxBranding />}
+      <div className="flex flex-wrap items-center gap-2">
         {canReadCognitive && (
           <button
             type="button"
             onClick={() =>
               window.dispatchEvent(new CustomEvent('okto:open-cognitive-action-center'))
             }
-            className="px-3 py-1.5 text-sm bg-violet-600 hover:bg-violet-700 text-white rounded-lg flex items-center gap-1.5"
+            className="px-3 py-2 text-sm font-medium bg-violet-600 hover:bg-violet-700 text-white rounded-lg flex items-center gap-1.5"
             aria-label="Open Cognitive Action Center"
             data-testid="kg-open-cognitive-action-center"
           >
@@ -471,7 +506,7 @@ function HeaderBar({ boardName, pollIntervalMs, lastFetchAt, onRefresh, onClose,
         <button
           type="button"
           onClick={onRefresh}
-          className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center gap-1.5"
+          className="px-3 py-2 text-sm font-medium border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg flex items-center gap-1.5"
           aria-label="Refresh KG data now"
         >
           <RefreshCw className="w-4 h-4" aria-hidden /> Refresh
@@ -479,12 +514,14 @@ function HeaderBar({ boardName, pollIntervalMs, lastFetchAt, onRefresh, onClose,
         <button
           type="button"
           onClick={onClose}
-          className="px-3 py-1.5 text-sm bg-surface-200 dark:bg-surface-700 hover:bg-surface-300 dark:hover:bg-surface-600 text-surface-900 dark:text-white rounded-lg flex items-center gap-1.5"
+          className="px-3 py-2 text-sm font-medium border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg flex items-center gap-1.5"
         >
           <ArrowLeft className="w-4 h-4" aria-hidden /> Back to Board
         </button>
       </div>
-    </div>
+      </div>
+      </div>
+    </header>
   );
 }
 
@@ -1148,16 +1185,44 @@ interface CardProps {
   children: React.ReactNode;
 }
 
+const CARD_GUIDANCE: Record<string, { description: string; help: string }> = {
+  'Decay Scheduler': {
+    description: 'Keep relevance scores current.',
+    help: 'A tick recomputes relevance using the configured decay policy. It writes scores; it does not rebuild storage or retry consolidation. Scheduling settings and manual execution require their own permissions.',
+  },
+  'Queue & Dead Letter': {
+    description: 'Follow queued work and failures that need review.',
+    help: 'Consolidation and global outbox dead letters are different queues. Review the failure cause before redriving through the appropriate workflow. Refreshing this dashboard does not retry any item.',
+  },
+  'KG Health': {
+    description: 'Read integrity signals and graph telemetry.',
+    help: 'These are backend observations, not inferred health. An unavailable metric is not zero. Inspect reported issues before deciding whether maintenance or recovery is needed.',
+  },
+  'Canonical Debt': {
+    description: 'Identify updates still waiting for canonical materialization.',
+    help: 'Canonical debt tracks materialization obligations. It is separate from cognitive pending work and may refer to the same sources. Retryable and blocked entries require different handling; a rebuild does not automatically settle every obligation.',
+  },
+  'Storage Footprint Proxy': {
+    description: 'Monitor disk usage, not process memory.',
+    help: 'The footprint measures storage files, not RAM. When no finite quota is configured, a usage percentage is not applicable; that alone does not make the byte measurement unavailable.',
+  },
+};
+
 function Card({ title, testId, icon, children }: CardProps) {
+  const guidance = CARD_GUIDANCE[title];
   return (
     <section
-      className="bg-white dark:bg-surface-800 rounded-xl border border-surface-200 dark:border-surface-700 p-5 shadow-sm"
+      className="min-w-0 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900"
       data-testid={testId}
     >
-      <h2 className="text-sm font-semibold text-surface-500 dark:text-surface-400 uppercase tracking-wider mb-3 flex items-center gap-2">
-        {icon}
-        {title}
-      </h2>
+      <div className="mb-5 border-b border-slate-100 pb-4 dark:border-slate-800">
+        <div className="flex items-center gap-2">
+          <span className="rounded-lg bg-sky-50 p-2 text-sky-700 dark:bg-sky-500/10 dark:text-sky-400">{icon}</span>
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{title}</h3>
+          {guidance && <ReadinessHelp label={`About ${title}`}>{guidance.help}</ReadinessHelp>}
+        </div>
+        {guidance && <p className="mt-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">{guidance.description}</p>}
+      </div>
       <div className="space-y-3">{children}</div>
     </section>
   );
@@ -1170,8 +1235,8 @@ interface RowProps {
 
 function Row({ label, children }: RowProps) {
   return (
-    <div className="flex items-baseline justify-between gap-3">
-      <span className="text-xs text-surface-500 dark:text-surface-400">{label}</span>
+    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+      <span className="text-xs text-slate-500 dark:text-slate-400">{label}</span>
       {children}
     </div>
   );
@@ -1310,7 +1375,7 @@ function cognitiveStateView(
     return {
       value: 'no generation',
       state: null,
-      subtitle: 'waiting for rebuild',
+      subtitle: 'no rebuild-linked generation',
       reportValue: 'not available',
       reportTone: 'default',
     };
@@ -1620,14 +1685,14 @@ function RecoveryPanel({
   const isCompleted = lastResult?.outcome === 'completed';
 
   return (
-    <div className="mb-6 space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-base font-semibold text-surface-900 dark:text-white">
+          <h3 className="text-base font-semibold text-surface-900 dark:text-white">
             KG Recovery
-          </h2>
+          </h3>
           <p className="text-xs text-surface-500 dark:text-surface-400">
-            Preflight, rebuild and report with cognitive pendings (KG-02).
+            Storage identity, historical recovery controls and audited rebuild preparation.
           </p>
         </div>
         <span className={recoveryStatus.className}>
@@ -1635,7 +1700,7 @@ function RecoveryPanel({
         </span>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         <RecoveryMetricCard
           label="Board graph"
           value={graphBackendLabel(boardStorage)}
@@ -1674,13 +1739,13 @@ function RecoveryPanel({
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_0.8fr] gap-4">
-        <section className="rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800">
+        <section className="min-w-0 rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
           <div className="border-b border-surface-200 dark:border-surface-700 px-4 py-3">
             <h3 className="text-sm font-semibold text-surface-900 dark:text-white">
               Preflight
             </h3>
             <p className="text-[11px] text-surface-500 dark:text-surface-400">
-              Read-only — the offline executor creates the authoritative manifest.
+              Step 1 · Review source eligibility. Read-only — the offline executor creates the authoritative manifest.
             </p>
           </div>
           <div className="space-y-2 px-4 py-3 text-sm">
@@ -1736,10 +1801,11 @@ function RecoveryPanel({
           </div>
         </section>
 
-        <aside className="rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 p-4 flex flex-col">
+        <aside className="min-w-0 rounded-xl border border-slate-200 bg-white p-4 flex flex-col dark:border-slate-800 dark:bg-slate-900">
           <h3 className="text-sm font-semibold text-surface-900 dark:text-white">
             Rebuild report
           </h3>
+          <p className="mt-1 mb-3 text-xs leading-relaxed text-slate-500 dark:text-slate-400">Step 2 · Record why recovery is needed and review the execution requirements. The result appears here; preparation is not a completed rebuild.</p>
           {runPhase !== 'idle' && (
             <div
               className={`mt-2 rounded-md px-3 py-2 text-xs ${
@@ -2018,7 +2084,7 @@ function HistoricalRecoveryControl({
 
   return (
     <section
-      className="rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 p-4"
+      className="min-w-0 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
       data-testid="historical-recovery-control"
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -2180,7 +2246,7 @@ function RecoveryMetricCard({
 }: RecoveryMetricCardProps) {
   return (
     <div
-      className="rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 p-4"
+      className="min-w-0 break-words rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
       title={tooltip}
       aria-label={`${label}: ${tooltip}`}
       data-testid={`kg-recovery-metric-${label.toLowerCase().replace(/\s+/g, '-')}`}

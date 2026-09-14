@@ -22,7 +22,7 @@
 import { createContext, useCallback, useContext, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 
-export type ModalStackEntry =
+export type ModalStackEntry = { boardId?: string } & (
   | { type: 'card'; id: string }
   | { type: 'story'; id: string }
   | {
@@ -34,7 +34,7 @@ export type ModalStackEntry =
   | { type: 'ideation'; id: string }
   | { type: 'refinement'; id: string }
   | { type: 'sprint'; id: string }
-  | { type: 'kg_node'; id: string };
+  | { type: 'kg_node'; id: string });
 
 interface ModalStackContextValue {
   stack: ModalStackEntry[];
@@ -53,8 +53,10 @@ export function ModalStackProvider({ children }: { children: ReactNode }) {
       // Dedupe: if the top of the stack is the same entity, don't push
       // twice (avoids double-click creating phantom layers).
       const top = prev[prev.length - 1];
-      if (top && top.type === entry.type && top.id === entry.id) return prev;
-      return [...prev, entry];
+      const scopedEntry = entry.boardId === undefined && top?.boardId
+        ? { ...entry, boardId: top.boardId } : entry;
+      if (top && top.type === scopedEntry.type && top.id === scopedEntry.id && top.boardId === scopedEntry.boardId) return prev;
+      return [...prev, scopedEntry];
     });
   }, []);
 
