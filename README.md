@@ -495,6 +495,9 @@ human-first UI.
 
 ## Graph storage
 
+See [Open PR review for 0.3.3](docs/PR_REVIEW_2026_09_14.md) for integration decisions,
+compatibility evidence and deferred dependency migrations.
+
 See [CLI, configuration and badge-refresh fixes (#84–#88)](docs/ISSUE_CLOSEOUT_84_88.md)
 for export error behavior, terms storage, CORS configuration and validation evidence.
 

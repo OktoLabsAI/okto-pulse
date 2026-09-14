@@ -12,8 +12,11 @@ from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphError,
 )
 from okto_pulse.core.kg.interfaces.ranked_graph_search import RankedGraphQuery
-from okto_pulse.core.kg.interfaces.registry import get_kg_registry
-from okto_pulse.core.kg.guarded_write import guarded_board_write, GuardedWriteError
+from okto_pulse.core.services.application_kg import (
+    get_current_provider_registry as get_kg_registry,
+    guarded_board_write,
+    GuardedWriteError,
+)
 from okto_pulse.core.application.use_cases.code_traceability_kg_access import (
     require_code_traceability_safe_arbitrary_query,
 )
