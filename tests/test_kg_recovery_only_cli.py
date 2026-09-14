@@ -210,13 +210,13 @@ def test_recovery_defaults_match_the_pinned_release_dependencies() -> None:
     dependencies = set(project["project"]["dependencies"])
     lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
 
-    assert recovery.EXPECTED_GRAFX_VERSION == "0.0.6"
+    assert recovery.EXPECTED_GRAFX_VERSION == "0.0.7"
     assert recovery.EXPECTED_SQLALCHEMY_VERSION == "2.0.49"
     assert not any("ladybug" in item for item in dependencies)
-    assert "okto-grafx[accel]==0.0.6" in dependencies
+    assert "okto-grafx[accel]==0.0.7" in dependencies
     assert "sqlalchemy[asyncio]==2.0.49" in dependencies
     assert 'name = "ladybug"' not in lock
-    assert '{ name = "okto-grafx", extras = ["accel"], specifier = "==0.0.6" }' in lock
+    assert '{ name = "okto-grafx", extras = ["accel"], specifier = "==0.0.7" }' in lock
     assert (
         '{ name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.49" }' in lock
     )

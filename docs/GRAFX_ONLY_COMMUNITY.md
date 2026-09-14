@@ -1,12 +1,32 @@
 # Grafx-only Community
 
-Community uses the published PyPI release `okto-grafx[accel]==0.0.6`. Ladybug/Kuzu is no longer a runtime,
+Community targets `okto-grafx[accel]==0.0.7`. Ladybug/Kuzu is no longer a runtime,
 installation dependency, configurable backend, recovery implementation or
 logical-transfer endpoint. Core runtime and contracts remain unchanged and engine-agnostic: it
 continues to consume graph ports and explicit capability declarations.
 
 The shared executable architecture matrix and the paired Core README now describe
 edition-owned graph adapters generically, rather than mandating a named database.
+
+## Pending 0.0.7 publication — 2026-09-14
+
+The dependency, recovery-only installation fingerprint and paired-wheel release
+gate now expect Grafx 0.0.7, retaining the `accel` extra. The PyPI version endpoint
+still returned 404 when this preparatory change was made. No installed package,
+running Pulse process or user database was changed.
+
+`uv.lock` deliberately retains the last real published resolution (Grafx 0.0.6),
+including its original artifact URLs and hashes. It is **not aligned** with the
+new manifest yet: do not use `uv sync --frozen` to bypass that mismatch. The
+existing recovery dependency/lock alignment test remains strict and will fail
+until the lock is regenerated. It has not been skipped or weakened.
+
+After publishing 0.0.7, run `uv lock --upgrade-package okto-grafx`, inspect that
+Grafx resolves from PyPI with the actual 0.0.7 artifacts, rerun the dependency/lock
+alignment test and commit the resulting lock. Do not replace it with a local
+development wheel or fabricated release hashes. Integration reports for 0.0.6
+remain historical evidence; this reference update does not claim a completed
+runtime regression against the unpublished release.
 
 ## Supported runtime
 
