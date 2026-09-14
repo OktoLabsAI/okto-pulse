@@ -440,6 +440,7 @@ class CommunityGrafxGraphRuntimeStore:
             sidecar_bytes=0,
             configured_max_bytes=maximum,
             percentage=percentage,
+            percentage_applicable=maximum is not None,
         )
 
     def budget_snapshot(self) -> GraphRuntimeBudgetSnapshot:

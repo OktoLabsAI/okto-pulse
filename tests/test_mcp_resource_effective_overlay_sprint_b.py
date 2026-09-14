@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 
 import pytest
 from fastmcp import Client
@@ -32,6 +33,19 @@ from okto_pulse.core.ports.mcp_resources import (
 
 
 _TEST_RESOURCE_PAGE_SIZE = 7
+
+
+def _assert_common_error_guidance_preserved(common: str, served: str) -> None:
+    assert served.startswith(common.rstrip()), "Community dropped or contradicted common error guidance"
+
+
+def test_common_error_guard_rejects_missing_or_contradictory_overlay() -> None:
+    common = "# Errors\nKB is advisory.\ncode_investigation_subject_version_conflict\n"
+    _assert_common_error_guidance_preserved(common, common + "\nCommunity notes\n")
+    with pytest.raises(AssertionError):
+        _assert_common_error_guidance_preserved(common, common.replace("KB is advisory.", "KB blocks."))
+    with pytest.raises(AssertionError):
+        _assert_common_error_guidance_preserved(common, "# Errors\nKB is advisory.\n")
 
 
 class _EmptyToolCatalog:
@@ -79,6 +93,9 @@ async def test_real_client_paginates_and_reads_exact_frozen_manifest(
 ) -> None:
     tool_inventory_before = tool_inventory_document(server.mcp)
     tool_hash_before = tool_inventory_sha256(tool_inventory_before)
+    common_bodies = {
+        spec.uri: spec.read() for spec in server.effective_resource_catalog().specs()
+    }
 
     transaction = register_and_freeze_community_resource_catalog(
         active_runtime_registry
@@ -144,6 +161,18 @@ async def test_real_client_paginates_and_reads_exact_frozen_manifest(
         assert bodies_by_uri[uri] == (_OPERATIONAL_DIR / relative_path).read_text(
             encoding="utf-8"
         )
+
+    # AI-02: test the body served over MCP, not merely the Core source file.
+    # Errors are explicitly synchronized common content plus Community notes.
+    error_uri = "okto-pulse://reference/errors"
+    _assert_common_error_guidance_preserved(common_bodies[error_uri], bodies_by_uri[error_uri])
+    for uri in replacement_by_uri:
+        common_headings = set(re.findall(r"^#{2,3} .+$", common_bodies[uri], re.M))
+        operational_headings = set(re.findall(r"^#{2,3} .+$", bodies_by_uri[uri], re.M))
+        assert common_headings <= operational_headings, (uri, common_headings - operational_headings)
+    assert "Knowledge Base is advisory" in bodies_by_uri[error_uri]
+    assert "Architecture, Mockup, or Knowledge Base is missing" not in bodies_by_uri[error_uri]
+    assert "Transparent Grafx checkpoint recovery" in bodies_by_uri["okto-pulse://workflows/kg"]
 
     unicode_uris = {
         uri

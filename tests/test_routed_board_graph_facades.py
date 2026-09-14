@@ -884,12 +884,16 @@ def test_runtime_reads_and_purge_use_inspect_with_the_required_windows() -> None
     assert events[events.index(purge_enter) + 1] == ("inspect", "board-g")
 
 
-def test_runtime_budget_never_routes_or_touches_either_backend() -> None:
+def test_runtime_budget_delegates_metadata_without_routing_or_opening_graphs() -> None:
+    from okto_pulse.community.adapters.graph_runtime_budget import build_native_runtime_budget_snapshot
     events: list[tuple[Any, ...]] = []
     resolver = _RouteResolver({}, events)
     windows = _Windows(events)
     ladybug = Mock()
     grafx = Mock()
+    grafx.budget_snapshot.return_value = build_native_runtime_budget_snapshot(SimpleNamespace(
+        kg_grafx_buffer_pool_mb=64, kg_grafx_read_participants=2,
+    ))
     ladybug_erase = Mock()
     grafx_erase = Mock()
     facade = _runtime_facade(
@@ -902,14 +906,18 @@ def test_runtime_budget_never_routes_or_touches_either_backend() -> None:
 
     snapshot = facade.budget_snapshot()
 
-    assert snapshot.status == "unavailable"
+    assert snapshot.status == "available"
     assert snapshot.source == "runtime_capability"
-    assert snapshot.unavailable_reason == "routed_budget_incomplete"
+    assert snapshot.unavailable_reason is None
     projection = NativeRuntimeBudget.model_validate(snapshot.__dict__)
     assert projection.source == "runtime_capability"
-    assert projection.unavailable_reason == "routed_budget_incomplete"
+    assert projection.effective.board_buffer_pool_mb == 64
+    assert projection.effective.read_participants == 2
+    assert projection.process_envelope.buffer_pool_per_board_mb == 192
     assert resolver.acquire_calls == resolver.inspect_calls == []
-    assert ladybug.mock_calls == grafx.mock_calls == []
+    grafx.budget_snapshot.assert_called_once_with()
+    assert len(grafx.mock_calls) == 1
+    assert ladybug.mock_calls == []
     assert ladybug_erase.mock_calls == grafx_erase.mock_calls == []
     assert events == []
 

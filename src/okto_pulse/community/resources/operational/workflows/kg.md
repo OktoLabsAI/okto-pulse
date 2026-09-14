@@ -357,3 +357,43 @@ After `okto_pulse_kg_commit_consolidation`:
 - [ ] `okto_pulse_kg_query_natural` retrieved the newly consolidated final facts
 - [ ] `okto_pulse_kg_query_cypher` validated the new nodes by `source_artifact_ref`
 - [ ] Final response includes `session_id`, `nodes_added`, `edges_added`, query verification, and nonconformities
+
+### SK-A relational authority and graph projection
+
+Quality receipts, findings, checklist executions/items, and checklist receipts
+remain relational source-of-truth records. The graph never creates a
+`QualityFinding` or checklist node. Entity roots may carry only the current
+Quality summary identity. A resolved Research Decision Ledger head projects
+through the existing `Decision`/`Alternative` vocabulary; demoting it to
+`open`, `investigating`, or `deferred` removes/tombstones those derived
+projections. Incremental reconciliation and rebuild must produce the same
+active set. Archive/cancel/demotion must not leave a stale child projection.
+Use `okto-pulse://reference/quality-assessments` for Quality currentness and
+`okto-pulse://workflows/refinements` for the RDL authoring lifecycle.
+For adopted semantic guidelines, assessment receipts, governed exceptions,
+projection identity and rebuild behavior, read the single canonical
+protocol at `okto-pulse://reference/policy-compliance`.
+
+When KG Health reports `digest_vs_board_layer_mismatch` after all operational
+queues are idle, inspect the rows with
+`okto_pulse_kg_digest_layer_mismatch_list`. An authorized KG administrator may
+then call `okto_pulse_kg_digest_layer_reconcile` with a bounded audit reason and
+wait for the outbox to return to idle before verifying the mismatch list again.
+This is a parity sync, not a rebuild. The worker keyset-inventories authoritative
+publishable board sources with physical duplicate detection, guards stale prune
+against derived clustering relationships, repairs identities and Board links,
+and backfills missing identities. It revalidates the source inventory before a
+board-isolated ACK and requires a post-flush fresh-handle proof of one stable
+digest, the correct Board edge, and exactly one total inbound Board edge per
+source.
+
+### Cognitive Provenance — Learning Taxonomy (S-KG-01)
+
+Cognitive artifacts (`Learning` / `Alternative` / `Assumption`) prove connectivity through **cognitive provenance** — a resolved `source_artifact_ref` PLUS a cognitive-taxonomy relation — NOT the deterministic `belongs_to`-to-`Entity` backbone the **operational** artifacts (`Requirement` / `Constraint` / `APIContract` / `TestScenario` / `Criterion` / `Bug` / `Entity`) require. The taxonomy reuses the EXISTING edge names; no new edge type is ever introduced (never `learned_from` / `informs` / `constrains` / `refines` / `warns_about`):
+
+| Learning shape | Allowed relation | Endpoint |
+|---|---|---|
+| bug-derived | `validates` | a **canonical** `Bug` (a `working` Bug never canonizes the Learning) |
+| non-bug | `relates_to` | ONE canonical `Entity` \| `Decision` \| `Requirement` \| `Constraint` \| `TestScenario` \| `APIContract` \| `Criterion` |
+
+`relates_to Decision -> Alternative` is unchanged. A cognitive writer that emits `belongs_to` (or any deterministic edge) is rejected fail-closed with `forbidden_deterministic_edge`; a cognitive node whose source resolves but carries no allowed relation is `missing_cognitive_provenance`. Operational artifacts stay on the strict deterministic provenance group even when they carry cognitive metadata.

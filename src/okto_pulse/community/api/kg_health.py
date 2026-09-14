@@ -119,6 +119,8 @@ class StorageFootprintProxy(BaseModel):
     source: str = "runtime_capability"
     status: str = "unavailable"
     percentage: float | None = None
+    percentage_status: Literal["available", "not_applicable", "unavailable"] = "unavailable"
+    percentage_reason: str | None = None
     high_water_mark_pct: float | None = None
     graph_lbug_bytes: int | None = None
     primary_bytes: int | None = None

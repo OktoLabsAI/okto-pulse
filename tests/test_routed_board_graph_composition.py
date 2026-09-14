@@ -122,6 +122,22 @@ def _settings(
     )
 
 
+def test_runtime_budget_uses_composed_constructor_values_without_opening_graphs(tmp_path):
+    settings = _settings(tmp_path)
+    settings.kg_grafx_buffer_pool_mb = 96
+    settings.kg_grafx_read_participants = 3
+    connector = _GrafxConnector()
+    bundle = composition.build_community_routed_board_graph_composition(settings=settings, grafx_connect=connector)
+    settings.kg_grafx_buffer_pool_mb = 128
+    budget = bundle.graph_runtime_store.budget_snapshot()
+    assert budget.status == "available"
+    assert budget.effective["board_buffer_pool_mb"] == 96
+    assert budget.effective["read_participants"] == 3
+    assert budget.process_envelope["buffer_pool_per_board_mb"] == 384
+    assert budget.process_envelope["total_process_bound_available"] is False
+    assert connector.calls == []
+
+
 def _build(
     root: Path,
     connector: _GrafxConnector,

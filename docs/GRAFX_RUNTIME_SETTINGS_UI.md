@@ -12,6 +12,37 @@ activation cautions are in [Advanced adoption](GRAFX_ADVANCED_ADOPTION_0_0_6.md)
 No Settings checkbox implicitly builds text indexes, enables history or deletes
 retained versions.
 
+## Health: capacity applicability and composed budgets
+
+KG Health obtains the budget from the validated values actually used to construct
+the resident pools, not from later edits to Settings. A restart is still required
+for settings changes to take effect. The routed provider exposes this immutable
+metadata without opening a graph or resolving a board binding:
+`native_runtime_budget.effective.board_buffer_pool_mb`, `global_buffer_pool_mb`
+and `read_participants`. The per-board cache envelope is the buffer budget times
+one writer plus the configured independent readers. This is neither measured RSS
+nor a bound on total process memory; `total_process_bound_available=false`.
+
+No database-size quota is configured by the Community composition. Consequently,
+the measured on-disk byte count is available, but capacity utilization has no
+denominator. Health returns `percentage_status=not_applicable`,
+`percentage_reason=no_capacity_limit_configured`, and null percentages; the UI
+shows **Not applicable**, not an unavailable reading or a fake 0% bar. Missing
+or unreadable storage still returns unavailable and is not covered up by this
+distinction. This requires no new Settings option and no rebuild.
+
+Analytics similarly shows **No samples** when the selection has no completed
+consolidation timing evidence to measure. Missing timestamps for materialized
+outcomes remain unavailable. Real DLQ/debt/recovery signals are unchanged.
+
+When Analytics reports a stale/not-ready graph snapshot, both panel modes
+recheck at 10-second intervals, at most three consecutive times. Rechecks stop
+on availability, request errors, recovery/quarantine/backpressure, unmount, or
+explicitly loaded pagination beyond the first page. They do not write the graph,
+fabricate availability, or initiate recovery. If the source remains unavailable,
+the partial result and manual Refresh remain visible. Changed response timestamps
+or fingerprints do not reset the retry bound.
+
 ## Pulse query-value ceiling
 
 `max_query_value_characters` has a **default and hard maximum of 65536** in

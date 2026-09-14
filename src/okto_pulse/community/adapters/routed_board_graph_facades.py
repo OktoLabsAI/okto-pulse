@@ -1030,11 +1030,8 @@ class CommunityRoutedGraphRuntimeStore:
             return provider.footprint(board_id)
 
     def budget_snapshot(self) -> GraphRuntimeBudgetSnapshot:
-        return GraphRuntimeBudgetSnapshot(
-            source="runtime_capability",
-            status="unavailable",
-            unavailable_reason="routed_budget_incomplete",
-        )
+        # Process-wide constructor metadata needs no board binding or graph I/O.
+        return self._grafx.budget_snapshot()
 
 
 class CommunityRoutedGraphRecovery:

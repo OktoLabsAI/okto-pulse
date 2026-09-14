@@ -503,6 +503,20 @@ describe('KG-HS.3 — scheduler debt and storage-footprint clarity', () => {
     expect(screen.getByText('Rebuild Complete With Canonical Debt')).toBeInTheDocument();
   });
 
+  it('explains absent capacity limits without hiding the measured file size', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve({ ...baseHealth, storage_footprint_proxy: {
+      ...baseHealth.storage_footprint_proxy!, status: 'available', percentage: null,
+      percentage_status: 'not_applicable', percentage_reason: 'no_capacity_limit_configured',
+      high_water_mark_pct: null, total_bytes: 1024, configured_max_db_size_bytes: null,
+      configured_max_db_size_gb: null, unavailable_reason: null,
+    } }));
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+    expect(await screen.findByText('Not applicable')).toBeInTheDocument();
+    expect(screen.getByText(/No storage limit configured/)).toBeInTheDocument();
+    expect(screen.getByText('1.00 KB')).toBeInTheDocument();
+  });
+
   it('renders storage footprint proxy copy without memory/buffer telemetry claims', async () => {
     mockBoard('b1');
     mockApi(() => Promise.resolve({

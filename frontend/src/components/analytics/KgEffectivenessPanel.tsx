@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
@@ -86,6 +86,24 @@ function availabilityFact(value: number | null, state: string): string | number 
   return words(state);
 }
 
+function HealthEvidenceNotice({ data }: { data: BoardKgAnalyticsResponse }) {
+  const incomplete = data.health.components.filter((component) =>
+    !['available', 'empty'].includes(component.result_state));
+  if (incomplete.length === 0) return null;
+  return (
+    <div aria-label="KG evidence details" className="space-y-1 text-xs text-gray-600 dark:text-gray-300">
+      <p>Health, graph availability and telemetry are separate signals. Missing telemetry alone does not require a rebuild.</p>
+      {needsSnapshotRefresh(data) && <p>A KG snapshot is stale or telemetry is not ready. Up to 3 automatic rechecks are attempted; use Refresh if it remains unavailable. No graph writes are performed.</p>}
+      {incomplete.map((component) => (
+        <p key={component.component}>
+          <span className="font-semibold">{words(component.component)}: {words(component.result_state)}.</span>{' '}
+          {component.classification_reason.split(';').map((reason) => words(reason)).join('; ')}.
+        </p>
+      ))}
+    </div>
+  );
+}
+
 function rateFact(value: number | null, state: string): string {
   if (value !== null) return `${Math.round(value * 1000) / 10}%`;
   if (state === 'empty') return 'N/A';
@@ -131,6 +149,14 @@ function DiagnosticList({ diagnostics }: { diagnostics: BoardKgDiagnostic[] }) {
   return <div className="space-y-2">{diagnostics.map((diagnostic, index) => <article key={`${diagnostic.domain}:${diagnostic.reason}:${index}`} className="rounded-lg border border-gray-200 p-3 dark:border-gray-700"><div className="flex flex-wrap items-center justify-between gap-2"><h6 className="text-xs font-semibold text-gray-800 dark:text-gray-100">{words(diagnostic.domain)}</h6><StateBadge value={diagnostic.severity} /></div><p className="mt-1 text-[10px] text-gray-500 dark:text-gray-400">{words(diagnostic.reason)}</p>{diagnostic.next_step.allowed && safeDrillDown(diagnostic.next_step.target) && <a href={diagnostic.next_step.target!} className="mt-2 inline-flex items-center gap-1 text-[10px] font-semibold text-indigo-600 dark:text-indigo-300"><ExternalLink className="h-3 w-3" aria-hidden="true" /> Open next step</a>}</article>)}</div>;
 }
 
+function needsSnapshotRefresh(data: BoardKgAnalyticsResponse | null): boolean {
+  if (data?.result_state !== 'partial') return false;
+  const blocked = ['recovery_needed', 'quarantined', 'backpressure', 'restricted', 'error'];
+  if (blocked.includes(data.health.state) || data.health.components.some((c) => blocked.includes(c.health_state) || blocked.includes(c.result_state))) return false;
+  return data.health.components.some((c) => c.component === 'graph'
+    && /(?:^|;)(?:graph_snapshot:(?:stale|unavailable)|health_telemetry_incomplete)(?:;|$)/.test(c.classification_reason ?? ''));
+}
+
 export function KgEffectivenessPanel({
   data,
   loading,
@@ -149,6 +175,24 @@ export function KgEffectivenessPanel({
   const [search, setSearch] = useState('');
   const [resultState, setResultState] = useState('all');
   const [severity, setSeverity] = useState('all');
+  const snapshotRetries = useRef({ scope: '', attempts: 0 });
+  const retryCallback = useRef(onRetry);
+  useEffect(() => { retryCallback.current = onRetry; }, [onRetry]);
+  // Scope excludes as_of/fingerprint: every fresh response changes these and
+  // must not reset the retry bound. Never discard explicitly loaded pages.
+  const snapshotScope = JSON.stringify([data?.board_id, from, to,
+    data?.query?.cognitive_status, data?.query?.artifact_types, data?.query?.limit]);
+  useEffect(() => {
+    if (snapshotRetries.current.scope !== snapshotScope || data?.result_state === 'available') {
+      snapshotRetries.current = { scope: snapshotScope, attempts: 0 };
+    }
+    if (loading || error || loadedPages > 1 || !needsSnapshotRefresh(data) || snapshotRetries.current.attempts >= 3) return;
+    const timer = window.setTimeout(() => {
+      snapshotRetries.current.attempts += 1;
+      retryCallback.current();
+    }, 10000);
+    return () => window.clearTimeout(timer);
+  }, [data, loading, error, loadedPages, snapshotScope]);
   const domains = useMemo(() => data?.domains ?? [], [data]);
   const resultStates = useMemo(() => Array.from(new Set(domains.map((item) => item.result_state))).sort(), [domains]);
   const severities = useMemo(() => Array.from(new Set(domains.flatMap((item) => item.severity ? [item.severity] : []))).sort(), [domains]);
@@ -225,6 +269,7 @@ export function KgEffectivenessPanel({
         {!loading && !error && !data && <div className="mt-4"><AnalyticsStateNotice state="unavailable" /></div>}
         {!loading && !error && data && <div className="mt-4 space-y-4">
           <AnalyticsStateNotice state={data.result_state} />
+          <HealthEvidenceNotice data={data} />
           <div className="flex flex-wrap items-center gap-2" aria-label="KG health and availability"><span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Health</span><StateBadge value={data.health.state} title={data.health.classification_reason} /><span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Result</span><StateBadge value={data.result_state} /><span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Currentness</span><StateBadge value={data.provenance.currentness} title={data.provenance.reason ?? undefined} /></div>
           {summaryCards.length > 0 ? <div className="grid grid-cols-2 gap-3 xl:grid-cols-4" aria-label="KG effectiveness summary KPIs">{summaryCards.map(({ label, value, note, icon: Icon }) => <article key={label} className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/40"><p className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-400"><Icon className="h-3.5 w-3.5" aria-hidden="true" /> {label}</p><p className="mt-1 text-lg font-bold text-gray-900 dark:text-white">{value}</p><p className="mt-0.5 text-[10px] text-gray-500 dark:text-gray-400">{note}</p></article>)}</div> : <p className="rounded-lg border border-dashed border-red-300 bg-red-50 px-4 py-4 text-xs text-red-800 dark:border-red-800 dark:bg-red-950/20 dark:text-red-200">The canonical KG payload is incomplete. Missing facts were not inferred.</p>}
         </div>}
@@ -247,13 +292,14 @@ export function KgEffectivenessPanel({
       {!loading && !error && data && (!effectiveness || !inventory) && <div className="mt-4 rounded-lg border border-dashed border-red-300 bg-red-50 px-4 py-5 text-xs text-red-800 dark:border-red-800 dark:bg-red-950/20 dark:text-red-200">The canonical KG payload is incomplete. Effectiveness and inventory were not inferred from other facts.</div>}
       {!loading && !error && data && effectiveness && inventory && <div className="mt-5 space-y-5">
         <AnalyticsStateNotice state={data.result_state} />
+        <HealthEvidenceNotice data={data} />
         <div className="flex flex-wrap items-center gap-2" aria-label="KG health and availability"><span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Health</span><StateBadge value={data.health.state} title={data.health.classification_reason} /><span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Result</span><StateBadge value={data.result_state} /><span className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Currentness</span><StateBadge value={data.provenance.currentness} title={data.provenance.reason ?? undefined} /><span className="text-xs text-gray-500 dark:text-gray-400">{words(data.health.classification_reason)}</span></div>
 
         <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6" aria-label="KG effectiveness KPIs">{[
           { label: 'Candidate → persisted', value: rateFact(effectiveness.conversion_rate, effectiveness.state), note: `${availabilityFact(effectiveness.candidate_count, effectiveness.state)} candidates · ${availabilityFact(effectiveness.persisted_count, effectiveness.state)} persisted`, icon: BrainCircuit },
           { label: 'Effectiveness', value: rateFact(effectiveness.rate, effectiveness.state), note: `${availabilityFact(effectiveness.numerator, effectiveness.state)} / ${availabilityFact(effectiveness.denominator, effectiveness.state)}`, icon: CheckCircle2 },
-          { label: 'Persistence p50', value: hoursFact(effectiveness.timing.p50_hours, effectiveness.timing.state), note: `${effectiveness.timing.sample_count} timing samples`, icon: Clock3 },
-          { label: 'Persistence p95', value: hoursFact(effectiveness.timing.p95_hours, effectiveness.timing.state), note: effectiveness.timing.reason ? words(effectiveness.timing.reason) : 'Canonical timing', icon: Clock3 },
+          { label: 'Persistence p50', value: effectiveness.timing.state === 'empty' ? 'No samples' : hoursFact(effectiveness.timing.p50_hours, effectiveness.timing.state), note: `${effectiveness.timing.sample_count} timing samples`, icon: Clock3 },
+          { label: 'Persistence p95', value: effectiveness.timing.state === 'empty' ? 'No samples' : hoursFact(effectiveness.timing.p95_hours, effectiveness.timing.state), note: effectiveness.timing.state === 'empty' ? 'No completed consolidation timings in this selection.' : effectiveness.timing.reason ? words(effectiveness.timing.reason) : 'Canonical timing', icon: Clock3 },
           { label: 'Cognitive inventory', value: availabilityFact(inventory.total, inventory.result_state), note: `${availabilityFact(inventory.overdue_revisits, inventory.result_state)} overdue revisits`, icon: Database },
           { label: 'Policy projection debt', value: policyDebt ? availabilityFact(policyDebt.count, policyDebt.result_state) : 'Unavailable', note: 'Independent debt domain', icon: ShieldAlert },
         ].map(({ label, value, note, icon: Icon }) => <div key={label} className="rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/40"><div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-400"><Icon className="h-3.5 w-3.5" aria-hidden="true" /> {label}</div><p className="mt-1 text-lg font-bold text-gray-900 dark:text-white">{value}</p><p className="mt-0.5 text-[10px] text-gray-500 dark:text-gray-400">{note}</p></div>)}</div>

@@ -989,7 +989,8 @@ interface StorageFootprintCardProps {
 
 function StorageFootprintCard({ proxy }: StorageFootprintCardProps) {
   const pct = proxy?.percentage ?? proxy?.high_water_mark_pct ?? null;
-  const pctLabel = typeof pct === 'number' ? `${pct.toFixed(1)}%` : 'unavailable';
+  const notApplicable = proxy?.status === 'available' && proxy.percentage_status === 'not_applicable';
+  const pctLabel = typeof pct === 'number' ? `${pct.toFixed(1)}%` : notApplicable ? 'Not applicable' : 'unavailable';
   const status = proxy?.status ?? 'unavailable';
   const totalBytes = proxy?.total_bytes ?? null;
   const maxBytes = proxy?.configured_max_db_size_bytes ?? null;
@@ -1023,12 +1024,13 @@ function StorageFootprintCard({ proxy }: StorageFootprintCardProps) {
           {pctLabel}
         </span>
       </Row>
-      <div className="h-2 rounded-full bg-surface-200 dark:bg-surface-700 overflow-hidden" aria-hidden>
+      {typeof pct === 'number' && <div className="h-2 rounded-full bg-surface-200 dark:bg-surface-700 overflow-hidden" aria-hidden>
         <div
           className={`h-full rounded-full ${tone}`}
-          style={{ width: `${Math.max(0, Math.min(100, pct ?? 0))}%` }}
+          style={{ width: `${Math.max(0, Math.min(100, pct))}%` }}
         />
-      </div>
+      </div>}
+      {notApplicable && <p className="text-xs text-surface-600 dark:text-surface-400">No storage limit configured. File size is available; a capacity percentage does not apply.</p>}
       <Row label="Files">
         <span className="text-xs text-surface-600 dark:text-surface-400">
           {bytesLabel}

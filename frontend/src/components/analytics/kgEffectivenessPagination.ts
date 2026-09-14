@@ -142,7 +142,13 @@ export function mergeBoardKgAnalyticsPages(
       candidate_count: candidateCount,
       persisted_count: persistedCount,
       conversion_rate: exactRate(persistedCount, candidateCount),
-      timing: {
+      timing: pages.every((page) => page.effectiveness.timing.state === 'empty') ? {
+        state: 'empty',
+        sample_count: 0,
+        p50_hours: null,
+        p95_hours: null,
+        reason: 'no_consolidation_timing_samples',
+      } : {
         state: 'unavailable',
         sample_count: pages.reduce((total, page) => total + page.effectiveness.timing.sample_count, 0),
         p50_hours: null,

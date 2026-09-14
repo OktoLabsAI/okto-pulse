@@ -1220,3 +1220,198 @@ Returns:
 
 Raises:
     ValueError: if retrieved_rows_json is not valid JSON.
+
+## Authorization and board scope
+
+Every board-scoped tool authenticates the request and resolves the caller's
+effective `AgentContext` for that exact board before opening a graph, Unit of
+Work, ledger, embedding provider, or writer lock. Session tools first resolve
+session ownership, derive its board, and then apply that board's ACL. A denied
+request is fail-closed and has no mutation side effect.
+
+Required permission by affected family:
+
+| Tool/family | `required_permission` |
+|---|---|
+| begin / add node / add edge / get similar / propose / commit / abort consolidation | `kg.session.begin` / `kg.session.add_node` / `kg.session.add_edge` / `kg.session.get_similar` / `kg.session.propose` / `kg.session.commit` / `kg.session.abort` |
+| list cognitive pending items | `board.read` |
+| update cognitive pending item | `kg.session.commit` |
+| decision history / related context / supersedence / contradictions / similar decisions / constraint explanation / alternatives / learning from bugs | `board.read` plus the matching `kg.query.decision_history`, `kg.query.related_context`, `kg.query.supersedence_chain`, `kg.query.contradictions`, `kg.query.similar_decisions`, `kg.query.constraint_explain`, `kg.query.alternatives`, or `kg.query.learning_from_bugs` |
+| global intent query | global `kg.query.global`; each included board also requires effective `board.read` and `kg.query.global` |
+| Cypher / natural / reflective query | `kg.power.cypher` / `kg.power.natural` |
+| schema info | `kg.power.schema_info` |
+| schema info with `include_internal=true` | additionally `kg.admin.settings_read` |
+| grounding / provenance drift / JSON-LD export | `board.read` |
+| health / health-readiness / canonical debt / partition integrity / digest mismatch / stale parity | `board.read` |
+| cognitive-readiness evaluations and lists / cognitive DLQ / bug cognitive closure evaluation | `board.read` |
+| orphan report / dead-letter list | `board.read` |
+| originates-from audit / takedown status / queue drill-down / connectivity DLQ diagnose and verify | `board.read` |
+| orphan backfill | `board.read` for `dry_run=true`; `kg.admin.historical_consolidation` for apply |
+| manual KG tick | `kg.admin.historical_consolidation` (board-effective for one board; global effective context for all boards) |
+| rebuild preflight / confirm / run | `kg.admin.wipe_board` |
+| quarantine restore plan / apply | global `kg.admin.wipe_board`, then the resolved destination board's effective `kg.admin.wipe_board` |
+
+Board overrides are honored because checks use the resolved board context, not
+the global agent object. Explicit legacy flat principals retain their historical
+`board:read` fallback for non-admin KG operations. Administrative schema
+introspection and every administrative mutation above have no legacy
+`board:read` fallback. Global administrative operations authenticate through
+the global effective context; a raw authenticated principal is not sufficient.
+`okto_pulse_kg_schema_info` with an empty `board_id` returns static global
+contract metadata and never opens, selects, or enumerates a board graph.
+
+Missing authentication or board access returns the non-enumerating
+`unauthorized` envelope. A resolved caller lacking a required flag receives
+`permission_denied` plus `required_permission`; for example:
+
+```json
+{
+  "error": {
+    "code": "permission_denied",
+    "message": "Permission denied: requires 'kg.power.cypher'",
+    "required_permission": "kg.power.cypher"
+  }
+}
+```
+
+The JSON-LD export keeps its legacy flat error projection while carrying the
+same information:
+`{"error":"permission_denied","message":"...","required_permission":"board.read"}`.
+
+## `okto_pulse_kg_originates_from_contract_audit`
+
+Read-only advisory audit for persisted `originates_from` KG edges whose endpoint
+labels violate the Bug->Entity contract.
+
+Use this when validating historical KG hygiene. Known endpoint pairs outside
+Bug->Entity are returned as high-confidence advisory findings; missing endpoint
+types are returned as low-confidence warnings. The tool never mutates, rebuilds,
+reprocesses, skips, or remediates graph data.
+
+Args:
+    board_id: Board ID.
+    limit: Max findings to return (1-200, default 50).
+    offset: Page offset.
+    include_ok: Include contract-satisfying edges in `items` when true.
+
+Returns:
+    JSON `{board_id, relationship_type, contract, status, items, counts, total,
+    scanned, limit, offset, read_only, mutated}`. Each item includes relationship
+    id, source/target ids, known endpoint types, classification, confidence,
+    reason, path, and `mutated=false`.
+
+## `okto_pulse_kg_digest_layer_reconcile`
+
+Administrative board-scoped WRITE for the specific case where
+`okto_pulse_kg_digest_layer_mismatch_list` still reports DecisionDigest layer
+drift while `okto_pulse_kg_queue_drilldown` reports an idle queue. It enqueues a
+durable `consolidation_committed` event with `nodes_added=0`; the event contains
+no graph-node reference rows and does not require a consolidation-session audit
+parent (its `session_id` is correlation metadata only). It reuses the normal
+Global Discovery parity reconciler, does not rebuild the graph, and does not
+change either read-only diagnostic tool.
+
+The worker treats the per-board graph as authoritative and keyset-paginates
+every publishable digest source type (`embedding IS NOT NULL`), grouped by ID;
+any physical source count other than one fails closed. It rechecks that source
+inventory after reconciliation and again after flush before ACK, so concurrent
+insert/remove or embedding eligibility changes are retried rather than pruned
+from an inconsistent snapshot. It prunes vanished/unembedded global rows only
+after a complete guard proves no `DECISION_MENTIONS_ENTITY` or
+`DECISION_DERIVES_FROM` relationship would be lost, repairs duplicate or corrupt
+physical identities, and backfills missing identities.
+
+A repair is acknowledged only after close/fsync/reopen and a fresh-handle read verifies
+exactly one stable digest, one edge from the correct Board, and one total inbound `CONTAINS_DECISION`
+edge per source; invalid cross-board links are
+removed without deleting digest or clustering relationships. Verification is
+isolated per board after the batch-global flush, so one corrupt board does not
+retry healthy boards. Board `decision_count` is written from the absolute
+authoritative inventory and remains idempotent across retries. Structured logs
+report `duplicate_count`, `repaired_count`, `backfilled_count`,
+`layer_corrected_count`, `link_repaired_count`,
+`invalid_link_pruned_count` and `verified_count`.
+
+Repeated calls are idempotent by effect: each request receives a distinct audit
+event ID, while a converged source/global set produces no further graph change.
+Requires `kg.admin.historical_consolidation`.
+
+Args:
+    board_id: Board ID. Authentication, board access, realm and command scope
+        must all resolve to this same board.
+    reason: Required 3-128 character audit code. Use lowercase letters, digits,
+        `.`, `:`, `_` or `-`; do not put free-form prose or sensitive data here.
+
+Returns:
+    MCP Outcome V2 success with board_id, event_id, session_id, normalized
+    reason, enqueued=true and effect_idempotent=true. Authentication, permission,
+    board-scope and validation failures use structured error outcomes.
+
+## `okto_pulse_kg_quarantine_restore`
+
+KG quarantine restore — dry-run/apply with backup-swap (KGD-01 FR4/BR4).
+Both plan and apply require `kg.admin.wipe_board`. Because `quarantine_id`
+does not reveal its owning board, the handler first checks the global effective
+admin context, resolves the minimum plan, and then re-checks the destination
+board's effective override before returning any plan path or applying files.
+
+`apply=false` (default) returns the auditable plan (files, destinations,
+conflicts, sizes) with NO mutation. `apply=true` moves the board's live files
+into a NEW quarantine with manifest (`backup_quarantine_id` in the result),
+copies the snapshot back, validates the board open, and emits
+`kg.quarantine.restore_dry_run` / `kg.quarantine.restored`.
+
+Args:
+    quarantine_id: Quarantine ID to restore from.
+    apply: false (default) = dry-run plan only; true = execute the restore
+        with backup-swap.
+
+Returns:
+    JSON `{plan, applied, backup_quarantine_id?}`.
+
+Errors:
+    `quarantine_not_found` — quarantine id does not exist.
+    `board_locked` — require a maintenance window before applying.
+    `partial_restore` — the manifest records the exact state for rollback;
+    never a silent half-restored board.
+
+## `okto_pulse_kg_export_jsonld`
+
+Read-only JSON-LD export of a board graph (spec MKG-E-S1 / FR5-FR6).
+
+Fixed PROV-O mapping: nodes → `prov:Entity` with `pulse:nodeType` /
+`pulse:kindOf`; `source_artifact_ref` → `prov:wasDerivedFrom`; session →
+`prov:wasGeneratedBy`; agent → `prov:wasAttributedTo`; supersedence →
+`prov:wasRevisionOf` on the successor. Edges are typed `pulse:Edge`
+entries. Deterministic: stable ordering + sorted keys — the same board
+always serializes to the same bytes.
+
+Paged by a stable `node_id` cursor: pass `next_cursor` until
+`last_page=true`; the concatenation of pages is the full export. An
+unreadable graph returns `kg_export_failed` and never a partial document.
+The CLI twin (`okto-pulse kg export --output`) writes the full document
+atomically offline. REST is deliberately absent (spec decision D7).
+
+## `okto_pulse_kg_provenance_drift`
+
+Read-only artifact→node drift report (spec MKG-B-S1 / FR7).
+
+Compares each node's persisted `source_content_hash` (stamped at commit
+with the session recipe) against the latest consolidation audit of the
+same artifact and the artifact's current existence via the board source
+reader. Reasons: `content_changed` (anchor stale vs last consolidated
+state, or artifact edited after the last consolidation) and
+`artifact_missing` (source deleted — terminal). The remedy is a normal
+re-consolidation (the NC-8 provenance restamp clears the flag); the
+tool never mutates the graph.
+
+Args:
+    board_id: Board ID.
+    node_type: Optional — narrow the scan to one node table.
+
+Returns:
+    JSON: `checked_count`, `skipped_count`, `drifted_count`,
+    `drifted_by_reason` (`content_changed` / `artifact_missing`),
+    `drifted` (node_id, node_type, source_artifact_ref,
+    persisted_hash, current_hash, reason; capped at 200 with
+    `truncated` flag).

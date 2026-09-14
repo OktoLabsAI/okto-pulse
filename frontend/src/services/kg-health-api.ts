@@ -59,6 +59,8 @@ export interface StorageFootprintProxy {
   source: 'file_size_proxy' | string;
   status: string;
   percentage: number | null;
+  percentage_status?: 'available' | 'not_applicable' | 'unavailable';
+  percentage_reason?: string | null;
   high_water_mark_pct: number | null;
   graph_lbug_bytes: number | null;
   sidecar_bytes: number | null;

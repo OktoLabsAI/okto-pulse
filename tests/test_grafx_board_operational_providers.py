@@ -805,6 +805,19 @@ def test_runtime_graph_state_covers_all_four_non_opening_states(tmp_path) -> Non
     assert store.exists("board-1") is True
 
 
+def test_no_quota_footprint_is_explicitly_inapplicable_not_unavailable(tmp_path):
+    (tmp_path / "grafx.meta").write_bytes(b"test")
+    store = CommunityGrafxGraphRuntimeStore(lambda _: tmp_path, lambda _: None, lambda *args: None, board_storage_root_resolver=lambda _: tmp_path)
+    footprint = store.footprint("b")
+    assert footprint.status == "available"
+    assert footprint.total_bytes == 4
+    assert footprint.percentage is None
+    assert footprint.percentage_applicable is False
+    missing = CommunityGrafxGraphRuntimeStore(lambda _: tmp_path / "missing", lambda _: None, lambda *args: None, board_storage_root_resolver=lambda _: tmp_path).footprint("b")
+    assert missing.status == "unavailable"
+    assert missing.percentage_applicable is True
+
+
 def test_runtime_purge_erase_footprint_and_budget(tmp_path, monkeypatch) -> None:
     board_root = tmp_path / "boards" / "board-1"
     path = board_root / "grafx" / "generation-2"

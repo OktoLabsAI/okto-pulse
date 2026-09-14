@@ -1029,11 +1029,21 @@ def build_community_routed_board_graph_composition(
         read_database_scope=access.read_database_scope,
         admission=access.admission,
     )
+    from types import SimpleNamespace
+    from okto_pulse.community.adapters.graph_runtime_budget import build_native_runtime_budget_snapshot
+
+    # Capture the validated constructor values, not settings that may change
+    # while these already-created pools are still resident.
+    runtime_budget = build_native_runtime_budget_snapshot(SimpleNamespace(
+        kg_grafx_buffer_pool_mb=configured_buffer_pool_mb,
+        kg_grafx_read_participants=read_participants,
+    ))
     grafx_runtime = CommunityGrafxGraphRuntimeStore(
         access.path,
         access.close,
         access.runtime_fence,
         board_storage_root_resolver=access.board_root,
+        budget_snapshot_provider=lambda: runtime_budget,
     )
     grafx_recovery = CommunityGrafxGraphRecovery(
         quarantine_root=binding_store.root / "quarantine",
