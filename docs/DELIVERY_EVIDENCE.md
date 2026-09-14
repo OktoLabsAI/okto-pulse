@@ -149,3 +149,7 @@ raising that baseline or claiming the global lint passed.
 Production frontend build and packaged-tree verification passed: 78 files,
 SHA-256 `5fd0b95e7ca08e287c51722fd7166328604d24cdf5770a653a49cb2461f60535`.
 The active user installation was not restarted or replaced.
+
+Publication integration with issues #84–#88: 55 Core, 42 Community and 11 frontend
+focused tests passed again. The combined production build contains 78 files,
+SHA-256 `a0ecae10bcc25ee7cba773574300054b00cb3fbea68fa7de11b80e4add64cbb1`.
