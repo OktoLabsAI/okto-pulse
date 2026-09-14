@@ -494,6 +494,9 @@ human-first UI.
 
 ## Graph storage
 
+See [Code Evidence Matrix: associations and coverage](docs/CODE_EVIDENCE_MATRIX_PRESENTATION.md)
+for the distinction between contextual references and applicable evidence.
+
 See [Cognitive Action Center: review knowledge gaps](docs/COGNITIVE_ACTION_CENTER.md)
 for the human review workflow, waiver effects, failed-processing navigation and permissions.
 
