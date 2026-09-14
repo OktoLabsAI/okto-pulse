@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import type { DeliveryEvidenceInput, DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 /**
  * API Service - all API calls centralized
  */
@@ -597,6 +598,14 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     },
 
     // ==================== CODE TRACEABILITY ====================
+
+    async getDeliveryEvidence(boardId: string, specId: string, signal?: AbortSignal): Promise<DeliveryEvidenceProjection> {
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence`, { signal });
+    },
+
+    async recordDeliveryEvidence(boardId: string, specId: string, body: DeliveryEvidenceInput): Promise<{ id: string; replayed: boolean }> {
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence`, { method: 'POST', body: JSON.stringify(body) });
+    },
 
     async getCodeTraceabilityProjection(
       boardId: string,

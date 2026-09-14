@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { DeliveryEvidencePanel } from '@/components/code-traceability/DeliveryEvidencePanel';
 import {
   X,
   ChevronRight,
@@ -163,6 +164,7 @@ interface SpecModalProps {
 type ModalTab =
   | 'details'
   | 'evidence-matrix'
+  | 'delivery-evidence'
   | 'project-structure'
   | 'tests'
   | 'rules'
@@ -2352,7 +2354,7 @@ export function SpecModal({
   const allTabs: { id: ModalTab; label: string; icon: React.ReactNode; count?: number; highlight?: boolean; permission?: string }[] = [
     { id: 'details', label: 'Details', icon: <FileText size={14} /> },
     ...(canReadCodeTraceability
-      ? [{ id: 'evidence-matrix' as ModalTab, label: 'Code Evidence Matrix', icon: <Grid3X3 size={14} /> }]
+      ? [{ id: 'evidence-matrix' as ModalTab, label: 'Code Evidence Matrix', icon: <Grid3X3 size={14} /> }, { id: 'delivery-evidence' as ModalTab, label: 'Delivery evidence', icon: <ShieldCheck size={14} /> }]
       : []),
     ...(showProjectStructure
       ? [{
@@ -2842,6 +2844,14 @@ export function SpecModal({
                     : 'Failed to update Code Evidence coverage');
                 }
               }}
+            />
+          )}
+          {activeTab === 'delivery-evidence' && spec && canReadCodeTraceability && (
+            <DeliveryEvidencePanel boardId={spec.board_id} specId={spec.id}
+              canRecord={!spec.archived && perms.has('code_traceability.target.execution_submit')}
+              canTest={!spec.archived && perms.has('spec.tests.execute')}
+              canWaive={!spec.archived && perms.has('code_traceability.waiver.create') && perms.has('code_traceability.waiver.clear')}
+              onChanged={() => void loadSpec()}
             />
           )}
           {activeTab === 'project-structure' && spec && showProjectStructure && (

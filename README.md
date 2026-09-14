@@ -71,10 +71,10 @@ Current 0.3.3 surface:
 
 | Surface | Count |
 | --- | ---: |
-| Governance gates | 17 |
-| Core MCP tools | 338 |
+| Governance gates | 18 |
+| Core MCP tools | 340 |
 | Community-only MCP tools | 0 |
-| MCP tools exposed by `okto-pulse serve` | 338 |
+| MCP tools exposed by `okto-pulse serve` | 340 |
 
 The community package materializes the full `okto-pulse-core` command catalog in
 its FastMCP host. That means installed community runtimes expose the complete
@@ -338,7 +338,8 @@ docker compose up -d
 | --- | --- | --- |
 | `HOST` | `127.0.0.1` | API/UI bind host. Use `0.0.0.0` in containers. |
 | `MCP_HOST` | `127.0.0.1` | MCP bind host. Use `0.0.0.0` in containers. |
-| `DATA_DIR` | `~/.okto-pulse` | SQLite database, uploads and graph storage root. |
+| `DATA_DIR` | `~/.okto-pulse` | SQLite database, uploads, graph storage and terms-acceptance root. Takes precedence over legacy `OKTO_PULSE_HOME` in the environment. |
+| `CORS_ORIGINS` | `*` | Comma-separated allowed browser origins, e.g. `https://one.example,https://two.example`. Explicit values are preserved. Not authentication or a firewall. |
 | `KG_BASE_DIR` | derived from `DATA_DIR` | Per-board graph database location. |
 | `KG_GRAFX_DESCRIPTOR_REVALIDATION` | `generation` | Grafx process-local descriptor policy: `generation` or `strict`. |
 | `HF_HOME` | `~/.cache/huggingface` | Sentence-transformers model cache. |
@@ -493,6 +494,12 @@ human-first UI.
 0.2.3, 0.2.2, 0.2.1 and 0.2.0.
 
 ## Graph storage
+
+See [CLI, configuration and badge-refresh fixes (#84–#88)](docs/ISSUE_CLOSEOUT_84_88.md)
+for export error behavior, terms storage, CORS configuration and validation evidence.
+
+See [Delivery evidence: committed code and test-card verification](docs/DELIVERY_EVIDENCE.md)
+for the separate Spec completion gate, UI, REST/MCP contracts and audited exemptions.
 
 See [Code Evidence Matrix: associations and coverage](docs/CODE_EVIDENCE_MATRIX_PRESENTATION.md)
 for the distinction between contextual references and applicable evidence.

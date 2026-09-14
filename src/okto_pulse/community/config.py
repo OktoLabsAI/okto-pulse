@@ -280,7 +280,6 @@ class CommunitySettings(CoreSettings, BaseSettings):
             self.kg_base_dir = str(data_path)
         else:
             self.kg_base_dir = str(Path(self.kg_base_dir).expanduser().resolve())
-        # Community edition is local-only — allow all origins to avoid CORS
-        # issues regardless of which port the user configures via CLI
-        self.cors_origins = "*"
+        # The field default permits local clients on arbitrary ports. Preserve
+        # explicit constructor, environment and dotenv restrictions.
         return self

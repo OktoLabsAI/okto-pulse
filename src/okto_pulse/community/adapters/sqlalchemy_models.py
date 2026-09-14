@@ -12720,6 +12720,45 @@ class ImplementationTargetResolutionRow(Base):
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
 
 
+class DeliveryEvidenceRecordRow(Base):
+    """Append-only delivery bindings/waivers/revocations, not graph projections."""
+
+    __tablename__ = "delivery_evidence_records"
+    __table_args__ = (
+        UniqueConstraint("board_id", "spec_id", "actor_id", "idempotency_key", name="uq_delivery_evidence_replay"),
+        CheckConstraint("edition >= 1", name="ck_delivery_evidence_edition"),
+        CheckConstraint("kind IN ('implementation', 'test', 'waiver', 'revoke')", name="ck_delivery_evidence_kind"),
+        Index("ix_delivery_evidence_scope", "board_id", "spec_id", "edition"),
+    )
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(String(36), ForeignKey("boards.id", ondelete="CASCADE"), nullable=False)
+    spec_id: Mapped[str] = mapped_column(String(36), ForeignKey("specs.id", ondelete="CASCADE"), nullable=False)
+    edition: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    actor_kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+for _delivery_guard_name, _delivery_guard_sql in {
+    "scope": """BEFORE INSERT ON delivery_evidence_records
+WHEN NOT EXISTS (SELECT 1 FROM specs WHERE id=NEW.spec_id AND board_id=NEW.board_id)
+BEGIN SELECT RAISE(ABORT, 'delivery_scope_invalid'); END""",
+    "update": """BEFORE UPDATE ON delivery_evidence_records
+BEGIN SELECT RAISE(ABORT, 'delivery_audit_immutable'); END""",
+    "delete": """BEFORE DELETE ON delivery_evidence_records
+WHEN EXISTS (SELECT 1 FROM specs WHERE id=OLD.spec_id)
+ AND EXISTS (SELECT 1 FROM boards WHERE id=OLD.board_id)
+BEGIN SELECT RAISE(ABORT, 'delivery_audit_immutable'); END""",
+}.items():
+    event.listen(DeliveryEvidenceRecordRow.__table__, "after_create", DDL(
+        f"CREATE TRIGGER IF NOT EXISTS trg_delivery_evidence_{_delivery_guard_name} {_delivery_guard_sql}"
+    ).execute_if(dialect="sqlite"))
+
+
 class ImplementationTargetExecutionRecordRow(Base):
     """Append-only post-execution disposition anchored to a result receipt."""
 
