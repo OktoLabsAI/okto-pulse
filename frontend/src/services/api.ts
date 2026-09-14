@@ -790,7 +790,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     },
 
     async deleteBoard(boardId: string): Promise<void> {
-      await apiClient.fetch(`/boards/${boardId}`, { method: 'DELETE' });
+      await apiClient.fetchJson<void>(`/boards/${boardId}`, { method: 'DELETE' });
     },
 
     async getBoardColumns(

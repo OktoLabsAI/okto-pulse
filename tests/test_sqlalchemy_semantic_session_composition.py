@@ -22,8 +22,41 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
     Ideation,
     IdeationQAItem,
+    Refinement,
 )
 from okto_pulse.community.adapters import sqlalchemy_policy_subject_versioning as psv
+
+
+@pytest.mark.asyncio
+async def test_production_session_preserves_refinement_citation_version(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'citations.db'}")
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        factory = build_community_session_factory(engine)
+        async with factory() as db:
+            db.add(Board(id="b", name="E2E", owner_id="owner", realm_id="local"))
+            db.add(Ideation(id="i", board_id="b", title="Parent", status="done", created_by="owner"))
+            db.add(Refinement(id="r", board_id="b", ideation_id="i", title="Refinement",
+                              status="draft", created_by="owner", version=1, analysis="Existing behavior."))
+            await db.commit()
+        for analysis in ("Existing behavior. evidence:one", "Existing behavior. evidence:two", "Existing behavior."):
+            async with factory() as db:
+                row = await db.get(Refinement, "r")
+                row.analysis = analysis
+                await db.commit()
+            async with factory() as db:
+                row = await db.get(Refinement, "r")
+                assert row.analysis == analysis
+                assert row.version == 1
+        async with factory() as db:
+            row = await db.get(Refinement, "r")
+            row.analysis = "Changed behavior. evidence:three"
+            await db.commit()
+        async with factory() as db:
+            assert (await db.get(Refinement, "r")).version == 2
+    finally:
+        await engine.dispose()
 
 
 def test_policy_subject_callbacks_are_scoped_to_community_session() -> None:

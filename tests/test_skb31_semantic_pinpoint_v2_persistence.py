@@ -200,8 +200,7 @@ def test_v2_adapter_satisfies_public_core_persistence_port():
 
 def test_v2_read_adapter_signature_matches_public_core_port() -> None:
     adapter_signature = inspect.signature(
-        CommunitySqlAlchemySemanticGuidelineAssessmentV2
-        .get_current_semantic_assessment_v2
+        CommunitySqlAlchemySemanticGuidelineAssessmentV2.get_current_semantic_assessment_v2
     )
     port_signature = inspect.signature(
         SemanticAssessmentV2ReadPort.get_current_semantic_assessment_v2
@@ -227,9 +226,10 @@ async def test_v2_capability_resolver_enforces_readers_first_and_runtime_probes(
     original_settings = get_settings()
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-        for _name, (_table, ddl) in (
-            semantic_pinpoint_v2_sqlite_trigger_manifest().items()
-        ):
+        for _name, (
+            _table,
+            ddl,
+        ) in semantic_pinpoint_v2_sqlite_trigger_manifest().items():
             await connection.execute(text(ddl))
 
     try:
@@ -308,8 +308,8 @@ async def test_subject_projection_resolves_human_field_and_denies_other_actor(
         await connection.run_sync(Base.metadata.create_all)
 
     async with factory() as session, session.begin():
-        board_id, ideation_id, revision, _binding = (
-            await _seed_semantic_authority(session, metric_count=1)
+        board_id, ideation_id, revision, _binding = await _seed_semantic_authority(
+            session, metric_count=1
         )
         subject = PolicySubjectRef(
             board_id=board_id,
@@ -418,9 +418,10 @@ async def test_v2_round_trip_findings_idempotency_and_immutability(tmp_path):
     )
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-        for _name, (_table, ddl) in (
-            semantic_pinpoint_v2_sqlite_trigger_manifest().items()
-        ):
+        for _name, (
+            _table,
+            ddl,
+        ) in semantic_pinpoint_v2_sqlite_trigger_manifest().items():
             await connection.execute(text(ddl))
 
     async with factory() as session, session.begin():
@@ -441,9 +442,7 @@ async def test_v2_round_trip_findings_idempotency_and_immutability(tmp_path):
         assert by_metric[revision.metrics[0].metric_id].outcome.value == "pass"
         failed = by_metric[revision.metrics[1].metric_id]
         assert failed.outcome.value == "fail"
-        assert failed.pinpoints[0].anchor_snapshot.label == (
-            "Problem statement"
-        )
+        assert failed.pinpoints[0].anchor_snapshot.label == ("Problem statement")
         assert failed.pinpoints[0].blocking_for(failed.outcome)
         current = await adapter.get_current_semantic_assessment_v2(
             board_id=board_id,
@@ -453,9 +452,7 @@ async def test_v2_round_trip_findings_idempotency_and_immutability(tmp_path):
         )
         assert current == projection
         with pytest.raises(GuidelinePolicyIdempotencyConflict):
-            await adapter.save_semantic_assessment_v2(
-                replace(request, confidence=94)
-            )
+            await adapter.save_semantic_assessment_v2(replace(request, confidence=94))
 
     async with factory() as session:
         receipt = (
@@ -498,6 +495,71 @@ async def test_v2_round_trip_findings_idempotency_and_immutability(tmp_path):
     await engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_board_erasure_removes_v2_findings_before_releasing_permit(tmp_path):
+    from sqlalchemy import delete, func
+    from sqlalchemy.exc import IntegrityError
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        Board,
+        BoardErasurePermit,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_kg_governance import (
+        CommunitySqlAlchemyKGGovernanceStore,
+    )
+
+    engine = _engine(tmp_path / "semantic-v2-erasure.db")
+    factory = async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession,
+        expire_on_commit=False,
+    )
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+            for _, (_, ddl) in semantic_pinpoint_v2_sqlite_trigger_manifest().items():
+                await connection.execute(text(ddl))
+        async with factory() as session, session.begin():
+            board_id, ideation_id, revision, binding = await _seed_semantic_authority(
+                session, metric_count=2
+            )
+            await CommunitySqlAlchemySemanticGuidelineAssessmentV2(
+                session
+            ).save_semantic_assessment_v2(
+                _request(board_id, ideation_id, revision, binding)
+            )
+        async with factory() as session:
+            with pytest.raises(
+                IntegrityError, match="semantic_assessment_v2_immutable"
+            ):
+                await session.execute(delete(Board).where(Board.id == board_id))
+            await session.rollback()
+        async with factory() as session, session.begin():
+            await CommunitySqlAlchemyKGGovernanceStore().purge_board_metadata(
+                session, board_id=board_id
+            )
+            for model in (
+                SemanticGuidelineAssessmentV2Row,
+                SemanticGuidelineMetricResultV2Row,
+                SemanticGuidelineFindingV2Row,
+            ):
+                assert (
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(model)
+                        .where(model.board_id == board_id)
+                    )
+                    == 0
+                )
+            assert await session.get(BoardErasurePermit, board_id) is None
+            await session.execute(delete(Board).where(Board.id == board_id))
+        async with factory() as session:
+            assert await session.get(Board, board_id) is None
+            assert (await session.execute(text("PRAGMA foreign_key_check"))).all() == []
+    finally:
+        await engine.dispose()
+
+
 @pytest.mark.parametrize(
     ("entity_type", "model"),
     (
@@ -512,9 +574,7 @@ async def test_v2_persistence_records_and_fences_validation_edition(
     entity_type: PolicyEntityType,
     model,
 ):
-    engine = _engine(
-        tmp_path / f"semantic-v2-{entity_type.value}-edition-fence.db"
-    )
+    engine = _engine(tmp_path / f"semantic-v2-{entity_type.value}-edition-fence.db")
     factory = async_sessionmaker(
         engine,
         class_=AsyncSession,
@@ -523,19 +583,18 @@ async def test_v2_persistence_records_and_fences_validation_edition(
     )
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
-        for _name, (_table, ddl) in (
-            semantic_pinpoint_v2_sqlite_trigger_manifest().items()
-        ):
+        for _name, (
+            _table,
+            ddl,
+        ) in semantic_pinpoint_v2_sqlite_trigger_manifest().items():
             await connection.execute(text(ddl))
 
     try:
         async with factory() as session, session.begin():
-            board_id, subject_id, revision, binding = (
-                await _seed_semantic_authority(
-                    session,
-                    metric_count=2,
-                    entity_type=entity_type,
-                )
+            board_id, subject_id, revision, binding = await _seed_semantic_authority(
+                session,
+                metric_count=2,
+                entity_type=entity_type,
             )
             adapter = CommunitySqlAlchemySemanticGuidelineAssessmentV2(session)
             request = _request(
@@ -555,14 +614,12 @@ async def test_v2_persistence_records_and_fences_validation_edition(
             assert stored is not None
             assert stored.validation_edition == 1
 
-            current_for_edition = (
-                await adapter.get_current_semantic_assessment_v2(
-                    board_id=board_id,
-                    entity_type=entity_type.value,
-                    subject_id=subject_id,
-                    binding_id=binding.binding_id,
-                    subject_edition=1,
-                )
+            current_for_edition = await adapter.get_current_semantic_assessment_v2(
+                board_id=board_id,
+                entity_type=entity_type.value,
+                subject_id=subject_id,
+                binding_id=binding.binding_id,
+                subject_edition=1,
             )
             assert current_for_edition is not None
             assert current_for_edition.receipt_id == created.receipt_id
@@ -579,9 +636,7 @@ async def test_v2_persistence_records_and_fences_validation_edition(
                 await adapter.save_semantic_assessment_v2(
                     replace(
                         request,
-                        idempotency_key=(
-                            f"v2-{entity_type.value}-stale-edition"
-                        ),
+                        idempotency_key=(f"v2-{entity_type.value}-stale-edition"),
                     )
                 )
 

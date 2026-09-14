@@ -891,6 +891,24 @@ class CommunityRoutedGraphRuntimeStore:
                 provider = self._provider(board_id)
             except GraphCapabilityUnavailable as failure:
                 if _is_missing_binding(failure):
+                    # Privacy erasure removes the binding itself. Its absence
+                    # is not proof of erasure: ask the non-opening physical
+                    # observer to inspect the entire canonical storage scope.
+                    # Only a typed, board-matching absence proof is accepted;
+                    # residues, IO errors and malformed observations fail closed.
+                    try:
+                        physical = self._grafx.graph_state(
+                            board_id, generation=generation
+                        )
+                    except Exception:
+                        physical = None
+                    if (
+                        isinstance(physical, GraphRuntimeState)
+                        and physical.board_id == board_id
+                        and physical.normalized_state
+                        is GraphRuntimeObservationState.CONFIRMED_ABSENT
+                    ):
+                        return physical
                     return _missing_runtime_state(board_id, generation=generation)
                 raise
             return provider.graph_state(board_id, generation=generation)

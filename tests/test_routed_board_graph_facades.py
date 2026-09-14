@@ -1029,10 +1029,74 @@ def test_missing_binding_returns_only_the_runtime_contracts_that_can_fail_closed
     assert purged.status == "failed"
     assert purged.error_code == "graph_route_binding_missing"
     assert purged.reason == "rebuild"
-    assert ladybug.mock_calls == grafx.mock_calls == []
+    assert ladybug.mock_calls == []
+    grafx.graph_state.assert_called_once_with("board-m", generation="requested")
     assert ladybug_erase.mock_calls == grafx_erase.mock_calls == []
     assert resolver.acquire_calls == []
     assert resolver.inspect_calls == ["board-m"] * 4
+
+
+@pytest.mark.parametrize("residue", [False, True])
+def test_missing_binding_absence_requires_canonical_physical_proof(tmp_path, residue):
+    from okto_pulse.community.adapters.grafx_graph_runtime_store import (
+        CommunityGrafxGraphRuntimeStore,
+    )
+
+    events = []
+    resolver = _RouteResolver({"board-m": _missing_binding()}, events)
+    windows = _Windows(events)
+    board_root = tmp_path / "boards" / "board-m"
+    if residue:
+        active = board_root / "grafx" / "generation-1"
+        active.mkdir(parents=True)
+        (active / "grafx.meta").write_bytes(b"unbound private data")
+
+    def missing_path(board_id):
+        raise _missing_binding()
+
+    provider = CommunityGrafxGraphRuntimeStore(
+        missing_path,
+        lambda _: None,
+        lambda *_: None,
+        board_storage_root_resolver=lambda _: board_root,
+    )
+    facade = _runtime_facade(
+        resolver, windows, Mock(), provider, grafx_erase=provider.erase_board_graph
+    )
+    state = facade.graph_state("board-m")
+    assert state.normalized_state is (
+        GraphRuntimeObservationState.PROVIDER_UNAVAILABLE
+        if residue
+        else GraphRuntimeObservationState.CONFIRMED_ABSENT
+    )
+    assert facade.erase_board_graph("board-m", reason="right_to_erasure").status in {
+        "erased",
+        "not_found",
+    }
+    assert (
+        facade.graph_state("board-m").normalized_state
+        is GraphRuntimeObservationState.CONFIRMED_ABSENT
+    )
+    # A fresh observation must not reuse the preceding success as a cache.
+    active = board_root / "grafx" / "generation-2"
+    active.mkdir(parents=True)
+    (active / "grafx.meta").write_bytes(b"new residue")
+    assert (
+        facade.graph_state("board-m").normalized_state
+        is GraphRuntimeObservationState.PROVIDER_UNAVAILABLE
+    )
+
+
+def test_missing_binding_physical_observer_failure_is_not_absence():
+    events = []
+    resolver = _RouteResolver({"board-m": _missing_binding()}, events)
+    provider = Mock()
+    provider.graph_state.side_effect = OSError("cannot inspect storage")
+    facade = _runtime_facade(resolver, _Windows(events), Mock(), provider)
+    assert (
+        facade.graph_state("board-m").normalized_state
+        is GraphRuntimeObservationState.PROVIDER_UNAVAILABLE
+    )
 
 
 @pytest.mark.asyncio
