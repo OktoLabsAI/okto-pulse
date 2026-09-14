@@ -116,6 +116,75 @@ def _install_denying_replace(
     return denials, passthrough
 
 
+def test_inspect_retries_transient_unreadable_existing_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port = CommunityLocalWriteLockPort()
+    acquisition = _acquire(port, tmp_path)
+    real_read = port._read_single_writer_manifest  # noqa: SLF001
+    attempts: list[int] = []
+    backoffs: list[float] = []
+
+    def transient_read(path: Path):
+        attempts.append(len(attempts) + 1)
+        if len(attempts) < 3:
+            return None
+        return real_read(path)
+
+    monkeypatch.setattr(port, "_read_single_writer_manifest", transient_read)
+    monkeypatch.setattr(coordination_module.time, "sleep", backoffs.append)
+
+    manifest = _manifest(port, tmp_path)
+
+    assert manifest is not None
+    assert manifest.owner_token == acquisition.owner_token
+    assert attempts == [1, 2, 3]
+    assert backoffs == [0.05, 0.1]
+
+
+def test_inspect_persistent_unreadable_manifest_is_bounded_and_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port = CommunityLocalWriteLockPort()
+    _acquire(port, tmp_path)
+    attempts: list[int] = []
+    backoffs: list[float] = []
+
+    def unreadable(_path: Path):
+        attempts.append(len(attempts) + 1)
+        return None
+
+    monkeypatch.setattr(port, "_read_single_writer_manifest", unreadable)
+    monkeypatch.setattr(coordination_module.time, "sleep", backoffs.append)
+
+    assert _manifest(port, tmp_path) is None
+    assert attempts == [1, 2, 3]
+    assert backoffs == [0.05, 0.1]
+
+
+def test_inspect_genuinely_missing_manifest_does_not_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port = CommunityLocalWriteLockPort()
+    attempts: list[int] = []
+    backoffs: list[float] = []
+    real_read = port._read_single_writer_manifest  # noqa: SLF001
+
+    def counted_read(path: Path):
+        attempts.append(len(attempts) + 1)
+        return real_read(path)
+
+    monkeypatch.setattr(port, "_read_single_writer_manifest", counted_read)
+    monkeypatch.setattr(coordination_module.time, "sleep", backoffs.append)
+
+    assert _manifest(port, tmp_path) is None
+    assert attempts == [1]
+    assert backoffs == []
+
+
 def test_transient_recovery_mutex_contention_retries_writer_acquisition(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -346,6 +415,156 @@ def test_transient_recovery_mutex_contention_retries_exact_token(
     assert after.owner_token == before.owner_token == acquisition.owner_token
     assert after.expires_at_epoch > before.expires_at_epoch
     _assert_no_debris(_board_dir(port, tmp_path))
+
+
+def test_same_port_serializes_two_board_renewals_before_kernel_mutex(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reservation and writer heartbeats wait instead of racing the kernel."""
+
+    port = CommunityLocalWriteLockPort(kg_base_dir=tmp_path)
+    artifacts = ("reservation-heartbeat", "writer-heartbeat")
+    acquisitions = {
+        artifact_id: port.acquire_single_writer_sync(
+            board_id=_BOARD_ID,
+            artifact_id=artifact_id,
+            operation=f"{artifact_id}-operation",
+            owner_id=f"{artifact_id}-owner",
+            ttl_seconds=30,
+        )
+        for artifact_id in artifacts
+    }
+    assert all(item.acquired and item.owner_token for item in acquisitions.values())
+
+    board_dir = tmp_path / "locks" / _BOARD_ID
+    process_mutex = port._single_writer_process_mutex_for(board_dir)  # noqa: SLF001
+    first_attempt_entered = threading.Event()
+    release_first_attempt = threading.Event()
+    second_waiting_at_process_gate = threading.Event()
+    second_finished = threading.Event()
+    attempt_order: list[str] = []
+    results: dict[str, bool] = {}
+    errors: list[BaseException] = []
+    real_attempt = port._renew_single_writer_attempt  # noqa: SLF001
+
+    class _TrackedProcessMutex:
+        def __enter__(self):
+            if threading.current_thread().name == "writer-renewal":
+                second_waiting_at_process_gate.set()
+            return process_mutex.__enter__()
+
+        def __exit__(self, *args):
+            return process_mutex.__exit__(*args)
+
+    monkeypatch.setattr(
+        port,
+        "_single_writer_process_mutex_for",
+        lambda _board_dir: _TrackedProcessMutex(),
+    )
+
+    def controlled_attempt(*, path: Path, owner_token: str, ttl_seconds: int):
+        artifact_id = path.name.removeprefix(".").removesuffix(".lock")
+        attempt_order.append(artifact_id)
+        if artifact_id == artifacts[0]:
+            first_attempt_entered.set()
+            assert release_first_attempt.wait(timeout=5)
+        return real_attempt(
+            path=path,
+            owner_token=owner_token,
+            ttl_seconds=ttl_seconds,
+        )
+
+    monkeypatch.setattr(port, "_renew_single_writer_attempt", controlled_attempt)
+
+    def renew(artifact_id: str) -> None:
+        try:
+            results[artifact_id] = port.renew_single_writer_sync(
+                board_id=_BOARD_ID,
+                artifact_id=artifact_id,
+                owner_token=str(acquisitions[artifact_id].owner_token),
+                ttl_seconds=45,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+        finally:
+            if artifact_id == artifacts[1]:
+                second_finished.set()
+
+    first = threading.Thread(
+        target=renew,
+        args=(artifacts[0],),
+        name="reservation-renewal",
+        daemon=True,
+    )
+    second = threading.Thread(
+        target=renew,
+        args=(artifacts[1],),
+        name="writer-renewal",
+        daemon=True,
+    )
+    first.start()
+    assert first_attempt_entered.wait(timeout=5)
+    second.start()
+    assert second_waiting_at_process_gate.wait(timeout=5)
+
+    # This exceeds the old 0.15 s retry budget. The second heartbeat must still
+    # be waiting locally, not falsely reporting that its exact token was lost.
+    assert not second_finished.wait(timeout=0.25)
+    release_first_attempt.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert not first.is_alive() and not second.is_alive()
+    assert errors == []
+    assert results == {artifacts[0]: True, artifacts[1]: True}
+    assert attempt_order == list(artifacts)
+    for artifact_id in artifacts:
+        manifest = port.inspect_single_writer_sync(
+            board_id=_BOARD_ID,
+            artifact_id=artifact_id,
+        )
+        assert manifest is not None
+        assert manifest.owner_token == acquisitions[artifact_id].owner_token
+    _assert_no_debris(board_dir)
+
+
+def test_same_thread_board_protocol_reentry_remains_busy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port = CommunityLocalWriteLockPort()
+    acquisition = _acquire(port, tmp_path)
+    before = _manifest(port, tmp_path)
+    board_dir = _board_dir(port, tmp_path)
+    process_mutex = port._single_writer_process_mutex_for(board_dir)  # noqa: SLF001
+    backoffs: list[float] = []
+    monkeypatch.setattr(coordination_module.time, "sleep", backoffs.append)
+
+    with process_mutex:
+        renewed = _renew(
+            port,
+            tmp_path,
+            owner_token=acquisition.owner_token,
+        )
+
+    assert renewed is False
+    assert backoffs == [0.05, 0.1]
+    after = _manifest(port, tmp_path)
+    assert after is not None and before is not None
+    assert after.to_disk_dict() == before.to_disk_dict()
+    _assert_no_debris(board_dir)
+
+
+def test_reset_for_tests_clears_board_process_mutex_registry(tmp_path: Path) -> None:
+    port = CommunityLocalWriteLockPort()
+    board_dir = _board_dir(port, tmp_path)
+    before = port._single_writer_process_mutex_for(board_dir)  # noqa: SLF001
+
+    port.reset_for_tests()
+
+    after = port._single_writer_process_mutex_for(board_dir)  # noqa: SLF001
+    assert after is not before
 
 
 def test_recovery_mutex_contention_exhaustion_is_bounded_and_non_mutating(

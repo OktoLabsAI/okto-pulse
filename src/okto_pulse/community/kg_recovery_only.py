@@ -58,7 +58,7 @@ COMMUNITY_DISTRIBUTION = "okto-pulse"
 EXPECTED_VERSION = "0.3.3"
 LEGACY_QUEUE_ONLY_SUPPORTED_SOFTWARE_VERSIONS = frozenset({"0.3.2", EXPECTED_VERSION})
 GRAFX_DISTRIBUTION = "okto-grafx"
-EXPECTED_GRAFX_VERSION = "0.0.5"
+EXPECTED_GRAFX_VERSION = "0.0.6"
 SQLALCHEMY_DISTRIBUTION = "SQLAlchemy"
 EXPECTED_SQLALCHEMY_VERSION = "2.0.49"
 AIOSQLITE_DISTRIBUTION = "aiosqlite"
@@ -3950,7 +3950,9 @@ def _assert_exact_relational_success_state(
             and audit["undo_status"] == "none"
             and audit["undone_at"] is None
             and audit["error_details"] is None
-            and len(refs) == item.node_ref_count == audit["nodes_added"]
+            and len(refs)
+            == item.node_ref_count
+            == audit["nodes_added"] + audit["nodes_superseded"]
             and all(
                 ref["board_id"] == board_id
                 and ref["session_id"] == item.consolidation_session_id
@@ -4454,7 +4456,7 @@ def _assert_exact_relational_compensation_state(
             and audit[14] is not None
             and audit[15] is None
             and not refs
-            and receipt.node_ref_count == int(audit[7]),
+            and receipt.node_ref_count == int(audit[7]) + int(audit[9]),
             "exact_relational_preserved_evidence_invalid",
             receipt.consolidation_session_id,
         )
@@ -8863,6 +8865,7 @@ def _legacy_quarantine_evidence(
             expected=historical_data_home / "boards" / board_id / "graph.lbug",
             code="legacy_queue_only_original_quarantine_storage_ref_invalid",
         )
+        and type(original_software_version) is str
         and original_software_version in LEGACY_QUEUE_ONLY_SUPPORTED_SOFTWARE_VERSIONS,
         "legacy_queue_only_original_quarantine_invalid",
     )
@@ -9008,6 +9011,7 @@ def _legacy_quarantine_evidence(
         and manual_manifest.get("kg_generation_id") is None
         and type(manual_manifest.get("files_moved")) is int
         and manual_manifest.get("files_moved") == 2
+        and type(manual_manifest.get("software_version")) is str
         and manual_manifest.get("software_version") == original_software_version
         and manual_manifest.get("software_version")
         in LEGACY_QUEUE_ONLY_SUPPORTED_SOFTWARE_VERSIONS,
@@ -11273,6 +11277,24 @@ def _canonical_source_rows(rows: Sequence[Mapping[str, Any]]) -> str:
     )
 
 
+def _reservation_snapshot_matches(current: Any, expected: Any) -> bool:
+    """Validate one complete lease snapshot without a racy second inspect."""
+
+    try:
+        return bool(
+            current is not None
+            and expected is not None
+            and current.owner_token == expected.owner_token
+            and current.owner_id == expected.owner_id
+            and current.operation == expected.operation
+            and current.acquired_at_epoch == expected.acquired_at_epoch
+            and current.admin_lane is True
+            and current.expires_at_epoch > time.time()
+        )
+    except BaseException:
+        return False
+
+
 def _assert_reservation_exact(
     bundle: ServiceBundle,
     *,
@@ -11295,15 +11317,7 @@ def _assert_reservation_exact(
     )
     if expected is not None:
         _require(
-            reservation.owner_token == expected.owner_token
-            and reservation.owner_id == expected.owner_id
-            and reservation.operation == expected.operation
-            and reservation.acquired_at_epoch == expected.acquired_at_epoch
-            and reservation.admin_lane is True
-            and bundle.operation_reservation.is_owner(
-                board_id=board_id,
-                owner_token=expected.owner_token,
-            ),
+            _reservation_snapshot_matches(reservation, expected),
             "administrative_reservation_authority_changed",
         )
     return reservation
@@ -11352,10 +11366,6 @@ def _fresh_reservation_for_invocation(
             or current.acquired_at_epoch < not_before_epoch
             or current.expires_at_epoch <= time.time()
             or identity == preexisting_identity
-            or not bundle.operation_reservation.is_owner(
-                board_id=board_id,
-                owner_token=current.owner_token,
-            )
         ):
             return None
         return current
@@ -12003,17 +12013,7 @@ async def _recover_exact_claims_for_resume(
             return bool(
                 not cancel_event.is_set()
                 and lifetime_probe()
-                and current is not None
-                and current.owner_token == reservation_baseline.owner_token
-                and current.owner_id == reservation_baseline.owner_id
-                and current.operation == reservation_baseline.operation
-                and current.acquired_at_epoch == reservation_baseline.acquired_at_epoch
-                and current.admin_lane is True
-                and current.expires_at_epoch > time.time()
-                and bundle.operation_reservation.is_owner(
-                    board_id=board_id,
-                    owner_token=reservation_baseline.owner_token,
-                )
+                and _reservation_snapshot_matches(current, reservation_baseline)
             )
         except BaseException:
             return False
@@ -12971,17 +12971,7 @@ async def _drain_exact_scope(
             return bool(
                 not cancel_event.is_set()
                 and lifetime_probe()
-                and current is not None
-                and current.owner_token == reservation_baseline.owner_token
-                and current.owner_id == reservation_baseline.owner_id
-                and current.operation == reservation_baseline.operation
-                and current.acquired_at_epoch == reservation_baseline.acquired_at_epoch
-                and current.admin_lane is True
-                and current.expires_at_epoch > time.time()
-                and bundle.operation_reservation.is_owner(
-                    board_id=board_id,
-                    owner_token=reservation_baseline.owner_token,
-                )
+                and _reservation_snapshot_matches(current, reservation_baseline)
             )
         except BaseException:
             return False
@@ -12990,6 +12980,9 @@ async def _drain_exact_scope(
     processed_total = 0
     cancellation_wait_emitted = False
     blocker: ExactDrainBlocker | None = None
+    idle_started_at: float | None = None
+    idle_observations = 0
+    idle_stall_seconds = min(30.0, timeout_seconds)
     while not service_task.done():
         _require(lifetime_probe(), "recovery_capability_lifetime_lost")
         if cancel_event.is_set():
@@ -13080,6 +13073,12 @@ async def _drain_exact_scope(
             board_id=board_id,
             source_rows=source_rows,
         )
+        if rows:
+            # Any typed result proves that the exact processor observed and
+            # classified the deterministic head.  A prior empty observation
+            # was therefore transient and must not count toward a later stall.
+            idle_started_at = None
+            idle_observations = 0
         neutral_rows = tuple(
             row for row in rows if row.disposition.value == "neutral_fence_loss"
         )
@@ -13194,12 +13193,45 @@ async def _drain_exact_scope(
             await asyncio.sleep(min(poll_seconds, retry_delay, remaining))
             continue
         if not rows and not service_task.done():
-            _require(
-                before_depth == 0 and after_depth == 0,
-                "exact_processor_made_no_progress",
-                f"depth={after_depth}",
-            )
-            await asyncio.sleep(poll_seconds)
+            if before_depth > 0 or after_depth > 0:
+                # The persistence boundary can observe the administrative
+                # reservation through a file replaced by its heartbeat.  One
+                # transient read failure must not turn a healthy, unchanged
+                # exact queue into destructive compensation.  Keep proving
+                # every fence/snapshot on each outer-loop iteration and allow
+                # only a short, monotonic, non-mutating observation window.
+                now_monotonic = asyncio.get_running_loop().time()
+                if idle_started_at is None:
+                    idle_started_at = now_monotonic
+                    idle_observations = 0
+                idle_observations += 1
+                indexes = {name: offset for offset, name in enumerate(before.columns)}
+                head_queue_id = (
+                    str(before.rows[0][indexes["id"]])
+                    if before.rows and "id" in indexes
+                    else None
+                )
+                _emit(
+                    "exact_scope_transient_idle",
+                    depth=after_depth,
+                    head_queue_id=head_queue_id,
+                    queue_fingerprint=before.fingerprint,
+                    observations=idle_observations,
+                )
+                _require(
+                    now_monotonic - idle_started_at < idle_stall_seconds,
+                    "exact_processor_stalled",
+                    (
+                        f"depth={after_depth} head={head_queue_id} "
+                        f"observations={idle_observations}"
+                    ),
+                )
+            else:
+                idle_started_at = None
+                idle_observations = 0
+            remaining = deadline - asyncio.get_running_loop().time()
+            _require(remaining > 0, "rebuild_run_timeout")
+            await asyncio.sleep(min(poll_seconds, remaining))
     result = await service_task
     _emit(
         "exact_scope_drained",

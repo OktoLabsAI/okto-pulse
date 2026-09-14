@@ -1211,6 +1211,8 @@ def _create_legacy_artifacts(
     source_count: int = 1,
     current_checkpoint: bool = False,
     historical_data_home: Path | None = None,
+    original_software_version: str = "0.3.2",
+    manual_software_version: str = "0.3.2",
 ) -> tuple[Path, Path, str]:
     historical_home = historical_data_home or data_home
     rebuild = data_home / "rebuild"
@@ -1392,7 +1394,7 @@ def _create_legacy_artifacts(
             ],
             "kg_generation_id": None,
             "files_moved": 1,
-            "software_version": "0.3.2",
+            "software_version": original_software_version,
             "quarantined_at": "2026-08-15T02:32:52+00:00",
             "retention_until": "2026-09-14T02:32:52+00:00",
         },
@@ -1413,7 +1415,7 @@ def _create_legacy_artifacts(
             "affected_paths_relative": ["graph.lbug", "graph.lbug.wal"],
             "kg_generation_id": None,
             "files_moved": 2,
-            "software_version": "0.3.2",
+            "software_version": manual_software_version,
             "quarantined_at": "2026-08-15T02:42:30+00:00",
             "retention_until": "2026-09-14T02:42:30+00:00",
         },
@@ -1449,9 +1451,26 @@ def _create_legacy_artifacts(
 
 
 def _legacy_graph_binding(data_home: Path) -> recovery.OfflineBoardGraphBinding:
-    decision = recovery._require_authenticated_recoverable_backend(data_home, BOARD_ID)
-    assert decision.binding is not None
-    return decision.binding
+    # Historical queue-only evidence is tested below the runtime admission
+    # boundary. The current executable correctly refuses opening Ladybug;
+    # constructing this archival fixture must not relax that production rule.
+    binding = CommunityGraphBackendBindingStore(data_home).inspect_board_binding(
+        BOARD_ID
+    )
+    document = (
+        data_home / "boards" / BOARD_ID / "graph_backend_binding.json"
+    ).read_bytes()
+    return recovery.OfflineBoardGraphBinding(
+        data_home=data_home.resolve(),
+        board_id=BOARD_ID,
+        backend=binding.backend,
+        generation=binding.generation,
+        physical_path=binding.physical_path,
+        physical_path_relative=binding.physical_path.relative_to(data_home).as_posix(),
+        page_size=binding.page_size,
+        binding_sha256=binding.binding_sha256,
+        document_sha256=hashlib.sha256(document).hexdigest(),
+    )
 
 
 def _legacy_discovery_bundle(
@@ -2167,6 +2186,59 @@ def test_recovery_admission_refuses_unsafe_unrelated_active_rows(
     assert _queue_row_tuple(db_path, "stale-sweep-retry") == before
 
 
+@pytest.mark.parametrize(
+    ("original_version", "manual_version"),
+    (
+        ("0.3.2", "0.3.2"),
+        ("0.3.3", "0.3.3"),
+    ),
+)
+def test_legacy_executor_accepts_explicit_quarantine_serializer_versions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    original_version: str,
+    manual_version: str,
+) -> None:
+    from okto_pulse.core.kg import rebuild_service
+
+    assert recovery.EXPECTED_VERSION in (
+        recovery.LEGACY_QUEUE_ONLY_SUPPORTED_SOFTWARE_VERSIONS
+    )
+    data_home = tmp_path / "data-home"
+    db_path = data_home / "data" / "pulse.db"
+    _create_queue_database(db_path)
+    rebuild, quarantine, _checkpoint_relative = _create_legacy_artifacts(
+        data_home,
+        original_software_version=original_version,
+        manual_software_version=manual_version,
+    )
+    bundle = _legacy_discovery_bundle(data_home)
+    monkeypatch.setattr(
+        rebuild_service,
+        "load_verified_rebuild_confirmation_receipt",
+        lambda **_kwargs: None,
+    )
+
+    plan = recovery._discover_legacy_queue_only_reconciliation(
+        bundle,
+        data_home=data_home,
+        db_path=db_path,
+        rebuild_root=rebuild,
+        rebuild_baseline=recovery._snapshot_tree_hashes(rebuild),
+        quarantine_root=quarantine,
+        quarantine_baseline=recovery._snapshot_tree_hashes(quarantine),
+        board_storage_baseline=recovery._snapshot_tree_hashes(
+            data_home / "boards" / BOARD_ID
+        ),
+        board_id=BOARD_ID,
+        recovery_actor_id="owner-1",
+        recovery_reason="governed legacy recovery",
+    )
+
+    assert plan is not None
+    assert plan.terminal is False
+
+
 def test_legacy_executor_discovers_reconciles_and_rediscovers_adoption(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2475,7 +2547,15 @@ def test_legacy_executor_binds_copied_report_ref_to_explicit_source_root(
             "legacy_queue_only_original_quarantine_invalid",
         ),
         (
-            "original_manifest_unsupported_version",
+            "original_manifest_unsupported_software_version",
+            "legacy_queue_only_original_quarantine_invalid",
+        ),
+        (
+            "original_manifest_future_software_version",
+            "legacy_queue_only_original_quarantine_invalid",
+        ),
+        (
+            "original_manifest_non_string_software_version",
             "legacy_queue_only_original_quarantine_invalid",
         ),
         (
@@ -2492,6 +2572,18 @@ def test_legacy_executor_binds_copied_report_ref_to_explicit_source_root(
         ),
         (
             "manual_manifest_version_mismatch",
+            "legacy_queue_only_manual_restore_invalid",
+        ),
+        (
+            "manual_manifest_unsupported_software_version",
+            "legacy_queue_only_manual_restore_invalid",
+        ),
+        (
+            "manual_manifest_future_software_version",
+            "legacy_queue_only_manual_restore_invalid",
+        ),
+        (
+            "manual_manifest_non_string_software_version",
             "legacy_queue_only_manual_restore_invalid",
         ),
         (
@@ -2546,8 +2638,12 @@ def test_legacy_executor_refuses_impossible_historical_serializer_shapes(
             )
         elif tamper == "original_manifest_missing_generation":
             payload.pop("kg_generation_id")
-        else:
+        elif tamper == "original_manifest_unsupported_software_version":
             payload["software_version"] = "0.3.1"
+        elif tamper == "original_manifest_future_software_version":
+            payload["software_version"] = "0.3.4"
+        else:
+            payload["software_version"] = ["0.3.2"]
         _write_json(path, payload)
     elif tamper.startswith("journal_"):
         path = quarantine / MANUAL_QUARANTINE_ID / "restore_operation.json"
@@ -2564,6 +2660,12 @@ def test_legacy_executor_refuses_impossible_historical_serializer_shapes(
             payload["files_moved"] = "2"
         elif tamper == "manual_manifest_version_mismatch":
             payload["software_version"] = recovery.EXPECTED_VERSION
+        elif tamper == "manual_manifest_unsupported_software_version":
+            payload["software_version"] = "0.3.1"
+        elif tamper == "manual_manifest_future_software_version":
+            payload["software_version"] = "0.3.4"
+        elif tamper == "manual_manifest_non_string_software_version":
+            payload["software_version"] = ["0.3.2"]
         else:
             payload["retention_until"] = "2026-08-15T02:42:00+00:00"
         _write_json(path, payload)
@@ -4025,7 +4127,12 @@ def test_real_service_bundle_heartbeats_keep_root_without_runtime_context(
                 time.sleep(1.2)
                 assert reservation_heartbeat.renew_now()
                 assert writer_heartbeat.renew_now()
-                assert reservation_heartbeat.renew_now() and writer_heartbeat.renew_now()
+                reservation_second_renewed = reservation_heartbeat.renew_now()
+                writer_second_renewed = writer_heartbeat.renew_now()
+                assert (reservation_second_renewed, writer_second_renewed) == (
+                    True,
+                    True,
+                )
                 writer_heartbeat.stop()
                 assert bundle.single_writer_lock.release(
                     board_id=board_id,

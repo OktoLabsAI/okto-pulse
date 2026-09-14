@@ -210,13 +210,13 @@ def test_recovery_defaults_match_the_pinned_release_dependencies() -> None:
     dependencies = set(project["project"]["dependencies"])
     lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
 
-    assert recovery.EXPECTED_GRAFX_VERSION == "0.0.5"
+    assert recovery.EXPECTED_GRAFX_VERSION == "0.0.6"
     assert recovery.EXPECTED_SQLALCHEMY_VERSION == "2.0.49"
     assert not any("ladybug" in item for item in dependencies)
-    assert "okto-grafx[accel]==0.0.5" in dependencies
+    assert "okto-grafx[accel]==0.0.6" in dependencies
     assert "sqlalchemy[asyncio]==2.0.49" in dependencies
     assert 'name = "ladybug"' not in lock
-    assert '{ name = "okto-grafx", extras = ["accel"], specifier = "==0.0.5" }' in lock
+    assert '{ name = "okto-grafx", extras = ["accel"], specifier = "==0.0.6" }' in lock
     assert (
         '{ name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.49" }' in lock
     )
@@ -2821,7 +2821,7 @@ def test_exact_batch_preserves_card_source_ref_alias(
 
 
 @pytest.mark.asyncio
-async def test_exact_drain_retries_typed_marker_then_cancels_on_terminal(
+async def test_exact_drain_retries_transient_empty_and_typed_marker_then_cancels(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2861,6 +2861,8 @@ async def test_exact_drain_retries_typed_marker_then_cancels_on_terminal(
     )
     snapshots = iter(
         (
+            _exact_queue_snapshot(manifest_ref=manifest_ref, marker=None),
+            _exact_queue_snapshot(manifest_ref=manifest_ref, marker=None),
             _exact_queue_snapshot(manifest_ref=manifest_ref, marker=None),
             _exact_queue_snapshot(manifest_ref=manifest_ref, marker=retry_marker),
             _exact_queue_snapshot(manifest_ref=manifest_ref, marker=retry_marker),
@@ -2908,15 +2910,18 @@ async def test_exact_drain_retries_typed_marker_then_cancels_on_terminal(
             assert claim_scope == scope
             assert reservation_authority_probe() is True
             self.calls += 1
+            if self.calls == 1:
+                self.last_attempted_count = 0
+                return ExactConsolidationBatchResult(claim_scope=scope, rows=())
             self.last_attempted_count = 1
             disposition = (
                 ExactConsolidationDisposition.RETRY_SCHEDULED
-                if self.calls == 1
+                if self.calls == 2
                 else ExactConsolidationDisposition.TERMINAL_FAILURE
             )
             return ExactConsolidationBatchResult(
                 claim_scope=scope,
-                rows=(disposition_row(disposition, attempt=self.calls),),
+                rows=(disposition_row(disposition, attempt=self.calls - 1),),
             )
 
     reservation = SimpleNamespace(
@@ -2982,7 +2987,7 @@ async def test_exact_drain_retries_typed_marker_then_cancels_on_terminal(
         poll_seconds=0.001,
     )
 
-    assert processor.calls == 2
+    assert processor.calls == 3
     assert cancel_event.is_set()
     assert outcome.service_result.outcome == "failed"
     assert outcome.blocker is not None
@@ -4140,6 +4145,29 @@ def test_reservation_reproof_rejects_same_operation_successor() -> None:
         )
 
 
+def test_reservation_reproof_uses_one_complete_snapshot() -> None:
+    manifest_ref = "manifest_resume"
+    baseline = _waiter_reservation(
+        manifest_ref,
+        acquired_at_epoch=time.time(),
+    )
+
+    class _SingleSnapshotPort(_WaiterReservationPort):
+        def is_owner(self, **_kwargs):  # noqa: ANN201
+            raise AssertionError("reservation reproof must not inspect twice")
+
+    bundle = SimpleNamespace(operation_reservation=_SingleSnapshotPort(baseline))
+
+    observed = recovery._assert_reservation_exact(
+        bundle,
+        board_id=BOARD_ID,
+        manifest_ref=manifest_ref,
+        expected=baseline,
+    )
+
+    assert observed is baseline
+
+
 def test_fresh_reservation_requires_exact_invocation_owner() -> None:
     manifest_ref = "manifest_resume"
     not_before = time.time()
@@ -4715,9 +4743,9 @@ async def _seed_real_closed_exact_relational_state(
                         agent_id="system:historical_consolidation",
                         started_at=occurred_at,
                         committed_at=occurred_at,
-                        nodes_added=1,
+                        nodes_added=0,
                         nodes_updated=2,
-                        nodes_superseded=0,
+                        nodes_superseded=1,
                         edges_added=3,
                         summary_text="real closed exact",
                         content_hash=membership_hash,
@@ -4741,9 +4769,9 @@ async def _seed_real_closed_exact_relational_state(
                         payload={
                             "session_id": session_id,
                             "artifact_id": artifact_id,
-                            "nodes_added": 1,
+                            "nodes_added": 0,
                             "nodes_updated": 2,
-                            "nodes_superseded": 0,
+                            "nodes_superseded": 1,
                             "edges_added": 3,
                         },
                         retry_count=0,
@@ -8367,6 +8395,18 @@ def test_installed_wheel_launcher_allows_self_and_denies_second_launcher(
         env=isolated_env,
     )
     assert self_only.returncode == 2
+    if "offline_listener_detected" in self_only.stdout:
+        # The installed fingerprint and real launcher have been exercised.
+        # Recovery must refuse an active workstation before process ancestry
+        # checks, even when --offline-port adds a separate fixture port.
+        # Do not stop the user's server or bypass this production guard just
+        # to reach the downstream second-launcher assertion.
+        assert not receipt_path.exists()
+        assert list(data_home.iterdir()) == []
+        pytest.skip(
+            "Installed launcher refused active listeners without effects; "
+            "second-launcher ancestry requires an offline workstation"
+        )
     assert "rehearsal_source_equals_target" in self_only.stdout
     assert "offline_pulse_process_detected" not in self_only.stdout
     assert not receipt_path.exists()

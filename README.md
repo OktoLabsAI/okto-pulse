@@ -495,6 +495,9 @@ human-first UI.
 
 ## Graph storage
 
+See [Local/remote integration and recovery regression](docs/LOCAL_REMOTE_INTEGRATION_2026_09_14.md)
+for the preserved local changes and their integration with the Grafx-only runtime.
+
 See [Open PR review for 0.3.3](docs/PR_REVIEW_2026_09_14.md) for integration decisions,
 compatibility evidence and deferred dependency migrations.
 

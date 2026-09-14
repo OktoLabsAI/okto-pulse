@@ -662,7 +662,17 @@ class CommunityRebuildEffects:
             replay_durable_cognitive,
         )
 
-        summary.update(replay_durable_cognitive(command.board_id))
+        replay_summary = replay_durable_cognitive(command.board_id)
+        summary.update(replay_summary)
+        durable_status = str(replay_summary.get("durable_source_status") or "")
+        replay_failed = list(replay_summary.get("replay_failed") or ())
+        if durable_status.startswith("error:") or replay_failed:
+            summary["status"] = STATUS_INTEGRITY_ERROR
+            summary["error"] = (
+                durable_status
+                if durable_status.startswith("error:")
+                else "durable_cognitive_replay_failed"
+            )
         if summary["status"] in (STATUS_DEGRADED, STATUS_UNREADABLE):
             summary["fallback_holds_recorded"] = record_cognitive_loss_fallback(
                 command.board_id, summary
