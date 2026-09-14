@@ -2157,6 +2157,11 @@ def cmd_kg_export(args):
         print(f"ERRO formato nao suportado: {fmt} (apenas jsonld)")
         sys.exit(2)
 
+    out_dir = os.path.dirname(os.path.abspath(output)) or "."
+    if not os.path.isdir(out_dir):
+        print(f"ERRO export_output_error: destination directory does not exist: {out_dir}")
+        sys.exit(2)
+
     # D5/R7: export offline abre o grafo do board — single-writer guard.
     _fail_fast_if_server_running("kg export")
 
@@ -2181,18 +2186,27 @@ def cmd_kg_export(args):
     payload = json.dumps(
         document, sort_keys=True, indent=2, ensure_ascii=False, default=str
     )
-    out_dir = os.path.dirname(os.path.abspath(output)) or "."
-    fd, tmp_path = _tempfile.mkstemp(dir=out_dir, suffix=".jsonld.tmp")
+    fd = None
+    tmp_path = None
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        fd, tmp_path = _tempfile.mkstemp(dir=out_dir, suffix=".jsonld.tmp")
+        handle = os.fdopen(fd, "w", encoding="utf-8", newline="\n")
+        fd = None  # Ownership transferred to the file object.
+        with handle:
             handle.write(payload)
         os.replace(tmp_path, output)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    except OSError as exc:
+        print(f"ERRO export_output_error: {exc}")
+        sys.exit(2)
+    finally:
+        # Also clean up on KeyboardInterrupt without swallowing cancellation.
+        if fd is not None:
+            os.close(fd)
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
     print(
         f"Export concluido: {document['nodes_exported']} nos, "
         f"{document['edges_exported']} edges -> {output}"
@@ -2828,6 +2842,14 @@ def main():
     if args.command == "kg" and not getattr(args, "kg_command", None):
         _print_banner()
         sub_kg.print_help()
+        sys.exit(1)
+    if (
+        args.command == "kg"
+        and args.kg_command == "subtype"
+        and not getattr(args, "subtype_command", None)
+    ):
+        _print_banner()
+        sub_subtype.print_help()
         sys.exit(1)
     if args.command == "metrics" and not getattr(args, "metrics_command", None):
         _print_banner()

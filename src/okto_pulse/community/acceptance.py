@@ -1,6 +1,7 @@
 """Terms-of-use acceptance helpers for the community CLI/server.
 
-Persistence layer is a tiny JSON file under ``~/.okto-pulse/.terms-accepted.json``
+Persistence layer is a tiny JSON file under the configured data home
+(``~/.okto-pulse/.terms-accepted.json`` by default)
 so the CLI flag (`--accept-terms`) and the env var (`OKTO_PULSE_TERMS_ACCEPTED=1`)
 can pre-populate consent before the frontend boots. The frontend reads this
 state via a small REST endpoint exposed in :mod:`okto_pulse.community.main`.
@@ -20,7 +21,10 @@ TERMS_HASH = "tos-2026-04-29-elv2-addendum-trademark-cla-cr2026"
 
 
 def _state_path() -> Path:
-    base = Path(os.environ.get("OKTO_PULSE_HOME") or (Path.home() / ".okto-pulse"))
+    from okto_pulse.community.config import CommunitySettings
+
+    # Use the same DATA_DIR / legacy home / dotenv precedence as the runtime.
+    base = Path(CommunitySettings().data_dir)
     base.mkdir(parents=True, exist_ok=True)
     return base / ".terms-accepted.json"
 
