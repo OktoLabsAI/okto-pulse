@@ -1350,74 +1350,80 @@ async def get_kg_metrics(
     # R05-C: read through the #06 GraphTransaction port (scope.execute) instead
     # of the direct board-connection tuple — the DB handle was unused and every
     # statement is a plain scope.execute, so the swap is behaviour-identical.
-    async with await resolve_graph_transaction().begin(board_id) as scope:
-        for rel_name, from_type, to_type in all_rel_pairs:
-            try:
-                # Kùzu groups implicitly on non-aggregate projections, but
-                # tolerates NULL only when we pre-coalesce per-row. Returning
-                # raw rows and aggregating in Python keeps the code portable
-                # across Kùzu versions (GROUP BY syntax shifted between 0.6
-                # and 0.11).
-                edge_visibility = ""
-                edge_params: dict[str, Any] | None = None
-                if not ct_access.allowed:
-                    edge_visibility = (
-                        f" WHERE {tpl.code_traceability_visibility_clause('a')}"
-                        f" AND {tpl.code_traceability_visibility_clause('b')}"
+    try:
+        async with await resolve_graph_transaction().begin(board_id) as scope:
+            for rel_name, from_type, to_type in all_rel_pairs:
+                try:
+                    # Kùzu groups implicitly on non-aggregate projections, but
+                    # tolerates NULL only when we pre-coalesce per-row. Returning
+                    # raw rows and aggregating in Python keeps the code portable
+                    # across Kùzu versions (GROUP BY syntax shifted between 0.6
+                    # and 0.11).
+                    edge_visibility = ""
+                    edge_params: dict[str, Any] | None = None
+                    if not ct_access.allowed:
+                        edge_visibility = (
+                            f" WHERE {tpl.code_traceability_visibility_clause('a')}"
+                            f" AND {tpl.code_traceability_visibility_clause('b')}"
+                        )
+                        edge_params = {"include_code_traceability": False}
+                    physical_rel = _relationship_table_name(
+                        scope,
+                        None,
+                        rel_name,
+                        from_type,
+                        to_type,
                     )
-                    edge_params = {"include_code_traceability": False}
-                physical_rel = _relationship_table_name(
-                    scope,
-                    None,
-                    rel_name,
-                    from_type,
-                    to_type,
-                )
-                edge_query = (
-                    f"MATCH (a:{from_type})-[r:{physical_rel}]->(b:{to_type})"
-                    f"{edge_visibility} "
-                    "RETURN r.layer, r.rule_id"
-                )
-                result = (
-                    scope.execute(edge_query)
-                    if edge_params is None
-                    else scope.execute(edge_query, edge_params)
-                )
-            except Exception:
-                continue
-            for row in result.rows:
-                layer = (row[0] or "unknown")
-                rule_id = (row[1] or "")
-                edge_count_by_layer[layer] = edge_count_by_layer.get(layer, 0) + 1
-                if rule_id:
-                    edge_by_rule[rule_id] = edge_by_rule.get(rule_id, 0) + 1
-
-        # Node type histogram — aggregate per type to dodge GROUP BY portability.
-        from okto_pulse.core.kg.schema_contract import NODE_TYPES
-
-        for nt in NODE_TYPES:
-            try:
-                node_visibility = ""
-                node_params: dict[str, Any] | None = None
-                if not ct_access.allowed:
-                    node_visibility = (
-                        f" WHERE {tpl.code_traceability_visibility_clause('n')}"
+                    edge_query = (
+                        f"MATCH (a:{from_type})-[r:{physical_rel}]->(b:{to_type})"
+                        f"{edge_visibility} "
+                        "RETURN r.layer, r.rule_id"
                     )
-                    node_params = {"include_code_traceability": False}
-                node_query = (
-                    f"MATCH (n:{nt}){node_visibility} RETURN count(n) AS c"
-                )
-                result = (
-                    scope.execute(node_query)
-                    if node_params is None
-                    else scope.execute(node_query, node_params)
-                )
-                if result.rows:
-                    c = int(result.rows[0][0])
-                    if c:
-                        node_count_by_type[nt] = c
-            except Exception:
-                continue
+                    result = (
+                        scope.execute(edge_query)
+                        if edge_params is None
+                        else scope.execute(edge_query, edge_params)
+                    )
+                except Exception:
+                    continue
+                for row in result.rows:
+                    layer = (row[0] or "unknown")
+                    rule_id = (row[1] or "")
+                    edge_count_by_layer[layer] = edge_count_by_layer.get(layer, 0) + 1
+                    if rule_id:
+                        edge_by_rule[rule_id] = edge_by_rule.get(rule_id, 0) + 1
+
+            # Node type histogram — aggregate per type to dodge GROUP BY portability.
+            from okto_pulse.core.kg.schema_contract import NODE_TYPES
+
+            for nt in NODE_TYPES:
+                try:
+                    node_visibility = ""
+                    node_params: dict[str, Any] | None = None
+                    if not ct_access.allowed:
+                        node_visibility = (
+                            f" WHERE {tpl.code_traceability_visibility_clause('n')}"
+                        )
+                        node_params = {"include_code_traceability": False}
+                    node_query = (
+                        f"MATCH (n:{nt}){node_visibility} RETURN count(n) AS c"
+                    )
+                    result = (
+                        scope.execute(node_query)
+                        if node_params is None
+                        else scope.execute(node_query, node_params)
+                    )
+                    if result.rows:
+                        c = int(result.rows[0][0])
+                        if c:
+                            node_count_by_type[nt] = c
+                except Exception:
+                    continue
+    except GraphError as exc:
+        # Route binding can change between the graph_initialized snapshot
+        # above and this transaction; map it like the other routed reads
+        # instead of surfacing an unhandled HTTP 500.
+        return _graph_problem(exc)
 
     edges_total = sum(edge_count_by_layer.values())
     nodes_total = sum(node_count_by_type.values())
