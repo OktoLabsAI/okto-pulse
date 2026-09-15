@@ -5194,10 +5194,11 @@ def _snapshot_tree_hashes(root: Path) -> dict[str, str]:
 
 
 def _snapshot_board_storage_hashes(root: Path) -> dict[str, str]:
-    """Hash graph data while excluding the provider's ephemeral route lock."""
+    """Hash graph data while excluding ephemeral coordination locks."""
 
     snapshot = _snapshot_tree_hashes(root)
     snapshot.pop(_BINDING_ROUTE_LOCK_FILENAME, None)
+    snapshot.pop(f"{_BOARD_BINDING_FILENAME}.lock", None)
     return snapshot
 
 

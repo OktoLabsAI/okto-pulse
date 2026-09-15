@@ -1394,6 +1394,11 @@ def test_f06_build_step_uses_core_processor_and_typed_effects(
         "restore_canonical_cognitive",
         lambda _board_id, _snapshot: cognitive.RestoreResult(),
     )
+    monkeypatch.setattr(
+        cognitive,
+        "replay_durable_cognitive",
+        lambda _board_id: {"durable_source_status": "ok", "replay_failed": []},
+    )
     monkeypatch.setattr(application_kg, "signal_consolidation_worker", lambda: True)
     monkeypatch.setattr(
         CommunityBoardRebuildIngestionAdapter,
@@ -1548,6 +1553,11 @@ def test_f06_policy_constraint_rebuild_failure_is_fail_closed(
         cognitive,
         "restore_canonical_cognitive",
         lambda _board_id, _snapshot: cognitive.RestoreResult(),
+    )
+    monkeypatch.setattr(
+        cognitive,
+        "replay_durable_cognitive",
+        lambda _board_id: {"durable_source_status": "ok", "replay_failed": []},
     )
     monkeypatch.setattr(application_kg, "signal_consolidation_worker", lambda: True)
     monkeypatch.setattr(
