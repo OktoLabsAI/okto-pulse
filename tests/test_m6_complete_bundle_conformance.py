@@ -1,4 +1,4 @@
-"""Finite Core-facing conformance slice for both complete graph bundles.
+"""Finite Core-facing conformance slice for the supported Grafx bundle.
 
 This is deliberately not another method-by-method provider suite.  The focused
 provider tests already own exhaustive API, failure-injection, destructive
@@ -237,13 +237,14 @@ async def _run_complete_bundle(
 
 
 @pytest.mark.asyncio
-async def test_m6_same_core_flow_conforms_for_complete_ladybug_and_grafx_bundles(
+async def test_m6_core_flow_conforms_for_complete_grafx_bundle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    outcomes = {
-        backend: await _run_complete_bundle(tmp_path / backend, backend, monkeypatch)
-        for backend in ("ladybug", "grafx")
-    }
-
-    assert outcomes["ladybug"] == outcomes["grafx"]
+    outcome = await _run_complete_bundle(tmp_path / "grafx", "grafx", monkeypatch)
+    assert outcome.board_schema_version
+    assert outcome.board_rollback_was_terminal is True
+    assert outcome.board_reopened is True
+    assert outcome.board_recovery_preserved_main is True
+    assert outcome.global_link_row
+    assert outcome.global_search_digest_ids

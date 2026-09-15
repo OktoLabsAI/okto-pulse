@@ -159,6 +159,9 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
         "global_discovery_recovery",
         "graph_runtime_store",
         "graph_recovery",
+        "ranked_graph_search",
+        "graph_history",
+        "graph_analytics",
     }
     # Each satisfies its #06 port (subclass IS-A the embedded which IS-A port).
     assert isinstance(providers["graph_store"], SemanticGraphStore)

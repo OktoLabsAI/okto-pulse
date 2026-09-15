@@ -2,20 +2,26 @@
 
 import pytest
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import sessionmaker
 
 from okto_pulse.community.adapters.sqlalchemy_discovery_execution import (
     CommunitySqlAlchemyDiscoveryExecutionReader,
 )
-from okto_pulse.community.adapters.sqlalchemy_models import Card
+from okto_pulse.community.adapters.sqlalchemy_models import Base, Card
+from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
+    CommunitySemanticSession,
+)
 
 
 @pytest.mark.asyncio
 async def test_discovery_archived_opt_in_preserves_board_scope_and_default():
     engine = create_engine("sqlite://")
     try:
-        Card.__table__.create(engine)
-        with Session(engine) as session:
+        # The composed semantic session updates the owning board during a
+        # protected Card flush, so the fixture must expose the real relational
+        # shape rather than an isolated Card table.
+        Base.metadata.create_all(engine)
+        with sessionmaker(bind=engine, class_=CommunitySemanticSession)() as session:
             session.add_all([
                 Card(id="active", title="Active", board_id="board", created_by="test", archived=False),
                 Card(id="archived", title="Archived", board_id="board", created_by="test", archived=True),
