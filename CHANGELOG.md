@@ -18,6 +18,10 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- Board deletion now consumes retryable Core lock-contention errors through
+  public ports, preserving the HTTP 409 contract without reaching into private
+  Core KG implementation modules.
+
 - Knowledge Graph graph, stats and metrics reads now resolve each logical
   relationship endpoint pair through the active backend. Grafx receives its
   physical per-pair table name while Ladybug keeps the logical name, preventing
