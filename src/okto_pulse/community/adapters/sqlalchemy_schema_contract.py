@@ -118,7 +118,7 @@ CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
 )
 
 # Additive Community-owned tables introduced after the F01 extraction. They
-# are intentionally excluded when proving that the inherited 64-table Core
+# are intentionally excluded when proving that the inherited 65-table Core
 # schema matches the governed Community contract.
 COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
     {

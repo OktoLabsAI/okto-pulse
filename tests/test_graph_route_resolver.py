@@ -71,8 +71,8 @@ def _make_directory_alias(link: Path, target: Path) -> bool:
 def _resolver(
     store: CommunityGraphBackendBindingStore,
     *,
-    board_backend: str = "ladybug",
-    global_backend: str = "ladybug",
+    board_backend: str = "grafx",
+    global_backend: str = "grafx",
     page_size: int = 8192,
     databases: dict[Path, _FakeGrafxDatabase] | None = None,
     opened: list[Path] | None = None,
@@ -171,7 +171,7 @@ def test_persisted_board_binding_and_page_size_override_changed_settings(
         ),
     )
 
-    changed = _resolver(store, board_backend="ladybug", page_size=8192)
+    changed = _resolver(store, board_backend="grafx", page_size=8192)
     inspected = changed.inspect_board_route("board-pinned")
 
     assert inspected == created
@@ -189,7 +189,7 @@ def test_physical_before_binding_is_adopted_and_persisted_geometry_wins(
     opened: list[Path] = []
     resolver = _resolver(
         store,
-        board_backend="ladybug",
+        board_backend="grafx",
         page_size=8192,
         databases={path: database},
         opened=opened,
@@ -230,7 +230,7 @@ def test_creation_failure_publishes_no_binding_and_retry_adopts_database(
     binding_path = path.parent.parent / "graph_backend_binding.json"
     assert not binding_path.exists()
 
-    retry = _resolver(store, board_backend="ladybug", databases={path: database})
+    retry = _resolver(store, board_backend="grafx", databases={path: database})
     adopted = retry.initialize_board_route("board-retry")
     assert adopted.backend == "grafx"
     assert binding_path.is_file()
@@ -330,13 +330,13 @@ def test_corrupt_binding_never_falls_back_to_other_physical_backend(
     resolver = _resolver(store)
     snapshot = resolver.initialize_board_route(
         "board-corrupt",
-        create_physical=lambda candidate: _ladybug(candidate.binding_path),
+        create_physical=lambda candidate: _grafx(candidate.binding_path),
     )
     alternate = store.board_grafx_path("board-corrupt", "generation-other")
     _grafx(alternate)
-    binding_path = snapshot.binding_path.parent / "graph_backend_binding.json"
+    binding_path = snapshot.binding_path.parent.parent / "graph_backend_binding.json"
     document = json.loads(binding_path.read_text(encoding="utf-8"))
-    document["backend"] = "grafx"
+    document["backend"] = "ladybug"
     binding_path.write_text(json.dumps(document), encoding="utf-8")
     opened: list[Path] = []
     changed = _resolver(
@@ -364,12 +364,12 @@ def test_board_and_global_initialization_have_independent_route_locks(
     def create_board(candidate: CommunityGraphRouteCandidate) -> Path:
         initialized_global.append(
             resolver.initialize_global_route(
-                create_physical=lambda global_candidate: _ladybug(
+                create_physical=lambda global_candidate: _grafx(
                     global_candidate.binding_path
                 )
             )
         )
-        return _ladybug(candidate.binding_path)
+        return _grafx(candidate.binding_path)
 
     board = resolver.initialize_board_route(
         "board-independent", create_physical=create_board
@@ -439,7 +439,7 @@ def test_unbound_global_adopts_authenticated_active_grafx_and_its_geometry(
     opened: list[Path] = []
     resolver = _resolver(
         store,
-        global_backend="ladybug",
+        global_backend="grafx",
         page_size=8192,
         databases={anchor: anchor_database, active_path: active_database},
         opened=opened,
@@ -515,12 +515,12 @@ def test_unbound_global_wal_residue_blocks_grafx_creation_and_publication(
     resolver = _resolver(store, global_backend="grafx")
     creation_calls: list[CommunityGraphRouteCandidate] = []
 
-    with pytest.raises(GraphCapabilityUnavailable) as ambiguous:
+    with pytest.raises(GraphUnavailable) as ambiguous:
         resolver.initialize_global_route(
             create_physical=lambda candidate: creation_calls.append(candidate)
         )
 
-    assert ambiguous.value.details["reason"] == "graph_route_storage_ambiguous"
+    assert ambiguous.value.details["reason"] == "graph_backend_retired_files_preserved"
     assert creation_calls == []
     assert wal.read_bytes() == b"pending-global-wal"
     assert not (primary.parent / "graph_backend_binding.json").exists()
@@ -922,6 +922,7 @@ def test_global_pointer_cutover_invalidates_snapshot_without_binding_fallback(
     assert mismatch.value.details["reason"] == "graph_route_snapshot_mismatch"
 
 
+@pytest.mark.skip(reason="Ladybug routing was removed from Community")
 def test_global_ladybug_binding_stays_on_anchor_across_pointer_cutovers(
     tmp_path: Path,
 ) -> None:
@@ -955,10 +956,11 @@ def test_global_generations_root_alias_is_refused_before_layout_reader(
     tmp_path: Path,
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
-    anchor = _ladybug(store.global_ladybug_path())
-    resolver = _resolver(store)
-    resolver.initialize_global_route()
-    _publish_active(anchor, "gdr_alias", backend="ladybug")
+    anchor = store.global_grafx_path("generation-1")
+    database = _grafx(anchor)
+    resolver = _resolver(store, databases={anchor: database})
+    resolver.initialize_global_route(create_physical=lambda _candidate: database)
+    _publish_active(anchor, "gdr_alias", backend="grafx")
     generation_root = generations_root(anchor)
     real_is_alias = route_module.is_filesystem_alias
     reader_calls: list[Path] = []

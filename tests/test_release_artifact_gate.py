@@ -38,8 +38,8 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
     assert module.EXPECTED_GRAFX_VERSION == "0.0.7"
     assert module.GRAFX_WHEEL_ENV == "OKTO_E2E_GRAFX_WHEEL"
     assert module.GRAFX_REPO_ENV == "OKTO_E2E_GRAFX_REPO"
-    assert module.EXPECTED_MCP_TOOL_COUNT == live_tool_count == 338
-    assert module.EXPECTED_CANONICAL_TOOL_COUNT == live_canonical_count == 330
+    assert module.EXPECTED_MCP_TOOL_COUNT == live_tool_count == 340
+    assert module.EXPECTED_CANONICAL_TOOL_COUNT == live_canonical_count == 332
     assert module.EXPECTED_TOOL_ALIAS_COUNT == live_alias_count == 8
     assert module.EXPECTED_RESOURCE_COUNT == live_resource_count == 56
     assert module.MINIMUM_SUPPORTED_PYTHON == (3, 11)
@@ -250,8 +250,8 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     )
     mcp_http = evidence["installed"]["mcp_http"]
     assert mcp_http["transport"] == "streamable-http-loopback"
-    assert mcp_http["tool_count"] == 338
-    assert mcp_http["canonical_tool_count"] == 330
+    assert mcp_http["tool_count"] == 340
+    assert mcp_http["canonical_tool_count"] == 332
     assert mcp_http["tool_alias_count"] == 8
     assert mcp_http["resource_count"] == 56
     assert mcp_http["ska_tool_count"] == 13

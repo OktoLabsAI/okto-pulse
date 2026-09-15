@@ -701,6 +701,8 @@ def test_done_journal_failure_is_a_typed_partial_restore(
 def _make_junction(link: Path, target: Path) -> bool:
     """Create a real Windows directory junction, or report that we cannot."""
 
+    if __import__("os").name != "nt":
+        pytest.skip("Windows junction semantics require a Windows runner")
     import subprocess
 
     completed = subprocess.run(
