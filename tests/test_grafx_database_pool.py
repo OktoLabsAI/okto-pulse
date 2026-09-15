@@ -173,6 +173,8 @@ def test_read_only_pool_remains_available_while_writer_participant_is_busy(
 
 
 def _make_junction(link: Path, target: Path) -> bool:
+    if __import__("os").name != "nt":
+        pytest.skip("Windows junction semantics require a Windows runner")
     completed = subprocess.run(
         ["cmd", "/c", "mklink", "/J", str(link), str(target)],
         capture_output=True,

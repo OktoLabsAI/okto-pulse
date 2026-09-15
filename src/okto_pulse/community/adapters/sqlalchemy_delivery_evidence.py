@@ -65,7 +65,8 @@ class CommunityDeliveryEvidenceStore:
 
     async def lock_scope(self, scope):
         # Same board no-op write fence as Code Traceability receipt mutations.
-        # SQLite serializes writers; PostgreSQL locks this board row until commit.
+        # SQLite serializes writers; a server-backed engine locks this board row
+        # until commit. Community itself deliberately supports only SQLite.
         result = await self.session.execute(
             update(Board)
             .where(Board.id == scope.board_id)
