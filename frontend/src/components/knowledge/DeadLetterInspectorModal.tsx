@@ -10,7 +10,7 @@
  *  - Tabela com expand row para errors[] history
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -70,21 +70,31 @@ export function DeadLetterInspectorModal({
 
   useEscapeToClose(onClose);
 
+  // Row redrives may run concurrently and each one refreshes the list when it
+  // completes. Only the most recent refresh may publish its result, otherwise
+  // an older response captured before a later redrive committed would resurrect
+  // rows that are no longer dead-lettered.
+  const fetchSequence = useRef(0);
+
   const fetchData = useCallback(async () => {
     if (!canReadQueue) {
       setLoading(false);
       setError('You do not have permission to read KG dead-letter rows');
       return;
     }
+    fetchSequence.current += 1;
+    const sequence = fetchSequence.current;
     setLoading(true);
     setError(null);
     try {
       const fresh = await getDeadLetterRows(boardId);
+      if (sequence !== fetchSequence.current) return;
       setData(fresh);
     } catch (err: any) {
+      if (sequence !== fetchSequence.current) return;
       setError(err?.message ?? 'Failed to load dead-letter rows');
     } finally {
-      setLoading(false);
+      if (sequence === fetchSequence.current) setLoading(false);
     }
   }, [boardId, canReadQueue]);
 

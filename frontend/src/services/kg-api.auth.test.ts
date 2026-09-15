@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { initAuthFetch } from '@/lib/authFetch';
 import { getNodeSource } from '@/services/kg-api';

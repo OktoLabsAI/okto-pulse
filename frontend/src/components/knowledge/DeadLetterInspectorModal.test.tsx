@@ -153,6 +153,53 @@ describe('DeadLetterInspectorModal', () => {
     await waitFor(() => screen.getByTestId('dlq-empty-state'));
   });
 
+  test('a stale refresh never overwrites the result of a newer redrive', async () => {
+    const rowB: dlqApi.DeadLetterRow = { ...ROW_FIXTURE, id: 'dlq-2', artifact_id: 'spec-def' };
+    const deferred = () => {
+      let resolve!: (value: dlqApi.DeadLetterListResponse) => void;
+      const promise = new Promise<dlqApi.DeadLetterListResponse>((done) => { resolve = done; });
+      return { promise, resolve };
+    };
+    const refreshAfterA = deferred();
+    const refreshAfterB = deferred();
+    const getSpy = vi.spyOn(dlqApi, 'getDeadLetterRows')
+      .mockResolvedValueOnce({ rows: [ROW_FIXTURE, rowB], total: 2, limit: 50, offset: 0 })
+      .mockReturnValueOnce(refreshAfterA.promise)
+      .mockReturnValueOnce(refreshAfterB.promise);
+    vi.spyOn(dlqApi, 'redriveDeadLetterRows').mockResolvedValue({
+      success: true,
+      blocked: false,
+      mutated: true,
+      scope: 'generic',
+      requested: 1,
+      selected: 1,
+      requeued_count: 1,
+      already_queued_count: 0,
+      process_now_mode: 'signalled_app_runner',
+    });
+
+    render(
+      <DeadLetterInspectorModal boardId="board-test" onClose={() => {}} />,
+    );
+
+    await screen.findByTestId('dlq-redrive-dlq-1');
+    fireEvent.click(screen.getByTestId('dlq-redrive-dlq-1'));
+    await waitFor(() => expect(getSpy).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByTestId('dlq-redrive-dlq-2'));
+    await waitFor(() => expect(getSpy).toHaveBeenCalledTimes(3));
+
+    // The refresh started by B's redrive resolves first: the DLQ is drained.
+    refreshAfterB.resolve({ rows: [], total: 0, limit: 50, offset: 0 });
+    await screen.findByTestId('dlq-empty-state');
+
+    // The older refresh, captured before B committed, resolves last and must be
+    // discarded instead of resurrecting spec-def as still dead-lettered.
+    refreshAfterA.resolve({ rows: [rowB], total: 1, limit: 50, offset: 0 });
+    await new Promise((done) => setTimeout(done, 0));
+    expect(screen.queryByText(/spec-def/)).not.toBeInTheDocument();
+    expect(screen.getByTestId('dlq-empty-state')).toBeInTheDocument();
+  });
+
   test('redrive requires the queue reprocess permission', async () => {
     permissionHas.mockImplementation(
       (flag: string) => flag !== 'kg.operations.queue.reprocess',
