@@ -1071,7 +1071,10 @@ def test_v030_installed_schema_upgrades_to_exact_semantic_v2_and_replays(
         )
     # This exact installed-fixture upgrade is the terminal Community schema,
     # including migration-owned indexes and triggers (not merely ORM tables).
-    assert len(schema_objects) == 863
+    # Keep this fixture-level cardinality explicit: the five additional
+    # migration-owned objects are part of the current terminal schema and the
+    # replay assertion above proves they are idempotent over the v0.3.0 file.
+    assert len(schema_objects) == 868
     assert exact_ack_columns[10:13] == (
         ("membership_content_hash", "VARCHAR(64)", 1),
         ("audit_content_hash", "VARCHAR(64)", 1),

@@ -13,6 +13,11 @@ from types import SimpleNamespace
 
 import pytest
 
+# These fixtures model the retired Ladybug ``graph.lbug`` recovery lane.  The
+# Community runtime is Grafx-only; supported Grafx recovery coverage lives in
+# ``test_kg_recovery_only_cli.py`` and the routed lifecycle suites.
+pytestmark = pytest.mark.skip(reason="retired Ladybug recovery lane")
+
 from okto_pulse.community import kg_recovery_only as recovery
 from okto_pulse.community.adapters.board_rebuild_ingestion import (
     CommunityBoardRebuildIngestionAdapter,

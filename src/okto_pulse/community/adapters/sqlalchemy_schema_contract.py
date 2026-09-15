@@ -114,7 +114,7 @@ LEGACY_CORE_SCHEMA_SHA256 = (
 # Keep the pre-extraction hash above immutable so migration provenance remains
 # independently verifiable.
 CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
-    "2e882268313049aa9e2bd7e7f521d2a53b0cb46306b709e10a51ef9f896614a9"
+    "cac384167d48703f86cc65c2fe8d0dea4322f9a3077a2bf26c473f5b26f4aa4a"
 )
 
 # Additive Community-owned tables introduced after the F01 extraction. They
