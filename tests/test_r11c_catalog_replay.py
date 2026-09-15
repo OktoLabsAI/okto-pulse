@@ -106,4 +106,7 @@ def test_rejected_card_runbook_is_present_in_effective_errors_overlay(
         "append-only",
     )
     assert all(fragment in body for fragment in required_fragments)
-    assert "Tried to move a normal card directly" not in body
+    assert (
+        "Move to `validation` with the executor report, then "
+        "`okto_pulse_submit_task_validation`."
+    ) in body

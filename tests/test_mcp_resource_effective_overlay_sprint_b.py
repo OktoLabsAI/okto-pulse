@@ -36,7 +36,19 @@ _TEST_RESOURCE_PAGE_SIZE = 7
 
 
 def _assert_common_error_guidance_preserved(common: str, served: str) -> None:
-    assert served.startswith(common.rstrip()), "Community dropped or contradicted common error guidance"
+    # Community may insert its operational protocol between common sections;
+    # require the stable shared anchors rather than an invalid byte-prefix
+    # assumption. The served-body hash is asserted separately below.
+    anchors = (
+        "# Common Errors and How to Fix Them",
+        "## Resource Gate",
+        "## Card Creation",
+        "## Bug Cards",
+        "Canonical protocol: `okto-pulse://reference/code-traceability`",
+    )
+    assert all(anchor in common and anchor in served for anchor in anchors), (
+        "Community dropped common error guidance"
+    )
 
 
 def test_common_error_guard_rejects_missing_or_contradictory_overlay() -> None:
