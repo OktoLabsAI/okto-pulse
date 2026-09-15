@@ -1329,7 +1329,7 @@ def test_offline_cold_health_routes_a_real_grafx_database_by_binding(
         bundle,
         board_id=BOARD_ID,
         board_storage_root=board_root,
-        board_storage_snapshot=recovery._snapshot_tree_hashes(board_root),
+        board_storage_snapshot=recovery._snapshot_board_storage_hashes(board_root),
         graph_runtime_store=runtime,
     )
 

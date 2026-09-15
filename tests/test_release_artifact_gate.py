@@ -182,11 +182,11 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     assert evidence["installed"]["runtime_version"]["python_major_minor"] == [3, 11]
     assert evidence["installed"]["runtime_version"]["required_major_minor"] == [3, 11]
     assert evidence["installed"]["runtime_version"]["pydantic"]
-    assert evidence["installed"]["runtime_version"]["okto_grafx"] == "0.0.1"
+    assert evidence["installed"]["runtime_version"]["okto_grafx"] == "0.0.7"
     assert evidence["core_artifact_audit"]["forbidden_wheel_paths"] == []
     assert evidence["core_artifact_audit"]["missing_required_resources"] == []
     origin = evidence["installed"]["origin_probe"]
-    assert origin["versions"]["grafx"] == "0.0.1"
+    assert origin["versions"]["grafx"] == "0.0.7"
     assert origin["distribution_file_counts"]["grafx"] > 0
     assert "site-packages" in origin["origins"]["okto_grafx"]
     assert origin["grafx_wheel_sha256"] == evidence["wheels"]["grafx"]["sha256"]
