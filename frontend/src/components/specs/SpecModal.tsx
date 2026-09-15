@@ -2850,7 +2850,8 @@ export function SpecModal({
             <DeliveryEvidencePanel boardId={spec.board_id} specId={spec.id}
               canRecord={!spec.archived && perms.has('code_traceability.target.execution_submit')}
               canTest={!spec.archived && perms.has('spec.tests.execute')}
-              canWaive={!spec.archived && perms.has('code_traceability.waiver.create') && perms.has('code_traceability.waiver.clear')}
+              canCreateWaiver={!spec.archived && perms.has('code_traceability.waiver.create')}
+              canClearWaiver={!spec.archived && perms.has('code_traceability.waiver.clear')}
               onChanged={() => void loadSpec()}
             />
           )}

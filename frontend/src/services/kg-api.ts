@@ -11,25 +11,13 @@ import type {
   AuditEntry,
   GraphLayerMode,
 } from '@/types/knowledge-graph';
-
-const KG_BASE = '/api/v1/kg';
+import { authFetchJson } from '@/lib/authFetch';
 
 async function kgFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(`${KG_BASE}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...init?.headers,
-    },
-  });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-    throw new Error(err.detail || err.message || `HTTP ${resp.status}`);
-  }
-  if (resp.status === 204 || resp.headers.get('Content-Length') === '0') {
-    return undefined as T;
-  }
-  return resp.json();
+  // The shared authenticated client owns both the configured API base URL and
+  // bearer-token refresh. KG calls must not silently bypass either in hosted
+  // deployments merely because this module is consumed outside a component.
+  return authFetchJson<T>(`/kg${path}`, init);
 }
 
 // Nodes

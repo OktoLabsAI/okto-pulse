@@ -464,6 +464,8 @@ async def list_nodes(
         )
     except KGToolError as e:
         return _handle_kg_error(e)
+    except GraphError as exc:
+        return _graph_problem(exc)
 
 
 @router.get("/boards/{board_id}/nodes/{node_id}")
@@ -499,6 +501,8 @@ async def get_node_detail(
         if e.code == "not_found":
             return _problem(404, "Not Found", f"Node {node_id} not found")
         return _handle_kg_error(e)
+    except GraphError as exc:
+        return _graph_problem(exc)
 
 
 @router.get("/boards/{board_id}/nodes/{node_id}/source", response_model=KGNodeSourceResult)
@@ -666,6 +670,8 @@ async def get_subgraph(
         )
     except KGToolError as e:
         return _handle_kg_error(e)
+    except GraphError as exc:
+        return _graph_problem(exc)
 
 
 def _node_id(row: Any) -> str:
@@ -1139,6 +1145,8 @@ async def find_similar(
         return {"results": results, "total": len(results)}
     except KGToolError as e:
         return _handle_kg_error(e)
+    except GraphError as exc:
+        return _graph_problem(exc)
 
 
 @router.get("/boards/{board_id}/supersedence/{decision_id}")
@@ -1165,6 +1173,8 @@ async def get_supersedence(
         )
     except KGToolError as e:
         return _handle_kg_error(e)
+    except GraphError as exc:
+        return _graph_problem(exc)
 
 
 @router.get("/boards/{board_id}/contradictions")
@@ -1197,6 +1207,8 @@ async def find_contradictions(
         return {"contradictions": results, "total": len(results)}
     except KGToolError as e:
         return _handle_kg_error(e)
+    except GraphError as exc:
+        return _graph_problem(exc)
 
 
 @router.get("/boards/{board_id}/stats")
@@ -1279,6 +1291,8 @@ async def get_stats(
         )
     except KGToolError as e:
         return _handle_kg_error(e)
+    except GraphError as exc:
+        return _graph_problem(exc)
 
 
 @router.get("/boards/{board_id}/metrics")
