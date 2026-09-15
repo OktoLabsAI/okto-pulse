@@ -16,7 +16,12 @@ def test_driver_dependency_check_is_independent_of_cwd_and_pythonpath(
     tmp_path: Path,
 ) -> None:
     pulse_repo = Path(__file__).resolve().parents[1]
-    grafx_repo = Path(okto_grafx.__file__).resolve().parents[2]
+    configured_grafx = os.environ.get("OKTO_E2E_GRAFX_REPO", "").strip()
+    grafx_repo = (
+        Path(configured_grafx).resolve()
+        if configured_grafx
+        else Path(okto_grafx.__file__).resolve().parents[2]
+    )
     core_repo = Path(schema_contract.__file__).resolve().parents[4]
     script = pulse_repo / "scripts" / "measure_m4_non_public_vector_indexes.py"
     environment = os.environ.copy()

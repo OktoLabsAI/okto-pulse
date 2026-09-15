@@ -607,7 +607,8 @@ venv = Path(sys.argv[1]).resolve()
 expected_grafx_url = sys.argv[2]
 expected_grafx_wheel = Path(sys.argv[3]).resolve()
 expected_grafx_sha256 = sys.argv[4]
-forbidden_roots = tuple(Path(value).resolve() for value in sys.argv[5:])
+expected_grafx_version = sys.argv[5]
+forbidden_roots = tuple(Path(value).resolve() for value in sys.argv[6:])
 
 import okto_pulse.core as core
 import okto_pulse.community as community
@@ -655,7 +656,7 @@ core_dist = metadata.distribution("okto-pulse-core")
 community_dist = metadata.distribution("okto-pulse")
 grafx_dist = metadata.distribution("okto-grafx")
 assert core_dist.version == community_dist.version == "0.3.3"
-assert grafx_dist.version == "0.0.5"
+assert grafx_dist.version == expected_grafx_version
 for distribution in (core_dist, community_dist, grafx_dist):
     root = Path(distribution.locate_file("")).resolve()
     assert under(root, venv), (distribution.metadata["Name"], root, venv)
@@ -969,6 +970,7 @@ def _installed_gate(
             grafx_wheel.resolve().as_uri(),
             grafx_wheel.resolve(),
             _sha256(grafx_wheel),
+            EXPECTED_GRAFX_VERSION,
             *FORBIDDEN_CHECKOUT_ROOTS,
         ),
         cwd=work_dir,
