@@ -428,6 +428,13 @@ export function ProjectStructureTab({
   const [evidenceOptions, setEvidenceOptions] = useState<Array<{ id: string; label: string }>>([]);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const expansionInitializedFor = useRef<string | null>(null);
+  // Every read and every applied mutation advances the snapshot generation. An
+  // in-flight GET publishes only while it is still the newest source, so a slow
+  // read (initial load with embedded structure, or a conflict refresh) can never
+  // overwrite the nodes and CAS tokens of a mutation that completed after it
+  // started.
+  const snapshotGeneration = useRef(0);
+  const pendingLoads = useRef(0);
   const onStructureChangeRef = useRef(onStructureChange);
   useEffect(() => {
     onStructureChangeRef.current = onStructureChange;
@@ -465,10 +472,14 @@ export function ProjectStructureTab({
   }, []);
 
   const loadSnapshot = useCallback(async (reviewConflict = false) => {
+    snapshotGeneration.current += 1;
+    const generation = snapshotGeneration.current;
+    pendingLoads.current += 1;
     setLoading(true);
     setLoadError(null);
     try {
       const snapshot = await api.getProjectStructure(boardId, spec.id);
+      if (generation !== snapshotGeneration.current) return;
       const loadedNodes = publishSnapshot(snapshot);
       if (reviewConflict) {
         setConflict((current) => current ? { ...current, reviewed: true } : current);
@@ -482,9 +493,11 @@ export function ProjectStructureTab({
         ));
       }
     } catch (error) {
+      if (generation !== snapshotGeneration.current) return;
       setLoadError(humanError(error));
     } finally {
-      setLoading(false);
+      pendingLoads.current -= 1;
+      if (pendingLoads.current === 0) setLoading(false);
     }
   }, [api, boardId, publishSnapshot, spec.id]);
 
@@ -557,6 +570,7 @@ export function ProjectStructureTab({
   }, [focusNodeId, loading, nodes]);
 
   const applyResult = useCallback((result: ProjectStructureMutationResponse) => {
+    snapshotGeneration.current += 1;
     const parsed = parseProjectStructureNodes(result.nodes);
     const state = stateFor(parsed.nodes, true);
     setNodes(parsed.nodes);
