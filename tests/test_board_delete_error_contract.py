@@ -9,8 +9,10 @@ from okto_pulse.community.api import boards
 from okto_pulse.community.adapters.sqlalchemy_kg_governance import (
     BoardRelationalErasureError,
 )
-from okto_pulse.core.kg.governance import BoardErasureLockContention
-from okto_pulse.core.kg.global_discovery_writer import GlobalDiscoveryWriterContention
+from okto_pulse.core.ports.board_erasure_control import BoardErasureLockContention
+from okto_pulse.core.ports.global_discovery_recovery_control import (
+    GlobalDiscoveryWriterContention,
+)
 from okto_pulse.core.ports.authentication import Principal
 
 
