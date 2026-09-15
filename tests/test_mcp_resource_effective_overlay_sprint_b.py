@@ -52,12 +52,20 @@ def _assert_common_error_guidance_preserved(common: str, served: str) -> None:
 
 
 def test_common_error_guard_rejects_missing_or_contradictory_overlay() -> None:
-    common = "# Errors\nKB is advisory.\ncode_investigation_subject_version_conflict\n"
+    common = "\n".join(
+        (
+            "# Common Errors and How to Fix Them",
+            "## Resource Gate",
+            "## Card Creation",
+            "## Bug Cards",
+            "Canonical protocol: `okto-pulse://reference/code-traceability`",
+        )
+    )
     _assert_common_error_guidance_preserved(common, common + "\nCommunity notes\n")
     with pytest.raises(AssertionError):
-        _assert_common_error_guidance_preserved(common, common.replace("KB is advisory.", "KB blocks."))
+        _assert_common_error_guidance_preserved(common, common.replace("## Bug Cards", ""))
     with pytest.raises(AssertionError):
-        _assert_common_error_guidance_preserved(common, "# Errors\nKB is advisory.\n")
+        _assert_common_error_guidance_preserved(common, "# Common Errors and How to Fix Them\n")
 
 
 class _EmptyToolCatalog:
