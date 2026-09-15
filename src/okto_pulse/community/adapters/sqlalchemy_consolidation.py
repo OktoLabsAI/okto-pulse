@@ -1770,6 +1770,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
             )
         ):
             return None
+        deferred_live = _deferred_rebuild_live_intent(claimed.payload)
         membership = claimed.payload.get("_rebuild_membership")
         expected_membership = {
             "content_hash": membership_content_hash,
@@ -1878,7 +1879,11 @@ class CommunitySqlAlchemyConsolidationPersistence:
             raise ExactConsolidationAckIntegrityError(
                 "exact_consolidation_ack_node_refs_invalid"
             )
-        if len(refs) != audit.nodes_added:
+        # Every newly materialized graph node receives a KuzuNodeRef.  A
+        # supersede creates a successor node and the orchestrator reclassifies
+        # that creation from ``nodes_added`` to ``nodes_superseded``; it does
+        # not stop being a created node that compensation must bind/delete.
+        if len(refs) != audit.nodes_added + audit.nodes_superseded:
             raise ExactConsolidationAckIntegrityError(
                 "exact_consolidation_ack_node_ref_counts_invalid"
             )
@@ -2060,12 +2065,41 @@ class CommunitySqlAlchemyConsolidationPersistence:
         # locked read.  Admission writes compact canonical JSON directly;
         # rebinding the Python dict through SQLAlchemy's JSON serializer would
         # add whitespace and make an unchanged row compare unequal.
-        result = await context.execute(
-            delete(ConsolidationQueue).where(
-                *claim_predicates,
-                cast(ConsolidationQueue.payload, Text) == claimed_payload_text,
-            )
+        exact_ack_predicates = (
+            *claim_predicates,
+            cast(ConsolidationQueue.payload, Text) == claimed_payload_text,
         )
+        if deferred_live is not None:
+            # Admission temporarily adopts a pre-existing live queue intent
+            # under the exact rebuild source.  An exact ACK must consume only
+            # that rebuild membership, not the original intent.  Restore the
+            # live row in the same transaction as the audit/outbox/journal
+            # commit so a later rebuild failure or process crash cannot lose
+            # an already-ACKed live intent.
+            result = await context.execute(
+                update(ConsolidationQueue)
+                .where(*exact_ack_predicates)
+                .values(
+                    status="pending",
+                    attempts=0,
+                    last_error=None,
+                    next_retry_at=None,
+                    source=deferred_live["source"],
+                    triggered_by_event=deferred_live["triggered_by_event"],
+                    payload=deferred_live["payload"],
+                    triggered_at=func.now(),
+                    claimed_by_session_id=None,
+                    claim_token=None,
+                    claimed_at=None,
+                    worker_id=None,
+                    claim_timeout_at=None,
+                )
+                .execution_options(synchronize_session=False)
+            )
+        else:
+            result = await context.execute(
+                delete(ConsolidationQueue).where(*exact_ack_predicates)
+            )
         if int(result.rowcount or 0) != 1:
             return None
         await context.flush()
@@ -2379,7 +2413,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
                     raise ExactConsolidationCompensationError(
                         "exact_consolidation_compensation_audit_or_refs_changed"
                     )
-                if audit.nodes_added != item.node_ref_count:
+                if audit.nodes_added + audit.nodes_superseded != item.node_ref_count:
                     raise ExactConsolidationCompensationError(
                         "exact_consolidation_compensation_node_ref_counts_changed"
                     )

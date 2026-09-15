@@ -653,6 +653,8 @@ function App() {
         <div className="fixed inset-0 z-50 bg-gray-50 dark:bg-gray-900 flex flex-col">
           <CognitiveActionCenterView
             boardId={currentBoard.id}
+            boardName={currentBoard.name}
+            onOpenHealth={() => { closeCognitiveActionCenter(); openKGHealth(); }}
             onClose={closeCognitiveActionCenter}
           />
         </div>

@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { MouseEvent, ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { LineageGraphModal } from '../LineageGraphModal';
+import { LineageGraphModal, layoutEdges, miniMapNodeColor } from '../LineageGraphModal';
+import { lineageStatusColor } from '../lineageStatusStyle';
 import { openLineageGraph } from '../lineageGraphEvents';
 import type { LineageGraphResponse } from '@/types';
 
@@ -484,6 +485,17 @@ const taskDependencyGraph: DependencyOverlay = {
 };
 
 describe('LineageGraphModal', () => {
+  it('assigns explicit right-to-left handles for forward edges and reversed handles only for back edges', () => {
+    const nodes = [{ ...graph.nodes[0], id: 'left', stage: 0 }, { ...graph.nodes[0], id: 'right', stage: 1 }];
+    const edges = layoutEdges({ ...graph, nodes, edges: [
+      { id: 'forward', source: 'left', target: 'right', relationship: 'has_refinement' },
+      { id: 'reverse', source: 'right', target: 'left', relationship: 'precedes' },
+    ] }, null);
+    expect(edges[0]).toMatchObject({ sourceHandle: 'lineage-source-right', targetHandle: 'lineage-target-left' });
+    expect(edges[1]).toMatchObject({ sourceHandle: 'lineage-source-left', targetHandle: 'lineage-target-right' });
+    expect(miniMapNodeColor({ id: 'node', position: { x: 0, y: 0 }, data: { lineageNode: { ...nodes[0], status: 'cancelled' } } })).toBe(lineageStatusColor('cancelled'));
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     apiMock.getLineageGraph.mockResolvedValue(graph);

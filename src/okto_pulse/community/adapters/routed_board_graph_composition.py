@@ -1,0 +1,1254 @@
+"""Coherent Board-only composition for immutable Community graph routes.
+
+The bundle in this module is deliberately not the edition composition root.  It
+builds the complete Board provider set and exposes the three shared routing
+objects which an umbrella Board+Global composition must reuse.  Importing or
+constructing it does not create a binding, open a database, or initialize a
+schema; ``initialize_board_route`` is the only first-boot door.
+
+Every routed call owns a small operation-local route session.  The first
+``inspect`` or ``acquire`` pins one immutable snapshot and every backend-local
+resolver in that call receives that exact object.  Revalidation deliberately
+bypasses the pin and reads persisted authority again.  The Grafx pool is shared
+and unbounded: ordinary synchronous providers cannot return a lease alongside
+their Core result, while the transaction provider takes its own lease for the
+whole engine scope.
+"""
+
+from __future__ import annotations
+
+import os
+import threading
+from okto_pulse.community.adapters.grafx_read_lanes import GrafxReadLanes
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any, Literal
+
+from okto_grafx.errors import GrafxSchemaVersionMismatch, GrafxUnsupportedOperation
+from okto_pulse.core.kg.interfaces.graph_errors import (
+    GraphCapabilityUnavailable,
+    GraphCorruption,
+)
+from okto_pulse.core.kg.interfaces.graph_lifecycle import (
+    GraphHandle,
+    GraphLifecycleStepResult,
+    PurgeReport,
+    RebuildReport,
+)
+from okto_pulse.core.kg.interfaces.graph_recovery import WalRecoveryReport
+from okto_pulse.core.kg.interfaces.graph_runtime_store import (
+    GraphPurgeResult,
+)
+from okto_pulse.core.services.application_kg import (
+    revalidate_board_graph_write_lease,
+)
+
+from okto_pulse.community.adapters import graph_operation_guards as kg_runtime
+from okto_pulse.community.adapters.grafx_board_storage import (
+    grafx_board_storage_ref,
+)
+from okto_pulse.community.adapters.grafx_cypher_executor import (
+    CommunityGrafxCypherExecutor,
+)
+from okto_pulse.community.adapters.grafx_database_pool import (
+    CommunityGrafxDatabasePool,
+    GrafxDatabasePoolError,
+)
+from okto_pulse.community.adapters.grafx_graph_lifecycle import (
+    CommunityGrafxGraphLifecycle,
+)
+from okto_pulse.community.adapters.grafx_graph_recovery import (
+    CommunityGrafxGraphRecovery,
+)
+from okto_pulse.community.adapters.grafx_graph_runtime_store import (
+    CommunityGrafxGraphRuntimeStore,
+)
+from okto_pulse.community.adapters.grafx_graph_schema_manager import (
+    CommunityGrafxGraphSchemaManager,
+)
+from okto_pulse.community.adapters.grafx_graph_store import (
+    CommunityGrafxGraphStore,
+)
+from okto_pulse.community.adapters.grafx_schema_bootstrap import (
+    read_current_grafx_schema_version,
+    validate_current_grafx_schema,
+)
+from okto_pulse.community.adapters.graph_backend_binding import (
+    CommunityGraphBackendBindingStore,
+)
+from okto_pulse.community.adapters.graph_rollout_journal import (
+    CommunityGraphRolloutJournal,
+    CommunityGraphRolloutMutationRecorder,
+)
+from okto_pulse.community.adapters.graph_route_resolver import (
+    CommunityGraphRouteCandidate,
+    CommunityGraphRouteResolver,
+    CommunityGraphRouteSnapshot,
+)
+from okto_pulse.community.adapters.routed_board_graph_facades import (
+    CommunityRoutedCypherExecutor,
+    CommunityRoutedGraphRecovery,
+    CommunityRoutedGraphRuntimeStore,
+    CommunityRoutedGraphSchemaManager,
+    CommunityRoutedSemanticGraphStore,
+)
+from okto_pulse.community.adapters.routed_graph_lifecycle import (
+    CommunityRoutedGraphLifecycle,
+)
+from okto_pulse.community.adapters.routed_graph_transaction import (
+    CommunityRoutedGraphTransaction,
+)
+from okto_pulse.community.config import (
+    PULSE_GRAFX_DEFAULT_BUFFER_POOL_MB,
+    validate_grafx_buffer_pool_mb,
+    validate_grafx_descriptor_revalidation,
+    validate_grafx_page_size,
+)
+
+GrafxConnector = Callable[..., Any]
+_SessionStatus = Literal["unresolved", "missing", "snapshot"]
+_ROLLOUT_ADMIN_MUTATION_PHASES = frozenset(
+    {
+        "graph_schema_ensure_bootstrapped",
+        "graph_schema_migrate",
+        "graph_lifecycle_rebuild",
+        "graph_lifecycle_purge",
+        "purge_board_graph",
+        "graph_recovery_grafx",
+    }
+)
+_ROLLOUT_INSPECT_ONLY_ADMIN_PHASES = frozenset(
+    {"graph_recovery_grafx"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _BoardRouteSession:
+    board_id: str
+    status: _SessionStatus = "unresolved"
+    snapshot: CommunityGraphRouteSnapshot | None = None
+    physical: bool = False
+    authority_erased: bool = False
+
+
+def _route_failure(reason: str, *, board_id: str) -> GraphCapabilityUnavailable:
+    return GraphCapabilityUnavailable(
+        "The routed Community Board graph operation was refused.",
+        details={
+            "operation": "route_board_graph_composition",
+            "reason": reason,
+            "scope": "board",
+            "scope_id": board_id,
+        },
+    )
+
+
+class CommunityBoardRouteSessionResolver(CommunityGraphRouteResolver):
+    """A normal route resolver with operation-local Board snapshot pinning."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._board_route_sessions: ContextVar[tuple[_BoardRouteSession, ...]] = (
+            ContextVar(
+                f"community_board_route_sessions_{id(self)}",
+                default=(),
+            )
+        )
+        self._board_route_fresh_read: ContextVar[bool] = ContextVar(
+            f"community_board_route_fresh_read_{id(self)}",
+            default=False,
+        )
+
+    @contextmanager
+    def board_route_session(self, board_id: str) -> Iterator[None]:
+        if type(board_id) is not str or not board_id:
+            raise ValueError("board_id must be non-empty text")
+        sessions = self._board_route_sessions.get()
+        token = self._board_route_sessions.set(
+            (*sessions, _BoardRouteSession(board_id=board_id))
+        )
+        try:
+            yield
+        finally:
+            self._board_route_sessions.reset(token)
+
+    def _session(self, board_id: str) -> _BoardRouteSession | None:
+        sessions = self._board_route_sessions.get()
+        if not sessions or sessions[-1].board_id != board_id:
+            return None
+        return sessions[-1]
+
+    def _set_session(self, state: _BoardRouteSession) -> None:
+        sessions = self._board_route_sessions.get()
+        if not sessions or sessions[-1].board_id != state.board_id:
+            raise _route_failure("board_route_session_missing", board_id=state.board_id)
+        self._board_route_sessions.set((*sessions[:-1], state))
+
+    def _cache_missing(self, board_id: str) -> None:
+        state = self._session(board_id)
+        if state is not None:
+            self._set_session(replace(state, status="missing"))
+
+    def _cache_snapshot(
+        self,
+        board_id: str,
+        snapshot: CommunityGraphRouteSnapshot,
+        *,
+        physical: bool,
+    ) -> CommunityGraphRouteSnapshot:
+        state = self._session(board_id)
+        if state is None:
+            return snapshot
+        if state.status == "snapshot":
+            assert state.snapshot is not None
+            if state.snapshot != snapshot:
+                raise _route_failure("graph_route_snapshot_mismatch", board_id=board_id)
+            self._set_session(
+                replace(
+                    state,
+                    physical=state.physical or physical,
+                )
+            )
+            return state.snapshot
+        self._set_session(
+            replace(
+                state,
+                status="snapshot",
+                snapshot=snapshot,
+                physical=state.physical or physical,
+            )
+        )
+        return snapshot
+
+    def inspect_board_route(self, board_id: str) -> CommunityGraphRouteSnapshot:
+        if self._board_route_fresh_read.get():
+            return super().inspect_board_route(board_id)
+        state = self._session(board_id)
+        if state is not None:
+            if state.status == "snapshot":
+                assert state.snapshot is not None
+                return state.snapshot
+            if state.status == "missing":
+                raise _route_failure("binding_missing", board_id=board_id)
+        try:
+            snapshot = super().inspect_board_route(board_id)
+        except GraphCapabilityUnavailable as failure:
+            if failure.details.get("reason") == "binding_missing":
+                self._cache_missing(board_id)
+            raise
+        return self._cache_snapshot(board_id, snapshot, physical=False)
+
+    def acquire_board_route(self, board_id: str) -> CommunityGraphRouteSnapshot:
+        if self._board_route_fresh_read.get():
+            return super().acquire_board_route(board_id)
+        state = self._session(board_id)
+        if state is not None:
+            if state.status == "snapshot" and state.physical:
+                assert state.snapshot is not None
+                return state.snapshot
+            if state.status == "missing":
+                raise _route_failure("binding_missing", board_id=board_id)
+        try:
+            snapshot = super().acquire_board_route(board_id)
+        except GraphCapabilityUnavailable as failure:
+            if failure.details.get("reason") == "binding_missing":
+                self._cache_missing(board_id)
+            raise
+        return self._cache_snapshot(board_id, snapshot, physical=True)
+
+    def revalidate_snapshot(
+        self,
+        snapshot: CommunityGraphRouteSnapshot,
+        *,
+        require_physical: bool = False,
+    ) -> CommunityGraphRouteSnapshot:
+        # Base revalidation calls the virtual acquire/inspect doors.  A fresh
+        # marker makes those doors bypass this session instead of comparing the
+        # snapshot to itself.
+        token = self._board_route_fresh_read.set(True)
+        try:
+            return super().revalidate_snapshot(
+                snapshot,
+                require_physical=require_physical,
+            )
+        finally:
+            self._board_route_fresh_read.reset(token)
+
+    def current_board_snapshot(
+        self,
+        board_id: str,
+        *,
+        require_physical: bool,
+    ) -> CommunityGraphRouteSnapshot | None:
+        state = self._session(board_id)
+        if state is None:
+            raise _route_failure("board_route_session_missing", board_id=board_id)
+        if state.status == "missing":
+            return None
+        return (
+            self.acquire_board_route(board_id)
+            if require_physical
+            else self.inspect_board_route(board_id)
+        )
+
+    def require_exact_session_snapshot(
+        self,
+        snapshot: CommunityGraphRouteSnapshot,
+        *,
+        require_physical: bool,
+    ) -> CommunityGraphRouteSnapshot:
+        current = self.current_board_snapshot(
+            snapshot.scope_id,
+            require_physical=require_physical,
+        )
+        if current is None or current is not snapshot:
+            # Identity, not only equality, is the pinning contract inside one
+            # operation. Persisted revalidation below still compares values.
+            raise _route_failure(
+                "graph_route_operation_snapshot_not_pinned",
+                board_id=snapshot.scope_id,
+            )
+        return self.revalidate_snapshot(
+            snapshot,
+            require_physical=require_physical,
+        )
+
+    def revalidate_session_authority(
+        self,
+        board_id: str,
+        *,
+        require_physical: bool,
+        allow_erased: bool = False,
+    ) -> CommunityGraphRouteSnapshot | None:
+        state = self._session(board_id)
+        if state is None:
+            raise _route_failure("board_route_session_missing", board_id=board_id)
+        if state.authority_erased and allow_erased:
+            return state.snapshot
+        if state.status == "snapshot":
+            assert state.snapshot is not None
+            return self.revalidate_snapshot(
+                state.snapshot,
+                require_physical=require_physical,
+            )
+
+        token = self._board_route_fresh_read.set(True)
+        try:
+            try:
+                super().inspect_board_route(board_id)
+            except GraphCapabilityUnavailable as failure:
+                if failure.details.get("reason") == "binding_missing":
+                    return None
+                raise
+        finally:
+            self._board_route_fresh_read.reset(token)
+        raise _route_failure("graph_route_missing_authority_changed", board_id=board_id)
+
+    def mark_session_authority_erased(self, board_id: str) -> None:
+        state = self._session(board_id)
+        if state is None:
+            raise _route_failure("board_route_session_missing", board_id=board_id)
+        self._set_session(replace(state, authority_erased=True))
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(str(Path(os.path.abspath(left)))) == os.path.normcase(
+        str(Path(os.path.abspath(right)))
+    )
+
+
+class _GrafxBoardAccess:
+    def __init__(
+        self,
+        resolver: CommunityBoardRouteSessionResolver,
+        pool: CommunityGrafxDatabasePool,
+        binding_store: CommunityGraphBackendBindingStore,
+        rollout_mutation_recorder: CommunityGraphRolloutMutationRecorder,
+        *,
+        configured_page_size: int,
+        connect: GrafxConnector | None,
+        read_pools: tuple[CommunityGrafxDatabasePool, ...] | None = None,
+    ) -> None:
+        self.resolver = resolver
+        self.pool = pool
+        selected_read_pools = read_pools or ()
+        if selected_read_pools and any(
+            not candidate.read_only for candidate in selected_read_pools
+        ):
+            raise ValueError("Grafx Board read pools must be non-empty and read-only")
+        self.read_pools = selected_read_pools
+        self._read_lanes = GrafxReadLanes(len(selected_read_pools) or 1)
+        self._read_pool_lock = threading.Lock()
+        self._read_join_lock = threading.Lock()
+        self._next_read_pool = 0
+        self.binding_store = binding_store
+        self.rollout_mutation_recorder = rollout_mutation_recorder
+        self.configured_page_size = validate_grafx_page_size(configured_page_size)
+        self.connect = connect
+
+    def _snapshot(
+        self,
+        board_id: str,
+        *,
+        require_physical: bool,
+    ) -> CommunityGraphRouteSnapshot:
+        snapshot = self.resolver.current_board_snapshot(
+            board_id,
+            require_physical=require_physical,
+        )
+        if (
+            snapshot is None
+            or snapshot.backend != "grafx"
+            or snapshot.page_size is None
+        ):
+            raise _route_failure("grafx_board_route_required", board_id=board_id)
+        return snapshot
+
+    def database(self, board_id: str):
+        snapshot = self._snapshot(board_id, require_physical=True)
+        assert snapshot.page_size is not None
+        database = self.pool.get(
+            snapshot.active_path,
+            page_size=snapshot.page_size,
+        )
+        self.resolver.admit_grafx_route(
+            snapshot,
+            database,
+            operation="resolve_routed_board_grafx_database",
+        )
+        return database
+
+    @contextmanager
+    def read_database_scope(self, board_id: str) -> Iterator[Any]:
+        """Keep scheduling load charged through the caller's complete read."""
+        with self._read_lanes.reserve(board_id) as lane:
+            yield self.read_database(board_id, _lane=lane)
+
+    def read_database(self, board_id: str, *, _lane: int | None = None):
+        """Resolve one independent snapshot participant for foreground reads.
+
+        Round-robin selection lets concurrent worker threads use separate Grafx
+        participant sections.  A writer commit on the writable handle cannot
+        block either lane, and a retry resolves the other lane automatically.
+        """
+
+        snapshot = self._snapshot(board_id, require_physical=True)
+        assert snapshot.page_size is not None
+        if not self.read_pools:
+            # Backward-compatible narrow construction used by isolated tests;
+            # the production composition always supplies dedicated lanes.
+            return self.database(board_id)
+        with self._read_pool_lock:
+            selected = self._next_read_pool if _lane is None else _lane
+            self._next_read_pool = (selected + 1) % len(self.read_pools)
+        pool = self.read_pools[selected]
+        try:
+            database = pool.get(
+                snapshot.active_path,
+                page_size=snapshot.page_size,
+            )
+        except GrafxDatabasePoolError as failure:
+            cause = failure.__cause__
+            read_join_requires_checkpoint = (
+                isinstance(cause, GrafxUnsupportedOperation)
+                and cause.details.get("field") == "read_only_consistency"
+            )
+            if not read_join_requires_checkpoint:
+                raise
+            # A new read-only participant can join only a checkpoint-complete
+            # durable image.  First recheck under a single-flight lock: another
+            # foreground reader may already have completed the checkpoint.
+            # If it did not, use the existing writable participant to run the
+            # native Grafx checkpoint, with the normal Pulse write fence, then
+            # retry the exact read lane.  This is recovery/maintenance only;
+            # no logical write is replayed by the application.
+            with self._read_join_lock:
+                try:
+                    database = pool.get(
+                        snapshot.active_path,
+                        page_size=snapshot.page_size,
+                    )
+                except GrafxDatabasePoolError as repeated:
+                    repeated_cause = repeated.__cause__
+                    if not (
+                        isinstance(repeated_cause, GrafxUnsupportedOperation)
+                        and repeated_cause.details.get("field")
+                        == "read_only_consistency"
+                    ):
+                        raise
+                    self.write_fence(board_id, "grafx_read_join_checkpoint")
+                    writer = self.database(board_id)
+                    writer.checkpoint()
+                    database = pool.get(
+                        snapshot.active_path,
+                        page_size=snapshot.page_size,
+                    )
+        self.resolver.admit_grafx_route(
+            snapshot,
+            database,
+            operation="resolve_routed_board_grafx_read_database",
+        )
+        return database
+
+    def path(self, board_id: str) -> Path:
+        return self._snapshot(board_id, require_physical=False).active_path
+
+    def board_root(self, board_id: str) -> Path:
+        return self.binding_store.board_ladybug_path(board_id).parent
+
+    def admission(self, board_id: str, database: Any) -> None:
+        snapshot = self._snapshot(board_id, require_physical=True)
+        self.resolver.admit_grafx_route(
+            snapshot,
+            database,
+            operation="admit_routed_board_grafx_provider",
+        )
+
+    def write_fence(self, board_id: str, phase: str) -> None:
+        revalidate_board_graph_write_lease(board_id, failure_phase=phase)
+        snapshot = self._snapshot(board_id, require_physical=True)
+        self.resolver.revalidate_snapshot(snapshot, require_physical=True)
+        self.rollout_mutation_recorder.close_rollback_before_write_if_active(
+            board_id,
+            snapshot.binding_sha256,
+            snapshot.backend,
+        )
+
+    def runtime_fence(self, board_id: str, phase: str) -> None:
+        revalidate_board_graph_write_lease(board_id, failure_phase=phase)
+        snapshot = self.resolver.revalidate_session_authority(
+            board_id,
+            require_physical=phase != "privacy_erase",
+            allow_erased=phase == "privacy_erase",
+        )
+        if snapshot is not None and snapshot.backend != "grafx":
+            raise _route_failure("board_route_backend_invalid", board_id=board_id)
+
+    def _all_pools(self) -> tuple[CommunityGrafxDatabasePool, ...]:
+        return (*self.read_pools, self.pool)
+
+    def _board_pool_paths(
+        self, board_id: str
+    ) -> tuple[tuple[CommunityGrafxDatabasePool, Path], ...]:
+        grafx_root = self.binding_store.board_grafx_path(
+            board_id, "generation-1"
+        ).parent
+        selected: list[tuple[CommunityGrafxDatabasePool, Path]] = []
+        for pool in self._all_pools():
+            for raw in pool.pooled_paths():
+                candidate = Path(raw)
+                try:
+                    candidate.relative_to(grafx_root)
+                except ValueError:
+                    continue
+                selected.append((pool, candidate))
+        return tuple(selected)
+
+    def close(self, board_id: str | None) -> None:
+        if board_id is None:
+            boards_root = self.binding_store.root / "boards"
+            paths: list[tuple[CommunityGrafxDatabasePool, Path]] = []
+            for pool in self._all_pools():
+                for raw in pool.pooled_paths():
+                    candidate = Path(raw)
+                    try:
+                        candidate.relative_to(boards_root)
+                    except ValueError:
+                        continue
+                    paths.append((pool, candidate))
+        else:
+            paths = list(self._board_pool_paths(board_id))
+        failures: list[BaseException] = []
+        for pool, path in paths:
+            try:
+                pool.close(path)
+            except BaseException as failure:  # noqa: BLE001 - account for every handle
+                failures.append(failure)
+        if failures:
+            primary = failures[0]
+            for secondary in failures[1:]:
+                primary.add_note(
+                    "closing another routed Grafx Board handle also failed: "
+                    f"{type(secondary).__name__}: {secondary}"
+                )
+            raise primary
+
+    def open_for_adoption(self, path: Path):
+        try:
+            return self.pool.get(path, page_size=self.configured_page_size)
+        except GrafxDatabasePoolError as failure:
+            cause = failure.__cause__
+            if not isinstance(cause, GrafxSchemaVersionMismatch):
+                raise
+            if cause.details.get("field") != "page_size":
+                raise
+            stored = cause.details.get("stored")
+            if type(stored) is not int:
+                raise
+            page_size = validate_grafx_page_size(stored)
+            return self.pool.get(path, page_size=page_size)
+
+    def open_temporary(self, path: Path):
+        snapshot = self._snapshot(path.parent.parent.name, require_physical=True)
+        if not _same_path(snapshot.active_path, path) or snapshot.page_size is None:
+            raise _route_failure(
+                "grafx_recovery_path_mismatch",
+                board_id=snapshot.scope_id,
+            )
+        return self.pool.open_unpooled(
+            path,
+            page_size=snapshot.page_size,
+            connect=self.connect,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CommunityRoutedBoardGraphComposition:
+    """All Board graph ports plus the shared physical routing identities."""
+
+    binding_store: CommunityGraphBackendBindingStore
+    resolver: CommunityBoardRouteSessionResolver
+    grafx_pool: CommunityGrafxDatabasePool
+    grafx_read_pools: tuple[CommunityGrafxDatabasePool, ...]
+    graph_store: CommunityRoutedSemanticGraphStore
+    cypher_executor: CommunityRoutedCypherExecutor
+    graph_transaction: CommunityRoutedGraphTransaction
+    graph_schema_manager: CommunityRoutedGraphSchemaManager
+    graph_lifecycle: CommunityRoutedGraphLifecycle
+    graph_runtime_store: CommunityRoutedGraphRuntimeStore
+    graph_recovery: CommunityRoutedGraphRecovery
+    _initialize_physical: Callable[[CommunityGraphRouteCandidate], object | None]
+    _rematerialize_physical: Callable[[CommunityGraphRouteCandidate], object | None]
+    ranked_graph_search: Any | None = None
+    graph_history: Any | None = None
+    graph_analytics: Any | None = None
+
+    def _require_route_materialization_allowed(self, board_id: str) -> None:
+        """Refuse every route-creation door while privacy erasure is durable."""
+
+        journal = CommunityGraphRolloutJournal(
+            self.binding_store.root,
+            board_id,
+        )
+        # Preserve the route resolver's existing empty-board and filesystem
+        # alias diagnostics when no rollout storage exists. ``lexists`` still
+        # sends a broken/aliased rollout root through the journal's fail-closed
+        # layout validation instead of treating it as finalized absence.
+        if not os.path.lexists(journal.rollout_root):
+            return
+        rollout = journal.read_if_exists()
+        if rollout is not None and rollout.state == "erased":
+            raise _route_failure(
+                "graph_rollout_privacy_tombstone_active",
+                board_id=board_id,
+            )
+
+    def initialize_board_route(self, board_id: str) -> CommunityGraphRouteSnapshot:
+        """Create/adopt and publish one Board route, only when explicitly called."""
+
+        phase = "initialize_board_route"
+        # Fence privacy and initialization with the same per-board storage
+        # window, without serializing independent boards process-wide.
+        with kg_runtime.board_storage_mutation_window(board_id, phase=phase):
+            revalidate_board_graph_write_lease(
+                board_id,
+                failure_phase=phase,
+            )
+            self._require_route_materialization_allowed(board_id)
+            snapshot = self.resolver.initialize_board_route(
+                board_id,
+                create_physical=self._initialize_physical,
+            )
+            self.resolver.revalidate_snapshot(snapshot, require_physical=True)
+        return snapshot
+
+    def adopt_existing_board_route(
+        self,
+        board_id: str,
+    ) -> CommunityGraphRouteSnapshot | None:
+        """Adopt physical storage without creating an absent Board target."""
+
+        phase = "adopt_existing_board_route"
+        with kg_runtime.board_storage_mutation_window(board_id, phase=phase):
+            revalidate_board_graph_write_lease(
+                board_id,
+                failure_phase=phase,
+            )
+            self._require_route_materialization_allowed(board_id)
+            return self.resolver.adopt_existing_board_route(board_id)
+
+    def rematerialize_board_route(
+        self,
+        board_id: str,
+    ) -> CommunityGraphRouteSnapshot:
+        """Explicitly recreate the exact target authorized by a rebuild."""
+
+        phase = "rematerialize_board_route_after_purge"
+        with kg_runtime.board_storage_mutation_window(board_id, phase=phase):
+            revalidate_board_graph_write_lease(board_id, failure_phase=phase)
+            self._require_route_materialization_allowed(board_id)
+            snapshot = self.resolver.rematerialize_board_route(
+                board_id,
+                create_physical=self._rematerialize_physical,
+            )
+            self.resolver.revalidate_snapshot(snapshot, require_physical=True)
+        return snapshot
+
+    def registry_providers(self) -> dict[str, Any]:
+        """Return only the unchanged Core Board registry slots."""
+
+        return {
+            "graph_store": self.graph_store,
+            "cypher_executor": self.cypher_executor,
+            "graph_transaction": self.graph_transaction,
+            "graph_schema_manager": self.graph_schema_manager,
+            "graph_lifecycle": self.graph_lifecycle,
+            "graph_runtime_store": self.graph_runtime_store,
+            "graph_recovery": self.graph_recovery,
+            "ranked_graph_search": self.ranked_graph_search,
+            "graph_history": self.graph_history,
+            "graph_analytics": self.graph_analytics,
+        }
+
+
+def _validated_shared_components(
+    *,
+    root: Path | None,
+    binding_store: CommunityGraphBackendBindingStore | None,
+    resolver: CommunityBoardRouteSessionResolver | None,
+    grafx_pool: CommunityGrafxDatabasePool | None,
+) -> tuple[
+    CommunityGraphBackendBindingStore | None,
+    CommunityBoardRouteSessionResolver | None,
+    CommunityGrafxDatabasePool | None,
+]:
+    supplied = (binding_store, resolver, grafx_pool)
+    if all(value is None for value in supplied):
+        return None, None, None
+    if any(value is None for value in supplied):
+        raise ValueError(
+            "binding_store, resolver and grafx_pool must be supplied together"
+        )
+    assert binding_store is not None
+    assert resolver is not None
+    assert grafx_pool is not None
+    if not isinstance(resolver, CommunityBoardRouteSessionResolver):
+        raise TypeError("resolver must be a CommunityBoardRouteSessionResolver")
+    if getattr(resolver, "_store", None) is not binding_store:
+        raise ValueError("resolver must own the supplied binding_store")
+    if not _same_path(binding_store.root, grafx_pool._root):
+        raise ValueError("binding_store and grafx_pool roots must match")
+    if root is not None and not _same_path(root, binding_store.root):
+        raise ValueError("supplied root does not match shared graph components")
+    if getattr(grafx_pool, "_max_entries", object()) is not None:
+        raise ValueError("the shared Grafx pool must be unbounded for Board providers")
+    return binding_store, resolver, grafx_pool
+
+
+def build_community_routed_board_graph_composition(
+    *,
+    settings: Any,
+    kg_base_dir: str | os.PathLike[str] | None = None,
+    binding_store: CommunityGraphBackendBindingStore | None = None,
+    resolver: CommunityBoardRouteSessionResolver | None = None,
+    grafx_pool: CommunityGrafxDatabasePool | None = None,
+    grafx_connect: GrafxConnector | None = None,
+) -> CommunityRoutedBoardGraphComposition:
+    """Build the routed Board bundle, optionally over prebuilt shared objects.
+
+    When shared objects are supplied all three are mandatory and their identity,
+    root and unbounded-pool policy are validated.  This lets the umbrella
+    Board+Global composition reuse exactly one store, resolver and pool instead
+    of constructing lookalikes.
+    """
+
+    configured_root = Path(
+        os.fspath(kg_base_dir if kg_base_dir is not None else settings.kg_base_dir)
+    ).expanduser()
+    configured_page_size = validate_grafx_page_size(settings.kg_grafx_page_size)
+    configured_buffer_pool_mb = validate_grafx_buffer_pool_mb(
+        getattr(settings, "kg_grafx_buffer_pool_mb", PULSE_GRAFX_DEFAULT_BUFFER_POOL_MB)
+    )
+    configured_descriptor_revalidation = validate_grafx_descriptor_revalidation(
+        getattr(settings, "kg_grafx_descriptor_revalidation", "generation")
+    )
+    board_backend = settings.kg_graph_backend
+    global_backend = settings.kg_global_graph_backend
+    local_adoption_opener: list[Callable[[Path], Any]] = [
+        lambda _path: (_ for _ in ()).throw(RuntimeError("Grafx opener not composed"))
+    ]
+
+    shared_store, shared_resolver, shared_pool = _validated_shared_components(
+        root=configured_root,
+        binding_store=binding_store,
+        resolver=resolver,
+        grafx_pool=grafx_pool,
+    )
+    if shared_store is None:
+        binding_store = CommunityGraphBackendBindingStore(configured_root)
+        grafx_pool = CommunityGrafxDatabasePool(
+            binding_store.root,
+            connect=grafx_connect,
+            max_entries=None,
+            descriptor_revalidation=configured_descriptor_revalidation,
+            buffer_pool_mb=configured_buffer_pool_mb,
+            constructor_options=getattr(settings, "kg_grafx_options", {}),
+        )
+        resolver = CommunityBoardRouteSessionResolver(
+            binding_store,
+            board_backend=board_backend,
+            global_backend=global_backend,
+            grafx_page_size=configured_page_size,
+            # The closure is installed just below, after its access object is
+            # available. A small mutable cell avoids constructing a second
+            # resolver merely to inject the opener.
+            open_grafx_database=lambda path: local_adoption_opener[0](path),
+        )
+    else:
+        binding_store = shared_store
+        resolver = shared_resolver
+        grafx_pool = shared_pool
+
+    assert binding_store is not None
+    assert resolver is not None
+    assert grafx_pool is not None
+    if grafx_pool.descriptor_revalidation != configured_descriptor_revalidation:
+        raise ValueError(
+            "the shared Grafx pool descriptor revalidation policy must match settings"
+        )
+    if grafx_pool.buffer_pool_mb != configured_buffer_pool_mb:
+        raise ValueError("the shared Grafx pool buffer budget must match settings")
+    if grafx_pool.constructor_options != getattr(settings, "kg_grafx_options", {}):
+        raise ValueError(
+            "the shared Grafx pool constructor options must match settings"
+        )
+    rollout_mutation_recorder = CommunityGraphRolloutMutationRecorder(
+        binding_store.root
+    )
+    if getattr(resolver, "_board_backend", None) != board_backend:
+        raise ValueError("shared resolver Board backend does not match settings")
+    if getattr(resolver, "_global_backend", None) != global_backend:
+        raise ValueError("shared resolver Global backend does not match settings")
+    if getattr(resolver, "_grafx_page_size", None) != configured_page_size:
+        raise ValueError("shared resolver Grafx page size does not match settings")
+
+    connector = grafx_connect
+    if connector is None:
+        connector = getattr(grafx_pool, "_connect", None)
+    # Bounded lazy participants, not a change to writer coordination. Each
+    # resident board can retain (read_participants + 1) independent caches.
+    from okto_pulse.community.config import validate_grafx_read_participants
+
+    read_participants = validate_grafx_read_participants(
+        getattr(settings, "kg_grafx_read_participants", 2)
+    )
+    grafx_read_pools = tuple(
+        CommunityGrafxDatabasePool(
+            binding_store.root,
+            connect=connector,
+            max_entries=None,
+            descriptor_revalidation=configured_descriptor_revalidation,
+            read_only=True,
+            buffer_pool_mb=configured_buffer_pool_mb,
+            constructor_options=getattr(settings, "kg_grafx_options", {}),
+        )
+        for _lane in range(read_participants)
+    )
+    access = _GrafxBoardAccess(
+        resolver,
+        grafx_pool,
+        binding_store,
+        rollout_mutation_recorder,
+        configured_page_size=configured_page_size,
+        connect=connector,
+        read_pools=grafx_read_pools,
+    )
+    if shared_store is None:
+        local_adoption_opener[0] = access.open_for_adoption
+    else:
+        # A prebuilt resolver can only be safely reused when its physical
+        # adoption door is rebound to the exact shared pool supplied here.
+        resolver._open_grafx_database = access.open_for_adoption
+
+    def rollout_administrative_write_fence(
+        board_id: str,
+        phase: str,
+        snapshot: CommunityGraphRouteSnapshot | None = None,
+    ) -> None:
+        """Fence non-logical mutations against a stale rollout checkpoint."""
+
+        revalidate_board_graph_write_lease(board_id, failure_phase=phase)
+        require_physical = phase not in _ROLLOUT_INSPECT_ONLY_ADMIN_PHASES
+        observed = snapshot or resolver.current_board_snapshot(
+            board_id,
+            require_physical=require_physical,
+        )
+        if observed is None:
+            raise _route_failure("board_route_required", board_id=board_id)
+        resolver.require_exact_session_snapshot(
+            observed,
+            require_physical=require_physical,
+        )
+        if phase not in _ROLLOUT_ADMIN_MUTATION_PHASES:
+            return
+        if observed.backend == "grafx":
+            rollout_mutation_recorder.close_rollback_before_write_if_active(
+                board_id,
+                observed.binding_sha256,
+                "grafx",
+            )
+            return
+
+        raise _route_failure("graph_backend_retired_files_preserved", board_id=board_id)
+
+    def invalidate_rollout_for_privacy(
+        board_id: str,
+        *,
+        reason: str,
+    ) -> GraphPurgeResult:
+        """Persist the privacy tombstone before either backend is touched."""
+
+        revalidate_board_graph_write_lease(
+            board_id,
+            failure_phase="privacy_invalidate_graph_rollout",
+        )
+        journal = CommunityGraphRolloutJournal(binding_store.root, board_id)
+        current = journal.read_if_exists()
+        if current is None:
+            return GraphPurgeResult(
+                board_id=board_id,
+                removed=False,
+                not_found=True,
+                status="not_found",
+                reason=reason,
+                backend="rollout",
+            )
+        already_invalidated = current.state == "erased"
+        journal.close_for_privacy(expected_version=current.state_version)
+        return GraphPurgeResult(
+            board_id=board_id,
+            removed=not already_invalidated,
+            not_found=already_invalidated,
+            status="not_found" if already_invalidated else "erased",
+            reason=reason,
+            backend="rollout",
+        )
+
+    def finalize_rollout_privacy_storage(
+        board_id: str,
+        *,
+        reason: str,
+    ) -> GraphPurgeResult:
+        """Remove rollout bytes only after both physical erasures succeeded."""
+
+        journal = CommunityGraphRolloutJournal(binding_store.root, board_id)
+        proof = journal.erase_privacy_storage(
+            before_mutation=lambda: revalidate_board_graph_write_lease(
+                board_id,
+                failure_phase="privacy_finalize_graph_rollout",
+            )
+        )
+        removed = proof.files_removed > 0 or proof.directories_removed > 0
+        return GraphPurgeResult(
+            board_id=board_id,
+            removed=removed,
+            not_found=not removed,
+            status="erased" if removed else "not_found",
+            reason=reason,
+            backend="rollout",
+        )
+
+    @contextmanager
+    def board_route_session(board_id: str) -> Iterator[None]:
+        with resolver.board_route_session(board_id):
+            try:
+                resolver.inspect_board_route(board_id)
+            except GraphCapabilityUnavailable as failure:
+                if failure.details.get("reason") != "binding_missing":
+                    raise
+            yield
+
+    @contextmanager
+    def operation_window(board_id: str) -> Iterator[None]:
+        with (
+            kg_runtime.board_graph_operation_window(board_id),
+            board_route_session(board_id),
+        ):
+            yield
+
+    @contextmanager
+    def mutation_window(board_id: str, *, phase: str) -> Iterator[None]:
+        with (
+            kg_runtime.board_storage_mutation_window(board_id, phase=phase),
+            board_route_session(board_id),
+        ):
+            revalidate_board_graph_write_lease(board_id, failure_phase=phase)
+            yield
+
+    @contextmanager
+    def lifecycle_mutation_window(board_id: str, *, phase: str) -> Iterator[None]:
+        with board_route_session(board_id):
+            resolver.inspect_board_route(board_id)
+            physical_window = kg_runtime.board_storage_mutation_window_unguarded
+            with physical_window(board_id, phase=phase):
+                yield
+
+    grafx_store = CommunityGrafxGraphStore(
+        access.database,
+        access.write_fence,
+        read_database_resolver=access.read_database,
+        read_database_scope=access.read_database_scope,
+    )
+    from okto_pulse.community.adapters.grafx_ranked_search import CommunityGrafxRankedSearch
+    from okto_pulse.community.adapters.grafx_observations import CommunityGrafxHistory, CommunityGrafxAnalytics
+    from okto_pulse.community.adapters.routed_graph_exploration import CommunityRoutedObservations
+    from okto_pulse.community.adapters.routed_graph_exploration import CommunityRoutedRankedSearch
+
+    def observations(provider):
+        return CommunityRoutedObservations(resolver, provider, operation_window=operation_window,
+                                          mutation_window=mutation_window, close=access.close)
+    history = observations(CommunityGrafxHistory(access.database, access.write_fence, read_database_scope=access.read_database_scope))
+    analytics = observations(CommunityGrafxAnalytics(access.read_database_scope))
+    ranked_search = CommunityRoutedRankedSearch(
+        resolver,
+        CommunityGrafxRankedSearch(access.database, access.write_fence,
+                                  read_database_scope=access.read_database_scope),
+        operation_window=operation_window, mutation_window=mutation_window, close=access.close,
+    )
+    grafx_cypher = CommunityGrafxCypherExecutor(
+        access.read_database,
+        read_database_scope=access.read_database_scope,
+    )
+    grafx_schema = CommunityGrafxGraphSchemaManager(
+        access.database,
+        access.write_fence,
+        read_database_resolver=access.read_database,
+        read_database_scope=access.read_database_scope,
+        admission=access.admission,
+    )
+    from types import SimpleNamespace
+    from okto_pulse.community.adapters.graph_runtime_budget import build_native_runtime_budget_snapshot
+
+    # Capture the validated constructor values, not settings that may change
+    # while these already-created pools are still resident.
+    runtime_budget = build_native_runtime_budget_snapshot(SimpleNamespace(
+        kg_grafx_buffer_pool_mb=configured_buffer_pool_mb,
+        kg_grafx_read_participants=read_participants,
+    ))
+    grafx_runtime = CommunityGrafxGraphRuntimeStore(
+        access.path,
+        access.close,
+        access.runtime_fence,
+        board_storage_root_resolver=access.board_root,
+        budget_snapshot_provider=lambda: runtime_budget,
+    )
+    grafx_recovery = CommunityGrafxGraphRecovery(
+        quarantine_root=binding_store.root / "quarantine",
+        database_path_resolver=access.path,
+        open_database=access.open_temporary,
+        close_board=lambda board_id: access.close(board_id),
+        revalidate_fence=access.runtime_fence,
+        mutation_guard=lambda _board_id: nullcontext(),
+    )
+    grafx_lifecycle = CommunityGrafxGraphLifecycle(
+        access.database,
+        access.path,
+        access.close,
+        access.write_fence,
+        admission=access.admission,
+        recover_latched_checkpoint=grafx_recovery.recover_wal_only_unguarded,
+    )
+
+    async def grafx_open(snapshot: CommunityGraphRouteSnapshot) -> GraphHandle:
+        resolver.require_exact_session_snapshot(snapshot, require_physical=True)
+        database = access.database(snapshot.scope_id)
+        validate_current_grafx_schema(database)
+        if not read_current_grafx_schema_version(database):
+            raise GraphCorruption(
+                "The routed Grafx Board graph has no BoardMeta schema version.",
+                details={
+                    "operation": "open_routed_grafx_board",
+                    "reason": "board_meta_missing",
+                    "board_id": snapshot.scope_id,
+                },
+            )
+        opened = not bool(getattr(database, "closed", False))
+        return GraphHandle(
+            board_id=snapshot.scope_id,
+            storage_ref=grafx_board_storage_ref(snapshot.scope_id),
+            opened=opened,
+            status="opened" if opened else "absent",
+            locked=False,
+            quarantined=False,
+        )
+
+    async def grafx_close(snapshot: CommunityGraphRouteSnapshot) -> None:
+        resolver.require_exact_session_snapshot(snapshot, require_physical=True)
+        await grafx_lifecycle.close(snapshot.scope_id)
+
+    async def grafx_rebuild(snapshot: CommunityGraphRouteSnapshot) -> RebuildReport:
+        resolver.require_exact_session_snapshot(snapshot, require_physical=True)
+        return await grafx_lifecycle.rebuild(snapshot.scope_id)
+
+    async def grafx_purge(
+        snapshot: CommunityGraphRouteSnapshot,
+        *,
+        reason: str,
+    ) -> PurgeReport:
+        resolver.require_exact_session_snapshot(snapshot, require_physical=True)
+        return await grafx_lifecycle.purge(snapshot.scope_id, reason=reason)
+
+    def grafx_step(
+        snapshot: CommunityGraphRouteSnapshot,
+        graph_type: str,
+        step: str,
+    ) -> GraphLifecycleStepResult:
+        resolver.require_exact_session_snapshot(snapshot, require_physical=True)
+        return grafx_lifecycle.apply_step(snapshot.scope_id, graph_type, step)
+
+    async def grafx_close_all() -> None:
+        access.close(None)
+
+    async def grafx_recover(board_id: str) -> WalRecoveryReport:
+        snapshot = resolver.current_board_snapshot(board_id, require_physical=False)
+        if snapshot is None:
+            raise _route_failure("board_route_required", board_id=board_id)
+        rollout_administrative_write_fence(
+            board_id,
+            "graph_recovery_grafx",
+            snapshot,
+        )
+        return await grafx_recovery.recover_wal_only(board_id)
+
+    def grafx_erase(board_id: str, *, reason: str) -> GraphPurgeResult:
+        result = grafx_runtime.erase_board_graph(board_id, reason=reason)
+        if result.error_code is None and result.status in {"erased", "not_found"}:
+            resolver.mark_session_authority_erased(board_id)
+        return result
+
+    graph_store = CommunityRoutedSemanticGraphStore(
+        resolver,
+        grafx=grafx_store,
+        operation_window=operation_window,
+        revalidate_write_fence=lambda board_id, phase: (
+            revalidate_board_graph_write_lease(board_id, failure_phase=phase)
+        ),
+        mutation_recorder=rollout_mutation_recorder,
+    )
+    cypher_executor = CommunityRoutedCypherExecutor(
+        resolver,
+        grafx=grafx_cypher,
+        operation_window=operation_window,
+    )
+    graph_schema_manager = CommunityRoutedGraphSchemaManager(
+        resolver,
+        grafx=grafx_schema,
+        operation_window=operation_window,
+        revalidate_write_fence=rollout_administrative_write_fence,
+    )
+    graph_transaction = CommunityRoutedGraphTransaction(
+        resolver,
+        grafx_pool=grafx_pool,
+        # A GraphTransaction is opened in the async orchestration context but
+        # its blocking engine work (including terminal commit/rollback) runs
+        # in a worker thread.  The generic operation_window also owns a
+        # ContextVar route-session token, which cannot legally be reset from
+        # that copied worker context.  Transactions already pin and
+        # revalidate their immutable snapshot explicitly, so retain only the
+        # thread-neutral physical close guard for their full lifetime.
+        operation_window=kg_runtime.board_graph_operation_window,
+        mutation_recorder=rollout_mutation_recorder,
+    )
+    graph_lifecycle = CommunityRoutedGraphLifecycle(
+        resolver,
+        operation_window=operation_window,
+        mutation_window_unguarded=lifecycle_mutation_window,
+        revalidate_write_fence=rollout_administrative_write_fence,
+        grafx_open_unguarded=grafx_open,
+        grafx_close_unguarded=grafx_close,
+        grafx_rebuild_unguarded=grafx_rebuild,
+        grafx_purge_unguarded=grafx_purge,
+        grafx_apply_step_unguarded=grafx_step,
+        grafx_close_all_unguarded=grafx_close_all,
+    )
+    graph_runtime_store = CommunityRoutedGraphRuntimeStore(
+        resolver,
+        grafx=grafx_runtime,
+        operation_window=operation_window,
+        mutation_window=mutation_window,
+        grafx_purge_unguarded=grafx_runtime.purge_board_graph,
+        grafx_erase_unguarded=grafx_erase,
+        rollout_erase_unguarded=invalidate_rollout_for_privacy,
+        rollout_finalize_erase_unguarded=finalize_rollout_privacy_storage,
+        rollout_write_fence=rollout_administrative_write_fence,
+    )
+    graph_recovery = CommunityRoutedGraphRecovery(
+        resolver,
+        grafx_recovery_unguarded=grafx_recover,
+        mutation_window=mutation_window,
+    )
+
+    def create_board_physical(
+        candidate: CommunityGraphRouteCandidate,
+        *,
+        close_window_owned: bool,
+    ) -> object | None:
+        if candidate.scope != "board":
+            raise _route_failure(
+                "board_initialization_candidate_scope_invalid",
+                board_id=candidate.scope_id,
+            )
+        if candidate.backend != "grafx" or candidate.page_size is None:
+            raise _route_failure(
+                "board_initialization_backend_invalid",
+                board_id=candidate.scope_id,
+            )
+        revalidate_board_graph_write_lease(
+            candidate.scope_id,
+            failure_phase=(
+                "rematerialize_board_route_after_purge"
+                if close_window_owned
+                else "initialize_board_route"
+            ),
+        )
+        return grafx_pool.get(
+            candidate.binding_path,
+            page_size=candidate.page_size,
+        )
+
+    def initialize_physical(candidate: CommunityGraphRouteCandidate) -> object | None:
+        return create_board_physical(candidate, close_window_owned=False)
+
+    def rematerialize_physical(
+        candidate: CommunityGraphRouteCandidate,
+    ) -> object | None:
+        return create_board_physical(candidate, close_window_owned=True)
+
+    return CommunityRoutedBoardGraphComposition(
+        binding_store=binding_store,
+        resolver=resolver,
+        grafx_pool=grafx_pool,
+        grafx_read_pools=grafx_read_pools,
+        graph_store=graph_store,
+        cypher_executor=cypher_executor,
+        graph_transaction=graph_transaction,
+        graph_schema_manager=graph_schema_manager,
+        graph_lifecycle=graph_lifecycle,
+        graph_runtime_store=graph_runtime_store,
+        graph_recovery=graph_recovery,
+        _initialize_physical=initialize_physical,
+        _rematerialize_physical=rematerialize_physical,
+        ranked_graph_search=ranked_search,
+        graph_history=history,
+        graph_analytics=analytics,
+    )
+
+
+__all__ = [
+    "CommunityBoardRouteSessionResolver",
+    "CommunityRoutedBoardGraphComposition",
+    "build_community_routed_board_graph_composition",
+]

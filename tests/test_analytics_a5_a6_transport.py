@@ -219,7 +219,7 @@ async def test_delivery_intelligence_rest_page_and_complete_csv_share_filters(
         assert uow is sentinel_uow
         assert command.window.from_inclusive == datetime(2026, 6, 1, tzinfo=UTC)
         assert command.window.to_exclusive == datetime(2026, 8, 21, tzinfo=UTC)
-        assert command.as_of == datetime(2026, 8, 21, 12, tzinfo=UTC)
+        assert command.as_of.tzinfo is not None
         if is_rest_call:
             assert command.cursor == "offset:7"
             assert command.limit == 17
@@ -238,7 +238,7 @@ async def test_delivery_intelligence_rest_page_and_complete_csv_share_filters(
     kwargs = {
         "date_from": "2026-06-01",
         "date_to": "2026-08-20",
-        "as_of": "2026-08-21T12:00:00Z",
+        "as_of": None,
         "range_value": None,
         "sprint_ids": [SPRINT_ID],
         "lanes": ["normal", "HOTFIX", "normal"],
@@ -295,7 +295,7 @@ async def test_delivery_intelligence_csv_drains_every_cursor_page(
         "board-1",
         date_from="2026-06-01",
         date_to="2026-08-20",
-        as_of="2026-08-21T12:00:00Z",
+        as_of=None,
         range_value=None,
         sprint_ids=None,
         lanes=None,
@@ -328,6 +328,67 @@ async def test_delivery_intelligence_csv_drains_every_cursor_page(
     assert rows["$.sprints[0].sprint_id"] == "sprint-1"
     assert rows["$.sprints[1].sprint_id"] == "sprint-2"
     assert rows["$.next_cursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_delivery_intelligence_rejects_historical_as_of_before_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def execute(*_args, **_kwargs):
+        raise AssertionError("current-state projection must not execute")
+
+    monkeypatch.setattr(analytics_api.DeliveryIntelligenceUseCase, "execute", execute)
+
+    with pytest.raises(HTTPException) as caught:
+        await analytics_api._delivery_intelligence_payload(
+            "board-1",
+            date_from=None,
+            date_to=None,
+            as_of="2026-01-01T00:00:00Z",
+            range_value=None,
+            sprint_ids=(),
+            lanes=(),
+            roles=(),
+            contribution_view="self_and_aggregates",
+            cursor=None,
+            limit=50,
+            minimum_sample_size=5,
+            user_id="user-1",
+            uow=object(),
+        )
+
+    assert caught.value.status_code == 400
+    assert caught.value.detail == {
+        "code": "analytics_query_invalid",
+        "message": "delivery_intelligence_historical_as_of_unsupported",
+    }
+
+
+@pytest.mark.asyncio
+async def test_delivery_intelligence_export_rejects_historical_as_of() -> None:
+    with pytest.raises(HTTPException) as caught:
+        await analytics_api.delivery_intelligence_export(
+            "board-1",
+            date_from=None,
+            date_to=None,
+            as_of="2026-01-01T00:00:00Z",
+            range_value=None,
+            sprint_ids=None,
+            lanes=None,
+            roles=None,
+            contribution_view="self_and_aggregates",
+            cursor=None,
+            limit=100,
+            minimum_sample_size=5,
+            user_id="user-1",
+            uow=object(),
+        )
+
+    assert caught.value.status_code == 400
+    assert caught.value.detail == {
+        "code": "analytics_query_invalid",
+        "message": "delivery_intelligence_historical_as_of_unsupported",
+    }
 
 
 @pytest.mark.asyncio

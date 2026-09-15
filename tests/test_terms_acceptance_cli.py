@@ -17,6 +17,8 @@ from okto_pulse.community import acceptance as acc
 
 @pytest.fixture(autouse=True)
 def _isolate_state(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DATA_DIR", raising=False)
     monkeypatch.setenv("OKTO_PULSE_HOME", str(tmp_path))
     monkeypatch.delenv("OKTO_PULSE_TERMS_ACCEPTED", raising=False)
     yield

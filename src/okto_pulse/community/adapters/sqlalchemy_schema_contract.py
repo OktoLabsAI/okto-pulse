@@ -106,18 +106,19 @@ LEGACY_CORE_SCHEMA_SHA256 = (
 )
 
 # Current inherited schema after the governed tenant-scope/Knowledge Base
-# migrations, the SK-B internal policy-version fences, and lifecycle-edition
-# columns on human-reviewed artifacts, including the fail-closed per-Spec Code
-# Evidence Matrix coverage skip and the nullable delivery/source-context
-# overlay on Refinement snapshots and Specs.
+# migrations, the SK-B internal policy-version fences, lifecycle-edition
+# columns on human-reviewed artifacts, and the exact rebuild compensation
+# journal used by terminal recovery reconciliation. This also includes the
+# fail-closed per-Spec Code Evidence Matrix coverage skip and the nullable
+# delivery/source-context overlay on Refinement snapshots and Specs.
 # Keep the pre-extraction hash above immutable so migration provenance remains
 # independently verifiable.
 CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
-    "577049d24a6315f44ba2f358c15dc3fa8fe7edf51fb5f29a2d7a8d26a25f4b4d"
+    "cac384167d48703f86cc65c2fe8d0dea4322f9a3077a2bf26c473f5b26f4aa4a"
 )
 
 # Additive Community-owned tables introduced after the F01 extraction. They
-# are intentionally excluded when proving that the inherited 60-table Core
+# are intentionally excluded when proving that the inherited 65-table Core
 # schema matches the governed Community contract.
 COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
     {

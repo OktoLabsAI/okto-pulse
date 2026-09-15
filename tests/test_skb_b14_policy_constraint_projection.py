@@ -12,7 +12,6 @@ import asyncio
 from copy import deepcopy
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
-import json
 from pathlib import Path
 import threading
 from typing import Any
@@ -25,10 +24,6 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from okto_pulse.community.adapters import kg_runtime
-from okto_pulse.community.adapters.kuzu_graph_transaction import (
-    CommunityKuzuGraphTransaction,
-)
 from okto_pulse.community.adapters.semantic_guideline_kg_events import (
     SEMANTIC_GUIDELINE_PROJECTION_HANDLER,
     SemanticGuidelineProjectionFact,
@@ -841,66 +836,3 @@ def test_semantic_context_envelope_is_strict_and_reserves_authority_fields():
             created_at=NOW,
             projected_at=NOW,
         )
-
-
-@pytest.mark.asyncio
-async def test_semantic_projection_kuzu_round_trip_is_replay_safe_and_not_audit_drift(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """Exercise the context codec and provenance split through real Kuzu."""
-
-    board_id = "semantic-projection-kuzu-round-trip"
-    monkeypatch.setattr(kg_runtime, "_kg_base_dir", lambda: tmp_path / "kg")
-    kg_runtime.reset_bootstrap_cache_for_tests()
-    try:
-        kg_runtime.bootstrap_board_graph(board_id)
-        projector = CommunitySqlAlchemyPolicyConstraintProjection(
-            graph_transaction_resolver=CommunityKuzuGraphTransaction
-        )
-        desired = _desired_chain()
-
-        first = await projector._reconcile(  # noqa: SLF001
-            board_id=board_id,
-            operation="sync",
-            event_id="event-kuzu-first",
-            desired=desired,
-            projected_at=NOW,
-        )
-        replay = await projector._reconcile(  # noqa: SLF001
-            board_id=board_id,
-            operation="sync",
-            event_id="event-kuzu-replay",
-            desired=desired,
-            projected_at=NOW,
-        )
-
-        assert first.active_count == len(desired)
-        assert first.activated_count == len(desired)
-        assert replay.replayed is True
-        assert replay.activated_count == replay.ended_count == 0
-
-        with kg_runtime.open_board_connection(board_id) as (_db, connection):
-            result = connection.execute(
-                "MATCH (n:Entity) RETURN n.id, n.context, n.source_content_hash"
-            )
-            rows = []
-            while result.has_next():
-                rows.append(result.get_next())
-            result.close()
-
-        desired_by_id = {node.node_id: node for node in desired}
-        semantic_rows = [
-            row for row in rows if str(row[0]).startswith("semantic-guideline:")
-        ]
-        assert len(semantic_rows) == len(desired)
-        for node_id, encoded_context, source_content_hash in semantic_rows:
-            assert isinstance(encoded_context, str)
-            assert encoded_context.startswith("json:")
-            context = json.loads(encoded_context.removeprefix("json:"))
-            assert context["contract"] == SEMANTIC_GUIDELINE_KG_CONTRACT
-            assert context["authority_digest"] == desired_by_id[str(node_id)].digest
-            assert source_content_hash is None
-    finally:
-        kg_runtime.close_all_connections(board_id)
-        kg_runtime.reset_bootstrap_cache_for_tests()

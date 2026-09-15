@@ -204,6 +204,46 @@ MATCH (d:DecisionDigest {board_id: $bid}) RETURN count(d);
 - *`failed to query global graph: IO exception: Could not set lock…`.*
   Another process holds the global Kùzu lock. See "Kùzu file lock" below.
 
+## Stop a historical recovery and start a new rebuild
+
+KG Health distinguishes the **historical graph recovery** (the legacy
+`historical_backfill` consolidation queue) from the destructive physical graph
+rebuild. Use the historical recovery card when the queue is no longer making
+progress or a legacy `claimed` row remains stuck:
+
+1. Select **Stop recovery**, then **Confirm stop**. Pulse deletes only live
+   `historical_backfill` rows for the selected board (`pending`, `paused`, and
+   `claimed`). Nodes and edges committed by completed entries are preserved.
+   Pulse first releases the authorization read snapshot and boundedly drains
+   the consolidation worker; the worker is restored after the short delete.
+   If that drain cannot be proven, cancellation fails closed instead of
+   deleting while an untracked write may still be running.
+2. The card reports **Stopped** immediately after the cancellation response.
+   Its live total becomes zero (`enabled=false`); the former run size remains
+   only in persisted audit metadata. The deleted claim token is the
+   durable fence: an older worker cannot ACK that row, and any unacknowledged
+   graph mutation follows the existing compensation path.
+3. To prepare a new rebuild, enter the required audit reason in the rebuild
+   report and use **Prepare offline rebuild**. KG Health refreshes the
+   diagnostic preflight and displays the governed three-stage recovery
+   instructions. It does not submit the obsolete online confirm/run sequence:
+   the installed one-shot executor must prove that Pulse and SDLC writers are
+   offline before it can create and promote a new generation. The cancellation
+   control never changes into a second start button, avoiding an unaudited and
+   ambiguous initiation path.
+
+The stop control requires `kg.operations.historical.read` and
+`kg.operations.historical.cancel`. Its REST equivalents are:
+
+```text
+GET  /api/v1/kg/boards/{board_id}/historical-consolidation/progress
+POST /api/v1/kg/boards/{board_id}/historical-consolidation/cancel
+```
+
+Cognitive-pending items already emitted by committed artifacts are a separate
+audit domain. Stopping the live historical queue never deletes that evidence;
+the UI labels the distinction instead of presenting it as active recovery work.
+
 ---
 
 ## Troubleshooting

@@ -32,7 +32,6 @@ import type {
   DiscoverySpecChildSelectorValue,
   SpecChildType,
 } from '@/types/discovery';
-import { NodeDetailModal } from './NodeDetailModal';
 import { useModalStack } from '@/contexts/ModalStackContext';
 import { useDashboardStore } from '@/store/dashboard';
 
@@ -187,13 +186,14 @@ export function GlobalSearchView({ boardId }: Props) {
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
-  const [selected, setSelected] = useState<SearchResult | null>(null);
   const [typeFilter, setTypeFilter] = useState<Set<string>>(new Set());
   const [graphLayer, setGraphLayer] = useState<GraphLayerMode>('canonical');
   const resultsRef = useRef<HTMLDivElement | null>(null);
 
   // Real-tool execution state (ideação a4f526df).
   const [intentResult, setIntentResult] = useState<IntentExecutionResult | null>(null);
+  const intentWarning =
+    typeof intentResult?.warning === 'string' ? intentResult.warning.trim() : '';
   const [pendingIntent, setPendingIntent] = useState<DiscoveryIntent | null>(null);
   const [paramValues, setParamValues] = useState<Record<string, IntentParamValue>>({});
   const [selectorStates, setSelectorStates] = useState<Record<string, SelectorUiState>>({});
@@ -205,6 +205,9 @@ export function GlobalSearchView({ boardId }: Props) {
   // navigation. This view no longer owns any modal state.
   const { push: pushModal } = useModalStack();
   const openCardInStore = useDashboardStore((s) => s.openCardModal);
+  const openSearchNode = (result: SearchResult) => {
+    pushModal({ type: 'kg_node', id: result.id, boardId: result.board_id });
+  };
 
   const handleOpenEntity = (row: discoveryApi.IntentExecutionRow) => {
     const meta = (row.meta || {}) as Record<string, unknown>;
@@ -219,7 +222,8 @@ export function GlobalSearchView({ boardId }: Props) {
       // CardModal reads the id from the dashboard store, not props.
       openCardInStore(entityId);
     }
-    pushModal({ type: type as 'card' | 'spec' | 'ideation' | 'refinement' | 'sprint' | 'kg_node', id: entityId });
+    pushModal({ type: type as 'card' | 'spec' | 'ideation' | 'refinement' | 'sprint' | 'kg_node', id: entityId,
+      boardId: typeof meta.board_id === 'string' ? meta.board_id : boardId });
   };
   const [intentsOpen, setIntentsOpen] = useState<boolean>(() => {
     if (typeof window === 'undefined') return true;
@@ -1104,7 +1108,7 @@ export function GlobalSearchView({ boardId }: Props) {
             </div>
             <div className="mb-3 rounded-md bg-gray-100 dark:bg-gray-800/60 p-3 text-xs">
               <div className="text-gray-500 dark:text-gray-400 mb-1">
-                Tool executed
+                {intentWarning ? 'Tool requested' : 'Tool executed'}
               </div>
               <code className="text-blue-600 dark:text-cyan-300 font-mono text-[11px] break-all">
                 {intentResult.tool_binding}(
@@ -1114,14 +1118,30 @@ export function GlobalSearchView({ boardId }: Props) {
                 )
               </code>
             </div>
-            {intentResult.rows.length === 0 ? (
-              <div className="text-center text-gray-500 dark:text-gray-400 py-6">
-                <div className="text-3xl mb-2">📭</div>
-                <p className="text-sm">
-                  The tool ran successfully but returned no rows for this
-                  board.
+            {intentWarning && (
+              <div
+                role="alert"
+                data-testid="discovery-intent-warning"
+                className="mb-3 rounded border border-amber-300 dark:border-amber-500/60 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-800 dark:text-amber-200"
+              >
+                <p className="font-medium">
+                  {intentResult.rows.length > 0
+                    ? 'Results may be incomplete'
+                    : 'Query could not be completed'}
                 </p>
+                <p className="mt-1 whitespace-pre-wrap break-words">{intentWarning}</p>
               </div>
+            )}
+            {intentResult.rows.length === 0 ? (
+              !intentWarning && (
+                <div className="text-center text-gray-500 dark:text-gray-400 py-6">
+                  <div className="text-3xl mb-2">📭</div>
+                  <p className="text-sm">
+                    The tool ran successfully but returned no rows for this
+                    board.
+                  </p>
+                </div>
+              )
             ) : (
               <div className="overflow-x-auto border border-gray-200 dark:border-gray-700 rounded-lg">
                 <table className="w-full text-xs">
@@ -1196,8 +1216,9 @@ export function GlobalSearchView({ boardId }: Props) {
               </div>
             )}
             <div className="mt-3 text-[11px] text-gray-500 dark:text-gray-400">
-              <strong>{intentResult.total}</strong>{' '}
-              {intentResult.total === 1 ? 'row' : 'rows'} from{' '}
+              <strong>{intentWarning ? intentResult.rows.length : intentResult.total}</strong>{' '}
+              {intentWarning && intentResult.rows.length > 0 ? 'partial ' : ''}
+              {(intentWarning ? intentResult.rows.length : intentResult.total) === 1 ? 'row' : 'rows'} from{' '}
               <code className="font-mono">{intentResult.tool_binding}</code>
             </div>
           </div>
@@ -1402,7 +1423,7 @@ export function GlobalSearchView({ boardId }: Props) {
                             return (
                               <tr
                                 key={`${r.board_id}-${r.id}-${i}`}
-                                onClick={() => setSelected(r)}
+                                onClick={() => openSearchNode(r)}
                                 data-testid={`global-search-result-${r.id}`}
                                 className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50"
                               >
@@ -1500,7 +1521,7 @@ export function GlobalSearchView({ boardId }: Props) {
                           <button
                             key={`${r.board_id}-${r.id}-${i}`}
                             type="button"
-                            onClick={() => setSelected(r)}
+                            onClick={() => openSearchNode(r)}
                             title={`${nt} — ${r.title}`}
                             className="absolute -translate-x-1/2 -translate-y-1/2 h-6 w-6 rounded-full border border-black/20 dark:border-white/20 hover:scale-110 transition-transform focus:outline-none focus:ring-2 focus:ring-blue-400"
                             style={{
@@ -1536,13 +1557,6 @@ export function GlobalSearchView({ boardId }: Props) {
         })()}
       </section>
 
-      {selected && (
-        <NodeDetailModal
-          boardId={selected.board_id}
-          nodeId={selected.id}
-          onClose={() => setSelected(null)}
-        />
-      )}
     </div>
   );
 }

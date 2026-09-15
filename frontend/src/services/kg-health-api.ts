@@ -9,6 +9,15 @@
  * Clerk injetado pelo authAdapter.
  */
 
+// KG Health presents the historical recovery controls, while the transport
+// remains the shared KG API contract used by the empty-state workflow.
+export {
+  cancelHistorical,
+  getHistoricalProgress,
+  startHistorical,
+  type HistoricalProgress,
+} from './kg-api';
+
 export interface TopDisconnectedNode {
   id: string;
   type: string;
@@ -50,6 +59,8 @@ export interface StorageFootprintProxy {
   source: 'file_size_proxy' | string;
   status: string;
   percentage: number | null;
+  percentage_status?: 'available' | 'not_applicable' | 'unavailable';
+  percentage_reason?: string | null;
   high_water_mark_pct: number | null;
   graph_lbug_bytes: number | null;
   sidecar_bytes: number | null;
@@ -96,6 +107,20 @@ export interface KGOperationalDomain {
   drill_down_signal?: string;
 }
 
+export interface KGGraphStorageRoute {
+  scope: 'board' | 'global';
+  backend: 'ladybug' | 'grafx' | null;
+  binding_status: 'bound' | 'missing' | 'unavailable';
+  physical_path: string | null;
+  generation: string | null;
+  page_size: number | null;
+}
+
+export interface KGGraphStorageSnapshot {
+  board: KGGraphStorageRoute;
+  global_graph: KGGraphStorageRoute;
+}
+
 export interface KGHealth {
   health_schema_version: string;
   materialization_state: 'not_materialized' | 'materialized' | 'unknown';
@@ -136,6 +161,7 @@ export interface KGHealth {
   kg_layer_counts?: KGLayerCounts;
   canonical_debt?: CanonicalDebtSummary;
   rebuild_diagnostics?: RebuildDiagnostics;
+  graph_storage?: KGGraphStorageSnapshot;
 }
 
 // ---- KG-02 rebuild lifecycle (spec e7360ffe, mockup sm_a30278ad) -------
@@ -162,13 +188,16 @@ export interface RebuildPreflightResult {
   generated_at: string;
   rebuild_status?: string;
   operational_substatus?: string;
-  manifest_ref: string;
-  source_set_hash: string;
+  manifest_ref: string | null;
+  source_set_hash: string | null;
+  execution_mode?: string;
+  operator_action?: string;
+  remediation?: string;
 }
 
 export interface RebuildConfirmResult {
   confirmation_id: string;
-  manifest_ref: string;
+  manifest_ref: string | null;
   source_set_hash: string;
   expires_at: string;
 }

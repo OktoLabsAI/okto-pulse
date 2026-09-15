@@ -161,7 +161,7 @@ export function KGHealthCognitivePendingPanel({
     <section
       data-testid="kg-cognitive-pending-panel"
       aria-label="Cognitive consolidation feedback"
-      className="mb-6 rounded-md border border-surface-200 bg-white p-4 shadow-sm dark:border-surface-700 dark:bg-surface-800"
+      className="min-w-0 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900"
     >
       <PanelHeader
         legacyMode={data?.legacy_mode ?? false}

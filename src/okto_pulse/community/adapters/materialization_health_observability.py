@@ -13,9 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
-from okto_pulse.community.adapters.ladybug_writer import (
-    ladybug_writer_activity_snapshot,
-)
 from okto_pulse.core.ports.materialization_health import (
     record_read_side_mutation_guard,
 )
@@ -84,7 +81,6 @@ class CommunityFilesystemMutationGuard:
         )
 
     def capture(self, board_id: str) -> FilesystemMetadataSnapshot:
-        writer_before = ladybug_writer_activity_snapshot()
         try:
             configured = (
                 *self._board_paths(str(board_id)),
@@ -95,23 +91,16 @@ class CommunityFilesystemMutationGuard:
                 path = Path(raw).resolve(strict=False)
                 paths.add(path)
                 paths.add(path.parent)
-                if path.suffix == ".lbug":
-                    paths.add(path.with_name(f"{path.name}.wal"))
             entries = tuple(
                 (str(path), self._metadata(path))
                 for path in sorted(paths, key=lambda item: str(item).casefold())
             )
         except Exception as exc:
-            writer_after = ladybug_writer_activity_snapshot()
             return FilesystemMetadataSnapshot(
                 sha256=None,
                 entries=(),
                 unavailable_reason=type(exc).__name__,
-                writer_revision_before=writer_before.revision,
-                writer_revision_after=writer_after.revision,
-                writer_active=writer_before.active or writer_after.active,
             )
-        writer_after = ladybug_writer_activity_snapshot()
         encoded = json.dumps(
             entries,
             sort_keys=True,
@@ -121,9 +110,6 @@ class CommunityFilesystemMutationGuard:
         return FilesystemMetadataSnapshot(
             sha256=hashlib.sha256(encoded).hexdigest(),
             entries=entries,
-            writer_revision_before=writer_before.revision,
-            writer_revision_after=writer_after.revision,
-            writer_active=writer_before.active or writer_after.active,
         )
 
     @staticmethod

@@ -143,6 +143,69 @@ beforeEach(() => {
 });
 
 describe('GlobalSearchView typed Discovery params', () => {
+  it('opens a search result in its own board and preserves the search input', async () => {
+    vi.mocked(discoveryApi.listIntents).mockResolvedValue([]);
+    vi.mocked(kgApi.globalSearch).mockResolvedValue({ results: [{
+      id: 'remote-node', board_id: 'other-board', title: 'Remote decision', summary: '',
+      node_type: 'Decision', similarity: 0.9, graph_layer: 'canonical',
+    }], total: 1, graph_layer: 'canonical' } as Awaited<ReturnType<typeof kgApi.globalSearch>>);
+    render(<GlobalSearchView boardId={BOARD} />);
+    fireEvent.change(screen.getByTestId('discovery-search-input'), { target: { value: 'remote decision' } });
+    fireEvent.click(screen.getByTestId('discovery-search-submit'));
+    fireEvent.click(await screen.findByTestId('global-search-result-remote-node'));
+    expect(mocks.pushModal).toHaveBeenCalledWith({ type: 'kg_node', id: 'remote-node', boardId: 'other-board' });
+    expect(screen.getByTestId('discovery-search-input')).toHaveValue('remote decision');
+  });
+
+  it.each([false, true])(
+    'shows a tool warning without claiming success (partial rows: %s)',
+    async (hasPartialRows) => {
+      vi.mocked(discoveryApi.listIntents).mockResolvedValue([intent(null)]);
+      vi.mocked(discoveryApi.executeIntent).mockResolvedValue({
+        rows: hasPartialRows
+          ? [{ id: 'decision-1', type: 'Decision', title: 'Available decision' }]
+          : [],
+        columns: ['Decision'],
+        total: hasPartialRows ? 20 : 0,
+        tool_binding: 'okto_pulse_kg_list_key_decisions',
+        params_echo: {},
+        execution: 'real_tool',
+        intent_id: 'intent-1',
+        intent_name: 'Key decisions',
+        warning: 'KG unavailable: read participant timed out',
+      });
+
+      render(<GlobalSearchView boardId={BOARD} />);
+      fireEvent.click(await screen.findByTestId('discovery-intent-trace_spec_child'));
+
+      const warning = await screen.findByRole('alert');
+      expect(warning).toHaveTextContent('KG unavailable: read participant timed out');
+      expect(warning).toHaveTextContent(
+        hasPartialRows ? 'Results may be incomplete' : 'Query could not be completed',
+      );
+      expect(screen.queryByText(/tool ran successfully/i)).not.toBeInTheDocument();
+      expect(screen.queryByText('Tool executed')).not.toBeInTheDocument();
+      if (hasPartialRows) {
+        expect(screen.getByText('Available decision')).toBeInTheDocument();
+        expect(screen.getByTestId('discovery-intent-result')).toHaveTextContent(
+          '1 partial row from',
+        );
+      } else {
+        expect(screen.queryByTestId('discovery-intent-row-0')).not.toBeInTheDocument();
+      }
+    },
+  );
+
+  it('still distinguishes a successful empty result from a failed tool query', async () => {
+    vi.mocked(discoveryApi.listIntents).mockResolvedValue([intent(null)]);
+
+    render(<GlobalSearchView boardId={BOARD} />);
+    fireEvent.click(await screen.findByTestId('discovery-intent-trace_spec_child'));
+
+    expect(await screen.findByText(/tool ran successfully/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('discovery-intent-warning')).not.toBeInTheDocument();
+  });
+
   it('sends the selected graph layer to free-text global search', async () => {
     vi.mocked(discoveryApi.listIntents).mockResolvedValue([]);
     vi.mocked(kgApi.globalSearch).mockResolvedValue({
@@ -583,6 +646,7 @@ describe('GlobalSearchView typed Discovery params', () => {
     expect(mocks.pushModal).toHaveBeenCalledWith({
       type: 'spec',
       id: 'spec-parent',
+      boardId: BOARD,
     });
   });
 });

@@ -14,7 +14,7 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from okto_pulse.community.adapters.hybrid_search import KuzuGraphExpander
+from okto_pulse.community.adapters.hybrid_search import CommunityGraphExpander
 from okto_pulse.core.kg.interfaces.reflective_query import (
     REFLECTIVE_DEFAULT_EDGES,
     Adequacy,
@@ -30,7 +30,9 @@ logger = logging.getLogger("okto_pulse.community.reflective_query")
 _WORD = re.compile(r"[\w-]+", re.UNICODE)
 
 
-def _stable_rows(rows: list[Mapping[str, Any]], limit: int) -> tuple[Mapping[str, Any], ...]:
+def _stable_rows(
+    rows: list[Mapping[str, Any]], limit: int
+) -> tuple[Mapping[str, Any], ...]:
     best: dict[str, dict[str, Any]] = {}
     for raw in rows:
         node_id = str(raw.get("node_id") or "")
@@ -40,9 +42,7 @@ def _stable_rows(rows: list[Mapping[str, Any]], limit: int) -> tuple[Mapping[str
         row["node_id"] = node_id
         row["node_type"] = str(row.get("node_type") or "unknown")
         row["title"] = str(row.get("title") or "")
-        row["similarity"] = max(
-            0.0, min(1.0, float(row.get("similarity") or 0.0))
-        )
+        row["similarity"] = max(0.0, min(1.0, float(row.get("similarity") or 0.0)))
         current = best.get(node_id)
         if current is None or row["similarity"] > current["similarity"]:
             best[node_id] = row
@@ -68,7 +68,7 @@ def _rewrite_query(query: str) -> str:
 class CommunityReflectiveRetrieval:
     """Vector retrieval plus deterministic graph expansion/fallback actions."""
 
-    identity = "community-kuzu-reflective-retrieval"
+    identity = "community-graph-reflective-retrieval"
     version = "2"
 
     def __init__(
@@ -84,7 +84,7 @@ class CommunityReflectiveRetrieval:
             raise ValueError("reflective_embedding_provider_required")
         self._graph_store = graph_store
         self._embedding = embedding_provider
-        self._expander = KuzuGraphExpander(cypher_executor)
+        self._expander = CommunityGraphExpander(cypher_executor)
 
     def _node_types(self, board_id: str, target_intent: str | None) -> tuple[str, ...]:
         info = self._graph_store.get_schema_info(board_id)
@@ -100,9 +100,7 @@ class CommunityReflectiveRetrieval:
         if target_intent:
             wanted = target_intent.casefold().replace("_", "")
             narrowed = tuple(
-                item
-                for item in available
-                if item.casefold().replace("_", "") == wanted
+                item for item in available if item.casefold().replace("_", "") == wanted
             )
             if narrowed:
                 return narrowed
@@ -140,9 +138,7 @@ class CommunityReflectiveRetrieval:
         info = self._graph_store.get_schema_info(board_id)
         return str(info.get("schema_version") or "unknown")
 
-    def retrieve(
-        self, request: ReflectiveRetrievalRequest
-    ) -> ReflectiveRetrievalBatch:
+    def retrieve(self, request: ReflectiveRetrievalRequest) -> ReflectiveRetrievalBatch:
         action = request.action
         mode = "vector_seed"
         cost = 1
@@ -152,9 +148,7 @@ class CommunityReflectiveRetrieval:
             cost = 2
             previous = [dict(row) for row in request.previous_rows]
             seeds = tuple(
-                str(row.get("node_id"))
-                for row in previous
-                if row.get("node_id")
+                str(row.get("node_id")) for row in previous if row.get("node_id")
             )
             neighbors = self._expander.expand(
                 board_id=request.board_id,
@@ -191,8 +185,7 @@ class CommunityReflectiveRetrieval:
                 mode = "intent_change"
             effective_query = (
                 request.rewritten_query
-                if action == CriticAction.RETRY_WITH_REWRITE
-                and request.rewritten_query
+                if action == CriticAction.RETRY_WITH_REWRITE and request.rewritten_query
                 else request.query
             )
             rows = self._vector_rows(

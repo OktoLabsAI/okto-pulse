@@ -41,16 +41,17 @@ class CommunityCanonicalBugNodeReader:
     """Canonical Bug lookup through the configured graph read interface."""
 
     def __init__(self, cypher_executor: Any | None = None) -> None:
-        if cypher_executor is None:
-            from okto_pulse.community.adapters.kuzu_cypher_executor import (
-                CommunityKuzuCypherExecutor,
-            )
-
-            cypher_executor = CommunityKuzuCypherExecutor()
         self._cypher_executor = cypher_executor
 
     async def exists(self, *, board_id: str, bug_id: str) -> bool:
-        result = self._cypher_executor.execute_read_only(
+        cypher_executor = self._cypher_executor
+        if cypher_executor is None:
+            from okto_pulse.core.services.application_kg import (
+                get_current_provider_registry,
+            )
+
+            cypher_executor = get_current_provider_registry().cypher_executor
+        result = cypher_executor.execute_read_only(
             board_id,
             "MATCH (b:Bug) WHERE b.graph_layer = 'canonical' "
             "AND (b.id = $bug_id OR b.source_artifact_ref = $bug_ref "

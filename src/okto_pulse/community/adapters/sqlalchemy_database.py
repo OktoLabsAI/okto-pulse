@@ -590,6 +590,10 @@ def configure_community_database(
     engine = build_community_engine(url, echo=echo)
     install_community_sqlite_pragmas(engine)
     install_community_pool_observability(engine)
+    if os.environ.get("OKTO_PULSE_SQLITE_WRITER_TRACE", "").lower() in {"1", "true", "yes"}:
+        from .sqlite_writer_diagnostics import install_sqlite_writer_diagnostics
+
+        install_sqlite_writer_diagnostics(engine)
     session_factory = build_community_session_factory(engine)
     runtime = CommunityDatabaseRuntime(
         engine=engine,

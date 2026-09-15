@@ -27,6 +27,8 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ConsolidationAudit,
     ConsolidationQueue,
     DesignSystemGateAudit,
+    DomainEventRow,
+    DomainEventHandlerExecution,
     ExactRebuildConsolidationAckJournal,
     ExactRebuildConsolidationCompensation,
     GlobalDiscoveryDeliveryRedriveControl,
@@ -47,6 +49,64 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 
 BOARD_ID = "board-erasure-target"
 OTHER_BOARD_ID = "board-erasure-other"
+
+
+@pytest.mark.asyncio
+async def test_materialized_domain_events_erased_under_permit(tmp_path):
+    database_module.create_database(
+        f"sqlite+aiosqlite:///{(tmp_path / 'events.db').as_posix()}"
+    )
+    register_community_relational_schema_lifecycle()
+    await database_module.init_db()
+    async with get_session_factory()() as session:
+        session.add_all(
+            [
+                Board(id=BOARD_ID, name="Erase", owner_id="owner"),
+                Board(id=OTHER_BOARD_ID, name="Keep", owner_id="owner"),
+            ]
+        )
+        await session.flush()
+        session.add_all(
+            [
+                DomainEventRow(
+                    id="erase-event",
+                    board_id=BOARD_ID,
+                    event_type="board.semantic_policy_binding_materialized.v2",
+                    payload_json={},
+                ),
+                DomainEventRow(
+                    id="keep-event",
+                    board_id=OTHER_BOARD_ID,
+                    event_type="board.semantic_policy_binding_materialized.v2",
+                    payload_json={},
+                ),
+            ]
+        )
+        await session.flush()
+        session.add(
+            DomainEventHandlerExecution(
+                id="erase-handler", event_id="erase-event", handler_name="test"
+            )
+        )
+        await session.commit()
+    async with get_session_factory()() as session:
+        with pytest.raises(
+            IntegrityError, match="guideline_impact_audit_evidence_immutable"
+        ):
+            await session.execute(delete(Board).where(Board.id == BOARD_ID))
+        await session.rollback()
+    async with get_session_factory()() as session:
+        await CommunitySqlAlchemyKGGovernanceStore().purge_board_metadata(
+            session, board_id=BOARD_ID
+        )
+        await session.execute(delete(Board).where(Board.id == BOARD_ID))
+        await session.commit()
+    async with get_session_factory()() as session:
+        assert await session.get(DomainEventRow, "erase-event") is None
+        assert await session.get(DomainEventHandlerExecution, "erase-handler") is None
+        assert await session.get(DomainEventRow, "keep-event") is not None
+        assert await session.get(Board, OTHER_BOARD_ID) is not None
+        assert (await session.execute(text("PRAGMA foreign_key_check"))).all() == []
 
 
 async def _count(session, model, predicate) -> int:

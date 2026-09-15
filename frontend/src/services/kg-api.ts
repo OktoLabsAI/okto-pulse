@@ -11,25 +11,13 @@ import type {
   AuditEntry,
   GraphLayerMode,
 } from '@/types/knowledge-graph';
-
-const KG_BASE = '/api/v1/kg';
+import { authFetchJson } from '@/lib/authFetch';
 
 async function kgFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(`${KG_BASE}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...init?.headers,
-    },
-  });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-    throw new Error(err.detail || err.message || `HTTP ${resp.status}`);
-  }
-  if (resp.status === 204 || resp.headers.get('Content-Length') === '0') {
-    return undefined as T;
-  }
-  return resp.json();
+  // The shared authenticated client owns both the configured API base URL and
+  // bearer-token refresh. KG calls must not silently bypass either in hosted
+  // deployments merely because this module is consumed outside a component.
+  return authFetchJson<T>(`/kg${path}`, init);
 }
 
 // Nodes
@@ -63,6 +51,23 @@ export async function listNodes(boardId: string, params?: {
 
 export async function getNodeDetail(boardId: string, nodeId: string) {
   return kgFetch<KGNode>(`/boards/${boardId}/nodes/${nodeId}`);
+}
+
+export interface KGNodeSource {
+  status: 'resolved' | 'missing_source' | 'unsupported' | 'unavailable';
+  source_artifact_ref: string | null;
+  target: {
+    board_id: string;
+    entity_type: 'spec' | 'refinement' | 'ideation' | 'sprint' | 'story' | 'card';
+    entity_kind: string;
+    entity_id: string;
+    title: string;
+    source_version: number | null;
+  } | null;
+}
+
+export async function getNodeSource(boardId: string, nodeId: string, signal?: AbortSignal) {
+  return kgFetch<KGNodeSource>(`/boards/${encodeURIComponent(boardId)}/nodes/${encodeURIComponent(nodeId)}/source`, { signal });
 }
 
 // Graph (for visualization)
@@ -252,7 +257,7 @@ export async function startHistorical(boardId: string) {
 }
 
 export async function cancelHistorical(boardId: string) {
-  return kgFetch<{ status: string }>(`/boards/${boardId}/historical-consolidation/cancel`, {
+  return kgFetch<{ status: string; board_id?: string; removed?: number }>(`/boards/${boardId}/historical-consolidation/cancel`, {
     method: 'POST',
   });
 }

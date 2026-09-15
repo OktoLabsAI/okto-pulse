@@ -78,13 +78,24 @@ function EntityLinks({
     <div className="flex min-w-[8rem] flex-col items-stretch gap-1">
       {mappings.map((mapping) => {
         const title = obligationTitle(mapping, obligationTitles);
+        const qualifier = mapping.evidence_applicable === false
+          ? 'Contextual link'
+          : mapping.evidence_applicable !== true
+            ? 'Applicability unresolved'
+            : null;
+        const explanation = mapping.evidence_applicable === false
+          ? 'Context/reference association; does not count as implementation evidence.'
+          : 'The association exists, but evidence applicability has not been established.';
         return (
           <span
             key={mapping.link_id}
-            title={`${title} · ${mapping.relation_type.replace(/_/g, ' ')}`}
-            className="line-clamp-2 max-w-[15rem] rounded bg-violet-50 px-2 py-1 text-left text-[10px] leading-4 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300"
+            title={`${title} · ${mapping.obligation_ref} · ${mapping.relation_type.replace(/_/g, ' ')}${qualifier ? ` · ${explanation}` : ''}`}
+            className={`max-w-[15rem] rounded px-2 py-1 text-left text-[10px] leading-4 ${qualifier
+              ? 'bg-slate-100 text-slate-700 dark:bg-slate-900/50 dark:text-slate-300'
+              : 'bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300'}`}
           >
-            {title}
+            <span className="line-clamp-2">{title}</span>
+            {qualifier && <span className="block text-[9px] font-medium">{qualifier}</span>}
           </span>
         );
       })}
@@ -148,7 +159,7 @@ function MatrixRow({
       {ENTITY_COLUMNS.map((column) => (
         <td key={column.label} className="px-2 py-3 text-center">
           <EntityLinks
-            mappings={applicableMappings.filter(
+            mappings={mappings.filter(
               (mapping) => (column.kinds as readonly string[]).includes(mapping.obligation_type),
             )}
             obligationTitles={obligationTitles}

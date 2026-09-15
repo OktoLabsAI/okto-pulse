@@ -10,6 +10,8 @@ invoke only those governance operations.
 """
 
 from __future__ import annotations
+from okto_pulse.core.models.delivery_evidence import DeliveryEvidenceInput, DeliveryEvidenceCommand, DeliveryEvidenceQuery
+from okto_pulse.core.application.use_cases.delivery_evidence import GetDeliveryEvidenceUseCase, RecordDeliveryEvidenceUseCase
 
 import base64
 from dataclasses import fields, is_dataclass
@@ -483,6 +485,9 @@ def _native(value: object, *, cursor_binding: str | None = None) -> object:
 
 
 def _http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, ValueError) and str(exc).startswith("delivery_"):
+        code = str(exc).split(":", 1)[0]
+        return HTTPException(status_code=409 if code.endswith("_conflict") else 404 if code.endswith("_not_found") else 422, detail={"code": code, "message": str(exc), "remediation": [{"action": "review_delivery_evidence", "tool": "okto_pulse_get_delivery_evidence"}]})
     """Project the same typed envelope exposed by the Core MCP adapter."""
 
     if isinstance(
@@ -1275,6 +1280,17 @@ async def get_code_traceability_projection(
         principal=principal,
         uow=uow,
     )
+
+
+@router.get("/{board_id}/specs/{spec_id}/delivery-evidence")
+async def get_delivery_evidence(board_id: str, spec_id: str, principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
+    return await _execute(GetDeliveryEvidenceUseCase(), DeliveryEvidenceQuery(board_id=board_id, spec_id=spec_id), board_id=board_id, principal=principal, uow=uow)
+
+
+@router.post("/{board_id}/specs/{spec_id}/delivery-evidence")
+async def record_delivery_evidence(board_id: str, spec_id: str, body: DeliveryEvidenceInput, principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
+    command = DeliveryEvidenceCommand(board_id=board_id, spec_id=spec_id, **body.model_dump())
+    return await _execute(RecordDeliveryEvidenceUseCase(), command, board_id=board_id, principal=principal, uow=uow)
 
 
 __all__ = ["router"]

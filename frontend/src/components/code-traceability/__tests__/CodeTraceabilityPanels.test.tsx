@@ -762,7 +762,40 @@ describe('Code Traceability passive Community surfaces', () => {
     expect(await screen.findByTestId('code-evidence-coverage-status'))
       .toHaveTextContent('Needs classification');
     expect(screen.getAllByText('Needs classification', { selector: 'span' })).toHaveLength(2);
-    expect(screen.queryByText('TR-1: Acquire the lock before persistence')).not.toBeInTheDocument();
+    expect(screen.getByText('TR-1: Acquire the lock before persistence')).toBeInTheDocument();
+    expect(screen.getByText('Applicability unresolved')).toBeInTheDocument();
+    expect(screen.queryByText('100%')).not.toBeInTheDocument();
+  });
+
+  it('shows contextual associations in every obligation column without changing server coverage', async () => {
+    const kinds = ['spec', 'functional_requirement', 'technical_requirement', 'business_rule',
+      'acceptance_criterion', 'api_contract', 'integration_requirement',
+      'observability_requirement', 'decision', 'test_scenario'] as const;
+    apiMock.getCodeTraceabilityProjection.mockResolvedValue({
+      ...gateProjection,
+      source_context_items: [{ ...gateProjection.source_context_items![0], evidence_applicable: false }],
+      contextual_evidence_coverage: {
+        total: 0, linked: 0, dispositioned: 0, pending: 0, pending_ids: [],
+        unresolved_applicability_count: 0, coverage_pct: null, projection_complete: true,
+      },
+      obligation_evidence_mappings: kinds.map((kind) => ({
+        ...gateProjection.obligation_evidence_mappings![0],
+        link_id: `link-${kind}`, obligation_type: kind, obligation_id: `id-${kind}`,
+        obligation_ref: `${kind}:id-${kind}`, evidence_applicable: false,
+        source_role: 'existing_constraint', relation_type: 'constrains',
+      })),
+    });
+    render(<EvidenceMatrixPanel boardId="board-1" subjectId="spec-1" subjectVersion={7}
+      obligationTitles={Object.fromEntries(kinds.map(kind => [`id-${kind}`, `Title ${kind}`]))} />);
+    const table = await screen.findByRole('table');
+    const cells = within(within(table).getAllByRole('row')[1]).getAllByRole('cell');
+    kinds.forEach((kind, index) => {
+      expect(within(cells[index]).getByText(`Title ${kind}`)).toBeInTheDocument();
+      expect(within(cells[index]).getByText('Contextual link')).toBeInTheDocument();
+    });
+    expect(screen.getByTestId('contextual-evidence-linked')).toHaveTextContent(/^0$/);
+    expect(screen.getByTestId('contextual-evidence-coverage-pct')).toHaveTextContent('—');
+    expect(screen.getByText('Context only')).toBeInTheDocument();
     expect(screen.queryByText('100%')).not.toBeInTheDocument();
   });
 

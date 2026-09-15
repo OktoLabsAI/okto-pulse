@@ -55,9 +55,9 @@ echo -e "${YELLOW}[2/4] Building okto-pulse-core...${NC}"
 cd "${CORE_DIR}"
 ensure_python_build_tool
 python -m build --wheel
-CORE_WHEEL="$(find "${CORE_DIR}/dist" -maxdepth 1 -type f -name 'okto_pulse_core-0.3.2-*.whl' -print -quit)"
+CORE_WHEEL="$(find "${CORE_DIR}/dist" -maxdepth 1 -type f -name 'okto_pulse_core-0.3.3-*.whl' -print -quit)"
 if [ -z "${CORE_WHEEL}" ]; then
-    echo -e "${RED}Core 0.3.2 wheel was not produced${NC}" >&2
+    echo -e "${RED}Core 0.3.3 wheel was not produced${NC}" >&2
     exit 1
 fi
 echo -e "${GREEN}✓ okto-pulse-core built${NC}"
@@ -67,9 +67,9 @@ echo ""
 echo -e "${YELLOW}[3/4] Building okto-pulse (community)...${NC}"
 cd "${COMMUNITY_DIR}"
 python -m build --wheel
-COMMUNITY_WHEEL="$(find "${COMMUNITY_DIR}/dist" -maxdepth 1 -type f -name 'okto_pulse-0.3.2-*.whl' -print -quit)"
+COMMUNITY_WHEEL="$(find "${COMMUNITY_DIR}/dist" -maxdepth 1 -type f -name 'okto_pulse-0.3.3-*.whl' -print -quit)"
 if [ -z "${COMMUNITY_WHEEL}" ]; then
-    echo -e "${RED}Community 0.3.2 wheel was not produced${NC}" >&2
+    echo -e "${RED}Community 0.3.3 wheel was not produced${NC}" >&2
     exit 1
 fi
 echo -e "${GREEN}✓ okto-pulse (community) built${NC}"

@@ -8,6 +8,8 @@
  * button.
  */
 
+import { authFetchJson } from '@/lib/authFetch';
+
 export interface DeadLetterErrorEntry {
   attempt: number;
   occurred_at: string;
@@ -34,7 +36,20 @@ export interface DeadLetterListResponse {
   offset: number;
 }
 
-const BASE = '/api/v1';
+export interface DeadLetterRedriveResponse {
+  success: boolean;
+  blocked: boolean;
+  mutated: boolean;
+  scope: 'generic' | 'code_traceability' | 'all';
+  requested: number | null;
+  selected: number;
+  requeued_count: number;
+  already_queued_count: number;
+  process_now_mode?: string | null;
+  remaining?: number | null;
+  batches?: number | null;
+  stop_reason?: string | null;
+}
 
 export async function getDeadLetterRows(
   boardId: string,
@@ -47,13 +62,37 @@ export async function getDeadLetterRows(
     limit: String(limit),
     offset: String(offset),
   });
-  const resp = await fetch(`${BASE}/kg/queue/dead-letter?${params}`, {
-    headers: { 'Content-Type': 'application/json' },
-    signal,
+  return authFetchJson<DeadLetterListResponse>(
+    `/kg/queue/dead-letter?${params}`,
+    { signal },
+  );
+}
+
+export async function redriveDeadLetterRows(
+  boardId: string,
+  deadLetterIds: string[],
+  scope: 'generic' | 'code_traceability' = 'generic',
+): Promise<DeadLetterRedriveResponse> {
+  return authFetchJson<DeadLetterRedriveResponse>('/kg/queue/dead-letter/redrive', {
+    method: 'POST',
+    body: JSON.stringify({
+      board_id: boardId,
+      dead_letter_ids: deadLetterIds,
+      scope,
+      process_now: true,
+    }),
   });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-    throw new Error(err.detail || `HTTP ${resp.status}`);
-  }
-  return resp.json();
+}
+
+export async function redriveAllDeadLetterRows(
+  boardId: string,
+): Promise<DeadLetterRedriveResponse> {
+  return authFetchJson<DeadLetterRedriveResponse>('/kg/queue/dead-letter/redrive', {
+    method: 'POST',
+    body: JSON.stringify({
+      board_id: boardId,
+      redrive_all: true,
+      process_now: true,
+    }),
+  });
 }

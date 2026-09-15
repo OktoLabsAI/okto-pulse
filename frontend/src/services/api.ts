@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import type { DeliveryEvidenceInput, DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 /**
  * API Service - all API calls centralized
  */
@@ -95,6 +96,10 @@ import type {
   SpecStructuredEntityMutationResult,
   SpecStructuredEntityOperation,
   SpecStructuredEntityType,
+  ProjectStructureMutationRequest,
+  ProjectStructureMutationResponse,
+  ProjectStructureProjectionResponse,
+  ProjectStructureSnapshot,
   SpecSummary,
   SpecValidationCurrentSummary,
   SpecValidationList,
@@ -594,6 +599,14 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     // ==================== CODE TRACEABILITY ====================
 
+    async getDeliveryEvidence(boardId: string, specId: string, signal?: AbortSignal): Promise<DeliveryEvidenceProjection> {
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence`, { signal });
+    },
+
+    async recordDeliveryEvidence(boardId: string, specId: string, body: DeliveryEvidenceInput): Promise<{ id: string; replayed: boolean }> {
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence`, { method: 'POST', body: JSON.stringify(body) });
+    },
+
     async getCodeTraceabilityProjection(
       boardId: string,
       subjectType: CodeTraceabilitySubjectType,
@@ -777,7 +790,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     },
 
     async deleteBoard(boardId: string): Promise<void> {
-      await apiClient.fetch(`/boards/${boardId}`, { method: 'DELETE' });
+      await apiClient.fetchJson<void>(`/boards/${boardId}`, { method: 'DELETE' });
     },
 
     async getBoardColumns(
@@ -1352,6 +1365,44 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     async getSpec(specId: string): Promise<Spec> {
       return apiClient.fetchJson<Spec>(`/specs/${specId}`);
+    },
+
+    async getProjectStructure(
+      boardId: string,
+      specId: string,
+      signal?: AbortSignal,
+    ): Promise<ProjectStructureSnapshot> {
+      return apiClient.fetchJson<ProjectStructureSnapshot>(
+        `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/project-structure`,
+        { signal },
+      );
+    },
+
+    async mutateProjectStructure(
+      boardId: string,
+      specId: string,
+      request: ProjectStructureMutationRequest,
+      signal?: AbortSignal,
+    ): Promise<ProjectStructureMutationResponse> {
+      return apiClient.fetchJson<ProjectStructureMutationResponse>(
+        `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/project-structure`,
+        {
+          method: 'PATCH',
+          body: JSON.stringify(request),
+          signal,
+        },
+      );
+    },
+
+    async getCardProjectStructure(
+      boardId: string,
+      cardId: string,
+      signal?: AbortSignal,
+    ): Promise<ProjectStructureProjectionResponse> {
+      return apiClient.fetchJson<ProjectStructureProjectionResponse>(
+        `/boards/${encodeURIComponent(boardId)}/cards/${encodeURIComponent(cardId)}/project-structure`,
+        { signal },
+      );
     },
 
     async listSpecDependencies(

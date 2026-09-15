@@ -253,9 +253,11 @@ class CommunitySqlAlchemyRelationalEffects(RelationalEffectsPort):
                 # The Core worker's final claim fence and compare-and-delete
                 # ACK then either abort before graph commit or compensate its
                 # deferred graph mutation after losing the ACK CAS.
-                where=or_(
-                    ConsolidationQueue.status != "pending",
-                    rebuild_source,
+                where=(
+                    (ConsolidationQueue.status.not_in(("pending", "claimed", "paused")))
+                    & ~rebuild_source
+                    if upsert.coalesce_active
+                    else or_(ConsolidationQueue.status != "pending", rebuild_source)
                 ),
             )
             .returning(ConsolidationQueue.id)

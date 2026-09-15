@@ -114,19 +114,25 @@ def test_quarantine_restore_composition_fences_distinct_data_and_kg_roots(
     data_root = (tmp_path / "data").resolve()
     kg_root.mkdir()
     registry = SimpleNamespace()
+    resolver = SimpleNamespace()
+
+    def factory(snapshot):
+        return snapshot
 
     _apply_quarantine_restore(
         registry,
         kg_base_dir=str(kg_root),
         data_dir=str(data_root),
+        graph_route_resolver=resolver,
+        grafx_restore_factory=factory,
     )
 
     restore = registry.quarantine_restore
-    assert restore._resolved_base_dir() == kg_root  # noqa: SLF001
+    assert restore._root == kg_root / "quarantine"  # noqa: SLF001
+    assert restore._resolver is resolver  # noqa: SLF001
+    assert restore._grafx_factory is factory  # noqa: SLF001
+    assert not hasattr(restore, "_ladybug")
     assert not data_root.exists()
-    assert restore._serve_lock_directories() == tuple(  # noqa: SLF001
-        sorted((data_root, kg_root), key=str)
-    )
 
 
 def _queue_db(tmp_path: Path) -> Path:
@@ -1024,6 +1030,58 @@ def test_f06_v3_upgrade_crash_before_enqueue_replays_v4_without_resnapshot(
     )
 
 
+@pytest.mark.parametrize(
+    ("replay_summary", "expected_error"),
+    [
+        ({"durable_source_status": "error:unreadable"}, "error:unreadable"),
+        (
+            {"durable_source_status": "ok", "replay_failed": ["node-1"]},
+            "durable_cognitive_replay_failed",
+        ),
+    ],
+)
+def test_restore_refuses_durable_replay_failure_and_replays_failure_receipt(
+    monkeypatch,
+    tmp_path: Path,
+    replay_summary,
+    expected_error,
+) -> None:
+    from okto_pulse.core.kg import canonical_cognitive_preservation as cognitive
+
+    monkeypatch.setattr(
+        cognitive,
+        "snapshot_canonical_cognitive",
+        lambda board_id: cognitive.CognitiveSnapshot(board_id=board_id, readable=True),
+    )
+    monkeypatch.setattr(
+        cognitive,
+        "restore_canonical_cognitive",
+        lambda *_args: cognitive.RestoreResult(),
+    )
+    replay_calls = []
+
+    def replay(board_id):
+        replay_calls.append(board_id)
+        return replay_summary
+
+    monkeypatch.setattr(cognitive, "replay_durable_cognitive", replay)
+    store = DictArtifactStore()
+    owner = CommunityBoardRebuildIngestionAdapter(
+        db_path=_queue_db(tmp_path),
+        artifact_store=store,
+    )
+    effects = CommunityRebuildEffects(owner, artifact_store=store)
+    command = _command()
+    effects.snapshot(command, effect_key=f"{command.run_id}:snapshot")
+    effect_key = f"{command.run_id}:restore"
+    receipt = effects.restore(command, effect_key=effect_key)
+    assert receipt.ok is False
+    assert receipt.code == cognitive.STATUS_INTEGRITY_ERROR
+    assert receipt.details["error"] == expected_error
+    assert effects.restore(command, effect_key=effect_key) == receipt
+    assert replay_calls == [command.board_id]
+
+
 def test_f06_every_concrete_effect_replays_without_duplicate_side_effect(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -1336,6 +1394,11 @@ def test_f06_build_step_uses_core_processor_and_typed_effects(
         "restore_canonical_cognitive",
         lambda _board_id, _snapshot: cognitive.RestoreResult(),
     )
+    monkeypatch.setattr(
+        cognitive,
+        "replay_durable_cognitive",
+        lambda _board_id: {"durable_source_status": "ok", "replay_failed": []},
+    )
     monkeypatch.setattr(application_kg, "signal_consolidation_worker", lambda: True)
     monkeypatch.setattr(
         CommunityBoardRebuildIngestionAdapter,
@@ -1480,7 +1543,6 @@ def test_f06_policy_constraint_rebuild_failure_is_fail_closed(
 ) -> None:
     from okto_pulse.core.kg import canonical_cognitive_preservation as cognitive
     from okto_pulse.core.services import application_kg
-    from okto_pulse.community.adapters import kg_runtime
 
     monkeypatch.setattr(
         cognitive,
@@ -1491,6 +1553,11 @@ def test_f06_policy_constraint_rebuild_failure_is_fail_closed(
         cognitive,
         "restore_canonical_cognitive",
         lambda _board_id, _snapshot: cognitive.RestoreResult(),
+    )
+    monkeypatch.setattr(
+        cognitive,
+        "replay_durable_cognitive",
+        lambda _board_id: {"durable_source_status": "ok", "replay_failed": []},
     )
     monkeypatch.setattr(application_kg, "signal_consolidation_worker", lambda: True)
     monkeypatch.setattr(
@@ -1527,7 +1594,7 @@ def test_f06_policy_constraint_rebuild_failure_is_fail_closed(
             node_ids=(),
         )
 
-    candidate_path = tmp_path / "kg" / "boards" / "board-1" / "graph.lbug"
+    candidate_path = tmp_path / "kg" / "boards" / "board-1" / "candidate.grafx"
     candidate_path.parent.mkdir(parents=True)
     candidate_path.write_bytes(b"failed-candidate")
     monkeypatch.setattr(
@@ -1543,11 +1610,6 @@ def test_f06_policy_constraint_rebuild_failure_is_fail_closed(
                 )
             )
         ),
-    )
-    monkeypatch.setattr(
-        kg_runtime,
-        "board_kuzu_path",
-        lambda _board_id: candidate_path,
     )
     discard = CandidateDiscardProbe(candidate_path)
     adapter = CommunityBoardRebuildIngestionAdapter(

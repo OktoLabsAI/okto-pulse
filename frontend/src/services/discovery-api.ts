@@ -30,6 +30,8 @@ export interface IntentExecutionResult {
   execution: 'real_tool' | 'semantic_fallback';
   intent_id: string;
   intent_name: string;
+  /** The tool could not complete or returned potentially incomplete results. */
+  warning?: string | null;
   /** Extra fields some executors include (e.g. `summary` for blockers). */
   [extra: string]: unknown;
 }

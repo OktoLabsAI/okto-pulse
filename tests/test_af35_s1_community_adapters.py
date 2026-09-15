@@ -107,12 +107,37 @@ def test_af35_s1_community_adapters_round_trip_real_sqlalchemy(
             before = await community_get_runtime_settings(db)
             after = await community_put_runtime_settings(
                 db,
-                {"kg_queue_alert_threshold": 1234},
+                {
+                    "kg_queue_alert_threshold": 1234,
+                    "kg_grafx_page_size": 16384,
+                    "kg_grafx_descriptor_revalidation": "strict",
+                },
             )
             row = await db.get(CommunityAppSetting, "kg_queue_alert_threshold")
-            return resource_summary, traceability, before, after, row
+            page_row = await db.get(CommunityAppSetting, "kg_grafx_page_size")
+            descriptor_row = await db.get(
+                CommunityAppSetting,
+                "kg_grafx_descriptor_revalidation",
+            )
+            return (
+                resource_summary,
+                traceability,
+                before,
+                after,
+                row,
+                page_row,
+                descriptor_row,
+            )
 
-    resource_summary, traceability, before, after, row = asyncio.run(drive())
+    (
+        resource_summary,
+        traceability,
+        before,
+        after,
+        row,
+        page_row,
+        descriptor_row,
+    ) = asyncio.run(drive())
 
     assert resource_summary["entity_id"] == spec_id
     assert {item["resource_type"] for item in resource_summary["resources"]} == {
@@ -132,7 +157,11 @@ def test_af35_s1_community_adapters_round_trip_real_sqlalchemy(
     }
     assert before["kg_queue_alert_threshold"] != 1234
     assert row is not None and row.value == "1234"
-    assert after["restart_required"] is False
+    assert page_row is not None and page_row.value == "16384"
+    assert descriptor_row is not None and descriptor_row.value == "strict"
+    assert after["desired_values"]["kg_grafx_page_size"] == 16384
+    assert after["desired_values"]["kg_grafx_descriptor_revalidation"] == "strict"
+    assert after["restart_required"] is True
 
 
 def test_af35_s1_community_adapter_imports_stay_boundary_clean() -> None:

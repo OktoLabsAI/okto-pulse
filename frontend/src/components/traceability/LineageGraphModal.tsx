@@ -32,6 +32,8 @@ import {
   X,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { lineageStatusColor } from './lineageStatusStyle';
+import { useMeasuredLineageNodes } from './useMeasuredLineageNodes';
 import { useModalStack } from '@/contexts/ModalStackContext';
 import { useDashboardApi } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboard';
@@ -54,6 +56,8 @@ const ACCESSIBLE_RELATION_LIMIT = 500;
 const MAX_ANIMATED_DEPENDENCY_EDGES = 80;
 const REVERSE_SOURCE_HANDLE = 'lineage-source-left';
 const REVERSE_TARGET_HANDLE = 'lineage-target-right';
+const FORWARD_SOURCE_HANDLE = 'lineage-source-right';
+const FORWARD_TARGET_HANDLE = 'lineage-target-left';
 
 type LineageViewMode = 'lineage' | 'dependencies';
 
@@ -194,12 +198,15 @@ function formatStatus(status?: string | null) {
   return status ? status.replace(/_/g, ' ') : 'No status';
 }
 
-function LineageNode({ data }: NodeProps<LineageFlowNode>) {
+export function LineageNode({ data }: NodeProps<LineageFlowNode>) {
   const { lineageNode: node, selected } = data;
   const style = getTypeStyle(node.entity_type);
+  const statusColor = lineageStatusColor(node.status);
 
   return (
     <div
+      data-lineage-status={node.status || 'unknown'}
+      style={{ borderColor: statusColor, borderLeftWidth: 6 }}
       onDoubleClick={(event) => {
         event.stopPropagation();
         data.onOpenDetails(node);
@@ -212,6 +219,7 @@ function LineageNode({ data }: NodeProps<LineageFlowNode>) {
       ].join(' ')}
     >
       <Handle
+        id={FORWARD_TARGET_HANDLE}
         type="target"
         position={Position.Left}
         className="!h-2 !w-2 !border !border-gray-300 !bg-gray-700 dark:!border-gray-600"
@@ -253,11 +261,12 @@ function LineageNode({ data }: NodeProps<LineageFlowNode>) {
             className={[
               'inline-flex min-w-0 max-w-full items-center gap-1 rounded px-1.5 py-0.5 text-[10px]',
               'font-semibold uppercase tracking-normal',
-              style.badge,
+              'text-gray-900 dark:text-gray-100',
             ].join(' ')}
             title={formatStatus(node.status)}
+            style={{ backgroundColor: `${statusColor}30`, border: `1px solid ${statusColor}` }}
           >
-            <CircleDot size={9} className="shrink-0" />
+            <CircleDot size={9} className="shrink-0" style={{ color: statusColor }} />
             <span className="truncate">{formatStatus(node.status)}</span>
           </span>
         </div>
@@ -269,6 +278,7 @@ function LineageNode({ data }: NodeProps<LineageFlowNode>) {
         className="!h-2 !w-2 !border !border-gray-300 !bg-gray-700 dark:!border-gray-600"
       />
       <Handle
+        id={FORWARD_SOURCE_HANDLE}
         type="source"
         position={Position.Right}
         className="!h-2 !w-2 !border !border-gray-300 !bg-gray-700 dark:!border-gray-600"
@@ -633,6 +643,8 @@ function layoutDependencyEdges(
       id: edge.id,
       source: edge.source,
       target: edge.target,
+      sourceHandle: FORWARD_SOURCE_HANDLE,
+      targetHandle: FORWARD_TARGET_HANDLE,
       type: 'smoothstep',
       label: relationshipLabels.precedes,
       animated: animationAllowed && selectedPath && Boolean(selectedNodeId),
@@ -840,7 +852,7 @@ function layoutNodes(
   });
 }
 
-function layoutEdges(
+export function layoutEdges(
   graph: LineageGraphResponse,
   selectedNodeId: string | null,
   positionStages?: ReadonlyMap<string, number>,
@@ -862,8 +874,8 @@ function layoutEdges(
       id: edge.id,
       source: edge.source,
       target: edge.target,
-      sourceHandle: reversePath ? REVERSE_SOURCE_HANDLE : undefined,
-      targetHandle: reversePath ? REVERSE_TARGET_HANDLE : undefined,
+      sourceHandle: reversePath ? REVERSE_SOURCE_HANDLE : FORWARD_SOURCE_HANDLE,
+      targetHandle: reversePath ? REVERSE_TARGET_HANDLE : FORWARD_TARGET_HANDLE,
       type: 'smoothstep',
       label: relationshipLabels[edge.relationship] || edge.relationship,
       animated: selectedPath && Boolean(selectedNodeId),
@@ -888,9 +900,9 @@ function layoutEdges(
   });
 }
 
-function miniMapNodeColor(node: Node) {
+export function miniMapNodeColor(node: Node) {
   const lineageNode = (node.data as LineageFlowNodeData).lineageNode;
-  return getTypeStyle(lineageNode?.entity_type || 'task').miniMap;
+  return lineageStatusColor(lineageNode?.status);
 }
 
 function canOpenDetails(node: LineageGraphNode | null) {
@@ -1109,7 +1121,7 @@ export function LineageGraphModal({ boardId }: Props) {
     setSelectedNodeId(selected?.id || null);
   }, [activeGraph, request, viewMode]);
 
-  const nodes = useMemo(
+  const nodeLayout = useMemo(
     () => (activeGraph
       ? layoutNodes(
           activeGraph,
@@ -1127,6 +1139,7 @@ export function LineageGraphModal({ boardId }: Props) {
       openNodeDetails,
     ],
   );
+  const { nodes, onNodesChange } = useMeasuredLineageNodes(nodeLayout);
   const edges = useMemo(
     () => {
       if (!activeGraph) return [];
@@ -1469,10 +1482,22 @@ export function LineageGraphModal({ boardId }: Props) {
                   )}
                 </ul>
               )}
+              <details className="absolute bottom-4 left-16 z-10 max-w-[70%] rounded-lg border border-gray-300 bg-white/95 p-2 text-xs text-gray-900 shadow-sm dark:border-gray-700 dark:bg-gray-900/95 dark:text-gray-100">
+                <summary className="cursor-pointer">Status colors</summary>
+                <div className="mt-2 flex max-h-40 flex-wrap gap-3 overflow-auto" aria-label="Node status legend">
+                  {Array.from(new Set(activeGraph.nodes.map((node) => node.status || ''))).sort().map((status) => (
+                    <span key={status} className="inline-flex items-center gap-1.5">
+                      <span className="h-3 w-3 rounded-sm" aria-hidden="true" style={{ backgroundColor: lineageStatusColor(status) }} />
+                      {formatStatus(status)}
+                    </span>
+                  ))}
+                </div>
+              </details>
               <ReactFlow
                 key={`${request.entityType}:${request.entityId}:${viewMode}:${activeGraphRevision}`}
                 className="lineage-flow"
                 nodes={nodes}
+                onNodesChange={onNodesChange}
                 edges={edges}
                 nodeTypes={nodeTypes}
                 fitView

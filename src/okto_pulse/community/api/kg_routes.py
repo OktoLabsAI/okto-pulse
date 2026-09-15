@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from time import perf_counter
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
 
@@ -21,6 +23,14 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from okto_pulse.core.kg import cypher_templates as tpl
+from okto_pulse.core.kg.interfaces.graph_errors import (
+    GraphCapabilityUnavailable,
+    GraphCorruption,
+    GraphError,
+    GraphInvalidQuery,
+    GraphUnavailable,
+    graph_memory_pressure_retry_after_seconds,
+)
 from okto_pulse.core.kg.kg_service import (
     KGToolError,
     get_kg_service,
@@ -49,11 +59,13 @@ from okto_pulse.core.application.use_cases.authorize_operation import (
     AuthorizeOperationCommand,
     AuthorizeOperationUseCase,
 )
+from okto_pulse.core.application.use_cases.kg_node_source import KGNodeSourceResult, ResolveKGNodeSourceUseCase
 from okto_pulse.core.application.use_cases.code_traceability_kg_access import (
     EvaluateCodeTraceabilityKGReadAccessUseCase,
     require_code_traceability_safe_arbitrary_query,
 )
 from okto_pulse.core.kg.cursor_codec import decode_cursor, encode_cursor
+from okto_pulse.core.kg.blocking_io import run_blocking_graph_io
 from okto_pulse.community.api.auth_deps import get_current_user, get_realm_id, require_user
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.repositories import PulseUnitOfWork
@@ -89,6 +101,64 @@ router = APIRouter(prefix="/kg", tags=["knowledge-graph"])
 __all__ = ["decode_cursor", "encode_cursor", "router"]
 
 logger = logging.getLogger("okto_pulse.api.kg_routes")
+
+
+class _InvalidSubgraphCursor(ValueError):
+    """Carry only paged-node cursor failures across the blocking I/O boundary."""
+
+
+def _record_read_phase(board_id: str, operation: str, phase: str, started: float) -> float:
+    """Report elapsed work without logging queries, row content or credentials."""
+    finished = perf_counter()
+    logger.info(
+        "kg.read.phase board=%s operation=%s phase=%s duration_ms=%.1f",
+        board_id, operation, phase, (finished - started) * 1000,
+    )
+    return finished
+
+
+def _relationship_table_name(
+    executor: Any,
+    board_id: str | None,
+    logical_type: str,
+    from_type: str,
+    to_type: str,
+) -> str:
+    """Return the backend table for one exact logical endpoint pair.
+
+    Community's Grafx layout uses one physical relationship table per endpoint
+    pair, while Ladybug uses the logical name.  Fakes and older providers keep
+    the historical logical-name behavior.
+    """
+
+    resolver = getattr(executor, "relationship_table_name", None)
+    if not callable(resolver):
+        return logical_type
+    if board_id is None:
+        return str(resolver(logical_type, from_type, to_type))
+    return str(resolver(board_id, logical_type, from_type, to_type))
+
+
+def _relationship_table_names(
+    executor: Any,
+    board_id: str,
+    layouts: Sequence[tuple[str, str, str]],
+) -> dict[tuple[str, str, str], str]:
+    """Optionally resolve a complete group; leave scalar diagnostics on refusal."""
+    resolver = getattr(executor, "relationship_table_names", None)
+    if not layouts or not callable(resolver):
+        return {}
+    try:
+        names = list(resolver(board_id, layouts))
+        if len(names) != len(layouts) or any(not isinstance(name, str) or not name for name in names):
+            return {}
+        return dict(zip(layouts, names, strict=True))
+    except Exception:
+        # Never use a partial prefix or guess logical names after a route error.
+        # The original scalar resolver reports each individual refusal below.
+        return {}
+
+
 def _kg_actor(
     *,
     user_id: str,
@@ -293,6 +363,22 @@ def _handle_kg_error(e: KGToolError) -> JSONResponse:
     return _problem(status, public_code, e.message, public_code)
 
 
+def _graph_problem(exc: GraphError) -> JSONResponse:
+    """Translate only failures already mapped through neutral provider contracts."""
+    status = 500
+    if isinstance(exc, GraphInvalidQuery):
+        status = 400
+    elif isinstance(exc, (GraphUnavailable, GraphCapabilityUnavailable, GraphCorruption)):
+        status = 503
+    retry_after = graph_memory_pressure_retry_after_seconds(exc)
+    if retry_after is not None:
+        status = 503
+    response = _problem(status, exc.code, str(exc), exc.code)
+    if retry_after is not None:
+        response.headers["Retry-After"] = str(retry_after)
+    return response
+
+
 # ---------------------------------------------------------------------------
 # ETag helpers
 # ---------------------------------------------------------------------------
@@ -336,24 +422,31 @@ async def list_nodes(
     )
     svc = get_kg_service()
     try:
-        layer = normalize_graph_layer(graph_layer)
-        rows = svc.get_all_nodes(
-            board_id,
-            min_confidence=min_confidence,
-            min_relevance=min_relevance,
-            max_rows=limit,
-            cursor=cursor or None,
-            node_type=type or None,
-            graph_layer=layer,
-            **ct_visibility_kwargs,
-        )
-        total_hint = svc.count_all_nodes(
-            board_id,
-            min_confidence=min_confidence,
-            min_relevance=min_relevance,
-            node_type=type or None,
-            graph_layer=layer,
-            **ct_visibility_kwargs,
+        def _load_node_page() -> tuple[str, list[dict[str, Any]], int]:
+            layer = normalize_graph_layer(graph_layer)
+            rows = svc.get_all_nodes(
+                board_id,
+                min_confidence=min_confidence,
+                min_relevance=min_relevance,
+                max_rows=limit,
+                cursor=cursor or None,
+                node_type=type or None,
+                graph_layer=layer,
+                **ct_visibility_kwargs,
+            )
+            total_hint = svc.count_all_nodes(
+                board_id,
+                min_confidence=min_confidence,
+                min_relevance=min_relevance,
+                node_type=type or None,
+                graph_layer=layer,
+                **ct_visibility_kwargs,
+            )
+            return layer, rows, total_hint
+
+        layer, rows, total_hint = await run_blocking_graph_io(
+            _load_node_page,
+            task_name=f"community.kg.nodes.read:{board_id}",
         )
         return {
             "nodes": rows,
@@ -371,6 +464,8 @@ async def list_nodes(
         )
     except KGToolError as e:
         return _handle_kg_error(e)
+    except GraphError as exc:
+        return _graph_problem(exc)
 
 
 @router.get("/boards/{board_id}/nodes/{node_id}")
@@ -391,10 +486,13 @@ async def get_node_detail(
     )
     svc = get_kg_service()
     try:
-        result = svc.get_node_detail(
-            board_id,
-            node_id,
-            **ct_visibility_kwargs,
+        result = await run_blocking_graph_io(
+            lambda: svc.get_node_detail(
+                board_id,
+                node_id,
+                **ct_visibility_kwargs,
+            ),
+            task_name=f"community.kg.node_detail.read:{board_id}",
         )
         if result is None:
             return _problem(404, "Not Found", f"Node {node_id} not found")
@@ -403,6 +501,36 @@ async def get_node_detail(
         if e.code == "not_found":
             return _problem(404, "Not Found", f"Node {node_id} not found")
         return _handle_kg_error(e)
+    except GraphError as exc:
+        return _graph_problem(exc)
+
+
+@router.get("/boards/{board_id}/nodes/{node_id}/source", response_model=KGNodeSourceResult)
+async def get_node_source(
+    board_id: str,
+    node_id: str,
+    actor: ActorContext = Depends(require_kg_board_actor),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Resolve one selected node's declared source, without expanding the graph.
+
+    Reuses the detail read's CT visibility gate, then separately authorizes the
+    owning artifact. No caller-supplied source ref can bypass that node read.
+    """
+    try:
+        node = await get_node_detail(board_id, node_id, actor=actor, uow=uow)
+        if isinstance(node, Response):
+            return node
+        return await ResolveKGNodeSourceUseCase().execute(
+            board_id=board_id,
+            source_artifact_ref=node.get("source_artifact_ref"),
+            actor=actor,
+            uow=uow,
+        )
+    except EntityNotFoundError:
+        return _problem(404, "Not Found", "Source is unavailable")
+    except GraphError as exc:
+        return _graph_problem(exc)
 
 
 @router.get("/boards/{board_id}/graph")
@@ -452,54 +580,75 @@ async def get_subgraph(
 
     svc = get_kg_service()
     try:
+        phase_started = perf_counter()
         ct_access = await _code_traceability_kg_read_access(
             actor=actor,
             board_id=board_id,
             uow=uow,
         )
+        dispatched = _record_read_phase(board_id, "subgraph", "authority", phase_started)
         ct_visibility_kwargs = (
             {} if ct_access.allowed else {"include_code_traceability": False}
         )
-        layer = normalize_graph_layer(graph_layer)
-        if center:
-            # Spec 849d6292 (FR6/AC5): the centered branch MUST scope to the
-            # requested layer too — default canonical never leaks working.
-            rows = svc.get_related_context(
-                board_id,
-                center,
-                max_rows=limit,
-                graph_layer=layer,
-                **ct_visibility_kwargs,
-            )
-            next_cursor: str | None = None
-        else:
-            try:
-                rows = svc.get_all_nodes(
+        def _load_subgraph() -> tuple[
+            str,
+            list[dict[str, Any]],
+            str | None,
+            list[dict[str, Any]],
+            dict[str, Any],
+        ]:
+            started = _record_read_phase(board_id, "subgraph", "dispatch", dispatched)
+            layer = normalize_graph_layer(graph_layer)
+            if center:
+                # Spec 849d6292 (FR6/AC5): the centered branch MUST scope to the
+                # requested layer too — default canonical never leaks working.
+                rows = svc.get_related_context(
                     board_id,
-                    min_confidence=0.0,
-                    min_relevance=min_relevance,
+                    center,
                     max_rows=limit,
-                    cursor=cursor or None,
-                    node_type=type or None,
                     graph_layer=layer,
                     **ct_visibility_kwargs,
                 )
-            except ValueError as exc:
-                return _problem(
-                    410,
-                    "Gone",
-                    f"cursor is invalid or corrupted: {exc}",
-                    "invalid_cursor",
-                )
-            next_cursor = _next_cursor_for(rows, limit)
+                next_cursor: str | None = None
+            else:
+                try:
+                    rows = svc.get_all_nodes(
+                        board_id,
+                        min_confidence=0.0,
+                        min_relevance=min_relevance,
+                        max_rows=limit,
+                        cursor=cursor or None,
+                        node_type=type or None,
+                        graph_layer=layer,
+                        **ct_visibility_kwargs,
+                    )
+                except ValueError as exc:
+                    raise _InvalidSubgraphCursor(str(exc)) from exc
+                next_cursor = _next_cursor_for(rows, limit)
 
-        node_ids = {_node_id(r) for r in rows if _node_id(r)}
-        edges, edge_metadata = _fetch_edges_for_nodes(
-            board_id,
-            node_ids,
-            **ct_visibility_kwargs,
+            started = _record_read_phase(board_id, "subgraph", "nodes", started)
+
+            node_ids = {_node_id(r) for r in rows if _node_id(r)}
+            node_types_by_id = {
+                str(row["id"]): str(row["node_type"])
+                for row in rows
+                if isinstance(row, dict) and row.get("id") and row.get("node_type")
+            }
+            edges, edge_metadata = _fetch_edges_for_nodes(
+                board_id,
+                node_ids,
+                node_types_by_id=node_types_by_id,
+                **ct_visibility_kwargs,
+            )
+            _record_read_phase(board_id, "subgraph", "edges", started)
+            return layer, rows, next_cursor, edges, edge_metadata
+
+        layer, rows, next_cursor, edges, edge_metadata = (
+            await run_blocking_graph_io(
+                _load_subgraph,
+                task_name=f"community.kg.subgraph.read:{board_id}",
+            )
         )
-
         return {
             "nodes": rows,
             "edges": edges,
@@ -512,8 +661,17 @@ async def get_subgraph(
                 **edge_metadata,
             },
         }
+    except _InvalidSubgraphCursor as exc:
+        return _problem(
+            410,
+            "Gone",
+            f"cursor is invalid or corrupted: {exc}",
+            "invalid_cursor",
+        )
     except KGToolError as e:
         return _handle_kg_error(e)
+    except GraphError as exc:
+        return _graph_problem(exc)
 
 
 def _node_id(row: Any) -> str:
@@ -546,6 +704,7 @@ def _fetch_edges_for_nodes(
     board_id: str,
     node_ids: set[str],
     *,
+    node_types_by_id: dict[str, str] | None = None,
     include_code_traceability: bool = True,
 ) -> tuple[list[dict], dict[str, Any]]:
     """Fetch all edges between the given node IDs from the board graph.
@@ -556,7 +715,9 @@ def _fetch_edges_for_nodes(
     """
     diagnostics: dict[str, Any] = {
         "edge_read_status": "ok",
+        "edge_tables_considered": 0,
         "edge_tables_scanned": 0,
+        "edge_tables_skipped_by_page_type": 0,
         "edge_tables_failed": 0,
         "edge_errors": [],
     }
@@ -567,47 +728,170 @@ def _fetch_edges_for_nodes(
         rel_pairs = _relation_pairs(REL_TYPES, MULTI_REL_TYPES)
         cypher_executor = resolve_cypher_executor()
 
+        ids_by_type: dict[str, set[str]] = {}
+        known_ids: set[str] = set()
+        if node_types_by_id is not None:
+            for node_id in node_ids:
+                node_type = node_types_by_id.get(node_id)
+                if node_type:
+                    ids_by_type.setdefault(node_type, set()).add(node_id)
+                    known_ids.add(node_id)
+        # A provider that omits the type must retain the old all-layout behaviour. Typed rows,
+        # however, let Grafx avoid probing every one of the 500 page ids against every endpoint
+        # table: each relationship statement receives only ids that can inhabit that endpoint.
+        untyped_ids = node_ids - known_ids
+
+        mapped_names = _relationship_table_names(cypher_executor, board_id, [
+            pair for pair in rel_pairs
+            if not (include_code_traceability and node_types_by_id is not None
+                    and not (ids_by_type.get(pair[1], set()) | untyped_ids)
+                    and not (ids_by_type.get(pair[2], set()) | untyped_ids))
+        ])
+
         edges = []
         seen: set[tuple[str, str, str]] = set()  # (rel, src, tgt) dedup
+        pending: list[tuple[str, str, str, str, dict[str, Any] | None]] = []
         for rel_name, from_type, to_type in rel_pairs:
-            diagnostics["edge_tables_scanned"] += 1
+            diagnostics["edge_tables_considered"] += 1
             try:
-                result = cypher_executor.execute_read_only(
+                from_node_ids = ids_by_type.get(from_type, set()) | untyped_ids
+                to_node_ids = ids_by_type.get(to_type, set()) | untyped_ids
+                if (
+                    include_code_traceability
+                    and node_types_by_id is not None
+                    and not from_node_ids
+                    and not to_node_ids
+                ):
+                    diagnostics["edge_tables_skipped_by_page_type"] += 1
+                    continue
+                diagnostics["edge_tables_scanned"] += 1
+                physical_rel = mapped_names.get((rel_name, from_type, to_type)) or _relationship_table_name(
+                    cypher_executor,
                     board_id,
-                    f"MATCH (a:{from_type})-[r:{rel_name}]->(b:{to_type}) "
-                    f"WHERE {tpl.code_traceability_visibility_clause('a')} "
-                    f"AND {tpl.code_traceability_visibility_clause('b')} "
-                    f"RETURN a.id, b.id, r.confidence "
-                    f"LIMIT 5000",
-                    {"include_code_traceability": include_code_traceability},
-                    max_rows=5000,
+                    rel_name,
+                    from_type,
+                    to_type,
                 )
-                for row in result.get("rows", []):
-                    src, tgt = row[0], row[1]
-                    key = (rel_name, src, tgt)
-                    if key in seen:
-                        continue
-                    # Pelo menos UMA ponta na página (era AND): com a projeção
-                    # paginada, exigir ambas as pontas escondia quase toda edge.
-                    # O cliente acumula as edges e materializa cada uma quando a
-                    # outra ponta chega nas páginas seguintes.
-                    if src in node_ids or tgt in node_ids:
-                        seen.add(key)
-                        edges.append({
-                            "id": f"{src}-{rel_name}-{tgt}",
-                            "source": src,
-                            "target": tgt,
-                            "edge_type": rel_name,
-                            "confidence": row[2] if len(row) > 2 else 0.7,
-                        })
+                visibility = ""
+                params: dict[str, Any] | None = None
+                if include_code_traceability:
+                    # Grafx 0.0.3 recognises this exact endpoint union and resolves the page
+                    # through its PK and relationship-endpoint indexes. Other providers retain
+                    # ordinary Cypher semantics, and the Python membership check below remains
+                    # the final defence against a provider returning unrelated rows.
+                    visibility = (
+                        " WHERE (a.id IN $from_node_ids OR b.id IN $to_node_ids)"
+                    )
+                    params = {
+                        "from_node_ids": tuple(sorted(from_node_ids)),
+                        "to_node_ids": tuple(sorted(to_node_ids)),
+                    }
+                else:
+                    visibility = (
+                        f" WHERE {tpl.code_traceability_visibility_clause('a')}"
+                        f" AND {tpl.code_traceability_visibility_clause('b')}"
+                    )
+                    params = {"include_code_traceability": False}
+                query = (
+                    f"MATCH (a:{from_type})-[r:{physical_rel}]->(b:{to_type})"
+                    f"{visibility} "
+                    "RETURN a.id, b.id, r.confidence LIMIT 5000"
+                )
+                pending.append((rel_name, from_type, to_type, query, params))
             except Exception as exc:
                 diagnostics["edge_tables_failed"] += 1
-                diagnostics["edge_errors"].append({
-                    "relationship": rel_name,
+                diagnostics["edge_errors"].append(
+                    {
+                        "relationship": rel_name,
+                        "from_type": from_type,
+                        "to_type": to_type,
+                        "error": str(exc),
+                    }
+                )
+
+        def consume(
+            relation: str,
+            result: dict[str, Any],
+        ) -> None:
+            for row in result.get("rows", []):
+                src, tgt = row[0], row[1]
+                key = (relation, src, tgt)
+                if key in seen:
+                    continue
+                # Pelo menos UMA ponta na página (era AND): com a projeção
+                # paginada, exigir ambas as pontas escondia quase toda edge.
+                # O cliente acumula as edges e materializa cada uma quando a
+                # outra ponta chega nas páginas seguintes.
+                if src in node_ids or tgt in node_ids:
+                    seen.add(key)
+                    edges.append(
+                        {
+                            "id": f"{src}-{relation}-{tgt}",
+                            "source": src,
+                            "target": tgt,
+                            "edge_type": relation,
+                            "confidence": row[2] if len(row) > 2 else 0.7,
+                        }
+                    )
+
+        def record_failure(
+            relation: str,
+            from_type: str,
+            to_type: str,
+            exc: Exception,
+        ) -> None:
+            diagnostics["edge_tables_failed"] += 1
+            diagnostics["edge_errors"].append(
+                {
+                    "relationship": relation,
                     "from_type": from_type,
                     "to_type": to_type,
                     "error": str(exc),
-                })
+                }
+            )
+
+        # Grafx can pin all relationship reads to one immutable snapshot. If the
+        # optional batch fails, retry table-by-table so the diagnostic contract still
+        # identifies the exact physical layout failure instead of hiding it.
+        batched = getattr(cypher_executor, "execute_read_only_batch", None)
+        batch_results: list[dict[str, Any]] | None = None
+        if pending and callable(batched):
+            try:
+                batch_results = list(
+                    batched(
+                        board_id,
+                        [(query, params, 5000) for *_, query, params in pending],
+                    )
+                )
+                if len(batch_results) != len(pending):
+                    raise RuntimeError(
+                        "read-only batch returned an incomplete result set"
+                    )
+            except Exception:
+                batch_results = None
+
+        if batch_results is not None:
+            for (rel_name, from_type, to_type, _query, _params), result in zip(
+                pending,
+                batch_results,
+                strict=True,
+            ):
+                try:
+                    consume(rel_name, result)
+                except Exception as exc:
+                    record_failure(rel_name, from_type, to_type, exc)
+        else:
+            for rel_name, from_type, to_type, query, params in pending:
+                try:
+                    result = cypher_executor.execute_read_only(
+                        board_id,
+                        query,
+                        params,
+                        max_rows=5000,
+                    )
+                    consume(rel_name, result)
+                except Exception as exc:
+                    record_failure(rel_name, from_type, to_type, exc)
         if diagnostics["edge_tables_failed"]:
             diagnostics["edge_read_status"] = "partial_failure"
         diagnostics["edges_returned"] = len(edges)
@@ -637,7 +921,67 @@ def _relation_pairs(
     for rel_name, pairs in multi_rel_types:
         for from_type, to_type in pairs:
             rel_pairs.append((rel_name, from_type, to_type))
-    return rel_pairs
+    # The same layout may appear in both declarations (for example supersedes
+    # Decision -> Decision). Visit it once, retaining first-encounter order and
+    # every distinct logical type/direction/endpoint pair. Duplicate declarations
+    # are not parallel edges and must not inflate census or verification totals.
+    return list(dict.fromkeys(rel_pairs))
+
+
+def _count_nodes_by_type(
+    board_id: str,
+    node_types: Sequence[str],
+    service: Any,
+    *,
+    min_relevance: float,
+    graph_layer: str,
+    include_code_traceability: bool = True,
+) -> dict[str, int]:
+    """Count every declared node type in one scan, with the old service path as fallback."""
+
+    expected = tuple(str(node_type) for node_type in node_types)
+    try:
+        executor = resolve_cypher_executor()
+        result = executor.execute_read_only(
+            board_id,
+            "MATCH (n) "
+            "WHERE n.source_confidence >= $min_confidence "
+            "AND n.relevance_score >= $min_relevance "
+            f"AND {tpl.layer_filter_clause('n')} "
+            f"AND {tpl.active_read_filter_clause('n')} "
+            f"AND {tpl.code_traceability_visibility_clause('n')} "
+            "RETURN label(n) AS node_type, count(n) AS c",
+            {
+                "min_confidence": 0.0,
+                "min_relevance": min_relevance,
+                "graph_layer": graph_layer,
+                "include_code_traceability": include_code_traceability,
+            },
+            max_rows=len(expected) + 1,
+        )
+        counts = dict.fromkeys(expected, 0)
+        for row in result.get("rows", []):
+            if not isinstance(row, (list, tuple)) or len(row) < 2:
+                raise ValueError("grouped node count returned a malformed row")
+            node_type = str(row[0])
+            count = int(row[1])
+            if count < 0:
+                raise ValueError("grouped node count returned a negative count")
+            if node_type in counts:
+                counts[node_type] += count
+        return counts
+    except Exception:
+        return {
+            node_type: service.count_all_nodes(
+                board_id,
+                min_confidence=0.0,
+                min_relevance=min_relevance,
+                node_type=node_type,
+                graph_layer=graph_layer,
+                include_code_traceability=include_code_traceability,
+            )
+            for node_type in expected
+        }
 
 
 def _count_edges_by_type(
@@ -653,15 +997,21 @@ def _count_edges_by_type(
     }
     try:
         from okto_pulse.core.kg.schema_contract import MULTI_REL_TYPES, REL_TYPES
-        rel_names = sorted({
-            rel_name
-            for rel_name, *_ in _relation_pairs(REL_TYPES, MULTI_REL_TYPES)
-        })
+        rel_pairs = _relation_pairs(REL_TYPES, MULTI_REL_TYPES)
         cypher_executor = resolve_cypher_executor()
         edge_counts: dict[str, int] = {}
-        for rel_name in rel_names:
+        pending: list[tuple[str, str, dict[str, Any] | None]] = []
+        mapped_names = _relationship_table_names(cypher_executor, board_id, rel_pairs)
+        for rel_name, from_type, to_type in rel_pairs:
             diagnostics["edge_count_tables_scanned"] += 1
             try:
+                physical_rel = mapped_names.get((rel_name, from_type, to_type)) or _relationship_table_name(
+                    cypher_executor,
+                    board_id,
+                    rel_name,
+                    from_type,
+                    to_type,
+                )
                 visibility = ""
                 params: dict[str, Any] | None = None
                 if not include_code_traceability:
@@ -671,33 +1021,78 @@ def _count_edges_by_type(
                     )
                     params = {"include_code_traceability": False}
                 edge_count_query = (
-                    f"MATCH (a)-[r:{rel_name}]->(b){visibility} "
+                    f"MATCH (a:{from_type})-[r:{physical_rel}]->(b:{to_type})"
+                    f"{visibility} "
                     "RETURN count(r) AS c"
                 )
-                result = (
-                    cypher_executor.execute_read_only(
-                        board_id,
-                        edge_count_query,
-                        max_rows=1,
-                    )
-                    if params is None
-                    else cypher_executor.execute_read_only(
-                        board_id,
-                        edge_count_query,
-                        params,
-                        max_rows=1,
-                    )
-                )
-                rows = result.get("rows", [])
-                count = int(rows[0][0]) if rows else 0
-                if count:
-                    edge_counts[rel_name] = count
+                pending.append((rel_name, edge_count_query, params))
             except Exception as exc:
                 diagnostics["edge_count_tables_failed"] += 1
                 diagnostics["edge_count_errors"].append({
                     "relationship": rel_name,
                     "error": str(exc),
                 })
+
+        def consume(rel_name: str, result: dict[str, Any]) -> None:
+            rows = result.get("rows", [])
+            count = int(rows[0][0]) if rows else 0
+            if count < 0:
+                raise ValueError("relationship count returned a negative value")
+            if count:
+                edge_counts[rel_name] = edge_counts.get(rel_name, 0) + count
+
+        def record_failure(rel_name: str, exc: Exception) -> None:
+            diagnostics["edge_count_tables_failed"] += 1
+            diagnostics["edge_count_errors"].append({
+                "relationship": rel_name,
+                "error": str(exc),
+            })
+
+        batched = getattr(cypher_executor, "execute_read_only_batch", None)
+        batch_results: list[dict[str, Any]] | None = None
+        if pending and callable(batched):
+            try:
+                batch_results = list(
+                    batched(
+                        board_id,
+                        [(query, params, 1) for _rel, query, params in pending],
+                    )
+                )
+                if len(batch_results) != len(pending):
+                    raise RuntimeError("count batch returned an incomplete result set")
+            except Exception:
+                batch_results = None
+
+        if batch_results is not None:
+            for (rel_name, _query, _params), result in zip(
+                pending,
+                batch_results,
+                strict=True,
+            ):
+                try:
+                    consume(rel_name, result)
+                except Exception as exc:
+                    record_failure(rel_name, exc)
+        else:
+            for rel_name, query, params in pending:
+                try:
+                    result = (
+                        cypher_executor.execute_read_only(
+                            board_id,
+                            query,
+                            max_rows=1,
+                        )
+                        if params is None
+                        else cypher_executor.execute_read_only(
+                            board_id,
+                            query,
+                            params,
+                            max_rows=1,
+                        )
+                    )
+                    consume(rel_name, result)
+                except Exception as exc:
+                    record_failure(rel_name, exc)
         if diagnostics["edge_count_tables_failed"]:
             diagnostics["edge_count_status"] = "partial_failure"
         return edge_counts, diagnostics
@@ -738,12 +1133,20 @@ async def find_similar(
         return _problem(400, "Bad Request", "topic query parameter is required")
     svc = get_kg_service()
     try:
-        results = svc.find_similar_decisions(
-            board_id, topic, top_k=top_k, min_similarity=min_similarity,
+        results = await run_blocking_graph_io(
+            lambda: svc.find_similar_decisions(
+                board_id,
+                topic,
+                top_k=top_k,
+                min_similarity=min_similarity,
+            ),
+            task_name=f"community.kg.similar.read:{board_id}",
         )
         return {"results": results, "total": len(results)}
     except KGToolError as e:
         return _handle_kg_error(e)
+    except GraphError as exc:
+        return _graph_problem(exc)
 
 
 @router.get("/boards/{board_id}/supersedence/{decision_id}")
@@ -764,9 +1167,14 @@ async def get_supersedence(
     )
     svc = get_kg_service()
     try:
-        return svc.get_supersedence_chain(board_id, decision_id)
+        return await run_blocking_graph_io(
+            lambda: svc.get_supersedence_chain(board_id, decision_id),
+            task_name=f"community.kg.supersedence.read:{board_id}",
+        )
     except KGToolError as e:
         return _handle_kg_error(e)
+    except GraphError as exc:
+        return _graph_problem(exc)
 
 
 @router.get("/boards/{board_id}/contradictions")
@@ -788,12 +1196,19 @@ async def find_contradictions(
     )
     svc = get_kg_service()
     try:
-        results = svc.find_contradictions(
-            board_id, node_id=node_id or None, max_rows=limit,
+        results = await run_blocking_graph_io(
+            lambda: svc.find_contradictions(
+                board_id,
+                node_id=node_id or None,
+                max_rows=limit,
+            ),
+            task_name=f"community.kg.contradictions.read:{board_id}",
         )
         return {"contradictions": results, "total": len(results)}
     except KGToolError as e:
         return _handle_kg_error(e)
+    except GraphError as exc:
+        return _graph_problem(exc)
 
 
 @router.get("/boards/{board_id}/stats")
@@ -805,65 +1220,79 @@ async def get_stats(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Board KG stats: counts, confidence, pending."""
+    phase_started = perf_counter()
     ct_access = await _code_traceability_kg_read_access(
         actor=actor,
         board_id=board_id,
         uow=uow,
     )
+    dispatched = _record_read_phase(board_id, "stats", "authority", phase_started)
     ct_visibility_kwargs = (
         {} if ct_access.allowed else {"include_code_traceability": False}
     )
     svc = get_kg_service()
     try:
-        layer = normalize_graph_layer(graph_layer)
-        ver = svc.get_schema_version(board_id)
-        all_nodes = svc.get_all_nodes(
-            board_id,
-            min_confidence=0.0,
-            min_relevance=min_relevance,
-            max_rows=1000,
-            graph_layer=layer,
-            **ct_visibility_kwargs,
-        )
-        from okto_pulse.core.kg.schema_contract import NODE_TYPES
-
-        node_counts: dict[str, int] = {
-            node_type: svc.count_all_nodes(
+        def _load_stats() -> dict[str, Any]:
+            started = _record_read_phase(board_id, "stats", "dispatch", dispatched)
+            layer = normalize_graph_layer(graph_layer)
+            ver = svc.get_schema_version(board_id)
+            started = _record_read_phase(board_id, "stats", "schema", started)
+            all_nodes = svc.get_all_nodes(
                 board_id,
                 min_confidence=0.0,
                 min_relevance=min_relevance,
-                node_type=node_type,
+                max_rows=1000,
                 graph_layer=layer,
                 **ct_visibility_kwargs,
             )
-            for node_type in NODE_TYPES
-        }
-        total_conf = 0.0
-        total_relevance = 0.0
-        for n in all_nodes:
-            total_conf += float(n.get("source_confidence") or 0.0)
-            total_relevance += float(n.get("relevance_score") or 0.0)
-        edge_counts, edge_metadata = _count_edges_by_type(
-            board_id,
-            **ct_visibility_kwargs,
+            started = _record_read_phase(board_id, "stats", "nodes", started)
+            from okto_pulse.core.kg.schema_contract import NODE_TYPES
+
+            node_counts = _count_nodes_by_type(
+                board_id,
+                NODE_TYPES,
+                svc,
+                min_relevance=min_relevance,
+                graph_layer=layer,
+                **ct_visibility_kwargs,
+            )
+            started = _record_read_phase(board_id, "stats", "node_counts", started)
+            total_conf = 0.0
+            total_relevance = 0.0
+            for node in all_nodes:
+                total_conf += float(node.get("source_confidence") or 0.0)
+                total_relevance += float(node.get("relevance_score") or 0.0)
+            edge_counts, edge_metadata = _count_edges_by_type(
+                board_id,
+                **ct_visibility_kwargs,
+            )
+            _record_read_phase(board_id, "stats", "edge_counts", started)
+            return {
+                "schema_version": ver,
+                "graph_schema_version": ver,
+                "node_counts_by_type": node_counts,
+                "edge_counts_by_type": edge_counts,
+                "avg_confidence": (
+                    round(total_conf / len(all_nodes), 2) if all_nodes else 0.0
+                ),
+                "avg_relevance": (
+                    round(total_relevance / len(all_nodes), 4) if all_nodes else 0.0
+                ),
+                "pending_queue_count": 0,
+                "last_consolidation_at": None,
+                "min_relevance": min_relevance,
+                "graph_layer": layer,
+                **edge_metadata,
+            }
+
+        return await run_blocking_graph_io(
+            _load_stats,
+            task_name=f"community.kg.stats.read:{board_id}",
         )
-        return {
-            "schema_version": ver,
-            "graph_schema_version": ver,
-            "node_counts_by_type": node_counts,
-            "edge_counts_by_type": edge_counts,
-            "avg_confidence": round(total_conf / len(all_nodes), 2) if all_nodes else 0.0,
-            "avg_relevance": (
-                round(total_relevance / len(all_nodes), 4) if all_nodes else 0.0
-            ),
-            "pending_queue_count": 0,
-            "last_consolidation_at": None,
-            "min_relevance": min_relevance,
-            "graph_layer": layer,
-            **edge_metadata,
-        }
     except KGToolError as e:
         return _handle_kg_error(e)
+    except GraphError as exc:
+        return _graph_problem(exc)
 
 
 @router.get("/boards/{board_id}/metrics")
@@ -917,74 +1346,84 @@ async def get_kg_metrics(
     # (MULTI_REL_TYPES, e.g. `belongs_to` hierarchy backbone). Without the
     # MULTI_REL_TYPES pass, the metrics page silently under-counts ~80% of
     # the deterministic edges Layer 1 produces.
-    all_rel_names = list(
-        dict.fromkeys(
-            [rel[0] for rel in REL_TYPES]
-            + [multi_rel[0] for multi_rel in MULTI_REL_TYPES]
-        )
-    )
+    all_rel_pairs = _relation_pairs(REL_TYPES, MULTI_REL_TYPES)
     # R05-C: read through the #06 GraphTransaction port (scope.execute) instead
     # of the direct board-connection tuple — the DB handle was unused and every
     # statement is a plain scope.execute, so the swap is behaviour-identical.
-    async with await resolve_graph_transaction().begin(board_id) as scope:
-        for rel_name in all_rel_names:
-            try:
-                # Kùzu groups implicitly on non-aggregate projections, but
-                # tolerates NULL only when we pre-coalesce per-row. Returning
-                # raw rows and aggregating in Python keeps the code portable
-                # across Kùzu versions (GROUP BY syntax shifted between 0.6
-                # and 0.11).
-                edge_visibility = ""
-                edge_params: dict[str, Any] | None = None
-                if not ct_access.allowed:
-                    edge_visibility = (
-                        f" WHERE {tpl.code_traceability_visibility_clause('a')}"
-                        f" AND {tpl.code_traceability_visibility_clause('b')}"
+    try:
+        async with await resolve_graph_transaction().begin(board_id) as scope:
+            for rel_name, from_type, to_type in all_rel_pairs:
+                try:
+                    # Kùzu groups implicitly on non-aggregate projections, but
+                    # tolerates NULL only when we pre-coalesce per-row. Returning
+                    # raw rows and aggregating in Python keeps the code portable
+                    # across Kùzu versions (GROUP BY syntax shifted between 0.6
+                    # and 0.11).
+                    edge_visibility = ""
+                    edge_params: dict[str, Any] | None = None
+                    if not ct_access.allowed:
+                        edge_visibility = (
+                            f" WHERE {tpl.code_traceability_visibility_clause('a')}"
+                            f" AND {tpl.code_traceability_visibility_clause('b')}"
+                        )
+                        edge_params = {"include_code_traceability": False}
+                    physical_rel = _relationship_table_name(
+                        scope,
+                        None,
+                        rel_name,
+                        from_type,
+                        to_type,
                     )
-                    edge_params = {"include_code_traceability": False}
-                edge_query = (
-                    f"MATCH (a)-[r:{rel_name}]->(b){edge_visibility} "
-                    "RETURN r.layer, r.rule_id"
-                )
-                result = (
-                    scope.execute(edge_query)
-                    if edge_params is None
-                    else scope.execute(edge_query, edge_params)
-                )
-            except Exception:
-                continue
-            for row in result.rows:
-                layer = (row[0] or "unknown")
-                rule_id = (row[1] or "")
-                edge_count_by_layer[layer] = edge_count_by_layer.get(layer, 0) + 1
-                if rule_id:
-                    edge_by_rule[rule_id] = edge_by_rule.get(rule_id, 0) + 1
+                    edge_query = (
+                        f"MATCH (a:{from_type})-[r:{physical_rel}]->(b:{to_type})"
+                        f"{edge_visibility} "
+                        "RETURN r.layer, r.rule_id"
+                    )
+                    result = (
+                        scope.execute(edge_query)
+                        if edge_params is None
+                        else scope.execute(edge_query, edge_params)
+                    )
+                except Exception:
+                    continue
+                for row in result.rows:
+                    layer = (row[0] or "unknown")
+                    rule_id = (row[1] or "")
+                    edge_count_by_layer[layer] = edge_count_by_layer.get(layer, 0) + 1
+                    if rule_id:
+                        edge_by_rule[rule_id] = edge_by_rule.get(rule_id, 0) + 1
 
-        # Node type histogram — aggregate per type to dodge GROUP BY portability.
-        from okto_pulse.core.kg.schema_contract import NODE_TYPES
-        for nt in NODE_TYPES:
-            try:
-                node_visibility = ""
-                node_params: dict[str, Any] | None = None
-                if not ct_access.allowed:
-                    node_visibility = (
-                        f" WHERE {tpl.code_traceability_visibility_clause('n')}"
+            # Node type histogram — aggregate per type to dodge GROUP BY portability.
+            from okto_pulse.core.kg.schema_contract import NODE_TYPES
+
+            for nt in NODE_TYPES:
+                try:
+                    node_visibility = ""
+                    node_params: dict[str, Any] | None = None
+                    if not ct_access.allowed:
+                        node_visibility = (
+                            f" WHERE {tpl.code_traceability_visibility_clause('n')}"
+                        )
+                        node_params = {"include_code_traceability": False}
+                    node_query = (
+                        f"MATCH (n:{nt}){node_visibility} RETURN count(n) AS c"
                     )
-                    node_params = {"include_code_traceability": False}
-                node_query = (
-                    f"MATCH (n:{nt}){node_visibility} RETURN count(n) AS c"
-                )
-                result = (
-                    scope.execute(node_query)
-                    if node_params is None
-                    else scope.execute(node_query, node_params)
-                )
-                if result.rows:
-                    c = int(result.rows[0][0])
-                    if c:
-                        node_count_by_type[nt] = c
-            except Exception:
-                continue
+                    result = (
+                        scope.execute(node_query)
+                        if node_params is None
+                        else scope.execute(node_query, node_params)
+                    )
+                    if result.rows:
+                        c = int(result.rows[0][0])
+                        if c:
+                            node_count_by_type[nt] = c
+                except Exception:
+                    continue
+    except GraphError as exc:
+        # Route binding can change between the graph_initialized snapshot
+        # above and this transaction; map it like the other routed reads
+        # instead of surfacing an unhandled HTTP 500.
+        return _graph_problem(exc)
 
     edges_total = sum(edge_count_by_layer.values())
     nodes_total = sum(node_count_by_type.values())
@@ -1335,13 +1774,16 @@ async def cypher_query(
         except PermissionDeniedError as exc:
             raise RESTAdapterContract.http_error(exc) from exc
     try:
-        result = execute_cypher_read_only(
-            board_id,
-            cypher,
-            params,
-            max_rows=max_rows,
-            timeout_ms=timeout_ms,
-            include_working=include_working,
+        result = await run_blocking_graph_io(
+            lambda: execute_cypher_read_only(
+                board_id,
+                cypher,
+                params,
+                max_rows=max_rows,
+                timeout_ms=timeout_ms,
+                include_working=include_working,
+            ),
+            task_name=f"community.kg.cypher.read:{board_id}",
         )
         return result
     except TierPowerError as e:
@@ -1351,6 +1793,11 @@ async def cypher_query(
             e.message,
             e.code,
         )
+    except GraphError as exc:
+        # Provider errors already crossed the edition's backend-neutral mapping.
+        # Invalid syntax/plans are client errors, not an unhandled ASGI exception
+        # or a signal to rebuild/recover a healthy graph.
+        return _graph_problem(exc)
 
 
 @router.get("/schema")
@@ -1379,8 +1826,16 @@ async def schema_info(
         )
     if board_id:
         await _ensure_board_access(board_id=board_id, actor=actor, uow=uow)
-    result = get_schema_info(board_id or "default", include_internal=include_internal)
-    return result
+    try:
+        return await run_blocking_graph_io(
+            lambda: get_schema_info(
+                board_id or "default", include_internal=include_internal,
+            ),
+            task_name=f"community.kg.schema.read:{board_id or 'default'}",
+        )
+    except GraphError as exc:
+        # No fallback to another board, synthetic schema or recovery on refusal.
+        return _graph_problem(exc)
 
 
 @router.get("/boards/{board_id}/pending")

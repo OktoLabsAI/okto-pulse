@@ -11,6 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_SRC = Path(__file__).parent.parent / "src"
 CORE_SRC = Path(__file__).parent.parent.parent / "okto-pulse-core" / "src"
 
@@ -127,3 +129,50 @@ def test_cli_backfill_runs_worker_on_mock_data(monkeypatch, capsys):
     assert payload["artifacts"]["spec"] == 1
     assert payload["nodes_total"] > 0
     assert payload["edges_total"] > 0
+
+
+def test_cli_backfill_apply_registers_coordination_before_async_work(monkeypatch):
+    """The standalone apply path must provide the durable write-lock port."""
+    from okto_pulse.community import cli as cli_mod
+    from okto_pulse.community.adapters import coordination
+    from okto_pulse.community.adapters import relational_schema_lifecycle
+    from okto_pulse import core
+
+    events: list[str] = []
+
+    monkeypatch.setattr(cli_mod, "_fail_fast_if_server_running", lambda _op: None)
+    monkeypatch.setattr(cli_mod, "_configure_community_relational_runtime", lambda *_a, **_k: None)
+    monkeypatch.setattr(core, "configure_settings", lambda _settings: None)
+    monkeypatch.setattr(
+        relational_schema_lifecycle,
+        "register_community_relational_schema_lifecycle",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        coordination,
+        "register_community_coordination_providers",
+        lambda: events.append("coordination"),
+    )
+
+    async def fake_apply(_board_id, _emit_json, _settings):
+        events.append("apply")
+
+    monkeypatch.setattr(cli_mod, "_apply_backfill", fake_apply)
+
+    def fake_run(coro):
+        events.append("run")
+        coro.close()
+
+    monkeypatch.setattr(cli_mod.asyncio, "run", fake_run)
+
+    class _Args:
+        board_id = "board-apply"
+        apply = True
+        artifact_type = ""
+        json = False
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli_mod.cmd_kg_backfill(_Args())
+
+    assert exc_info.value.code == 0
+    assert events == ["coordination", "run"]

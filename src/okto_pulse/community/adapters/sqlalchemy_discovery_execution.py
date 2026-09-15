@@ -295,16 +295,14 @@ class CommunitySqlAlchemyDiscoveryExecutionReader:
         return dict(row.settings or {}) if row is not None else {}
 
     async def list_board_cards(
-        self, context: Any, *, board_id: str
+        self, context: Any, *, board_id: str, include_archived: bool = False
     ) -> tuple[DiscoveryCardFact, ...]:
+        statement = select(Card).where(Card.board_id == board_id)
+        if not include_archived:
+            statement = statement.where(Card.archived.is_(False))
         rows = (
             (
-                await context.execute(
-                    select(Card).where(
-                        Card.board_id == board_id,
-                        Card.archived.is_(False),
-                    )
-                )
+                await context.execute(statement)
             )
             .scalars()
             .all()

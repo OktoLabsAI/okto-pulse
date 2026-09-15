@@ -23,6 +23,7 @@ from okto_pulse.core.domain.guideline_semantic_assessment import (
     LEGACY_UNKNOWN_SEMANTIC_EDITOR_ID,
 )
 from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
+from okto_pulse.core.services.code_traceability_gate import is_evidence_citation_only_change
 
 from .sqlalchemy_models import (
     ArchitectureDesign,
@@ -533,6 +534,13 @@ def _before_flush(
                 "updated_at",
                 "test_scenario_policy_epoch",
             }
+            if isinstance(instance, Refinement) and "analysis" in semantic_changes:
+                history = inspect(instance).attrs.analysis.history
+                # Missing old state is not proof of a citation-only mutation.
+                if history.deleted and history.added and is_evidence_citation_only_change(
+                    history.deleted[0], history.added[0]
+                ):
+                    semantic_changes.discard("analysis")
             if semantic_changes and instance.id:
                 direct_version_targets[type(instance)].add(instance.id)
         if isinstance(instance, Spec):

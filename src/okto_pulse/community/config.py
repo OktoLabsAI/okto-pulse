@@ -4,10 +4,11 @@ import os
 from pathlib import Path
 from typing import Literal
 
+from okto_pulse.core import CoreSettings
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import DotEnvSettingsSource
-from okto_pulse.core import CoreSettings
+
 from okto_pulse.community.adapters.embedding import (
     COMMUNITY_DEFAULT_EMBEDDING_DIM,
     COMMUNITY_DEFAULT_EMBEDDING_MODE,
@@ -17,15 +18,51 @@ from okto_pulse.community.adapters.telemetry_effect_config import (
     COMMUNITY_DEFAULT_METRICS_BEACON_URL,
 )
 
-GRAPH_DB_MAX_SIZE_GB_VALUES: tuple[int, ...] = (2, 4, 8, 16, 32, 64)
 DataDirOrigin = Literal["explicit", "DATA_DIR", "OKTO_PULSE_HOME", "default"]
+GraphBackend = Literal["grafx"]
+GrafxDescriptorRevalidation = Literal["strict", "generation"]
+
+PULSE_GRAFX_DEFAULT_PAGE_SIZE = 8192
+PULSE_GRAFX_MIN_PAGE_SIZE = 4096
+PULSE_GRAFX_MAX_PAGE_SIZE = 32768
+PULSE_GRAFX_DEFAULT_BUFFER_POOL_MB = 64
 
 
-def validate_graph_db_max_size_gb(value: int) -> int:
-    if value not in GRAPH_DB_MAX_SIZE_GB_VALUES:
+def validate_grafx_page_size(value: int) -> int:
+    """Validate the persisted page geometry required by the Pulse schema."""
+
+    if type(value) is not int:
+        raise ValueError("kg_grafx_page_size must be an integer")
+    if not PULSE_GRAFX_MIN_PAGE_SIZE <= value <= PULSE_GRAFX_MAX_PAGE_SIZE:
+        raise ValueError("kg_grafx_page_size must be between 4096 and 32768 bytes")
+    if value & (value - 1):
+        raise ValueError("kg_grafx_page_size must be a power of two")
+    return value
+
+
+def validate_grafx_descriptor_revalidation(value: object) -> str:
+    """Validate the process-local descriptor policy accepted by Okto Grafx."""
+
+    if type(value) is not str or value not in {"strict", "generation"}:
         raise ValueError(
-            "kg_kuzu_max_db_size_gb must be one of "
-            "2, 4, 8, 16, 32, 64 GB (a power of 2)"
+            "kg_grafx_descriptor_revalidation must be 'strict' or 'generation'"
+        )
+    return value
+
+
+def validate_grafx_buffer_pool_mb(value: object) -> int:
+    """Validate a process-local buffer budget in MiB for each Grafx handle."""
+
+    if type(value) is not int or value < 1:
+        raise ValueError("kg_grafx_buffer_pool_mb must be a positive integer")
+    return value
+
+
+def validate_grafx_read_participants(value: object) -> int:
+    """Bound readers per Board and for Global; never a writer-policy toggle."""
+    if type(value) is not int or not 1 <= value <= 8:
+        raise ValueError(
+            "kg_grafx_read_participants must be an integer between 1 and 8"
         )
     return value
 
@@ -52,7 +89,7 @@ class CommunitySettings(CoreSettings, BaseSettings):
     metrics_dir: str = ""
     metrics_beacon_url: str = COMMUNITY_DEFAULT_METRICS_BEACON_URL
     mcp_server_name: str = "okto-pulse"
-    mcp_server_version: str = "0.3.2"
+    mcp_server_version: str = "0.3.3"
     mcp_port: int = 8101
     # MCP and API/UI share one event loop.  Keep tool-call bursts bounded while
     # leaving transport sessions, streams and every REST route outside the gate.
@@ -67,6 +104,22 @@ class CommunitySettings(CoreSettings, BaseSettings):
     mcp_admission_retry_after_ms: int = Field(500, ge=1, le=60_000)
     cors_origins: str = "*"
     kg_base_dir: str = "~/.okto-pulse"
+    # Community has one supported graph backend. Core contracts remain neutral.
+    # Persisted bindings are still authenticated; legacy files are never silently
+    # reinterpreted as Grafx or discarded while initializing a new route.
+    kg_graph_backend: GraphBackend = "grafx"
+    kg_global_graph_backend: GraphBackend = "grafx"
+    kg_grafx_page_size: int = PULSE_GRAFX_DEFAULT_PAGE_SIZE
+    # Each writer/read lane owns its own buffer pool. This is a per-handle
+    # budget, not a process-wide cap; the three ordinary lanes can use 3x it.
+    kg_grafx_buffer_pool_mb: int = PULSE_GRAFX_DEFAULT_BUFFER_POOL_MB
+    kg_grafx_read_participants: int = 2
+    kg_grafx_options: dict = Field(default_factory=dict)
+    # Pulse owns Grafx's generation directories and replaces them only with every handle closed,
+    # which is the closed lifecycle required by Grafx's generation policy.  Keep strict available
+    # for forensic/manual/shared-directory operation, but do not pay its per-page namespace walk
+    # on the ordinary managed runtime.
+    kg_grafx_descriptor_revalidation: GrafxDescriptorRevalidation = "generation"
 
     # Community ships sentence-transformers as a mandatory dep (pyproject.toml),
     # so override the core default of "stub" — semantic KG search needs real
@@ -74,18 +127,12 @@ class CommunitySettings(CoreSettings, BaseSettings):
     kg_embedding_mode: str = COMMUNITY_DEFAULT_EMBEDDING_MODE
     kg_embedding_model: str = COMMUNITY_DEFAULT_EMBEDDING_MODEL
     kg_embedding_dim: int = COMMUNITY_DEFAULT_EMBEDDING_DIM
-    # Each open Ladybug Database owns its own native buffer pool.  Conservative
+    # Each open graph Database owns its own native buffer pool.  Conservative
     # defaults keep a local multi-board process below the former 4 x 512 MB
     # baseline while persisted/operator overrides remain backwards compatible.
-    kg_kuzu_buffer_pool_mb: int = Field(256, ge=128, le=512)
     # Global Discovery is a separate Database and does not need the full board
     # write budget.  It is intentionally environment/config-only for now; the
     # legacy runtime-settings API continues to govern the board pool unchanged.
-    kg_global_kuzu_buffer_pool_mb: int = Field(128, ge=128, le=512)
-    kg_kuzu_max_db_size_gb: int = Field(2, ge=2, le=64)
-    kg_connection_pool_size: int = Field(2, ge=1, le=32)
-    kg_wal_salvage_enabled: bool = True
-    kg_wal_only_recovery_enabled: bool = True
     kg_decay_tick_batch_size: int = 200
     kg_write_barrier_mode: str = "soft"
     mcp_legacy_coverage: bool = Field(
@@ -118,15 +165,16 @@ class CommunitySettings(CoreSettings, BaseSettings):
             "_env_file_encoding",
             self.model_config.get("env_file_encoding"),
         )
-        dotenv_values = (
+        dotenv_source = (
             DotEnvSettingsSource(
                 type(self),
                 env_file=env_file,
                 env_file_encoding=env_file_encoding,
-            )()
+            )
             if env_file is not None
-            else {}
+            else None
         )
+        dotenv_values = dotenv_source() if dotenv_source is not None else {}
         dotenv_data_dir = str(dotenv_values.get("data_dir") or "").strip()
 
         if supplied_data_dir:
@@ -149,10 +197,48 @@ class CommunitySettings(CoreSettings, BaseSettings):
         prepared["data_dir_origin"] = origin
         super().__init__(**prepared)
 
-    @field_validator("kg_kuzu_max_db_size_gb")
+    @field_validator("kg_grafx_page_size")
     @classmethod
-    def _validate_graph_db_max_size_gb(cls, value: int) -> int:
-        return validate_graph_db_max_size_gb(value)
+    def _validate_grafx_page_size(cls, value: int) -> int:
+        return validate_grafx_page_size(value)
+
+    @field_validator("kg_grafx_buffer_pool_mb", mode="before")
+    @classmethod
+    def _validate_grafx_buffer_pool_mb(cls, value: object) -> int:
+        if isinstance(value, str):
+            try:
+                value = int(value)
+            except ValueError:
+                pass
+        return validate_grafx_buffer_pool_mb(value)
+
+    @field_validator("kg_grafx_descriptor_revalidation", mode="before")
+    @classmethod
+    def _validate_grafx_descriptor_revalidation(cls, value: object) -> str:
+        return validate_grafx_descriptor_revalidation(value)
+
+    @field_validator("kg_grafx_read_participants", mode="before")
+    @classmethod
+    def _validate_grafx_read_participants(cls, value: object) -> int:
+        if isinstance(value, str):
+            try:
+                value = int(value)
+            except ValueError:
+                pass
+        return validate_grafx_read_participants(value)
+
+    @model_validator(mode="after")
+    def _validate_grafx_constructor_options(self):
+        from okto_pulse.community.adapters.grafx_settings_catalog import (
+            validate_options,
+        )
+
+        self.kg_grafx_options = validate_options(
+            self.kg_grafx_options,
+            page_size=self.kg_grafx_page_size,
+            buffer_pool_mb=self.kg_grafx_buffer_pool_mb,
+        )
+        return self
 
     @property
     def cors_origins_list(self) -> list[str]:
@@ -194,7 +280,6 @@ class CommunitySettings(CoreSettings, BaseSettings):
             self.kg_base_dir = str(data_path)
         else:
             self.kg_base_dir = str(Path(self.kg_base_dir).expanduser().resolve())
-        # Community edition is local-only — allow all origins to avoid CORS
-        # issues regardless of which port the user configures via CLI
-        self.cors_origins = "*"
+        # The field default permits local clients on arbitrary ports. Preserve
+        # explicit constructor, environment and dotenv restrictions.
         return self

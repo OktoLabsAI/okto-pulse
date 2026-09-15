@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import pytest_asyncio
 from sqlalchemy import event, select, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from okto_pulse.community.adapters.sqlalchemy_base import Base
@@ -29,6 +30,33 @@ from okto_pulse.core.ports.consolidation import (
 
 BOARD_ID = "card4-worker-fence-board"
 ARTIFACT_ID = "card4-deleted-spec"
+
+
+@pytest.mark.asyncio
+async def test_worker_fence_blocks_investigation_on_an_unrelated_board(queue_store):
+    """Reproduce E2E contention with the real fence, without a slow graph run."""
+    factory, adapter = queue_store
+    async with factory() as seed:
+        seed.add(Board(id="unrelated-board", name="Other", owner_id="tester"))
+        seed.add(_queue_row(row_id="writer-probe", work_kind="consolidate",
+                            generation=0, delete_event_id=None, claim_token="token"))
+        await seed.commit()
+    async with factory() as worker, factory() as author:
+        await author.execute(text("PRAGMA busy_timeout=50"))
+        assert await adapter.queue_claim_is_current_and_unfenced(
+            worker, entry_id="writer-probe", claim_token="token", board_id=BOARD_ID,
+            artifact_type="spec", artifact_id=ARTIFACT_ID, work_kind="consolidate",
+            source="test", generation=0, delete_event_id=None,
+        )
+        # Identical write-fence SQL used by Code Investigation admission.
+        admission = text("UPDATE boards SET id = id WHERE id = :board_id")
+        with pytest.raises(OperationalError) as failure:
+            await author.execute(admission, {"board_id": "unrelated-board"})
+        assert failure.value.orig.sqlite_errorcode & 0xFF == 5
+        await author.rollback()
+        await worker.rollback()
+        assert (await author.execute(admission, {"board_id": "unrelated-board"})).rowcount == 1
+        await author.rollback()
 
 
 @pytest_asyncio.fixture

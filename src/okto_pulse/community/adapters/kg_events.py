@@ -199,7 +199,15 @@ class CommunityKGEventsReader:
         board_id: str,
         include_code_traceability: bool,
     ) -> dict[str, int]:
-        predicates = [ConsolidationQueue.board_id == board_id]
+        # This snapshot drives the user-facing "consolidation in progress"
+        # indicator.  Maintenance coordinators (stale_sweep/stale_reconcile)
+        # share the durable queue but are neither artifact consolidation nor
+        # blockers for starting historical consolidation.  Counting them here
+        # made a deferred daily sweep look like a permanently stuck backfill.
+        predicates = [
+            ConsolidationQueue.board_id == board_id,
+            ConsolidationQueue.work_kind == "consolidate",
+        ]
         if not include_code_traceability:
             predicates.append(
                 exclude_code_traceability_artifact(

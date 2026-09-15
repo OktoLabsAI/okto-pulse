@@ -24,7 +24,10 @@ async def _compose_and_list_boards(*, list_all: bool) -> list[tuple[str, str]]:
     from okto_pulse.community.adapters.sqlalchemy_models import Board
     from okto_pulse.community.config import CommunitySettings
     from okto_pulse.core import configure_settings
-    from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory, init_db
+    from okto_pulse.community.adapters.sqlalchemy_database import (
+        get_session_factory,
+        init_db,
+    )
 
     settings = CommunitySettings()
     configure_settings(settings)
@@ -80,13 +83,24 @@ def _emit_all(results: list[dict[str, Any]], names: dict[str, str]) -> int:
 def run(args: argparse.Namespace) -> int:
     """Execute a parsed ``okto-pulse kg migrate-schema`` command."""
 
-    from okto_pulse.community.serve_lock import assert_no_live_server
+    from okto_pulse.community.serve_lock import (
+        assert_no_live_server,
+        ServeAlreadyRunningError,
+    )
     from okto_pulse.community.config import CommunitySettings
 
-    assert_no_live_server(
-        CommunitySettings().data_dir,
-        operation="kg migrate-schema",
-    )
+    try:
+        assert_no_live_server(
+            CommunitySettings().data_dir,
+            operation="kg migrate-schema",
+        )
+    except ServeAlreadyRunningError as exc:
+        print(
+            "ERROR [serve-lock]: refusing 'kg migrate-schema' while an okto-pulse "
+            f"server is running.\n{exc}",
+            file=sys.stderr,
+        )
+        return 2
     pairs = asyncio.run(
         _compose_and_list_boards(list_all=bool(getattr(args, "all_boards", False)))
     )

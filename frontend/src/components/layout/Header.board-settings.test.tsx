@@ -100,6 +100,10 @@ vi.mock('@/components/layout/RuntimeSettingsPanel', () => ({
   ),
 }));
 
+vi.mock('@/components/knowledge', () => ({
+  KnowledgeGraphPage: () => <div>Graph content</div>,
+}));
+
 vi.mock('react-hot-toast', () => ({
   default: {
     success: vi.fn(),
@@ -250,6 +254,16 @@ describe('Header Board settings resource automation', () => {
       'board.admin.edit',
     );
   });
+
+  it.each(['About', 'Knowledge Graph'])(
+    'shows Grafx attribution in %s independently of graph loading',
+    (entry) => {
+      render(<Header />);
+      openHeaderMenu();
+      fireEvent.click(screen.getByRole('button', { name: entry }));
+      expect(screen.getByText('Powered by Okto Grafx')).toBeInTheDocument();
+    },
+  );
 
   it.each([
     ['revision reader', ['guidelines.revisions.read']],

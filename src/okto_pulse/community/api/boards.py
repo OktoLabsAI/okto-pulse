@@ -1,8 +1,18 @@
 """Board API endpoints."""
 
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy.exc import IntegrityError
+
+from okto_pulse.community.adapters.sqlalchemy_kg_governance import (
+    BoardRelationalErasureError,
+)
+from okto_pulse.core.ports.board_erasure_control import BoardErasureLockContention
+from okto_pulse.core.ports.global_discovery_recovery_control import (
+    GlobalDiscoveryWriterContention,
+)
 
 from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
     statement_budget,
@@ -252,6 +262,27 @@ async def delete_board(
         )
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
+    except (BoardErasureLockContention, GlobalDiscoveryWriterContention) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "board_erasure_busy",
+                "message": "Board deletion is temporarily blocked by an active graph operation. Wait for it to finish and retry.",
+                "retryable": True,
+            },
+        ) from exc
+    except (BoardRelationalErasureError, IntegrityError) as exc:
+        logging.getLogger(__name__).exception(
+            "board.delete.relational_erasure_failed board=%s", board_id
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "board_erasure_integrity_failed",
+                "message": "Board deletion could not complete its integrity checks. Review the application log before retrying.",
+                "retryable": False,
+            },
+        ) from exc
 
 
 @router.get(

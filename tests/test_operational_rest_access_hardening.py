@@ -130,6 +130,10 @@ class _Downstream:
 
 def _runtime_settings(**updates):
     values = {
+        "kg_graph_backend": "grafx",
+        "kg_global_graph_backend": "grafx",
+        "kg_grafx_page_size": 8192,
+        "kg_grafx_descriptor_revalidation": "generation",
         "kg_kuzu_buffer_pool_mb": 256,
         "kg_kuzu_max_db_size_gb": 8,
         "kg_connection_pool_size": 4,
@@ -346,6 +350,15 @@ BOARD_SURFACES = [
     ("GET", "/api/v1/kg/queue/drilldown?board_id=board-b", None),
     ("GET", "/api/v1/kg/queue/dead-letter?board_id=board-b", None),
     (
+        "POST",
+        "/api/v1/kg/queue/dead-letter/redrive",
+        {
+            "board_id": "board-b",
+            "dead_letter_ids": ["dlq-1"],
+            "process_now": False,
+        },
+    ),
+    (
         "GET",
         "/api/v1/kg/cognitive-pending/candidate-decisions?board_id=board-b",
         None,
@@ -420,6 +433,11 @@ BOARD_SURFACES = [
 ]
 
 WRITE_SURFACES = [
+    (
+        "POST",
+        "/api/v1/kg/queue/dead-letter/redrive",
+        {"board_id": "board-b", "dead_letter_ids": ["dlq-1"], "process_now": False},
+    ),
     (
         "POST",
         "/api/v1/kg/board-b/cognitive-readiness/skip",
@@ -527,6 +545,7 @@ WRITE_SURFACES = [
         "orphan-backfill",
         "queue-drilldown",
         "dead-letter",
+        "dead-letter-redrive",
         "cognitive-candidates",
         "cognitive-badges",
         "cognitive-pending",
@@ -588,7 +607,7 @@ def test_online_rebuild_boundary_is_diagnostic_and_never_writes_or_consumes(
             "board_id": "board-b",
             "operation": "rebuild",
             "preflight_hash": "a" * 64,
-            "manifest_ref": "diagnostic-only",
+            "manifest_ref": None,
         },
     )
     assert confirm.status_code == 409
@@ -618,7 +637,7 @@ def test_online_rebuild_boundary_is_diagnostic_and_never_writes_or_consumes(
             "board_id": "board-b",
             "operation": "rebuild",
             "preflight_hash": "a" * 64,
-            "manifest_ref": "diagnostic-only",
+            "manifest_ref": None,
             "reason": "legacy token must remain untouched",
         },
     )
@@ -776,6 +795,7 @@ def test_canonical_debt_valid_filters_preserve_rest_pagination() -> None:
     ("method", "path", "payload"),
     WRITE_SURFACES,
     ids=[
+        "dead-letter-redrive",
         "cognitive-skip",
         "cognitive-clear",
         "canonical-debt-retry",

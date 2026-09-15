@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import {
   Boxes,
   Code2,
@@ -75,6 +75,8 @@ interface ExcalidrawElement {
 }
 
 interface DragState {
+  startOriginX: number;
+  startOriginY: number;
   id: string;
   startClientX: number;
   startClientY: number;
@@ -92,6 +94,8 @@ interface PanState {
 }
 
 interface ResizeState {
+  startOriginX: number;
+  startOriginY: number;
   id: string;
   startClientX: number;
   startClientY: number;
@@ -298,7 +302,7 @@ function clampZoom(value: number): number {
 }
 
 function snapToGrid(value: number): number {
-  return Math.max(0, Math.round(value / GRID_SIZE) * GRID_SIZE);
+  return Math.round(value / GRID_SIZE) * GRID_SIZE;
 }
 
 function snapSizeToGrid(value: number, minimum: number): number {
@@ -517,13 +521,34 @@ export function ArchitectureDiagramEditor({
     [mockups],
   );
 
+  const previousCanvasOrigin = useRef<{ id: string | null | undefined; x: number; y: number; width: number; height: number } | null>(null);
   const canvasSize = useMemo(() => {
     const bounds = getElementsBounds(elements);
+    const previous = previousCanvasOrigin.current?.id === diagram?.id ? previousCanvasOrigin.current : null;
+    // Diagram coordinates remain unchanged. Translate only the view so negative
+    // positions have the same scrollable breathing room as right/bottom edges.
+    const originX = Math.max(previous?.x ?? 0, bounds ? -Math.min(0, Math.floor((bounds.minX - CANVAS_MARGIN) / GRID_SIZE) * GRID_SIZE) : 0);
+    const originY = Math.max(previous?.y ?? 0, bounds ? -Math.min(0, Math.floor((bounds.minY - CANVAS_MARGIN) / GRID_SIZE) * GRID_SIZE) : 0);
     return {
-      width: Math.max(BASE_CANVAS_WIDTH, (bounds?.maxX || 0) + CANVAS_MARGIN),
-      height: Math.max(BASE_CANVAS_HEIGHT, (bounds?.maxY || 0) + CANVAS_MARGIN),
+      originX,
+      originY,
+      width: Math.max(BASE_CANVAS_WIDTH, (bounds?.maxX || 0) + originX + CANVAS_MARGIN, (previous?.width ?? 0) + originX - (previous?.x ?? 0)),
+      height: Math.max(BASE_CANVAS_HEIGHT, (bounds?.maxY || 0) + originY + CANVAS_MARGIN, (previous?.height ?? 0) + originY - (previous?.y ?? 0)),
     };
-  }, [elements]);
+  }, [elements, diagram?.id]);
+
+  useLayoutEffect(() => {
+    const viewport = scrollRef.current;
+    if (!viewport) return;
+    const previous = previousCanvasOrigin.current;
+    if (previous && previous.id === diagram?.id) {
+      // Compensate origin growth before paint: moving the leftmost node must
+      // not move all other nodes on screen or feed artificial motion into drag.
+      viewport.scrollLeft += (canvasSize.originX - previous.x) * zoom;
+      viewport.scrollTop += (canvasSize.originY - previous.y) * zoom;
+    }
+    previousCanvasOrigin.current = { id: diagram?.id, x: canvasSize.originX, y: canvasSize.originY, width: canvasSize.width, height: canvasSize.height };
+  }, [canvasSize, diagram?.id, zoom, mode, isFullscreen]);
 
   useEffect(() => {
     setRawDraft(rawPreview);
@@ -553,10 +578,10 @@ export function ArchitectureDiagramEditor({
     if (!viewport) return;
     const box = elementBox(target);
     window.requestAnimationFrame(() => {
-      viewport.scrollLeft = Math.max(0, (box.x + box.width / 2) * zoom - viewport.clientWidth / 2);
-      viewport.scrollTop = Math.max(0, (box.y + box.height / 2) * zoom - viewport.clientHeight / 2);
+      viewport.scrollLeft = Math.max(0, (box.x + canvasSize.originX + box.width / 2) * zoom - viewport.clientWidth / 2);
+      viewport.scrollTop = Math.max(0, (box.y + canvasSize.originY + box.height / 2) * zoom - viewport.clientHeight / 2);
     });
-  }, [elements, focusElementId, focusSignal, zoom]);
+  }, [elements, focusElementId, focusSignal, zoom, canvasSize.originX, canvasSize.originY]);
 
   const updateElements = (nextElements: ExcalidrawElement[]) => {
     if (!diagram) return;
@@ -650,6 +675,8 @@ export function ArchitectureDiagramEditor({
       // Some test/browser environments do not expose pointer capture.
     }
     dragRef.current = {
+      startOriginX: canvasSize.originX,
+      startOriginY: canvasSize.originY,
       id: element.id,
       startClientX: event.clientX,
       startClientY: event.clientY,
@@ -672,6 +699,8 @@ export function ArchitectureDiagramEditor({
     }
     const box = elementBox(element);
     resizeRef.current = {
+      startOriginX: canvasSize.originX,
+      startOriginY: canvasSize.originY,
       id: element.id,
       startClientX: event.clientX,
       startClientY: event.clientY,
@@ -716,8 +745,8 @@ export function ArchitectureDiagramEditor({
       const viewport = scrollRef.current;
       const scrollDeltaX = viewport ? viewport.scrollLeft - resize.startScrollLeft : 0;
       const scrollDeltaY = viewport ? viewport.scrollTop - resize.startScrollTop : 0;
-      const nextWidth = snapSizeToGrid(resize.startWidth + (event.clientX - resize.startClientX + scrollDeltaX) / zoom, MIN_NODE_WIDTH);
-      const nextHeight = snapSizeToGrid(resize.startHeight + (event.clientY - resize.startClientY + scrollDeltaY) / zoom, MIN_NODE_HEIGHT);
+      const nextWidth = snapSizeToGrid(resize.startWidth + (event.clientX - resize.startClientX + scrollDeltaX) / zoom - (canvasSize.originX - resize.startOriginX), MIN_NODE_WIDTH);
+      const nextHeight = snapSizeToGrid(resize.startHeight + (event.clientY - resize.startClientY + scrollDeltaY) / zoom - (canvasSize.originY - resize.startOriginY), MIN_NODE_HEIGHT);
       updateElements(elements.map((item) => (item.id === resize.id ? { ...item, width: nextWidth, height: nextHeight } : item)));
       return;
     }
@@ -727,8 +756,8 @@ export function ArchitectureDiagramEditor({
     autoScrollNearEdge(event);
     const scrollDeltaX = viewport ? viewport.scrollLeft - drag.startScrollLeft : 0;
     const scrollDeltaY = viewport ? viewport.scrollTop - drag.startScrollTop : 0;
-    const nextX = snapToGrid(drag.startX + (event.clientX - drag.startClientX + scrollDeltaX) / zoom);
-    const nextY = snapToGrid(drag.startY + (event.clientY - drag.startClientY + scrollDeltaY) / zoom);
+    const nextX = snapToGrid(drag.startX + (event.clientX - drag.startClientX + scrollDeltaX) / zoom - (canvasSize.originX - drag.startOriginX));
+    const nextY = snapToGrid(drag.startY + (event.clientY - drag.startClientY + scrollDeltaY) / zoom - (canvasSize.originY - drag.startOriginY));
     updateElements(elements.map((item) => (item.id === drag.id ? { ...item, x: nextX, y: nextY } : item)));
   };
 
@@ -824,8 +853,8 @@ export function ArchitectureDiagramEditor({
     ));
     setZoom(nextZoom);
     window.requestAnimationFrame(() => {
-      viewport.scrollLeft = Math.max(0, (bounds.minX - 90) * nextZoom);
-      viewport.scrollTop = Math.max(0, (bounds.minY - 90) * nextZoom);
+      viewport.scrollLeft = Math.max(0, (bounds.minX + canvasSize.originX - 90) * nextZoom);
+      viewport.scrollTop = Math.max(0, (bounds.minY + canvasSize.originY - 90) * nextZoom);
     });
   };
 
@@ -1274,7 +1303,7 @@ export function ArchitectureDiagramEditor({
             onPointerCancel={endPointerInteraction}
             onPointerLeave={endPointerInteraction}
           >
-            <div className="relative" style={{ width: canvasSize.width * zoom, height: canvasSize.height * zoom }}>
+            <div data-testid="architecture-canvas-surface" className="relative" style={{ width: canvasSize.width * zoom, height: canvasSize.height * zoom }}>
               <div
                 className="absolute left-0 top-0"
                 style={{
@@ -1288,8 +1317,11 @@ export function ArchitectureDiagramEditor({
                   backgroundSize: '24px 24px',
                 }}
               >
-                {edgeElements.map(renderEdge)}
-                {nodeElements.map(renderNode)}
+                <div data-testid="architecture-diagram-origin" className="absolute"
+                  style={{ left: canvasSize.originX, top: canvasSize.originY }}>
+                  {edgeElements.map(renderEdge)}
+                  {nodeElements.map(renderNode)}
+                </div>
               </div>
             </div>
           </div>

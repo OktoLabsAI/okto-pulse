@@ -37,7 +37,7 @@ import hashlib
 from importlib import metadata
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import re
 import signal
@@ -55,11 +55,10 @@ from uuid import RFC_4122, UUID
 
 CORE_DISTRIBUTION = "okto-pulse-core"
 COMMUNITY_DISTRIBUTION = "okto-pulse"
-EXPECTED_VERSION = "0.3.2"
-LADYBUG_DISTRIBUTION = "ladybug"
-EXPECTED_LADYBUG_VERSION = "0.16.0"
-KUZU_DISTRIBUTION = "kuzu"
-EXPECTED_KUZU_VERSION = "0.11.3"
+EXPECTED_VERSION = "0.3.3"
+LEGACY_QUEUE_ONLY_SUPPORTED_SOFTWARE_VERSIONS = frozenset({"0.3.2", EXPECTED_VERSION})
+GRAFX_DISTRIBUTION = "okto-grafx"
+EXPECTED_GRAFX_VERSION = "0.0.7"
 SQLALCHEMY_DISTRIBUTION = "SQLAlchemy"
 EXPECTED_SQLALCHEMY_VERSION = "2.0.49"
 AIOSQLITE_DISTRIBUTION = "aiosqlite"
@@ -423,6 +422,7 @@ class ServiceBundle:
     single_writer_lock: Any
     source_enumerator: Any
     event_manifest_bindings: dict[str, EventManifestBinding]
+    graph_binding: OfflineBoardGraphBinding | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -590,10 +590,9 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--expected-core-version", default=EXPECTED_VERSION)
     parser.add_argument("--expected-community-version", default=EXPECTED_VERSION)
     parser.add_argument(
-        "--expected-ladybug-version",
-        default=EXPECTED_LADYBUG_VERSION,
+        "--expected-grafx-version",
+        default=EXPECTED_GRAFX_VERSION,
     )
-    parser.add_argument("--expected-kuzu-version", default=EXPECTED_KUZU_VERSION)
     parser.add_argument(
         "--expected-sqlalchemy-version",
         default=EXPECTED_SQLALCHEMY_VERSION,
@@ -743,8 +742,7 @@ def _install_evidence(
     *,
     core_version: str,
     community_version: str,
-    ladybug_version: str,
-    kuzu_version: str,
+    grafx_version: str,
     sqlalchemy_version: str,
     aiosqlite_version: str,
 ) -> InstallEvidence:
@@ -760,14 +758,8 @@ def _install_evidence(
             include_python=True,
         ),
         _distribution_evidence(
-            LADYBUG_DISTRIBUTION,
-            ladybug_version,
-            include_python=True,
-            require_native=True,
-        ),
-        _distribution_evidence(
-            KUZU_DISTRIBUTION,
-            kuzu_version,
+            GRAFX_DISTRIBUTION,
+            grafx_version,
             include_python=True,
         ),
         _distribution_evidence(
@@ -2457,7 +2449,12 @@ def _validate_storage_hashes(value: Any, *, code: str) -> dict[str, str]:
     return normalized
 
 
-def _validate_board_storage_hashes(value: Any, *, code: str) -> dict[str, str]:
+def _validate_board_storage_hashes(
+    value: Any,
+    *,
+    code: str,
+    binding: OfflineBoardGraphBinding | None = None,
+) -> dict[str, str]:
     _require(isinstance(value, Mapping), code)
     _require(
         all(
@@ -2467,8 +2464,65 @@ def _validate_board_storage_hashes(value: Any, *, code: str) -> dict[str, str]:
         code,
     )
     normalized = dict(value)
-    _require(set(normalized) == {"graph.lbug"}, code)
-    _require(_is_sha256(normalized["graph.lbug"]), code)
+    _require(normalized, code)
+    _require(all(_is_sha256(item) for item in normalized.values()), code)
+    for relative in normalized:
+        _require(
+            "\\" not in relative
+            and "\x00" not in relative
+            and relative == PurePosixPath(relative).as_posix(),
+            code,
+        )
+        parsed = PurePosixPath(relative)
+        _require(
+            not parsed.is_absolute()
+            and bool(parsed.parts)
+            and all(part not in {"", ".", ".."} for part in parsed.parts),
+            code,
+        )
+
+    # Receipts emitted before authenticated Board bindings contained exactly
+    # the closed Ladybug primary.  Continue accepting that historical shape;
+    # new executions below are always validated against their live binding.
+    if set(normalized) == {_BINDING_LADYBUG_FILENAME}:
+        _require(binding is None, code)
+        return normalized
+
+    _require(_BOARD_BINDING_FILENAME in normalized, code)
+    physical = set(normalized) - {_BOARD_BINDING_FILENAME}
+    _require(physical, code)
+    if binding is not None:
+        _require(
+            normalized[_BOARD_BINDING_FILENAME] == binding.document_sha256,
+            code,
+        )
+        if binding.backend == "ladybug":
+            _require(physical == {_BINDING_LADYBUG_FILENAME}, code)
+        else:
+            prefix = f"{binding.board_storage_relative}/"
+            _require(all(relative.startswith(prefix) for relative in physical), code)
+            _require(f"{prefix}grafx.meta" in physical, code)
+        return normalized
+
+    if _BINDING_LADYBUG_FILENAME in physical:
+        _require(physical == {_BINDING_LADYBUG_FILENAME}, code)
+        return normalized
+
+    grafx_paths = tuple(PurePosixPath(relative) for relative in physical)
+    _require(
+        all(
+            len(path.parts) >= 3 and path.parts[0] == _BINDING_GRAFX_DIRNAME
+            for path in grafx_paths
+        ),
+        code,
+    )
+    generations = {path.parts[1] for path in grafx_paths}
+    _require(len(generations) == 1, code)
+    generation = next(iter(generations))
+    _require(
+        f"{_BINDING_GRAFX_DIRNAME}/{generation}/grafx.meta" in physical,
+        code,
+    )
     return normalized
 
 
@@ -3896,7 +3950,9 @@ def _assert_exact_relational_success_state(
             and audit["undo_status"] == "none"
             and audit["undone_at"] is None
             and audit["error_details"] is None
-            and len(refs) == item.node_ref_count == audit["nodes_added"]
+            and len(refs)
+            == item.node_ref_count
+            == audit["nodes_added"] + audit["nodes_superseded"]
             and all(
                 ref["board_id"] == board_id
                 and ref["session_id"] == item.consolidation_session_id
@@ -4400,7 +4456,7 @@ def _assert_exact_relational_compensation_state(
             and audit[14] is not None
             and audit[15] is None
             and not refs
-            and receipt.node_ref_count == int(audit[7]),
+            and receipt.node_ref_count == int(audit[7]) + int(audit[9]),
             "exact_relational_preserved_evidence_invalid",
             receipt.consolidation_session_id,
         )
@@ -5137,17 +5193,35 @@ def _snapshot_tree_hashes(root: Path) -> dict[str, str]:
     return second_hashes
 
 
+def _snapshot_board_storage_hashes(root: Path) -> dict[str, str]:
+    """Hash graph data while excluding ephemeral coordination locks."""
+
+    snapshot = _snapshot_tree_hashes(root)
+    snapshot.pop(_BINDING_ROUTE_LOCK_FILENAME, None)
+    snapshot.pop(f"{_BOARD_BINDING_FILENAME}.lock", None)
+    return snapshot
+
+
 def _capture_post_teardown_board_storage(
     *,
     data_home: Path,
     board_id: str,
+    expected_binding: OfflineBoardGraphBinding,
 ) -> tuple[dict[str, str], str]:
     """Prove the final native handle is closed and bind its physical bytes."""
 
-    snapshot = _validate_board_storage_hashes(
-        _snapshot_tree_hashes(data_home / "boards" / board_id),
-        code="post_teardown_board_storage_invalid",
+    _require(
+        expected_binding.data_home == Path(os.path.abspath(data_home))
+        and expected_binding.board_id == board_id,
+        "post_teardown_board_binding_scope_mismatch",
     )
+    binding = _revalidate_board_binding(expected_binding)
+    snapshot = _validate_board_storage_hashes(
+        _snapshot_board_storage_hashes(data_home / "boards" / board_id),
+        code="post_teardown_board_storage_invalid",
+        binding=binding,
+    )
+    _revalidate_board_binding(expected_binding)
     digest = _canonical_json_hash(snapshot)
     _emit(
         "post_teardown_board_storage_captured",
@@ -5221,11 +5295,23 @@ def _expected_compensation_board_storage(
     quarantine_root: Path,
     board_id: str,
     manifest_ref: str,
+    binding: OfflineBoardGraphBinding,
 ) -> dict[str, str]:
-    """Pin the exact predecessor bytes a governed compensation must restore."""
+    """Pin restored physical bytes plus the immutable authenticated binding."""
 
     if checkpoint is None:
         return {}
+    _require(
+        isinstance(binding, OfflineBoardGraphBinding),
+        "manifest_compensation_board_binding_missing",
+    )
+    _require(
+        binding.board_id == board_id
+        and binding.data_home == Path(os.path.abspath(quarantine_root.parent)),
+        "manifest_compensation_board_binding_scope_invalid",
+    )
+    binding = _revalidate_board_binding(binding)
+    binding_only = {_BOARD_BINDING_FILENAME: binding.document_sha256}
     receipts = checkpoint.get("receipts")
     quarantine_key = f"f06:{manifest_ref}:quarantine"
     quarantine_receipt = (
@@ -5241,7 +5327,12 @@ def _expected_compensation_board_storage(
     assert isinstance(details, Mapping)
     affected = tuple(str(value) for value in details.get("affected_files", ()))
     if not affected:
-        return {}
+        _revalidate_board_binding(binding)
+        return binding_only
+    _require(
+        len(affected) == len(set(affected)),
+        "manifest_compensation_quarantine_receipt_invalid",
+    )
     quarantine_id = str(details.get("quarantine_ref") or "")
     _require(
         bool(quarantine_id),
@@ -5252,32 +5343,206 @@ def _expected_compensation_board_storage(
         quarantine_dir / "manifest.json",
         "manifest_compensation_quarantine_manifest_invalid",
     )
+    raw_paths = manifest.get("affected_paths_relative")
+    raw_storage_refs = manifest.get("affected_storage_refs")
     _require(
         str(manifest.get("quarantine_id")) == quarantine_id
         and str(manifest.get("board_id")) == board_id
-        and set(str(value) for value in manifest.get("affected_paths_relative", ()))
-        == set(affected),
+        and manifest.get("graph_type") == "board_graph"
+        and isinstance(raw_paths, list)
+        and bool(raw_paths)
+        and len(raw_paths) == len({str(value) for value in raw_paths})
+        and isinstance(raw_storage_refs, list)
+        and len(raw_storage_refs) == len(raw_paths),
         "manifest_compensation_quarantine_binding_invalid",
     )
-    expected: dict[str, str] = {}
-    for relative in affected:
-        relative_path = Path(relative)
+    assert isinstance(raw_paths, list)
+    assert isinstance(raw_storage_refs, list)
+    manifest_paths = tuple(str(value) for value in raw_paths)
+
+    decoded_refs: list[Path] = []
+    for raw_ref in raw_storage_refs:
         _require(
-            not relative_path.is_absolute()
-            and ".." not in relative_path.parts
-            and len(relative_path.parts) == 1,
-            "manifest_compensation_quarantine_path_invalid",
+            isinstance(raw_ref, Mapping)
+            and set(raw_ref) == {"token", "namespace"}
+            and raw_ref.get("namespace") == "community_local_graph_v1"
+            and type(raw_ref.get("token")) is str,
+            "manifest_compensation_quarantine_storage_ref_invalid",
+        )
+        assert isinstance(raw_ref, Mapping)
+        token = str(raw_ref["token"])
+        try:
+            padding = "=" * (-len(token) % 4)
+            encoded_path = base64.urlsafe_b64decode(token + padding).decode("utf-8")
+        except (ValueError, UnicodeError) as exc:
+            raise RecoveryRefused(
+                "manifest_compensation_quarantine_storage_ref_invalid"
+            ) from exc
+        _require(
+            base64.urlsafe_b64encode(encoded_path.encode("utf-8"))
+            .decode("ascii")
+            .rstrip("=")
+            == token,
+            "manifest_compensation_quarantine_storage_ref_invalid",
+        )
+        decoded = Path(os.path.abspath(encoded_path))
+        _require(
+            Path(encoded_path).is_absolute()
+            and os.path.normcase(str(decoded))
+            == os.path.normcase(str(Path(encoded_path).resolve(strict=False))),
+            "manifest_compensation_quarantine_storage_ref_invalid",
+        )
+        _assert_no_symlink_components(
+            decoded,
+            "manifest_compensation_quarantine_storage_ref_alias_refused",
+        )
+        decoded_refs.append(decoded)
+
+    if binding.backend == "ladybug":
+        allowed_names = {
+            _BINDING_LADYBUG_FILENAME,
+            *(
+                f"{_BINDING_LADYBUG_FILENAME}{suffix}"
+                for suffix in _BINDING_LADYBUG_SIDECAR_SUFFIXES
+            ),
+        }
+        current_receipt_tokens = tuple(
+            f"board:{board_id}:artifact:{index}" for index in range(len(manifest_paths))
+        )
+        _require(
+            affected in {manifest_paths, current_receipt_tokens}
+            and set(manifest_paths) <= allowed_names
+            and _BINDING_LADYBUG_FILENAME in manifest_paths
+            and tuple(decoded_refs)
+            == tuple(binding.physical_path.with_name(name) for name in manifest_paths),
+            "manifest_compensation_quarantine_binding_invalid",
+        )
+        expected = dict(binding_only)
+        for relative in manifest_paths:
+            relative_path = Path(relative)
+            _require(
+                not relative_path.is_absolute()
+                and ".." not in relative_path.parts
+                and len(relative_path.parts) == 1,
+                "manifest_compensation_quarantine_path_invalid",
+                relative,
+            )
+            path = quarantine_dir / relative_path
+            _require(
+                path.is_file() and not _is_filesystem_alias(path),
+                "manifest_compensation_quarantine_source_missing",
+                relative,
+            )
+            expected[relative_path.as_posix()] = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+        _revalidate_board_binding(binding)
+        return expected
+
+    _require(
+        binding.backend == "grafx"
+        and affected == (f"board:{board_id}",)
+        and manifest_paths == (binding.physical_path_relative,)
+        and tuple(decoded_refs) == (binding.physical_path,)
+        and manifest.get("format") == "pulse_grafx_quarantine/1"
+        and manifest.get("kind") == "grafx_board_directory"
+        and manifest.get("generation") == binding.generation
+        and manifest.get("binding_sha256") == binding.binding_sha256
+        and Path(str(manifest.get("database_path") or "")) == binding.physical_path
+        and manifest.get("payload_relative") == "payload/database"
+        and manifest.get("source_removed") is True
+        and manifest.get("complete") is True
+        and manifest.get("phase") == "captured",
+        "manifest_compensation_quarantine_binding_invalid",
+    )
+    manifest_sha256 = manifest.get("manifest_sha256")
+    authenticated_manifest = {
+        key: value for key, value in manifest.items() if key != "manifest_sha256"
+    }
+    _require(
+        _is_sha256(manifest_sha256)
+        and _canonical_json_hash(authenticated_manifest) == manifest_sha256,
+        "manifest_compensation_quarantine_manifest_authentication_invalid",
+    )
+    raw_files = manifest.get("files")
+    raw_directories = manifest.get("directories")
+    _require(
+        isinstance(raw_files, list)
+        and bool(raw_files)
+        and isinstance(raw_directories, list),
+        "manifest_compensation_grafx_inventory_invalid",
+    )
+    assert isinstance(raw_files, list)
+    assert isinstance(raw_directories, list)
+    normalized_files: list[dict[str, object]] = []
+    expected_payload_hashes: dict[str, str] = {}
+    expected_sizes: dict[str, int] = {}
+    for raw_file in raw_files:
+        _require(
+            isinstance(raw_file, Mapping)
+            and set(raw_file) == {"relative_path", "size_bytes", "sha256"},
+            "manifest_compensation_grafx_inventory_invalid",
+        )
+        assert isinstance(raw_file, Mapping)
+        relative = raw_file.get("relative_path")
+        size = raw_file.get("size_bytes")
+        digest = raw_file.get("sha256")
+        parsed = PurePosixPath(relative) if type(relative) is str else None
+        _require(
+            parsed is not None
+            and not parsed.is_absolute()
+            and bool(parsed.parts)
+            and ".." not in parsed.parts
+            and parsed.as_posix() == relative
+            and type(size) is int
+            and size >= 0
+            and _is_sha256(digest)
+            and relative not in expected_payload_hashes,
+            "manifest_compensation_grafx_inventory_invalid",
+        )
+        expected_payload_hashes[str(relative)] = str(digest)
+        expected_sizes[str(relative)] = int(size)
+        normalized_files.append(
+            {
+                "relative_path": str(relative),
+                "size_bytes": int(size),
+                "sha256": str(digest),
+            }
+        )
+    directories = tuple(str(value) for value in raw_directories)
+    _require(
+        len(directories) == len(set(directories))
+        and tuple(normalized_files)
+        == tuple(sorted(normalized_files, key=lambda item: item["relative_path"]))
+        and manifest.get("inventory_sha256")
+        == _canonical_json_hash(
+            {"directories": list(directories), "files": normalized_files}
+        ),
+        "manifest_compensation_grafx_inventory_invalid",
+    )
+    payload_root = quarantine_dir / "payload" / "database"
+    payload_hashes = _snapshot_tree_hashes(payload_root)
+    payload_identities = _snapshot_tree_identities(payload_root)
+    actual_directories = tuple(sorted(set(payload_identities) - set(payload_hashes)))
+    _require(
+        payload_hashes == expected_payload_hashes
+        and actual_directories == directories
+        and "grafx.meta" in payload_hashes,
+        "manifest_compensation_grafx_payload_invalid",
+    )
+    for relative, expected_size in expected_sizes.items():
+        path = payload_root.joinpath(*PurePosixPath(relative).parts)
+        _require(
+            path.lstat().st_size == expected_size,
+            "manifest_compensation_grafx_payload_invalid",
             relative,
         )
-        path = quarantine_dir / relative_path
-        _require(
-            path.is_file() and not _is_filesystem_alias(path),
-            "manifest_compensation_quarantine_source_missing",
-            relative,
-        )
-        expected[relative_path.as_posix()] = hashlib.sha256(
-            path.read_bytes()
-        ).hexdigest()
+    expected = dict(binding_only)
+    prefix = f"{binding.board_storage_relative}/"
+    expected.update(
+        {f"{prefix}{relative}": digest for relative, digest in payload_hashes.items()}
+    )
+    _revalidate_board_binding(binding)
     return expected
 
 
@@ -5526,6 +5791,7 @@ def _assert_governed_quarantine(
     receipt: Mapping[str, Any],
     board_id: str,
     manifest_ref: str,
+    graph_binding: OfflineBoardGraphBinding,
 ) -> str:
     _assert_tree_preserved(quarantine_root, baseline_hashes)
     details = receipt.get("details")
@@ -5580,8 +5846,15 @@ def _assert_governed_quarantine(
     affected = tuple(
         str(value) for value in manifest.get("affected_paths_relative", ())
     )
+    expected_affected = (
+        _BINDING_LADYBUG_FILENAME
+        if graph_binding.backend == "ladybug"
+        else graph_binding.physical_path_relative
+    )
     _require(
-        "graph.lbug" in affected, "quarantine_live_graph_not_captured", repr(affected)
+        expected_affected in affected,
+        "quarantine_live_graph_not_captured",
+        repr(affected),
     )
     return quarantine_id
 
@@ -6509,44 +6782,96 @@ def _offline_cold_graph_health(
     board_id: str,
     board_storage_root: Path,
     board_storage_snapshot: Mapping[str, str],
+    graph_runtime_store: Any | None = None,
 ) -> dict[str, Any]:
-    """Build only the health fields needed before admission without opening Ladybug.
+    """Build the pre-admission health fields without opening either backend.
 
-    Opening an embedded Ladybug database is not physically read-only: on Windows
-    it both retains an exclusive cached ``Database`` handle and may normalize
-    native pages.  Preflight therefore consumes a conservative cold projection.
-    It never claims the graph is healthy; terminal queryability is proved later,
-    under the governed recovery capability, by :func:`_real_health`.
+    The authenticated Board binding is the route authority.  The composed
+    runtime port performs the backend-owned non-opening observation; this
+    executor only binds that result back to the exact cold filesystem snapshot.
+    It never claims the graph is healthy: terminal queryability is proved later.
     """
 
-    from okto_pulse.community.adapters.kuzu_graph_path_resolver import (
-        CommunityKuzuGraphPathResolver,
-    )
-
-    state = CommunityKuzuGraphPathResolver().storage_state(board_id)
-    expected_path = board_storage_root / "graph.lbug"
+    expected_binding = bundle.graph_binding
     _require(
-        state.path.resolve(strict=False) == expected_path.resolve(strict=False),
-        "cold_graph_storage_path_mismatch",
+        isinstance(expected_binding, OfflineBoardGraphBinding),
+        "cold_graph_backend_binding_missing",
     )
-    graph_present = "graph.lbug" in board_storage_snapshot
+    binding = _revalidate_board_binding(expected_binding)
+    bound_board_root = (
+        binding.physical_path.parent
+        if binding.backend == "ladybug"
+        else binding.physical_path.parents[1]
+    )
+    _require(
+        binding.board_id == board_id and bound_board_root == board_storage_root,
+        "cold_graph_storage_scope_mismatch",
+    )
+    _require(
+        board_storage_snapshot.get(_BOARD_BINDING_FILENAME) == binding.document_sha256,
+        "cold_graph_binding_snapshot_drift",
+    )
+    if binding.backend == "ladybug":
+        allowed = {
+            _BOARD_BINDING_FILENAME,
+            _BINDING_LADYBUG_FILENAME,
+            *(
+                f"{_BINDING_LADYBUG_FILENAME}{suffix}"
+                for suffix in _BINDING_LADYBUG_SIDECAR_SUFFIXES
+            ),
+        }
+        _require(
+            set(board_storage_snapshot).issubset(allowed),
+            "cold_graph_storage_snapshot_ambiguous",
+        )
+        graph_present = _BINDING_LADYBUG_FILENAME in board_storage_snapshot
+        snapshot_locked = f"{_BINDING_LADYBUG_FILENAME}.wal" in board_storage_snapshot
+    else:
+        prefix = f"{binding.board_storage_relative}/"
+        physical = {
+            relative
+            for relative in board_storage_snapshot
+            if relative != _BOARD_BINDING_FILENAME
+        }
+        _require(
+            all(relative.startswith(prefix) for relative in physical),
+            "cold_graph_storage_snapshot_ambiguous",
+        )
+        graph_present = f"{prefix}grafx.meta" in physical
+        snapshot_locked = False
+
+    if graph_runtime_store is None:
+        from okto_pulse.core.services.application_kg import (
+            get_current_provider_registry,
+        )
+
+        graph_runtime_store = get_current_provider_registry().graph_runtime_store
+    _require(graph_runtime_store is not None, "cold_graph_runtime_provider_missing")
+    state = graph_runtime_store.graph_state(
+        board_id,
+        generation=binding.generation,
+    )
+    expected_provider_backend = (
+        "community_local_graph" if binding.backend == "ladybug" else "okto_grafx"
+    )
+    _require(
+        str(getattr(state, "board_id", "")) == board_id
+        and getattr(state, "generation", None) == binding.generation
+        and getattr(state, "backend", None) == expected_provider_backend,
+        "cold_graph_runtime_route_mismatch",
+    )
     _require(
         bool(state.exists) == graph_present,
         "cold_graph_storage_snapshot_drift",
         board_id,
     )
-    snapshot_sidecars = {
-        relative
-        for relative in board_storage_snapshot
-        if "/" not in relative
-        and relative != "graph.lbug"
-        and relative.startswith("graph.lbug")
-    }
-    _require(
-        set(state.sidecars) == snapshot_sidecars,
-        "cold_graph_sidecar_snapshot_drift",
-        board_id,
-    )
+    if binding.backend == "ladybug":
+        _require(
+            bool(state.locked) == snapshot_locked,
+            "cold_graph_sidecar_snapshot_drift",
+            board_id,
+        )
+    _revalidate_board_binding(expected_binding)
     return {
         # ``recovery_needed`` is deliberately conservative: no native graph
         # query has run, so this projection must never manufacture ``healthy``.
@@ -6558,16 +6883,18 @@ def _offline_cold_graph_health(
     }
 
 
-def _snapshot_closed_board_storage(
+async def _snapshot_closed_board_storage(
     *,
     board_id: str,
     board_storage_root: Path,
     phase: str,
     drain_timeout_seconds: float = 30.0,
+    expected_binding: OfflineBoardGraphBinding | None = None,
+    graph_lifecycle: Any | None = None,
 ) -> dict[str, str]:
-    """Drain readers, close the native DB cache, and hash inside that fence."""
+    """Drain readers, close composed native pools, and hash inside that fence."""
 
-    from okto_pulse.community.adapters.kg_runtime import (
+    from okto_pulse.community.adapters.graph_operation_guards import (
         board_storage_mutation_window,
     )
 
@@ -6577,7 +6904,21 @@ def _snapshot_closed_board_storage(
             phase=f"recovery_snapshot:{phase}",
             drain_timeout=drain_timeout_seconds,
         ):
-            snapshot = _snapshot_tree_hashes(board_storage_root)
+            if expected_binding is not None:
+                _revalidate_board_binding(expected_binding)
+                if graph_lifecycle is None:
+                    from okto_pulse.core.application.kg_runtime_access import (
+                        resolve_graph_lifecycle,
+                    )
+
+                    graph_lifecycle = resolve_graph_lifecycle()
+                # ``close(None)`` is the public process-wide pool drain.  The
+                # surrounding Board mutation window keeps new readers out while
+                # the routed provider releases its native handle and bytes hash.
+                await graph_lifecycle.close(None)
+            snapshot = _snapshot_board_storage_hashes(board_storage_root)
+            if expected_binding is not None:
+                _revalidate_board_binding(expected_binding)
     except RecoveryRefused:
         raise
     except BaseException as exc:
@@ -8494,6 +8835,7 @@ def _legacy_quarantine_evidence(
     assert isinstance(original_refs, list)
     original_ref = original_refs[0]
     assert isinstance(original_ref, Mapping)
+    original_software_version = original_manifest.get("software_version")
     original_quarantined_at = _parse_utc_timestamp(
         original_manifest.get("quarantined_at"),
         code="legacy_queue_only_original_quarantine_invalid",
@@ -8524,7 +8866,8 @@ def _legacy_quarantine_evidence(
             expected=historical_data_home / "boards" / board_id / "graph.lbug",
             code="legacy_queue_only_original_quarantine_storage_ref_invalid",
         )
-        and original_manifest.get("software_version") == EXPECTED_VERSION,
+        and type(original_software_version) is str
+        and original_software_version in LEGACY_QUEUE_ONLY_SUPPORTED_SOFTWARE_VERSIONS,
         "legacy_queue_only_original_quarantine_invalid",
     )
     _require(
@@ -8669,7 +9012,10 @@ def _legacy_quarantine_evidence(
         and manual_manifest.get("kg_generation_id") is None
         and type(manual_manifest.get("files_moved")) is int
         and manual_manifest.get("files_moved") == 2
-        and manual_manifest.get("software_version") == EXPECTED_VERSION,
+        and type(manual_manifest.get("software_version")) is str
+        and manual_manifest.get("software_version") == original_software_version
+        and manual_manifest.get("software_version")
+        in LEGACY_QUEUE_ONLY_SUPPORTED_SOFTWARE_VERSIONS,
         "legacy_queue_only_manual_restore_invalid",
     )
     _require(
@@ -9183,8 +9529,17 @@ def _build_legacy_queue_only_intent(
         "legacy_queue_only_generation_evidence_conflict",
     )
     _require(
-        "graph.lbug" in board_storage_baseline
-        and set(board_storage_baseline) <= {"graph.lbug", "graph.lbug.wal"},
+        isinstance(bundle.graph_binding, OfflineBoardGraphBinding)
+        and bundle.graph_binding.backend == "ladybug"
+        and board_storage_baseline.get(_BOARD_BINDING_FILENAME)
+        == bundle.graph_binding.document_sha256
+        and _BINDING_LADYBUG_FILENAME in board_storage_baseline
+        and set(board_storage_baseline)
+        <= {
+            _BOARD_BINDING_FILENAME,
+            _BINDING_LADYBUG_FILENAME,
+            f"{_BINDING_LADYBUG_FILENAME}.wal",
+        },
         "legacy_queue_only_board_storage_invalid",
     )
     source = f"rebuild:{command.manifest_ref}"
@@ -10712,9 +11067,10 @@ def _assert_closed_operation_baseline_safe(
         quarantine_root=quarantine_root,
         board_id=board_id,
         manifest_ref=manifest_ref,
+        binding=bundle.graph_binding,
     )
     _require(
-        _snapshot_tree_hashes(board_storage_root) == expected_board_storage,
+        _snapshot_board_storage_hashes(board_storage_root) == expected_board_storage,
         "terminal_reconciliation_required:closed_compensation_graph_mismatch",
         run_id,
     )
@@ -10724,7 +11080,8 @@ def _assert_closed_operation_baseline_safe(
         "terminal_reconciliation_required:closed_compensation_pointer_mismatch",
         run_id,
     )
-    if expected_board_storage:
+    expected_physical_storage = set(expected_board_storage) - {_BOARD_BINDING_FILENAME}
+    if expected_physical_storage:
         _require(
             bool(raw_health.get("graph_storage_exists")),
             "terminal_reconciliation_required:closed_compensation_graph_unresolved",
@@ -10921,6 +11278,24 @@ def _canonical_source_rows(rows: Sequence[Mapping[str, Any]]) -> str:
     )
 
 
+def _reservation_snapshot_matches(current: Any, expected: Any) -> bool:
+    """Validate one complete lease snapshot without a racy second inspect."""
+
+    try:
+        return bool(
+            current is not None
+            and expected is not None
+            and current.owner_token == expected.owner_token
+            and current.owner_id == expected.owner_id
+            and current.operation == expected.operation
+            and current.acquired_at_epoch == expected.acquired_at_epoch
+            and current.admin_lane is True
+            and current.expires_at_epoch > time.time()
+        )
+    except BaseException:
+        return False
+
+
 def _assert_reservation_exact(
     bundle: ServiceBundle,
     *,
@@ -10943,15 +11318,7 @@ def _assert_reservation_exact(
     )
     if expected is not None:
         _require(
-            reservation.owner_token == expected.owner_token
-            and reservation.owner_id == expected.owner_id
-            and reservation.operation == expected.operation
-            and reservation.acquired_at_epoch == expected.acquired_at_epoch
-            and reservation.admin_lane is True
-            and bundle.operation_reservation.is_owner(
-                board_id=board_id,
-                owner_token=expected.owner_token,
-            ),
+            _reservation_snapshot_matches(reservation, expected),
             "administrative_reservation_authority_changed",
         )
     return reservation
@@ -11000,10 +11367,6 @@ def _fresh_reservation_for_invocation(
             or current.acquired_at_epoch < not_before_epoch
             or current.expires_at_epoch <= time.time()
             or identity == preexisting_identity
-            or not bundle.operation_reservation.is_owner(
-                board_id=board_id,
-                owner_token=current.owner_token,
-            )
         ):
             return None
         return current
@@ -11651,17 +12014,7 @@ async def _recover_exact_claims_for_resume(
             return bool(
                 not cancel_event.is_set()
                 and lifetime_probe()
-                and current is not None
-                and current.owner_token == reservation_baseline.owner_token
-                and current.owner_id == reservation_baseline.owner_id
-                and current.operation == reservation_baseline.operation
-                and current.acquired_at_epoch == reservation_baseline.acquired_at_epoch
-                and current.admin_lane is True
-                and current.expires_at_epoch > time.time()
-                and bundle.operation_reservation.is_owner(
-                    board_id=board_id,
-                    owner_token=reservation_baseline.owner_token,
-                )
+                and _reservation_snapshot_matches(current, reservation_baseline)
             )
         except BaseException:
             return False
@@ -12182,10 +12535,11 @@ async def _run_legacy_queue_only_lane(
             _snapshot_tree_hashes(quarantine_root) == dict(quarantine_baseline),
             "legacy_queue_only_quarantine_changed",
         )
-        closed_board = _snapshot_closed_board_storage(
+        closed_board = await _snapshot_closed_board_storage(
             board_id=reconciliation.intent.board_id,
             board_storage_root=board_storage_root,
             phase="legacy_manual_restore_queue_only_terminal",
+            expected_binding=bundle.graph_binding,
         )
         _require(
             closed_board == dict(board_storage_baseline),
@@ -12618,17 +12972,7 @@ async def _drain_exact_scope(
             return bool(
                 not cancel_event.is_set()
                 and lifetime_probe()
-                and current is not None
-                and current.owner_token == reservation_baseline.owner_token
-                and current.owner_id == reservation_baseline.owner_id
-                and current.operation == reservation_baseline.operation
-                and current.acquired_at_epoch == reservation_baseline.acquired_at_epoch
-                and current.admin_lane is True
-                and current.expires_at_epoch > time.time()
-                and bundle.operation_reservation.is_owner(
-                    board_id=board_id,
-                    owner_token=reservation_baseline.owner_token,
-                )
+                and _reservation_snapshot_matches(current, reservation_baseline)
             )
         except BaseException:
             return False
@@ -12637,6 +12981,9 @@ async def _drain_exact_scope(
     processed_total = 0
     cancellation_wait_emitted = False
     blocker: ExactDrainBlocker | None = None
+    idle_started_at: float | None = None
+    idle_observations = 0
+    idle_stall_seconds = min(30.0, timeout_seconds)
     while not service_task.done():
         _require(lifetime_probe(), "recovery_capability_lifetime_lost")
         if cancel_event.is_set():
@@ -12727,6 +13074,12 @@ async def _drain_exact_scope(
             board_id=board_id,
             source_rows=source_rows,
         )
+        if rows:
+            # Any typed result proves that the exact processor observed and
+            # classified the deterministic head.  A prior empty observation
+            # was therefore transient and must not count toward a later stall.
+            idle_started_at = None
+            idle_observations = 0
         neutral_rows = tuple(
             row for row in rows if row.disposition.value == "neutral_fence_loss"
         )
@@ -12841,12 +13194,45 @@ async def _drain_exact_scope(
             await asyncio.sleep(min(poll_seconds, retry_delay, remaining))
             continue
         if not rows and not service_task.done():
-            _require(
-                before_depth == 0 and after_depth == 0,
-                "exact_processor_made_no_progress",
-                f"depth={after_depth}",
-            )
-            await asyncio.sleep(poll_seconds)
+            if before_depth > 0 or after_depth > 0:
+                # The persistence boundary can observe the administrative
+                # reservation through a file replaced by its heartbeat.  One
+                # transient read failure must not turn a healthy, unchanged
+                # exact queue into destructive compensation.  Keep proving
+                # every fence/snapshot on each outer-loop iteration and allow
+                # only a short, monotonic, non-mutating observation window.
+                now_monotonic = asyncio.get_running_loop().time()
+                if idle_started_at is None:
+                    idle_started_at = now_monotonic
+                    idle_observations = 0
+                idle_observations += 1
+                indexes = {name: offset for offset, name in enumerate(before.columns)}
+                head_queue_id = (
+                    str(before.rows[0][indexes["id"]])
+                    if before.rows and "id" in indexes
+                    else None
+                )
+                _emit(
+                    "exact_scope_transient_idle",
+                    depth=after_depth,
+                    head_queue_id=head_queue_id,
+                    queue_fingerprint=before.fingerprint,
+                    observations=idle_observations,
+                )
+                _require(
+                    now_monotonic - idle_started_at < idle_stall_seconds,
+                    "exact_processor_stalled",
+                    (
+                        f"depth={after_depth} head={head_queue_id} "
+                        f"observations={idle_observations}"
+                    ),
+                )
+            else:
+                idle_started_at = None
+                idle_observations = 0
+            remaining = deadline - asyncio.get_running_loop().time()
+            _require(remaining > 0, "rebuild_run_timeout")
+            await asyncio.sleep(min(poll_seconds, remaining))
     result = await service_task
     _emit(
         "exact_scope_drained",
@@ -13209,10 +13595,11 @@ async def _assert_manifest_compensation_reconciliation(
         if compensation_applied
         else dict(board_storage_baseline)
     )
-    terminal_board_storage = _snapshot_closed_board_storage(
+    terminal_board_storage = await _snapshot_closed_board_storage(
         board_id=board_id,
         board_storage_root=board_storage_root,
         phase="manifest_compensation_terminal",
+        expected_binding=bundle.graph_binding,
     )
     _require(
         terminal_board_storage == expected_terminal_board_storage,
@@ -13229,7 +13616,7 @@ async def _assert_manifest_compensation_reconciliation(
         == baseline_health.get("current_kg_generation_id"),
         "manifest_compensation_generation_pointer_changed",
     )
-    graph_files = terminal_board_storage
+    graph_files = set(terminal_board_storage) - {_BOARD_BINDING_FILENAME}
     if graph_files:
         _require(
             bool(post_health.get("graph_storage_exists")),
@@ -13412,10 +13799,11 @@ async def _await_closed_archive_reconciliation(
         _sqlite_logical_fingerprints(db_path) == dict(logical_database_baseline),
         "logical_database_changed_during_closed_receipt_archive",
     )
-    terminal_board_storage = _snapshot_closed_board_storage(
+    terminal_board_storage = await _snapshot_closed_board_storage(
         board_id=board_id,
         board_storage_root=board_storage_root,
         phase="archive_closed_terminal",
+        expected_binding=bundle.graph_binding,
     )
     _require(
         terminal_board_storage == dict(board_storage_baseline),
@@ -13665,7 +14053,7 @@ def _assert_exact_failed_rebuild_event(
     )
 
 
-def _assert_exact_blocking_compensation(
+async def _assert_exact_blocking_compensation(
     bundle: ServiceBundle,
     manifest: Any,
     result: Any,
@@ -13918,10 +14306,11 @@ def _assert_exact_blocking_compensation(
         == expected_new_quarantines,
         "exact_blocking_quarantine_set_invalid",
     )
-    terminal_board_storage = _snapshot_closed_board_storage(
+    terminal_board_storage = await _snapshot_closed_board_storage(
         board_id=board_id,
         board_storage_root=board_storage_root,
         phase="exact_blocking_terminal",
+        expected_binding=bundle.graph_binding,
     )
     post_health = _offline_cold_graph_health(
         bundle,
@@ -13981,7 +14370,10 @@ async def _assert_terminal_gates(
     rebaseline_audit_baseline: Mapping[str, Any] | None = None,
     expected_rebaseline_evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from okto_pulse.core.application.kg_runtime_access import resolve_graph_lifecycle
+    from okto_pulse.core.application.kg_runtime_access import (
+        resolve_graph_lifecycle,
+        resolve_graph_schema_manager,
+    )
     from okto_pulse.core.kg.rebuild_report import RebuildReportStore
 
     _require(getattr(result, "outcome", None) == "completed", "rebuild_not_completed")
@@ -14235,8 +14627,17 @@ async def _assert_terminal_gates(
         "terminal_orphan_scan_unresolved",
         repr(orphan_report.unresolved_reasons),
     )
-    live_graph = Path(os.environ["KG_BASE_DIR"]) / "boards" / board_id / "graph.lbug"
-    _require(live_graph.is_file(), "terminal_graph_storage_missing", str(live_graph))
+    graph_binding = bundle.graph_binding
+    _require(
+        isinstance(graph_binding, OfflineBoardGraphBinding),
+        "terminal_graph_backend_binding_missing",
+    )
+    graph_binding = _revalidate_board_binding(graph_binding)
+    _require(
+        _binding_physical_storage_present(graph_binding),
+        "terminal_graph_storage_missing",
+        str(graph_binding.physical_path),
+    )
     post_health = await _real_health(composition, board_id)
     _require(
         str(post_health.get("graph_state") or "") == "healthy",
@@ -14248,9 +14649,9 @@ async def _assert_terminal_gates(
         == str(current_generation),
         "terminal_health_generation_mismatch",
     )
-    from okto_pulse.community.adapters.kuzu_graph_store import CommunityKuzuGraphStore
-
-    graph_schema_version = CommunityKuzuGraphStore().get_schema_version(board_id)
+    graph_schema_version = await resolve_graph_schema_manager().current_version(
+        board_id
+    )
     _require(bool(graph_schema_version), "terminal_graph_query_failed")
     quarantine_id = _assert_governed_quarantine(
         quarantine_root=quarantine_root,
@@ -14259,6 +14660,7 @@ async def _assert_terminal_gates(
         receipt=receipt_by_effect["quarantine"],
         board_id=board_id,
         manifest_ref=manifest.manifest_ref,
+        graph_binding=graph_binding,
     )
     confirmation_receipt_ref = _assert_confirmation_receipt(
         bundle,
@@ -14356,6 +14758,7 @@ async def _shutdown_composed_runtime(
 async def _execute_under_serve_lock(
     args: argparse.Namespace,
     *,
+    graph_binding: OfflineBoardGraphBinding | OfflineBoardGraphRouteDecision,
     data_home: Path,
     db_path: Path,
     owner_id: str,
@@ -14401,7 +14804,20 @@ async def _execute_under_serve_lock(
         # before any native health/open call. Ladybug open is not physically
         # read-only and keeps a Windows file handle in the Database cache.
         board_storage_root = data_home / "boards" / args.board_id
-        board_storage_baseline = _snapshot_tree_hashes(board_storage_root)
+        board_storage_baseline = _snapshot_board_storage_hashes(board_storage_root)
+        if isinstance(graph_binding, OfflineBoardGraphRouteDecision):
+            route_decision = graph_binding
+        else:
+            _require(
+                isinstance(graph_binding, OfflineBoardGraphBinding),
+                "offline_recovery_backend_route_decision_invalid",
+            )
+            route_decision = OfflineBoardGraphRouteDecision(
+                data_home=graph_binding.data_home,
+                board_id=graph_binding.board_id,
+                binding=graph_binding,
+            )
+        _revalidate_board_route_decision(route_decision)
         app = create_community_app()
         composition = app.state.runtime_composition
         transaction = app.state.mcp_cold_start_transaction
@@ -14446,12 +14862,6 @@ async def _execute_under_serve_lock(
 
             _assert_no_pulse_processes()
             _require(lifetime_probe(), "offline_lifetime_proof_failed")
-            await _authorize_governed_rebuild(
-                composition,
-                board_id=args.board_id,
-                actor_id=owner_id,
-            )
-            _require(lifetime_probe(), "offline_lifetime_lost_during_authorization")
             quarantine_root = data_home / "quarantine"
 
             def legacy_evidence_probe(intent: Any) -> bool:
@@ -14468,6 +14878,21 @@ async def _execute_under_serve_lock(
                 legacy_evidence_probe=legacy_evidence_probe,
                 legacy_db_path=db_path,
             )
+            adopted_legacy_route = route_decision.binding is None
+            active_binding = _publish_recovery_board_route(
+                route_decision,
+                bundle=bundle,
+                actor_id=owner_id,
+                lifetime_probe=lifetime_probe,
+            )
+            bundle.graph_binding = active_binding
+            if adopted_legacy_route:
+                board_storage_baseline = await _snapshot_closed_board_storage(
+                    board_id=args.board_id,
+                    board_storage_root=board_storage_root,
+                    phase="administrative_route_adoption",
+                    expected_binding=active_binding,
+                )
             raw_health = _offline_cold_graph_health(
                 bundle,
                 board_id=args.board_id,
@@ -14486,6 +14911,12 @@ async def _execute_under_serve_lock(
                 bundle.operation_reservation.inspect(board_id=args.board_id) is None,
                 "preexisting_administrative_reservation_present",
             )
+            await _authorize_governed_rebuild(
+                composition,
+                board_id=args.board_id,
+                actor_id=owner_id,
+            )
+            _require(lifetime_probe(), "offline_lifetime_lost_during_authorization")
             overlay_revision_path = rebuild_root / _COGNITIVE_OVERLAY_REVISION_RELATIVE
             overlay_revision_baseline: Mapping[str, Any] | None = None
             if _COGNITIVE_OVERLAY_REVISION_RELATIVE in rebuild_baseline:
@@ -14765,6 +15196,7 @@ async def _execute_under_serve_lock(
                     quarantine_root=quarantine_root,
                     board_id=args.board_id,
                     manifest_ref=manifest.manifest_ref,
+                    binding=bundle.graph_binding,
                 )
                 if compensation_mode
                 else {}
@@ -15257,7 +15689,7 @@ async def _execute_under_serve_lock(
                 service_task = None
                 _require(lifetime_probe(), "offline_lifetime_lost_before_terminal_gate")
                 if exact_blocker is not None:
-                    _assert_exact_blocking_compensation(
+                    await _assert_exact_blocking_compensation(
                         bundle,
                         manifest,
                         result,
@@ -15436,6 +15868,580 @@ def _run_bounded_recovery_lanes(
     return second
 
 
+# --- authenticated Board backend route -------------------------------------
+
+_BINDING_CODE = "offline_recovery_backend_binding"
+_BOARD_BINDING_FILENAME = "graph_backend_binding.json"
+_BINDING_FORMAT = "okto-pulse-community-graph-binding/1"
+_BINDING_MAX_BYTES = 16 * 1024
+_BINDING_GRAFX_DIRNAME = "grafx"
+_BINDING_LADYBUG_FILENAME = "graph.lbug"
+_BINDING_ROUTE_LOCK_FILENAME = ".graph_route_initialization.lock"
+_BINDING_LADYBUG_SIDECAR_SUFFIXES = (".wal", ".shadow", ".wal.checkpoint")
+_BINDING_GRAFX_MIN_PAGE_SIZE = 4096
+_BINDING_GRAFX_MAX_PAGE_SIZE = 32768
+_BINDING_KEYS = frozenset(
+    {
+        "binding_format",
+        "scope",
+        "scope_id",
+        "backend",
+        "generation",
+        "physical_path",
+        "page_size",
+        "binding_sha256",
+    }
+)
+_BINDING_BACKENDS = frozenset({"grafx"})
+_BINDING_PORTABLE_FORBIDDEN = frozenset('<>:"|?*')
+_BINDING_WINDOWS_RESERVED = frozenset(
+    {
+        "aux",
+        "con",
+        "nul",
+        "prn",
+        *(f"com{number}" for number in range(1, 10)),
+        *(f"lpt{number}" for number in range(1, 10)),
+    }
+)
+"""A deliberate mirror of ``adapters.graph_backend_binding``.
+
+These rules are duplicated rather than imported, and the duplication is not an
+oversight.  The binding store imports ``okto_pulse.community.config``, and this
+check has to run BEFORE the explicit environment is frozen -- so importing it
+here would both violate the executor's import discipline and settle the very
+question the check exists to answer.  The mirror is held to the original by
+tests that build documents with the real store and read them back through here.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class OfflineBoardGraphBinding:
+    """Authenticated, immutable routing evidence for one recovery execution."""
+
+    data_home: Path
+    board_id: str
+    backend: str
+    generation: str
+    physical_path: Path
+    physical_path_relative: str
+    page_size: int | None
+    binding_sha256: str
+    document_sha256: str
+
+    @property
+    def board_storage_relative(self) -> str:
+        return self.physical_path.relative_to(
+            self.data_home / "boards" / self.board_id
+        ).as_posix()
+
+
+@dataclass(frozen=True, slots=True)
+class OfflineBoardGraphRouteDecision:
+    """Frozen pre-effect route evidence, including safe legacy adoption."""
+
+    data_home: Path
+    board_id: str
+    binding: OfflineBoardGraphBinding | None
+    legacy_state: str | None = None
+
+    def __post_init__(self) -> None:
+        _require(
+            (self.binding is not None and self.legacy_state is None)
+            or (
+                self.binding is None
+                and self.legacy_state in {"empty", "ladybug_present"}
+            ),
+            "offline_recovery_backend_route_decision_invalid",
+        )
+
+
+def _binding_digest(body: Mapping[str, Any]) -> str:
+    """The binding digest, byte-for-byte as the binding writer computes it."""
+
+    return hashlib.sha256(
+        json.dumps(
+            dict(body),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _binding_portable_segment(value: Any, *, field: str) -> str:
+    """Mirror the store's portable-segment rule for one path component."""
+
+    _require(type(value) is str, f"{_BINDING_CODE}_{field}_invalid")
+    _require(
+        bool(value)
+        and value not in {".", ".."}
+        and "/" not in value
+        and "\\" not in value
+        and "\x00" not in value,
+        f"{_BINDING_CODE}_{field}_invalid",
+    )
+    _require(
+        len(value) <= 128
+        and value[-1:] not in {".", " "}
+        and value.split(".", 1)[0].casefold() not in _BINDING_WINDOWS_RESERVED
+        and not any(character in _BINDING_PORTABLE_FORBIDDEN for character in value)
+        and not any(ord(character) < 32 for character in value),
+        f"{_BINDING_CODE}_{field}_not_portable",
+    )
+    return value
+
+
+def _binding_grafx_page_size(value: Any) -> int:
+    """Mirror validate_grafx_page_size without importing the settings module."""
+
+    _require(
+        type(value) is int
+        and _BINDING_GRAFX_MIN_PAGE_SIZE <= value <= _BINDING_GRAFX_MAX_PAGE_SIZE
+        and not value & (value - 1),
+        f"{_BINDING_CODE}_page_size_invalid",
+        str(value),
+    )
+    return value
+
+
+def _binding_physical_path(
+    root: Path,
+    value: Any,
+    *,
+    board_id: str,
+    backend: str,
+    generation: str,
+) -> Path:
+    """Mirror the store's canonical physical-path rule, following no alias."""
+
+    _require(
+        type(value) is str and "\\" not in value,
+        f"{_BINDING_CODE}_physical_path_invalid",
+    )
+    relative = PurePosixPath(value)
+    _require(
+        not relative.is_absolute() and ".." not in relative.parts,
+        f"{_BINDING_CODE}_physical_path_invalid",
+    )
+    candidate = root.joinpath(*relative.parts)
+    lexical = Path(os.path.abspath(candidate))
+    absolute_root = Path(os.path.abspath(root))
+    try:
+        parts = lexical.relative_to(absolute_root).parts
+    except ValueError as exc:
+        raise RecoveryRefused(
+            f"{_BINDING_CODE}_physical_path_escapes_data_home"
+        ) from exc
+    # A physical path whose lexical and resolved forms disagree is reached
+    # through a junction or symlink somewhere, so it is refused rather than
+    # followed out of the data home.
+    _require(
+        os.path.normcase(str(lexical))
+        == os.path.normcase(str(candidate.resolve(strict=False))),
+        f"{_BINDING_CODE}_physical_path_alias_refused",
+    )
+    _require(
+        tuple(parts[:2]) == ("boards", board_id),
+        f"{_BINDING_CODE}_physical_path_scope_mismatch",
+    )
+    board_root = root / "boards" / board_id
+    if backend == "grafx":
+        expected = board_root / _BINDING_GRAFX_DIRNAME / generation
+    else:
+        _require(
+            _BINDING_GRAFX_DIRNAME not in tuple(part.casefold() for part in parts)
+            and lexical.suffix.casefold() == ".lbug",
+            f"{_BINDING_CODE}_physical_path_not_canonical",
+        )
+        expected = board_root / _BINDING_LADYBUG_FILENAME
+    _require(
+        os.path.normcase(str(lexical))
+        == os.path.normcase(str(Path(os.path.abspath(expected)))),
+        f"{_BINDING_CODE}_physical_path_not_canonical",
+    )
+    return lexical
+
+
+def _persisted_board_binding(
+    binding_path: Path,
+    root: Path,
+    board_id: str,
+) -> OfflineBoardGraphBinding:
+    """Read and authenticate one complete persisted binding, or refuse.
+
+    The document is accepted only if it is exactly what the store would accept.
+    The digest is self-contained rather than a signature, so a hash-consistent
+    document that is semantically wrong is still refused.
+    """
+
+    content = _read_bounded_stable_file(
+        binding_path,
+        code=_BINDING_CODE,
+        max_bytes=_BINDING_MAX_BYTES,
+    )
+    document = _strict_json_mapping(content, code=_BINDING_CODE)
+    _require(set(document) == _BINDING_KEYS, f"{_BINDING_CODE}_shape_invalid")
+    supplied = document["binding_sha256"]
+    _require(_is_sha256(supplied), f"{_BINDING_CODE}_digest_invalid")
+    body = {key: value for key, value in document.items() if key != "binding_sha256"}
+    _require(_binding_digest(body) == supplied, f"{_BINDING_CODE}_digest_mismatch")
+    _require(
+        document["binding_format"] == _BINDING_FORMAT,
+        f"{_BINDING_CODE}_format_unsupported",
+    )
+    _require(
+        document["scope"] == "board" and document["scope_id"] == board_id,
+        f"{_BINDING_CODE}_scope_mismatch",
+    )
+    backend = document["backend"]
+    _require(
+        type(backend) is str and backend in _BINDING_BACKENDS,
+        f"{_BINDING_CODE}_backend_invalid",
+    )
+    generation = _binding_portable_segment(document["generation"], field="generation")
+    physical_path = _binding_physical_path(
+        root,
+        document["physical_path"],
+        board_id=board_id,
+        backend=backend,
+        generation=generation,
+    )
+    if backend == "grafx":
+        page_size: int | None = _binding_grafx_page_size(document["page_size"])
+    else:
+        _require(
+            document["page_size"] is None,
+            f"{_BINDING_CODE}_page_size_not_null",
+        )
+        page_size = None
+    return OfflineBoardGraphBinding(
+        data_home=Path(os.path.abspath(root)),
+        board_id=board_id,
+        backend=backend,
+        generation=generation,
+        physical_path=physical_path,
+        physical_path_relative=str(document["physical_path"]),
+        page_size=page_size,
+        binding_sha256=str(supplied),
+        document_sha256=hashlib.sha256(content).hexdigest(),
+    )
+
+
+def _board_backend_decision(
+    data_home: Path,
+    board_id: str,
+) -> OfflineBoardGraphRouteDecision:
+    """Freeze one authenticated route or an unequivocal legacy candidate.
+
+    This pre-effect decision is read-only.  A persisted binding is the routing
+    authority.  Without one, only an empty Board or canonical Ladybug primary
+    (with recognized sidecars) is eligible for later administrative adoption.
+    Any Grafx, alias, orphan sidecar, mixed or unknown artifact fails closed.
+    """
+
+    canonical_home = Path(os.path.abspath(data_home))
+    board_root = canonical_home / "boards" / board_id
+    binding_path = board_root / _BOARD_BINDING_FILENAME
+    _assert_no_symlink_components(binding_path, f"{_BINDING_CODE}_alias_refused")
+    try:
+        binding_details = binding_path.lstat()
+    except FileNotFoundError:
+        binding_details = None
+    except OSError as exc:
+        raise RecoveryRefused(f"{_BINDING_CODE}_unverifiable:{binding_path}") from exc
+    if binding_details is not None:
+        _require(
+            stat.S_ISREG(binding_details.st_mode),
+            f"{_BINDING_CODE}_type_invalid",
+        )
+        return OfflineBoardGraphRouteDecision(
+            data_home=canonical_home,
+            board_id=board_id,
+            binding=_persisted_board_binding(
+                binding_path,
+                canonical_home,
+                board_id,
+            ),
+        )
+
+    _assert_no_symlink_components(board_root, f"{_BINDING_CODE}_alias_refused")
+    try:
+        board_details = board_root.lstat()
+    except FileNotFoundError:
+        names: set[str] = set()
+    except OSError as exc:
+        raise RecoveryRefused(f"{_BINDING_CODE}_unverifiable:{board_root}") from exc
+    else:
+        _require(
+            stat.S_ISDIR(board_details.st_mode),
+            f"{_BINDING_CODE}_legacy_board_root_type_invalid",
+        )
+        try:
+            names = {entry.name for entry in os.scandir(board_root)}
+        except OSError as exc:
+            raise RecoveryRefused(f"{_BINDING_CODE}_unverifiable:{board_root}") from exc
+
+    allowed = {
+        _BINDING_LADYBUG_FILENAME,
+        _BINDING_ROUTE_LOCK_FILENAME,
+        *(
+            f"{_BINDING_LADYBUG_FILENAME}{suffix}"
+            for suffix in _BINDING_LADYBUG_SIDECAR_SUFFIXES
+        ),
+    }
+    _require(names <= allowed, f"{_BINDING_CODE}_missing")
+    sidecar_names = {
+        f"{_BINDING_LADYBUG_FILENAME}{suffix}"
+        for suffix in _BINDING_LADYBUG_SIDECAR_SUFFIXES
+    }
+    ladybug_present = _BINDING_LADYBUG_FILENAME in names
+    _require(not ladybug_present, "offline_graph_backend_retired_files_preserved")
+    _require(ladybug_present or not (names & sidecar_names), f"{_BINDING_CODE}_missing")
+    for name in names:
+        path = board_root / name
+        _assert_no_symlink_components(path, f"{_BINDING_CODE}_alias_refused")
+        try:
+            details = path.lstat()
+        except OSError as exc:
+            raise RecoveryRefused(f"{_BINDING_CODE}_unverifiable:{path}") from exc
+        _require(stat.S_ISREG(details.st_mode), f"{_BINDING_CODE}_missing")
+    return OfflineBoardGraphRouteDecision(
+        data_home=canonical_home,
+        board_id=board_id,
+        binding=None,
+        legacy_state="ladybug_present" if ladybug_present else "empty",
+    )
+
+
+def _require_authenticated_recoverable_backend(
+    data_home: Path,
+    board_id: str,
+) -> OfflineBoardGraphRouteDecision:
+    """Freeze a bound route or a safe, still-unbound legacy Board state.
+
+    A legacy state is authority only to enter the later administrative route
+    publication lane; it is never used to select or open a provider directly.
+    """
+
+    return _board_backend_decision(data_home, board_id)
+
+
+def _revalidate_board_route_decision(
+    expected: OfflineBoardGraphRouteDecision,
+) -> OfflineBoardGraphRouteDecision:
+    observed = _board_backend_decision(expected.data_home, expected.board_id)
+    _require(observed == expected, "offline_recovery_backend_route_changed")
+    return observed
+
+
+def _revalidate_board_binding(
+    expected: OfflineBoardGraphBinding,
+) -> OfflineBoardGraphBinding:
+    decision = _board_backend_decision(expected.data_home, expected.board_id)
+    observed = decision.binding
+    _require(observed == expected, "offline_recovery_backend_binding_changed")
+    assert observed is not None
+    return observed
+
+
+def _publish_recovery_board_route(
+    decision: OfflineBoardGraphRouteDecision,
+    *,
+    bundle: ServiceBundle,
+    actor_id: str,
+    lifetime_probe: Callable[[], bool],
+    routed_graph: Any | None = None,
+) -> OfflineBoardGraphBinding:
+    """Publish a missing route only inside Core's administrative write lane.
+
+    Community composition is deliberately side-effect-free and is required to
+    obtain the routed provider.  This function runs before health, schema or
+    rebuild graph operations and never opens a backend by a guessed path.
+    """
+
+    frozen = _revalidate_board_route_decision(decision)
+    if frozen.binding is not None:
+        return _revalidate_board_binding(frozen.binding)
+    _require(lifetime_probe(), "offline_route_adoption_lifetime_proof_failed")
+    _require(
+        bundle.single_writer_lock.inspect(board_id=decision.board_id) is None,
+        "preexisting_writer_lock_present",
+    )
+    _require(
+        bundle.operation_reservation.inspect(board_id=decision.board_id) is None,
+        "preexisting_administrative_reservation_present",
+    )
+    if routed_graph is None:
+        from okto_pulse.community.adapters.composition import (
+            require_community_routed_graph_composition,
+        )
+
+        routed_graph = require_community_routed_graph_composition()
+
+    operation = "offline_recovery_route_adoption"
+    ttl_seconds = int(getattr(bundle.service, "lock_ttl_seconds", 300))
+    _require(ttl_seconds > 0, "offline_route_adoption_ttl_invalid")
+    reservation = bundle.operation_reservation.acquire(
+        board_id=decision.board_id,
+        operation=f"{operation}.reservation",
+        owner_id=f"{actor_id}:{operation}:reservation:{time.time_ns()}",
+        ttl_seconds=ttl_seconds,
+        admin_lane=True,
+    )
+    _require(
+        bool(getattr(reservation, "acquired", False))
+        and bool(getattr(reservation, "owner_token", None))
+        and bool(getattr(reservation, "admin_lane", True)),
+        "offline_route_adoption_reservation_contention",
+    )
+    reservation_token = str(reservation.owner_token)
+    writer_token: str | None = None
+    primary_error: BaseException | None = None
+    cleanup_errors: list[str] = []
+    try:
+        acquisition = bundle.single_writer_lock.acquire(
+            board_id=decision.board_id,
+            operation=operation,
+            owner_id=f"{actor_id}:{operation}:writer:{time.time_ns()}",
+            ttl_seconds=ttl_seconds,
+            admin_lane=True,
+        )
+        _require(
+            bool(getattr(acquisition, "acquired", False))
+            and bool(getattr(acquisition, "owner_token", None))
+            and bool(getattr(acquisition, "admin_lane", True)),
+            "offline_route_adoption_writer_contention",
+        )
+        writer_token = str(acquisition.owner_token)
+        from okto_pulse.core.kg.write_barrier import under_safe_write
+
+        with under_safe_write(decision.board_id, writer_token, operation):
+            _require(
+                lifetime_probe()
+                and bundle.operation_reservation.renew(
+                    board_id=decision.board_id,
+                    owner_token=reservation_token,
+                    ttl_seconds=ttl_seconds,
+                )
+                and bundle.single_writer_lock.renew(
+                    board_id=decision.board_id,
+                    owner_token=writer_token,
+                    ttl_seconds=ttl_seconds,
+                ),
+                "offline_route_adoption_fence_lost",
+            )
+            _revalidate_board_route_decision(decision)
+            if decision.legacy_state == "ladybug_present":
+                snapshot = routed_graph.adopt_existing_board_route(decision.board_id)
+                _require(snapshot is not None, "offline_route_adoption_missing")
+            else:
+                _require(
+                    decision.legacy_state == "empty",
+                    "offline_route_adoption_decision_invalid",
+                )
+                snapshot = routed_graph.initialize_board_route(decision.board_id)
+            _require(
+                lifetime_probe()
+                and bundle.operation_reservation.renew(
+                    board_id=decision.board_id,
+                    owner_token=reservation_token,
+                    ttl_seconds=ttl_seconds,
+                )
+                and bundle.single_writer_lock.renew(
+                    board_id=decision.board_id,
+                    owner_token=writer_token,
+                    ttl_seconds=ttl_seconds,
+                ),
+                "offline_route_adoption_fence_lost",
+            )
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        if writer_token is not None:
+            try:
+                if not bundle.single_writer_lock.release(
+                    board_id=decision.board_id,
+                    owner_token=writer_token,
+                ):
+                    cleanup_errors.append("writer_token_mismatch")
+            except BaseException as exc:
+                cleanup_errors.append(f"writer:{type(exc).__name__}")
+        try:
+            if not bundle.operation_reservation.release(
+                board_id=decision.board_id,
+                owner_token=reservation_token,
+            ):
+                cleanup_errors.append("reservation_token_mismatch")
+        except BaseException as exc:
+            cleanup_errors.append(f"reservation:{type(exc).__name__}")
+        if cleanup_errors:
+            cleanup = RecoveryRefused(
+                "offline_route_adoption_fence_release_failed:"
+                + ",".join(cleanup_errors)
+            )
+            if primary_error is not None:
+                primary_error.add_note(str(cleanup))
+            else:
+                raise cleanup
+
+    observed_decision = _board_backend_decision(decision.data_home, decision.board_id)
+    observed = observed_decision.binding
+    _require(observed is not None, "offline_route_adoption_binding_missing")
+    if decision.legacy_state == "ladybug_present":
+        _require(observed.backend == "ladybug", "offline_route_adoption_misdirected")
+    _require(
+        str(getattr(snapshot, "scope", "")) == "board"
+        and str(getattr(snapshot, "scope_id", "")) == decision.board_id
+        and str(getattr(snapshot, "backend", "")) == observed.backend
+        and str(getattr(snapshot, "generation", "")) == observed.generation
+        and Path(getattr(snapshot, "binding_path", "")) == observed.physical_path
+        and getattr(snapshot, "page_size", None) == observed.page_size
+        and str(getattr(snapshot, "binding_sha256", "")) == observed.binding_sha256,
+        "offline_route_adoption_binding_mismatch",
+    )
+    _require(lifetime_probe(), "offline_route_adoption_lifetime_lost")
+    _emit(
+        "offline_graph_route_adopted",
+        board_id=decision.board_id,
+        backend=observed.backend,
+        generation=observed.generation,
+        legacy_state=decision.legacy_state,
+    )
+    return observed
+
+
+def _binding_physical_storage_present(
+    binding: OfflineBoardGraphBinding,
+) -> bool:
+    """Check the bound physical target without following aliases or opening it."""
+
+    _assert_no_symlink_components(
+        binding.physical_path,
+        "offline_recovery_backend_storage_alias_refused",
+    )
+    try:
+        details = binding.physical_path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise RecoveryRefused(
+            f"offline_recovery_backend_storage_unverifiable:{binding.physical_path}"
+        ) from exc
+    expected_type = (
+        stat.S_ISREG(details.st_mode)
+        if binding.backend == "ladybug"
+        else stat.S_ISDIR(details.st_mode)
+    )
+    _require(
+        expected_type,
+        "offline_recovery_backend_storage_type_invalid",
+        str(binding.physical_path),
+    )
+    return True
+
+
 def _execute(args: argparse.Namespace, evidence: InstallEvidence) -> int:
     data_home = _resolve_explicit_data_home(args.data_home, require_existing=True)
     db_path = (data_home / "data" / "pulse.db").resolve()
@@ -15448,6 +16454,13 @@ def _execute(args: argparse.Namespace, evidence: InstallEvidence) -> int:
     )
     _assert_ports_offline(args.offline_ports)
     _assert_no_pulse_processes()
+    # Before ANY durable effect -- receipt consumption, serve lock, schema
+    # install, runtime open -- authenticate and freeze the Board route that all
+    # subsequent provider-neutral proofs must continue to observe.
+    route_decision = _require_authenticated_recoverable_backend(
+        data_home,
+        str(args.board_id),
+    )
     rehearsal_source_home: Path | None = None
     rehearsal_source_snapshot: dict[str, str] | None = None
     rehearsal_source_schema: str | None = None
@@ -15484,6 +16497,7 @@ def _execute(args: argparse.Namespace, evidence: InstallEvidence) -> int:
             install_fingerprint=evidence.fingerprint,
             execution_contract=execution_contract,
         )
+        _revalidate_board_route_decision(route_decision)
         live_consumed_receipt_path = _register_live_consumption(
             receipt_path=live_receipt_path,
             receipt=live_receipt,
@@ -15511,6 +16525,7 @@ def _execute(args: argparse.Namespace, evidence: InstallEvidence) -> int:
 
     settings = CommunitySettings(_env_file=None)
     _assert_settings_identity(settings, data_home, db_path)
+    _revalidate_board_route_decision(route_decision)
     with acquire_serve_lock(settings) as serve_lock:
         _require(serve_lock is not None, "serve_lock_reentrant_refused")
         heartbeat = ServeLockHeartbeat(
@@ -15545,6 +16560,7 @@ def _execute(args: argparse.Namespace, evidence: InstallEvidence) -> int:
                 ),
                 "exact_relational_schema_offline_fence_lost",
             )
+            _revalidate_board_route_decision(route_decision)
             schema_installed = _install_exact_relational_recovery_schema(db_path)
             _emit(
                 "exact_relational_recovery_schema_ready",
@@ -15565,9 +16581,12 @@ def _execute(args: argparse.Namespace, evidence: InstallEvidence) -> int:
             )
 
             def run_lane(require_fresh: bool) -> dict[str, Any]:
-                return asyncio.run(
+                nonlocal route_decision
+                previous_decision = route_decision
+                lane_result = asyncio.run(
                     _execute_under_serve_lock(
                         args,
+                        graph_binding=previous_decision,
                         data_home=data_home,
                         db_path=db_path,
                         owner_id=owner_id,
@@ -15578,6 +16597,26 @@ def _execute(args: argparse.Namespace, evidence: InstallEvidence) -> int:
                         historical_data_home=rehearsal_source_home or data_home,
                     )
                 )
+                observed_decision = _board_backend_decision(
+                    data_home,
+                    str(args.board_id),
+                )
+                _require(
+                    observed_decision.binding is not None,
+                    "offline_route_adoption_binding_missing",
+                )
+                if previous_decision.binding is not None:
+                    _require(
+                        observed_decision.binding == previous_decision.binding,
+                        "offline_recovery_backend_binding_changed",
+                    )
+                elif previous_decision.legacy_state == "ladybug_present":
+                    _require(
+                        observed_decision.binding.backend == "ladybug",
+                        "offline_route_adoption_misdirected",
+                    )
+                route_decision = observed_decision
+                return lane_result
 
             def validate_reconciliation_boundary(
                 lane_result: Mapping[str, Any],
@@ -15613,12 +16652,18 @@ def _execute(args: argparse.Namespace, evidence: InstallEvidence) -> int:
                 run_lane,
                 validate_reconciliation_boundary=validate_reconciliation_boundary,
             )
+            graph_binding = route_decision.binding
+            _require(
+                isinstance(graph_binding, OfflineBoardGraphBinding),
+                "offline_route_adoption_binding_missing",
+            )
             (
                 board_storage_post_teardown,
                 board_storage_post_teardown_sha256,
             ) = _capture_post_teardown_board_storage(
                 data_home=data_home,
                 board_id=args.board_id,
+                expected_binding=graph_binding,
             )
             terminal["board_storage_post_teardown"] = board_storage_post_teardown
             terminal["board_storage_post_teardown_sha256"] = (
@@ -15708,8 +16753,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     evidence = _install_evidence(
         core_version=args.expected_core_version,
         community_version=args.expected_community_version,
-        ladybug_version=args.expected_ladybug_version,
-        kuzu_version=args.expected_kuzu_version,
+        grafx_version=args.expected_grafx_version,
         sqlalchemy_version=args.expected_sqlalchemy_version,
         aiosqlite_version=args.expected_aiosqlite_version,
     )

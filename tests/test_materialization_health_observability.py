@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,7 +9,6 @@ import pytest
 from okto_pulse.community.adapters.materialization_health import (
     CommunityMaterializationEvidenceProbe,
 )
-from okto_pulse.community.adapters.ladybug_writer import ladybug_writer_scope
 from okto_pulse.community.adapters.materialization_health_observability import (
     CommunityFilesystemMutationGuard,
 )
@@ -138,7 +136,7 @@ async def test_probe_records_clean_filesystem_guard_without_creating_paths(
 
 
 @pytest.mark.asyncio
-async def test_probe_mutation_guard_detects_write_and_forces_fail_closed_evidence(
+async def test_probe_metadata_change_cannot_be_attributed_without_writer_evidence(
     tmp_path: Path,
 ) -> None:
     board_id = "board-observability-violation"
@@ -165,46 +163,9 @@ async def test_probe_mutation_guard_detects_write_and_forces_fail_closed_evidenc
     )
 
     assert graph_path.exists()
-    assert evidence.census.status is CensusStatus.UNAVAILABLE
-    assert evidence.census.reason_code == "health_read_side_mutation_detected"
-    snapshot = materialization_observability_snapshot()["mutation_guard"]
-    assert snapshot["counts"] == {"violation": 1}
-    assert snapshot["samples"][0]["changed_path_count"] >= 1
-
-
-def test_guard_does_not_attribute_concurrent_writer_change_to_health_read(
-    tmp_path: Path,
-) -> None:
-    board_id = "board-observability-concurrent-writer"
-    graph_path = tmp_path / "graphs" / board_id / "board.lbug"
-    discovery_path = tmp_path / "global" / "discovery.lbug"
-    writer_errors: list[BaseException] = []
-
-    def concurrent_writer() -> None:
-        try:
-            with ladybug_writer_scope(
-                scope=board_id,
-                phase="test_concurrent_health_probe",
-                timeout_s=2.0,
-            ):
-                graph_path.parent.mkdir(parents=True, exist_ok=True)
-                graph_path.write_bytes(b"legitimate-concurrent-writer")
-        except BaseException as exc:  # surfaced in the assertion thread
-            writer_errors.append(exc)
-
-    writer = threading.Thread(target=concurrent_writer, daemon=True)
-    guard = CommunityFilesystemMutationGuard(
-        board_paths=lambda _board_id: (graph_path,),
-        discovery_paths=lambda: (discovery_path,),
-    )
-    before = guard.capture(board_id)
-    writer.start()
-    writer.join(timeout=2.0)
-    result = guard.complete(board_id=board_id, before=before)
-
-    assert not writer.is_alive()
-    assert writer_errors == []
-    assert result.outcome == "unavailable"
+    # Relational census is independent; only attribution of filesystem changes
+    # is unavailable with legitimate cross-process graph writers.
+    assert evidence.census.status is CensusStatus.AVAILABLE
     snapshot = materialization_observability_snapshot()["mutation_guard"]
     assert snapshot["counts"] == {"unavailable": 1}
     assert snapshot["samples"][0]["changed_path_count"] >= 1

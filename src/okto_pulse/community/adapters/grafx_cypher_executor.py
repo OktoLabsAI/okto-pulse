@@ -1,0 +1,304 @@
+"""CypherExecutor for Okto Grafx: the read-only 1.0 endpoint, unwidened.
+
+Core owns the query contract.  It normalizes, validates, injects the terminal
+LIMIT and bounds variable-length paths before the executor is ever called, and
+it decides whether the canonical filter applies.  This adapter therefore adds
+no grammar of its own: it resolves proven logical relationship names against
+the Community-owned physical layout, opens one Grafx read snapshot, runs the
+statement, and shapes the answer into the Pulse envelope. The same name resolver
+is used by transactional reads/writes; ambiguous patterns are never narrowed.
+
+Two things are genuinely this layer's job.  The first is the paired read: Tier
+Power compares a canonical projection against its all-layer baseline, and the
+two windows are only comparable if they were read from the SAME snapshot, so
+both statements run inside one transaction rather than one each.  The second is
+the result boundary: native detached entities and temporal values are projected
+by the Community value adapter. Paths expose `_NODES` and `_RELS` lists; every
+other tuple stays a tuple, as declared by the Pulse envelope contract.
+"""
+
+from __future__ import annotations
+
+import time
+from contextlib import AbstractContextManager, nullcontext
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any
+
+from okto_grafx import Database
+from okto_grafx.errors import GrafxLeaseTimeout
+from okto_pulse.core.kg.tier_power import (
+    MAX_TRAVERSAL_DEPTH,
+    auto_bound_var_length_path,
+    auto_inject_limit,
+    normalize_cypher_unicode,
+    validate_cypher_read_only,
+)
+
+from okto_pulse.community.adapters.cypher_statement_policy import (
+    leading_statement_token,
+)
+from okto_pulse.community.adapters.cypher_statement_policy import (
+    statement_is_write as _statement_is_write,
+)
+from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+from okto_pulse.community.adapters.grafx_graph_transaction import (
+    _grafx_query_parameters,
+    _normalize_value,
+)
+from okto_pulse.community.adapters.grafx_relationship_layout import (
+    resolve_relationship_table,
+)
+from okto_pulse.community.adapters.grafx_relationship_query import (
+    translate_logical_relationships,
+)
+
+DatabaseResolver = Callable[[str], Database]
+ReadOnlyBatchItem = tuple[str, dict[str, Any] | None, int]
+
+# The two path sequences Pulse exposes as lists. Named explicitly rather than
+# matched by shape: converting every tuple would silently rewrite values the
+# contract says are tuples, and matching by heuristic would drift.
+_PATH_SEQUENCE_KEYS = ("_NODES", "_RELS")
+
+# Both published names now resolve to the shared policy.  Delegating rather
+# than re-deriving is the point of the module: this executor used to fence the
+# read-only introspection/vector CALL allowlist that the Ladybug side has
+# always treated as readable, which is a policy difference no engine should own.
+statement_kind = leading_statement_token
+statement_is_write = _statement_is_write
+
+
+def project_path_sequences(value: Any) -> Any:
+    """Convert only `_NODES`/`_RELS` tuples to lists, everywhere they appear.
+
+    Applied after the shared value normalization, so timestamps and vectors are
+    already in their Pulse form and what is left to reconcile is the one
+    container difference between the two engines.
+    """
+
+    if isinstance(value, Mapping):
+        projected: dict[str, Any] = {}
+        for key, item in value.items():
+            name = str(key)
+            if name in _PATH_SEQUENCE_KEYS and isinstance(item, (list, tuple)):
+                projected[name] = [project_path_sequences(entry) for entry in item]
+            else:
+                projected[name] = project_path_sequences(item)
+        return projected
+    if isinstance(value, list):
+        return [project_path_sequences(item) for item in value]
+    if isinstance(value, tuple):
+        # Preserved as a tuple: only the two named path sequences change shape.
+        return tuple(project_path_sequences(item) for item in value)
+    return value
+
+
+def pulse_value(value: Any) -> Any:
+    """One cell as Pulse sees it: normalized, then path sequences reconciled."""
+
+    return project_path_sequences(_normalize_value(value))
+
+
+class CommunityGrafxCypherExecutor:
+    """Grafx implementation of the read-only CypherExecutor port."""
+
+    def __init__(self, database_resolver: DatabaseResolver, *,
+                 read_database_scope: Callable[[str], AbstractContextManager[Database]] | None = None) -> None:
+        # The executor resolves a database but never owns its lifecycle: the
+        # composition root decides which generation a board reads from, and a
+        # reader must not be able to close a handle other readers share.
+        self._database_resolver = database_resolver
+        self._read_database_scope = read_database_scope
+
+    def _read_scope(self, board_id: str) -> AbstractContextManager[Database]:
+        if self._read_database_scope is not None:
+            return self._read_database_scope(board_id)
+        return nullcontext(self._database_resolver(board_id))
+
+    @staticmethod
+    def relationship_table_name(
+        logical_type: str,
+        from_type: str,
+        to_type: str,
+    ) -> str:
+        """Resolve a Pulse logical endpoint pair to its physical Grafx table."""
+
+        return resolve_relationship_table(logical_type, from_type, to_type)
+
+    @staticmethod
+    def _prepare(cypher: str, *, max_rows: int) -> str:
+        cleaned = normalize_cypher_unicode(cypher)
+        validate_cypher_read_only(cleaned)
+        cleaned = auto_inject_limit(cleaned, max_rows)
+        cleaned = auto_bound_var_length_path(cleaned, MAX_TRAVERSAL_DEPTH)
+        return translate_logical_relationships(cleaned, read_only=True)
+
+    @staticmethod
+    def _envelope(
+        result: Any,
+        *,
+        max_rows: int,
+        started: float,
+    ) -> dict[str, Any]:
+        columns = [str(name) for name in getattr(result, "columns", ()) or ()]
+        raw_rows = list(getattr(result, "rows", ()) or ())
+        overrun = len(raw_rows) > max_rows
+        if overrun:
+            raw_rows = raw_rows[:max_rows]
+        rows = [[pulse_value(cell) for cell in row] for row in raw_rows]
+        return {
+            "rows": rows,
+            "columns": columns,
+            "row_count": len(rows),
+            "truncated": overrun,
+            "execution_time_ms": round((time.monotonic() - started) * 1000, 1),
+        }
+
+    def execute_read_only(
+        self,
+        board_id: str,
+        cypher: str,
+        params: dict[str, Any] | None = None,
+        *,
+        max_rows: int = 1000,
+    ) -> dict:
+        cleaned = self._prepare(cypher, max_rows=max_rows)
+        started = time.monotonic()
+        for attempt in range(2):
+            scope = self._read_scope(board_id)
+            try:
+                with scope as database:
+                    result = database.execute(cleaned, _grafx_query_parameters(params))
+                    return self._envelope(
+                        result,
+                        max_rows=max_rows,
+                        started=started,
+                    )
+            except GrafxLeaseTimeout as exc:
+                if attempt == 0:
+                    continue
+                mapped = map_grafx_error(exc, operation="read_only_query")
+                if mapped is exc:
+                    raise
+                raise mapped from exc
+            except Exception as exc:
+                mapped = map_grafx_error(exc, operation="read_only_query")
+                if mapped is exc:
+                    raise
+                raise mapped from exc
+        raise AssertionError("unreachable Grafx read retry state")
+
+    def execute_read_only_pair(
+        self,
+        board_id: str,
+        primary_cypher: str,
+        comparison_cypher: str,
+        params: dict[str, Any] | None = None,
+        *,
+        max_rows: int = 1000,
+    ) -> dict[str, dict[str, Any]]:
+        """Read the canonical window and its all-layer baseline together.
+
+        Both statements run inside ONE Grafx read transaction. Two snapshots
+        could disagree about a concurrent write, and Tier Power reports the
+        difference between them as rows hidden by canonical projection -- a
+        difference that has to come from the layer filter, never from time.
+        """
+
+        primary = self._prepare(primary_cypher, max_rows=max_rows)
+        comparison = self._prepare(comparison_cypher, max_rows=max_rows)
+        for attempt in range(2):
+            scope = self._read_scope(board_id)
+            try:
+                with scope as database, database.transaction("read") as reader:
+                    primary_started = time.monotonic()
+                    prepared_params = _grafx_query_parameters(params)
+                    primary_result = reader.execute(primary, prepared_params)
+                    primary_envelope = self._envelope(
+                        primary_result,
+                        max_rows=max_rows,
+                        started=primary_started,
+                    )
+                    comparison_started = time.monotonic()
+                    comparison_result = reader.execute(comparison, prepared_params)
+                    comparison_envelope = self._envelope(
+                        comparison_result,
+                        max_rows=max_rows,
+                        started=comparison_started,
+                    )
+            except GrafxLeaseTimeout as exc:
+                if attempt == 0:
+                    continue
+                mapped = map_grafx_error(exc, operation="read_only_query")
+                if mapped is exc:
+                    raise
+                raise mapped from exc
+            except Exception as exc:
+                mapped = map_grafx_error(exc, operation="read_only_query")
+                if mapped is exc:
+                    raise
+                raise mapped from exc
+            return {"primary": primary_envelope, "comparison": comparison_envelope}
+        raise AssertionError("unreachable Grafx paired-read retry state")
+
+    def execute_read_only_batch(
+        self,
+        board_id: str,
+        statements: Sequence[ReadOnlyBatchItem],
+    ) -> list[dict[str, Any]]:
+        """Execute independent reads against one immutable Grafx snapshot.
+
+        The KG projection fans out over every physical relationship table. Opening an
+        autocommit snapshot for each table adds lease and catalog work without improving
+        isolation. All statements are validated and bounded before the snapshot opens; an
+        invalid statement therefore fails closed without partially executing the batch.
+        """
+
+        prepared = [
+            (
+                self._prepare(cypher, max_rows=max_rows),
+                _grafx_query_parameters(params),
+                max_rows,
+            )
+            for cypher, params, max_rows in statements
+        ]
+        if not prepared:
+            return []
+        for attempt in range(2):
+            scope = self._read_scope(board_id)
+            envelopes: list[dict[str, Any]] = []
+            try:
+                with scope as database, database.transaction("read") as reader:
+                    for cypher, params, max_rows in prepared:
+                        started = time.monotonic()
+                        result = reader.execute(cypher, params)
+                        envelopes.append(
+                            self._envelope(result, max_rows=max_rows, started=started)
+                        )
+            except GrafxLeaseTimeout as exc:
+                if attempt == 0:
+                    continue
+                mapped = map_grafx_error(exc, operation="read_only_query")
+                if mapped is exc:
+                    raise
+                raise mapped from exc
+            except Exception as exc:
+                mapped = map_grafx_error(exc, operation="read_only_query")
+                if mapped is exc:
+                    raise
+                raise mapped from exc
+            return envelopes
+        raise AssertionError("unreachable Grafx batch-read retry state")
+
+    def is_supported(self) -> bool:
+        return True
+
+
+__all__ = [
+    "CommunityGrafxCypherExecutor",
+    "ReadOnlyBatchItem",
+    "project_path_sequences",
+    "pulse_value",
+    "statement_is_write",
+    "statement_kind",
+]

@@ -15,7 +15,6 @@ import pytest
 import okto_pulse.core.infra.database as database_module
 import okto_pulse.community.adapters.global_discovery_recovery_worker as worker_module
 from okto_pulse.community.adapters.global_discovery_recovery import (
-    CommunityGlobalDiscoveryRecovery,
     CommunityGlobalDiscoveryRecoveryError,
     CommunityPreparedRecoveryRevoker,
     CommunityRelationalRecoverySnapshotFingerprint,
@@ -958,9 +957,7 @@ def test_worker_renewal_exhaustion_after_physical_work_terminalizes_partial(
             self.calls.append(dict(kwargs))
             denial_armed.set()
             kwargs["fence_check"]()
-            raise AssertionError(
-                "renewal exhaustion must surface at the fence check"
-            )
+            raise AssertionError("renewal exhaustion must surface at the fence check")
 
         def reconcile_predecessor_and_complete(self, **kwargs):
             kwargs["fence_check"]()
@@ -1092,8 +1089,7 @@ def test_worker_renewal_exhaustion_after_physical_work_terminalizes_partial(
         assert len(physical.calls) == 1
         # The REAL port retry ran to its exact declared bound, once.
         assert (
-            len(denials)
-            == coordination_module._SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS  # noqa: SLF001
+            len(denials) == coordination_module._SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS  # noqa: SLF001
         )
 
         # Epoch N+1 eligibility is proven by the same durable admission the
@@ -1247,8 +1243,7 @@ def test_source_revision_installs_the_exact_closed_trigger_manifest(
         "spec_qa_items",
     }.issubset(GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES)
     assert (
-        GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION
-        == "gdsr-trigger-manifest-v8"
+        GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION == "gdsr-trigger-manifest-v8"
     )
     for row in rows:
         name = str(row["name"])
@@ -1276,8 +1271,7 @@ def test_source_revision_v4_upgrade_installs_qa_inputs_and_rotates_incarnation(
             ).fetchone()[0]
         )
         connection.execute(
-            "UPDATE global_discovery_source_revision "
-            "SET trigger_manifest_version = ?",
+            "UPDATE global_discovery_source_revision SET trigger_manifest_version = ?",
             ("gdsr-trigger-manifest-v4",),
         )
         connection.commit()
@@ -1316,8 +1310,7 @@ def test_source_revision_v4_upgrade_installs_qa_inputs_and_rotates_incarnation(
             "FROM global_discovery_source_revision"
         ).fetchone()
         triggers = connection.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type = 'trigger' AND name LIKE ?",
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE ?",
             (f"{GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX}%",),
         ).fetchall()
     finally:
@@ -1394,23 +1387,6 @@ def test_dropped_trigger_refuses_fingerprint_and_restart_repair_rotates_incarnat
     repaired = provider.read_fence()
     assert repaired.incarnation_id != baseline.incarnation_id
     assert repaired.fingerprint() != baseline.fingerprint()
-
-
-def test_current_snapshot_fingerprint_never_resolves_or_opens_a_graph() -> None:
-    calls: list[str] = []
-    adapter = CommunityGlobalDiscoveryRecovery(
-        global_runtime=object(),  # type: ignore[arg-type]
-        graph_path_provider=lambda: (_ for _ in ()).throw(
-            AssertionError("graph path must stay untouched")
-        ),
-        snapshot_fingerprint_provider=lambda: (
-            calls.append("relational"),
-            "sha256:relational",
-        )[1],
-    )
-
-    assert adapter.current_snapshot_fingerprint() == "sha256:relational"
-    assert calls == ["relational"]
 
 
 def test_source_revision_fingerprint_is_o1_and_lock_refusal_is_bounded(

@@ -9,9 +9,7 @@ from __future__ import annotations
 from okto_pulse.core.kg.interfaces.global_discovery_recovery import (
     GlobalDiscoveryRecovery,
 )
-from okto_pulse.community.adapters.global_discovery_recovery import (
-    CommunityGlobalDiscoveryRecovery,
-)
+from typing_extensions import get_protocol_members
 
 
 class _OldOnlyProvider:
@@ -33,7 +31,7 @@ class _CompleteProvider(_OldOnlyProvider):
 
 
 def test_recover_and_cutover_is_in_the_core_protocol():
-    assert "recover_and_cutover" in GlobalDiscoveryRecovery.__protocol_attrs__
+    assert "recover_and_cutover" in get_protocol_members(GlobalDiscoveryRecovery)
 
 
 def test_old_only_provider_is_rejected_by_isinstance():
@@ -44,9 +42,3 @@ def test_old_only_provider_is_rejected_by_isinstance():
 
 def test_complete_provider_is_accepted_by_isinstance():
     assert isinstance(_CompleteProvider(), GlobalDiscoveryRecovery)
-
-
-def test_production_adapter_satisfies_the_protocol():
-    # The real Community adapter must satisfy the updated protocol.
-    assert hasattr(CommunityGlobalDiscoveryRecovery, "recover_and_cutover")
-    assert hasattr(CommunityGlobalDiscoveryRecovery, "rebuild_candidate_and_cutover")

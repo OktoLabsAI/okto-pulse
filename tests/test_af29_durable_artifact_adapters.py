@@ -4,12 +4,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-import pytest
 
 from okto_pulse.community.adapters.coordination import CommunityLocalWriteLockPort
-from okto_pulse.community.adapters.global_discovery_runtime import (
-    CommunityGlobalDiscoveryRuntime,
-)
 from okto_pulse.community.adapters.rebuild_audit_storage import (
     CommunityFileSystemCognitivePendingWorkProvider,
 )
@@ -101,67 +97,6 @@ class _GraphRuntime:
 
     def is_ladybug_corruption_error(self, exc: BaseException) -> bool:
         return "corrupt" in str(exc).lower()
-
-
-def test_af29_global_discovery_runtime_flush_probe_success(tmp_path, monkeypatch):
-    graph_runtime = _GraphRuntime()
-    primary = tmp_path / "global" / "discovery.lbug"
-    runtime = CommunityGlobalDiscoveryRuntime(
-        graph_runtime=graph_runtime,
-        graph_path_provider=lambda: primary,
-    )
-    primary.parent.mkdir()
-    primary.write_bytes(b"local-graph")
-    (primary.parent / "discovery.lbug.wal").write_bytes(b"wal")
-    monkeypatch.setattr(runtime, "_runtime", lambda: graph_runtime)
-
-    with _durable_global_writer(tmp_path, operation="af29_flush_probe_success"):
-        runtime.flush_after_write_batch()
-
-    assert graph_runtime.opened_paths == [primary]
-    assert graph_runtime.connections[0].executed == ["CALL SHOW_TABLES() RETURN name"]
-    assert graph_runtime.connections[0].closed is True
-    assert graph_runtime.dbs[0].closed is True
-
-
-def test_af29_global_discovery_runtime_flush_reports_missing_artifact(
-    tmp_path,
-    monkeypatch,
-):
-    graph_runtime = _GraphRuntime()
-    primary = tmp_path / "global" / "discovery.lbug"
-    runtime = CommunityGlobalDiscoveryRuntime(
-        graph_runtime=graph_runtime,
-        graph_path_provider=lambda: primary,
-    )
-    monkeypatch.setattr(runtime, "_runtime", lambda: graph_runtime)
-
-    with _durable_global_writer(tmp_path, operation="af29_flush_probe_missing"):
-        with pytest.raises(RuntimeError, match="global discovery file missing"):
-            runtime.flush_after_write_batch()
-
-    assert graph_runtime.opened_paths == []
-
-
-def test_af29_global_discovery_runtime_flush_preserves_corrupt_artifact(
-    tmp_path,
-    monkeypatch,
-):
-    graph_runtime = _GraphRuntime(fail_open=True)
-    primary = tmp_path / "global" / "discovery.lbug"
-    runtime = CommunityGlobalDiscoveryRuntime(
-        graph_runtime=graph_runtime,
-        graph_path_provider=lambda: primary,
-    )
-    primary.parent.mkdir()
-    primary.write_bytes(b"not-a-valid-graph")
-    monkeypatch.setattr(runtime, "_runtime", lambda: graph_runtime)
-
-    with _durable_global_writer(tmp_path, operation="af29_flush_probe_corrupt"):
-        with pytest.raises(RuntimeError, match="Existing global discovery"):
-            runtime.flush_after_write_batch()
-
-    assert primary.read_bytes() == b"not-a-valid-graph"
 
 
 def test_af29_cognitive_pending_provider_enumerates_local_ledgers(tmp_path):
