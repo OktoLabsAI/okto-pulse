@@ -64,11 +64,16 @@ jobs:
           path: okto-pulse-core
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Checkout Okto Grafx
+      # Pinned to the commit that ships Grafx 0.0.7 (no release tag exists on
+      # okto-grafx yet). release_artifact_gate.py rejects any wheel whose version
+      # is not exactly the pyproject pin, so a moving `main` would break this
+      # job on the next Grafx version bump. Update this ref together with the
+      # `okto-grafx[accel]==X.Y.Z` pin in pyproject.toml.
+      - name: Checkout Okto Grafx @ 0.0.7
         uses: actions/checkout@v7
         with:
           repository: OktoLabsAI/okto-grafx
-          ref: main
+          ref: 3a2239a0bda80223c298a68d6d14f3c951f133d2
           path: okto-grafx
           token: ${{ secrets.GITHUB_TOKEN }}
 

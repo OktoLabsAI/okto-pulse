@@ -155,3 +155,55 @@ def test_neutral_memory_pressure_retains_bounded_retry_header():
     )
     assert response.status_code == 503
     assert response.headers["Retry-After"] == "2"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_point", ("begin", "enter"))
+async def test_metrics_graph_errors_are_returned_as_neutral_problems(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_point: str,
+) -> None:
+    """A board route that vanishes after the graph_initialized snapshot must not 500."""
+
+    class _Scope:
+        async def __aenter__(self):
+            if failure_point == "enter":
+                raise GraphCapabilityUnavailable("graph_route_binding_missing")
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+    async def _begin(board_id: str):
+        assert board_id == "test-board"
+        if failure_point == "begin":
+            raise GraphCapabilityUnavailable("graph_route_binding_missing")
+        return _Scope()
+
+    monkeypatch.setattr(
+        kg_routes,
+        "_code_traceability_kg_read_access",
+        AsyncMock(return_value=SimpleNamespace(allowed=True)),
+    )
+    monkeypatch.setattr(
+        kg_routes,
+        "snapshot_kg_runtime",
+        lambda *, board_id: SimpleNamespace(graph_initialized=True),
+    )
+    monkeypatch.setattr(
+        kg_routes,
+        "resolve_graph_transaction",
+        lambda: SimpleNamespace(begin=_begin),
+    )
+
+    response = await kg_routes.get_kg_metrics(
+        "test-board",
+        actor=ActorContext("test-user", "rest"),
+        uow=SimpleNamespace(),
+    )
+
+    assert response.status_code == 503
+    assert response.media_type == "application/problem+json"
+    body = json.loads(response.body)
+    assert body["type"] == "/errors/graph_capability_unavailable"
+
