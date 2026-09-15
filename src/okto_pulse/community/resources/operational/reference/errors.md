@@ -53,6 +53,17 @@ is created.
 
 ## Card / Move Transitions
 
+For **Normal and Bug** cards, an admitted task-validation submission evaluates
+both the assessment and the completion gates. A failed assessment, or a passed
+assessment followed by a blocking completion gate, atomically moves the card
+from `validation` to `rejected` and publishes the sealed Current rejection
+cause. `rejected` means **rework is required**, not "waiting for another
+validator": do not resubmit validation from that status. The only public rework
+edge is `rejected` → `in_progress`; after the implementation changes, submit a
+new executor report when moving back to `validation`, then create a new
+validation attempt. Historical validations and rejection records remain
+append-only.
+
 | Error message | Cause | Fix |
 |---|---|---|
 | `"A conclusion is required when moving a card to Validation"` / `"A conclusion is required when moving a card to Done"` | Missing executor report: `conclusion`, `completeness`, `completeness_justification`, `drift`, `drift_justification` | Add all 5 parameters to `okto_pulse_move_card`. |
