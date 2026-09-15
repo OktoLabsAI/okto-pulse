@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AgentsModal } from './AgentsModal';
 import type { Agent, AgentSummary, PermissionPreset } from '@/types';
@@ -97,6 +97,13 @@ describe('AgentsModal reveal-once credentials', () => {
       clipboard: { writeText: vi.fn().mockResolvedValue(undefined) },
     });
     vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.stubEnv('VITE_MCP_PORT', '8101');
+    vi.stubGlobal('OKTO_PULSE_CONFIG', undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
   it('keeps listed agents secret-free and reveals only newly created keys', async () => {
@@ -115,6 +122,11 @@ describe('AgentsModal reveal-once credentials', () => {
     expect(screen.getByText('Hidden. Regenerate to reveal a new key.')).toBeInTheDocument();
     expect(screen.getByTitle('Regenerate key')).toBeEnabled();
     expect(screen.queryByText('dash_new_secret')).not.toBeInTheDocument();
+    const hiddenCodex = screen.getByRole('button', { name: 'Codex (CLI)' });
+    expect(hiddenCodex).toBeDisabled();
+    fireEvent.click(hiddenCodex);
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: /okto cli/i })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
     fireEvent.change(screen.getByPlaceholderText('Ex: Claude Assistant'), {
@@ -123,6 +135,10 @@ describe('AgentsModal reveal-once credentials', () => {
     fireEvent.click(screen.getByRole('button', { name: /^create agent$/i }));
 
     await screen.findByText('dash_new_secret');
+    fireEvent.click(screen.getByRole('button', { name: 'Codex (CLI)' }));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      'codex mcp add okto-pulse --url "http://127.0.0.1:8101/mcp?api_key=dash_new_secret"',
+    );
     fireEvent.click(screen.getByText('Existing Agent'));
     expect(screen.getByText('Hidden. Regenerate to reveal a new key.')).toBeInTheDocument();
     expect(screen.queryByText('dash_new_secret')).not.toBeInTheDocument();
@@ -180,6 +196,60 @@ describe('AgentsModal reveal-once credentials', () => {
 
     expect(screen.queryByText('dash_rotated_secret')).not.toBeInTheDocument();
     expect(screen.getByText('Hidden. Regenerate to reveal a new key.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Codex (CLI)' })).toBeDisabled();
+  });
+
+  it('replaces the copied Codex credential after key rotation and honors the runtime MCP URL', async () => {
+    vi.stubGlobal('OKTO_PULSE_CONFIG', { MCP_URL: 'https://pulse.example.test/graph-service/' });
+    apiMock.listMyAgents.mockResolvedValue([]);
+    apiMock.createAgent.mockResolvedValue({
+      agent: agent('agent-1', 'Codex Agent'),
+      reveal_once_secret: 'dash_new_secret',
+    });
+    apiMock.regenerateAgentKey.mockResolvedValue({
+      agent: agent('agent-1', 'Codex Agent'),
+      reveal_once_secret: 'dash_rotated_secret',
+    });
+
+    render(<AgentsModal isOpen onClose={() => {}} />);
+    await screen.findByText('No agents registered');
+    fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
+    fireEvent.change(screen.getByPlaceholderText('Ex: Claude Assistant'), {
+      target: { value: 'Codex Agent' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^create agent$/i }));
+    await screen.findByText('dash_new_secret');
+    fireEvent.click(screen.getByRole('button', { name: 'Codex (CLI)' }));
+    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith(
+      'codex mcp add okto-pulse --url "https://pulse.example.test/graph-service/mcp?api_key=dash_new_secret"',
+    );
+
+    fireEvent.click(screen.getByTitle('Regenerate key'));
+    await screen.findByText('dash_rotated_secret');
+    fireEvent.click(screen.getByRole('button', { name: 'Codex (CLI)' }));
+    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith(
+      'codex mcp add okto-pulse --url "https://pulse.example.test/graph-service/mcp?api_key=dash_rotated_secret"',
+    );
+    expect(screen.queryByText('dash_new_secret')).not.toBeInTheDocument();
+    expect(screen.getByText(/run the new command and restart your Codex session/)).toBeInTheDocument();
+  });
+
+  it('uses the configured fallback port and URL-encodes credentials in the Codex command', async () => {
+    vi.stubEnv('VITE_MCP_PORT', '9101');
+    apiMock.listMyAgents.mockResolvedValue([agent('agent-1', 'Codex Agent')]);
+    apiMock.regenerateAgentKey.mockResolvedValue({
+      agent: agent('agent-1', 'Codex Agent'),
+      reveal_once_secret: 'test-only+&=#"$`/ value',
+    });
+
+    render(<AgentsModal isOpen onClose={() => {}} />);
+    await screen.findByText('Codex Agent');
+    fireEvent.click(screen.getByTitle('Regenerate key'));
+    const codexButton = await screen.findByRole('button', { name: 'Codex (CLI)' });
+    fireEvent.click(codexButton);
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      'codex mcp add okto-pulse --url "http://127.0.0.1:9101/mcp?api_key=test-only%2B%26%3D%23%22%24%60%2F%20value"',
+    );
   });
 
   it('keeps the reveal-once buffer through refetch while the modal stays open', async () => {

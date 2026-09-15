@@ -8,25 +8,33 @@ continues to consume graph ports and explicit capability declarations.
 The shared executable architecture matrix and the paired Core README now describe
 edition-owned graph adapters generically, rather than mandating a named database.
 
-## Pending 0.0.7 publication — 2026-09-14
+## Published 0.0.7 installation — 2026-09-14
 
-The dependency, recovery-only installation fingerprint and paired-wheel release
-gate now expect Grafx 0.0.7, retaining the `accel` extra. The PyPI version endpoint
-still returned 404 when this preparatory change was made. No installed package,
-running Pulse process or user database was changed.
+The dependency, recovery-only installation fingerprint, paired-wheel release
+gate and `uv.lock` now agree on the published Grafx 0.0.7 release, retaining the
+`accel` extra. Grafx resolves from PyPI with the actual wheel and sdist URLs and
+SHA-256 hashes. The wheel SHA-256 is
+`fe623ae15d9e3b4c04ef2777e715f2ca3f68c3d092fdbaa17aa57f826c38cb21`.
 
-`uv.lock` deliberately retains the last real published resolution (Grafx 0.0.6),
-including its original artifact URLs and hashes. It is **not aligned** with the
-new manifest yet: do not use `uv sync --frozen` to bypass that mismatch. The
-existing recovery dependency/lock alignment test remains strict and will fail
-until the lock is regenerated. It has not been skipped or weakened.
+The lock was regenerated with
+`uv lock --find-links ../okto_grafx/.grafx-tmp/language-wheel --upgrade-package okto-grafx`.
+The existing local wheel location is needed for Core 0.3.3, which is not yet on
+PyPI; its resolution remains unchanged. Grafx itself comes from PyPI, not that
+directory. `uv lock --check` with the same `--find-links` passed.
 
-After publishing 0.0.7, run `uv lock --upgrade-package okto-grafx`, inspect that
-Grafx resolves from PyPI with the actual 0.0.7 artifacts, rerun the dependency/lock
-alignment test and commit the resulting lock. Do not replace it with a local
-development wheel or fabricated release hashes. Integration reports for 0.0.6
-remain historical evidence; this reference update does not claim a completed
-runtime regression against the unpublished release.
+The local runtime keeps one global Python 3.13 user-site installation of
+Pulse/Core 0.3.3 and `okto-grafx[accel]==0.0.7`, with NumPy and CRC32C available.
+The duplicate `uv tool` installation and its three command launchers were
+removed at the user's request, without removing the data home or stopping the
+remaining global process.
+
+Validation: all 251 installed Grafx files matched the official PyPI wheel;
+43 focused dependency, recovery fingerprint, query-semantics and read-lane tests
+passed. A disposable graph verified independent read participants, commit,
+rollback and durable reopen. The restarted global Pulse completed startup and
+returned HTTP 200 for the UI and the E2E board's canonical graph endpoint.
+These are bounded installation/integration checks, not a claim of a complete
+release regression. Earlier 0.0.6 reports remain historical evidence.
 
 ## Supported runtime
 

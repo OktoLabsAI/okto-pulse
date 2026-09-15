@@ -149,9 +149,19 @@ environment and submits only the bounded result.
 | --- | --- |
 | Claude Code | Run it from the directory that contains `.mcp.json`. |
 | Claude Desktop | Copy the generated MCP server block into Claude Desktop settings. |
+| Codex | In **Menu → Agents**, create an agent or regenerate its key, then click **Codex (CLI)** and run the copied command in your terminal. |
 | Cursor | Add the MCP server URL in Cursor MCP settings. |
 | VS Code | Copy the server block into `.vscode/mcp.json`. |
 | Windsurf / Cline | Use the generated `.mcp.json` when supported. |
+
+The **Codex (CLI)** button copies `codex mcp add okto-pulse --url "<Pulse MCP URL with agent key>"`,
+using the runtime MCP address and the newly revealed API key. Install Codex CLI
+first. After rotating the key, copy and run the new command, then restart the
+Codex session; the old key stops working. Configuration copying is disabled when
+the reveal-once key is hidden. Keep the copied command private: it contains the
+key and can be saved in shell history and Codex's configuration. The command
+configures a connection; board access still needs to be granted in Pulse.
+See the [official Codex MCP documentation](https://developers.openai.com/codex/mcp/).
 
 Generated shape:
 
@@ -517,7 +527,7 @@ for the human review workflow, waiver effects, failed-processing navigation and 
 See [KG Health: observe, diagnose and recover](docs/KG_HEALTH_DASHBOARD.md)
 for the operations dashboard, contextual help, action impacts and recovery safeguards.
 
-Community uses **Okto Grafx only**, pinned to `okto-grafx[accel]==0.0.7`. This dependency update is prepared ahead of its PyPI publication: regenerate `uv.lock` from the published artifacts before locked installs or release qualification. See [Grafx-only runtime, settings, retirement and data preservation](docs/GRAFX_ONLY_COMMUNITY.md). The Core remains storage-agnostic.
+Community uses **Okto Grafx only**, pinned to the published `okto-grafx[accel]==0.0.7` release. `uv.lock` resolves Grafx from the official PyPI artifacts. See [Grafx-only runtime, settings, retirement and data preservation](docs/GRAFX_ONLY_COMMUNITY.md). The Core remains storage-agnostic.
 
 ## SaaS Closure Audit
 

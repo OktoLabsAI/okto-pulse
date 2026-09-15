@@ -1449,16 +1449,16 @@ wheels = [
 
 [[package]]
 name = "okto-grafx"
-version = "0.0.6"
+version = "0.0.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "google-crc32c" },
     { name = "numpy" },
     { name = "tzdata" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/af/4d/d6eb8a7172feb51d4b21878a29e27029166a3820e54e6ba78708f383960b/okto_grafx-0.0.6.tar.gz", hash = "sha256:5d2623e1c76578efcc21ca59c51321a5a0c57b4eceac4d6da0f3f6680f872e7f", size = 1653502, upload-time = "2026-09-13T17:17:34.413Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/de/55/d133a90665dc3466724a6b0011e14ac48afa0250f72ab595534083512384/okto_grafx-0.0.7.tar.gz", hash = "sha256:beffe031bd11e336923928f0781bcf08dfdd92866444cdce28e81aa399cf8f3d", size = 1661231, upload-time = "2026-09-15T02:02:22.012Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5b/8a/31725f452ba875527ec85fbec4e45428512be5a9cf8d6cecc43f38fed07d/okto_grafx-0.0.6-py3-none-any.whl", hash = "sha256:0b98a1f9b20f68b88e9f8d53b655539b9a92fc7b667b2284c5a0361166382c46", size = 1765616, upload-time = "2026-09-13T17:17:32.751Z" },
+    { url = "https://files.pythonhosted.org/packages/56/3a/7a29a7dee9b167f2bf6aa417d9a48c3eaf099e77897cda429df41ade46c9/okto_grafx-0.0.7-py3-none-any.whl", hash = "sha256:fe623ae15d9e3b4c04ef2777e715f2ca3f68c3d092fdbaa17aa57f826c38cb21", size = 1774362, upload-time = "2026-09-15T02:02:20.362Z" },
 ]
 
 [[package]]
@@ -1510,7 +1510,7 @@ requires-dist = [
     { name = "filelock", specifier = ">=3.16.0,<4.0.0" },
     { name = "httpx", specifier = ">=0.27.0,<1.0.0" },
     { name = "mcp", specifier = ">=1.20.0,<2.0.0" },
-    { name = "okto-grafx", extras = ["accel"], specifier = "==0.0.6" },
+    { name = "okto-grafx", extras = ["accel"], specifier = "==0.0.7" },
     { name = "okto-pulse-core", specifier = ">=0.3.3,<1.0.0" },
     { name = "pydantic", specifier = ">=2.12.0,<2.14" },
     { name = "pydantic-settings", specifier = ">=2.1.0,<3.0.0" },
