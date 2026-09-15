@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { KgEffectivenessFullView } from './KgEffectivenessFullView';
@@ -218,6 +218,93 @@ describe('KG effectiveness A6 UI', () => {
     expect(within(kpis).getByText('7 / 10')).toBeInTheDocument();
     expect(within(kpis).getByText('13')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'All records loaded' })).toBeDisabled();
+  });
+
+  it.each(['compact', 'full'] as const)('explains partial telemetry without hiding valid facts in %s mode', (mode) => {
+    const data = kgPage({ resultState: 'partial', nextCursor: null });
+    data.health.state = 'at_risk';
+    data.health.components = [
+      { component: 'graph', health_state: 'at_risk', result_state: 'partial', classification_reason: 'graph_snapshot:partial;health_telemetry_incomplete' },
+      { component: 'discovery', health_state: 'healthy', result_state: 'available', classification_reason: 'queryable' },
+    ];
+    render(<KgEffectivenessPanel data={data} loading={false} error={null} exporting={false}
+      from="2026-08-01" to="2026-08-21" onRetry={vi.fn()} onExport={vi.fn()} mode={mode} />);
+    expect(screen.getByTestId('kg-result-state-partial')).toBeInTheDocument();
+    expect(screen.queryByTestId('kg-result-state-unavailable')).not.toBeInTheDocument();
+    const details = screen.getByLabelText('KG evidence details');
+    expect(details).toHaveTextContent('Missing telemetry alone does not require a rebuild.');
+    expect(details).toHaveTextContent('Graph: Partial.');
+    expect(details).toHaveTextContent('Health Telemetry Incomplete');
+    expect(details).not.toHaveTextContent('Discovery: Unavailable');
+    const kpis = screen.getByLabelText(mode === 'compact' ? 'KG effectiveness summary KPIs' : 'KG effectiveness KPIs');
+    expect(within(kpis).getByText('6 / 8')).toBeInTheDocument();
+    expect(within(kpis).getByText('11')).toBeInTheDocument();
+  });
+
+  it('labels a legitimate absence of timing samples without claiming a failure or zero latency', () => {
+    const data = kgPage({ numerator: 0, denominator: 4, nextCursor: null });
+    data.effectiveness.timing = { state: 'empty', sample_count: 0, p50_hours: null, p95_hours: null, reason: 'no_consolidation_timing_samples' };
+    render(<KgEffectivenessPanel data={data} loading={false} error={null} exporting={false}
+      from="2026-08-01" to="2026-08-21" onRetry={vi.fn()} onExport={vi.fn()} mode="full" />);
+    expect(screen.getByTestId('kg-result-state-available')).toBeInTheDocument();
+    expect(screen.getAllByText('No samples')).toHaveLength(2);
+    expect(screen.getByText('No completed consolidation timings in this selection.')).toBeInTheDocument();
+    expect(screen.getByText('0 / 4')).toBeInTheDocument();
+    expect(screen.queryByText('0.0h')).not.toBeInTheDocument();
+  });
+
+  it.each(['compact', 'full'] as const)('bounds automatic snapshot rechecks in %s mode even with changing fingerprints', (mode) => {
+    vi.useFakeTimers();
+    const retry = vi.fn();
+    const data = kgPage({ resultState: 'partial' });
+    data.health.components = [{ component: 'graph', health_state: 'at_risk', result_state: 'partial', classification_reason: 'graph_snapshot:stale' }];
+    const panel = (page: BoardKgAnalyticsResponse) => <KgEffectivenessPanel data={page} loading={false} error={null} exporting={false}
+      from="2026-08-01" to="2026-08-21" onRetry={retry} onExport={vi.fn()} mode={mode} />;
+    const view = render(panel(data));
+    try {
+      for (let index = 0; index < 5; index += 1) {
+        act(() => { vi.advanceTimersByTime(10000); });
+        // Cold startup can finish the graph probe before the parity telemetry.
+        // That intermediate phase must not prematurely cancel the bounded cycle.
+        view.rerender(panel({ ...data, query_fingerprint: String(index).repeat(64), health: {
+          ...data.health, components: [{ ...data.health.components[0], classification_reason: index === 0 ? 'health_telemetry_incomplete' : 'graph_snapshot:stale' }],
+        } }));
+      }
+      expect(retry).toHaveBeenCalledTimes(3);
+      expect(screen.getByTestId('kg-result-state-partial')).toBeInTheDocument();
+      // Changing selection grants a new bound; an available response cancels it.
+      view.rerender(panel({ ...data, board_id: 'board-2' }));
+      act(() => { vi.advanceTimersByTime(10000); });
+      expect(retry).toHaveBeenCalledTimes(4);
+      view.rerender(panel(kgPage()));
+      act(() => { vi.advanceTimersByTime(30000); });
+      expect(retry).toHaveBeenCalledTimes(4);
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
+  it.each(['loading', 'error', 'pages', 'recovery_needed', 'quarantined', 'backpressure', 'restricted', 'unmount'])('does not schedule snapshot rechecks through %s', (stop) => {
+    vi.useFakeTimers();
+    const retry = vi.fn();
+    const data = kgPage({ resultState: 'partial' });
+    data.health.components = [{ component: 'graph', health_state: 'at_risk', result_state: 'unavailable', classification_reason: 'graph_snapshot:unavailable;graph_metrics:unavailable' }];
+    if (stop === 'recovery_needed' || stop === 'quarantined' || stop === 'backpressure') data.health.components[0].health_state = stop;
+    if (stop === 'restricted') data.result_state = 'restricted';
+    const view = render(<KgEffectivenessPanel data={data} loading={stop === 'loading'} error={stop === 'error' ? 'offline' : null} exporting={false}
+      from="2026-08-01" to="2026-08-21" onRetry={retry} onExport={vi.fn()} loadedPages={stop === 'pages' ? 2 : 1} />);
+    try {
+      if (stop === 'unmount') view.unmount();
+      act(() => { vi.advanceTimersByTime(60000); });
+      expect(retry).not.toHaveBeenCalled();
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
+  it('keeps timing empty across empty pages but never hides a page failure', () => {
+    const a = kgPage();
+    const b = kgPage({ nextCursor: null });
+    a.effectiveness.timing = b.effectiveness.timing = { state: 'empty', sample_count: 0, p50_hours: null, p95_hours: null, reason: 'no_consolidation_timing_samples' };
+    expect(mergeBoardKgAnalyticsPages([a, b])?.effectiveness.timing.state).toBe('empty');
+    b.effectiveness.timing = { ...b.effectiveness.timing, state: 'unavailable', reason: 'insufficient_consolidation_timing_evidence' };
+    expect(mergeBoardKgAnalyticsPages([a, b])?.effectiveness.timing.state).toBe('unavailable');
   });
 
   it('does not double-count repeated operational facts or fabricate cross-page quantiles', () => {

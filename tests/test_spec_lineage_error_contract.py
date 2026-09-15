@@ -14,6 +14,29 @@ from okto_pulse.core.application.errors import (
     SpecLineagePreflightError,
 )
 from okto_pulse.core.models.schemas import SpecCreate, SpecUpdate
+from okto_pulse.core.domain.code_traceability import (
+    CodeDeliveryContextRequired,
+    CodeTraceabilityContractError,
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [
+    CodeDeliveryContextRequired(details={"reason": "spec_create_delivery_context_required"}),
+    CodeTraceabilityContractError("code_delivery_context_override_reason_invalid"),
+])
+async def test_create_spec_preserves_code_context_refusal(monkeypatch, error):
+    async def refused(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(specs_api.CreateSpecUseCase, "execute", refused)
+    with pytest.raises(HTTPException) as raised:
+        await specs_api.create_spec(
+            "board-1", SpecCreate(title="Missing delivery context"),
+            user_id="user-1", uow=SimpleNamespace(),
+        )
+    assert raised.value.status_code == 409
+    assert raised.value.detail == error.to_error_dict()
 
 
 @pytest.mark.asyncio

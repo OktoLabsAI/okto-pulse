@@ -21,13 +21,13 @@ import type { Agent, AgentSummary, PermissionPreset } from '@/types';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { usePermissions } from '@/hooks/usePermissions';
 
-type McpFormat = 'claude' | 'cursor' | 'vscode' | 'windsurf' | 'claude-cli' | 'okto-cli';
+type McpFormat = 'claude' | 'cursor' | 'vscode' | 'windsurf' | 'claude-cli' | 'codex';
 type Tab = 'my-agents' | 'board-access';
 
 const MCP_CONSUMERS: { format: McpFormat; label: string; file: string; icon: 'json' | 'terminal' }[] = [
   { format: 'claude', label: 'Claude Desktop / Claude Code', file: 'claude_desktop_config.json', icon: 'json' },
   { format: 'claude-cli', label: 'Claude Code (CLI)', file: 'terminal', icon: 'terminal' },
-  { format: 'okto-cli', label: 'Okto CLI (/mcp add)', file: 'terminal', icon: 'terminal' },
+  { format: 'codex', label: 'Codex (CLI)', file: 'terminal', icon: 'terminal' },
   { format: 'cursor', label: 'Cursor', file: '.cursor/mcp.json', icon: 'json' },
   { format: 'vscode', label: 'VS Code (Copilot)', file: '.vscode/mcp.json', icon: 'json' },
   { format: 'windsurf', label: 'Windsurf / Cline', file: 'cline_mcp_settings.json', icon: 'json' },
@@ -44,15 +44,15 @@ function getMcpBaseUrl(): string {
 }
 
 function getMcpConfigJson(format: McpFormat, apiKey: string): string {
-  const mcpUrl = getMcpBaseUrl();
-  const url = `${mcpUrl}/mcp?api_key=${apiKey}`;
+  const mcpUrl = getMcpBaseUrl().replace(/\/+$/, '');
+  const url = `${mcpUrl}/mcp?api_key=${encodeURIComponent(apiKey)}`;
 
   if (format === 'claude-cli') {
     return `claude mcp add -t http okto-pulse "${url}"`;
   }
 
-  if (format === 'okto-cli') {
-    return `/mcp add '${JSON.stringify({ name: 'okto-pulse', type: 'http', server_config: { type: 'http', url } })}'`;
+  if (format === 'codex') {
+    return `codex mcp add okto-pulse --url "${url}"`;
   }
 
   if (format === 'vscode') {
@@ -604,7 +604,7 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                                     }}
                                     disabled={!revealedKey}
                                     className="flex items-center gap-2 px-3 py-2 text-xs bg-white dark:bg-gray-900 rounded border border-gray-200 dark:border-gray-700 hover:bg-blue-50 dark:hover:bg-blue-900/20 text-left text-gray-700 dark:text-gray-300 disabled:opacity-50 disabled:hover:bg-white dark:disabled:hover:bg-gray-900"
-                                    title={revealedKey ? (icon === 'terminal' ? 'Terminal command' : file) : 'Key hidden; regenerate to copy config'}
+                                    title={revealedKey ? (format === 'codex' ? 'Copy the command to add or update Pulse in Codex; run it in your terminal' : icon === 'terminal' ? 'Terminal command' : file) : 'Key hidden; regenerate to copy config'}
                                   >
                                     {icon === 'terminal' ? (
                                       <Terminal size={14} className="shrink-0 text-gray-500 dark:text-gray-400" />
@@ -615,6 +615,11 @@ export function AgentsModal({ isOpen, onClose }: AgentsModalProps) {
                                   </button>
                                 ))}
                               </div>
+                              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                                Codex: copy the command and run it in your terminal with Codex CLI installed.
+                                After regenerating a key, run the new command and restart your Codex session.
+                                Copied configurations contain your API key; keep them private.
+                              </p>
                             </div>
                           </div>
                         )}

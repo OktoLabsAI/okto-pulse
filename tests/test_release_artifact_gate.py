@@ -34,11 +34,14 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
     live_resource_count = len(core_mcp_server.resource_registry_projection())
 
     assert Path(core_mcp_server.__file__).resolve().is_relative_to(module.CORE_REPO)
-    assert module.EXPECTED_VERSION == "0.3.2"
+    assert module.EXPECTED_VERSION == "0.3.3"
+    assert module.EXPECTED_GRAFX_VERSION == "0.0.7"
+    assert module.GRAFX_WHEEL_ENV == "OKTO_E2E_GRAFX_WHEEL"
+    assert module.GRAFX_REPO_ENV == "OKTO_E2E_GRAFX_REPO"
     assert module.EXPECTED_MCP_TOOL_COUNT == live_tool_count == 338
     assert module.EXPECTED_CANONICAL_TOOL_COUNT == live_canonical_count == 330
     assert module.EXPECTED_TOOL_ALIAS_COUNT == live_alias_count == 8
-    assert module.EXPECTED_RESOURCE_COUNT == live_resource_count == 55
+    assert module.EXPECTED_RESOURCE_COUNT == live_resource_count == 56
     assert module.MINIMUM_SUPPORTED_PYTHON == (3, 11)
     assert module._is_core_checkout(module.CORE_REPO)
     assert "site-packages" not in str(module.CORE_REPO).lower()
@@ -50,11 +53,12 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
     assert "installed semantic-v2 reader contract mismatch" in (
         module._INSTALLED_ORIGIN_PROBE
     )
+    assert 'metadata.distribution("okto-grafx")' in module._INSTALLED_ORIGIN_PROBE
+    assert 'grafx_dist.read_text("direct_url.json")' in (module._INSTALLED_ORIGIN_PROBE)
     assert "__EXPECTED_" not in module._MCP_CLIENT_PROBE
     assert "installed runtime" in module._INSTALLED_RUNTIME_VERSION_PROBE
-    assert 'metadata.version("pydantic")' in (
-        module._INSTALLED_RUNTIME_VERSION_PROBE
-    )
+    assert 'metadata.version("pydantic")' in (module._INSTALLED_RUNTIME_VERSION_PROBE)
+    assert 'metadata.version("okto-grafx")' in (module._INSTALLED_RUNTIME_VERSION_PROBE)
     assert module.RUNTIME_MATRIX_PROBE.is_file()
     runtime_probe = module.RUNTIME_MATRIX_PROBE.read_text(encoding="utf-8")
     assert '"coverage": "TS24-C11 covered"' in runtime_probe
@@ -153,6 +157,7 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
 
     completed = subprocess.run(
         command,
+        check=False,
         cwd=REPO,
         env=os.environ.copy(),
         capture_output=True,
@@ -173,14 +178,22 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     evidence = json.loads(results[0])
 
     assert evidence["status"] == "passed"
-    assert evidence["expected_version"] == "0.3.2"
+    assert evidence["expected_version"] == "0.3.3"
     assert evidence["installed"]["runtime_version"]["python_major_minor"] == [3, 11]
     assert evidence["installed"]["runtime_version"]["required_major_minor"] == [3, 11]
     assert evidence["installed"]["runtime_version"]["pydantic"]
+    assert evidence["installed"]["runtime_version"]["okto_grafx"] == "0.0.1"
     assert evidence["core_artifact_audit"]["forbidden_wheel_paths"] == []
     assert evidence["core_artifact_audit"]["missing_required_resources"] == []
     origin = evidence["installed"]["origin_probe"]
-    assert origin["about_version"] == "0.3.2"
+    assert origin["versions"]["grafx"] == "0.0.1"
+    assert origin["distribution_file_counts"]["grafx"] > 0
+    assert "site-packages" in origin["origins"]["okto_grafx"]
+    assert origin["grafx_wheel_sha256"] == evidence["wheels"]["grafx"]["sha256"]
+    assert origin["grafx_direct_url"]["url"].endswith(
+        "/" + evidence["wheels"]["grafx"]["name"]
+    )
+    assert origin["about_version"] == "0.3.3"
     assert origin["ska_contract_manifests"]["tool_count"] == 13
     assert origin["ska_contract_manifests"]["resource_count"] == 23
     assert origin["semantic_v2_reader_contract"]["compatible"] is True
@@ -188,7 +201,7 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     assert len(origin["required_core_resources"]) == 2
     for distribution in ("core", "community"):
         provenance = evidence["installed"]["payload_provenance"][distribution]
-        assert provenance["version"] == "0.3.2"
+        assert provenance["version"] == "0.3.3"
         assert provenance["commit"]
         assert provenance["repository_root"]
         assert provenance["wheel"]["sha256"]
@@ -200,14 +213,8 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     assert runtime_matrix["status"] == "passed"
     sqlite = runtime_matrix["sqlite"]
     assert sqlite["fresh"]["foreign_key_errors"] == []
-    assert (
-        sqlite["rerun"]["logical_sha256"]
-        == sqlite["fresh"]["logical_sha256"]
-    )
-    assert (
-        sqlite["crash_resume"]["logical_sha256"]
-        == sqlite["fresh"]["logical_sha256"]
-    )
+    assert sqlite["rerun"]["logical_sha256"] == sqlite["fresh"]["logical_sha256"]
+    assert sqlite["crash_resume"]["logical_sha256"] == sqlite["fresh"]["logical_sha256"]
     concurrency = sqlite["concurrency"]
     assert concurrency["returncodes"] == [0, 0]
     assert concurrency["both_workers_succeeded"] is True
@@ -233,20 +240,19 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     assert kg_parity["oracle"]["productive_kuzu_materialized"] is False
     assert kg_parity["oracle"]["productive_kuzu_purged"] is False
     assert all(
-        family["match"]
-        and family["incremental_sha256"] == family["rebuild_sha256"]
+        family["match"] and family["incremental_sha256"] == family["rebuild_sha256"]
         for family in kg_parity["family_projection_hashes"].values()
     )
     assert kg_parity["ska"]["quality"] == "covered"
     assert kg_parity["ska"]["research_decision_ledger"] == "covered"
     assert evidence["installed"]["cli_version"] == (
-        "okto-pulse 0.3.2 (okto-pulse-core 0.3.2)"
+        "okto-pulse 0.3.3 (okto-pulse-core 0.3.3)"
     )
     mcp_http = evidence["installed"]["mcp_http"]
     assert mcp_http["transport"] == "streamable-http-loopback"
     assert mcp_http["tool_count"] == 338
     assert mcp_http["canonical_tool_count"] == 330
     assert mcp_http["tool_alias_count"] == 8
-    assert mcp_http["resource_count"] == 55
+    assert mcp_http["resource_count"] == 56
     assert mcp_http["ska_tool_count"] == 13
     assert (work_dir / "release-artifact-evidence.json").is_file()

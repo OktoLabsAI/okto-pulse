@@ -1,10 +1,8 @@
 """REST endpoints for runtime settings (0.1.4).
 
 Exposes ``GET`` and ``PUT`` on ``/api/v1/settings/runtime`` so the frontend
-Settings menu can read/modify graph-runtime knobs. The public field names
-remain the legacy ``kg_kuzu_*``/``kg_connection_pool_size`` compatibility
-contract until provider-neutral aliases ship. Ranges match the Pydantic
-validators on :class:`CoreSettings`; invalid values are rejected with 422.
+Settings menu can read/modify Grafx constructor knobs. Retired engine settings
+are not accepted or advertised. Invalid values are rejected before persistence.
 
 The current Community graph runtime applies these values at construction time,
 so writes only take effect on the next process restart. The response includes
@@ -13,10 +11,15 @@ so writes only take effect on the next process restart. The response includes
 
 from __future__ import annotations
 
+from typing import Any, Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
-from okto_pulse.community.api.deps import get_unit_of_work, scheduler_control_from_request
+from okto_pulse.community.api.deps import (
+    get_unit_of_work,
+    scheduler_control_from_request,
+)
 from okto_pulse.community.api.permission_errors import permission_denied_http_error
 from okto_pulse.core.application.use_cases.operational_rest import (
     GetRuntimeSettingsCommand,
@@ -27,7 +30,11 @@ from okto_pulse.core.application.use_cases.operational_rest import (
 from okto_pulse.core.application.use_cases.base import PermissionDeniedError
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.community.api.auth_deps import require_principal
-from okto_pulse.community.config import validate_graph_db_max_size_gb
+from okto_pulse.community.config import (
+    validate_grafx_buffer_pool_mb,
+    validate_grafx_page_size,
+)
+from okto_pulse.community.adapters.grafx_settings_catalog import validate_options
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.domain.runtime_settings import (
@@ -47,16 +54,23 @@ class RuntimeSettingsResponse(BaseModel):
     used while a constructor-time change is waiting for restart.
     """
 
-    # Graph runtime tab - legacy public field names, restart-required on change.
-    kg_kuzu_buffer_pool_mb: int
-    kg_kuzu_max_db_size_gb: int
-    kg_connection_pool_size: int
+    # Active providers are informational. Existing per-scope bindings remain
+    # authoritative and cannot be changed from this general settings surface.
+    kg_graph_backend: Literal["grafx"]
+    kg_global_graph_backend: Literal["grafx"]
+    # Grafx settings consumed when the graph composition is built.
+    kg_grafx_page_size: int
+    kg_grafx_descriptor_revalidation: Literal["strict", "generation"]
+    kg_grafx_buffer_pool_mb: int = 64
+    kg_grafx_read_participants: int = Field(default=2, strict=True, ge=1, le=8)
+    kg_grafx_options: dict[str, Any] = Field(default_factory=dict)
+    grafx_settings_catalog: list[dict[str, Any]] = Field(default_factory=list)
+    # Legacy public fields remain in the wire contract for older clients, but
+    # are no longer presented by the Grafx-oriented Settings UI.
     # KGD-01 FR1/TR3 — WAL salvage toggle (bool persistido como 0/1;
     # restart-required como as demais GRAPH_DB_KEYS).
-    kg_wal_salvage_enabled: bool
     # KGD-01 FR3/BR2 — wal-only recovery toggle (degrau 2 da escada; bool
     # persistido como 0/1; restart-required como as demais GRAPH_DB_KEYS).
-    kg_wal_only_recovery_enabled: bool
     # Event Queue tab — hot-reload (no restart needed).
     kg_queue_max_concurrent_workers: int
     kg_queue_min_interval_ms: int
@@ -67,7 +81,7 @@ class RuntimeSettingsResponse(BaseModel):
     kg_decay_tick_interval_minutes: int
     kg_decay_tick_staleness_days: int
     kg_decay_tick_max_age_days: int
-    desired_values: dict[str, int] = Field(default_factory=dict)
+    desired_values: dict[str, Any] = Field(default_factory=dict)
     restart_required: bool
 
 
@@ -79,14 +93,20 @@ class RuntimeSettingsPayload(BaseModel):
     or equal to`` / ``less than or equal to`` message for violations.
     """
 
-    # Graph runtime tab - legacy public field names.
-    kg_kuzu_buffer_pool_mb: int | None = Field(default=None, ge=128, le=512)
-    kg_kuzu_max_db_size_gb: int | None = Field(default=None, ge=2, le=64)
-    kg_connection_pool_size: int | None = Field(default=None, ge=1, le=32)
+    model_config = {"extra": "forbid"}
+
+    # Grafx startup-time settings. Page geometry applies to newly-created
+    # generations; existing generation bindings retain their stored geometry.
+    kg_grafx_page_size: int | None = Field(default=None, strict=True, ge=4096, le=32768)
+    kg_grafx_descriptor_revalidation: Literal["strict", "generation"] | None = None
+    kg_grafx_buffer_pool_mb: int | None = Field(default=None, strict=True, ge=1)
+    kg_grafx_read_participants: int | None = Field(
+        default=None, strict=True, ge=1, le=8
+    )
+    kg_grafx_options: dict[str, Any] | None = None
+    # Legacy public fields remain accepted for API compatibility.
     # KGD-01 FR1/TR3 — WAL salvage toggle.
-    kg_wal_salvage_enabled: bool | None = Field(default=None)
     # KGD-01 FR3/BR2 — wal-only recovery toggle (degrau 2).
-    kg_wal_only_recovery_enabled: bool | None = Field(default=None)
     # Event Queue tab (spec bdcda842).
     kg_queue_max_concurrent_workers: int | None = Field(default=None, ge=1, le=16)
     kg_queue_min_interval_ms: int | None = Field(default=None, ge=0, le=1000)
@@ -103,14 +123,26 @@ class RuntimeSettingsPayload(BaseModel):
     # Default restart_policy for graph-runtime changes is "required" when
     # omitted — matches the existing "restart_required" semantics.
     migration_plan_ref: str | None = Field(default=None, max_length=256)
-    restart_policy: str | None = Field(default=None, pattern="^(none|required|scheduled)$")
+    restart_policy: str | None = Field(
+        default=None, pattern="^(none|required|scheduled)$"
+    )
 
-    @field_validator("kg_kuzu_max_db_size_gb")
+    @field_validator("kg_grafx_options")
     @classmethod
-    def _validate_graph_db_max_size_gb(cls, value: int | None) -> int | None:
+    def _validate_grafx_options(cls, value: dict[str, Any] | None):
+        return None if value is None else validate_options(value)
+
+    @field_validator("kg_grafx_buffer_pool_mb")
+    @classmethod
+    def _validate_grafx_buffer(cls, value: int | None):
+        return None if value is None else validate_grafx_buffer_pool_mb(value)
+
+    @field_validator("kg_grafx_page_size")
+    @classmethod
+    def _validate_grafx_page_size(cls, value: int | None) -> int | None:
         if value is None:
             return value
-        return validate_graph_db_max_size_gb(value)
+        return validate_grafx_page_size(value)
 
 
 @router.get("/settings/runtime", response_model=RuntimeSettingsResponse)
@@ -176,4 +208,6 @@ async def put_runtime(
                 "audit_event": exc.audit_event,
             },
         ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return RuntimeSettingsResponse(**data)

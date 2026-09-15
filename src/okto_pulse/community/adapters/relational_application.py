@@ -715,6 +715,11 @@ class CommunityRelationalApplicationAdapter:
 
         return CommunitySqlAlchemyCodeTraceabilityStore(session)
 
+    def delivery_evidence(self, session: AsyncSession):
+        from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import CommunityDeliveryEvidenceStore
+
+        return CommunityDeliveryEvidenceStore(session)
+
     def delivery_forecast_read(self, session: AsyncSession):
         """Bind board-scoped Sprint commitment evidence for forecasting."""
 

@@ -214,7 +214,10 @@ def _domain_age(
     timestamps: Iterable[datetime | None], *, observed_at: datetime
 ) -> BoardKgDomainAge:
     ages = sorted(
-        max(0.0, (observed_at - _utc(value, fallback=observed_at)).total_seconds() / 3600)
+        max(
+            0.0,
+            (observed_at - _utc(value, fallback=observed_at)).total_seconds() / 3600,
+        )
         for value in timestamps
         if value is not None
     )
@@ -366,9 +369,7 @@ class CommunitySqlAlchemyDeliveryForecastEvidence:
             delivery_contract_version=DELIVERY_COMMITMENT_CONTRACT_VERSION,
             observed_at=observed_at,
             input_state=(
-                ForecastInputState.AVAILABLE
-                if available
-                else ForecastInputState.EMPTY
+                ForecastInputState.AVAILABLE if available else ForecastInputState.EMPTY
             ),
             minimum_observations=DEFAULT_FORECAST_MINIMUM_OBSERVATIONS,
             readiness_rule_version=FORECAST_READINESS_RULE_VERSION,
@@ -436,7 +437,9 @@ class CommunitySqlAlchemyBoardKgAnalyticsEvidence:
                 artifact_store=require_rebuild_audit_artifact_store()
             )
             generation = store.latest_generation(query.board_id)
-            raw_items = store.list_items(query.board_id, generation) if generation else []
+            raw_items = (
+                store.list_items(query.board_id, generation) if generation else []
+            )
         except Exception:
             return (), None, "cognitive_item_ledger_unavailable"
 
@@ -495,13 +498,7 @@ class CommunitySqlAlchemyBoardKgAnalyticsEvidence:
                         }
                     ),
                     blocker_codes=tuple(
-                        sorted(
-                            {
-                                str(value)
-                                for value in (item.reason_code,)
-                                if value
-                            }
-                        )
+                        sorted({str(value) for value in (item.reason_code,) if value})
                     ),
                 )
             )
@@ -543,43 +540,59 @@ class CommunitySqlAlchemyBoardKgAnalyticsEvidence:
         board_id = query.board_id
 
         queue_rows = (
-            await self._session.execute(
-                select(ConsolidationQueue.triggered_at).where(
-                    ConsolidationQueue.board_id == board_id,
-                    ConsolidationQueue.status.in_(_ACTIVE_QUEUE_STATES),
+            (
+                await self._session.execute(
+                    select(ConsolidationQueue.triggered_at).where(
+                        ConsolidationQueue.board_id == board_id,
+                        ConsolidationQueue.status.in_(_ACTIVE_QUEUE_STATES),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         dlq_rows = (
-            await self._session.execute(
-                select(ConsolidationDeadLetter.dead_lettered_at).where(
-                    ConsolidationDeadLetter.board_id == board_id
+            (
+                await self._session.execute(
+                    select(ConsolidationDeadLetter.dead_lettered_at).where(
+                        ConsolidationDeadLetter.board_id == board_id
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         debt_rows = (
-            await self._session.execute(
-                select(CanonicalDebt.created_at).where(
-                    CanonicalDebt.board_id == board_id,
-                    CanonicalDebt.canonical_state.in_(_OPEN_CANONICAL_DEBT_STATES),
+            (
+                await self._session.execute(
+                    select(CanonicalDebt.created_at).where(
+                        CanonicalDebt.board_id == board_id,
+                        CanonicalDebt.canonical_state.in_(_OPEN_CANONICAL_DEBT_STATES),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         policy_rows = (
-            await self._session.execute(
-                select(DomainEventRow.occurred_at)
-                .select_from(DomainEventHandlerExecution)
-                .join(
-                    DomainEventRow,
-                    DomainEventRow.id == DomainEventHandlerExecution.event_id,
-                )
-                .where(
-                    DomainEventRow.board_id == board_id,
-                    DomainEventHandlerExecution.handler_name == _POLICY_HANDLER,
-                    DomainEventHandlerExecution.status.in_(_ACTIVE_POLICY_STATES),
+            (
+                await self._session.execute(
+                    select(DomainEventRow.occurred_at)
+                    .select_from(DomainEventHandlerExecution)
+                    .join(
+                        DomainEventRow,
+                        DomainEventRow.id == DomainEventHandlerExecution.event_id,
+                    )
+                    .where(
+                        DomainEventRow.board_id == board_id,
+                        DomainEventHandlerExecution.handler_name == _POLICY_HANDLER,
+                        DomainEventHandlerExecution.status.in_(_ACTIVE_POLICY_STATES),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         cognitive_items, next_cursor, cognitive_error = await self._cognitive_items(
             query, observed_at=observed_at
         )
@@ -657,10 +670,34 @@ class CommunitySqlAlchemyBoardKgAnalyticsEvidence:
                 )
             )
 
-        health_state, health_result, health_reason, reasons, components = (
-            await self._health(board_id)
-        )
+        (
+            health_state,
+            health_result,
+            health_reason,
+            reasons,
+            components,
+        ) = await self._health(board_id)
         diagnostics = tuple(
+            BoardKgDiagnostic(
+                domain=f"health:{component.component}",
+                severity=(
+                    BoardKgDomainSeverity.BLOCKING
+                    if component.health_state
+                    in {
+                        BoardKgHealthState.BACKPRESSURE,
+                        BoardKgHealthState.RECOVERY_NEEDED,
+                        BoardKgHealthState.QUARANTINED,
+                    }
+                    else BoardKgDomainSeverity.AT_RISK
+                ),
+                reason=component.classification_reason,
+                next_step=BoardKgDrillDown(
+                    True, f"/api/v1/kg/health?board_id={board_id}"
+                ),
+            )
+            for component in components
+            if component.result_state is not BoardKgAnalyticsResultState.AVAILABLE
+        ) + tuple(
             BoardKgDiagnostic(
                 domain=item.domain.value,
                 severity=item.severity or BoardKgDomainSeverity.AT_RISK,

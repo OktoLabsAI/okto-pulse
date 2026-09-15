@@ -108,6 +108,8 @@ async def _stage_and_ack(
     compact_queue_payload: bool = False,
     commit_before_ack: bool = False,
     expect_receipt: bool | None = None,
+    deferred_live: dict[str, object] | None = None,
+    created_node_ref_count: int = 4,
 ) -> ExactConsolidationAckReceipt | None:
     artifact_id = f"artifact-{ordinal}"
     queue_id = f"queue-{ordinal}"
@@ -120,6 +122,8 @@ async def _stage_and_ack(
         "e" * 64 if audit_content_hash is None else audit_content_hash
     )
     payload = _queue_payload(ordinal)
+    if deferred_live is not None:
+        payload["_rebuild_deferred_live"] = deferred_live
     occurred_at = datetime(2026, 8, 16, 12, ordinal, tzinfo=timezone.utc)
     audit = ConsolidationAudit(
         session_id=consolidation_session_id,
@@ -160,14 +164,21 @@ async def _stage_and_ack(
                 attempts=0,
             ),
             audit,
-            KuzuNodeRef(
-                id=f"ref-row-{ordinal}",
-                session_id=consolidation_session_id,
-                board_id=BOARD_ID,
-                kuzu_node_id=f"node-{ordinal}",
-                kuzu_node_type="Entity",
-                operation="add",
-                timestamp=occurred_at,
+            *(
+                KuzuNodeRef(
+                    id=(
+                        f"ref-row-{ordinal}"
+                        if ref_ordinal == 0
+                        else f"ref-superseded-{ordinal}-{ref_ordinal}"
+                    ),
+                    session_id=consolidation_session_id,
+                    board_id=BOARD_ID,
+                    kuzu_node_id=f"node-{ordinal}-{ref_ordinal}",
+                    kuzu_node_type="Entity",
+                    operation="add",
+                    timestamp=occurred_at,
+                )
+                for ref_ordinal in range(created_node_ref_count)
             ),
             GlobalUpdateOutbox(
                 id=f"outbox-row-{ordinal}",
@@ -256,7 +267,12 @@ async def _stage_and_ack(
                 "source_version": str(ordinal),
                 "source_ref": f"spec:{artifact_id}",
                 "run_id": SOURCE.removeprefix("rebuild:"),
-            }
+            },
+            **(
+                {"_rebuild_deferred_live": deferred_live}
+                if deferred_live is not None
+                else {}
+            ),
         },
         reservation_authority_probe=lambda: True,
     )
@@ -357,6 +373,7 @@ async def test_exact_ack_journals_effects_and_queue_delete_atomically(exact_stor
             materialization_generation="mg_1",
         )
         assert receipt is not None
+        assert receipt.node_ref_count == 4
         assert receipt.membership_content_hash != receipt.audit_content_hash
         assert receipt.audit_content_hash == "e" * 64
         assert await session.get(ConsolidationQueue, "queue-1") is None
@@ -393,6 +410,99 @@ async def test_exact_ack_accepts_compact_raw_admission_payload(exact_store):
         journal = await session.get(ExactRebuildConsolidationAckJournal, "queue-1")
         assert journal is not None
         assert journal.receipt_sha256 == receipt.receipt_sha256
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("created_node_ref_count", (3, 5))
+async def test_exact_ack_rejects_created_node_ref_count_drift_atomically(
+    exact_store,
+    created_node_ref_count: int,
+) -> None:
+    factory, adapter = exact_store
+    async with factory() as session:
+        with pytest.raises(ExactConsolidationAckIntegrityError) as captured:
+            await _stage_and_ack(
+                session,
+                adapter,
+                ordinal=1,
+                previous_generation="unmaterialized-v1",
+                materialization_generation="mg_1",
+                created_node_ref_count=created_node_ref_count,
+            )
+        assert captured.value.code == "exact_consolidation_ack_node_ref_counts_invalid"
+        assert await session.get(ConsolidationQueue, "queue-1") is not None
+        assert await session.get(ExactRebuildConsolidationAckJournal, "queue-1") is None
+        await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_exact_ack_restores_deferred_live_intent_atomically_and_keeps_it_through_compensation(
+    exact_store,
+):
+    factory, adapter = exact_store
+    deferred_live = {
+        "source": "state_transition",
+        "triggered_by_event": "event-live-1",
+        "payload": {"revision": 17, "reason": "live-update"},
+    }
+    async with factory() as session:
+        receipt = await _stage_and_ack(
+            session,
+            adapter,
+            ordinal=1,
+            previous_generation="unmaterialized-v1",
+            materialization_generation="mg_1",
+            deferred_live=deferred_live,
+        )
+        assert receipt is not None
+        restored = await session.get(ConsolidationQueue, "queue-1")
+        assert restored is not None
+        assert restored.status == "pending"
+        assert restored.source == "state_transition"
+        assert restored.triggered_by_event == "event-live-1"
+        assert restored.payload == {"revision": 17, "reason": "live-update"}
+        assert restored.claim_token is None
+        assert restored.claimed_by_session_id is None
+        assert restored.worker_id is None
+        await session.commit()
+
+    async with factory() as session:
+        before_compensation = await session.get(ConsolidationQueue, "queue-1")
+        assert before_compensation is not None
+        before_state = (
+            before_compensation.status,
+            before_compensation.source,
+            before_compensation.triggered_by_event,
+            before_compensation.payload,
+            before_compensation.attempts,
+            before_compensation.last_error,
+            before_compensation.next_retry_at,
+            before_compensation.claim_token,
+        )
+        result = await adapter.compensate_exact_rebuild_commits(
+            session,
+            board_id=BOARD_ID,
+            source=SOURCE,
+            reservation_lineage_id=LINEAGE,
+            expected_receipts=(receipt,),
+            reservation_authority_probe=lambda: True,
+        )
+        assert result is not None and result.replayed is False
+        await session.commit()
+
+    async with factory() as session:
+        after_compensation = await session.get(ConsolidationQueue, "queue-1")
+        assert after_compensation is not None
+        assert (
+            after_compensation.status,
+            after_compensation.source,
+            after_compensation.triggered_by_event,
+            after_compensation.payload,
+            after_compensation.attempts,
+            after_compensation.last_error,
+            after_compensation.next_retry_at,
+            after_compensation.claim_token,
+        ) == before_state
 
 
 @pytest.mark.asyncio

@@ -40,10 +40,27 @@ import * as kgApi from '@/services/kg-api';
 import { getKGHealth, type KGHealth } from '@/services/kg-health-api';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { usePermissions } from '@/hooks/usePermissions';
+import { useOptionalModalStack } from '@/contexts/ModalStackContext';
 import { useCodeTraceabilityAuthority } from '@/components/code-traceability';
 
 interface Props {
   boardId: string;
+}
+
+export function resolveGraphTotalNodeCount(
+  stats: KGStats | null,
+  health: KGHealth | null,
+): number | undefined {
+  const counts = stats?.node_counts_by_type;
+  if (counts && Object.keys(counts).length > 0) {
+    return Object.values(counts).reduce((sum, count) => (
+      Number.isFinite(count) && count > 0 ? sum + count : sum
+    ), 0);
+  }
+  const healthTotal = health?.total_nodes;
+  return typeof healthTotal === 'number' && healthTotal >= 0
+    ? healthTotal
+    : undefined;
 }
 
 type SubView = 'graph' | 'audit' | 'pending' | 'pending_tree' | 'settings' | 'global';
@@ -155,9 +172,11 @@ export function KnowledgeGraphPage({ boardId }: Props) {
   const [healthSnapshot, setHealthSnapshot] = useState<KGHealth | null>(null);
   const [statsSnapshot, setStatsSnapshot] = useState<KGStats | null>(null);
   const [historicalProgress, setHistoricalProgress] = useState<kgApi.HistoricalProgress | null>(null);
+  const [historicalLoading, setHistoricalLoading] = useState(true);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<KGNode | null>(null);
   const [modalNode, setModalNode] = useState<KGNode | null>(null);
+  const modalStack = useOptionalModalStack();
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -178,6 +197,10 @@ export function KnowledgeGraphPage({ boardId }: Props) {
       (edge) => visibleIds.has(edge.source) && visibleIds.has(edge.target),
     );
   }, [authorityNodes, canReadCodeTraceability, edges]);
+  const totalNodeCount = useMemo(
+    () => resolveGraphTotalNodeCount(statsSnapshot, healthSnapshot),
+    [healthSnapshot, statsSnapshot],
+  );
 
   useEffect(() => {
     if (canReadCodeTraceability) return;
@@ -206,6 +229,9 @@ export function KnowledgeGraphPage({ boardId }: Props) {
     return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1';
   });
   const dragState = useRef<{ startX: number; startWidth: number } | null>(null);
+  const graphRequest = useRef(0);
+  const diagnosticsRequest = useRef(0);
+  const statsRequest = useRef(0);
   const [helpOpen, setHelpOpen] = useState(false);
   const serverNodeType = useMemo(() => {
     const realTypes = filters.types.filter((type) => String(type) !== HIDE_ALL_NODE_TYPE);
@@ -245,41 +271,88 @@ export function KnowledgeGraphPage({ boardId }: Props) {
 
   const loadGraph = useCallback(
     async (limit: number) => {
+      const request = ++graphRequest.current;
       setLoading(true);
       setError(null);
       try {
-        const [data, health, historical, stats] = await Promise.all([
-          kgApi.getSubgraph(boardId, {
-            limit,
-            min_relevance: 0,
-            type: serverNodeType,
-            graph_layer: filters.graphLayer,
-          }),
-          canReadHealth ? getKGHealth(boardId).catch(() => null) : Promise.resolve(null),
-          canReadHistorical
-            ? kgApi.getHistoricalProgress(boardId).catch(() => null)
-            : Promise.resolve(null),
-          kgApi.getStats(boardId, { graph_layer: filters.graphLayer }).catch(() => null),
-        ]);
+        const data = await kgApi.getSubgraph(boardId, {
+          limit,
+          min_relevance: 0,
+          type: serverNodeType,
+          graph_layer: filters.graphLayer,
+        });
+        if (request !== graphRequest.current) return;
         setNodes(data.nodes || []);
         setEdges(data.edges || []);
         setGraphMetadata(data.metadata ?? null);
-        setHealthSnapshot(health);
-        setStatsSnapshot(stats);
-        setHistoricalProgress(historical);
         setNextCursor(data.next_cursor ?? null);
       } catch (err) {
+        if (request !== graphRequest.current) return;
         setError(err instanceof Error ? err.message : 'Failed to load graph');
       } finally {
-        setLoading(false);
+        if (request === graphRequest.current) setLoading(false);
       }
     },
-    [boardId, filters.graphLayer, serverNodeType, canReadHealth, canReadHistorical],
+    [boardId, filters.graphLayer, serverNodeType],
   );
 
+  const loadDiagnostics = useCallback(async () => {
+    const request = ++diagnosticsRequest.current;
+    setHistoricalLoading(canReadHistorical);
+    await Promise.all([
+      (canReadHealth ? getKGHealth(boardId).catch(() => null) : Promise.resolve(null))
+        .then((health) => {
+          if (request === diagnosticsRequest.current) setHealthSnapshot(health);
+        }),
+      (canReadHistorical
+        ? kgApi.getHistoricalProgress(boardId).catch(() => null)
+        : Promise.resolve(null))
+        .then((historical) => {
+          if (request !== diagnosticsRequest.current) return;
+          setHistoricalProgress(historical);
+          setHistoricalLoading(false);
+        }),
+    ]);
+  }, [boardId, canReadHealth, canReadHistorical]);
+
+  // Health permissions hydrate independently of the graph census. Do not start
+  // another expensive census when those unrelated permissions become ready.
+  const loadStats = useCallback(async () => {
+    const request = ++statsRequest.current;
+    setStatsSnapshot(null);
+    const stats = await kgApi.getStats(boardId, {
+      graph_layer: filters.graphLayer,
+    }).catch(() => null);
+    if (request !== statsRequest.current) return;
+    setStatsSnapshot(stats);
+  }, [boardId, filters.graphLayer]);
+
+  const refreshGraph = useCallback(() => {
+    void loadGraph(nodeLimit);
+    void loadDiagnostics();
+    void loadStats();
+  }, [loadDiagnostics, loadGraph, loadStats, nodeLimit]);
+
   useEffect(() => {
-    loadGraph(nodeLimit);
+    void loadGraph(nodeLimit);
+    return () => {
+      graphRequest.current += 1;
+    };
   }, [boardId, nodeLimit, loadGraph]);
+
+  useEffect(() => {
+    void loadDiagnostics();
+    return () => {
+      diagnosticsRequest.current += 1;
+    };
+  }, [loadDiagnostics]);
+
+  useEffect(() => {
+    void loadStats();
+    return () => {
+      statsRequest.current += 1;
+    };
+  }, [loadStats]);
 
   // Wire SSE live events. When a commit burst settles, auto-refetch the
   // graph so the canvas reflects the new state — the sync indicator chip
@@ -405,13 +478,14 @@ export function KnowledgeGraphPage({ boardId }: Props) {
     };
   }, [sidebarWidth]);
 
-  const handleOpenSpec = useCallback((specRef: string) => {
-    if (typeof window !== 'undefined') {
-      window.location.href = `/specs/${specRef}`;
-    }
-  }, []);
+  const handleShowDetails = (node: KGNode) => {
+    if (modalStack) modalStack.push({ type: 'kg_node', id: node.id, boardId });
+    else setModalNode(node);
+  };
 
-  if (loading) {
+  // Do not mount onboarding (which can auto-refresh completed backfills) before
+  // its status is known. Non-empty graphs never wait for diagnostics.
+  if (loading || (!error && nodes.length === 0 && canReadHistorical && historicalLoading)) {
     return (
       <div
         className="flex items-center justify-center h-full"
@@ -453,7 +527,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
             boardId={boardId}
             health={mismatchHealth}
             metadata={graphMetadata}
-            onRefresh={() => loadGraph(nodeLimit)}
+            onRefresh={refreshGraph}
           />
         </div>
       );
@@ -461,7 +535,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
     if (!kgApi.isHistoricalProgressTerminal(historicalProgress)) {
       return (
         <div data-empty-state="yet" data-testid="kg-empty-yet" className="h-full">
-          <EmptyState boardId={boardId} onRefresh={() => loadGraph(nodeLimit)} />
+          <EmptyState boardId={boardId} onRefresh={refreshGraph} />
         </div>
       );
     }
@@ -510,7 +584,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
               ? statsSnapshot?.node_counts_by_type
               : undefined}
             totalNodeCount={canReadCodeTraceability
-              ? healthSnapshot?.total_nodes ?? undefined
+              ? totalNodeCount
               : undefined}
           />
         </div>
@@ -570,7 +644,7 @@ export function KnowledgeGraphPage({ boardId }: Props) {
                 }}
               />
               <KGRefreshButton
-                onRefresh={() => loadGraph(nodeLimit)}
+                onRefresh={refreshGraph}
                 loading={loading}
                 label="Refresh"
                 shortcut
@@ -627,8 +701,8 @@ export function KnowledgeGraphPage({ boardId }: Props) {
               initialSelectedNodeId={selectedNode?.id ?? null}
               onClearFilters={handleClearFilters}
               onAdjustRelevance={handleAdjustRelevance}
-              onOpenSpec={handleOpenSpec}
-              onShowDetails={setModalNode}
+              boardId={boardId}
+              onShowDetails={handleShowDetails}
               refitTrigger={refitTrigger}
             />
           </>

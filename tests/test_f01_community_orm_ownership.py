@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from okto_pulse.core.domain.entities import Board, Ideation, Spec
 from sqlalchemy import Column, Index, Integer, MetaData, Table, inspect
 
 from okto_pulse.community.adapters.core_import_boundary import (
@@ -29,7 +30,6 @@ from okto_pulse.community.adapters.sqlalchemy_schema_contract import (
     LEGACY_CORE_SCHEMA_SHA256,
     schema_contract_sha256,
 )
-from okto_pulse.core.domain.entities import Board, Ideation, Spec
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -50,8 +50,8 @@ def test_community_metadata_matches_governed_inherited_schema_contract() -> None
     assert table_names & COMMUNITY_SCHEMA_EXTENSION_TABLES == (
         COMMUNITY_SCHEMA_EXTENSION_TABLES
     )
-    assert len(legacy_table_names) == 63
-    assert len(table_names) == 63 + len(COMMUNITY_SCHEMA_EXTENSION_TABLES)
+    assert len(legacy_table_names) == 64
+    assert len(table_names) == 64 + len(COMMUNITY_SCHEMA_EXTENSION_TABLES)
     assert (
         schema_contract_sha256(
             Base.metadata,

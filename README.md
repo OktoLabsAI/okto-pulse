@@ -48,6 +48,11 @@
 | [`docs/RELEASE-NOTES.md`](docs/RELEASE-NOTES.md) | Full changeset per version |
 | [`docs/TOKEN-USAGE.md`](docs/TOKEN-USAGE.md) | Measured MCP context cost for agents |
 | [`docs/kg-health.md`](docs/kg-health.md) | Knowledge Graph health signals and triage |
+| [`docs/KG_SOURCE_NAVIGATION.md`](docs/KG_SOURCE_NAVIGATION.md) | Open owning artifacts from KG nodes and Global Discovery; provenance resolution, permissions and read-only API |
+| [`docs/DIAGRAM_CANVAS_AND_LINEAGE_UI.md`](docs/DIAGRAM_CANVAS_AND_LINEAGE_UI.md) | Architecture canvas margins, explicit lineage connection handles, status colors and isolated browser validation |
+| [`docs/GRAFX_V005_ADOPTION.md`](docs/GRAFX_V005_ADOPTION.md) | Grafx 0.0.5 adoption, optional capability boundary, Settings and validation checkpoint |
+| [`docs/GRAFX_ADVANCED_ADOPTION_0_0_6.md`](docs/GRAFX_ADVANCED_ADOPTION_0_0_6.md) | Grafx 0.0.6 adoption: composed reads, ranked search, independent Global readers, history/provenance and analytics; API/configuration contracts and validation evidence |
+| [`docs/GRAFX_RECOVERY_BATCHING.md`](docs/GRAFX_RECOVERY_BATCHING.md) | Bounded Global recovery writes, rollback/fencing guarantees and remaining batch opportunities |
 
 ## What is Okto Pulse?
 
@@ -63,14 +68,14 @@ Every stage has structured artifacts, lineage, status transitions and validation
 
 ## Platform Surface
 
-Current 0.3.2 surface:
+Current 0.3.3 surface:
 
 | Surface | Count |
 | --- | ---: |
-| Governance gates | 17 |
-| Core MCP tools | 338 |
+| Governance gates | 18 |
+| Core MCP tools | 340 |
 | Community-only MCP tools | 0 |
-| MCP tools exposed by `okto-pulse serve` | 338 |
+| MCP tools exposed by `okto-pulse serve` | 340 |
 
 The community package materializes the full `okto-pulse-core` command catalog in
 its FastMCP host. That means installed community runtimes expose the complete
@@ -144,9 +149,19 @@ environment and submits only the bounded result.
 | --- | --- |
 | Claude Code | Run it from the directory that contains `.mcp.json`. |
 | Claude Desktop | Copy the generated MCP server block into Claude Desktop settings. |
+| Codex | In **Menu → Agents**, create an agent or regenerate its key, then click **Codex (CLI)** and run the copied command in your terminal. |
 | Cursor | Add the MCP server URL in Cursor MCP settings. |
 | VS Code | Copy the server block into `.vscode/mcp.json`. |
 | Windsurf / Cline | Use the generated `.mcp.json` when supported. |
+
+The **Codex (CLI)** button copies `codex mcp add okto-pulse --url "<Pulse MCP URL with agent key>"`,
+using the runtime MCP address and the newly revealed API key. Install Codex CLI
+first. After rotating the key, copy and run the new command, then restart the
+Codex session; the old key stops working. Configuration copying is disabled when
+the reveal-once key is hidden. Keep the copied command private: it contains the
+key and can be saved in shell history and Codex's configuration. The command
+configures a connection; board access still needs to be granted in Pulse.
+See the [official Codex MCP documentation](https://developers.openai.com/codex/mcp/).
 
 Generated shape:
 
@@ -247,7 +262,7 @@ workflows or a verified backup/restore procedure.
 
 Okto Pulse ships as two packages: **`okto-pulse-core`** owns the SDLC domain, the governance gates
 and the Knowledge Graph contracts as pure `Protocol` seams; **`okto-pulse`** (this package) owns
-every concrete mechanism — SQLite, Kùzu/LadybugDB, the filesystem, the scheduler, telemetry state,
+every concrete mechanism — SQLite, Okto Grafx, the filesystem, the scheduler, telemetry state,
 the REST app and the MCP host.
 
 Core never imports Community. Community fills the ports at startup, and an unfilled slot **fails
@@ -267,9 +282,30 @@ contract each of the 156 adapter modules implements.
 | `okto-pulse serve` | Start API/UI and MCP in one Python process. |
 | `okto-pulse serve --api-port N --mcp-port M` | Override API/UI and MCP ports. |
 | `okto-pulse status` | Show service status, database path, size and board counts. |
-| `okto-pulse reset [-y]` | Delete local data and re-seed after confirmation. |
+| `okto-pulse status --json` | Emit one status object; SQLite errors return exit 1 without an initialization hint. |
+| `okto-pulse code-traceability requests <board_id>` | List persisted code-investigation requests. |
+| `okto-pulse code-traceability receipts <board_id>` | List agent-attested execution receipts. |
+| `okto-pulse code-traceability inspect <board_id> <kind> <record_id>` | Inspect one persisted request or receipt. |
+| `okto-pulse code-traceability diagnose <board_id>` | Validate the persisted Code Traceability schema and board policy. |
+| `okto-pulse metrics status [--window-days N]` | Show local metrics state and aggregates; N is 1–400, default 30. |
+| `okto-pulse metrics enable-beacon --policy-version VERSION --yes` | Opt in to anonymous hourly aggregate metrics. |
+| `okto-pulse metrics disable` | Turn metrics off. |
+| `okto-pulse metrics export [--output PATH]` | Export local metrics as JSONL. |
+| `okto-pulse metrics purge-local --yes` | Delete local metrics files after explicit confirmation. |
+| `okto-pulse api-key [--handoff-file PATH]` | Atomically consume a reveal-once bootstrap API-key handoff. |
+| `okto-pulse reset [-y]` | Delete SQLite, uploads and SQLite-owned board graph directories, then re-seed; offline and explicitly destructive. |
+| `okto-pulse verify-pipeline <board_id>` | Check all five Kanban-KG pipeline layers for a board. |
 | `okto-pulse kg dedup-entities <board_id>` | Run the idempotent KG entity deduplication migration for a board. |
-| `okto-pulse kg migrate-schema [--all-boards]` | Apply graph schema migrations manually. The runtime also auto-heals supported legacy schemas. |
+| `okto-pulse kg migrate-schema (--board <board_id> or --all-boards)` | Apply graph schema migrations manually. The runtime also auto-heals supported legacy schemas. |
+| `okto-pulse kg backfill <board_id> [--apply]` | Re-extract deterministic KG nodes and edges; dry-run by default. |
+| `okto-pulse kg proposals <board_id>` | List pending KG curation proposals. |
+| `okto-pulse kg unmerge <board_id> <record_id>` | Logically reverse a dedup equivalence record without re-pointing edges. |
+| `okto-pulse kg export <board_id> --output PATH` | Export a deterministic JSON-LD graph. |
+| `okto-pulse kg subtype declare <node_type> <kind_of>` | Declare a governed KG subtype. |
+| `okto-pulse kg restore <quarantine_id> [--apply]` | Plan or apply restoration of a quarantined KG snapshot. |
+
+For exact JSON/error, graph-reset ownership and migration admission contracts,
+see [CLI corrections and safety](docs/CLI_ISSUE_CLOSEOUT_20260913.md).
 
 ## Run with Docker
 
@@ -313,8 +349,10 @@ docker compose up -d
 | --- | --- | --- |
 | `HOST` | `127.0.0.1` | API/UI bind host. Use `0.0.0.0` in containers. |
 | `MCP_HOST` | `127.0.0.1` | MCP bind host. Use `0.0.0.0` in containers. |
-| `DATA_DIR` | `~/.okto-pulse` | SQLite database, uploads and graph storage root. |
+| `DATA_DIR` | `~/.okto-pulse` | SQLite database, uploads, graph storage and terms-acceptance root. Takes precedence over legacy `OKTO_PULSE_HOME` in the environment. |
+| `CORS_ORIGINS` | `*` | Comma-separated allowed browser origins, e.g. `https://one.example,https://two.example`. Explicit values are preserved. Not authentication or a firewall. |
 | `KG_BASE_DIR` | derived from `DATA_DIR` | Per-board graph database location. |
+| `KG_GRAFX_DESCRIPTOR_REVALIDATION` | `generation` | Grafx process-local descriptor policy: `generation` or `strict`. |
 | `HF_HOME` | `~/.cache/huggingface` | Sentence-transformers model cache. |
 | `MCP_TRACE_ENABLED` | unset | Set to `1` to record MCP calls for replay testing. |
 | `MCP_TRACE_DIR` | `${KG_BASE_DIR}/mcp_traces` | Trace output directory when tracing is enabled; falls back to `./mcp_traces` when `KG_BASE_DIR` is unset. |
@@ -325,6 +363,30 @@ docker compose up -d
 | `MCP_ADMISSION_MAX_QUEUED_PER_SESSION` | `4` | Maximum queued MCP tool calls owned by one session. |
 | `MCP_ADMISSION_WAIT_TIMEOUT_MS` | `250` | Maximum queue wait before a fail-fast saturation result. Set to `0` to reject instead of waiting. |
 | `MCP_ADMISSION_RETRY_AFTER_MS` | `500` | Retry delay advertised by a retryable `mcp_admission_saturated` result. |
+
+For Grafx, `generation` is the Pulse default. Pulse owns each managed generation directory and
+performs restore/generation replacement only with its handles closed, satisfying this policy's
+closed lifecycle. It amortizes descriptor identity proofs only for Grafx's canonical heap, catalog,
+index and WAL names; control and unknown names remain strict. This removes repeated namespace
+system calls from page-heavy graph reads without changing Grafx locking, WAL, OCC or snapshot
+rules. Keep it for the ordinary local Pulse runtime where no other tool mutates the live generation.
+
+`strict` proves the physical identity behind every cached descriptor hit. Select it when external
+tools may touch the database directory, during manual maintenance or forensics with uncertain
+directory provenance, on mixed-trust hosts, with live file replacement/replication that swaps
+names, or on an unsupported shared filesystem. Its advantage is detecting an out-of-protocol path
+replacement at the next physical operation; its cost is repeated namespace/descriptor calls on hot
+files. Conversely, `generation` can defer detection of that unsupported mutation until directed
+invalidation, generation advance or reopen. The policy is process-local and not persisted; it does
+not alter OCC, WAL, durability or multiwriter/multireader guarantees. Pulse fixes one policy per
+Grafx pool and refuses a handle whose observed effective mode differs from configuration. The full
+whitelist and transition matrix are specified in Okto Grafx's
+`docs/architecture/ST2_DESCRIPTOR_REVALIDATION.md`.
+
+One-shot schema-migration and rollout builders continue to open their separate, unbound candidate
+paths with Grafx's `strict` default and close them before activation. They do not share the live
+pool or its path, so this conservative choice neither changes nor weakens the configured policy of
+the active Pulse database.
 
 MCP admission is intentionally scoped to tool execution. Saturated calls receive
 a bounded, retryable outcome with `next_action.rel=retry_after`; initialization,
@@ -412,13 +474,21 @@ If running in Docker, expose the MCP listener with `MCP_HOST=0.0.0.0` and publis
 </details>
 
 <details>
-<summary>Graph database reports lock, WAL or size errors</summary>
+<summary>Grafx reports lock, WAL or page-geometry errors</summary>
 
 First confirm that only one `okto-pulse serve` process is using the same data directory. Then open board settings and check:
 
-- Graph DB buffer pool size
-- Graph DB max database size per board
+- configured Board and Global Discovery providers
+- Grafx page size (fixed for each existing generation)
+- Grafx descriptor revalidation mode (`generation` for Pulse-managed paths;
+  `strict` for forensic or externally shared paths)
 - KG health and dead-letter metrics
+
+The DLQ Inspector in **Settings → Event Queue** can redrive an individual row or
+all accessible rows after their root cause is fixed. `Redrive all` requires an
+explicit UI confirmation and drains the board DLQ through bounded 200-row
+transactions. Both modes are permission-gated, idempotent and wake the
+consolidation worker.
 
 Use the contextual error message as the source of truth when reporting an issue.
 
@@ -426,13 +496,38 @@ Use the contextual error message as the source of truth when reporting an issue.
 
 ## Release Notes
 
-**Current: 0.3.2** — Community delivers actionable semantic-guideline evidence,
+**Current: 0.3.3** — Community delivers actionable semantic-guideline evidence,
 agent-mediated Code Traceability, governed lifecycle validation, resilient KG
 recovery, canonical Analytics dashboards and full-graph dependency lineage in a
 human-first UI.
 
-**→ [Full release notes](docs/RELEASE-NOTES.md)** — 0.3.2, 0.3.1 and 0.3.0 changesets, plus 0.2.6, 0.2.5,
+**→ [Full release notes](docs/RELEASE-NOTES.md)** — 0.3.3, 0.3.2, 0.3.1 and 0.3.0 changesets, plus 0.2.6, 0.2.5,
 0.2.3, 0.2.2, 0.2.1 and 0.2.0.
+
+## Graph storage
+
+See [Local/remote integration and recovery regression](docs/LOCAL_REMOTE_INTEGRATION_2026_09_14.md)
+for the preserved local changes and their integration with the Grafx-only runtime.
+
+See [Open PR review for 0.3.3](docs/PR_REVIEW_2026_09_14.md) for integration decisions,
+compatibility evidence and deferred dependency migrations.
+
+See [CLI, configuration and badge-refresh fixes (#84–#88)](docs/ISSUE_CLOSEOUT_84_88.md)
+for export error behavior, terms storage, CORS configuration and validation evidence.
+
+See [Delivery evidence: committed code and test-card verification](docs/DELIVERY_EVIDENCE.md)
+for the separate Spec completion gate, UI, REST/MCP contracts and audited exemptions.
+
+See [Code Evidence Matrix: associations and coverage](docs/CODE_EVIDENCE_MATRIX_PRESENTATION.md)
+for the distinction between contextual references and applicable evidence.
+
+See [Cognitive Action Center: review knowledge gaps](docs/COGNITIVE_ACTION_CENTER.md)
+for the human review workflow, waiver effects, failed-processing navigation and permissions.
+
+See [KG Health: observe, diagnose and recover](docs/KG_HEALTH_DASHBOARD.md)
+for the operations dashboard, contextual help, action impacts and recovery safeguards.
+
+Community uses **Okto Grafx only**, pinned to the published `okto-grafx[accel]==0.0.7` release. `uv.lock` resolves Grafx from the official PyPI artifacts. See [Grafx-only runtime, settings, retirement and data preservation](docs/GRAFX_ONLY_COMMUNITY.md). The Core remains storage-agnostic.
 
 ## SaaS Closure Audit
 
@@ -442,7 +537,7 @@ The executable ownership matrix is generated by `okto-pulse-saas-closure`. Every
 | Surface | Core contract | Community/local adapter | SaaS swap target | Executable gates |
 | --- | --- | --- | --- | --- |
 | Relational runtime | repository/UoW and schema lifecycle ports; no ad-hoc dialect or engine/session factory bypass | SQLite/SQLAlchemy adapters in community.adapters.sqlalchemy_* and relational_schema_lifecycle | SQLite -> Aurora/Postgres | run_relational_residue_gate, audit_dependency_conformance, audit_community_core_import_boundary |
-| KG graph runtime | KG interfaces, policies and adapter-neutral schema compatibility helpers | LadybugDB/Kuzu adapters in community.adapters.kuzu_* and global_discovery_runtime | LadybugDB/Kuzu -> Neptune | audit_dependency_conformance, ImportBoundaryGate, audit_community_core_import_boundary |
+| KG graph runtime | KG interfaces, policies and adapter-neutral schema compatibility helpers | edition-owned graph adapters behind Community routed composition | edition graph adapters -> remote graph provider | audit_dependency_conformance, ImportBoundaryGate, audit_community_core_import_boundary |
 | Durable files and artifacts | StorageProvider, RebuildAuditArtifactStore and CognitivePendingWorkProvider contracts | filesystem storage, upload_dir, rebuild audit storage and cognitive-pending providers | filesystem -> S3 | run_rebuild_audit_storage_gate, run_core_settings_defaults_gate, run_public_config_stability_gate |
 | Telemetry effects | TelemetryPort contracts, event schema and privacy policy | local JSONL store, state files, beacon sender and product telemetry adapters | local telemetry files/API -> AWS telemetry API | run_telemetry_store_ownership_gate, run_telemetry_sender_ownership_gate, run_telemetry_product_ownership_gate |
 | Scheduler/runtime effects | JobSpec, SchedulerControl and KG daily tick policy | APScheduler-backed SingletonSchedulerControl | APScheduler local runtime -> runtime scheduler adapter | SchedulerControlSymbolGate, scheduler_signal_conformance |
@@ -452,9 +547,9 @@ The executable ownership matrix is generated by `okto-pulse-saas-closure`. Every
 <!-- F16-SAAS-CLOSURE:BEGIN -->
 | F16 executable surface | Owner | Observed | Terminal target |
 | --- | --- | ---: | ---: |
-| Core import rows | Core | 7173 | classified |
-| Community-to-Core import rows | Community | 1132 | classified |
-| Direct dependency rows | Distribution owner | 25 | classified |
+| Core import rows | Core | 7262 | classified |
+| Community-to-Core import rows | Community | 1193 | classified |
+| Direct dependency rows | Distribution owner | 26 | classified |
 | `import_boundary_baseline` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
 | `singleton_baseline` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |
 | `dependency_temporary_exceptions` budget | `675c43ee-7d91-4cc3-8f87-44eeb293f90c` | 0 | 0 |

@@ -100,6 +100,24 @@ const baseHealth: KGHealth = {
     layer_counts_status: 'ok',
     operator_action: 'none',
   },
+  graph_storage: {
+    board: {
+      scope: 'board',
+      backend: 'grafx',
+      binding_status: 'bound',
+      physical_path: 'boards/b1/grafx/generation-1',
+      generation: 'generation-1',
+      page_size: 8192,
+    },
+    global_graph: {
+      scope: 'global',
+      backend: 'grafx',
+      binding_status: 'bound',
+      physical_path: 'global/grafx/generation-1',
+      generation: 'generation-1',
+      page_size: 8192,
+    },
+  },
 };
 
 function mockBoard(id: string | null) {
@@ -142,7 +160,45 @@ function mockCognitivePending(counts: KGCognitivePendingCounts) {
 beforeEach(() => {
   vi.useRealTimers();
   vi.clearAllMocks();
+  permissionHas.mockImplementation(() => true);
   mockCognitivePending(cognitiveCounts());
+  vi.mocked(kgHealthApi.getHistoricalProgress).mockResolvedValue({
+    enabled: false,
+    status: 'inactive',
+    total: 0,
+    progress: 0,
+    pending: 0,
+    claimed: 0,
+    paused: 0,
+    failed: 0,
+  });
+  vi.mocked(kgHealthApi.startHistorical).mockResolvedValue({
+    status: 'queueing',
+    board_id: 'b1',
+    total_artifacts: 3,
+  });
+  vi.mocked(kgHealthApi.cancelHistorical).mockResolvedValue({
+    status: 'cancelled',
+    board_id: 'b1',
+    removed: 3,
+  });
+  vi.mocked(kgHealthApi.runRebuildConfirm).mockResolvedValue({
+    confirmation_id: 'confirmation-1',
+    manifest_ref: 'manifest1',
+    source_set_hash: 'sourcehash1',
+    expires_at: new Date(Date.now() + 60_000).toISOString(),
+  });
+  vi.mocked(kgHealthApi.runRebuildRun).mockResolvedValue({
+    run_id: 'run-1',
+    outcome: 'completed',
+    reason: 'completed',
+    audit_ref: 'audit/run-1.json',
+    previous_kg_generation_id: 'gen1',
+    current_kg_generation_id: 'gen2',
+    started_at: new Date().toISOString(),
+    finished_at: new Date().toISOString(),
+    affected_files: [],
+  });
   vi.mocked(kgHealthApi.runRebuildPreflight).mockResolvedValue({
     board_id: 'b1',
     outcome: 'ready',
@@ -171,6 +227,31 @@ afterEach(() => {
 });
 
 describe('TS1 — mount inicial dispara 1 fetch e renderiza cards principais', () => {
+  it('orders overview, processing and diagnostics before exceptional recovery, without adding writes', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve({ ...baseHealth, overall_state: 'healthy' }));
+    render(<KGHealthView onClose={() => {}} />);
+    await screen.findByRole('heading', { name: 'Operational' });
+    const sections = ['overview', 'processing', 'diagnostics', 'recovery'].map((id) => document.getElementById(`kg-health-${id}`)!);
+    for (let i = 1; i < sections.length; i++) {
+      expect(sections[i - 1].compareDocumentPosition(sections[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    expect(screen.getByRole('navigation', { name: 'KG Health sections' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /^Recovery$/ })).toHaveAttribute('href', '#kg-health-recovery');
+    expect(screen.getByText('Powered by Okto Grafx')).toBeInTheDocument();
+    expect(kgHealthApi.runRebuildConfirm).not.toHaveBeenCalled();
+    expect(kgHealthApi.runRebuildRun).not.toHaveBeenCalled();
+    expect(kgHealthApi.cancelHistorical).not.toHaveBeenCalled();
+  });
+
+  it('does not claim a Grafx binding when storage routing is unavailable', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve({ ...baseHealth, graph_storage: undefined }));
+    render(<KGHealthView onClose={() => {}} />);
+    await screen.findByTestId('kg-health-overview');
+    expect(screen.queryByText('Powered by Okto Grafx')).not.toBeInTheDocument();
+  });
+
   it('fixa o contrato frontend em health schema 1.1', () => {
     expect(EXPECTED_KG_HEALTH_SCHEMA_VERSION).toBe('1.1');
   });
@@ -447,6 +528,20 @@ describe('KG-HS.3 — scheduler debt and storage-footprint clarity', () => {
     expect(screen.getByText('Rebuild Complete With Canonical Debt')).toBeInTheDocument();
   });
 
+  it('explains absent capacity limits without hiding the measured file size', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve({ ...baseHealth, storage_footprint_proxy: {
+      ...baseHealth.storage_footprint_proxy!, status: 'available', percentage: null,
+      percentage_status: 'not_applicable', percentage_reason: 'no_capacity_limit_configured',
+      high_water_mark_pct: null, total_bytes: 1024, configured_max_db_size_bytes: null,
+      configured_max_db_size_gb: null, unavailable_reason: null,
+    } }));
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+    expect(await screen.findByText('Not applicable')).toBeInTheDocument();
+    expect(screen.getByText(/No storage limit configured/)).toBeInTheDocument();
+    expect(screen.getByText('1.00 KB')).toBeInTheDocument();
+  });
+
   it('renders storage footprint proxy copy without memory/buffer telemetry claims', async () => {
     mockBoard('b1');
     mockApi(() => Promise.resolve({
@@ -678,6 +773,157 @@ describe('TS12 — empty state sem currentBoard suprime polling', () => {
 });
 
 describe('KG recovery panel — health and cognitive rebuild state', () => {
+  it('stops a live legacy backfill, including its claimed work', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve(baseHealth));
+    vi.mocked(kgHealthApi.getHistoricalProgress)
+      .mockResolvedValueOnce({
+        enabled: true,
+        status: 'in_progress',
+        total: 263,
+        progress: 0,
+        pending: 262,
+        claimed: 1,
+        paused: 0,
+        failed: 0,
+      })
+      .mockResolvedValue({
+        enabled: false,
+        status: 'cancelled',
+        total: 0,
+        progress: 0,
+        pending: 0,
+        claimed: 0,
+        paused: 0,
+        failed: 0,
+      });
+
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+
+    expect(await screen.findByTestId('historical-recovery-status'))
+      .toHaveTextContent('Running');
+    expect(screen.getByText('262').parentElement).toHaveTextContent('Pending');
+    expect(screen.getByText('1').parentElement).toHaveTextContent('Claimed');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop recovery' }));
+    expect(screen.getByText(/Stop all live historical queue work/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm stop' }));
+
+    await waitFor(() => {
+      expect(kgHealthApi.cancelHistorical).toHaveBeenCalledWith('b1');
+      expect(screen.getByTestId('historical-recovery-status')).toHaveTextContent('Stopped');
+    });
+    expect(screen.getByTestId('historical-recovery-action-status'))
+      .toHaveTextContent('Recovery cancelled. 3 live queue entries were fenced and removed.');
+    expect(screen.queryByRole('button', { name: /Start recovery/ })).toBeNull();
+    expect(screen.getByText(/Prepare a new rebuild only from the audited/))
+      .toBeInTheDocument();
+  });
+
+  it('does not expose a second rebuild start action after cancellation', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve(baseHealth));
+    vi.mocked(kgHealthApi.getHistoricalProgress).mockResolvedValue({
+      enabled: false,
+      status: 'cancelled',
+      total: 0,
+      progress: 0,
+      pending: 0,
+      claimed: 0,
+      paused: 0,
+      failed: 0,
+    });
+
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+
+    expect(await screen.findByTestId('historical-recovery-status'))
+      .toHaveTextContent('Stopped');
+    expect(screen.queryByRole('button', { name: /Start recovery/ })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Confirm rebuild' })).toBeDisabled();
+    expect(kgHealthApi.startHistorical).not.toHaveBeenCalled();
+  });
+
+  it('shows governed offline recovery instead of submitting an impossible online rebuild', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve(baseHealth));
+    vi.mocked(kgHealthApi.runRebuildPreflight).mockResolvedValue({
+      board_id: 'b1',
+      outcome: 'diagnostic_complete',
+      action_required: 'run_local_offline_kg_recovery_executor',
+      reason: null,
+      base_state: 'fresh',
+      metric_status: 'available',
+      current_kg_generation_id: 'gen1',
+      eligible_source_count: 1,
+      skipped_cancelled_count: 0,
+      has_non_deterministic_inputs: false,
+      preflight_hash: 'a'.repeat(64),
+      generated_at: new Date().toISOString(),
+      manifest_ref: null,
+      source_set_hash: null,
+      execution_mode: 'recovery_only_offline',
+      operator_action: 'run_local_offline_kg_recovery_executor',
+      remediation: 'Stop Pulse and run the governed three-stage recovery executor.',
+    });
+
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+
+    const button = await screen.findByRole('button', { name: 'Prepare offline rebuild' });
+    const reason = screen.getByRole('textbox', { name: 'Reason (audit) *' });
+    fireEvent.change(reason, { target: { value: 'operator requested rebuild' } });
+    fireEvent.click(button);
+
+    expect(await screen.findByTestId('rebuild-live-status'))
+      .toHaveTextContent('rebuild must run with Pulse offline');
+    expect(screen.getByText(/governed three-stage recovery executor/)).toBeInTheDocument();
+    expect(kgHealthApi.runRebuildConfirm).not.toHaveBeenCalled();
+    expect(kgHealthApi.runRebuildRun).not.toHaveBeenCalled();
+  });
+
+  it('announces rebuild preparation and start without waiting for completion', async () => {
+    mockBoard('b1');
+    mockApi(() => Promise.resolve(baseHealth));
+    let acceptConfirmation!: (value: Awaited<ReturnType<typeof kgHealthApi.runRebuildConfirm>>) => void;
+    let finishRun!: (value: Awaited<ReturnType<typeof kgHealthApi.runRebuildRun>>) => void;
+    vi.mocked(kgHealthApi.runRebuildConfirm).mockImplementation(
+      () => new Promise((resolve) => { acceptConfirmation = resolve; }),
+    );
+    vi.mocked(kgHealthApi.runRebuildRun).mockImplementation(
+      () => new Promise((resolve) => { finishRun = resolve; }),
+    );
+
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+    const reason = await screen.findByRole('textbox', { name: 'Reason (audit) *' });
+    fireEvent.change(reason, { target: { value: 'operator requested rebuild' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm rebuild' }));
+
+    expect(await screen.findByTestId('rebuild-live-status'))
+      .toHaveTextContent('Starting rebuild');
+    acceptConfirmation({
+      confirmation_id: 'confirmation-2',
+      manifest_ref: 'manifest1',
+      source_set_hash: 'sourcehash1',
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('rebuild-live-status')).toHaveTextContent('Rebuild started');
+    });
+    finishRun({
+      run_id: 'run-2',
+      outcome: 'completed',
+      reason: 'completed',
+      audit_ref: 'audit/run-2.json',
+      previous_kg_generation_id: 'gen1',
+      current_kg_generation_id: 'gen2',
+      started_at: new Date().toISOString(),
+      finished_at: new Date().toISOString(),
+      affected_files: [],
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('rebuild-live-status')).toHaveTextContent('Rebuild completed');
+    });
+  });
+
   it('labels at_risk health as At risk, not Recovery needed', async () => {
     mockBoard('b1');
     mockApi(() =>
@@ -721,14 +967,51 @@ describe('KG recovery panel — health and cognitive rebuild state', () => {
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
 
     const graphMetric = await screen.findByTestId('kg-recovery-metric-board-graph');
-    expect(graphMetric.getAttribute('title')).toContain('graph.lbug');
+    expect(graphMetric).toHaveTextContent('Okto Grafx');
+    expect(graphMetric.getAttribute('title')).toContain('boards/b1/grafx/generation-1');
+    expect(graphMetric.getAttribute('title')).toContain('8192 bytes');
     expect(graphMetric.getAttribute('title')).toContain('metric.unavailable');
 
     const discoveryMetric = screen.getByTestId('kg-recovery-metric-global-discovery');
-    expect(discoveryMetric.getAttribute('title')).toContain('discovery.lbug');
+    expect(discoveryMetric).toHaveTextContent('Okto Grafx');
+    expect(discoveryMetric.getAttribute('title')).toContain('global/grafx/generation-1');
 
     const cognitiveMetric = screen.getByTestId('kg-recovery-metric-cognitive');
     expect(cognitiveMetric.getAttribute('title')).toContain('consolidated');
+  });
+
+  it('renders Ladybug only when the authenticated route actually selects it', async () => {
+    mockBoard('b1');
+    mockApi(() =>
+      Promise.resolve({
+        ...baseHealth,
+        graph_storage: {
+          board: {
+            scope: 'board',
+            backend: 'ladybug',
+            binding_status: 'bound',
+            physical_path: 'boards/b1/graph.lbug',
+            generation: 'legacy',
+            page_size: null,
+          },
+          global_graph: {
+            scope: 'global',
+            backend: 'ladybug',
+            binding_status: 'bound',
+            physical_path: 'global/discovery.lbug',
+            generation: 'legacy',
+            page_size: null,
+          },
+        },
+      }),
+    );
+
+    render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
+
+    expect(await screen.findByTestId('kg-recovery-metric-board-graph'))
+      .toHaveTextContent('Retired graph backend');
+    expect(screen.getByTestId('kg-recovery-metric-global-discovery'))
+      .toHaveTextContent('Retired graph backend');
   });
 
   it('surfaces an empty board graph explicitly when health total_nodes is zero', async () => {

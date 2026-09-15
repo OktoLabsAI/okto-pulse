@@ -86,6 +86,39 @@ class _SingleWriterRecoveryMutexBusy(Exception):
     """Another process owns the board's kernel recovery authority."""
 
 
+class _InProcessBoardRecoveryMutex:
+    """Serialize one port's board protocol without permitting re-entry.
+
+    Different heartbeat threads wait for the current in-process operation and
+    therefore never burn the kernel mutex's bounded cross-process retries on
+    each other. Re-entry by the owning thread remains a busy result instead of
+    deadlocking, preserving the non-reentrant kernel-lock contract.
+    """
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._owner_thread_id: int | None = None
+
+    def __enter__(self) -> "_InProcessBoardRecoveryMutex":
+        thread_id = threading.get_ident()
+        with self._condition:
+            if self._owner_thread_id == thread_id:
+                raise _SingleWriterRecoveryMutexBusy
+            while self._owner_thread_id is not None:
+                self._condition.wait()
+            self._owner_thread_id = thread_id
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        thread_id = threading.get_ident()
+        with self._condition:
+            if self._owner_thread_id != thread_id:
+                raise RuntimeError("in_process_board_recovery_mutex_owner_mismatch")
+            self._owner_thread_id = None
+            self._condition.notify_all()
+        return None
+
+
 class _PersistentKernelFileMutex:
     """Non-blocking cross-process mutex whose rendezvous path is never unlinked.
 
@@ -216,6 +249,9 @@ class CommunityLocalWriteLockPort(WriteLockPort):
         self._sync_locks: dict[tuple[str, str], threading.Lock] = {}
         self._async_handles: dict[tuple[str, str], WriteLockHandle] = {}
         self._sync_handles: dict[tuple[str, str], WriteLockHandle] = {}
+        self._single_writer_process_mutexes: dict[
+            str, _InProcessBoardRecoveryMutex
+        ] = {}
         self._registry_lock = threading.Lock()
         self._bound_kg_base_dir = self._canonical_bound_kg_base_dir(kg_base_dir)
 
@@ -258,6 +294,26 @@ class CommunityLocalWriteLockPort(WriteLockPort):
                 lock = threading.Lock()
                 self._sync_locks[key] = lock
             return lock
+
+    def _single_writer_process_mutex_for(
+        self,
+        board_dir: Path,
+    ) -> _InProcessBoardRecoveryMutex:
+        key = os.path.normcase(os.path.abspath(os.fspath(board_dir)))
+        with self._registry_lock:
+            mutex = self._single_writer_process_mutexes.get(key)
+            if mutex is None:
+                mutex = _InProcessBoardRecoveryMutex()
+                self._single_writer_process_mutexes[key] = mutex
+            return mutex
+
+    @contextmanager
+    def _serialized_single_writer_recovery_mutex(self, board_dir: Path):
+        """Enter the per-board process gate, then the cross-process mutex."""
+
+        with self._single_writer_process_mutex_for(board_dir):
+            with self._single_writer_recovery_mutex(board_dir) as kernel_mutex:
+                yield kernel_mutex
 
     async def acquire(
         self,
@@ -325,6 +381,7 @@ class CommunityLocalWriteLockPort(WriteLockPort):
             self._sync_locks.clear()
             self._async_handles.clear()
             self._sync_handles.clear()
+            self._single_writer_process_mutexes.clear()
 
     def acquire_single_writer_sync(
         self,
@@ -358,7 +415,7 @@ class CommunityLocalWriteLockPort(WriteLockPort):
                     _SINGLE_WRITER_RENEW_REPLACE_BACKOFF_SECONDS[attempt_index - 1]
                 )
             try:
-                with self._single_writer_recovery_mutex(board_dir):
+                with self._serialized_single_writer_recovery_mutex(board_dir):
                     recovery_token, recovery_marker_recovered = (
                         self._claim_single_writer_recovery_marker(
                             recovery_path=recovery_path,
@@ -537,7 +594,7 @@ class CommunityLocalWriteLockPort(WriteLockPort):
                     _SINGLE_WRITER_RENEW_REPLACE_BACKOFF_SECONDS[attempt_index - 1]
                 )
             try:
-                with self._single_writer_recovery_mutex(board_dir):
+                with self._serialized_single_writer_recovery_mutex(board_dir):
                     try:
                         recovery_token, _ = self._claim_single_writer_recovery_marker(
                             recovery_path=recovery_path,
@@ -604,7 +661,7 @@ class CommunityLocalWriteLockPort(WriteLockPort):
                     _SINGLE_WRITER_RENEW_REPLACE_BACKOFF_SECONDS[attempt_index - 1]
                 )
             try:
-                with self._single_writer_recovery_mutex(board_dir):
+                with self._serialized_single_writer_recovery_mutex(board_dir):
                     try:
                         recovery_token, _ = self._claim_single_writer_recovery_marker(
                             recovery_path=recovery_path,
@@ -709,9 +766,20 @@ class CommunityLocalWriteLockPort(WriteLockPort):
             base_dir_hint=base_dir_hint,
             board_dir_resolver=board_dir_resolver,
         )
-        return self._read_single_writer_manifest(
-            self._single_writer_path(board_dir, artifact_id)
-        )
+        path = self._single_writer_path(board_dir, artifact_id)
+        # Windows may briefly deny a reader while the heartbeat publishes the
+        # renewed manifest with ``os.replace``.  ``None`` is an authority-loss
+        # signal to callers, so do not manufacture it from one transient read
+        # failure.  Retry only while the pathname still exists, with the same
+        # short explicit bound used by renewal.  A missing manifest, a foreign
+        # token, or an expired manifest is never retried or promoted.
+        for attempt_index in range(_SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS):
+            manifest = self._read_single_writer_manifest(path)
+            if manifest is not None or not path.exists():
+                return manifest
+            if attempt_index + 1 < _SINGLE_WRITER_RENEW_REPLACE_ATTEMPTS:
+                time.sleep(_SINGLE_WRITER_RENEW_REPLACE_BACKOFF_SECONDS[attempt_index])
+        return None
 
     @staticmethod
     def _iso(epoch: float) -> str:

@@ -9,6 +9,75 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+### Added
+
+- KG Health now exposes the board's historical graph-recovery status and
+  a guarded control to stop a live legacy backfill. Stopping affects only live
+  `historical_backfill` queue rows and preserves graph data already committed
+  by completed items; new rebuilds use the separate reason-bound action.
+
+### Fixed
+
+- Knowledge Graph graph, stats and metrics reads now resolve each logical
+  relationship endpoint pair through the active backend. Grafx receives its
+  physical per-pair table name while Ladybug keeps the logical name, preventing
+  every edge table from failing with `plan_error` and preserving logical count
+  aggregation in the API.
+- Historical-consolidation cancellation now includes claimed rows through the
+  Core cancellation fence, so a stalled legacy worker no longer leaves the UI
+  permanently running or blocks a later restart. Board authorization and
+  historical-progress reads now use bounded column projections instead of
+  materializing every eager Board relationship, avoiding an unbounded SQLite
+  snapshot on this operational path.
+- KG Health applies the terminal cancellation response immediately, announces
+  the zero-live-work outcome, and no longer turns the stop control into a
+  competing start button. Rebuild preparation and running phases are announced
+  in the report panel while the audited operation is in flight.
+
+### Changed
+
+- Grafx read-only execution now uses its bounded autocommit door for single statements and its
+  identity-revalidated lexical transaction door for paired same-snapshot reads, avoiding repeated
+  Windows participant lock-file opens without retaining a lock or a descriptor between requests.
+- Pulse-owned, unbound Grafx rebuild candidates now default to
+  `checkpoint_interval_records=1_000_000` and
+  `descriptor_revalidation="generation"`, avoiding per-batch automatic checkpoint work while
+  retaining the terminal explicit checkpoint, Grafx's default `wal_max_bytes` policy and any
+  connection overrides supplied by the caller.
+- A new, empty Grafx rebuild candidate now activates catalog v2 and its persistent identity-index
+  authority before the first schema DDL. Pre-existing paths are still refused before adoption,
+  and an activation failure closes and removes only the newly owned candidate through the
+  existing fail-closed transfer cleanup.
+- Grafx descriptor revalidation is now an explicit, fail-closed Community setting. The safe
+  `strict` policy remains the default; controlled performance runs opt into `generation`, and the
+  shared pool, temporary recovery/restore opens and M-PULSE-7 receipts authenticate the effective
+  process-local policy before accepting a handle or result.
+- Board Grafx statement fences now transfer the physical-route proof from the freshly authenticated
+  binding while the exact database remains pool-pinned. Every fence still re-reads the binding,
+  detects a visible CAS cutover, requires the canonical physical database and re-admits its path and
+  page size; generic and Global route revalidation keep the complete component walk.
+
+## [0.3.3] - 2026-08-23
+
+### Added
+
+- A contributor guide covering the paired repository setup, Python and
+  frontend validation commands, CLA handling and branch-matching CI behavior.
+- Complete CLI reference coverage for Code Traceability, Metrics, API-key,
+  pipeline verification and Knowledge Graph operations.
+
+### Changed
+
+- The frontend package and documentation now identify the Okto Pulse Community
+  workbench accurately, without obsolete Clerk setup instructions.
+- ESLint warning budgets now match the exact current per-rule counts.
+- Community now requires `okto-pulse-core>=0.3.3`.
+
+### Fixed
+
+- Delivery Intelligence rejects historical `as_of` requests until a real
+  snapshot reader is available, including complete CSV export requests.
+
 ## [0.3.2] - 2026-08-22
 
 ### Added

@@ -1,7 +1,7 @@
 /**
  * Dead Letter Inspector — modal listando DLQ rows do consolidation worker.
  *
- * Spec ed17b1fe (Wave 2 NC 1ede3471). Read-only MVP — sem reprocess.
+ * Includes an explicit, permission-gated redrive action per row.
  *
  * Estados:
  *  - Loading skeleton (durante fetch inicial e refresh)
@@ -17,11 +17,15 @@ import {
   ChevronDown,
   ChevronRight,
   RefreshCw,
+  RotateCcw,
   X,
 } from 'lucide-react';
+import toast from 'react-hot-toast';
 
 import {
   getDeadLetterRows,
+  redriveAllDeadLetterRows,
+  redriveDeadLetterRows,
   type DeadLetterListResponse,
   type DeadLetterRow,
 } from '@/services/dead-letter-api';
@@ -32,6 +36,12 @@ interface DeadLetterInspectorModalProps {
   boardId: string;
   onClose: () => void;
 }
+
+const CODE_TRACEABILITY_ARTIFACT_TYPES = new Set([
+  'code_investigation_receipt',
+  'code_evidence',
+  'implementation_target',
+]);
 
 export function DeadLetterInspectorModal({
   boardId,
@@ -44,10 +54,19 @@ export function DeadLetterInspectorModal({
     && !permissions.ownerReviewRequired
     && permissions.has('kg.operations.queue.read')
   );
+  const canRedriveQueue = (
+    !permissions.isLoading
+    && !permissions.error
+    && !permissions.ownerReviewRequired
+    && permissions.has('kg.operations.queue.reprocess')
+  );
   const [data, setData] = useState<DeadLetterListResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [redrivingIds, setRedrivingIds] = useState<Set<string>>(new Set());
+  const [redrivingAll, setRedrivingAll] = useState(false);
+  const [confirmRedriveAll, setConfirmRedriveAll] = useState(false);
 
   useEscapeToClose(onClose);
 
@@ -86,6 +105,66 @@ export function DeadLetterInspectorModal({
     });
   };
 
+  const redrive = async (row: DeadLetterRow) => {
+    if (!canRedriveQueue || redrivingAll || redrivingIds.has(row.id)) return;
+    setRedrivingIds((current) => new Set(current).add(row.id));
+    try {
+      const scope = CODE_TRACEABILITY_ARTIFACT_TYPES.has(row.artifact_type)
+        ? 'code_traceability'
+        : 'generic';
+      const result = await redriveDeadLetterRows(boardId, [row.id], scope);
+      if (!result.success || result.blocked) {
+        toast.error('Redrive was refused or only partially applied. Review the refreshed DLQ.');
+      } else if (!result.mutated || result.selected === 0) {
+        toast('The DLQ row was already moved or is no longer eligible.', {
+          icon: 'ℹ️',
+        });
+      } else {
+        toast.success(
+          result.already_queued_count > 0
+            ? 'DLQ row linked to its existing queue item.'
+            : 'DLQ row requeued for consolidation.',
+        );
+      }
+      await fetchData();
+    } catch (err: any) {
+      toast.error(err?.message ?? 'Failed to redrive dead-letter row');
+      await fetchData();
+    } finally {
+      setRedrivingIds((current) => {
+        const next = new Set(current);
+        next.delete(row.id);
+        return next;
+      });
+    }
+  };
+
+  const redriveAll = async () => {
+    if (!canRedriveQueue || redrivingAll || !data || data.total === 0) return;
+    setRedrivingAll(true);
+    try {
+      const result = await redriveAllDeadLetterRows(boardId);
+      if (!result.success || (result.remaining ?? 0) > 0 || result.blocked) {
+        toast.error(
+          `Redrive stopped with ${result.remaining ?? 0} eligible row(s) remaining.`,
+        );
+      } else if (!result.mutated || result.selected === 0) {
+        toast('The DLQ was already empty.', { icon: 'ℹ️' });
+      } else {
+        toast.success(`Redrove all ${result.selected} DLQ row(s).`);
+      }
+      await fetchData();
+    } catch (err: any) {
+      toast.error(err?.message ?? 'Failed to redrive all dead-letter rows');
+      // Earlier scoped batches may already be committed; don't leave a stale
+      // list suggesting the failed HTTP request rolled back the entire job.
+      await fetchData();
+    } finally {
+      setRedrivingAll(false);
+      setConfirmRedriveAll(false);
+    }
+  };
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm"
@@ -110,6 +189,26 @@ export function DeadLetterInspectorModal({
           <div className="flex items-center gap-1">
             <button
               type="button"
+              onClick={() => setConfirmRedriveAll(true)}
+              disabled={
+                loading
+                || redrivingAll
+                || redrivingIds.size > 0
+                || !data
+                || data.total === 0
+                || !canRedriveQueue
+              }
+              className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-2.5 py-1.5 text-[11px] font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+              title={canRedriveQueue
+                ? 'Requeue every accessible DLQ row for this board'
+                : 'Requires kg.operations.queue.reprocess'}
+              data-testid="dlq-redrive-all"
+            >
+              <RotateCcw className={`h-3.5 w-3.5 ${redrivingAll ? 'animate-spin' : ''}`} />
+              {redrivingAll ? 'Redriving all…' : 'Redrive all'}
+            </button>
+            <button
+              type="button"
               onClick={fetchData}
               disabled={loading}
               className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-white/10 rounded-lg disabled:opacity-50"
@@ -132,6 +231,41 @@ export function DeadLetterInspectorModal({
 
         {/* Body */}
         <div className="flex-1 overflow-auto">
+          {confirmRedriveAll && data && data.total > 0 && (
+            <div
+              className="m-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-950 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-100"
+              role="alert"
+              data-testid="dlq-redrive-all-confirmation"
+            >
+              <p className="font-medium">
+                Redrive all {data.total} accessible DLQ row(s)?
+              </p>
+              <p className="mt-1 text-[11px] opacity-80">
+                Rows will be requeued in bounded batches and the consolidation worker will be awakened.
+                {' '}Concurrent arrivals or blocked rows may remain. Completed batches are not rolled back if a later batch fails.
+              </p>
+              <div className="mt-3 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmRedriveAll(false)}
+                  disabled={redrivingAll}
+                  className="rounded border border-amber-400 px-2.5 py-1 font-medium hover:bg-amber-100 disabled:opacity-50 dark:hover:bg-amber-900/50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void redriveAll()}
+                  disabled={redrivingAll}
+                  className="rounded bg-blue-600 px-2.5 py-1 font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                  data-testid="dlq-redrive-all-confirm"
+                >
+                  Confirm redrive all
+                </button>
+              </div>
+            </div>
+          )}
+
           {loading && !data && <SkeletonRows />}
 
           {error && (
@@ -162,6 +296,7 @@ export function DeadLetterInspectorModal({
                   <th className="px-4 py-2 font-medium">Attempts</th>
                   <th className="px-4 py-2 font-medium">Last error</th>
                   <th className="px-4 py-2 font-medium">Dead-lettered</th>
+                  <th className="px-4 py-2 font-medium">Action</th>
                   <th className="px-4 py-2 font-medium w-12"></th>
                 </tr>
               </thead>
@@ -172,6 +307,9 @@ export function DeadLetterInspectorModal({
                     row={row}
                     expanded={expandedIds.has(row.id)}
                     onToggle={() => toggleExpand(row.id)}
+                    onRedrive={() => void redrive(row)}
+                    redriving={redrivingIds.has(row.id)}
+                    canRedrive={canRedriveQueue && !redrivingAll}
                   />
                 ))}
               </tbody>
@@ -186,7 +324,7 @@ export function DeadLetterInspectorModal({
               ? `Showing ${data.rows.length} of ${data.total} dead-lettered rows`
               : ''}
           </span>
-          <span>Reprocess deferred to v2</span>
+          <span>Redrive wakes the consolidation worker immediately</span>
         </div>
       </div>
     </div>
@@ -226,9 +364,19 @@ interface DLQTableRowProps {
   row: DeadLetterRow;
   expanded: boolean;
   onToggle: () => void;
+  onRedrive: () => void;
+  redriving: boolean;
+  canRedrive: boolean;
 }
 
-function DLQTableRow({ row, expanded, onToggle }: DLQTableRowProps) {
+function DLQTableRow({
+  row,
+  expanded,
+  onToggle,
+  onRedrive,
+  redriving,
+  canRedrive,
+}: DLQTableRowProps) {
   const errors = Array.isArray(row.errors) ? row.errors : [];
   const lastError = errors[errors.length - 1];
   const lastErrorType = formatErrorType(lastError?.error_type);
@@ -271,6 +419,19 @@ function DLQTableRow({ row, expanded, onToggle }: DLQTableRowProps) {
         <td className="px-4 py-2">
           <button
             type="button"
+            onClick={onRedrive}
+            disabled={!canRedrive || redriving}
+            className="inline-flex items-center gap-1 rounded bg-blue-600 px-2 py-1 text-[10px] font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+            title={canRedrive ? 'Requeue this row for consolidation' : 'Requires kg.operations.queue.reprocess'}
+            data-testid={`dlq-redrive-${row.id}`}
+          >
+            <RotateCcw className={`h-3 w-3 ${redriving ? 'animate-spin' : ''}`} />
+            {redriving ? 'Redriving…' : 'Redrive'}
+          </button>
+        </td>
+        <td className="px-4 py-2">
+          <button
+            type="button"
             onClick={onToggle}
             className="p-1 text-gray-400 hover:text-blue-600"
             aria-label={expanded ? 'Collapse history' : 'Expand history'}
@@ -286,7 +447,7 @@ function DLQTableRow({ row, expanded, onToggle }: DLQTableRowProps) {
       </tr>
       {expanded && (
         <tr className="bg-gray-50 dark:bg-gray-800/30">
-          <td colSpan={6} className="px-6 py-3">
+          <td colSpan={7} className="px-6 py-3">
             <div className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">
               Attempt history
             </div>

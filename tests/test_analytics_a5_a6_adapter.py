@@ -155,8 +155,9 @@ async def test_a5_a6_are_reachable_through_real_uow_and_relational_adapter() -> 
         assert forecast_payload["forecast"]["sample_size"] == 8
         assert forecast_payload["forecast"]["point"] == 1.0
         assert (
-            CanonicalDeliveryForecastResponseDTO.model_validate(forecast_payload)
-            .model_dump(mode="json", by_alias=True)
+            CanonicalDeliveryForecastResponseDTO.model_validate(
+                forecast_payload
+            ).model_dump(mode="json", by_alias=True)
             == forecast_payload
         )
 
@@ -170,9 +171,98 @@ async def test_a5_a6_are_reachable_through_real_uow_and_relational_adapter() -> 
             "cognitive_backlog",
         ]
         assert (
-            CanonicalBoardKgAnalyticsResponseDTO.model_validate(kg_payload)
-            .model_dump(mode="json", by_alias=True)
+            CanonicalBoardKgAnalyticsResponseDTO.model_validate(kg_payload).model_dump(
+                mode="json", by_alias=True
+            )
             == kg_payload
         )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("graph_probe", ("available", "stale", "unavailable"))
+async def test_partial_health_flows_through_real_uow_and_response_contract(
+    monkeypatch, graph_probe
+):
+    from okto_pulse.community.adapters.sqlalchemy_analytics_evidence import (
+        CommunitySqlAlchemyBoardKgAnalyticsEvidence,
+    )
+    from okto_pulse.core.services import kg_health_service
+
+    async def health(board_id, _context):
+        assert board_id == BOARD_ID
+        return {
+            "board_id": board_id,
+            "overall_state": "at_risk",
+            "graph_state": "at_risk",
+            "discovery_state": "healthy",
+            "metric_status": "unavailable",
+            "classification_reason": "board_graph_metadata_present",
+            "board_graph_queryable": True,
+            "probe_diagnostics": {
+                "graph_snapshot": {"status": graph_probe},
+                "graph_metrics": {"status": "available"},
+                "discovery_snapshot": {"status": "available"},
+                "discovery_telemetry": {"status": "available"},
+            },
+        }
+
+    async def cognitive(_self, _query, *, observed_at):
+        # No access to user file-backed ledgers in this integration fixture.
+        return (), None, None
+
+    monkeypatch.setattr(kg_health_service, "get_kg_health", health)
+    monkeypatch.setattr(
+        CommunitySqlAlchemyBoardKgAnalyticsEvidence, "_cognitive_items", cognitive
+    )
+    engine = create_async_engine("sqlite+aiosqlite://", future=True)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    register_relational_application_adapter(CommunityRelationalApplicationAdapter())
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        async with factory() as session:
+            session.add(
+                Board(
+                    id=BOARD_ID,
+                    name="Isolated analytics",
+                    owner_id="user-1",
+                    realm_id="local",
+                )
+            )
+            await session.commit()
+            result = await BoardKgAnalyticsUseCase().execute(
+                BoardKgAnalyticsCommand(
+                    board_id=BOARD_ID,
+                    window=AnalyticsUtcWindow(NOW - timedelta(days=90), NOW),
+                    as_of=NOW,
+                ),
+                actor=RESTAdapterContract.actor("user-1", board_id=BOARD_ID),
+                uow=CommunityUnitOfWork(session),
+            )
+        payload = result.data
+        assert (
+            CanonicalBoardKgAnalyticsResponseDTO.model_validate(payload).model_dump(
+                mode="json", by_alias=True
+            )
+            == payload
+        )
+        assert payload["result_state"] == "partial"
+        assert payload["health"]["state"] == "at_risk"
+        assert payload["health"]["availability"]["discovery"] == "available"
+        assert payload["health"]["availability"]["graph"] == (
+            "unavailable" if graph_probe == "unavailable" else "partial"
+        )
+        assert payload["cognitive_inventory"]["total"] == 0
+        assert payload["cognitive_inventory"]["result_state"] == "empty"
+        diagnostic = next(
+            item for item in payload["diagnostics"] if item["domain"] == "health:graph"
+        )
+        assert (
+            diagnostic["next_step"]["target"]
+            == f"/api/v1/kg/health?board_id={BOARD_ID}"
+        )
+        assert diagnostic["severity"] == "at_risk"
     finally:
         await engine.dispose()

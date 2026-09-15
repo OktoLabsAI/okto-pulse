@@ -77,12 +77,12 @@ jobs:
           echo "okto-pulse-core has matching tag $TAG"
 
       - name: Checkout okto-pulse @ ${{ steps.version.outputs.tag }}
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: okto-pulse
 
       - name: Checkout okto-pulse-core @ ${{ steps.version.outputs.tag }}
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: OktoLabsAI/okto-pulse-core
           ref: ${{ steps.version.outputs.tag }}
@@ -109,7 +109,7 @@ jobs:
           echo "Versions aligned: pulse=$PYPROJECT_VERSION core=$CORE_VERSION tag=$TAG_VERSION"
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip
@@ -137,10 +137,10 @@ jobs:
         # Pinned to commit SHA of v4.1.1 (released 2026-03-26) for
         # supply-chain integrity. Used to sign + verify images keylessly
         # via Sigstore Fulcio + Rekor.
-        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@v4.5.2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -265,7 +265,7 @@ jobs:
       - name: Checkout mcp-replay-test (replay tool + trace fixtures)
         # The replay script and the 2.6 MB long trace live in their own repo
         # so okto-pulse stays small. Audit Phase 4d.
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: OktoLabsAI/mcp-replay-test
           path: mcp-replay-test

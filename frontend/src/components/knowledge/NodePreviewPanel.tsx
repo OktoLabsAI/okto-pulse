@@ -6,36 +6,28 @@
  * NodeDetailPanel which opens on the right sidebar only on double-click.
  * The preview keeps the user in the graph view and offers two exits:
  *   - Close (X): deselects the node via props.onClose
- *   - Open in spec: navigates to /specs/{source_artifact_ref} when the
- *     node carries a spec reference (buttons are suppressed otherwise)
+ *   - Open source: resolves the owning artifact and opens its existing modal.
  */
 
-import { useMemo } from 'react';
 import type { KGNode } from '@/types/knowledge-graph';
 import { kgNodeDisplayType, kgNodeVisualConfig } from '@/types/knowledge-graph';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import { RelevanceBadge } from './RelevanceBadge';
+import { NodeSourceLink } from './NodeSourceLink';
+import { useOptionalModalStack } from '@/contexts/ModalStackContext';
 
 interface Props {
   node: KGNode | null;
   onClose: () => void;
-  onOpenSpec?: (specRef: string) => void;
+  boardId?: string;
   /** Called when the user clicks "Show more" — promotes the inline preview
    *  to a full NodeDetailModal rendered by the parent. */
   onShowDetails?: (node: KGNode) => void;
 }
 
-const SPEC_REF_PATTERN = /^spec:/i;
-
-export function NodePreviewPanel({ node, onClose, onOpenSpec, onShowDetails }: Props) {
-  useEscapeToClose(onClose, { enabled: Boolean(node), priority: 10 });
-
-  const specRef = useMemo(() => {
-    if (!node?.source_artifact_ref) return null;
-    return SPEC_REF_PATTERN.test(node.source_artifact_ref)
-      ? node.source_artifact_ref.replace(SPEC_REF_PATTERN, '')
-      : null;
-  }, [node?.source_artifact_ref]);
+export function NodePreviewPanel({ node, onClose, boardId, onShowDetails }: Props) {
+  const modalStack = useOptionalModalStack();
+  useEscapeToClose(onClose, { enabled: Boolean(node) && !modalStack?.stack.length, priority: 10 });
 
   if (!node) return null;
   const cfg = kgNodeVisualConfig(node);
@@ -45,7 +37,7 @@ export function NodePreviewPanel({ node, onClose, onOpenSpec, onShowDetails }: P
       data-testid="kg-preview-panel"
       role="dialog"
       aria-label={`Preview of ${node.title}`}
-      className="absolute top-4 left-4 z-30 w-80 rounded-md bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 shadow-xl border border-gray-200 dark:border-gray-700 p-3"
+      className="absolute top-4 left-4 z-30 w-80 max-w-[calc(100%-2rem)] max-h-[calc(100%-2rem)] overflow-y-auto rounded-md bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 shadow-xl border border-gray-200 dark:border-gray-700 p-3"
     >
       <div className="flex items-start justify-between mb-2">
         <span
@@ -66,6 +58,7 @@ export function NodePreviewPanel({ node, onClose, onOpenSpec, onShowDetails }: P
       </div>
 
       <h3 className="text-sm font-semibold leading-snug mb-2">{node.title}</h3>
+      <NodeSourceLink node={node} boardId={boardId} />
 
       {node.content && (
         <p className="text-xs text-gray-700 dark:text-gray-300 mb-2 whitespace-pre-wrap">
@@ -95,15 +88,6 @@ export function NodePreviewPanel({ node, onClose, onOpenSpec, onShowDetails }: P
         </div>
       </div>
 
-      {node.source_artifact_ref && (
-        <div className="text-[11px] mb-2">
-          <span className="text-gray-500">Source: </span>
-          <span className="font-mono text-blue-600 dark:text-blue-400 break-all">
-            {node.source_artifact_ref}
-          </span>
-        </div>
-      )}
-
       <div className="flex flex-col gap-1.5">
         {onShowDetails && (
           <button
@@ -113,16 +97,6 @@ export function NodePreviewPanel({ node, onClose, onOpenSpec, onShowDetails }: P
             className="w-full px-3 py-1.5 text-xs bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-200 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
           >
             Show more
-          </button>
-        )}
-        {specRef && onOpenSpec && (
-          <button
-            type="button"
-            onClick={() => onOpenSpec(specRef)}
-            data-testid="kg-preview-open-spec"
-            className="w-full px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
-          >
-            Open in spec
           </button>
         )}
       </div>

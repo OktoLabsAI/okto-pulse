@@ -16,7 +16,7 @@
  * read-only signal sourced from the REST endpoint.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   getKGCognitivePendingBadges,
@@ -58,7 +58,8 @@ export function useCognitivePendingBadges(
   const [error, setError] = useState<Error | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
   const abortRef = useRef<AbortController | null>(null);
-  const reloadTokenRef = useRef<number>(0);
+  const [reloadToken, setReloadToken] = useState(0);
+  const refresh = useCallback(() => setReloadToken((token) => token + 1), []);
 
   useEffect(() => {
     abortRef.current?.abort();
@@ -79,10 +80,12 @@ export function useCognitivePendingBadges(
       controller.signal,
     )
       .then((resp) => {
+        if (controller.signal.aborted) return;
         setData(resp);
         setLoading(false);
       })
       .catch((err) => {
+        if (controller.signal.aborted) return;
         if ((err as DOMException)?.name === 'AbortError') return;
         setError(err as Error);
         setLoading(false);
@@ -90,10 +93,10 @@ export function useCognitivePendingBadges(
     return () => {
       controller.abort();
     };
-    // refsKey + kgGenerationId + boardId + reloadTokenRef.current
+    // refsKey + kgGenerationId + boardId + reloadToken
     // re-trigger the effect. refsKey is the stable join of dedupedRefs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [boardId, refsKey, kgGenerationId, canReadCognitive, reloadTokenRef.current]);
+  }, [boardId, refsKey, kgGenerationId, canReadCognitive, reloadToken]);
 
   return {
     badges: data?.badges ?? {},
@@ -101,8 +104,6 @@ export function useCognitivePendingBadges(
     eligibleEntityTypes: data?.eligible_entity_types ?? [],
     loading,
     error,
-    refresh: () => {
-      reloadTokenRef.current += 1;
-    },
+    refresh,
   };
 }

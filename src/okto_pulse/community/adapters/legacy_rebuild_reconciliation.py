@@ -1349,7 +1349,12 @@ def _validate_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     )
     _require(
         "graph.lbug" in board_hashes
-        and set(board_hashes) <= {"graph.lbug", "graph.lbug.wal"}
+        and set(board_hashes)
+        <= {
+            "graph_backend_binding.json",
+            "graph.lbug",
+            "graph.lbug.wal",
+        }
         and board_storage["sha256"] == canonical_evidence_hash(board_hashes),
         "legacy_queue_only_board_storage_invalid",
     )

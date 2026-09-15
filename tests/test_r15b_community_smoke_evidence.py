@@ -16,8 +16,8 @@ from okto_pulse.core.application.boundary import (
 def test_community_runtime_smoke_evidence_passes_core_contract() -> None:
     now = datetime(2026, 7, 1, tzinfo=timezone.utc)
     payload = build_community_runtime_smoke_evidence(
-        core_version="0.3.2",
-        community_version="0.3.2",
+        core_version="0.3.3",
+        community_version="0.3.3",
         core_commit="core-sha",
         community_commit="community-sha",
         core_wheel_hash="sha256:core",
@@ -66,8 +66,8 @@ def test_community_runtime_smoke_evidence_passes_core_contract() -> None:
 def test_community_runtime_smoke_evidence_surfaces_exact_diffs() -> None:
     now = datetime(2026, 7, 1, tzinfo=timezone.utc)
     payload = build_community_runtime_smoke_evidence(
-        core_version="0.3.2",
-        community_version="0.3.2",
+        core_version="0.3.3",
+        community_version="0.3.3",
         core_commit="core-sha",
         community_commit="community-sha",
         core_wheel_hash="sha256:core",

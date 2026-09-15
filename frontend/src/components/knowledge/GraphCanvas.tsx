@@ -77,8 +77,8 @@ interface Props {
   /** Bumped by parent (e.g. when the sidebar collapses/expands) to request a
    *  delayed re-fit once the surrounding layout transition has settled. */
   refitTrigger?: number;
-  /** Navigate to a spec reference when "Open in spec" is clicked from the preview panel (S5.2). */
-  onOpenSpec?: (specRef: string) => void;
+  /** Board owning this graph, used to resolve selected-node provenance. */
+  boardId?: string;
   /** Promote the inline preview to a full modal when "Show more" is clicked. */
   onShowDetails?: (node: KGNode) => void;
 }
@@ -158,7 +158,7 @@ export function GraphCanvas({
   initialSelectedNodeId = null,
   onClearFilters,
   onAdjustRelevance,
-  onOpenSpec,
+  boardId,
   onShowDetails,
   refitTrigger = 0,
 }: Props) {
@@ -827,7 +827,7 @@ export function GraphCanvas({
       <NodePreviewPanel
         node={selectedNode}
         onClose={handlePreviewClose}
-        onOpenSpec={onOpenSpec}
+        boardId={boardId}
         onShowDetails={onShowDetails}
       />
     </div>

@@ -1061,9 +1061,7 @@ class RefinementSnapshot(Base):
     )
     delivery_context: Mapped[str | None] = mapped_column(String(16), nullable=True)
     source_context_manifest: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    source_context_sha256: Mapped[str | None] = mapped_column(
-        String(64), nullable=True
-    )
+    source_context_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -1276,9 +1274,7 @@ class Spec(Base):
         JSON, nullable=True
     )
     source_context_manifest: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    source_context_sha256: Mapped[str | None] = mapped_column(
-        String(64), nullable=True
-    )
+    source_context_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     context: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -1405,6 +1401,21 @@ class Spec(Base):
         default=1,
         server_default=text("1"),
     )
+    # Project-structure metadata is additive. Legacy NULL revision maps to zero
+    # at the port boundary; the canonical digest is NULL only while the tree is
+    # absent. The JSON storage stays physically last so fresh ``create_all``
+    # and legacy ALTER ADD converge to the same order. SQL NULL means the
+    # capability has never been authored; JSON [] is authored-empty.
+    project_structure_revision: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+        default=0,
+    )
+    project_structure_digest: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    project_structure: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     # Relationships
     board: Mapped["Board"] = relationship("Board", back_populates="specs")
@@ -1467,6 +1478,32 @@ class SpecHistory(Base):
 
     # Relationships
     spec: Mapped["Spec"] = relationship("Spec", back_populates="history")
+
+
+class ProjectStructureMutationReceiptRow(Base):
+    """Durable exact-replay receipt for one Project structure batch."""
+
+    __tablename__ = "project_structure_mutation_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(idempotency_key)) >= 1 AND length(request_digest) = 64",
+            name="ck_project_structure_receipt_shape",
+        ),
+    )
+
+    spec_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("specs.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        primary_key=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime(),
+        server_default=func.now(),
+        nullable=False,
+    )
 
 
 class SpecDependencyBoardLock(Base):
@@ -7709,7 +7746,10 @@ class GlobalUpdateOutbox(Base):
 class ExactRebuildConsolidationAckJournal(Base):
     """Immutable receipt for one relational commit in an exact F06 drain.
 
-    The queue row is deleted in the same transaction that inserts this row.
+    The exact rebuild membership is consumed in the same transaction that
+    inserts this row. The queue row is deleted unless admission preserved a
+    pre-existing live intent, in which case that row is atomically restored to
+    its pending non-rebuild state.
     Physical graph compensation is separate; the journal preserves enough
     identity to reverse only the unpublished relational projection owned by
     the discarded candidate generation.
@@ -11667,12 +11707,8 @@ class CodeInvestigationReceiptRow(Base):
     acceptance_status: Mapped[str] = mapped_column(String(16), nullable=False)
     outcome: Mapped[str] = mapped_column(String(16), nullable=False)
     delivery_context: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    contextual_outcome: Mapped[str | None] = mapped_column(
-        String(48), nullable=True
-    )
-    context_contract_version: Mapped[int | None] = mapped_column(
-        Integer, nullable=True
-    )
+    contextual_outcome: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    context_contract_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     capabilities: Mapped[list] = mapped_column(JSON, nullable=False)
     source_ref: Mapped[str] = mapped_column(String(512), nullable=False)
     source_identity_digest: Mapped[str | None] = mapped_column(
@@ -11977,12 +12013,8 @@ class CodeEvidenceRow(Base):
     baseline_workspace_state_id: Mapped[str | None] = mapped_column(
         String(255), nullable=True
     )
-    baseline_provenance_note: Mapped[str | None] = mapped_column(
-        Text, nullable=True
-    )
-    context_contract_version: Mapped[int | None] = mapped_column(
-        Integer, nullable=True
-    )
+    baseline_provenance_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context_contract_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     declared_revision: Mapped[str | None] = mapped_column(String(255), nullable=True)
     workspace_state_id: Mapped[str] = mapped_column(String(255), nullable=False)
     declared_dirty: Mapped[bool] = mapped_column(Boolean, nullable=False)
@@ -12168,9 +12200,7 @@ class CodeEvidenceClassificationEventRow(Base):
     baseline_workspace_state_id: Mapped[str] = mapped_column(
         String(255), nullable=False
     )
-    baseline_provenance_note: Mapped[str | None] = mapped_column(
-        Text, nullable=True
-    )
+    baseline_provenance_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     classified_by: Mapped[str] = mapped_column(String(255), nullable=False)
     classified_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     justification: Mapped[str] = mapped_column(Text, nullable=False)
@@ -12677,6 +12707,62 @@ class ImplementationTargetResolutionRow(Base):
     received_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
+class DeliveryEvidenceRecordRow(Base):
+    """Append-only delivery bindings/waivers/revocations, not graph projections."""
+
+    __tablename__ = "delivery_evidence_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "board_id",
+            "spec_id",
+            "actor_id",
+            "idempotency_key",
+            name="uq_delivery_evidence_replay",
+        ),
+        CheckConstraint("edition >= 1", name="ck_delivery_evidence_edition"),
+        CheckConstraint(
+            "kind IN ('implementation', 'test', 'waiver', 'revoke')",
+            name="ck_delivery_evidence_kind",
+        ),
+        Index("ix_delivery_evidence_scope", "board_id", "spec_id", "edition"),
+    )
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("boards.id", ondelete="CASCADE"), nullable=False
+    )
+    spec_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("specs.id", ondelete="CASCADE"), nullable=False
+    )
+    edition: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    actor_kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+for _delivery_guard_name, _delivery_guard_sql in {
+    "scope": """BEFORE INSERT ON delivery_evidence_records
+WHEN NOT EXISTS (SELECT 1 FROM specs WHERE id=NEW.spec_id AND board_id=NEW.board_id)
+BEGIN SELECT RAISE(ABORT, 'delivery_scope_invalid'); END""",
+    "update": """BEFORE UPDATE ON delivery_evidence_records
+BEGIN SELECT RAISE(ABORT, 'delivery_audit_immutable'); END""",
+    "delete": """BEFORE DELETE ON delivery_evidence_records
+WHEN EXISTS (SELECT 1 FROM specs WHERE id=OLD.spec_id)
+ AND EXISTS (SELECT 1 FROM boards WHERE id=OLD.board_id)
+BEGIN SELECT RAISE(ABORT, 'delivery_audit_immutable'); END""",
+}.items():
+    event.listen(
+        DeliveryEvidenceRecordRow.__table__,
+        "after_create",
+        DDL(
+            f"CREATE TRIGGER IF NOT EXISTS trg_delivery_evidence_{_delivery_guard_name} {_delivery_guard_sql}"
+        ).execute_if(dialect="sqlite"),
+    )
 
 
 class ImplementationTargetExecutionRecordRow(Base):

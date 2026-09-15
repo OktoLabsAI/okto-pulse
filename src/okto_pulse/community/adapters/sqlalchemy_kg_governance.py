@@ -18,6 +18,8 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     BoardErasureJob,
     BoardErasurePermit,
     Card,
+    CodeEvidenceClassificationEventRow,
+    CodeEvidenceClassificationHeadRow,
     CodeEvidenceDispositionRow,
     CodeEvidenceRow,
     CodeEvidenceSpecLinkRow,
@@ -29,6 +31,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ConsolidationAudit,
     ConsolidationQueue,
     DesignSystemGateAudit,
+    DomainEventRow,
     ExactRebuildConsolidationAckJournal,
     ExactRebuildConsolidationCompensation,
     GlobalDiscoveryDeliveryRedriveControl,
@@ -67,6 +70,9 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     PolicyWaiverRow,
     Refinement,
     SemanticGuidelineAssessmentReceiptRow,
+    SemanticGuidelineAssessmentV2Row,
+    SemanticGuidelineMetricResultV2Row,
+    SemanticGuidelineFindingV2Row,
     SemanticGuidelineBindingConfigurationRow,
     SemanticGuidelineFindingRow,
     SemanticGuidelineLegacyMigrationRow,
@@ -125,13 +131,24 @@ async def _delete_self_referencing_history(
 
     if not scope_ids:
         return
-    rows = (
-        await context.execute(
-            select(identity, model.superseded_by_id).where(
-                model.scope_id.in_(scope_ids)
-            )
-        )
-    ).all()
+    await _delete_restrict_history(
+        context,
+        model=model,
+        identity=identity,
+        reference=model.superseded_by_id,
+        predicate=model.scope_id.in_(scope_ids),
+    )
+
+
+async def _delete_restrict_history(
+    context: Any, *, model: Any, identity: Any, reference: Any, predicate: Any
+) -> None:
+    """Remove referencing rows before referenced rows, without disabling FKs.
+
+    Works for either predecessor or successor pointers. External references
+    remain protected by the database; cycles fail closed in the caller's txn.
+    """
+    rows = (await context.execute(select(identity, reference).where(predicate))).all()
     pending = {
         str(row[0]): (str(row[1]) if row[1] is not None else None) for row in rows
     }
@@ -170,19 +187,36 @@ class CommunitySqlAlchemyKGGovernanceStore:
     async def get_board(
         self, context: Any, *, board_id: str
     ) -> HistoricalBoardRecord | None:
-        row = await context.get(Board, board_id)
+        # Never materialize the Board ORM graph for a two-column governance
+        # lookup.  Its eager relationships can load thousands of unrelated
+        # rows and keep a SQLite snapshot open across the following write.
+        row = (
+            (
+                await context.execute(
+                    select(
+                        Board.id.label("id"), Board.settings.label("settings")
+                    ).where(Board.id == board_id)
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
         return (
-            HistoricalBoardRecord(id=str(row.id), settings=dict(row.settings or {}))
+            HistoricalBoardRecord(
+                id=str(row["id"]), settings=dict(row["settings"] or {})
+            )
             if row is not None
             else None
         )
 
     async def save_board(self, context: Any, board: HistoricalBoardRecord) -> None:
-        row = await context.get(Board, board.id)
-        if row is not None:
-            row.settings = dict(board.settings)
-            flag_modified(row, "settings")
-            await context.flush()
+        # A set-based update avoids reloading that same eager ORM graph while
+        # preserving the established caller-owned transaction/commit boundary.
+        await context.execute(
+            update(Board)
+            .where(Board.id == board.id)
+            .values(settings=dict(board.settings))
+        )
 
     async def queue_counts(self, context: Any, *, board_id: str) -> dict[str, int]:
         rows = (
@@ -314,11 +348,18 @@ class CommunitySqlAlchemyKGGovernanceStore:
         )
 
     async def delete_historical_pending(self, context: Any, *, board_id: str) -> int:
+        """Remove the full live historical run, including an in-flight claim.
+
+        A worker that already holds the deleted claim is fenced by its claim
+        token on ACK and compensates any unacknowledged graph mutation.  This
+        makes cancellation terminal instead of leaving a legacy ``claimed``
+        row that blocks a later restart.
+        """
         result = await context.execute(
             delete(ConsolidationQueue).where(
                 ConsolidationQueue.board_id == board_id,
                 ConsolidationQueue.source == "historical_backfill",
-                ConsolidationQueue.status.in_(("pending", "paused")),
+                ConsolidationQueue.status.in_(("pending", "claimed", "paused")),
             )
         )
         return int(result.rowcount or 0)
@@ -545,7 +586,23 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 )
             )
             await context.execute(
-                delete(CodeEvidenceRow).where(CodeEvidenceRow.board_id == board_id)
+                delete(CodeEvidenceClassificationHeadRow).where(
+                    CodeEvidenceClassificationHeadRow.board_id == board_id
+                )
+            )
+            await _delete_restrict_history(
+                context,
+                model=CodeEvidenceClassificationEventRow,
+                identity=CodeEvidenceClassificationEventRow.id,
+                reference=CodeEvidenceClassificationEventRow.predecessor_classification_id,
+                predicate=CodeEvidenceClassificationEventRow.board_id == board_id,
+            )
+            await _delete_restrict_history(
+                context,
+                model=CodeEvidenceRow,
+                identity=CodeEvidenceRow.id,
+                reference=CodeEvidenceRow.supersedes_evidence_id,
+                predicate=CodeEvidenceRow.board_id == board_id,
             )
             await context.execute(
                 delete(CodeInvestigationHeadRow).where(
@@ -557,10 +614,12 @@ class CommunitySqlAlchemyKGGovernanceStore:
                     CodeInvestigationReceiptRevocationRow.board_id == board_id
                 )
             )
-            await context.execute(
-                delete(CodeInvestigationReceiptRow).where(
-                    CodeInvestigationReceiptRow.board_id == board_id
-                )
+            await _delete_restrict_history(
+                context,
+                model=CodeInvestigationReceiptRow,
+                identity=CodeInvestigationReceiptRow.id,
+                reference=CodeInvestigationReceiptRow.predecessor_receipt_id,
+                predicate=CodeInvestigationReceiptRow.board_id == board_id,
             )
             await context.execute(
                 delete(CodeInvestigationRequestRow).where(
@@ -577,6 +636,12 @@ class CommunitySqlAlchemyKGGovernanceStore:
             # participate in the same permit-scoped physical erasure. Delete
             # lifecycle heads before exact receipt/binding authorities; their
             # deferred/cascading lineage removes the corresponding events.
+            for model in (
+                SemanticGuidelineFindingV2Row,
+                SemanticGuidelineMetricResultV2Row,
+                SemanticGuidelineAssessmentV2Row,
+            ):
+                await context.execute(delete(model).where(model.board_id == board_id))
             await context.execute(
                 delete(SemanticGuidelineWaiverRow).where(
                     SemanticGuidelineWaiverRow.board_id == board_id
@@ -612,10 +677,12 @@ class CommunitySqlAlchemyKGGovernanceStore:
                     SemanticSubjectVersionRow.board_id == board_id
                 )
             )
-            await context.execute(
-                delete(SemanticSubjectVersionEventRow).where(
-                    SemanticSubjectVersionEventRow.board_id == board_id
-                )
+            await _delete_restrict_history(
+                context,
+                model=SemanticSubjectVersionEventRow,
+                identity=SemanticSubjectVersionEventRow.event_id,
+                reference=SemanticSubjectVersionEventRow.predecessor_event_id,
+                predicate=SemanticSubjectVersionEventRow.board_id == board_id,
             )
             await context.execute(
                 delete(SemanticGuidelineLegacyMigrationRow).where(
@@ -829,6 +896,10 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 KGCurationProposal,
                 DesignSystemGateAudit,
                 ActivityLog,
+                # Materialized policy/semantic events are immutable even
+                # after their reference rows disappear. Purge under permit,
+                # before Board DELETE cascades run without that permit.
+                DomainEventRow,
                 SemanticGuidelineAssessmentReceiptRow,
                 SemanticGuidelineBindingConfigurationRow,
                 SemanticGuidelineFindingRow,
@@ -882,6 +953,7 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 KGCurationProposal,
                 DesignSystemGateAudit,
                 ActivityLog,
+                DomainEventRow,
                 SemanticGuidelineAssessmentReceiptRow,
                 SemanticGuidelineBindingConfigurationRow,
                 SemanticGuidelineFindingRow,
@@ -897,6 +969,11 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 CodeInvestigationReceiptRevocationRow,
                 CodeInvestigationHeadRow,
                 CodeEvidenceRow,
+                CodeEvidenceClassificationHeadRow,
+                CodeEvidenceClassificationEventRow,
+                SemanticGuidelineAssessmentV2Row,
+                SemanticGuidelineMetricResultV2Row,
+                SemanticGuidelineFindingV2Row,
                 CodeEvidenceSpecLinkRow,
                 CodeEvidenceDispositionRow,
                 ImplementationTargetRow,

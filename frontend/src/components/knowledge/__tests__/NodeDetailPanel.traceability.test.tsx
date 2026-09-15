@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { KGNode } from '@/types/knowledge-graph';
 import { NodeDetailPanel } from '../NodeDetailPanel';
 
-const authority = vi.hoisted(() => ({ canReadProjection: true }));
+const authority = vi.hoisted(() => ({ canReadProjection: true, isLoading: false }));
 
 vi.mock('@/hooks/usePermissions', () => ({
   usePermissions: () => ({
@@ -20,7 +20,7 @@ vi.mock('@/components/code-traceability', () => ({
     canRevokeReceipt: false,
     canCreateTarget: false,
     canAcknowledgeOverlap: false,
-    isLoading: false,
+    isLoading: authority.isLoading,
     error: null,
   }),
 }));
@@ -48,10 +48,32 @@ const TARGET_NODE: KGNode = {
 
 afterEach(() => {
   authority.canReadProjection = true;
+  authority.isLoading = false;
   cleanup();
 });
 
 describe('NodeDetailPanel Code Traceability inspector', () => {
+  it.each([true, false])('waits for authority before rendering or closing (allowed=%s)', async (allowed) => {
+    authority.canReadProjection = false;
+    authority.isLoading = true;
+    const onClose = vi.fn();
+    const view = render(<NodeDetailPanel node={TARGET_NODE} boardId="board-1" onClose={onClose} />);
+    expect(screen.getByRole('status')).toHaveTextContent('Checking source permissions');
+    expect(screen.queryByText(TARGET_NODE.title)).not.toBeInTheDocument();
+    expect(screen.queryByTestId('kg-node-source')).not.toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    authority.isLoading = false;
+    authority.canReadProjection = allowed;
+    view.rerender(<NodeDetailPanel node={TARGET_NODE} boardId="board-1" onClose={onClose} />);
+    if (allowed) {
+      expect(screen.getByText(TARGET_NODE.title)).toBeInTheDocument();
+      expect(onClose).not.toHaveBeenCalled();
+    } else {
+      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+      expect(view.container).toBeEmptyDOMElement();
+    }
+  });
+
   it('shows the logical subtype and accepted metadata with explicit authority', () => {
     render(
       <NodeDetailPanel

@@ -3,7 +3,22 @@
 Changeset per version, newest first.
 
 
-### 0.3.2 - current
+### 0.3.3 - current
+
+Version 0.3.3 aligns Community packaging and contributor workflows with the
+paired Core release and closes the remaining Delivery Intelligence semantics.
+
+- REST and CSV Delivery Intelligence reject caller-supplied historical
+  `as_of` values while the projection reads current state.
+- The contributor setup is executable through the `[dev]` extra and matching
+  Core/Community branches, with current CLA guidance and complete CLI docs.
+- The frontend package, README and exact ESLint warning ratchet now reflect the
+  shipped Okto Pulse Community application.
+- Core and Community runtime, MCP, recovery, frontend, Docker and release-gate
+  version contracts are aligned on `0.3.3`.
+
+
+### 0.3.2
 
 Version 0.3.2 turns evidence, delivery readiness and analytics into one governed
 local workflow. Community implements the matching persistence, REST, MCP-host

@@ -1651,7 +1651,7 @@ Beyond the static board settings above, the **Runtime Settings Panel** (Menu →
 
 | Tab | Controls |
 |-----|----------|
-| **GraphDB** | LadybugDB connection pool, timeout, query limits |
+| **GraphDB** | Grafx buffer budget, independent read participants, descriptor validation and advanced options |
 | **Event Queue** | \`kg_queue_min_interval_ms\` (0–1000), batch size, retry policy |
 | **Decay Tick** | \`interval_minutes\` (5–10080), \`staleness_days\` (1–365), \`max_age_days\` (0–365) — plus the **"Save & run now"** action that persists + triggers a tick atomically |
 

@@ -12,6 +12,7 @@ warnings.filterwarnings(
 
 import argparse
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -24,6 +25,8 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
+
+from okto_pulse.community.metrics_limits import DEFAULT_WINDOW_DAYS, validate_window_days
 
 # Default ports
 DEFAULT_API_PORT = 8100
@@ -310,7 +313,7 @@ def _json_field(record, name: str, default=None):
             return json.loads(value)
         except Exception:
             return default
-    return value
+    return copy.deepcopy(value)
 
 
 def _result_records(result):
@@ -369,6 +372,7 @@ def _configure_community_relational_runtime(settings, *, echo: bool = False) -> 
     from okto_pulse.community.adapters.relational_effects import (
         register_community_relational_effects,
     )
+
     # CLI commands run outside the FastAPI composition root.  Register the
     # same relational ports required by seeds, health reads and governed
     # writes so `init` and offline maintenance fail closed only for genuine
@@ -420,6 +424,85 @@ class GlobalDiscoveryInitError(RuntimeError):
         self.code = code
 
 
+class BoardGraphInitError(RuntimeError):
+    """Typed ``okto-pulse init`` board Knowledge Graph failure/refusal.
+
+    Same contract as :class:`GlobalDiscoveryInitError`: a stable ``.code`` so
+    callers and tests key off the typed outcome instead of message text.
+    """
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+async def _bootstrap_board_graph(board_id: str) -> tuple[str, str]:
+    """Bootstrap a board's Knowledge Graph and prove it is really there.
+
+    Returns the ``(storage token, schema version)`` pair that ``init`` reports.
+
+    Fail-closed, and deliberately backend-neutral.  ``init`` used to name the
+    board's graph by resolving a Community-local file path, which quietly
+    assumed one storage engine: where a board uses a different one that path
+    describes nothing, so the operator-facing line could name a file that does
+    not exist while init still claimed success.  The board's own runtime is
+    asked instead, through the registered port, and it answers the same way
+    whichever engine is behind it.
+
+    The diagnosis is non-opening -- the runtime reports from metadata alone, so
+    proving the graph exists costs no handle and cannot itself fail the boot it
+    is checking.
+    """
+
+    from okto_pulse.core.kg.interfaces.graph_runtime_store import (
+        GraphRuntimeObservationState,
+    )
+    from okto_pulse.core.services.application_kg import (
+        get_current_provider_registry,
+    )
+
+    from okto_pulse.community.adapters.composition import (
+        require_community_routed_graph_composition,
+    )
+
+    registry = get_current_provider_registry()
+    require_community_routed_graph_composition(registry).initialize_board_route(
+        board_id
+    )
+    await registry.graph_schema_manager.ensure_bootstrapped(board_id)
+
+    # ``getattr`` rather than attribute access: a registry that does not carry
+    # the slot at all must reach the typed refusal below, not raise an
+    # AttributeError that reads like a crash instead of a fail-closed decision.
+    runtime = getattr(registry, "graph_runtime_store", None)
+    if runtime is None:
+        raise BoardGraphInitError(
+            "board_graph_provider_unavailable: no graph runtime store is "
+            "registered, so init cannot prove the board graph exists after "
+            "bootstrap",
+            code="board_graph_provider_unavailable",
+        )
+
+    observation = runtime.graph_state(board_id)
+    # ``normalized_state`` is the fail-closed reading: a legacy adapter that
+    # only reports a negative ``exists`` is treated as unavailable rather than
+    # promoted to a confirmed absence.
+    observed = observation.normalized_state
+    if observed is not GraphRuntimeObservationState.PRESENT_READABLE_CANDIDATE:
+        reason = f" reason={observation.reason_code}" if observation.reason_code else ""
+        raise BoardGraphInitError(
+            "board_graph_init_refused: bootstrap did not leave a readable board "
+            f"graph (state={observed.value}{reason}); refusing to report a "
+            "successful init",
+            code="board_graph_init_refused",
+        )
+
+    version = await registry.graph_schema_manager.current_version(board_id)
+    # The shared ``board:<id>`` storage reference identifies the graph without
+    # naming a backend, a file or a path.
+    return observation.storage_ref.token, str(version)
+
+
 def _bootstrap_global_discovery_graph() -> str:
     """Materialize the Global Discovery graph during ``okto-pulse init``.
 
@@ -437,7 +520,9 @@ def _bootstrap_global_discovery_graph() -> str:
       migrates existing Global Discovery; schema migration has its own owner.
     - ``PRESENT_UNREADABLE_OR_ERROR`` (including residue): typed refusal naming
       the recovery ceremony, zero mutation.
-    - ``PROVIDER_UNAVAILABLE``: typed failure, zero mutation.
+    - ``PROVIDER_UNAVAILABLE``: the exact missing-binding reason enters the
+      composition-owned initializer under this lease; every other reason is a
+      typed failure with zero mutation.
 
     On a mid-DDL failure the lease is released and handles are closed by the
     caller's shutdown barrier, and the partial graph is preserved (never
@@ -448,17 +533,18 @@ def _bootstrap_global_discovery_graph() -> str:
     only its heartbeat runs in a context-propagating helper thread. Returns the
     typed outcome code.
     """
-    from okto_pulse.core.services.application_kg import (
-        get_current_provider_registry,
+    from okto_pulse.core.kg.interfaces.graph_runtime_store import (
+        GraphRuntimeObservationState,
     )
     from okto_pulse.core.ports.global_discovery_recovery_control import (
         GlobalDiscoveryWriterLease,
     )
-    from okto_pulse.core.kg.interfaces.graph_runtime_store import (
-        GraphRuntimeObservationState,
+    from okto_pulse.core.services.application_kg import (
+        get_current_provider_registry,
     )
 
-    runtime = get_current_provider_registry().require_global_discovery_runtime()
+    registry = get_current_provider_registry()
+    runtime = registry.require_global_discovery_runtime()
 
     lease = GlobalDiscoveryWriterLease.acquire(
         operation="init_global_discovery",
@@ -478,16 +564,30 @@ def _bootstrap_global_discovery_graph() -> str:
                 # readable Global Discovery graph. Zero physical mutation.
                 outcome = "global_discovery_already_present"
             elif obs_state == GraphRuntimeObservationState.PROVIDER_UNAVAILABLE:
-                reason = (
-                    f" reason={observation.reason_code}"
-                    if observation.reason_code
-                    else ""
-                )
-                raise GlobalDiscoveryInitError(
-                    "global_discovery_provider_unavailable: Global Discovery "
-                    f"runtime is unavailable{reason}; init made zero mutation",
-                    code="global_discovery_provider_unavailable",
-                )
+                if observation.reason_code == "graph_route_binding_missing":
+                    from okto_pulse.community.adapters.composition import (
+                        require_community_routed_graph_composition,
+                    )
+
+                    # The routed initializer owns both durable binding publication
+                    # and physical bootstrap.  Calling it only under the active
+                    # writer lease avoids an unfenced first materialization; do
+                    # not call runtime.bootstrap() again after it returns.
+                    require_community_routed_graph_composition(
+                        registry
+                    ).initialize_global_route()
+                    outcome = "global_discovery_materialized"
+                else:
+                    reason = (
+                        f" reason={observation.reason_code}"
+                        if observation.reason_code
+                        else ""
+                    )
+                    raise GlobalDiscoveryInitError(
+                        "global_discovery_provider_unavailable: Global Discovery "
+                        f"runtime is unavailable{reason}; init made zero mutation",
+                        code="global_discovery_provider_unavailable",
+                    )
             else:
                 # PRESENT_UNREADABLE_OR_ERROR, including
                 # global_discovery_residue_without_primary and the durable
@@ -748,23 +848,13 @@ def cmd_init(args, *, owned_serve_lock: object | None = None):
                     if board_row:
                         board_id = board_row["id"]
 
-            # Bootstrap Knowledge Graph (Kuzu) for the board so the graph
-            # schema and vector indexes are ready before the first agent call.
-            # This is intentionally fail-closed: a broken first-boot graph is
-            # an initialization failure, not a successful "bootstrap skipped".
+            # Bootstrap the board Knowledge Graph so the graph schema and
+            # vector indexes are ready before the first agent call.  Both the
+            # bootstrap and the proof that it worked cross registered ports, so
+            # this says nothing about which engine stores the board.
             if board_id:
-                # Schema lifecycle crosses the Core port; the CLI resolves the
-                # Community-local path only for operator-facing diagnostics.
-                from okto_pulse.community.adapters.kg_runtime import board_kuzu_path
-                from okto_pulse.core.services.application_kg import (
-                    get_current_provider_registry,
-                )
-
-                _kg_reg = get_current_provider_registry()
-                await _kg_reg.graph_schema_manager.ensure_bootstrapped(board_id)
-                _kg_path = board_kuzu_path(board_id)
-                _kg_ver = await _kg_reg.graph_schema_manager.current_version(board_id)
-                print(f"  Knowledge Graph: {_kg_path} (schema {_kg_ver})")
+                _kg_token, _kg_ver = await _bootstrap_board_graph(board_id)
+                print(f"  Knowledge Graph: {_kg_token} (schema {_kg_ver})")
 
             # Materialize the Global Discovery graph (``global/discovery.lbug``)
             # under the public writer-lease fence so cross-board discovery is
@@ -775,7 +865,7 @@ def cmd_init(args, *, owned_serve_lock: object | None = None):
         finally:
             # ``init`` is a complete runtime lifecycle, not just a relational
             # migration command.  The demo consolidation and the primary-board
-            # bootstrap both leave Ladybug Database handles in the process-wide
+            # bootstrap both leave graph Database handles in the process-wide
             # cache.  Closing only SQLite lets interpreter teardown strand recent
             # commits in graph.lbug.wal (and can make strict WAL replay reject the
             # fresh Demo graph).  Reuse the same checkpoint+close boundary as the
@@ -1149,64 +1239,39 @@ def cmd_code_traceability(args):
 def cmd_status(args):
     """Show status of Okto Pulse Community."""
     from okto_pulse.community.config import CommunitySettings
-    from okto_pulse.community.serve_lock import inspect_serve_lock_identity
+    from okto_pulse.community.commands.status import collect_status, render_status
 
-    api_port = args.api_port
-    mcp_port = args.mcp_port
+    report = collect_status(
+        CommunitySettings(),
+        api_port=args.api_port,
+        mcp_port=args.mcp_port,
+        port_probe=_is_port_in_use,
+    )
+    exit_code = render_status(
+        report,
+        json_output=getattr(args, "json", False),
+        api_port=args.api_port,
+        mcp_port=args.mcp_port,
+    )
+    if exit_code:
+        raise SystemExit(exit_code)
 
-    settings = CommunitySettings()
-    data_path = Path(settings.data_dir)
-    db_path = data_path / "data" / "pulse.db"
 
-    print("Okto Pulse Community Status")
-    print(f"  Data dir: {data_path}")
-    print(f"  Source:   {settings.data_dir_origin}")
-    print(f"  Database: {db_path}")
-
-    if db_path.exists():
-        size_kb = db_path.stat().st_size / 1024
-        print(f"  DB size:  {size_kb:.1f} KB")
-
-        import sqlite3
-
-        conn = sqlite3.connect(str(db_path))
-        try:
-            boards = conn.execute("SELECT COUNT(*) FROM boards").fetchone()[0]
-            cards = conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
-            agents = conn.execute("SELECT COUNT(*) FROM agents").fetchone()[0]
-            specs = conn.execute("SELECT COUNT(*) FROM specs").fetchone()[0]
-            print(f"  Boards:   {boards}")
-            print(f"  Cards:    {cards}")
-            print(f"  Specs:    {specs}")
-            print(f"  Agents:   {agents}")
-        except Exception:
-            print("  (tables not yet created — run 'okto-pulse init' first)")
-        finally:
-            conn.close()
-    else:
-        print("  Database not found — run 'okto-pulse init' first.")
-
-    api_up = _is_port_in_use(api_port)
-    mcp_up = _is_port_in_use(mcp_port)
-    identity = inspect_serve_lock_identity(settings)
-    identity_state = identity["state"]
-    if identity_state == "confirmed":
-        identity_label = f"confirmed (instance {identity['instance_id']})"
-    elif identity_state == "unreadable":
-        identity_label = "unreadable (serve lock cannot be verified)"
-    elif identity_state == "identity_mismatch":
-        identity_label = f"identity mismatch ({identity['reason']})"
-    elif api_up or mcp_up:
-        identity_label = f"unknown ({identity['reason']})"
-    else:
-        identity_label = f"stopped ({identity['reason']})"
-    print(f"  Runtime identity: {identity_label}")
-    print(f"\n  API server ({api_port}):  {'running' if api_up else 'stopped'}")
-    print(f"  MCP server ({mcp_port}):  {'running' if mcp_up else 'stopped'}")
+def _metrics_window_days(text: str) -> int:
+    try:
+        return validate_window_days(int(text))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def cmd_metrics(args):
     """Control metrics On/Off settings and local data."""
+    if args.metrics_command == "status":
+        try:
+            validate_window_days(args.window_days)
+        except ValueError as exc:
+            print(f"okto-pulse metrics status: error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
     from okto_pulse.community.adapters.telemetry_composition import (
         register_community_telemetry_runtime,
     )
@@ -1494,6 +1559,15 @@ def cmd_kg_backfill(args):
 
     # ── Path B: Apply ────────────────────────────────────────────────
     if apply_writes:
+        # Historical consolidation acquires the same durable writer lease as
+        # the server and ``init`` paths.  Register Community's concrete
+        # coordination ports before entering the async apply flow; otherwise
+        # a standalone CLI process reaches the queue with no write_lock_port.
+        from okto_pulse.community.adapters.coordination import (
+            register_community_coordination_providers,
+        )
+
+        register_community_coordination_providers()
         asyncio.run(_apply_backfill(board_id, emit_json, settings))
         sys.exit(0)
 
@@ -1758,6 +1832,9 @@ def _spec_to_dict(s):
         "test_scenarios": _json_field(s, "test_scenarios"),
         "business_rules": _json_field(s, "business_rules"),
         "api_contracts": _json_field(s, "api_contracts"),
+        "project_structure_revision": _field(s, "project_structure_revision"),
+        "project_structure_digest": _field(s, "project_structure_digest"),
+        "project_structure": _json_field(s, "project_structure"),
     }
 
 
@@ -2080,6 +2157,11 @@ def cmd_kg_export(args):
         print(f"ERRO formato nao suportado: {fmt} (apenas jsonld)")
         sys.exit(2)
 
+    out_dir = os.path.dirname(os.path.abspath(output)) or "."
+    if not os.path.isdir(out_dir):
+        print(f"ERRO export_output_error: destination directory does not exist: {out_dir}")
+        sys.exit(2)
+
     # D5/R7: export offline abre o grafo do board — single-writer guard.
     _fail_fast_if_server_running("kg export")
 
@@ -2104,18 +2186,27 @@ def cmd_kg_export(args):
     payload = json.dumps(
         document, sort_keys=True, indent=2, ensure_ascii=False, default=str
     )
-    out_dir = os.path.dirname(os.path.abspath(output)) or "."
-    fd, tmp_path = _tempfile.mkstemp(dir=out_dir, suffix=".jsonld.tmp")
+    fd = None
+    tmp_path = None
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        fd, tmp_path = _tempfile.mkstemp(dir=out_dir, suffix=".jsonld.tmp")
+        handle = os.fdopen(fd, "w", encoding="utf-8", newline="\n")
+        fd = None  # Ownership transferred to the file object.
+        with handle:
             handle.write(payload)
         os.replace(tmp_path, output)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    except OSError as exc:
+        print(f"ERRO export_output_error: {exc}")
+        sys.exit(2)
+    finally:
+        # Also clean up on KeyboardInterrupt without swallowing cancellation.
+        if fd is not None:
+            os.close(fd)
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
     print(
         f"Export concluido: {document['nodes_exported']} nos, "
         f"{document['edges_exported']} edges -> {output}"
@@ -2174,6 +2265,28 @@ def cmd_kg_subtype_declare(args):
     sys.exit(0)
 
 
+def _configure_kg_restore_cold_registry():
+    """Compose the offline restore registry without migrating relational data."""
+    from okto_pulse.core import configure_settings
+    from okto_pulse.core.services.application_kg import (
+        get_current_provider_registry,
+    )
+
+    from okto_pulse.community.adapters.composition import (
+        configure_community_kg_registry,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_database import (
+        get_session_factory,
+    )
+    from okto_pulse.community.config import CommunitySettings
+
+    settings = CommunitySettings()
+    configure_settings(settings)
+    _configure_community_relational_runtime(settings, echo=False)
+    configure_community_kg_registry(get_session_factory(), settings=settings)
+    return get_current_provider_registry()
+
+
 def cmd_kg_restore(args):
     """KGD-01 FR4 — `okto-pulse kg restore <quarantine_id> [--apply]`.
 
@@ -2185,32 +2298,18 @@ def cmd_kg_restore(args):
     structured `board_locked`); mid-flight failures return `partial_restore`
     with the operation manifest recording the exact state for rollback.
     """
-    from okto_pulse.community.adapters.quarantine_restore import (
-        CommunityQuarantineRestore,
-    )
     from okto_pulse.core.kg.interfaces.quarantine_restore import (
         QuarantineRestoreError,
     )
-    from okto_pulse.core import configure_settings, get_settings
-    from okto_pulse.community.config import CommunitySettings
 
     quarantine_id: str = args.quarantine_id
     apply_restore: bool = bool(getattr(args, "apply", False))
     emit_json: bool = bool(getattr(args, "json", False))
 
-    try:
-        settings = get_settings()
-    except RuntimeError:
-        settings = CommunitySettings()
-        configure_settings(settings)
-
-    data_dir = getattr(settings, "data_dir", None)
-    extra_lock_dirs = (Path(data_dir).expanduser(),) if data_dir else ()
-
-    service = CommunityQuarantineRestore(
-        base_dir=settings.kg_base_dir,
-        extra_serve_lock_dirs=extra_lock_dirs,
-    )
+    # The composition-owned slot is the only CLI factory.  In particular, the
+    # command must not reconstruct the graph adapter from settings: doing so
+    # would bypass persisted Board routing and silently misroute Grafx data.
+    service = _configure_kg_restore_cold_registry().require_quarantine_restore()
 
     def _emit_restore_error(exc: QuarantineRestoreError) -> None:
         payload = exc.to_payload()
@@ -2297,6 +2396,7 @@ def cmd_kg_restore(args):
 def cmd_reset(args):
     """Reset all data — delete DB and uploads, re-seed."""
     from okto_pulse.community.config import CommunitySettings
+    from okto_pulse.community.commands.reset_graphs import plan_board_reset
     from okto_pulse.community.serve_lock import (
         ServeAlreadyRunningError,
         ServeInstanceLock,
@@ -2320,6 +2420,10 @@ def cmd_reset(args):
     _fail_fast_if_server_running("reset")
     try:
         with ServeInstanceLock(data_path).acquire() as owned_serve_lock:
+            # Resolve every owned graph and reject aliased paths before the
+            # SQLite catalog (our ownership evidence) or uploads are deleted.
+            graph_plan = plan_board_reset(settings, data_path / "data" / "pulse.db")
+            graph_plan.apply()
             for f in (data_path / "data").glob("pulse.db*"):
                 f.unlink()
                 print(f"  Deleted: {f}")
@@ -2409,6 +2513,9 @@ def main():
         "status", help="Show service status and DB metrics"
     )
     sub_status.add_argument(
+        "--json", action="store_true", help="Emit one machine-readable status object"
+    )
+    sub_status.add_argument(
         "--api-port",
         type=int,
         default=DEFAULT_API_PORT,
@@ -2487,7 +2594,9 @@ def main():
     )
 
     metrics_status = metrics_sub.add_parser("status", help="Show metrics status")
-    metrics_status.add_argument("--window-days", type=int, default=30)
+    metrics_status.add_argument(
+        "--window-days", type=_metrics_window_days, default=DEFAULT_WINDOW_DAYS
+    )
     metrics_status.set_defaults(func=cmd_metrics)
 
     metrics_enable = metrics_sub.add_parser(
@@ -2598,7 +2707,7 @@ def main():
     # NC-8 (spec 7f23535f) — dedup-entities migration
     sub_dedup = kg_subparsers.add_parser(
         "dedup-entities",
-        help="Consolidate duplicate Kuzu nodes per (node_type, source_artifact_ref)",
+        help="Consolidate duplicate graph nodes per (node_type, source_artifact_ref)",
     )
     sub_dedup.add_argument("board_id", help="Target board UUID")
     sub_dedup.add_argument(
@@ -2734,6 +2843,14 @@ def main():
         _print_banner()
         sub_kg.print_help()
         sys.exit(1)
+    if (
+        args.command == "kg"
+        and args.kg_command == "subtype"
+        and not getattr(args, "subtype_command", None)
+    ):
+        _print_banner()
+        sub_subtype.print_help()
+        sys.exit(1)
     if args.command == "metrics" and not getattr(args, "metrics_command", None):
         _print_banner()
         sub_metrics.print_help()
@@ -2745,7 +2862,8 @@ def main():
         sub_traceability.print_help()
         sys.exit(1)
 
-    _print_banner()
+    if not (args.command == "status" and getattr(args, "json", False)):
+        _print_banner()
     args.func(args)
 
 

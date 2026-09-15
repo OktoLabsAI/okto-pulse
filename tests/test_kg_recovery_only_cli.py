@@ -165,7 +165,13 @@ def test_inspect_install_does_not_touch_data_home_or_execute(
         distributions=(),
         runtime=(("python_version", "test"),),
     )
-    monkeypatch.setattr(recovery, "_install_evidence", lambda **_kwargs: evidence)
+    install_kwargs: dict[str, str] = {}
+
+    def installed_evidence(**kwargs: str) -> recovery.InstallEvidence:
+        install_kwargs.update(kwargs)
+        return evidence
+
+    monkeypatch.setattr(recovery, "_install_evidence", installed_evidence)
     monkeypatch.setattr(recovery, "_hash_executor_file", lambda: EXECUTOR_HASH)
     monkeypatch.setattr(
         recovery,
@@ -195,6 +201,8 @@ def test_inspect_install_does_not_touch_data_home_or_execute(
     assert payload["install_fingerprint"] == INSTALL_HASH
     assert payload["executor_sha256"] == EXECUTOR_HASH
     assert payload["entrypoints_sha256"] == ENTRYPOINT_HASH
+    assert install_kwargs["grafx_version"] == recovery.EXPECTED_GRAFX_VERSION
+    assert "kuzu_version" not in install_kwargs
 
 
 def test_recovery_defaults_match_the_pinned_release_dependencies() -> None:
@@ -202,15 +210,76 @@ def test_recovery_defaults_match_the_pinned_release_dependencies() -> None:
     dependencies = set(project["project"]["dependencies"])
     lock = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
 
-    assert recovery.EXPECTED_LADYBUG_VERSION == "0.16.0"
+    assert recovery.EXPECTED_GRAFX_VERSION == "0.0.7"
     assert recovery.EXPECTED_SQLALCHEMY_VERSION == "2.0.49"
-    assert "ladybug==0.16.0" in dependencies
+    assert not any("ladybug" in item for item in dependencies)
+    assert "okto-grafx[accel]==0.0.7" in dependencies
     assert "sqlalchemy[asyncio]==2.0.49" in dependencies
-    assert '{ name = "ladybug", specifier = "==0.16.0" }' in lock
+    assert 'name = "ladybug"' not in lock
+    assert '{ name = "okto-grafx", extras = ["accel"], specifier = "==0.0.7" }' in lock
     assert (
-        '{ name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.49" }'
-        in lock
+        '{ name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.49" }' in lock
     )
+
+
+def test_install_evidence_authenticates_grafx_without_kuzu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[str, str, bool, bool]] = []
+
+    def distribution_evidence(
+        name: str,
+        version: str,
+        *,
+        include_python: bool,
+        require_native: bool = False,
+    ) -> recovery.DistributionEvidence:
+        observed.append((name, version, include_python, require_native))
+        return recovery.DistributionEvidence(
+            name=name,
+            version=version,
+            fingerprint="a" * 64,
+            file_count=1,
+            editable=False,
+        )
+
+    monkeypatch.setattr(recovery, "_distribution_evidence", distribution_evidence)
+
+    evidence = recovery._install_evidence(
+        core_version="0.3.3",
+        community_version="0.3.3",
+        grafx_version="0.0.1",
+        sqlalchemy_version="2.0.49",
+        aiosqlite_version="0.22.1",
+    )
+
+    assert [item[0] for item in observed] == [
+        recovery.CORE_DISTRIBUTION,
+        recovery.COMMUNITY_DISTRIBUTION,
+        recovery.GRAFX_DISTRIBUTION,
+        recovery.SQLALCHEMY_DISTRIBUTION,
+        recovery.AIOSQLITE_DISTRIBUTION,
+    ]
+    assert all(item[0].casefold() != "kuzu" for item in observed)
+    assert observed[2] == ("okto-grafx", "0.0.1", True, False)
+    assert len(evidence.fingerprint) == 64
+
+
+def test_kuzu_version_alias_refuses_a_nondefault_ladybug_conflict() -> None:
+    with pytest.raises(SystemExit):
+        recovery._parse_args(
+            [
+                "--data-home",
+                "C:/pulse",
+                "--board-id",
+                BOARD_ID,
+                "--inspect-install",
+                "--expected-ladybug-version",
+                "0.15.0",
+                "--expected-kuzu-version",
+                "0.16.0",
+            ]
+        )
 
 
 def test_process_oracle_detects_real_launchers_but_not_ancestor_shells() -> None:
@@ -855,7 +924,7 @@ def test_preexisting_rebuild_temp_is_refused_before_plan_or_artifact_read(
     snapshot_offset = source.index("rebuild_baseline = _snapshot_tree_hashes")
     refusal_offset = source.index("_assert_no_rebuild_transients(rebuild_baseline)")
     graph_snapshot_offset = source.index(
-        "board_storage_baseline = _snapshot_tree_hashes"
+        "board_storage_baseline = _snapshot_board_storage_hashes"
     )
     composition_offset = source.index("app = create_community_app()")
     health_offset = source.index("raw_health = _offline_cold_graph_health")
@@ -907,6 +976,7 @@ async def test_dangling_rebuild_root_is_refused_before_composition_or_read(
     ):
         await recovery._execute_under_serve_lock(
             SimpleNamespace(board_id=BOARD_ID),
+            graph_binding=object(),
             data_home=data_home,
             db_path=data_home / "data" / "pulse.db",
             owner_id="owner-1",
@@ -1134,104 +1204,146 @@ def test_snapshot_nested_tree_uses_authoritative_lstat_identity(tmp_path: Path) 
     }
 
 
-def test_offline_cold_health_is_conservative_and_snapshot_bound(
+def _compensation_checkpoint(
+    *,
+    manifest_ref: str,
+    quarantine_id: str,
+    affected_files: list[str],
+) -> dict[str, object]:
+    return {
+        "receipts": {
+            f"f06:{manifest_ref}:quarantine": {
+                "details": {
+                    "affected_files": affected_files,
+                    "quarantine_ref": quarantine_id,
+                }
+            }
+        }
+    }
+
+
+def test_grafx_compensation_maps_the_opaque_receipt_to_the_directory_payload(
+    tmp_path: Path,
+) -> None:
+    import okto_grafx
+    from okto_pulse.community.adapters.grafx_board_storage import (
+        quarantine_grafx_board_storage,
+    )
+
+    data_home = tmp_path.resolve()
+    board_root = data_home / "boards" / BOARD_ID
+    graph_path = board_root / "grafx" / GUARD_GENERATION
+    database = okto_grafx.connect(graph_path, page_size=GRAFX_PAGE_SIZE)
+    _store_module, store = _binding_store(data_home)
+    store.initialize_board_binding(
+        board_id=BOARD_ID,
+        backend="grafx",
+        generation=GUARD_GENERATION,
+        physical_path=graph_path,
+        page_size=GRAFX_PAGE_SIZE,
+        database=database,
+    )
+    database.close()
+    decision = recovery._require_authenticated_recoverable_backend(
+        data_home,
+        BOARD_ID,
+    )
+    assert decision.binding is not None
+    binding = decision.binding
+    affected_count, quarantine_id = quarantine_grafx_board_storage(
+        BOARD_ID,
+        graph_path,
+        reason="recovery-only-regression",
+    )
+    assert affected_count > 0
+    assert quarantine_id is not None
+    assert not graph_path.exists()
+    manifest_ref = "manifest-grafx-compensation"
+
+    expected = recovery._expected_compensation_board_storage(
+        _compensation_checkpoint(
+            manifest_ref=manifest_ref,
+            quarantine_id=quarantine_id,
+            affected_files=[f"board:{BOARD_ID}"],
+        ),
+        quarantine_root=data_home / "quarantine",
+        board_id=BOARD_ID,
+        manifest_ref=manifest_ref,
+        binding=binding,
+    )
+    payload = data_home / "quarantine" / quarantine_id / "payload" / "database"
+    shutil.copytree(payload, graph_path)
+
+    assert expected == recovery._snapshot_board_storage_hashes(board_root)
+    assert expected["graph_backend_binding.json"] == binding.document_sha256
+    assert all(
+        relative == "graph_backend_binding.json"
+        or relative.startswith(f"grafx/{GUARD_GENERATION}/")
+        for relative in expected
+    )
+
+
+def test_offline_cold_health_routes_a_real_grafx_database_by_binding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from okto_pulse.community.adapters import kuzu_graph_path_resolver
-
-    root = tmp_path / "boards" / BOARD_ID
-    root.mkdir(parents=True)
-    graph = root / "graph.lbug"
-    graph.write_bytes(b"closed graph")
-    state = SimpleNamespace(
-        path=graph,
-        exists=True,
-        locked=False,
-        quarantined=False,
-        sidecars=(),
+    import okto_grafx
+    from okto_pulse.community.adapters.grafx_graph_runtime_store import (
+        CommunityGrafxGraphRuntimeStore,
     )
-    monkeypatch.setattr(
-        kuzu_graph_path_resolver.CommunityKuzuGraphPathResolver,
-        "storage_state",
-        lambda _self, _board_id: state,
+
+    data_home = tmp_path.resolve()
+    board_root = data_home / "boards" / BOARD_ID
+    graph_path = board_root / "grafx" / GUARD_GENERATION
+    database = okto_grafx.connect(graph_path, page_size=GRAFX_PAGE_SIZE)
+    _store_module, store = _binding_store(data_home)
+    store.initialize_board_binding(
+        board_id=BOARD_ID,
+        backend="grafx",
+        generation=GUARD_GENERATION,
+        physical_path=graph_path,
+        page_size=GRAFX_PAGE_SIZE,
+        database=database,
+    )
+    database.close()
+    decision = recovery._require_authenticated_recoverable_backend(
+        data_home,
+        BOARD_ID,
+    )
+    assert decision.binding is not None
+    binding = decision.binding
+    runtime = CommunityGrafxGraphRuntimeStore(
+        lambda _board_id: graph_path,
+        lambda _board_id: None,
+        lambda _board_id, _phase: None,
+        board_storage_root_resolver=lambda _board_id: board_root,
     )
     bundle = SimpleNamespace(
+        graph_binding=binding,
         generation_repository=SimpleNamespace(
-            get_current=lambda _board_id: "generation-current"
-        )
+            get_current=lambda _board_id: GUARD_GENERATION
+        ),
     )
 
     health = recovery._offline_cold_graph_health(
         bundle,
         board_id=BOARD_ID,
-        board_storage_root=root,
-        board_storage_snapshot={"graph.lbug": "a" * 64},
+        board_storage_root=board_root,
+        board_storage_snapshot=recovery._snapshot_tree_hashes(board_root),
+        graph_runtime_store=runtime,
     )
 
-    assert health == {
-        "graph_state": "recovery_needed",
-        "metric_status": "unavailable",
-        "current_kg_generation_id": "generation-current",
-        "graph_storage_exists": True,
-        "graph_storage_locked": False,
-    }
-
-    state.sidecars = ("graph.lbug.wal",)
-    with pytest.raises(
-        recovery.RecoveryRefused,
-        match="cold_graph_sidecar_snapshot_drift",
-    ):
-        recovery._offline_cold_graph_health(
-            bundle,
-            board_id=BOARD_ID,
-            board_storage_root=root,
-            board_storage_snapshot={"graph.lbug": "a" * 64},
-        )
+    assert health["graph_state"] == "recovery_needed"
+    assert health["graph_storage_exists"] is True
+    assert not (board_root / "graph.lbug").exists()
 
 
-def test_post_teardown_board_snapshot_requires_one_closed_graph(
+@pytest.mark.asyncio
+async def test_closed_board_snapshot_refuses_drain_timeout_before_hash(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    graph_hash = "a" * 64
-    monkeypatch.setattr(
-        recovery,
-        "_snapshot_tree_hashes",
-        lambda _root: {"graph.lbug": graph_hash},
-    )
-
-    snapshot, digest = recovery._capture_post_teardown_board_storage(
-        data_home=tmp_path,
-        board_id=BOARD_ID,
-    )
-
-    assert snapshot == {"graph.lbug": graph_hash}
-    assert digest == recovery._canonical_json_hash(snapshot)
-
-    monkeypatch.setattr(
-        recovery,
-        "_snapshot_tree_hashes",
-        lambda _root: {
-            "graph.lbug": graph_hash,
-            "graph.lbug.wal": "b" * 64,
-        },
-    )
-    with pytest.raises(
-        recovery.RecoveryRefused,
-        match="post_teardown_board_storage_invalid",
-    ):
-        recovery._capture_post_teardown_board_storage(
-            data_home=tmp_path,
-            board_id=BOARD_ID,
-        )
-
-
-def test_closed_board_snapshot_refuses_drain_timeout_before_hash(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from okto_pulse.community.adapters import kg_runtime
+    from okto_pulse.community.adapters import graph_operation_guards as kg_runtime
 
     @contextmanager
     def blocked_window(*_args, **_kwargs):  # noqa: ANN202
@@ -1246,7 +1358,7 @@ def test_closed_board_snapshot_refuses_drain_timeout_before_hash(
     )
 
     with pytest.raises(recovery.RecoveryRefused) as captured:
-        recovery._snapshot_closed_board_storage(
+        await recovery._snapshot_closed_board_storage(
             board_id=BOARD_ID,
             board_storage_root=tmp_path / "boards" / BOARD_ID,
             phase="unit-timeout",
@@ -1258,112 +1370,65 @@ def test_closed_board_snapshot_refuses_drain_timeout_before_hash(
     assert "type=TimeoutError" in str(captured.value)
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows Ladybug handle contract")
-def test_real_ladybug_close_releases_hash_handle_and_allows_explicit_reopen(
+@pytest.mark.asyncio
+async def test_closed_board_snapshot_drains_the_composed_provider_for_real_grafx(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import textwrap
+    import okto_grafx
+    from okto_pulse.community.adapters import graph_operation_guards as kg_runtime
 
-    source_root = Path(recovery.__file__).resolve().parents[2]
-    core_source_root = source_root.parent.parent / "okto_labs_pulse_core" / "src"
-    assert (core_source_root / "okto_pulse" / "core").is_dir()
-    child_home = tmp_path / "native-child"
-    script = textwrap.dedent(
-        """
-        import asyncio
-        from pathlib import Path
-        import sys
-        from okto_pulse.community import kg_recovery_only as recovery
-        from okto_pulse.core.ports import consolidation as core_consolidation
+    data_home = tmp_path.resolve()
+    board_root = data_home / "boards" / BOARD_ID
+    graph_path = board_root / "grafx" / GUARD_GENERATION
+    database = okto_grafx.connect(graph_path, page_size=GRAFX_PAGE_SIZE)
+    _store_module, store = _binding_store(data_home)
+    store.initialize_board_binding(
+        board_id=BOARD_ID,
+        backend="grafx",
+        generation=GUARD_GENERATION,
+        physical_path=graph_path,
+        page_size=GRAFX_PAGE_SIZE,
+        database=database,
+    )
+    database.close()
+    decision = recovery._require_authenticated_recoverable_backend(
+        data_home,
+        BOARD_ID,
+    )
+    assert decision.binding is not None
+    binding = decision.binding
+    close_calls: list[None] = []
 
-        assert Path(core_consolidation.__file__).resolve().is_relative_to(
-            Path(sys.argv[2]).resolve()
+    class _Lifecycle:
+        async def close(self, board_id: str | None = None) -> None:
+            assert board_id is None
+            close_calls.append(None)
+
+    @contextmanager
+    def routed_window(*_args, **_kwargs):  # noqa: ANN202
+        yield
+
+    monkeypatch.setattr(kg_runtime, "board_storage_mutation_window", routed_window)
+
+    snapshot = await recovery._snapshot_closed_board_storage(
+        board_id=BOARD_ID,
+        board_storage_root=board_root,
+        phase="grafx-real",
+        expected_binding=binding,
+        graph_lifecycle=_Lifecycle(),
+    )
+
+    assert close_calls == [None]
+    assert (
+        recovery._validate_board_storage_hashes(
+            snapshot,
+            code="grafx_real_snapshot_invalid",
+            binding=binding,
         )
-        assert hasattr(core_consolidation, 'ExactConsolidationAckReceipt')
-
-        async def main():
-            home = Path(sys.argv[1]).resolve()
-            for relative in ('data', 'rebuild', 'quarantine'):
-                (home / relative).mkdir(parents=True, exist_ok=True)
-            recovery._configure_explicit_environment(home)
-            from okto_pulse.community.main import create_community_app
-            from okto_pulse.community.adapters.kuzu_graph_store import (
-                CommunityKuzuGraphStore,
-            )
-            from okto_pulse.core.application.kg_runtime_access import (
-                resolve_graph_lifecycle,
-            )
-            from okto_pulse.core.composition import runtime_composition_scope
-
-            app = create_community_app()
-            composition = app.state.runtime_composition
-            transaction = app.state.mcp_cold_start_transaction
-            board_id = '11111111-1111-4111-8111-111111111111'
-            try:
-                with runtime_composition_scope(composition):
-                    lifecycle = resolve_graph_lifecycle()
-                    store = CommunityKuzuGraphStore()
-                    assert (await lifecycle.open(board_id)).opened
-                    assert store.get_schema_version(board_id)
-                    from okto_pulse.community.adapters.kg_runtime import (
-                        BoardConnection,
-                    )
-                    held_reader = BoardConnection(board_id)
-                    try:
-                        try:
-                            recovery._snapshot_closed_board_storage(
-                                board_id=board_id,
-                                board_storage_root=home / 'boards' / board_id,
-                                phase='native-proof-held-reader',
-                                drain_timeout_seconds=0.05,
-                            )
-                        except recovery.RecoveryRefused as exc:
-                            assert 'board_graph_close_before_snapshot_failed' in str(exc)
-                        else:
-                            raise AssertionError('active native reader was not refused')
-                    finally:
-                        held_reader.close()
-                    first = recovery._snapshot_closed_board_storage(
-                        board_id=board_id,
-                        board_storage_root=home / 'boards' / board_id,
-                        phase='native-proof-first'
-                    )
-                    assert set(first) == {'graph.lbug'}
-                    assert (await lifecycle.open(board_id)).opened
-                    assert store.get_schema_version(board_id)
-                    second = recovery._snapshot_closed_board_storage(
-                        board_id=board_id,
-                        board_storage_root=home / 'boards' / board_id,
-                        phase='native-proof-second'
-                    )
-                    assert set(second) == {'graph.lbug'}
-            finally:
-                with runtime_composition_scope(composition):
-                    await recovery._shutdown_composed_runtime(composition, None)
-                transaction.rollback()
-            post_teardown = recovery._snapshot_tree_hashes(
-                home / 'boards' / board_id
-            )
-            assert set(post_teardown) == {'graph.lbug'}
-            print('native_close_hash_reopen_teardown_ok')
-
-        asyncio.run(main())
-        """
+        == snapshot
     )
-    env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join((str(source_root), str(core_source_root)))
-    completed = subprocess.run(
-        [sys.executable, "-c", script, str(child_home), str(core_source_root)],
-        cwd=source_root.parent,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-
-    assert completed.returncode == 0, completed.stdout + completed.stderr
-    assert "native_close_hash_reopen_teardown_ok" in completed.stdout
+    assert "graph.lbug" not in snapshot
 
 
 def test_windows_reparse_flag_is_classified_as_filesystem_alias() -> None:
@@ -2756,7 +2821,7 @@ def test_exact_batch_preserves_card_source_ref_alias(
 
 
 @pytest.mark.asyncio
-async def test_exact_drain_retries_typed_marker_then_cancels_on_terminal(
+async def test_exact_drain_retries_transient_empty_and_typed_marker_then_cancels(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2796,6 +2861,8 @@ async def test_exact_drain_retries_typed_marker_then_cancels_on_terminal(
     )
     snapshots = iter(
         (
+            _exact_queue_snapshot(manifest_ref=manifest_ref, marker=None),
+            _exact_queue_snapshot(manifest_ref=manifest_ref, marker=None),
             _exact_queue_snapshot(manifest_ref=manifest_ref, marker=None),
             _exact_queue_snapshot(manifest_ref=manifest_ref, marker=retry_marker),
             _exact_queue_snapshot(manifest_ref=manifest_ref, marker=retry_marker),
@@ -2843,15 +2910,18 @@ async def test_exact_drain_retries_typed_marker_then_cancels_on_terminal(
             assert claim_scope == scope
             assert reservation_authority_probe() is True
             self.calls += 1
+            if self.calls == 1:
+                self.last_attempted_count = 0
+                return ExactConsolidationBatchResult(claim_scope=scope, rows=())
             self.last_attempted_count = 1
             disposition = (
                 ExactConsolidationDisposition.RETRY_SCHEDULED
-                if self.calls == 1
+                if self.calls == 2
                 else ExactConsolidationDisposition.TERMINAL_FAILURE
             )
             return ExactConsolidationBatchResult(
                 claim_scope=scope,
-                rows=(disposition_row(disposition, attempt=self.calls),),
+                rows=(disposition_row(disposition, attempt=self.calls - 1),),
             )
 
     reservation = SimpleNamespace(
@@ -2917,7 +2987,7 @@ async def test_exact_drain_retries_typed_marker_then_cancels_on_terminal(
         poll_seconds=0.001,
     )
 
-    assert processor.calls == 2
+    assert processor.calls == 3
     assert cancel_event.is_set()
     assert outcome.service_result.outcome == "failed"
     assert outcome.blocker is not None
@@ -3263,7 +3333,8 @@ async def test_exact_drain_validates_partial_ack_then_compensates_post_commit_er
     assert outcome.blocker.row_result == ack
 
 
-def test_exact_post_commit_blocker_passes_full_compensation_gate(
+@pytest.mark.asyncio
+async def test_exact_post_commit_blocker_passes_full_compensation_gate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3501,6 +3572,7 @@ def test_exact_post_commit_blocker_passes_full_compensation_gate(
         artifact_store=ArtifactStore(),
         single_writer_lock=no_lock,
         operation_reservation=no_lock,
+        graph_binding=None,
     )
     result = SimpleNamespace(
         run_id=run_id,
@@ -3552,10 +3624,14 @@ def test_exact_post_commit_blocker_passes_full_compensation_gate(
         "_quarantine_ids",
         lambda *_a, **_k: {"q_original", "q_backup"},
     )
+
+    async def closed_board_storage(**_kwargs):  # noqa: ANN003, ANN202
+        return {"graph.lbug": "a" * 64}
+
     monkeypatch.setattr(
         recovery,
         "_snapshot_closed_board_storage",
-        lambda **_kwargs: {"graph.lbug": "a" * 64},
+        closed_board_storage,
     )
     monkeypatch.setattr(
         recovery,
@@ -3592,7 +3668,7 @@ def test_exact_post_commit_blocker_passes_full_compensation_gate(
         lambda _db_path, **kwargs: relational_calls.append(kwargs["binding"]),
     )
 
-    recovery._assert_exact_blocking_compensation(
+    await recovery._assert_exact_blocking_compensation(
         bundle,
         SimpleNamespace(manifest_ref=manifest_ref),
         result,
@@ -4069,6 +4145,29 @@ def test_reservation_reproof_rejects_same_operation_successor() -> None:
         )
 
 
+def test_reservation_reproof_uses_one_complete_snapshot() -> None:
+    manifest_ref = "manifest_resume"
+    baseline = _waiter_reservation(
+        manifest_ref,
+        acquired_at_epoch=time.time(),
+    )
+
+    class _SingleSnapshotPort(_WaiterReservationPort):
+        def is_owner(self, **_kwargs):  # noqa: ANN201
+            raise AssertionError("reservation reproof must not inspect twice")
+
+    bundle = SimpleNamespace(operation_reservation=_SingleSnapshotPort(baseline))
+
+    observed = recovery._assert_reservation_exact(
+        bundle,
+        board_id=BOARD_ID,
+        manifest_ref=manifest_ref,
+        expected=baseline,
+    )
+
+    assert observed is baseline
+
+
 def test_fresh_reservation_requires_exact_invocation_owner() -> None:
     manifest_ref = "manifest_resume"
     not_before = time.time()
@@ -4481,13 +4580,22 @@ def _closed_baseline_inputs(tmp_path: Path, *, checkpoint=None):  # noqa: ANN001
     rebuild_root.mkdir()
     quarantine_root.mkdir()
     board_storage_root.mkdir(parents=True)
+    _write_binding(tmp_path.resolve(), backend="grafx", page_size=GRAFX_PAGE_SIZE)
+    decision = recovery._require_authenticated_recoverable_backend(
+        tmp_path.resolve(),
+        BOARD_ID,
+    )
+    assert decision.binding is not None
     receipt = _receipt(state="authorized")
     audit = _terminal_audit(
         receipt,
         outcome="failed",
         reason="lifecycle_failed",
     )
-    bundle = SimpleNamespace(artifact_store=_CheckpointArtifactStore(checkpoint))
+    bundle = SimpleNamespace(
+        artifact_store=_CheckpointArtifactStore(checkpoint),
+        graph_binding=decision.binding,
+    )
     return {
         "bundle": bundle,
         "receipt": receipt,
@@ -4635,9 +4743,9 @@ async def _seed_real_closed_exact_relational_state(
                         agent_id="system:historical_consolidation",
                         started_at=occurred_at,
                         committed_at=occurred_at,
-                        nodes_added=1,
+                        nodes_added=0,
                         nodes_updated=2,
-                        nodes_superseded=0,
+                        nodes_superseded=1,
                         edges_added=3,
                         summary_text="real closed exact",
                         content_hash=membership_hash,
@@ -4661,9 +4769,9 @@ async def _seed_real_closed_exact_relational_state(
                         payload={
                             "session_id": session_id,
                             "artifact_id": artifact_id,
-                            "nodes_added": 1,
+                            "nodes_added": 0,
                             "nodes_updated": 2,
-                            "nodes_superseded": 0,
+                            "nodes_superseded": 1,
                             "edges_added": 3,
                         },
                         retry_count=0,
@@ -5360,7 +5468,16 @@ def test_closed_archive_baseline_reproves_real_exact_relational_compensation(
     rebuild_root.mkdir()
     quarantine_root.mkdir()
     board_storage_root.mkdir(parents=True)
-    bundle = SimpleNamespace(artifact_store=_CheckpointArtifactStore(checkpoint))
+    _write_binding(tmp_path.resolve(), backend="grafx", page_size=GRAFX_PAGE_SIZE)
+    decision = recovery._require_authenticated_recoverable_backend(
+        tmp_path.resolve(),
+        BOARD_ID,
+    )
+    assert decision.binding is not None
+    bundle = SimpleNamespace(
+        artifact_store=_CheckpointArtifactStore(checkpoint),
+        graph_binding=decision.binding,
+    )
 
     def persist_effects() -> dict[str, str]:
         for effect_key, effect_payload in checkpoint["receipts"].items():
@@ -6211,6 +6328,13 @@ async def test_execute_under_lock_runs_archive_lane_with_exact_gate_contract(
     (data_home / "rebuild").mkdir()
     (data_home / "quarantine").mkdir()
     (data_home / "boards" / BOARD_ID).mkdir(parents=True)
+    _write_binding(data_home.resolve(), backend="grafx", page_size=GRAFX_PAGE_SIZE)
+    graph_decision = recovery._require_authenticated_recoverable_backend(
+        data_home.resolve(),
+        BOARD_ID,
+    )
+    assert graph_decision.binding is not None
+    graph_binding = graph_decision.binding
     receipt = _receipt(state="authorized")
     audit = _terminal_audit(
         receipt,
@@ -6383,6 +6507,7 @@ async def test_execute_under_lock_runs_archive_lane_with_exact_gate_contract(
             batch_size=1,
             reason="test archive lane",
         ),
+        graph_binding=graph_binding,
         data_home=data_home,
         db_path=db_path,
         owner_id="owner-1",
@@ -8072,7 +8197,7 @@ def test_entrypoint_hash_binds_metadata_and_launcher(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    metadata_path = Path("okto_pulse-0.3.2.dist-info/entry_points.txt")
+    metadata_path = Path("okto_pulse-0.3.3.dist-info/entry_points.txt")
     launcher_path = Path("bin/okto-pulse-kg-recovery-only.exe")
     (tmp_path / metadata_path).parent.mkdir(parents=True)
     (tmp_path / launcher_path).parent.mkdir(parents=True)
@@ -8130,50 +8255,98 @@ def test_installed_wheel_launcher_allows_self_and_denies_second_launcher(
     dist_dir = tmp_path / "dist"
     venv_dir = tmp_path / "venv"
     data_home = tmp_path / "copy"
+    core_repo_raw = os.environ.get("OKTO_PULSE_CORE_REPO", "").strip()
+    grafx_repo_raw = (
+        os.environ.get("OKTO_E2E_GRAFX_REPO", "").strip()
+        or os.environ.get("OKTO_PULSE_GRAFX_REPO", "").strip()
+    )
+    assert core_repo_raw, "OKTO_PULSE_CORE_REPO must select the Core checkout"
+    assert grafx_repo_raw, (
+        "OKTO_E2E_GRAFX_REPO or OKTO_PULSE_GRAFX_REPO must select the Grafx checkout"
+    )
+    core_repo = Path(core_repo_raw).expanduser().resolve()
+    grafx_repo = Path(grafx_repo_raw).expanduser().resolve()
+    assert (core_repo / "src" / "okto_pulse" / "core").is_dir(), core_repo
+    assert (grafx_repo / "src" / "okto_grafx").is_dir(), grafx_repo
+
+    isolated_env = os.environ.copy()
+    isolated_env.pop("PYTHONPATH", None)
+    isolated_env.pop("PYTHONHOME", None)
+    isolated_env["UV_NO_PROGRESS"] = "1"
+    isolated_env["UV_OFFLINE"] = "1"
+    isolated_env["UV_PYTHON_DOWNLOADS"] = "never"
     dist_dir.mkdir()
     data_home.mkdir()
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "build",
-            "--wheel",
-            "--no-isolation",
-            "--outdir",
-            str(dist_dir),
-            ".",
-        ],
-        cwd=project_root,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=120,
+    uv = shutil.which("uv")
+    assert uv is not None, "uv is required to build the installed-wheel fixture"
+
+    def run_checked(command: list[str], *, timeout: float = 240) -> None:
+        completed = subprocess.run(
+            command,
+            cwd=tmp_path,
+            env=isolated_env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        assert completed.returncode == 0, completed.stdout + completed.stderr
+
+    def build_wheel(repo: Path, directory: Path, prefix: str) -> Path:
+        directory.mkdir(parents=True)
+        run_checked(
+            [
+                uv,
+                "build",
+                "--wheel",
+                "--offline",
+                "--no-python-downloads",
+                "--out-dir",
+                str(directory),
+                str(repo),
+            ]
+        )
+        wheels = sorted(directory.glob(f"{prefix}-*.whl"))
+        assert len(wheels) == 1, wheels
+        return wheels[0]
+
+    core_wheel = build_wheel(core_repo, dist_dir / "core", "okto_pulse_core")
+    grafx_wheel = build_wheel(grafx_repo, dist_dir / "grafx", "okto_grafx")
+    community_wheel = build_wheel(
+        project_root,
+        dist_dir / "community",
+        "okto_pulse",
     )
-    subprocess.run(
-        [sys.executable, "-m", "venv", "--system-site-packages", str(venv_dir)],
-        check=True,
-        capture_output=True,
-        text=True,
+    run_checked(
+        [
+            uv,
+            "venv",
+            "--no-project",
+            "--offline",
+            "--no-python-downloads",
+            "--python",
+            sys.executable,
+            str(venv_dir),
+        ],
         timeout=60,
     )
     venv_python = venv_dir / "Scripts" / "python.exe"
     launcher = venv_dir / "Scripts" / "okto-pulse-kg-recovery-only.exe"
-    wheel = next(dist_dir.glob("*.whl"))
-    subprocess.run(
+    run_checked(
         [
-            str(venv_python),
-            "-m",
+            uv,
             "pip",
             "install",
-            "--no-deps",
-            "--force-reinstall",
-            "--disable-pip-version-check",
-            str(wheel),
+            "--offline",
+            "--no-python-downloads",
+            "--strict",
+            "--python",
+            str(venv_python),
+            str(core_wheel),
+            str(grafx_wheel),
+            str(community_wheel),
         ],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=60,
+        timeout=180,
     )
     assert launcher.is_file()
     common = [
@@ -8189,8 +8362,17 @@ def test_installed_wheel_launcher_allows_self_and_denies_second_launcher(
         capture_output=True,
         text=True,
         timeout=60,
+        env=isolated_env,
     )
-    fingerprint = str(json.loads(inspected.stdout)["install_fingerprint"])
+    installed_payload = json.loads(inspected.stdout)
+    fingerprint = str(installed_payload["install_fingerprint"])
+    assert [item["name"] for item in installed_payload["distributions"]] == [
+        "okto-pulse-core",
+        "okto-pulse",
+        "okto-grafx",
+        "SQLAlchemy",
+        "aiosqlite",
+    ]
     receipt_path = tmp_path / "receipt.json"
     safe_rehearsal = [
         *common,
@@ -8210,8 +8392,21 @@ def test_installed_wheel_launcher_allows_self_and_denies_second_launcher(
         capture_output=True,
         text=True,
         timeout=60,
+        env=isolated_env,
     )
     assert self_only.returncode == 2
+    if "offline_listener_detected" in self_only.stdout:
+        # The installed fingerprint and real launcher have been exercised.
+        # Recovery must refuse an active workstation before process ancestry
+        # checks, even when --offline-port adds a separate fixture port.
+        # Do not stop the user's server or bypass this production guard just
+        # to reach the downstream second-launcher assertion.
+        assert not receipt_path.exists()
+        assert list(data_home.iterdir()) == []
+        pytest.skip(
+            "Installed launcher refused active listeners without effects; "
+            "second-launcher ancestry requires an offline workstation"
+        )
     assert "rehearsal_source_equals_target" in self_only.stdout
     assert "offline_pulse_process_detected" not in self_only.stdout
     assert not receipt_path.exists()
@@ -8221,6 +8416,7 @@ def test_installed_wheel_launcher_allows_self_and_denies_second_launcher(
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         creationflags=0x08000000 | 0x00000004,  # NO_WINDOW | CREATE_SUSPENDED
+        env=isolated_env,
     )
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     ntdll = ctypes.WinDLL("ntdll")
@@ -8240,6 +8436,7 @@ def test_installed_wheel_launcher_allows_self_and_denies_second_launcher(
             capture_output=True,
             text=True,
             timeout=60,
+            env=isolated_env,
         )
         assert denied.returncode == 2
         assert "offline_pulse_process_detected" in denied.stdout
@@ -8254,3 +8451,941 @@ def test_installed_wheel_launcher_allows_self_and_denies_second_launcher(
         except subprocess.TimeoutExpired:
             blocker.kill()
             blocker.wait(timeout=10)
+
+
+# --- authenticated Board backend gate --------------------------------------
+#
+# The binding is the only routing authority. Both supported providers proceed;
+# missing, malformed or changed authority refuses before receipt consumption,
+# serve lock, schema installation or runtime open.
+
+
+GUARD_GENERATION = "generation-0001"
+GRAFX_PAGE_SIZE = 8192
+
+
+class _ReachedTheLegacyPath(RuntimeError):
+    """Raised by the first post-guard step so passing the gate is observable."""
+
+
+def _binding_store(data_home: Path):
+    from okto_pulse.community.adapters import graph_backend_binding as store_module
+
+    return store_module, store_module.CommunityGraphBackendBindingStore(data_home)
+
+
+def _board_root(data_home: Path, board_id: str = BOARD_ID) -> Path:
+    return data_home / "boards" / board_id
+
+
+def _write_binding(
+    data_home: Path,
+    *,
+    backend: str,
+    board_id: str = BOARD_ID,
+    generation: str = GUARD_GENERATION,
+    physical_path: Path | None = None,
+    page_size: int | None = None,
+    body_edit: Mapping[str, object] | None = None,
+    document_edit: Mapping[str, object] | None = None,
+    drop_keys: tuple[str, ...] = (),
+) -> Path:
+    """Publish a binding through the store's own body/digest/writer code.
+
+    Going through the real store is the point: it makes these documents the ones
+    Pulse actually writes, so the executor's mirrored reader is tested against
+    the original rather than against my reading of it.  ``body_edit`` changes the
+    body BEFORE the digest (hash-consistent but possibly meaningless), while
+    ``document_edit`` changes it after (the digest no longer matches).
+    """
+
+    store_module, store = _binding_store(data_home)
+    root = store.root
+    if physical_path is None:
+        physical_path = (
+            root / "boards" / board_id / "grafx" / generation
+            if backend == "grafx"
+            else root / "boards" / board_id / "graph.lbug"
+        )
+    body = store._body(
+        scope="board",
+        scope_id=board_id,
+        backend=backend,
+        generation=generation,
+        physical_path=Path(physical_path),
+        page_size=page_size,
+    )
+    if body_edit:
+        body = {**body, **body_edit}
+    document = {**body, "binding_sha256": store_module._binding_sha256(body)}
+    if document_edit:
+        document = {**document, **document_edit}
+    for key in drop_keys:
+        document.pop(key, None)
+    path = root / "boards" / board_id / store_module.BOARD_BINDING_FILENAME
+    store._publish_initial(path, body=document)
+    return path
+
+
+def _write_binding_bytes(
+    data_home: Path, content: bytes, board_id: str = BOARD_ID
+) -> Path:
+    from okto_pulse.community.adapters import graph_backend_binding as store_module
+
+    path = _board_root(data_home, board_id) / store_module.BOARD_BINDING_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return path
+
+
+def _make_junction(link: Path, target: Path) -> bool:
+    """Create a directory junction, or report that this platform cannot."""
+
+    if os.name != "nt":
+        return False
+    target.mkdir(parents=True, exist_ok=True)
+    link.parent.mkdir(parents=True, exist_ok=True)
+    completed = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed.returncode == 0 and recovery._is_filesystem_alias(link)
+
+
+def _drive_execute(
+    monkeypatch: pytest.MonkeyPatch,
+    data_home: Path,
+    *,
+    effects: list[str],
+    rehearsal_copy_of: Path | None = None,
+) -> int:
+    """Run the real CLI with every step after the guard replaced by a seam.
+
+    Nothing downstream of the gate is allowed to run for real.  Each seam
+    appends its own name and then raises, so a refusal that reaches the caller
+    with an empty ``effects`` list is a positive statement that no receipt was
+    consumed, no serve lock taken, no schema installed and no runtime opened.
+    """
+
+    evidence = recovery.InstallEvidence(
+        fingerprint=INSTALL_HASH,
+        distributions=(),
+        runtime=(("python_version", "test"),),
+    )
+    monkeypatch.setattr(recovery, "_install_evidence", lambda **_kwargs: evidence)
+    # The read-only offline gates run before the guard and must not make these
+    # tests depend on the ports and processes of the machine running them.
+    monkeypatch.setattr(recovery, "_assert_ports_offline", lambda *_a, **_k: None)
+    monkeypatch.setattr(recovery, "_assert_no_pulse_processes", lambda *_a, **_k: None)
+
+    def _seam(name: str):
+        def _record(*_args: object, **_kwargs: object) -> object:
+            effects.append(name)
+            raise _ReachedTheLegacyPath(name)
+
+        return _record
+
+    for name in (
+        "_resolve_external_existing_file",
+        "_assert_rehearsal_copy",
+        "_validate_rehearsal_attestation",
+        "_register_live_consumption",
+        "_configure_explicit_environment",
+        "_execute_under_serve_lock",
+    ):
+        monkeypatch.setattr(recovery, name, _seam(name))
+
+    argv = [
+        "--data-home",
+        str(data_home),
+        "--board-id",
+        BOARD_ID,
+        "--expected-install-fingerprint",
+        INSTALL_HASH,
+    ]
+    if rehearsal_copy_of is None:
+        argv += ["--execute", "--rehearsal-receipt", str(data_home.parent / "r.json")]
+    else:
+        argv += [
+            "--rehearsal-copy-of",
+            str(rehearsal_copy_of),
+            "--rehearsal-receipt-out",
+            str(data_home.parent / "out.json"),
+        ]
+    return recovery.main(argv)
+
+
+def _refusal(capsys: pytest.CaptureFixture[str]) -> str:
+    payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["event"] == "offline_recovery_refused"
+    return str(payload["error"])
+
+
+@pytest.fixture
+def guard_home(tmp_path: Path) -> Path:
+    home = tmp_path / "pulse-home"
+    (home / "data").mkdir(parents=True)
+    (home / "boards" / BOARD_ID).mkdir(parents=True)
+    return home.resolve()
+
+
+def test_an_authentic_grafx_binding_reaches_the_provider_neutral_path(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (guard_home / "boards" / BOARD_ID / "grafx" / GUARD_GENERATION).mkdir(parents=True)
+    _write_binding(guard_home, backend="grafx", page_size=GRAFX_PAGE_SIZE)
+    effects: list[str] = []
+
+    with pytest.raises(_ReachedTheLegacyPath):
+        _drive_execute(monkeypatch, guard_home, effects=effects)
+
+    assert effects == ["_resolve_external_existing_file"]
+
+
+def test_a_grafx_board_reaches_the_rehearsal_copy_path_too(
+    guard_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (guard_home / "boards" / BOARD_ID / "grafx" / GUARD_GENERATION).mkdir(parents=True)
+    _write_binding(guard_home, backend="grafx", page_size=GRAFX_PAGE_SIZE)
+    source = tmp_path / "live-home"
+    (source / "data").mkdir(parents=True)
+    effects: list[str] = []
+
+    with pytest.raises(_ReachedTheLegacyPath):
+        _drive_execute(
+            monkeypatch,
+            guard_home,
+            effects=effects,
+            rehearsal_copy_of=source.resolve(),
+        )
+
+    assert effects == ["_assert_rehearsal_copy"]
+
+
+def test_grafx_storage_without_a_binding_refuses_before_any_durable_effect(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Canonical Grafx storage with no binding means a decision was made somewhere
+    # this executor cannot see; assuming Ladybug would recover the wrong database.
+    (guard_home / "boards" / BOARD_ID / "grafx" / GUARD_GENERATION).mkdir(parents=True)
+    effects: list[str] = []
+
+    exit_code = _drive_execute(monkeypatch, guard_home, effects=effects)
+
+    assert exit_code == 2
+    assert _refusal(capsys) == "offline_recovery_backend_binding_missing"
+    assert effects == []
+    # And the guard did not adopt or initialize a binding to settle the question.
+    from okto_pulse.community.adapters import graph_backend_binding as store_module
+
+    assert not (_board_root(guard_home) / store_module.BOARD_BINDING_FILENAME).exists()
+
+
+def test_an_empty_grafx_directory_is_still_refused(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Isolated or coexisting, present is present: the guard does not try to judge
+    # whether the storage is usable, only whether it exists.
+    (guard_home / "boards" / BOARD_ID / "grafx").mkdir(parents=True)
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert _refusal(capsys) == "offline_recovery_backend_binding_missing"
+    assert effects == []
+
+
+def test_a_board_with_no_binding_and_no_storage_reaches_administrative_adoption(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    effects: list[str] = []
+
+    with pytest.raises(_ReachedTheLegacyPath):
+        _drive_execute(monkeypatch, guard_home, effects=effects)
+
+    assert effects == ["_resolve_external_existing_file"]
+
+
+def test_an_unbound_ladybug_primary_reaches_administrative_adoption(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (_board_root(guard_home) / "graph.lbug").write_bytes(b"legacy graph")
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+
+    assert effects == []
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "graph.lbug.wal",
+        "graph.kuzu",
+        "unknown-storage",
+    ),
+)
+def test_an_ambiguous_unbound_board_refuses_before_any_durable_effect(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    relative: str,
+) -> None:
+    (_board_root(guard_home) / relative).write_bytes(b"ambiguous")
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+
+    assert _refusal(capsys) == "offline_recovery_backend_binding_missing"
+    assert effects == []
+
+
+def test_an_authentic_ladybug_binding_written_by_the_store_runs_the_legacy_path(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Published by the real initializer, physical database and all, so this is
+    # the exact document Pulse writes for a Ladybug board.
+    (guard_home / "boards" / BOARD_ID / "graph.lbug").write_bytes(b"")
+    _store_module, store = _binding_store(guard_home)
+    store.initialize_board_binding(
+        board_id=BOARD_ID,
+        backend="ladybug",
+        generation=GUARD_GENERATION,
+        physical_path=guard_home / "boards" / BOARD_ID / "graph.lbug",
+    )
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+
+    assert effects == []
+
+
+def test_an_authentic_ladybug_binding_decides_even_beside_grafx_storage(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The storage probe exists only to cover the case where nothing recorded a
+    # decision.  An authentic binding IS that record, so it wins.
+    (guard_home / "boards" / BOARD_ID / "grafx" / GUARD_GENERATION).mkdir(parents=True)
+    _write_binding(guard_home, backend="ladybug")
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+
+    assert effects == []
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (b"{ not json", "offline_recovery_backend_binding_invalid_json"),
+        (b"[]", "offline_recovery_backend_binding_not_object"),
+        (b"\xff\xfe binary", "offline_recovery_backend_binding_invalid_json"),
+        (
+            b'{"backend": "ladybug", "backend": "grafx"}',
+            "offline_recovery_backend_binding_duplicate_key:backend",
+        ),
+        (b"{}", "offline_recovery_backend_binding_shape_invalid"),
+    ],
+)
+def test_a_malformed_binding_fails_closed_without_any_durable_effect(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    content: bytes,
+    expected: str,
+) -> None:
+    _write_binding_bytes(guard_home, content)
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert _refusal(capsys) == expected
+    assert effects == []
+
+
+def test_an_oversized_binding_is_refused_without_reading_it_whole(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_binding_bytes(guard_home, b"{" + b" " * (16 * 1024 + 1) + b"}")
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert _refusal(capsys).startswith("offline_recovery_backend_binding_too_large")
+    assert effects == []
+
+
+def test_a_tampered_binding_is_refused_rather_than_read_for_its_backend(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Ladybug document, digest left behind, backend rewritten to grafx.  An
+    # unauthentic document is not evidence of anything, so it is not consulted.
+    _write_binding(guard_home, backend="ladybug", document_edit={"backend": "grafx"})
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert _refusal(capsys) == "offline_recovery_backend_binding_digest_mismatch"
+    assert effects == []
+
+
+@pytest.mark.parametrize(
+    ("document_edit", "expected"),
+    [
+        (
+            {"binding_sha256": "not-a-digest"},
+            "offline_recovery_backend_binding_digest_invalid",
+        ),
+        (
+            {"binding_sha256": None},
+            "offline_recovery_backend_binding_digest_invalid",
+        ),
+        (
+            {"unexpected": "extra"},
+            "offline_recovery_backend_binding_shape_invalid",
+        ),
+    ],
+)
+def test_a_binding_of_the_wrong_shape_fails_closed(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    document_edit: dict[str, object],
+    expected: str,
+) -> None:
+    _write_binding(guard_home, backend="ladybug", document_edit=document_edit)
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert _refusal(capsys) == expected
+    assert effects == []
+
+
+def test_a_binding_missing_a_key_fails_closed(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_binding(guard_home, backend="ladybug", drop_keys=("page_size",))
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert _refusal(capsys) == "offline_recovery_backend_binding_shape_invalid"
+    assert effects == []
+
+
+# The digest is self-contained rather than a signature, so every one of these
+# documents hashes correctly and is still refused on its meaning.
+@pytest.mark.parametrize(
+    ("backend", "body_edit", "expected"),
+    [
+        (
+            "ladybug",
+            {"page_size": 8192},
+            "offline_recovery_backend_binding_page_size_not_null",
+        ),
+        (
+            "grafx",
+            {"page_size": None},
+            "offline_recovery_backend_binding_page_size_invalid",
+        ),
+        (
+            "grafx",
+            {"page_size": 5000},
+            "offline_recovery_backend_binding_page_size_invalid",
+        ),
+        (
+            "grafx",
+            {"page_size": 1024},
+            "offline_recovery_backend_binding_page_size_invalid",
+        ),
+        (
+            "ladybug",
+            {"backend": "kuzu"},
+            "offline_recovery_backend_binding_backend_invalid",
+        ),
+        (
+            "ladybug",
+            {"binding_format": "okto-pulse-community-graph-binding/2"},
+            "offline_recovery_backend_binding_format_unsupported",
+        ),
+        (
+            "ladybug",
+            {"scope": "global"},
+            "offline_recovery_backend_binding_scope_mismatch",
+        ),
+        (
+            "ladybug",
+            {"scope_id": "00000000-0000-4000-8000-000000000000"},
+            "offline_recovery_backend_binding_scope_mismatch",
+        ),
+        (
+            "ladybug",
+            {"generation": "con"},
+            "offline_recovery_backend_binding_generation_not_portable",
+        ),
+        (
+            "ladybug",
+            {"generation": ".."},
+            "offline_recovery_backend_binding_generation_invalid",
+        ),
+        (
+            "ladybug",
+            {"generation": 7},
+            "offline_recovery_backend_binding_generation_invalid",
+        ),
+        (
+            "ladybug",
+            {"physical_path": f"boards/{BOARD_ID}/grafx/{GUARD_GENERATION}"},
+            "offline_recovery_backend_binding_physical_path_not_canonical",
+        ),
+        (
+            "ladybug",
+            {"physical_path": f"boards/{BOARD_ID}/graph.kuzu"},
+            "offline_recovery_backend_binding_physical_path_not_canonical",
+        ),
+        (
+            "ladybug",
+            {"physical_path": "../outside/graph.lbug"},
+            "offline_recovery_backend_binding_physical_path_invalid",
+        ),
+        (
+            "ladybug",
+            {"physical_path": "/absolute/graph.lbug"},
+            "offline_recovery_backend_binding_physical_path_invalid",
+        ),
+        (
+            "ladybug",
+            {"physical_path": f"boards\\{BOARD_ID}\\graph.lbug"},
+            "offline_recovery_backend_binding_physical_path_invalid",
+        ),
+        (
+            "ladybug",
+            {"physical_path": "global/graph.lbug"},
+            "offline_recovery_backend_binding_physical_path_scope_mismatch",
+        ),
+        (
+            "grafx",
+            {"physical_path": f"boards/{BOARD_ID}/grafx/other-generation"},
+            "offline_recovery_backend_binding_physical_path_not_canonical",
+        ),
+    ],
+)
+def test_a_hash_consistent_but_meaningless_binding_still_fails_closed(
+    guard_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    backend: str,
+    body_edit: dict[str, object],
+    expected: str,
+) -> None:
+    if backend == "ladybug" and not any(
+        key in body_edit for key in ("format", "binding_format", "scope", "scope_id")
+    ):
+        expected = "offline_recovery_backend_binding_backend_invalid"
+    page_size = GRAFX_PAGE_SIZE if backend == "grafx" else None
+    _write_binding(
+        guard_home, backend=backend, page_size=page_size, body_edit=body_edit
+    )
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert _refusal(capsys).startswith(expected)
+    assert effects == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="directory junctions are Windows-only")
+def test_a_junctioned_board_directory_is_refused_without_reading_it(
+    guard_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A junction must be refused, not followed out of the data home.
+
+    The junction target holds a perfectly valid Ladybug binding.  If the guard
+    followed the reparse point it would read that document and let the run
+    proceed, so the refusal -- and the empty effect log -- is the proof that it
+    never left the data home.
+    """
+
+    external = tmp_path / "external-board"
+    outside_home = tmp_path / "outside-home"
+    (outside_home / "boards" / BOARD_ID).mkdir(parents=True)
+    (outside_home / "boards" / BOARD_ID / "graph.lbug").write_bytes(b"")
+    _write_binding(outside_home.resolve(), backend="ladybug")
+    external.mkdir()
+    shutil.copy2(
+        outside_home / "boards" / BOARD_ID / "graph_backend_binding.json",
+        external / "graph_backend_binding.json",
+    )
+
+    board_root = _board_root(guard_home)
+    shutil.rmtree(board_root)
+    if not _make_junction(board_root, external):
+        pytest.skip("this environment cannot create a directory junction")
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert _refusal(capsys).startswith("offline_recovery_backend_binding_alias_refused")
+    assert effects == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="directory junctions are Windows-only")
+def test_a_missing_binding_refuses_before_a_grafx_junction_is_followed(
+    guard_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # With no binding there is no authority to inspect any candidate backend
+    # path, including a Grafx junction outside the data home.
+    if not _make_junction(
+        _board_root(guard_home) / "grafx", tmp_path / "external-grafx"
+    ):
+        pytest.skip("this environment cannot create a directory junction")
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert _refusal(capsys) == "offline_recovery_backend_binding_missing"
+    assert effects == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="directory junctions are Windows-only")
+def test_a_binding_whose_physical_path_crosses_a_junction_is_refused(
+    guard_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The document is authentic and lexically canonical, but the path it names
+    # only reaches its target through a reparse point.
+    board_root = _board_root(guard_home)
+    _write_binding(guard_home, backend="grafx", page_size=GRAFX_PAGE_SIZE)
+    (board_root / "grafx" / GUARD_GENERATION).unlink(missing_ok=True)
+    if not _make_junction(
+        board_root / "grafx" / GUARD_GENERATION, tmp_path / "external-lbug"
+    ):
+        pytest.skip("this environment cannot create a directory junction")
+    effects: list[str] = []
+
+    assert _drive_execute(monkeypatch, guard_home, effects=effects) == 2
+    assert (
+        _refusal(capsys)
+        == "offline_recovery_backend_binding_physical_path_alias_refused"
+    )
+    assert effects == []
+
+
+def test_the_mirrored_binding_rules_match_the_binding_store(tmp_path: Path) -> None:
+    """Pin the executor's mirror to the module it deliberately duplicates.
+
+    The guard cannot import the binding store: the store imports
+    ``okto_pulse.community.config``, and the guard runs before the explicit
+    environment is frozen.  This test carries the coupling instead, so the two
+    cannot drift apart silently.
+    """
+
+    from okto_pulse.community import config as community_config
+    from okto_pulse.community.adapters import graph_backend_binding as store_module
+
+    assert recovery._BOARD_BINDING_FILENAME == store_module.BOARD_BINDING_FILENAME
+    assert recovery._BINDING_FORMAT == store_module.BINDING_FORMAT
+    assert recovery._BINDING_MAX_BYTES == store_module.MAX_BINDING_BYTES
+    assert recovery._BINDING_KEYS == store_module._BINDING_KEYS
+    assert recovery._BINDING_BACKENDS == {"grafx"}
+    assert recovery._BINDING_BACKENDS <= store_module._BACKENDS
+    assert recovery._BINDING_PORTABLE_FORBIDDEN == (
+        store_module._PORTABLE_SEGMENT_FORBIDDEN
+    )
+    assert recovery._BINDING_WINDOWS_RESERVED == store_module._WINDOWS_RESERVED_SEGMENTS
+    assert recovery._BINDING_GRAFX_MIN_PAGE_SIZE == (
+        community_config.PULSE_GRAFX_MIN_PAGE_SIZE
+    )
+    assert recovery._BINDING_GRAFX_MAX_PAGE_SIZE == (
+        community_config.PULSE_GRAFX_MAX_PAGE_SIZE
+    )
+
+    home = (tmp_path / "digest-home").resolve()
+    (home / "boards" / BOARD_ID).mkdir(parents=True)
+    _store_module, store = _binding_store(home)
+    body = store._body(
+        scope="board",
+        scope_id=BOARD_ID,
+        backend="grafx",
+        generation=GUARD_GENERATION,
+        physical_path=home / "boards" / BOARD_ID / "grafx" / GUARD_GENERATION,
+        page_size=GRAFX_PAGE_SIZE,
+    )
+    # Same body, same digest -- computed by two independent implementations.
+    assert recovery._binding_digest(body) == store_module._binding_sha256(body)
+
+
+def test_the_backend_guard_precedes_every_durable_step_in_execute() -> None:
+    # A source-order check to complement the behavioural proofs above: the
+    # seams show that nothing ran, this shows there is no later path that could.
+    source = inspect.getsource(recovery._execute)
+    guard = source.index("_require_authenticated_recoverable_backend(")
+    for later in (
+        "if args.rehearsal_copy_of:",
+        "_register_live_consumption(",
+        "_configure_explicit_environment(",
+        "    acquire_serve_lock,",
+        "with acquire_serve_lock(settings) as serve_lock:",
+    ):
+        assert guard < source.index(later), later
+
+
+def test_terminal_graph_proofs_use_only_composed_provider_facades() -> None:
+    source = inspect.getsource(recovery._assert_terminal_gates)
+
+    assert "resolve_graph_lifecycle" in source
+    assert "resolve_graph_schema_manager" in source
+    assert "CommunityKuzuGraphStore" not in source
+    assert '"graph.lbug"' not in source
+
+
+def test_a_frozen_binding_refuses_an_authentic_route_replacement(
+    guard_home: Path,
+) -> None:
+    graph = _board_root(guard_home) / "graph.lbug"
+    graph.write_bytes(b"closed graph")
+    binding_path = _write_binding(
+        guard_home, backend="grafx", page_size=GRAFX_PAGE_SIZE
+    )
+    decision = recovery._require_authenticated_recoverable_backend(
+        guard_home,
+        BOARD_ID,
+    )
+    assert decision.binding is not None
+    frozen = decision.binding
+    binding_path.unlink()
+    (_board_root(guard_home) / "grafx" / GUARD_GENERATION).mkdir(parents=True)
+    _write_binding(
+        guard_home,
+        backend="grafx",
+        page_size=GRAFX_PAGE_SIZE,
+        generation="new-generation",
+    )
+
+    with pytest.raises(
+        recovery.RecoveryRefused,
+        match="offline_recovery_backend_binding_changed",
+    ):
+        recovery._revalidate_board_binding(frozen)
+
+
+def test_the_backend_decision_opens_nothing_and_writes_nothing(
+    guard_home: Path,
+) -> None:
+    """The decision must leave the board exactly as it found it."""
+
+    (guard_home / "boards" / BOARD_ID / "grafx" / GUARD_GENERATION).mkdir(parents=True)
+    _write_binding(guard_home, backend="grafx", page_size=GRAFX_PAGE_SIZE)
+    before = recovery._snapshot_tree_hashes(guard_home)
+
+    decision = recovery._require_authenticated_recoverable_backend(
+        guard_home,
+        BOARD_ID,
+    )
+
+    assert decision.binding is not None
+    assert decision.binding.backend == "grafx"
+    assert recovery._snapshot_tree_hashes(guard_home) == before
+
+
+class _RouteAdministrativeLock:
+    def __init__(self, name: str, events: list[tuple[str, object]]) -> None:
+        self.name = name
+        self.events = events
+        self.token = f"{name}-token"
+        self.owned = False
+
+    def inspect(self, *, board_id: str):  # noqa: ANN201
+        self.events.append((f"{self.name}.inspect", board_id))
+        return None
+
+    def acquire(self, **kwargs: object):  # noqa: ANN201
+        self.events.append((f"{self.name}.acquire", dict(kwargs)))
+        self.owned = True
+        return SimpleNamespace(
+            acquired=True,
+            owner_token=self.token,
+            admin_lane=kwargs.get("admin_lane"),
+        )
+
+    def renew(self, **kwargs: object) -> bool:
+        self.events.append((f"{self.name}.renew", dict(kwargs)))
+        return self.owned and kwargs.get("owner_token") == self.token
+
+    def release(self, **kwargs: object) -> bool:
+        self.events.append((f"{self.name}.release", dict(kwargs)))
+        matched = self.owned and kwargs.get("owner_token") == self.token
+        self.owned = False
+        return matched
+
+
+@pytest.mark.parametrize(
+    ("legacy_primary", "expected_method"),
+    ((False, "initialize"),),
+)
+def test_unbound_route_is_published_only_inside_the_administrative_lane(
+    guard_home: Path,
+    legacy_primary: bool,
+    expected_method: str,
+) -> None:
+    graph = _board_root(guard_home) / "grafx" / "generation-1"
+    if legacy_primary:
+        graph.write_bytes(b"legacy")
+    decision = recovery._require_authenticated_recoverable_backend(
+        guard_home,
+        BOARD_ID,
+    )
+    assert decision.binding is None
+    assert decision.legacy_state == ("ladybug_present" if legacy_primary else "empty")
+    events: list[tuple[str, object]] = []
+    reservation = _RouteAdministrativeLock("reservation", events)
+    writer = _RouteAdministrativeLock("writer", events)
+    _store_module, store = _binding_store(guard_home)
+
+    def publish(method: str):  # noqa: ANN202
+        from okto_pulse.core.kg.write_barrier import require_write_token
+
+        guard = require_write_token(
+            BOARD_ID,
+            expected_owner_token=writer.token,
+        )
+        assert guard is not None
+        events.append(("route.publish", method))
+        if method == "initialize":
+            graph.mkdir(parents=True)
+            import okto_grafx
+
+            database = okto_grafx.connect(graph, page_size=GRAFX_PAGE_SIZE)
+        binding = store.initialize_board_binding(
+            board_id=BOARD_ID,
+            backend="grafx",
+            page_size=GRAFX_PAGE_SIZE,
+            database=database,
+            generation="generation-1",
+            physical_path=graph,
+        )
+        database.close()
+        return SimpleNamespace(
+            scope="board",
+            scope_id=BOARD_ID,
+            backend=binding.backend,
+            generation=binding.generation,
+            binding_path=binding.physical_path,
+            page_size=binding.page_size,
+            binding_sha256=binding.binding_sha256,
+        )
+
+    routed = SimpleNamespace(
+        adopt_existing_board_route=lambda _board_id: publish("adopt"),
+        initialize_board_route=lambda _board_id: publish("initialize"),
+    )
+    bundle = SimpleNamespace(
+        operation_reservation=reservation,
+        single_writer_lock=writer,
+        service=SimpleNamespace(lock_ttl_seconds=60),
+    )
+
+    binding = recovery._publish_recovery_board_route(
+        decision,
+        bundle=bundle,
+        actor_id="operator-1",
+        lifetime_probe=lambda: True,
+        routed_graph=routed,
+    )
+
+    assert binding.backend == "grafx"
+    assert events.count(("route.publish", expected_method)) == 1
+    assert all(
+        details["admin_lane"] is True
+        for event, details in events
+        if event.endswith(".acquire")
+    )
+    route_index = events.index(("route.publish", expected_method))
+    assert (
+        next(
+            index
+            for index, (event, _details) in enumerate(events)
+            if event == "writer.acquire"
+        )
+        < route_index
+    )
+    assert route_index < next(
+        index
+        for index, (event, _details) in enumerate(events)
+        if event == "writer.release"
+    )
+    assert writer.owned is False
+    assert reservation.owned is False
+
+
+def test_administrative_route_lane_releases_both_fences_when_publication_fails(
+    guard_home: Path,
+) -> None:
+    decision = recovery._require_authenticated_recoverable_backend(
+        guard_home,
+        BOARD_ID,
+    )
+    events: list[tuple[str, object]] = []
+    reservation = _RouteAdministrativeLock("reservation", events)
+    writer = _RouteAdministrativeLock("writer", events)
+    bundle = SimpleNamespace(
+        operation_reservation=reservation,
+        single_writer_lock=writer,
+        service=SimpleNamespace(lock_ttl_seconds=60),
+    )
+    routed = SimpleNamespace(
+        initialize_board_route=lambda _board_id: (_ for _ in ()).throw(
+            RuntimeError("publication-cut")
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="publication-cut"):
+        recovery._publish_recovery_board_route(
+            decision,
+            bundle=bundle,
+            actor_id="operator-1",
+            lifetime_probe=lambda: True,
+            routed_graph=routed,
+        )
+
+    assert writer.owned is False
+    assert reservation.owned is False
+    assert [event for event, _details in events if event.endswith(".release")] == [
+        "writer.release",
+        "reservation.release",
+    ]
+
+
+def test_route_publication_precedes_every_composed_graph_operation() -> None:
+    lane_source = inspect.getsource(recovery._execute_under_serve_lock)
+    composition = lane_source.index("app = create_community_app()")
+    publication = lane_source.index("active_binding = _publish_recovery_board_route(")
+    health = lane_source.index("raw_health = _offline_cold_graph_health(")
+    authorization = lane_source.index("await _authorize_governed_rebuild(")
+    assert composition < publication < health < authorization
+
+    publication_source = inspect.getsource(recovery._publish_recovery_board_route)
+    assert publication_source.count("admin_lane=True") == 2
+    assert "with under_safe_write(" in publication_source
+    assert "adopt_existing_board_route" in publication_source
+    assert "initialize_board_route" in publication_source
+    assert "CommunityKuzuGraphStore" not in publication_source

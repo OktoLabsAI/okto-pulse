@@ -85,12 +85,15 @@ async def _database_with_legacy_evidence(
     database_path: Path,
     *,
     evidence_count: int,
+    foreign_keys: bool = False,
 ):
     engine = create_async_engine(
         f"sqlite+aiosqlite:///{database_path.as_posix()}",
         connect_args={"timeout": 30},
     )
     async with engine.begin() as connection:
+        if foreign_keys:
+            await connection.exec_driver_sql("PRAGMA foreign_keys=ON")
         await connection.run_sync(Base.metadata.create_all)
         for manifest in (
             code_traceability_sqlite_trigger_manifest(),

@@ -1,9 +1,9 @@
 {
   "<unattributed>": 3,
-  "@typescript-eslint/no-explicit-any": 361,
+  "@typescript-eslint/no-explicit-any": 308,
   "@typescript-eslint/no-require-imports": 1,
   "@typescript-eslint/no-unused-vars": 2,
   "no-useless-escape": 3,
-  "react-hooks/exhaustive-deps": 62,
+  "react-hooks/exhaustive-deps": 50,
   "react-refresh/only-export-components": 26
 }

@@ -340,6 +340,8 @@ describe('SpecModal Activity tab', () => {
     ).toEqual([
       'Details',
       'Code Evidence Matrix',
+      'Delivery evidence',
+      'Project structure',
       'Tests',
       'Rules',
       'Dependencies',

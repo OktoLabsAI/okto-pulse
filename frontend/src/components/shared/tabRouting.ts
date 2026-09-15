@@ -65,6 +65,7 @@ export type RefinementModalSubtab =
 export type SpecModalTab =
   | 'details'
   | 'evidence-matrix'
+  | 'project-structure'
   | 'tests'
   | 'rules'
   | 'dependencies'
@@ -116,6 +117,7 @@ export type CardModalSubtab =
   | 'lineage'
   | 'requirements'
   | 'dependencies'
+  | 'project-structure'
   | 'execution-report'
   | 'task-validation'
   | 'policy-compliance';

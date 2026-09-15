@@ -100,8 +100,8 @@ def test_af33_community_adapters_cover_capstone_swap_surfaces() -> None:
         "src/okto_pulse/community/adapters/sqlalchemy_unit_of_work.py",
         "src/okto_pulse/community/adapters/sqlalchemy_repositories.py",
         "src/okto_pulse/community/adapters/relational_schema_lifecycle.py",
-        "src/okto_pulse/community/adapters/kuzu_graph_store.py",
-        "src/okto_pulse/community/adapters/global_discovery_runtime.py",
+        "src/okto_pulse/community/adapters/grafx_graph_store.py",
+        "src/okto_pulse/community/adapters/grafx_global_discovery_runtime.py",
         "src/okto_pulse/community/adapters/rebuild_audit_storage.py",
         "src/okto_pulse/community/adapters/storage.py",
         "src/okto_pulse/community/adapters/telemetry_store.py",
@@ -135,7 +135,7 @@ def test_af33_community_adapters_cover_capstone_swap_surfaces() -> None:
     assert adapter_files & community_inventory_paths
     for token in (
         "SQLite",
-        "LadybugDB/Kuzu",
+        "edition-owned graph adapters",
         "filesystem",
         "telemetry",
         "APScheduler",

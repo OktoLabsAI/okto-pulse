@@ -40,10 +40,14 @@ import { CanonicalPartitionIntegrityInspectorModal } from './CanonicalPartitionI
 import {
   getKGCognitivePendingItems,
   getKGHealth,
+  cancelHistorical,
+  getHistoricalProgress,
   runRebuildConfirm,
   runRebuildPreflight,
   runRebuildRun,
   type KGHealth,
+  type KGGraphStorageRoute,
+  type KGGraphStorageSnapshot,
   type KGCognitivePendingCounts,
   type CanonicalDebtSummary,
   type DecaySchedulerDiagnostics,
@@ -52,11 +56,15 @@ import {
   type RebuildDiagnostics,
   type RebuildRunResult,
   type StorageFootprintProxy,
+  type HistoricalProgress,
 } from '@/services/kg-health-api';
 import { triggerKGTick } from '@/services/kg-tick-api';
 import { KGHealthCognitivePendingPanel } from './KGHealthCognitivePendingPanel';
 import { CandidateDecisionPanel } from './CandidateDecisionPanel';
 import { usePermissions } from '@/hooks/usePermissions';
+import { GrafxBranding } from '@/components/shared/GrafxBranding';
+import { ReadinessHelp } from './ReadinessHelp';
+import { KGHealthOverview, KGHealthSectionHeading } from './KGHealthOverview';
 
 interface KGHealthViewProps {
   pollIntervalMs?: number;
@@ -84,6 +92,8 @@ export function KGHealthView({
   const canRunRebuildPreflight = policyReady && permissions.has('kg.operations.rebuild.preflight');
   const canRunRebuildConfirm = policyReady && permissions.has('kg.operations.rebuild.confirm');
   const canRunRebuild = policyReady && permissions.has('kg.operations.rebuild.run');
+  const canReadHistorical = policyReady && permissions.has('kg.operations.historical.read');
+  const canCancelHistorical = policyReady && permissions.has('kg.operations.historical.cancel');
   const canReadRuntime = policyReady && permissions.has('runtime.settings.read');
 
   const [data, setData] = useState<KGHealth | null>(null);
@@ -196,7 +206,7 @@ export function KGHealthView({
 
   return (
     <div
-      className="flex flex-col h-full bg-surface-50 dark:bg-surface-950"
+      className="flex min-h-0 flex-col h-full bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-100"
       data-testid="kg-health-view"
     >
       <HeaderBar
@@ -206,8 +216,10 @@ export function KGHealthView({
         onRefresh={handleRefresh}
         onClose={onClose}
         canReadCognitive={canReadCognitive}
+        grafxActive={data?.graph_storage?.board?.backend === 'grafx'}
       />
-      <div className="flex-1 overflow-auto p-6">
+      <div className="min-h-0 flex-1 overflow-auto" data-testid="kg-health-scroll-content">
+        <div className="mx-auto max-w-[1600px] space-y-6 px-4 py-5 sm:px-6 sm:py-6">
         {schemaMismatch && (
           <SchemaBanner
             expected={EXPECTED_KG_HEALTH_SCHEMA_VERSION}
@@ -224,30 +236,59 @@ export function KGHealthView({
         {data && (
           <>
             {error && <InlineErrorBanner message={error.message} />}
-            <RecoveryPanel
-              boardId={boardId}
-              graphState={data.graph_state ?? null}
-              discoveryState={data.discovery_state ?? null}
-              overallState={data.overall_state ?? null}
-              currentGenerationId={data.current_kg_generation_id ?? null}
-              classificationReason={data.classification_reason ?? null}
-              totalNodes={data.total_nodes}
-              pollIntervalMs={pollIntervalMs}
-              onCompleted={handleRefresh}
-              canPreflight={canRunRebuildPreflight}
-              canConfirm={canRunRebuildConfirm}
-              canRun={canRunRebuild}
-              canReadCognitive={canReadCognitive}
-            />
-            {canReadCognitive && (
-              <KGHealthCognitivePendingPanel
-                boardId={boardId}
-                selectedKgGenerationId={data.current_kg_generation_id ?? null}
-                pollIntervalMs={pollIntervalMs}
-              />
-            )}
-            {canReadCognitive && <CandidateDecisionPanel boardId={boardId} />}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+            <KGHealthOverview health={data} stale={Boolean(error)} />
+            <nav aria-label="KG Health sections" className="sticky top-0 z-20 flex flex-wrap gap-1 rounded-xl border border-slate-200 bg-white/95 p-1.5 shadow-sm backdrop-blur dark:border-slate-800 dark:bg-slate-900/95">
+              {[
+                ['overview', 'Overview'], ['processing', 'Processing & knowledge'],
+                ['diagnostics', 'Diagnostics'], ['recovery', 'Recovery'],
+              ].map(([id, label]) => (
+                <a key={id} href={`#kg-health-${id}`} className="rounded-lg px-3 py-2 text-sm font-medium text-slate-600 hover:bg-sky-50 hover:text-sky-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-sky-300">{label}</a>
+              ))}
+            </nav>
+            <section id="kg-health-processing" aria-labelledby="kg-health-processing-title" className="scroll-mt-28 space-y-4">
+              <KGHealthSectionHeading id="kg-health-processing-title" eyebrow="01 · Knowledge work" title="Processing & pending work"
+                description="Track work waiting to reach the graph. These queues describe processing, not database integrity, and their counts may overlap." />
+              <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
+                <QueueDeadLetterCard
+                  queueDepth={data.queue_depth}
+                  oldestPendingAgeS={data.oldest_pending_age_s}
+                  deadLetterCount={data.dead_letter_count}
+                  globalOutboxDeadLetterCount={
+                    data.operational_domains?.global_outbox_dead_letter?.count
+                    ?? data.global_outbox_dead_letter_count
+                    ?? 0
+                  }
+                />
+                <CanonicalDebtCard summary={data.canonical_debt ?? null} layerCounts={data.kg_layer_counts ?? null} diagnostics={data.rebuild_diagnostics ?? null} />
+              </div>
+              {canReadCognitive && (
+                <>
+                  <KGHealthCognitivePendingPanel
+                    boardId={boardId}
+                    selectedKgGenerationId={data.current_kg_generation_id ?? null}
+                    pollIntervalMs={pollIntervalMs}
+                  />
+                  <CandidateDecisionPanel boardId={boardId} />
+                </>
+              )}
+            </section>
+            <section id="kg-health-diagnostics" aria-labelledby="kg-health-diagnostics-title" className="scroll-mt-28">
+              <KGHealthSectionHeading id="kg-health-diagnostics-title" eyebrow="02 · Inspect & maintain" title="Diagnostics & maintenance"
+                description="Inspect integrity signals, storage usage and relevance scheduling. Running a tick recalculates relevance; it does not rebuild the graph." />
+              <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
+                <div className="min-w-0 space-y-4">
+                  <KGHealthCard
+                    totalNodes={data.total_nodes}
+                    defaultScoreCount={data.default_score_count}
+                    defaultScoreRatio={data.default_score_ratio}
+                    avgRelevance={data.avg_relevance}
+                    contradictWarnCount={data.contradict_warn_count}
+                    metricStatus={data.metric_status ?? null}
+                    boardId={boardId}
+                    healthIssues={data.health_issues ?? []}
+                  />
+                  <StorageFootprintCard proxy={data.storage_footprint_proxy ?? null} />
+                </div>
               <SchemaTickCard
                 schemaVersion={data.schema_version}
                 healthSchemaVersion={data.health_schema_version ?? data.schema_version}
@@ -265,37 +306,37 @@ export function KGHealthView({
                 canRunTick={canRunTick}
                 canOpenDecayTickSettings={canReadRuntime}
               />
-              <QueueDeadLetterCard
-                queueDepth={data.queue_depth}
-                oldestPendingAgeS={data.oldest_pending_age_s}
-                deadLetterCount={data.dead_letter_count}
-                globalOutboxDeadLetterCount={
-                  data.operational_domains?.global_outbox_dead_letter?.count
-                  ?? data.global_outbox_dead_letter_count
-                  ?? 0
-                }
-              />
-              <KGHealthCard
-                totalNodes={data.total_nodes}
-                defaultScoreCount={data.default_score_count}
-                defaultScoreRatio={data.default_score_ratio}
-                avgRelevance={data.avg_relevance}
-                contradictWarnCount={data.contradict_warn_count}
-                metricStatus={data.metric_status ?? null}
+              </div>
+            </section>
+            <section id="kg-health-recovery" aria-labelledby="kg-health-recovery-title" className="scroll-mt-28 rounded-2xl border border-amber-200 bg-amber-50/40 p-4 dark:border-amber-900/60 dark:bg-amber-950/10 sm:p-6">
+              <KGHealthSectionHeading id="kg-health-recovery-title" eyebrow="03 · Exceptional operation" title="Recovery & rebuild"
+                description="Use only after reviewing the diagnosis. Stopping historical recovery, resolving cognitive debt and rebuilding storage are different actions." />
+              <div className="mb-5 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-relaxed text-amber-900 dark:border-amber-900/70 dark:bg-amber-950/30 dark:text-amber-200">
+                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" aria-hidden />
+                <p><strong>Review before rebuilding.</strong> Preflight checks eligible sources; it does not start a rebuild. An actual rebuild promotes a new graph generation and can leave cognitive work pending. An absent rebuild generation alone is not a failure.</p>
+              </div>
+              <RecoveryPanel
                 boardId={boardId}
-                healthIssues={data.health_issues ?? []}
+                graphState={data.graph_state ?? null}
+                discoveryState={data.discovery_state ?? null}
+                overallState={data.overall_state ?? null}
+                currentGenerationId={data.current_kg_generation_id ?? null}
+                classificationReason={data.classification_reason ?? null}
+                totalNodes={data.total_nodes}
+                graphStorage={data.graph_storage ?? null}
+                pollIntervalMs={pollIntervalMs}
+                onCompleted={handleRefresh}
+                canPreflight={canRunRebuildPreflight}
+                canConfirm={canRunRebuildConfirm}
+                canRun={canRunRebuild}
+                canReadCognitive={canReadCognitive}
+                canReadHistorical={canReadHistorical}
+                canCancelHistorical={canCancelHistorical}
               />
-              <CanonicalDebtCard
-                summary={data.canonical_debt ?? null}
-                layerCounts={data.kg_layer_counts ?? null}
-                diagnostics={data.rebuild_diagnostics ?? null}
-              />
-              <StorageFootprintCard
-                proxy={data.storage_footprint_proxy ?? null}
-              />
-            </div>
+            </section>
           </>
         )}
+        </div>
       </div>
     </div>
   );
@@ -426,32 +467,36 @@ interface HeaderBarProps {
   onRefresh: () => void;
   onClose: () => void;
   canReadCognitive: boolean;
+  grafxActive: boolean;
 }
 
-function HeaderBar({ boardName, pollIntervalMs, lastFetchAt, onRefresh, onClose, canReadCognitive }: HeaderBarProps) {
+function HeaderBar({ boardName, pollIntervalMs, lastFetchAt, onRefresh, onClose, canReadCognitive, grafxActive }: HeaderBarProps) {
   const lastFetchLabel = lastFetchAt
     ? `last fetch ${Math.max(0, Math.floor((Date.now() - lastFetchAt.getTime()) / 1000))}s ago`
     : 'fetching...';
   const intervalLabel = `Polling ${Math.round(pollIntervalMs / 1000)}s`;
   return (
-    <div className="flex items-center justify-between border-b border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 px-6 py-3 shrink-0">
-      <div className="flex items-center gap-3">
-        <Activity className="text-emerald-500" aria-hidden />
-        <div>
-          <h1 className="text-lg font-bold text-surface-900 dark:text-white">KG Health Dashboard</h1>
-          <p className="text-xs text-surface-500 dark:text-surface-400">
+    <header className="shrink-0 border-b border-slate-200 bg-white px-4 py-4 dark:border-slate-800 dark:bg-slate-900 sm:px-6">
+      <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-4">
+      <div className="min-w-0 flex-1 basis-80">
+          <p className="mb-1 flex items-center gap-2 text-xs font-semibold text-sky-700 dark:text-sky-400"><Activity className="h-4 w-4" aria-hidden /> Knowledge Graph · Operations</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-white">KG Health Dashboard</h1>
+          <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Understand graph health, follow pending work and recover with confidence.</p>
+          <p className="mt-2 flex flex-wrap items-center gap-x-2 text-xs text-slate-500 dark:text-slate-400">
             Board: {boardName} · {intervalLabel} · {lastFetchLabel}
+            <ReadinessHelp label="About automatic refresh">This page refreshes observations while visible, without starting a rebuild or consolidation. Refresh does not retry failed jobs. If a refresh fails, previous data remains visible with a warning.</ReadinessHelp>
           </p>
-        </div>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-col gap-3 sm:items-end">
+        {grafxActive && <GrafxBranding />}
+      <div className="flex flex-wrap items-center gap-2">
         {canReadCognitive && (
           <button
             type="button"
             onClick={() =>
               window.dispatchEvent(new CustomEvent('okto:open-cognitive-action-center'))
             }
-            className="px-3 py-1.5 text-sm bg-violet-600 hover:bg-violet-700 text-white rounded-lg flex items-center gap-1.5"
+            className="px-3 py-2 text-sm font-medium bg-violet-600 hover:bg-violet-700 text-white rounded-lg flex items-center gap-1.5"
             aria-label="Open Cognitive Action Center"
             data-testid="kg-open-cognitive-action-center"
           >
@@ -461,7 +506,7 @@ function HeaderBar({ boardName, pollIntervalMs, lastFetchAt, onRefresh, onClose,
         <button
           type="button"
           onClick={onRefresh}
-          className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center gap-1.5"
+          className="px-3 py-2 text-sm font-medium border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg flex items-center gap-1.5"
           aria-label="Refresh KG data now"
         >
           <RefreshCw className="w-4 h-4" aria-hidden /> Refresh
@@ -469,12 +514,14 @@ function HeaderBar({ boardName, pollIntervalMs, lastFetchAt, onRefresh, onClose,
         <button
           type="button"
           onClick={onClose}
-          className="px-3 py-1.5 text-sm bg-surface-200 dark:bg-surface-700 hover:bg-surface-300 dark:hover:bg-surface-600 text-surface-900 dark:text-white rounded-lg flex items-center gap-1.5"
+          className="px-3 py-2 text-sm font-medium border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg flex items-center gap-1.5"
         >
           <ArrowLeft className="w-4 h-4" aria-hidden /> Back to Board
         </button>
       </div>
-    </div>
+      </div>
+      </div>
+    </header>
   );
 }
 
@@ -979,7 +1026,8 @@ interface StorageFootprintCardProps {
 
 function StorageFootprintCard({ proxy }: StorageFootprintCardProps) {
   const pct = proxy?.percentage ?? proxy?.high_water_mark_pct ?? null;
-  const pctLabel = typeof pct === 'number' ? `${pct.toFixed(1)}%` : 'unavailable';
+  const notApplicable = proxy?.status === 'available' && proxy.percentage_status === 'not_applicable';
+  const pctLabel = typeof pct === 'number' ? `${pct.toFixed(1)}%` : notApplicable ? 'Not applicable' : 'unavailable';
   const status = proxy?.status ?? 'unavailable';
   const totalBytes = proxy?.total_bytes ?? null;
   const maxBytes = proxy?.configured_max_db_size_bytes ?? null;
@@ -1013,12 +1061,13 @@ function StorageFootprintCard({ proxy }: StorageFootprintCardProps) {
           {pctLabel}
         </span>
       </Row>
-      <div className="h-2 rounded-full bg-surface-200 dark:bg-surface-700 overflow-hidden" aria-hidden>
+      {typeof pct === 'number' && <div className="h-2 rounded-full bg-surface-200 dark:bg-surface-700 overflow-hidden" aria-hidden>
         <div
           className={`h-full rounded-full ${tone}`}
-          style={{ width: `${Math.max(0, Math.min(100, pct ?? 0))}%` }}
+          style={{ width: `${Math.max(0, Math.min(100, pct))}%` }}
         />
-      </div>
+      </div>}
+      {notApplicable && <p className="text-xs text-surface-600 dark:text-surface-400">No storage limit configured. File size is available; a capacity percentage does not apply.</p>}
       <Row label="Files">
         <span className="text-xs text-surface-600 dark:text-surface-400">
           {bytesLabel}
@@ -1136,16 +1185,44 @@ interface CardProps {
   children: React.ReactNode;
 }
 
+const CARD_GUIDANCE: Record<string, { description: string; help: string }> = {
+  'Decay Scheduler': {
+    description: 'Keep relevance scores current.',
+    help: 'A tick recomputes relevance using the configured decay policy. It writes scores; it does not rebuild storage or retry consolidation. Scheduling settings and manual execution require their own permissions.',
+  },
+  'Queue & Dead Letter': {
+    description: 'Follow queued work and failures that need review.',
+    help: 'Consolidation and global outbox dead letters are different queues. Review the failure cause before redriving through the appropriate workflow. Refreshing this dashboard does not retry any item.',
+  },
+  'KG Health': {
+    description: 'Read integrity signals and graph telemetry.',
+    help: 'These are backend observations, not inferred health. An unavailable metric is not zero. Inspect reported issues before deciding whether maintenance or recovery is needed.',
+  },
+  'Canonical Debt': {
+    description: 'Identify updates still waiting for canonical materialization.',
+    help: 'Canonical debt tracks materialization obligations. It is separate from cognitive pending work and may refer to the same sources. Retryable and blocked entries require different handling; a rebuild does not automatically settle every obligation.',
+  },
+  'Storage Footprint Proxy': {
+    description: 'Monitor disk usage, not process memory.',
+    help: 'The footprint measures storage files, not RAM. When no finite quota is configured, a usage percentage is not applicable; that alone does not make the byte measurement unavailable.',
+  },
+};
+
 function Card({ title, testId, icon, children }: CardProps) {
+  const guidance = CARD_GUIDANCE[title];
   return (
     <section
-      className="bg-white dark:bg-surface-800 rounded-xl border border-surface-200 dark:border-surface-700 p-5 shadow-sm"
+      className="min-w-0 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900"
       data-testid={testId}
     >
-      <h2 className="text-sm font-semibold text-surface-500 dark:text-surface-400 uppercase tracking-wider mb-3 flex items-center gap-2">
-        {icon}
-        {title}
-      </h2>
+      <div className="mb-5 border-b border-slate-100 pb-4 dark:border-slate-800">
+        <div className="flex items-center gap-2">
+          <span className="rounded-lg bg-sky-50 p-2 text-sky-700 dark:bg-sky-500/10 dark:text-sky-400">{icon}</span>
+          <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{title}</h3>
+          {guidance && <ReadinessHelp label={`About ${title}`}>{guidance.help}</ReadinessHelp>}
+        </div>
+        {guidance && <p className="mt-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">{guidance.description}</p>}
+      </div>
       <div className="space-y-3">{children}</div>
     </section>
   );
@@ -1158,8 +1235,8 @@ interface RowProps {
 
 function Row({ label, children }: RowProps) {
   return (
-    <div className="flex items-baseline justify-between gap-3">
-      <span className="text-xs text-surface-500 dark:text-surface-400">{label}</span>
+    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+      <span className="text-xs text-slate-500 dark:text-slate-400">{label}</span>
       {children}
     </div>
   );
@@ -1215,16 +1292,13 @@ function formatBytes(value: number): string {
 // Recovery panel — KG-02 sm_a30278ad mockup
 // ---------------------------------------------------------------------------
 //
-// Single-page flow per the mockup: preflight summary + rebuild report aside,
-// inline reason input and one explicit "Confirm rebuild" button. No second
-// modal — the operator already sees all the destructive-op context on the
-// page (KG-02 FR3 explicit UI confirmation is satisfied by the destructive
-// red button + the reason input + the preflight context above it).
+// Single-page flow per the mockup: diagnostic preflight summary + rebuild
+// report aside, inline reason input and one explicit preparation action. The
+// Community runtime never starts destructive rebuild work online; the action
+// refreshes diagnostics and exposes the governed offline executor contract.
 //
-//   POST /kg/rebuild/preflight  ──▶  preflight_hash + manifest_ref
-//   POST /kg/rebuild/confirm    ──▶  confirmation_id (single-use TTL bound)
-//   POST /kg/rebuild/run        ──▶  RebuildRunResult (audit_ref + report_ref
-//                                    + promoted generation, KG-02.4 + .7)
+//   POST /kg/rebuild/preflight  ──▶  diagnostics + offline remediation
+//   confirm/run                  ──▶  never called in recovery_only_offline
 
 interface RecoveryPanelProps {
   boardId: string;
@@ -1234,12 +1308,15 @@ interface RecoveryPanelProps {
   currentGenerationId: string | null;
   classificationReason: string | null;
   totalNodes: number;
+  graphStorage: KGGraphStorageSnapshot | null;
   pollIntervalMs: number;
   onCompleted: () => void;
   canPreflight: boolean;
   canConfirm: boolean;
   canRun: boolean;
   canReadCognitive: boolean;
+  canReadHistorical: boolean;
+  canCancelHistorical: boolean;
 }
 
 interface RecoveryStatusView {
@@ -1298,7 +1375,7 @@ function cognitiveStateView(
     return {
       value: 'no generation',
       state: null,
-      subtitle: 'waiting for rebuild',
+      subtitle: 'no rebuild-linked generation',
       reportValue: 'not available',
       reportTone: 'default',
     };
@@ -1401,6 +1478,32 @@ function explainRecoveryState(state: string | null, reason: string | null): stri
   return `State is unknown because the health payload did not include a known KG state.${reasonText}`;
 }
 
+function graphBackendLabel(route: KGGraphStorageRoute | null): string {
+  if (route?.backend === 'grafx') return 'Okto Grafx';
+  if (route?.backend === 'ladybug') return 'Retired graph backend';
+  if (route?.binding_status === 'missing') return 'Not bound';
+  return 'Backend unavailable';
+}
+
+function graphStorageTooltip(
+  route: KGGraphStorageRoute | null,
+  role: 'board-local graph' | 'global discovery graph',
+): string {
+  if (!route || route.binding_status === 'unavailable') {
+    return `The ${role} backend is unavailable because KG Health could not authenticate its persisted route binding.`;
+  }
+  if (route.binding_status === 'missing') {
+    return `The ${role} has no persisted route binding yet. KG Health will not guess whether LadybugDB or Okto Grafx owns it.`;
+  }
+
+  const backend = graphBackendLabel(route);
+  const path = route.physical_path ? ` Active storage: ${route.physical_path}.` : '';
+  const pageSize = route.backend === 'grafx' && route.page_size
+    ? ` Page size: ${route.page_size} bytes.`
+    : '';
+  return `${backend} is the active ${role} backend.${path}${pageSize}`;
+}
+
 function RecoveryPanel({
   boardId,
   graphState,
@@ -1409,18 +1512,24 @@ function RecoveryPanel({
   currentGenerationId,
   classificationReason,
   totalNodes,
+  graphStorage,
   pollIntervalMs,
   onCompleted,
   canPreflight,
   canConfirm,
   canRun,
   canReadCognitive,
+  canReadHistorical,
+  canCancelHistorical,
 }: RecoveryPanelProps) {
   const [preflight, setPreflight] = useState<RebuildPreflightResult | null>(null);
   const [preflightError, setPreflightError] = useState<string | null>(null);
   const [preflightLoading, setPreflightLoading] = useState(false);
   const [reason, setReason] = useState('');
   const [running, setRunning] = useState(false);
+  const [runPhase, setRunPhase] = useState<
+    'idle' | 'preparing' | 'running' | 'completed' | 'failed' | 'offline_required'
+  >('idle');
   const [lastResult, setLastResult] = useState<RebuildRunResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [cognitiveCounts, setCognitiveCounts] =
@@ -1497,6 +1606,7 @@ function RecoveryPanel({
       return;
     }
     setRunning(true);
+    setRunPhase('preparing');
     setRunError(null);
     setLastResult(null);
     try {
@@ -1504,12 +1614,21 @@ function RecoveryPanel({
       // current (KG-02.2 lifecycle: single-use TTL-bound confirmation).
       const fresh = await runRebuildPreflight(boardId);
       setPreflight(fresh);
+      if (fresh.execution_mode === 'recovery_only_offline' || !fresh.manifest_ref) {
+        setRunPhase('offline_required');
+        setRunError(
+          fresh.remediation
+            ?? 'Stop Pulse and run the installed local one-shot KG recovery executor.',
+        );
+        return;
+      }
       const confirmResult = await runRebuildConfirm({
         board_id: boardId,
         operation: 'rebuild',
         preflight_hash: fresh.preflight_hash,
         manifest_ref: fresh.manifest_ref,
       });
+      setRunPhase('running');
       const runResult = await runRebuildRun({
         confirmation_id: confirmResult.confirmation_id,
         board_id: boardId,
@@ -1519,6 +1638,7 @@ function RecoveryPanel({
         reason: reason.trim(),
       });
       setLastResult(runResult);
+      setRunPhase(runResult.outcome === 'completed' ? 'completed' : 'failed');
       if (runResult.outcome === 'completed') {
         toast.success('Rebuild completed — new generation promoted.');
         setReason('');
@@ -1528,6 +1648,7 @@ function RecoveryPanel({
       onCompleted();
     } catch (err) {
       setRunError((err as Error).message);
+      setRunPhase('failed');
     } finally {
       setRunning(false);
     }
@@ -1540,11 +1661,13 @@ function RecoveryPanel({
     cognitiveError,
   );
   const graphDisplayState = totalNodes === 0 ? 'empty' : graphState;
-  const graphTooltip =
-    totalNodes === 0
-      ? `graph.lbug is the board-local LadybugDB graph for this board. The graph is empty because KG Health counted total_nodes=0 and the graph endpoint will return no nodes until the board is indexed again. ${explainRecoveryState(graphState, classificationReason)}`
-      : `graph.lbug is the board-local LadybugDB graph for this board. ${explainRecoveryState(graphState, classificationReason)}`;
-  const discoveryTooltip = `discovery.lbug is the global discovery LadybugDB index used for cross-board KG discovery. ${explainRecoveryState(discoveryState, classificationReason)}`;
+  const boardStorage = graphStorage?.board ?? null;
+  const globalStorage = graphStorage?.global_graph ?? null;
+  const emptyGraphExplanation = totalNodes === 0
+    ? ' The graph is empty because KG Health counted total_nodes=0 and the graph endpoint will return no nodes until the board is indexed again.'
+    : '';
+  const graphTooltip = `${graphStorageTooltip(boardStorage, 'board-local graph')}${emptyGraphExplanation} ${explainRecoveryState(graphState, classificationReason)}`;
+  const discoveryTooltip = `${graphStorageTooltip(globalStorage, 'global discovery graph')} ${explainRecoveryState(discoveryState, classificationReason)}`;
   const generationTooltip = currentGenerationId
     ? `Current KG generation is ${currentGenerationId}. It is fresh because a UUID v4 generation is selected as the active rebuild output.`
     : 'No current KG generation is selected yet, so rebuild-derived status cannot be tied to a generation.';
@@ -1562,14 +1685,14 @@ function RecoveryPanel({
   const isCompleted = lastResult?.outcome === 'completed';
 
   return (
-    <div className="mb-6 space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-base font-semibold text-surface-900 dark:text-white">
+          <h3 className="text-base font-semibold text-surface-900 dark:text-white">
             KG Recovery
-          </h2>
+          </h3>
           <p className="text-xs text-surface-500 dark:text-surface-400">
-            Preflight, rebuild and report with cognitive pendings (KG-02).
+            Storage identity, historical recovery controls and audited rebuild preparation.
           </p>
         </div>
         <span className={recoveryStatus.className}>
@@ -1577,17 +1700,17 @@ function RecoveryPanel({
         </span>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         <RecoveryMetricCard
           label="Board graph"
-          value="graph.lbug"
+          value={graphBackendLabel(boardStorage)}
           state={graphDisplayState}
           subtitle={totalNodes === 0 ? '0 nodes indexed' : undefined}
           tooltip={graphTooltip}
         />
         <RecoveryMetricCard
           label="Global discovery"
-          value="discovery.lbug"
+          value={graphBackendLabel(globalStorage)}
           state={discoveryState}
           tooltip={discoveryTooltip}
         />
@@ -1607,14 +1730,22 @@ function RecoveryPanel({
         />
       </div>
 
+      <HistoricalRecoveryControl
+        boardId={boardId}
+        pollIntervalMs={pollIntervalMs}
+        canRead={canReadHistorical}
+        canCancel={canCancelHistorical}
+        onChanged={onCompleted}
+      />
+
       <div className="grid grid-cols-1 lg:grid-cols-[1.2fr_0.8fr] gap-4">
-        <section className="rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800">
+        <section className="min-w-0 rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
           <div className="border-b border-surface-200 dark:border-surface-700 px-4 py-3">
             <h3 className="text-sm font-semibold text-surface-900 dark:text-white">
               Preflight
             </h3>
             <p className="text-[11px] text-surface-500 dark:text-surface-400">
-              Read-only — manifest persisted on every run.
+              Step 1 · Review source eligibility. Read-only — the offline executor creates the authoritative manifest.
             </p>
           </div>
           <div className="space-y-2 px-4 py-3 text-sm">
@@ -1662,7 +1793,7 @@ function RecoveryPanel({
                 </PreflightRow>
                 <PreflightRow label="Manifest">
                   <span className="font-mono text-[11px] text-surface-600 dark:text-surface-400">
-                    {preflight.manifest_ref}
+                    {preflight.manifest_ref ?? 'created by offline executor'}
                   </span>
                 </PreflightRow>
               </>
@@ -1670,10 +1801,35 @@ function RecoveryPanel({
           </div>
         </section>
 
-        <aside className="rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 p-4 flex flex-col">
+        <aside className="min-w-0 rounded-xl border border-slate-200 bg-white p-4 flex flex-col dark:border-slate-800 dark:bg-slate-900">
           <h3 className="text-sm font-semibold text-surface-900 dark:text-white">
             Rebuild report
           </h3>
+          <p className="mt-1 mb-3 text-xs leading-relaxed text-slate-500 dark:text-slate-400">Step 2 · Record why recovery is needed and review the execution requirements. The result appears here; preparation is not a completed rebuild.</p>
+          {runPhase !== 'idle' && (
+            <div
+              className={`mt-2 rounded-md px-3 py-2 text-xs ${
+                runPhase === 'failed'
+                  ? 'bg-rose-50 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300'
+                  : runPhase === 'offline_required'
+                  ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                  : 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+              }`}
+              role="status"
+              aria-live="polite"
+              data-testid="rebuild-live-status"
+            >
+              {runPhase === 'preparing' && (
+                preflight?.execution_mode === 'recovery_only_offline'
+                  ? 'Refreshing diagnostics for the governed offline rebuild…'
+                  : 'Starting rebuild — refreshing and validating preflight…'
+              )}
+              {runPhase === 'running' && 'Rebuild started — waiting for the terminal report…'}
+              {runPhase === 'completed' && 'Rebuild completed — the terminal report is available below.'}
+              {runPhase === 'failed' && 'Rebuild did not start or did not complete. Review the error below.'}
+              {runPhase === 'offline_required' && 'Online preflight completed — rebuild must run with Pulse offline.'}
+            </div>
+          )}
           <div className="mt-3 space-y-2 text-sm flex-1">
             {!lastResult && (
               <>
@@ -1772,7 +1928,13 @@ function RecoveryPanel({
               disabled={running}
             />
             {runError && (
-              <div className="rounded-md bg-rose-50 dark:bg-rose-900/40 border border-rose-200 dark:border-rose-700 px-3 py-2 text-rose-700 dark:text-rose-300 text-xs">
+              <div
+                className={`rounded-md px-3 py-2 text-xs border ${
+                  runPhase === 'offline_required'
+                    ? 'bg-amber-50 dark:bg-amber-900/40 border-amber-200 dark:border-amber-700 text-amber-700 dark:text-amber-300'
+                    : 'bg-rose-50 dark:bg-rose-900/40 border-rose-200 dark:border-rose-700 text-rose-700 dark:text-rose-300'
+                }`}
+              >
                 {runError}
               </div>
             )}
@@ -1786,19 +1948,248 @@ function RecoveryPanel({
                   ? 'Requires kg.operations.rebuild.preflight, .confirm and .run'
                   : reasonInvalid
                   ? 'Type a reason first'
+                  : preflight?.execution_mode === 'recovery_only_offline'
+                  ? 'Refresh diagnostics and show the governed offline rebuild steps'
                   : 'Run destructive rebuild now'
               }
             >
               {running && <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden />}
-              {running ? 'Running…' : 'Confirm rebuild'}
+              {running
+                ? 'Preparing…'
+                : preflight?.execution_mode === 'recovery_only_offline'
+                ? 'Prepare offline rebuild'
+                : 'Confirm rebuild'}
             </button>
             <p className="text-[11px] text-surface-500 dark:text-surface-400 text-center">
-              Destructive — promotes a new UUID v4 generation.
+              {preflight?.execution_mode === 'recovery_only_offline'
+                ? 'Pulse must be stopped before the recovery executor can promote a new UUID v4 generation.'
+                : 'Destructive — promotes a new UUID v4 generation.'}
             </p>
           </div>
         </aside>
       </div>
     </div>
+  );
+}
+
+interface HistoricalRecoveryControlProps {
+  boardId: string;
+  pollIntervalMs: number;
+  canRead: boolean;
+  canCancel: boolean;
+  onChanged: () => void;
+}
+
+function HistoricalRecoveryControl({
+  boardId,
+  pollIntervalMs,
+  canRead,
+  canCancel,
+  onChanged,
+}: HistoricalRecoveryControlProps) {
+  const [progress, setProgress] = useState<HistoricalProgress | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [action, setAction] = useState<'cancel' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmingStop, setConfirmingStop] = useState(false);
+  const [lastActionMessage, setLastActionMessage] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (!canRead) {
+      setProgress(null);
+      setLoading(false);
+      return;
+    }
+    try {
+      const next = await getHistoricalProgress(boardId);
+      setProgress(next);
+      setError(null);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [boardId, canRead]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      if (cancelled) return;
+      await refresh();
+    };
+    void poll();
+    const intervalId = setInterval(poll, pollIntervalMs);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [pollIntervalMs, refresh]);
+
+  const active = Boolean(
+    progress
+    && (
+      progress.status === 'in_progress'
+      || progress.status === 'paused'
+      || (progress.pending ?? 0) > 0
+      || (progress.claimed ?? 0) > 0
+      || (progress.paused ?? 0) > 0
+    )
+  );
+
+  const handleCancel = useCallback(async () => {
+    if (!canCancel || action) return;
+    setAction('cancel');
+    setError(null);
+    try {
+      const result = await cancelHistorical(boardId);
+      setProgress({
+        enabled: false,
+        status: 'cancelled',
+        total: 0,
+        progress: 0,
+        pending: 0,
+        claimed: 0,
+        paused: 0,
+        failed: 0,
+      });
+      setLastActionMessage(
+        `Recovery cancelled. ${result.removed ?? 0} live queue entries were fenced and removed.`,
+      );
+      toast.success(
+        `Historical recovery stopped: ${result.removed ?? 0} live queue entries removed.`,
+      );
+      setConfirmingStop(false);
+      await refresh();
+      onChanged();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setAction(null);
+    }
+  }, [action, boardId, canCancel, onChanged, refresh]);
+
+  const statusLabel = loading
+    ? 'Checking…'
+    : error && !progress
+    ? 'Unavailable'
+    : active
+    ? 'Running'
+    : progress?.status === 'cancelled'
+    ? 'Stopped'
+    : progress?.status === 'completed_with_errors'
+    ? 'Completed with errors'
+    : progress?.status === 'completed'
+    ? 'Completed'
+    : 'Ready';
+
+  return (
+    <section
+      className="min-w-0 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
+      data-testid="historical-recovery-control"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-surface-900 dark:text-white">
+            Historical graph recovery
+          </h3>
+          <p className="mt-1 text-[11px] text-surface-500 dark:text-surface-400">
+            Controls the legacy backfill queue only. Stopping fences pending and claimed work;
+            graph data already committed remains intact.
+          </p>
+          <p className="mt-1 text-[11px] text-surface-500 dark:text-surface-400">
+            Cognitive pending items from already committed artifacts are audit debt, not active
+            recovery work, and are not deleted by this cancellation.
+          </p>
+        </div>
+        <span
+          className={`rounded-full px-3 py-1 text-xs font-medium ${
+            active
+              ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+              : 'bg-surface-100 text-surface-700 dark:bg-surface-900 dark:text-surface-300'
+          }`}
+          data-testid="historical-recovery-status"
+        >
+          {statusLabel}
+        </span>
+      </div>
+
+      {canRead && progress && (
+        <div className="mt-3 grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs">
+          <ReportRow label="Processed" value={`${progress.progress}/${progress.total}`} />
+          <ReportRow label="Pending" value={String(progress.pending ?? 0)} />
+          <ReportRow label="Claimed" value={String(progress.claimed ?? 0)} />
+          <ReportRow label="Paused" value={String(progress.paused ?? 0)} />
+          <ReportRow label="Failed" value={String(progress.failed ?? 0)} />
+        </div>
+      )}
+
+      {!canRead && (
+        <p className="mt-3 text-xs text-amber-700 dark:text-amber-300">
+          Requires kg.operations.historical.read to inspect this recovery.
+        </p>
+      )}
+      {error && (
+        <p className="mt-3 text-xs text-rose-600 dark:text-rose-400" role="alert">
+          {error}
+        </p>
+      )}
+      {lastActionMessage && (
+        <p
+          className="mt-3 text-xs text-emerald-700 dark:text-emerald-300"
+          role="status"
+          aria-live="polite"
+          data-testid="historical-recovery-action-status"
+        >
+          {lastActionMessage}
+        </p>
+      )}
+
+      <div className="mt-3 flex flex-wrap justify-end gap-2">
+        {active && !confirmingStop && (
+          <button
+            type="button"
+            onClick={() => setConfirmingStop(true)}
+            disabled={!canCancel || action !== null}
+            className="rounded-md bg-rose-600 hover:bg-rose-700 disabled:opacity-60 disabled:cursor-not-allowed px-3 py-2 text-xs font-medium text-white inline-flex items-center gap-2"
+            title={!canCancel ? 'Requires kg.operations.historical.cancel' : undefined}
+          >
+            <XCircle className="w-3.5 h-3.5" aria-hidden />
+            Stop recovery
+          </button>
+        )}
+        {active && confirmingStop && (
+          <div className="flex flex-wrap items-center justify-end gap-2" role="group" aria-label="Confirm stop historical recovery">
+            <span className="text-xs text-rose-700 dark:text-rose-300">
+              Stop all live historical queue work for this board?
+            </span>
+            <button
+              type="button"
+              onClick={() => void handleCancel()}
+              disabled={action !== null}
+              className="rounded-md bg-rose-600 hover:bg-rose-700 disabled:opacity-60 px-3 py-2 text-xs font-medium text-white inline-flex items-center gap-2"
+            >
+              {action === 'cancel' && <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden />}
+              Confirm stop
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmingStop(false)}
+              disabled={action !== null}
+              className="rounded-md border border-surface-300 dark:border-surface-600 px-3 py-2 text-xs font-medium text-surface-700 dark:text-surface-200"
+            >
+              Keep running
+            </button>
+          </div>
+        )}
+        {!active && !loading && (
+          <p className="max-w-xl text-right text-xs text-surface-500 dark:text-surface-400">
+            No legacy recovery is active. Prepare a new rebuild only from the audited
+            {' '}<strong className="text-surface-700 dark:text-surface-200">Prepare offline rebuild</strong>
+            {' '}action below after entering its reason.
+          </p>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -1855,7 +2246,7 @@ function RecoveryMetricCard({
 }: RecoveryMetricCardProps) {
   return (
     <div
-      className="rounded-lg border border-surface-200 dark:border-surface-700 bg-white dark:bg-surface-800 p-4"
+      className="min-w-0 break-words rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
       title={tooltip}
       aria-label={`${label}: ${tooltip}`}
       data-testid={`kg-recovery-metric-${label.toLowerCase().replace(/\s+/g, '-')}`}

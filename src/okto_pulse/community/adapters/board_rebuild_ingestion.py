@@ -856,44 +856,46 @@ class CommunityBoardRebuildIngestionAdapter:
         board_id: str,
         reason: str,
     ) -> PurgeReport:
-        """Quarantine existing board graph files for an explicit rebuild.
+        """Ask the routed graph lifecycle to prepare storage for a rebuild.
 
         The bootstrap path is fail-closed and must never purge an existing
         graph just because opening it failed. A confirmed rebuild is different:
-        the operator already requested replacement, so we move the current
-        graph files to quarantine before the deterministic worker bootstraps a
-        fresh graph. If quarantine fails, the rebuild step fails and preserves
-        the original files.
+        the operator already requested replacement, so the selected provider
+        owns its quarantine/noop decision. Provider failures propagate and no
+        concrete backend path is probed before or after dispatch.
         """
-
-        from okto_pulse.community.adapters.kg_runtime import board_kuzu_path
-
-        path = board_kuzu_path(board_id)
-        targets: list[Path] = []
-        if path.exists():
-            targets.append(path)
-        if path.parent.exists():
-            targets.extend(sorted(path.parent.glob(path.name + ".*")))
-        if not targets:
-            return PurgeReport(
-                board_id=board_id,
-                status="noop",
-                reason=reason,
-            )
 
         from okto_pulse.core.services.application_kg import (
             get_current_provider_registry,
         )
 
         registry = get_current_provider_registry()
+        routed_graph = getattr(
+            registry,
+            "_community_routed_graph_composition",
+            None,
+        )
+        # A rebuild is the sole administrative lane allowed to recreate a
+        # physical target whose immutable binding survived an earlier purge.
+        # Do this once before dispatch so a retry after a crash between purge
+        # and rematerialization can resume, and once after dispatch so the
+        # consolidation/schema lane never observes the bound route as absent.
+        # Ordinary reads, startup adoption and lifecycle open remain strictly
+        # non-creating.
+        if routed_graph is not None:
+            routed_graph.rematerialize_board_route(board_id)
         report = run_async_blocking(
             registry.graph_lifecycle.purge(board_id, reason=reason)
         )
-        still_present = [p for p in targets if p.exists()]
-        if still_present:
-            raise RuntimeError(
-                "explicit rebuild could not quarantine existing graph files: "
-                + ", ".join(str(p) for p in still_present)
+        if routed_graph is not None:
+            routed_graph.rematerialize_board_route(board_id)
+            # Rematerialization restores only the authenticated physical
+            # target.  Rebuild workers require the complete Pulse schema
+            # before their first transaction; performing that materialization
+            # here keeps it inside the explicit rebuild lane and ensures a
+            # schema failure aborts before any source row can be enqueued.
+            run_async_blocking(
+                registry.graph_schema_manager.ensure_bootstrapped(board_id)
             )
         return report
 

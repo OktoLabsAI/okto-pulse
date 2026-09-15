@@ -6,7 +6,7 @@ version: "1.0"
 
 ## Architecture Overview
 
-- **Per-board LadybugDB graph** at `~/.okto-pulse/boards/{board_id}/graph.lbug` — 11 node types, 16 relationship types, 9 HNSW vector indexes
+- **Per-board Okto Grafx graph** in the authenticated generation under the configured KG storage root (`boards/{board_id}/grafx/`). Schema and indexes are managed by the Community Grafx adapter
 - **Global discovery meta-graph** at `~/.okto-pulse/global/discovery.lbug` — board summaries, topic clusters, canonical entities (digest-only, no sensitive content)
 - **SQLite operational tables**: `consolidation_queue`, `consolidation_audit`, node back-references for undo, `global_update_outbox`
 - **Agent-as-LLM premise**: the platform NEVER invokes LLM. All cognitive work (extraction, reasoning, reconciliation decisions) is done by YOU, the code agent.
@@ -20,7 +20,7 @@ version: "1.0"
 | `okto_pulse_kg_add_edge_candidate` | session_id, candidate | Add an edge. Endpoints reference in-session candidates or existing nodes via `kg:` prefix. |
 | `okto_pulse_kg_get_similar_nodes` | session_id, candidate_id, top_k?, min_similarity? | HNSW vector search against existing graph. |
 | `okto_pulse_kg_propose_reconciliation` | session_id | Server computes deterministic hints: ADD/UPDATE/SUPERSEDE/NOOP. |
-| `okto_pulse_kg_commit_consolidation` | session_id, summary_text?, agent_overrides? | Atomically write to LadybugDB + audit row + outbox event. |
+| `okto_pulse_kg_commit_consolidation` | session_id, summary_text?, agent_overrides? | Atomically write to Okto Grafx + audit row + outbox event. |
 | `okto_pulse_kg_abort_consolidation` | session_id, reason? | Drop the session without writing. |
 
 **Node types (11):** Decision, Criterion, Constraint, Assumption, Requirement, Entity, APIContract, TestScenario, Bug, Learning, Alternative
@@ -46,6 +46,31 @@ version: "1.0"
 
 `candidate_id` is session-local: `get_similar_nodes` before
 `add_node_candidate` returns `candidate_not_found`.
+
+### Transparent Grafx checkpoint recovery
+
+The routed Board lifecycle handles Grafx's explicit `recovery_required` latch
+without operator interaction. The path remains deliberately narrow and runs
+while Pulse owns the Board's exclusive lifecycle window and Core write fence.
+Both `CHECKPOINT` and `FSYNC` use that exclusive window because either can enter
+recovery. Pulse snapshots the WAL durably, closes the pooled handle, lets Grafx
+perform its native writable-open recovery, verifies the complete database,
+performs a cold-reopen probe and retries the checkpoint exactly once.
+
+`GrafxUnsupportedOperation` does not imply durable damage and never triggers WAL
+recovery. In particular, an unleased process-local handle already marked closed
+is discarded and ordinarily reopened by the shared pool. A closed handle that
+is still leased is an invariant failure and remains fail-closed; it is never
+closed or replaced underneath its transaction.
+
+A successful native pass may report `recovered`, or `skipped` with the exact
+reason that no WAL work was found; both mean the stale process-local latch was
+removed and the database passed verification. Missing storage, an unclean
+verification, recovery-policy refusal, lost fence, close/open failure, a second
+checkpoint failure, or any unsupported-operation error remains fail-closed.
+This mechanism never rebuilds, purges, replaces a generation or falls back to
+another graph backend. Operator recovery remains the path for every failure
+outside this bounded automatic case.
 
 ## Global Discovery recovery (component-scoped)
 
@@ -186,7 +211,7 @@ coordinator rows manually. Follow `kg.stale_sweep.scheduled.staged`,
 
 | Tool | Args | Purpose |
 |------|------|---------|
-| `okto_pulse_kg_query_cypher` | board_id, cypher, params?, max_rows?, timeout_ms?, include_working? | Read-only Cypher directly on LadybugDB. Defaults to canonical-only rows; pass `include_working=true` when validating working graph ingestion. |
+| `okto_pulse_kg_query_cypher` | board_id, cypher, params?, max_rows?, timeout_ms?, include_working? | Read-only Cypher directly on Okto Grafx. Defaults to canonical-only rows; pass `include_working=true` when validating working graph ingestion. |
 | `okto_pulse_kg_query_natural` | board_id, nl_query, limit?, min_confidence? | Natural language search via embedding + HNSW |
 | `okto_pulse_kg_schema_info` | board_id?, include_internal? | Schema introspection: node types, rel types, vector indexes |
 
@@ -332,3 +357,43 @@ After `okto_pulse_kg_commit_consolidation`:
 - [ ] `okto_pulse_kg_query_natural` retrieved the newly consolidated final facts
 - [ ] `okto_pulse_kg_query_cypher` validated the new nodes by `source_artifact_ref`
 - [ ] Final response includes `session_id`, `nodes_added`, `edges_added`, query verification, and nonconformities
+
+### SK-A relational authority and graph projection
+
+Quality receipts, findings, checklist executions/items, and checklist receipts
+remain relational source-of-truth records. The graph never creates a
+`QualityFinding` or checklist node. Entity roots may carry only the current
+Quality summary identity. A resolved Research Decision Ledger head projects
+through the existing `Decision`/`Alternative` vocabulary; demoting it to
+`open`, `investigating`, or `deferred` removes/tombstones those derived
+projections. Incremental reconciliation and rebuild must produce the same
+active set. Archive/cancel/demotion must not leave a stale child projection.
+Use `okto-pulse://reference/quality-assessments` for Quality currentness and
+`okto-pulse://workflows/refinements` for the RDL authoring lifecycle.
+For adopted semantic guidelines, assessment receipts, governed exceptions,
+projection identity and rebuild behavior, read the single canonical
+protocol at `okto-pulse://reference/policy-compliance`.
+
+When KG Health reports `digest_vs_board_layer_mismatch` after all operational
+queues are idle, inspect the rows with
+`okto_pulse_kg_digest_layer_mismatch_list`. An authorized KG administrator may
+then call `okto_pulse_kg_digest_layer_reconcile` with a bounded audit reason and
+wait for the outbox to return to idle before verifying the mismatch list again.
+This is a parity sync, not a rebuild. The worker keyset-inventories authoritative
+publishable board sources with physical duplicate detection, guards stale prune
+against derived clustering relationships, repairs identities and Board links,
+and backfills missing identities. It revalidates the source inventory before a
+board-isolated ACK and requires a post-flush fresh-handle proof of one stable
+digest, the correct Board edge, and exactly one total inbound Board edge per
+source.
+
+### Cognitive Provenance — Learning Taxonomy (S-KG-01)
+
+Cognitive artifacts (`Learning` / `Alternative` / `Assumption`) prove connectivity through **cognitive provenance** — a resolved `source_artifact_ref` PLUS a cognitive-taxonomy relation — NOT the deterministic `belongs_to`-to-`Entity` backbone the **operational** artifacts (`Requirement` / `Constraint` / `APIContract` / `TestScenario` / `Criterion` / `Bug` / `Entity`) require. The taxonomy reuses the EXISTING edge names; no new edge type is ever introduced (never `learned_from` / `informs` / `constrains` / `refines` / `warns_about`):
+
+| Learning shape | Allowed relation | Endpoint |
+|---|---|---|
+| bug-derived | `validates` | a **canonical** `Bug` (a `working` Bug never canonizes the Learning) |
+| non-bug | `relates_to` | ONE canonical `Entity` \| `Decision` \| `Requirement` \| `Constraint` \| `TestScenario` \| `APIContract` \| `Criterion` |
+
+`relates_to Decision -> Alternative` is unchanged. A cognitive writer that emits `belongs_to` (or any deterministic edge) is rejected fail-closed with `forbidden_deterministic_edge`; a cognitive node whose source resolves but carries no allowed relation is `missing_cognitive_provenance`. Operational artifacts stay on the strict deterministic provenance group even when they carry cognitive metadata.

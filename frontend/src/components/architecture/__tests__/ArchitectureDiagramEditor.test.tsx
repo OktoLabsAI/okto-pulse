@@ -218,6 +218,32 @@ describe('ArchitectureDiagramEditor', () => {
     expect(payload.elements.find((item) => item.id === 'box_1')).toMatchObject({ x: 72, y: 72 });
   });
 
+  it.each([-1200, 0, 2400])('keeps all four canvas margins for coordinates %s without rewriting data', (coordinate) => {
+    const onChange = vi.fn();
+    const input = { ...diagram, adapter_payload: { elements: [
+      { id: 'box_1', type: 'rectangle', x: coordinate, y: coordinate, width: 160, height: 80, text: 'API' },
+    ] } };
+    render(<ArchitectureDiagramEditor diagram={input} onChange={onChange} />);
+    const origin = screen.getByTestId('architecture-diagram-origin');
+    const surface = screen.getByTestId('architecture-canvas-surface');
+    const left = coordinate + parseFloat(origin.style.left);
+    const top = coordinate + parseFloat(origin.style.top);
+    expect(left).toBeGreaterThanOrEqual(420);
+    expect(top).toBeGreaterThanOrEqual(420);
+    expect(parseFloat(surface.style.width) - left - 160).toBeGreaterThanOrEqual(420);
+    expect(parseFloat(surface.style.height) - top - 80).toBeGreaterThanOrEqual(420);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('allows dragging through zero into negative world coordinates', () => {
+    const onChange = vi.fn();
+    render(<ArchitectureDiagramEditor diagram={diagram} onChange={onChange} />);
+    fireEvent.pointerDown(screen.getByTestId('architecture-element-box_1'), { clientX: 200, clientY: 200, pointerId: 1 });
+    fireEvent.pointerMove(screen.getByTestId('architecture-canvas'), { clientX: 80, clientY: 80, pointerId: 1 });
+    const updated = onChange.mock.calls.at(-1)![0] as ArchitectureDiagram;
+    expect((updated.adapter_payload as { elements: unknown[] }).elements[0]).toMatchObject({ x: -72, y: -72 });
+  });
+
   it('does not render diagram type tools or a connect toolbar action', () => {
     render(<ArchitectureDiagramEditor diagram={{ ...diagram, diagram_type: 'sequence' }} onChange={vi.fn()} />);
 

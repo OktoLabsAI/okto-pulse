@@ -14,6 +14,7 @@ import {
 } from '@/types/knowledge-graph';
 import * as kgApi from '@/services/kg-api';
 import { RelevanceBadge } from './RelevanceBadge';
+import { NodeSourceLink } from './NodeSourceLink';
 import { useOptionalModalStack } from '@/contexts/ModalStackContext';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useCodeTraceabilityAuthority } from '@/components/code-traceability';
@@ -41,9 +42,11 @@ interface ChainNode {
 
 export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Props) {
   const permissions = usePermissions(boardId);
-  const { canReadProjection: canReadCodeTraceability } =
+  const { canReadProjection: canReadCodeTraceability, isLoading: traceabilityLoading } =
     useCodeTraceabilityAuthority(boardId);
+  const traceabilityPending = isCodeTraceabilityKind(node.kind_of) && traceabilityLoading;
   const traceabilityDenied = isCodeTraceabilityKind(node.kind_of)
+    && !traceabilityLoading
     && !canReadCodeTraceability;
   useEffect(() => {
     if (traceabilityDenied) onClose();
@@ -68,7 +71,7 @@ export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Prop
   const modalStack = useOptionalModalStack();
   const navigateToNode = (nodeId: string) => {
     if (modalStack) {
-      modalStack.push({ type: 'kg_node', id: nodeId });
+      modalStack.push({ type: 'kg_node', id: nodeId, boardId });
     } else if (onNodeNavigate) {
       onNodeNavigate(nodeId);
     }
@@ -134,6 +137,9 @@ export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Prop
   const displayScore =
     typeof optimisticScore === 'number' ? optimisticScore : node.relevance_score ?? 0.5;
 
+  // Loading authority is not a denial. Keep the modal mounted without leaking
+  // node content while the first request (or a cross-board lookup) completes.
+  if (traceabilityPending) return <p role="status" className="p-4 text-sm text-gray-500 dark:text-gray-400">Checking source permissions…</p>;
   if (traceabilityDenied) return null;
 
   return (
@@ -157,6 +163,7 @@ export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Prop
       <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">
         {node.title}
       </h3>
+      <NodeSourceLink node={node} boardId={boardId} />
 
       {/* Always show content section, even if empty */}
       <section className="mb-4">
@@ -253,15 +260,6 @@ export function NodeDetailPanel({ node, boardId, onClose, onNodeNavigate }: Prop
             ))}
           </dl>
         </section>
-      )}
-
-      {node.source_artifact_ref && (
-        <div className="mb-4 text-xs">
-          <span className="text-gray-500">Source: </span>
-          <span className="font-mono text-blue-600 dark:text-blue-400">
-            {node.source_artifact_ref}
-          </span>
-        </div>
       )}
 
       {node.created_at && (

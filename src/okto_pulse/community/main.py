@@ -36,6 +36,9 @@ from okto_pulse.community.adapters.sqlalchemy_database import (
     get_session_factory,
     init_db,
 )
+from okto_pulse.community.adapters.startup_graph_routes import (
+    adopt_existing_board_routes_before_schema_sweep,
+)
 from okto_pulse.core.services.application_kg import get_current_provider_registry
 
 # NOTE: MCP server is imported lazily inside create_community_app (after
@@ -84,7 +87,7 @@ _DEFAULT_METRICS_BEACON_INTERVAL_SECONDS = 3600.0
 def _log_native_runtime_budget() -> None:
     """Publish one structured post-composition native runtime budget event."""
 
-    from okto_pulse.community.adapters.kg_runtime import (
+    from okto_pulse.community.adapters.graph_runtime_budget import (
         build_native_runtime_budget_snapshot,
     )
 
@@ -127,8 +130,8 @@ _EMBEDDING_PRELOAD_TASKS: set[asyncio.Task[None]] = set()
 def _enable_native_crash_diagnostics() -> None:
     """Enable Python's fatal-signal traceback without blocking startup.
 
-    Ladybug/Kuzu executes in a native extension.  A process-level access
-    violation bypasses Python exception handlers; ``faulthandler`` preserves
+    Native extensions in the local ML/acceleration stack can fail outside
+    Python exception handlers; ``faulthandler`` preserves
     the Python stacks of every thread in stderr so a repeated native crash has
     an actionable call site.  Some embedded/service hosts expose no usable
     stderr file descriptor, so diagnostics remain best-effort.
@@ -905,6 +908,19 @@ def create_community_app():
         )
 
         await apply_persisted_settings_to_core_settings()
+        # The app factory registers lazy graph providers before async SQLite
+        # hydration. Recompose them from the hydrated snapshot BEFORE seeding
+        # or starting workers; otherwise a saved constructor setting is shown
+        # as effective while pools still contain the pre-hydration defaults.
+        configure_community_kg_registry(
+            _rc_session_factory,
+            settings=runtime_composition.settings_provider.get_settings_snapshot(),
+            auth_context_factory=create_mcp_auth_factory(
+                _mcp_auth_get_agent,
+                _rc_session_factory,
+                session_scope_factory=_cancel_safe_rc_scope,
+            ),
+        )
         _log_native_runtime_budget()
 
         from okto_pulse.community.adapters.kg_events import (
@@ -965,6 +981,10 @@ def create_community_app():
         # every worker and the decay scheduler so they never observe a
         # pre-migration board graph.
         try:
+            await adopt_existing_board_routes_before_schema_sweep(
+                uow_factory=app_instance.state.runtime_composition.uow_factory,
+                logger=_STARTUP_LOGGER,
+            )
             await run_startup_schema_sweep(
                 uow_factory=app_instance.state.runtime_composition.uow_factory,
                 logger=_STARTUP_LOGGER,

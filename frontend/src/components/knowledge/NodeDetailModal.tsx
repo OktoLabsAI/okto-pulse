@@ -29,6 +29,10 @@ interface Props {
 }
 
 export function NodeDetailModal({ node, nodeId, boardId, onClose, onEscape }: Props) {
+  return <ScopedNodeDetail key={`${boardId}:${node?.id ?? nodeId}`} node={node} nodeId={nodeId} boardId={boardId} onClose={onClose} onEscape={onEscape} />;
+}
+
+function ScopedNodeDetail({ node, nodeId, boardId, onClose, onEscape }: Props) {
   const [hydrated, setHydrated] = useState<KGNode | null>(node ?? null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

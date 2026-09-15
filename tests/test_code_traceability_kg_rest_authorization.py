@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -158,6 +159,46 @@ async def test_graph_filters_ct_nodes_and_edge_endpoints_for_explicit_deny(
 
 
 @pytest.mark.asyncio
+async def test_graph_page_runs_native_reads_outside_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _ProjectionService()
+    event_loop_thread = threading.get_ident()
+    observed_threads: list[int] = []
+    original_get_all_nodes = service.get_all_nodes
+
+    def _get_all_nodes(*args, **kwargs):
+        observed_threads.append(threading.get_ident())
+        return original_get_all_nodes(*args, **kwargs)
+
+    def _edges(_board_id: str, _node_ids: set[str], **_kwargs):
+        observed_threads.append(threading.get_ident())
+        return [], {"edge_read_status": "ok"}
+
+    service.get_all_nodes = _get_all_nodes  # type: ignore[method-assign]
+    monkeypatch.setattr(kg_routes, "get_kg_service", lambda: service)
+    monkeypatch.setattr(kg_routes, "_fetch_edges_for_nodes", _edges)
+
+    payload = await kg_routes.get_subgraph(
+        BOARD_ID,
+        center="",
+        depth=2,
+        limit=100,
+        cursor="",
+        min_relevance=0.0,
+        type="",
+        graph_layer="canonical",
+        actor=_actor(ct_read=True),
+        uow=SimpleNamespace(),
+    )
+
+    assert len(payload["nodes"]) == 2
+    assert len(observed_threads) == 2
+    assert all(thread_id != event_loop_thread for thread_id in observed_threads)
+    assert len(set(observed_threads)) == 1
+
+
+@pytest.mark.asyncio
 async def test_cypher_guard_denies_without_complete_ct_authority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -197,3 +238,54 @@ async def test_cypher_complete_ct_grant_bypasses_materialization_guard(
     )
 
     assert payload == {"rows": [[CT_ID]]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native_name,status,public_code", [
+    ("GrafxParseError", 400, "graph_invalid_query"),
+    ("GrafxPlanError", 400, "graph_invalid_query"),
+    ("GrafxLeaseTimeout", 503, "graph_lock_contention"),
+    ("GrafxCorruptionDetected", 503, "graph_corruption"),
+    ("GrafxUnsupportedOperation", 503, "graph_capability_unavailable"),
+    ("GrafxBufferBudgetExceeded", 503, "graph_memory_pressure"),
+    ("GrafxError", 500, "graph_error"),
+])
+async def test_native_query_refusal_is_structured_and_never_bypasses_auth(
+    monkeypatch, native_name, status, public_code,
+):
+    import json
+    from okto_grafx import errors
+    from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+
+    calls = []
+    original = getattr(errors, native_name)("private query payload must not leak")
+    mapped = map_grafx_error(original, operation="read_only_query")
+    assert mapped.code == public_code
+
+    def refused(*_args, **_kwargs):
+        calls.append(1)
+        raise mapped from original
+
+    monkeypatch.setattr(kg_routes, "execute_cypher_read_only", refused)
+    response = await kg_routes.cypher_query(
+        BOARD_ID, cypher="RETURN unsupported_function(1)",
+        actor=_actor(ct_read=True), uow=SimpleNamespace(),
+    )
+    assert response.status_code == status
+    assert response.media_type == "application/problem+json"
+    payload = json.loads(response.body)
+    assert payload["status"] == status
+    assert payload["type"] == f"/errors/{public_code}"
+    assert "private query payload" not in payload["detail"]
+    if native_name == "GrafxBufferBudgetExceeded":
+        assert response.headers["Retry-After"] == "60"
+    else:
+        assert "Retry-After" not in response.headers
+    assert calls == [1]
+    with pytest.raises(HTTPException) as denied:
+        await kg_routes.cypher_query(
+            BOARD_ID, cypher="RETURN unsupported_function(1)",
+            actor=_actor(ct_read=False), uow=SimpleNamespace(),
+        )
+    assert denied.value.status_code == 403
+    assert calls == [1]
