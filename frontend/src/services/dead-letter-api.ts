@@ -8,6 +8,8 @@
  * button.
  */
 
+import { authFetchJson } from '@/lib/authFetch';
+
 export interface DeadLetterErrorEntry {
   attempt: number;
   occurred_at: string;
@@ -49,8 +51,6 @@ export interface DeadLetterRedriveResponse {
   stop_reason?: string | null;
 }
 
-const BASE = '/api/v1';
-
 export async function getDeadLetterRows(
   boardId: string,
   limit = 50,
@@ -62,15 +62,10 @@ export async function getDeadLetterRows(
     limit: String(limit),
     offset: String(offset),
   });
-  const resp = await fetch(`${BASE}/kg/queue/dead-letter?${params}`, {
-    headers: { 'Content-Type': 'application/json' },
-    signal,
-  });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-    throw new Error(err.detail || `HTTP ${resp.status}`);
-  }
-  return resp.json();
+  return authFetchJson<DeadLetterListResponse>(
+    `/kg/queue/dead-letter?${params}`,
+    { signal },
+  );
 }
 
 export async function redriveDeadLetterRows(
@@ -78,9 +73,8 @@ export async function redriveDeadLetterRows(
   deadLetterIds: string[],
   scope: 'generic' | 'code_traceability' = 'generic',
 ): Promise<DeadLetterRedriveResponse> {
-  const resp = await fetch(`${BASE}/kg/queue/dead-letter/redrive`, {
+  return authFetchJson<DeadLetterRedriveResponse>('/kg/queue/dead-letter/redrive', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       board_id: boardId,
       dead_letter_ids: deadLetterIds,
@@ -88,36 +82,17 @@ export async function redriveDeadLetterRows(
       process_now: true,
     }),
   });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-    const detail = err?.detail;
-    const message = typeof detail === 'string'
-      ? detail
-      : detail?.message || detail?.reason || err?.message || `HTTP ${resp.status}`;
-    throw new Error(message);
-  }
-  return resp.json();
 }
 
 export async function redriveAllDeadLetterRows(
   boardId: string,
 ): Promise<DeadLetterRedriveResponse> {
-  const resp = await fetch(`${BASE}/kg/queue/dead-letter/redrive`, {
+  return authFetchJson<DeadLetterRedriveResponse>('/kg/queue/dead-letter/redrive', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       board_id: boardId,
       redrive_all: true,
       process_now: true,
     }),
   });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-    const detail = err?.detail;
-    const message = typeof detail === 'string'
-      ? detail
-      : detail?.message || detail?.reason || err?.message || `HTTP ${resp.status}`;
-    throw new Error(message);
-  }
-  return resp.json();
 }

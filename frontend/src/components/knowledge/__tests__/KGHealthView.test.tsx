@@ -836,8 +836,9 @@ describe('KG recovery panel — health and cognitive rebuild state', () => {
 
     render(<KGHealthView pollIntervalMs={30000} onClose={() => {}} />);
 
-    expect(await screen.findByTestId('historical-recovery-status'))
-      .toHaveTextContent('Stopped');
+    await waitFor(() => {
+      expect(screen.getByTestId('historical-recovery-status')).toHaveTextContent('Stopped');
+    });
     expect(screen.queryByRole('button', { name: /Start recovery/ })).toBeNull();
     expect(screen.getByRole('button', { name: 'Confirm rebuild' })).toBeDisabled();
     expect(kgHealthApi.startHistorical).not.toHaveBeenCalled();

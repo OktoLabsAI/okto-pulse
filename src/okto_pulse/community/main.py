@@ -908,6 +908,16 @@ def create_community_app():
         )
 
         await apply_persisted_settings_to_core_settings()
+        # ``apply_persisted_settings_to_core_settings`` replaces the Core
+        # settings singleton. Keep the Community snapshot provider in lockstep
+        # before rebuilding its lazy graph providers; otherwise Grafx reports a
+        # persisted constructor value as effective while it still opens with the
+        # pre-hydration defaults captured by the app factory.
+        from okto_pulse.core import get_settings
+
+        runtime_composition.settings_provider.replace_settings_snapshot(
+            get_settings()
+        )
         # The app factory registers lazy graph providers before async SQLite
         # hydration. Recompose them from the hydrated snapshot BEFORE seeding
         # or starting workers; otherwise a saved constructor setting is shown

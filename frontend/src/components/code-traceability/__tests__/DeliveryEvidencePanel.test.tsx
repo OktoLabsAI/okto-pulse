@@ -44,10 +44,34 @@ it('binds authenticated test-card candidate and implementation IDs using server 
 it('keeps done Specs done and displays waiver distinctly from test success', async () => {
   const p = projection(); p.status = 'done'; p.rows[0].test_waiver_ids = ['waiver']; p.rows[0].test_satisfied = true; p.allowed = true;
   api.getDeliveryEvidence.mockResolvedValue(p);
-  render(<DeliveryEvidencePanel boardId="b" specId="s" canWaive />);
+  render(<DeliveryEvidencePanel boardId="b" specId="s" canCreateWaiver />);
   expect(await screen.findByText(/has not been reopened/)).toBeTruthy();
   expect(screen.getByText('Explicitly waived — not tested')).toBeTruthy();
   expect(screen.getByLabelText('Record type')).toHaveProperty('value', 'waiver');
+});
+
+it('separates waiver creation from the authority to revoke an existing record', async () => {
+  const p = projection();
+  p.records = [{
+    id: 'record-1', kind: 'waiver', actor_id: 'owner', created_at: '2026-09-15T00:00:00Z',
+    revoked: false, payload: { justification: 'Temporary exception.' },
+  }];
+  api.getDeliveryEvidence.mockResolvedValue(p);
+  render(<DeliveryEvidencePanel boardId="b" specId="s" canClearWaiver />);
+  await screen.findByText('Return the expected version');
+
+  expect(screen.queryByRole('button', { name: 'Record association' })).toBeNull();
+  fireEvent.click(screen.getByText('Audit history (1)'));
+  const reason = screen.getByLabelText('Revocation audit reason');
+  expect(screen.getByRole('button', { name: 'Revoke' })).toBeDisabled();
+  fireEvent.change(reason, { target: { value: 'The exception no longer applies.' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
+
+  await waitFor(() => expect(api.recordDeliveryEvidence).toHaveBeenCalledWith(
+    'b', 's', expect.objectContaining({
+      kind: 'revoke', record_id: 'record-1', justification: 'The exception no longer applies.',
+    }),
+  ));
 });
 
 it('does not retain a success message after refresh fails', async () => {

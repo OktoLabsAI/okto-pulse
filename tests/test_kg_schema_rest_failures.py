@@ -58,6 +58,74 @@ async def test_schema_provider_errors_are_problem_details(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "route,kwargs",
+    (
+        (
+            "list_nodes",
+            {
+                "type": "",
+                "min_confidence": 0.0,
+                "min_relevance": 0.0,
+                "limit": 10,
+                "cursor": "",
+                "graph_layer": "canonical",
+            },
+        ),
+        ("get_node_detail", {"node_id": "node-1"}),
+        (
+            "get_subgraph",
+            {
+                "center": "",
+                "depth": 2,
+                "limit": 10,
+                "cursor": "",
+                "min_relevance": 0.0,
+                "type": "",
+                "graph_layer": "canonical",
+            },
+        ),
+        ("find_similar", {"topic": "topic", "top_k": 10, "min_similarity": 0.3}),
+        ("get_supersedence", {"decision_id": "decision-1"}),
+        ("find_contradictions", {"node_id": "", "limit": 10}),
+        ("get_stats", {"min_relevance": 0.0, "graph_layer": "canonical"}),
+    ),
+)
+async def test_routed_graph_errors_are_returned_as_neutral_problems(
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    kwargs: dict[str, object],
+) -> None:
+    """No Grafx route-resolution failure may escape a read endpoint as HTTP 500."""
+
+    monkeypatch.setattr(kg_routes, "get_kg_service", lambda: object())
+    monkeypatch.setattr(
+        kg_routes,
+        "_code_traceability_kg_read_access",
+        AsyncMock(return_value=SimpleNamespace(allowed=True)),
+    )
+    monkeypatch.setattr(kg_routes, "_require_kg_operation", AsyncMock())
+    monkeypatch.setattr(
+        kg_routes,
+        "run_blocking_graph_io",
+        AsyncMock(
+            side_effect=GraphCapabilityUnavailable("graph_route_binding_missing")
+        ),
+    )
+
+    response = await getattr(kg_routes, route)(
+        "test-board",
+        actor=ActorContext("test-user", "rest"),
+        uow=SimpleNamespace(),
+        **kwargs,
+    )
+
+    assert response.status_code == 503
+    body = json.loads(response.body)
+    assert body["type"] == "/errors/graph_capability_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_schema_introspection_runs_off_loop_and_preserves_result(monkeypatch):
     monkeypatch.setattr(kg_routes, "_require_kg_operation", AsyncMock())
     monkeypatch.setattr(kg_routes, "_ensure_board_access", AsyncMock())

@@ -1993,21 +1993,34 @@ function HistoricalRecoveryControl({
   const [error, setError] = useState<string | null>(null);
   const [confirmingStop, setConfirmingStop] = useState(false);
   const [lastActionMessage, setLastActionMessage] = useState<string | null>(null);
+  // Polls may overlap a user cancellation or a newer poll. Only the most
+  // recent request may publish state, otherwise a late pre-cancellation
+  // response can make a cancelled recovery look active again.
+  const refreshGeneration = useRef(0);
 
   const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current;
     if (!canRead) {
-      setProgress(null);
-      setLoading(false);
+      if (generation === refreshGeneration.current) {
+        setProgress(null);
+        setLoading(false);
+      }
       return;
     }
     try {
       const next = await getHistoricalProgress(boardId);
-      setProgress(next);
-      setError(null);
+      if (generation === refreshGeneration.current) {
+        setProgress(next);
+        setError(null);
+      }
     } catch (err) {
-      setError((err as Error).message);
+      if (generation === refreshGeneration.current) {
+        setError((err as Error).message);
+      }
     } finally {
-      setLoading(false);
+      if (generation === refreshGeneration.current) {
+        setLoading(false);
+      }
     }
   }, [boardId, canRead]);
 
@@ -2021,6 +2034,7 @@ function HistoricalRecoveryControl({
     const intervalId = setInterval(poll, pollIntervalMs);
     return () => {
       cancelled = true;
+      refreshGeneration.current += 1;
       clearInterval(intervalId);
     };
   }, [pollIntervalMs, refresh]);
@@ -2038,6 +2052,9 @@ function HistoricalRecoveryControl({
 
   const handleCancel = useCallback(async () => {
     if (!canCancel || action) return;
+    // Fence every outstanding progress request before publishing the durable
+    // cancellation state below.
+    refreshGeneration.current += 1;
     setAction('cancel');
     setError(null);
     try {
