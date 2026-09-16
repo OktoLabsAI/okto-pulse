@@ -3,7 +3,8 @@
 Companion to `okto-pulse-core/docs/KG_TRACEABILITY_GAPS_PLAN.md` (the master
 plan, question catalog, gap inventory and phase order live there). This file
 lists only what changes in this repo, per phase. Branch: `feature/v0.3.4` in
-both repos; Core PRs merge first.
+both repos; Core PRs merge first. Execution order after the user's decisions:
+0 -> 1 -> 2 -> 5 -> 5b -> 3 -> 4 -> 6 (Pulse ideation `dfbdc0f4`).
 
 ## Phase 0
 
@@ -64,19 +65,31 @@ both repos; Core PRs merge first.
 - KG Health UI: surface `bugs_without_learning` and terminal
   `skipped_no_llm_config` closeout items.
 
-## Phase 5 (deferred to 0.3.5 by default): schema evolution 0.5.0 -> 0.6.0
+## Phase 5 (inside 0.3.4 by decision D5; runs after phase 2, before phase 3): schema evolution 0.5.0 -> 0.6.0
 
-- New `adapters/grafx_schema_evolution_0_6_0.py` (or generalised evolution
-  module) with candidate rebuild for: node columns `severity`, `source_status`,
-  `source_created_at`, `source_updated_at`, `resolved_at`; new pairs listed in
-  the master plan.
+- New `adapters/grafx_schema_evolution_0_6_0.py` (or the evolution module
+  generalised into a 0.3.12 -> 0.5.0 -> 0.6.0 chain) with candidate rebuild
+  for: node columns `severity`, `source_status`, `source_created_at`,
+  `source_updated_at`, `resolved_at` (44 -> 49 columns); new pairs `supports
+  (Bug, Requirement | Constraint | Criterion | TestScenario | APIContract |
+  Decision)`, `violates (Bug, Requirement)`, `violates (Bug, Criterion)`,
+  `derives_from (Constraint, Requirement)`, `derives_from (Requirement,
+  Requirement)`, `derives_from (Decision, Constraint)` (69 -> 80 pairs, no new
+  relationship name).
 - `adapters/graph_ddl.py` `COMMON_NODE_COLUMNS` (keep `embedding` last),
   `grafx_schema_manifest.py` fingerprint, `tests/test_grafx_schema_bootstrap.py`
-  (44-column and fingerprint pins), `tests/test_grafx_relationship_layout.py`
-  (16 types / 69 pairs), `tests/test_grafx_auxiliary_indexes.py` counts,
-  `frontend/src/types/knowledge-graph.ts` and
-  `components/knowledge/__tests__/GraphControlsPanel.test.tsx` if a new
-  relationship *name* is introduced (none planned), README counters.
+  (column count and fingerprint pins), `tests/test_grafx_relationship_layout.py`
+  (16 types / 80 pairs), `tests/test_grafx_auxiliary_indexes.py` counts,
+  `frontend/src/constants/kg.ts` SCHEMA_VERSION (no change to
+  `types/knowledge-graph.ts` or `GraphControlsPanel.test.tsx`: no new
+  relationship name), README counters.
+- Board migration runbook: candidate rebuild and cutover for every existing
+  board, `BoardMeta.schema_version` to 0.6.0, one documented operator override
+  for the structural-hash `SCHEMA_VERSION_CHANGED` mismatch on the next rebuild
+  promotion.
+- Exit criteria (decision D4, no loose node): `okto_pulse_kg_orphan_report = 0`
+  and KG Health without connectivity issues on the three local boards after the
+  cutover; edge census unchanged for pre-existing families.
 - `docs/grafx-schema-evolution-0.5.0-to-0.6.0.md` following the existing
   0.3.12-to-0.5.0 document format.
 
