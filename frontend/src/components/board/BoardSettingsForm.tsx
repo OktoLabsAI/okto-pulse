@@ -1091,6 +1091,56 @@ export function BoardSettingsForm({ settings, onChange, contextWarnings }: Board
       </SettingsSection>
 
       <SettingsSection
+        title="Delivery Evidence Gate"
+        description="Requires accepted delivery proof before a task or a Spec can be completed. Test cards authenticate via passed scenarios and stay exempt."
+        icon={<Shield size={12} />}
+      >
+        <SettingRow
+          label="Enforcement mode"
+          description="Governs both card → Done and Spec → Done. Default: Blocking."
+        >
+          {null}
+        </SettingRow>
+        <div
+          className="grid grid-cols-2 gap-2"
+          aria-label="Delivery evidence enforcement mode"
+          data-testid="delivery-evidence-gate-mode"
+        >
+          {(['advisory', 'blocking'] as const).map((mode) => {
+            const checked =
+              (settings.delivery_evidence_gate ?? 'blocking') === mode;
+            const titles: Record<'advisory' | 'blocking', string> = {
+              advisory:
+                'The coverage verdict is shown on the card and the Spec rollup without blocking completion.',
+              blocking:
+                'Card → Done and Spec → Done are rejected with delivery_evidence_incomplete until every obligation has accepted proof or a human waiver.',
+            };
+            return (
+              <button
+                key={mode}
+                type="button"
+                title={titles[mode]}
+                aria-pressed={checked}
+                data-testid={`delivery-evidence-gate-mode-${mode}`}
+                onClick={() => onChange({ delivery_evidence_gate: mode })}
+                className={`h-9 rounded border px-2 text-[11px] font-medium transition-colors ${
+                  checked
+                    ? 'border-violet-400 bg-violet-50 text-violet-700 dark:border-violet-500/70 dark:bg-violet-500/15 dark:text-violet-200'
+                    : 'border-gray-200 bg-gray-50 text-gray-500 hover:bg-gray-100 dark:border-gray-800 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700'
+                }`}
+              >
+                {mode === 'advisory' ? 'Advisory' : 'Blocking'}
+              </button>
+            );
+          })}
+        </div>
+        <p className="text-[10px] leading-4 text-gray-400 dark:text-gray-500">
+          Proofs recorded before this release are migrated automatically on
+          upgrade — boards keep their current protection level.
+        </p>
+      </SettingsSection>
+
+      <SettingsSection
         title="Design System Gate"
         description="Controls Design System consumption checks on mockup submissions."
         icon={<Palette size={12} />}

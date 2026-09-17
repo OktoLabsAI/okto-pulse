@@ -23,6 +23,42 @@ export interface DeliveryEvidenceProjection {
   }>;
   implementations: Array<{ id: string; card_id: string; relative_path: string; result_revision: string; current_accepted_execution: boolean; source_ref?: string; symbol?: string; explanation?: string }>;
   tests?: Array<{ id: string; card_id: string; scenario_id: string; result: string }>;
-  candidates: Array<{ kind: 'implementation' | 'test'; id: string; card_id: string; label: string }>;
+  candidates: Array<{ kind: 'implementation' | 'test'; id: string; card_id: string; card_version?: number; label: string }>;
   records: Array<{ id: string; kind: string; actor_id: string; created_at: string; revoked: boolean; payload: { justification: string; card_id?: string; scenario_id?: string; execution_id?: string; phase?: string } }>;
+}
+
+// --- Card-scoped surface (0.3.4, spec 793c43d0) ---
+
+export interface CardDeliveryEvidenceInput {
+  expected_card_version: number;
+  expected_spec_edition: number;
+  idempotency_key: string;
+  kind: 'implementation' | 'test' | 'revoke';
+  obligation_refs: string[];
+  justification: string;
+  execution_id?: string;
+  scenario_id?: string;
+  implementation_ids?: string[];
+  record_id?: string;
+}
+
+export interface DeliveryPerCardObligation {
+  ref: string;
+  title: string;
+  implementation_satisfied: boolean;
+}
+
+export interface DeliveryPerCard {
+  card_id: string;
+  title: string;
+  card_type: string;
+  status: string;
+  obligations: DeliveryPerCardObligation[];
+  satisfied: boolean;
+}
+// Rollup projection extension (0.3.4): the spec read returns the aggregated
+// card-ledger view. Assign to DeliveryEvidenceProjection via declaration
+// merging below.
+export interface DeliveryEvidenceProjection {
+  per_card?: DeliveryPerCard[];
 }

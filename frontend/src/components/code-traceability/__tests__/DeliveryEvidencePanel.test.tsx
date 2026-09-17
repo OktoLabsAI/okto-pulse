@@ -3,16 +3,19 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { DeliveryEvidencePanel } from '../DeliveryEvidencePanel';
 import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 
-const api = vi.hoisted(() => ({ getDeliveryEvidence: vi.fn(), recordDeliveryEvidence: vi.fn() }));
+const api = vi.hoisted(() => ({ getDeliveryEvidence: vi.fn(), recordDeliveryEvidence: vi.fn(), recordCardDeliveryEvidence: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 function projection(): DeliveryEvidenceProjection {
   return { board_id: 'b', spec_id: 's', edition: 2, version: 7, status: 'in_progress', allowed: false, complete: true,
     blockers: ['delivery_test_result_missing'], rejected_record_ids: [],
     rows: [{ obligation: { title: 'Return the expected version', binding: { obligation_ref: 'ac:1', semantic_sha256: 'a'.repeat(64) } }, implementation_ids: ['impl'], test_ids: [], implementation_waiver_ids: [], test_waiver_ids: [], implementation_satisfied: true, test_satisfied: false }],
     implementations: [{ id: 'impl', card_id: 'task', relative_path: 'src/api.py', result_revision: 'a'.repeat(40), current_accepted_execution: true }],
-    candidates: [{ kind: 'implementation', id: 'execution', card_id: 'task', label: 'API commit' }, { kind: 'test', id: 'scenario', card_id: 'test-card', label: 'Version assertion' }], records: [] };
+    candidates: [
+      { kind: 'implementation', id: 'execution', card_id: 'task', card_version: 4, label: 'API commit' },
+      { kind: 'test', id: 'scenario', card_id: 'test-card', card_version: 2, label: 'Version assertion' },
+    ], records: [] };
 }
-beforeEach(() => { vi.clearAllMocks(); api.getDeliveryEvidence.mockResolvedValue(projection()); api.recordDeliveryEvidence.mockResolvedValue({ id: 'new', replayed: false }); });
+beforeEach(() => { vi.clearAllMocks(); api.getDeliveryEvidence.mockResolvedValue(projection()); api.recordDeliveryEvidence.mockResolvedValue({ id: 'new', replayed: false }); api.recordCardDeliveryEvidence.mockResolvedValue({ id: 'new', replayed: false }); });
 afterEach(cleanup);
 
 it('shows missing verification without claiming the planning matrix proves delivery', async () => {
@@ -26,7 +29,21 @@ it('shows missing verification without claiming the planning matrix proves deliv
   expect(screen.getByText('Task/bug: task')).toBeTruthy();
 });
 
-it('binds authenticated test-card candidate and implementation IDs using server version', async () => {
+it('renders the per-card rollup block with name-first obligations', async () => {
+  const p = projection();
+  p.per_card = [
+    { card_id: 'task', title: 'Re-anchor delivery bindings', card_type: 'normal', status: 'done', satisfied: true, obligations: [{ ref: 'fr:1', title: 'Bindings live on the card ledger', implementation_satisfied: true }] },
+    { card_id: 'test-card', title: 'DoD rejection scenario', card_type: 'test', status: 'done', satisfied: false, obligations: [] },
+  ];
+  api.getDeliveryEvidence.mockResolvedValue(p);
+  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  expect(await screen.findByText('Re-anchor delivery bindings')).toBeTruthy();
+  expect(screen.getByText('Bindings live on the card ledger')).toBeTruthy();
+  expect(screen.getByText('Test card · authenticates via passed scenario')).toBeTruthy();
+  expect(screen.getByText('Satisfied')).toBeTruthy();
+});
+
+it('binds authenticated test-card candidate via the card-scoped surface', async () => {
   render(<DeliveryEvidencePanel boardId="b" specId="s" canTest />);
   await screen.findByText('Return the expected version');
   fireEvent.click(screen.getByLabelText('Select ac:1'));
@@ -36,9 +53,10 @@ it('binds authenticated test-card candidate and implementation IDs using server 
   fireEvent.click(screen.getByRole('checkbox', { name: /src\/api.py/ }));
   fireEvent.change(screen.getByRole('textbox', { name: /Explanation/ }), { target: { value: 'Verified the committed version output.' } });
   fireEvent.click(screen.getByRole('button', { name: 'Record association' }));
-  await waitFor(() => expect(api.recordDeliveryEvidence).toHaveBeenCalledTimes(1));
-  expect(api.recordDeliveryEvidence.mock.calls[0]).toEqual(['b', 's', expect.objectContaining({ expected_edition: 2, expected_version: 7, kind: 'test', card_id: 'test-card', scenario_id: 'scenario', implementation_ids: ['impl'], obligation_refs: ['ac:1'] })]);
-  expect(api.recordDeliveryEvidence.mock.calls[0][2]).not.toHaveProperty('verified');
+  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledTimes(1));
+  expect(api.recordCardDeliveryEvidence.mock.calls[0]).toEqual(['b', 'test-card', 's', expect.objectContaining({ expected_spec_edition: 2, expected_card_version: 2, kind: 'test', scenario_id: 'scenario', implementation_ids: ['impl'], obligation_refs: ['ac:1'] })]);
+  expect(api.recordCardDeliveryEvidence.mock.calls[0][3]).not.toHaveProperty('card_id');
+  expect(api.recordCardDeliveryEvidence.mock.calls[0][3]).not.toHaveProperty('verified');
 });
 
 it('keeps done Specs done and displays waiver distinctly from test success', async () => {
@@ -48,6 +66,19 @@ it('keeps done Specs done and displays waiver distinctly from test success', asy
   expect(await screen.findByText(/has not been reopened/)).toBeTruthy();
   expect(screen.getByText('Explicitly waived — not tested')).toBeTruthy();
   expect(screen.getByLabelText('Record type')).toHaveProperty('value', 'waiver');
+});
+
+it('routes a waiver to the legacy human-only surface, never the card ledger', async () => {
+  render(<DeliveryEvidencePanel boardId="b" specId="s" canCreateWaiver />);
+  await screen.findByText('Return the expected version');
+  fireEvent.click(screen.getByLabelText('Select ac:1'));
+  fireEvent.change(screen.getByLabelText('Record type'), { target: { value: 'waiver' } });
+  fireEvent.change(screen.getByRole('combobox', { name: /Exempt only this phase/ }), { target: { value: 'test' } });
+  fireEvent.change(screen.getByRole('textbox', { name: /Explanation/ }), { target: { value: 'Not testable in this lane.' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Record association' }));
+  await waitFor(() => expect(api.recordDeliveryEvidence).toHaveBeenCalledTimes(1));
+  expect(api.recordDeliveryEvidence.mock.calls[0]).toEqual(['b', 's', expect.objectContaining({ expected_edition: 2, expected_version: 7, kind: 'waiver', phase: 'test', obligation_refs: ['ac:1'] })]);
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
 });
 
 it('separates waiver creation from the authority to revoke an existing record', async () => {
@@ -67,11 +98,13 @@ it('separates waiver creation from the authority to revoke an existing record', 
   fireEvent.change(reason, { target: { value: 'The exception no longer applies.' } });
   fireEvent.click(screen.getByRole('button', { name: 'Revoke' }));
 
+  // Waiver revocation stays on the legacy human-only rollup surface (BR-3).
   await waitFor(() => expect(api.recordDeliveryEvidence).toHaveBeenCalledWith(
     'b', 's', expect.objectContaining({
       kind: 'revoke', record_id: 'record-1', justification: 'The exception no longer applies.',
     }),
   ));
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
 });
 
 it('does not retain a success message after refresh fails', async () => {
@@ -85,7 +118,7 @@ it('does not retain a success message after refresh fails', async () => {
 });
 
 it('retries an uncertain save with the same idempotency key', async () => {
-  api.recordDeliveryEvidence.mockRejectedValueOnce(new Error('Network failed'));
+  api.recordCardDeliveryEvidence.mockRejectedValueOnce(new Error('Network failed'));
   render(<DeliveryEvidencePanel boardId="b" specId="s" canRecord />);
   await screen.findByText('Return the expected version');
   fireEvent.click(screen.getByLabelText('Select ac:1'));
@@ -94,6 +127,7 @@ it('retries an uncertain save with the same idempotency key', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Record association' }));
   await screen.findByText('Network failed');
   fireEvent.click(screen.getByRole('button', { name: 'Record association' }));
-  await waitFor(() => expect(api.recordDeliveryEvidence).toHaveBeenCalledTimes(2));
-  expect(api.recordDeliveryEvidence.mock.calls[0][2]).toEqual(api.recordDeliveryEvidence.mock.calls[1][2]);
+  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledTimes(2));
+  expect(api.recordCardDeliveryEvidence.mock.calls[0][3].idempotency_key).toBe(api.recordCardDeliveryEvidence.mock.calls[1][3].idempotency_key);
+  expect(api.recordCardDeliveryEvidence.mock.calls[0][3].expected_card_version).toBe(4);
 });

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
-import type { DeliveryEvidenceInput, DeliveryEvidenceProjection } from '@/types/delivery-evidence';
+import type { CardDeliveryEvidenceInput, DeliveryEvidenceInput, DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 
 interface Props {
   boardId: string;
@@ -46,21 +46,35 @@ export function DeliveryEvidencePanel({ boardId, specId, canRecord = false, canT
     if ((recordId && !canClearWaiver) || (!recordId && kind === 'waiver' && !canCreateWaiver) || (!recordId && kind === 'test' && !canTest) || (!recordId && kind === 'implementation' && !canRecord)) return;
     const originalIdentity = identity;
     const selected = data.candidates.find(item => `${item.card_id}:${item.id}` === choice);
-    const input: DeliveryEvidenceInput = {
-      expected_edition: data.edition, expected_version: data.version,
-      idempotency_key: crypto.randomUUID(), kind: recordId ? 'revoke' : kind,
+    const cardInput: CardDeliveryEvidenceInput = {
+      expected_card_version: selected?.card_version ?? 1, expected_spec_edition: data.edition,
+      idempotency_key: crypto.randomUUID(),
+      // Card-scoped surface rejects waivers by contract shape; the waiver
+      // branch is routed to legacyInput below and never reaches cardInput.kind.
+      kind: (recordId ? 'revoke' : kind === 'waiver' ? 'revoke' : kind) as CardDeliveryEvidenceInput['kind'],
       obligation_refs: recordId ? [] : refs, justification,
-      ...(recordId ? { record_id: recordId } : kind === 'waiver' ? { phase } : {
-        card_id: selected?.card_id,
+      ...(recordId ? { record_id: recordId } : {
         ...(kind === 'implementation' ? { execution_id: selected?.id } : { scenario_id: selected?.id, implementation_ids: testedIds }),
       }),
     };
-    const payload = JSON.stringify({ ...input, idempotency_key: '', board_id: boardId, spec_id: specId });
-    if (replayRef.current?.payload === payload) input.idempotency_key = replayRef.current.key;
-    else replayRef.current = { payload, key: input.idempotency_key };
+    // Waivers AND their revocations stay on the legacy spec-rollup surface
+    // (human-only, BR-3): there is no card anchor for a waiver.
+    const useLegacySurface = Boolean(recordId) || kind === 'waiver';
+    const legacyInput: DeliveryEvidenceInput | null = useLegacySurface ? {
+      expected_edition: data.edition, expected_version: data.version,
+      idempotency_key: cardInput.idempotency_key,
+      kind: recordId ? 'revoke' : 'waiver',
+      obligation_refs: recordId ? [] : refs, justification,
+      ...(recordId ? { record_id: recordId } : { phase }),
+    } : null;
+    const payload = JSON.stringify({ ...cardInput, idempotency_key: '', board_id: boardId, spec_id: specId });
+    if (replayRef.current?.payload === payload) cardInput.idempotency_key = replayRef.current.key;
+    else replayRef.current = { payload, key: cardInput.idempotency_key };
     setBusy(true); setError('');
     try {
-      await api.recordDeliveryEvidence(boardId, specId, input);
+      if (legacyInput) await api.recordDeliveryEvidence(boardId, specId, legacyInput);
+      else if (!selected) throw new Error('Select an accepted current proof first.');
+      else await api.recordCardDeliveryEvidence(boardId, selected.card_id, specId, cardInput);
       if (identityRef.current !== originalIdentity) return;
       replayRef.current = null;
       if (recordId) setRevocationReason(''); else setReason('');
@@ -90,6 +104,22 @@ export function DeliveryEvidencePanel({ boardId, specId, canRecord = false, canT
           <td className="p-2">{row.test_ids.length ? <details><summary className="cursor-pointer">Verified passing run ({row.test_ids.length})</summary>{row.test_ids.map(id => { const proof = data.tests?.find(t => t.id === id); return <div key={id} className="mt-2 max-w-sm break-words text-xs"><p>Test card: {proof?.card_id || 'See audit record'}</p><p>Scenario: {proof?.scenario_id || 'See audit record'}</p><code className="break-all">{id}</code></div>; })}</details> : row.test_waiver_ids.length ? 'Explicitly waived — not tested' : 'Missing / stale'}</td>
         </tr>; })}
       </tbody></table></div>
+      {data.per_card && data.per_card.length > 0 && <div>
+        <h4 className="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Per card</h4>
+        <ul className="mt-2 space-y-2">
+          {data.per_card.map(card => <li key={card.card_id} className="rounded border p-3">
+            <div className="flex items-center justify-between gap-3">
+              <span className="min-w-0"><span className="block truncate text-sm font-medium">{card.title}</span><code className="text-xs text-slate-500">{card.card_id}</code></span>
+              <span className={card.card_type === 'test' ? 'text-xs text-slate-400' : card.satisfied ? 'text-xs font-medium text-emerald-600' : 'text-xs font-medium text-amber-600'}>
+                {card.card_type === 'test' ? 'Test card · authenticates via passed scenario' : card.satisfied ? 'Satisfied' : 'In progress'}
+              </span>
+            </div>
+            {card.obligations.length > 0 && <ul className="mt-2 space-y-1 text-xs">
+              {card.obligations.map(ob => <li key={ob.ref} className="flex items-center justify-between gap-3"><span className="min-w-0"><span className="block truncate">{ob.title}</span><code className="text-slate-500">{ob.ref}</code></span><span className={ob.implementation_satisfied ? 'text-emerald-600' : 'text-amber-600'}>{ob.implementation_satisfied ? '✓ Implementation' : '◌ No accepted proof'}</span></li>)}
+            </ul>}
+          </li>)}
+        </ul>
+      </div>}
       {canCreateAnyRecord && <form onSubmit={e => { e.preventDefault(); void submit(); }} className="space-y-3 rounded border p-3">
         <h4 className="font-medium">Associate proof with selected obligations</h4>
         <label className="block text-sm">Record type<select className={field} value={kind} onChange={e => { setKind(e.target.value as typeof kind); setChoice(''); }}>

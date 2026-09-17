@@ -10,8 +10,8 @@ invoke only those governance operations.
 """
 
 from __future__ import annotations
-from okto_pulse.core.models.delivery_evidence import DeliveryEvidenceInput, DeliveryEvidenceCommand, DeliveryEvidenceQuery
-from okto_pulse.core.application.use_cases.delivery_evidence import GetDeliveryEvidenceUseCase, RecordDeliveryEvidenceUseCase
+from okto_pulse.core.models.delivery_evidence import CardDeliveryEvidenceCommand, CardDeliveryEvidenceInput, DeliveryEvidenceInput, DeliveryEvidenceCommand, DeliveryEvidenceQuery
+from okto_pulse.core.application.use_cases.delivery_evidence import GetDeliveryEvidenceUseCase, RecordCardDeliveryEvidenceUseCase, RecordDeliveryEvidenceUseCase
 
 import base64
 from dataclasses import fields, is_dataclass
@@ -1289,8 +1289,20 @@ async def get_delivery_evidence(board_id: str, spec_id: str, principal: Principa
 
 @router.post("/{board_id}/specs/{spec_id}/delivery-evidence")
 async def record_delivery_evidence(board_id: str, spec_id: str, body: DeliveryEvidenceInput, principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
+    """Legacy spec-scoped surface: waivers and their revocations (human-only)."""
     command = DeliveryEvidenceCommand(board_id=board_id, spec_id=spec_id, **body.model_dump())
     return await _execute(RecordDeliveryEvidenceUseCase(), command, board_id=board_id, principal=principal, uow=uow)
+
+
+@router.post("/{board_id}/cards/{card_id}/specs/{spec_id}/delivery-evidence")
+async def record_card_delivery_evidence(board_id: str, card_id: str, spec_id: str, body: CardDeliveryEvidenceInput, principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
+    """Card-scoped recording surface (0.3.4, spec 793c43d0 / FR-7).
+
+    The task owns its implementation/test bindings; the command carries the
+    card CAS fence. Waivers are not accepted here (BR-3).
+    """
+    command = CardDeliveryEvidenceCommand(board_id=board_id, card_id=card_id, spec_id=spec_id, **body.model_dump())
+    return await _execute(RecordCardDeliveryEvidenceUseCase(), command, board_id=board_id, principal=principal, uow=uow)
 
 
 __all__ = ["router"]

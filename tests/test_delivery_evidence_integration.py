@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Base,
+    CardDeliveryEvidenceRecordRow,
     Spec,
     Card,
     DeliveryEvidenceRecordRow,
@@ -35,7 +36,7 @@ from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import (
 from okto_pulse.community.adapters.test_evidence import (
     CommunityTestEvidenceWriteVerifier,
 )
-from okto_pulse.core.models.delivery_evidence import DeliveryEvidenceCommand
+from okto_pulse.core.models.delivery_evidence import CardDeliveryEvidenceCommand, DeliveryEvidenceCommand
 from okto_pulse.core.domain.code_traceability import (
     code_investigation_observation_sha256,
 )
@@ -86,6 +87,16 @@ async def ledger(tmp_path):
     )
     await session.execute(
         update(Card).where(Card.id == "test").values(test_scenario_ids=[SCENARIO["id"]])
+    )
+    # FR-2: the task card's obligation universe derives from linked_task_ids.
+    await session.execute(
+        update(Spec)
+        .where(Spec.id == SPEC_ID)
+        .values(
+            acceptance_criteria=[
+                {**ACCEPTANCE_CRITERIA[0], "linked_task_ids": ["task"]}
+            ]
+        )
     )
     now = datetime(2026, 7, 14, 14, tzinfo=timezone.utc)
     request, consumed, receipt, _, workspace = _attestation_bundle(
@@ -166,6 +177,32 @@ async def ledger(tmp_path):
 
 
 def command(kind="implementation", **kwargs):
+    """Card-scoped command (0.3.4 surface) for implementation/test/revoke.
+
+    The legacy spec-scoped shape stays available for waivers (human-only,
+    rollup level) via ``legacy_command``.
+    """
+    values = dict(
+        board_id=BOARD_ID,
+        spec_id=SPEC_ID,
+        expected_spec_edition=1,
+        idempotency_key=kind,
+        kind=kind,
+        obligation_refs=["ac:ac-about"],
+        justification="The implemented About version is tested by this health assertion.",
+    )
+    if kind == "implementation":
+        values.update(card_id="task", execution_id="execution", expected_card_version=1)
+    elif kind == "test":
+        values.update(card_id="test", scenario_id=SCENARIO["id"], expected_card_version=1)
+    elif kind == "revoke":
+        values.update(obligation_refs=[], record_id=kwargs.pop("record_id", "record"))
+    if "card_id" in kwargs:
+        values["expected_card_version"] = kwargs.get("expected_card_version", 1)
+    return CardDeliveryEvidenceCommand(**{**values, **kwargs})
+
+
+def legacy_command(kind="waiver", **kwargs):
     values = dict(
         board_id=BOARD_ID,
         spec_id=SPEC_ID,
@@ -174,13 +211,9 @@ def command(kind="implementation", **kwargs):
         idempotency_key=kind,
         kind=kind,
         obligation_refs=["ac:ac-about"],
-        justification="The implemented About version is tested by this health assertion.",
+        justification="Explicit audited exemption.",
     )
-    if kind == "implementation":
-        values.update(card_id="task", execution_id="execution")
-    elif kind == "test":
-        values.update(card_id="test", scenario_id=SCENARIO["id"])
-    elif kind == "waiver":
+    if kind == "waiver":
         values.update(phase="implementation")
     elif kind == "revoke":
         values.update(obligation_refs=[])
@@ -188,6 +221,12 @@ def command(kind="implementation", **kwargs):
 
 
 async def record(store, data, human=False):
+    if isinstance(data, CardDeliveryEvidenceCommand):
+        return await store.record_card(
+            data,
+            actor_id="owner" if human else "agent-1",
+            actor_kind="user" if human else "agent",
+        )
     return await store.record(
         data,
         actor_id="owner" if human else "agent-1",
@@ -295,16 +334,17 @@ async def test_waiver_is_human_scoped_phase_specific_revocable_and_preserves_don
 ):
     session, store, _ = ledger
     await session.execute(update(Spec).values(status="done"))
+    # Waivers stay on the legacy spec-rollup surface (BR-3).
     with pytest.raises(ValueError, match="human_authorization"):
-        await record(store, command("waiver"))
-    first = await record(store, command("waiver"), human=True)
+        await record(store, legacy_command("waiver"))
+    first = await record(store, legacy_command("waiver"), human=True)
     view = await store.projection(BOARD_ID, SPEC_ID)
     assert not view["allowed"] and view["rows"][0]["implementation_waiver_ids"]
     await record(
-        store, command("waiver", phase="test", idempotency_key="waive-test"), human=True
+        store, legacy_command("waiver", phase="test", idempotency_key="waive-test"), human=True
     )
     assert (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
-    await record(store, command("revoke", record_id=first["id"]), human=True)
+    await record(store, legacy_command("revoke", record_id=first["id"]), human=True)
     view = await store.projection(BOARD_ID, SPEC_ID)
     assert not view["allowed"] and view["status"] == "done"
     assert len(view["records"]) == 3
@@ -316,8 +356,8 @@ async def test_rejects_cross_scope_stale_version_unknown_obligation_and_replay_c
 ):
     session, store, _ = ledger
     for data, error in (
-        (command(expected_version=2), "version_conflict"),
-        (command(expected_edition=2), "edition_conflict"),
+        (command(expected_card_version=2), "version_conflict"),
+        (command(expected_spec_edition=2), "edition_conflict"),
         (command(obligation_refs=["fr:missing"]), "obligation_not_found"),
         (command(card_id="test"), "accepted_committed_task"),
         (command(spec_id="other"), "spec_not_found"),
@@ -339,7 +379,7 @@ async def test_core_use_case_denies_before_persistence_and_agents_cannot_waive(
     from okto_pulse.core.application.use_cases import delivery_evidence as app
     from okto_pulse.core.application.use_cases.base import PermissionDeniedError
 
-    store = SimpleNamespace(record=AsyncMock())
+    store = SimpleNamespace(record=AsyncMock(), record_card=AsyncMock())
     uow = SimpleNamespace(services=SimpleNamespace(delivery_evidence=store))
     actor = SimpleNamespace(actor_id="agent", actor_kind="agent")
     monkeypatch.setattr(
@@ -348,16 +388,21 @@ async def test_core_use_case_denies_before_persistence_and_agents_cannot_waive(
         AsyncMock(side_effect=PermissionDeniedError("denied")),
     )
     with pytest.raises(PermissionDeniedError):
-        await app.RecordDeliveryEvidenceUseCase().execute(
+        await app.RecordCardDeliveryEvidenceUseCase().execute(
             command(), actor=actor, uow=uow
         )
-    store.record.assert_not_awaited()
+    store.record_card.assert_not_awaited()
     monkeypatch.setattr(app, "require_authorization", AsyncMock())
     with pytest.raises(PermissionDeniedError, match="human_authorization"):
         await app.RecordDeliveryEvidenceUseCase().execute(
-            command("waiver"), actor=actor, uow=uow
+            legacy_command("waiver"), actor=actor, uow=uow
         )
     store.record.assert_not_awaited()
+    # The card surface has no waiver kind at all: agents cannot even ask.
+    with pytest.raises(Exception):
+        CardDeliveryEvidenceCommand(
+            **{**command().model_dump(exclude={"kind"}), "kind": "waiver", "phase": "implementation"}
+        )
 
 
 @pytest.mark.asyncio
@@ -374,7 +419,7 @@ async def test_real_sqlite_race_has_one_audit_record_and_one_replay(ledger):
     results = await asyncio.gather(worker(), worker())
     assert results[0]["id"] == results[1]["id"]
     assert sorted(r["replayed"] for r in results) == [False, True]
-    assert len((await session.scalars(select(DeliveryEvidenceRecordRow))).all()) == 1
+    assert len((await session.scalars(select(CardDeliveryEvidenceRecordRow))).all()) == 1
 
 
 @pytest.mark.asyncio
@@ -382,15 +427,17 @@ async def test_database_rejects_audit_rewriting(ledger):
     session, store, _ = ledger
     saved = await record(store, command())
     await session.commit()
-    with pytest.raises(IntegrityError, match="delivery_audit_immutable"):
+    row = await session.get(CardDeliveryEvidenceRecordRow, saved["id"])
+    assert row is not None and row.actor_id == "agent-1"
+    with pytest.raises(IntegrityError, match="card_delivery_audit_immutable"):
         await session.execute(
-            update(DeliveryEvidenceRecordRow)
-            .where(DeliveryEvidenceRecordRow.id == saved["id"])
+            update(CardDeliveryEvidenceRecordRow)
+            .where(CardDeliveryEvidenceRecordRow.id == saved["id"])
             .values(actor_id="someone-else")
         )
     await session.rollback()
     assert (
-        await session.get(DeliveryEvidenceRecordRow, saved["id"])
+        await session.get(CardDeliveryEvidenceRecordRow, saved["id"])
     ).actor_id == "agent-1"
 
 
@@ -431,27 +478,37 @@ async def test_rest_roundtrip_closed_schema_and_domain_errors(ledger, monkeypatc
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=rest_app), base_url="http://test"
     ) as client:
-        url = f"/boards/{BOARD_ID}/specs/{SPEC_ID}/delivery-evidence"
-        response = await client.get(url)
+        read_url = f"/boards/{BOARD_ID}/specs/{SPEC_ID}/delivery-evidence"
+        response = await client.get(read_url)
         assert response.status_code == 200 and response.json()["allowed"] is False
-        payload = command().model_dump(exclude={"board_id", "spec_id"})
+        # Card-scoped recording surface (0.3.4, spec 793c43d0 / FR-7).
+        url = f"/boards/{BOARD_ID}/cards/task/specs/{SPEC_ID}/delivery-evidence"
+        test_url = f"/boards/{BOARD_ID}/cards/test/specs/{SPEC_ID}/delivery-evidence"
+        payload = command().model_dump(exclude={"board_id", "card_id", "spec_id"})
         forged = await client.post(url, json={**payload, "verified": True})
         assert forged.status_code == 422
         saved = await client.post(url, json=payload)
         assert saved.status_code == 200, saved.text
         test_payload = command(
             "test", implementation_ids=[saved.json()["id"]]
-        ).model_dump(exclude={"board_id", "spec_id"})
-        tested = await client.post(url, json=test_payload)
+        ).model_dump(exclude={"board_id", "card_id", "spec_id"})
+        tested = await client.post(test_url, json=test_payload)
         assert tested.status_code == 200, tested.text
-        assert (await client.get(url)).json()["allowed"] is True
+        assert (await client.get(read_url)).json()["allowed"] is True
         stale = await client.post(
-            url, json={**payload, "expected_version": 50, "idempotency_key": "stale"}
+            url,
+            json={**payload, "expected_card_version": 50, "idempotency_key": "stale"},
         )
         assert (
             stale.status_code == 409
             and stale.json()["detail"]["code"] == "delivery_version_conflict"
         )
+        # The legacy spec surface stays for human-only waivers (BR-3) and
+        # rejects the card-scoped shape with the closed-schema 422.
+        legacy = await client.post(
+            f"/boards/{BOARD_ID}/specs/{SPEC_ID}/delivery-evidence", json=payload
+        )
+        assert legacy.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -497,9 +554,10 @@ async def test_mcp_runs_same_store_closed_inputs_permissions_and_explicit_errors
     read = await catalog.get_tool("okto_pulse_get_delivery_evidence")
     bad = await write.fn(
         board_id=BOARD_ID,
+        card_id="task",
         spec_id=SPEC_ID,
         evidence={
-            **command().model_dump(exclude={"board_id", "spec_id"}),
+            **command().model_dump(exclude={"board_id", "card_id", "spec_id"}),
             "verified": True,
         },
     )
@@ -507,15 +565,17 @@ async def test_mcp_runs_same_store_closed_inputs_permissions_and_explicit_errors
     auth.assert_not_awaited()
     saved = await write.fn(
         board_id=BOARD_ID,
+        card_id="task",
         spec_id=SPEC_ID,
-        evidence=command().model_dump(exclude={"board_id", "spec_id"}),
+        evidence=command().model_dump(exclude={"board_id", "card_id", "spec_id"}),
     )
     assert not saved.is_error, saved
     tested = await write.fn(
         board_id=BOARD_ID,
+        card_id="test",
         spec_id=SPEC_ID,
         evidence=command("test", implementation_ids=[saved.payload["id"]]).model_dump(
-            exclude={"board_id", "spec_id"}
+            exclude={"board_id", "card_id", "spec_id"}
         ),
     )
     assert not tested.is_error, tested
@@ -524,18 +584,26 @@ async def test_mcp_runs_same_store_closed_inputs_permissions_and_explicit_errors
     assert result.payload["allowed"]
     stale = await write.fn(
         board_id=BOARD_ID,
+        card_id="task",
         spec_id=SPEC_ID,
-        evidence=command(expected_version=90, idempotency_key="stale").model_dump(
-            exclude={"board_id", "spec_id"}
+        evidence=command(expected_card_version=90, idempotency_key="stale").model_dump(
+            exclude={"board_id", "card_id", "spec_id"}
         ),
     )
     assert stale.is_error and stale.code == "delivery_version_conflict"
+    # Waivers are not part of the card surface at all (BR-3): the closed
+    # input shape rejects the kind before any authorization runs.
     waiver = await write.fn(
         board_id=BOARD_ID,
+        card_id="task",
         spec_id=SPEC_ID,
-        evidence=command("waiver").model_dump(exclude={"board_id", "spec_id"}),
+        evidence={
+            **command().model_dump(exclude={"board_id", "card_id", "spec_id", "kind"}),
+            "kind": "waiver",
+            "phase": "implementation",
+        },
     )
-    assert waiver.is_error and waiver.code == "forbidden"
+    assert waiver.is_error and waiver.code == "validation_failed"
 
 
 @pytest.mark.asyncio

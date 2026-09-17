@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import type { DeliveryEvidenceInput, DeliveryEvidenceProjection } from '@/types/delivery-evidence';
+import type { CardDeliveryEvidenceInput, DeliveryEvidenceInput, DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 /**
  * API Service - all API calls centralized
  */
@@ -604,7 +604,13 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
     },
 
     async recordDeliveryEvidence(boardId: string, specId: string, body: DeliveryEvidenceInput): Promise<{ id: string; replayed: boolean }> {
+      // Legacy spec-scoped surface: waivers and their revocations (human-only).
       return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence`, { method: 'POST', body: JSON.stringify(body) });
+    },
+
+    async recordCardDeliveryEvidence(boardId: string, cardId: string, specId: string, body: CardDeliveryEvidenceInput): Promise<{ id: string; replayed: boolean }> {
+      // Card-scoped surface (0.3.4, spec 793c43d0): the task owns its bindings.
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/cards/${encodeURIComponent(cardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence`, { method: 'POST', body: JSON.stringify(body) });
     },
 
     async getCodeTraceabilityProjection(

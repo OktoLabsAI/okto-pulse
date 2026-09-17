@@ -899,6 +899,39 @@ def create_community_app():
     async def combined_lifespan(app_instance) -> AsyncGenerator[None, None]:
         await init_db()
 
+        # 0.3.4 delivery-evidence re-anchoring (spec 793c43d0 / FR-6): copy
+        # the legacy spec ledger into the card ledger once, transactionally
+        # per board, guarded by the verdict-equivalence gate. Idempotent —
+        # re-runs skip already-migrated rows; an abort (needs_relink or
+        # verdict divergence) logs the bounded report and leaves the legacy
+        # ledger untouched (copy-not-move) for operator remediation.
+        try:
+            from okto_pulse.community.adapters.delivery_migration import (
+                DeliveryMigrationAborted,
+                migrate_all_boards,
+            )
+
+            async with _rc_session_factory() as _migration_session:
+                for _report in await migrate_all_boards(_migration_session):
+                    _STARTUP_LOGGER.info(
+                        "delivery migration board=%s copied=%s skipped_existing=%s skipped_waivers=%s",
+                        _report.get("board_id"),
+                        _report.get("copied"),
+                        _report.get("skipped_existing"),
+                        _report.get("skipped_waivers"),
+                    )
+                await _migration_session.commit()
+        except DeliveryMigrationAborted as _exc:
+            _STARTUP_LOGGER.error(
+                "delivery migration ABORTED board=%s reason=%s report=%s — "
+                "legacy ledger untouched; resolve needs_relink bindings",
+                _exc.report.get("board_id"),
+                str(_exc),
+                _exc.report,
+            )
+        except Exception as _exc:  # noqa: BLE001 — boot must never strand here
+            _STARTUP_LOGGER.exception("delivery migration failed: %s", _exc)
+
         # Rehydrate the composed settings snapshot immediately after schema
         # initialization. First-boot seeding materializes the demo graph, so it
         # must observe persisted graph-memory limits just like every later

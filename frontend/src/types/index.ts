@@ -3412,6 +3412,10 @@ export interface BoardSettings {
   // recorded in the activity log; require = gated moves reject a conclusion
   // without a minimally populated block.
   impact_evidence_mode?: 'off' | 'advisory' | 'require';
+  // Card-scoped delivery evidence gate (spec 793c43d0 / FR-5). One setting
+  // governs BOTH card→done and spec→done. Missing legacy values resolve to
+  // `blocking` server-side — the 0.3.3 spec gate was unconditional.
+  delivery_evidence_gate?: 'advisory' | 'blocking';
   // Requirement-lint language profiles exposed during preflight to an
   // external evaluating agent. Community persists the configuration and the
   // returned evidence; it does not perform the analysis. Empty/absent means

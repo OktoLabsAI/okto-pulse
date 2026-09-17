@@ -219,6 +219,14 @@ class CommunityDeliveryEvidenceStore:
                 evidence=evidence,
             ).verified
         if valid and payload.get("implementation_ids"):
+            # Card-ledger test records reference card-ledger implementation ids
+            # (CardRecord rows); legacy spec records reference the legacy table.
+            binding_model = CardRecord if isinstance(record, CardRecord) else Record
+            binding_scope_fields = (
+                ("board_id", "spec_id", "spec_edition")
+                if binding_model is CardRecord
+                else ("board_id", "spec_id", "edition")
+            )
             try:
                 executed_at = datetime.fromisoformat(
                     evidence["execution_attestation"]["executed_at"].replace(
@@ -226,14 +234,15 @@ class CommunityDeliveryEvidenceStore:
                     )
                 )
                 for implementation_id in payload["implementation_ids"]:
-                    binding_record = await self.session.get(Record, implementation_id)
+                    binding_record = await self.session.get(
+                        binding_model, implementation_id
+                    )
                     if (
                         binding_record is None
                         or binding_record.kind != "implementation"
-                        or (
-                            binding_record.board_id,
-                            binding_record.spec_id,
-                            binding_record.edition,
+                        or tuple(
+                            getattr(binding_record, field)
+                            for field in binding_scope_fields
                         )
                         != (scope.board_id, scope.spec_id, scope.edition)
                     ):
@@ -324,7 +333,10 @@ class CommunityDeliveryEvidenceStore:
     async def projection(self, board_id, spec_id):
         spec = await self._spec(board_id, spec_id)
         scope = DeliveryScope(board_id, spec_id, int(spec.edition))
-        snapshot = await self.load_snapshot(scope)
+        # Spec-scoped READ returns the card-ledger rollup (FR-4): the spec
+        # projection is a derivation, not a recording surface. The response
+        # keeps the legacy shape and adds the per_card block (RDL-3).
+        snapshot, per_card = await self.load_rollup_snapshot(board_id, spec_id)
         evaluation = evaluate_delivery_coverage(snapshot)
         records = await self._records(scope)
         revoked = {r.payload.get("record_id") for r in records if r.kind == "revoke"}
@@ -363,6 +375,15 @@ class CommunityDeliveryEvidenceStore:
                         "kind": "implementation",
                         "id": execution.id,
                         "card_id": execution.card_id,
+                        # Card CAS fence for the card-scoped record surface.
+                        "card_version": int(
+                            getattr(
+                                await self._get(Card, execution.card_id),
+                                "policy_version",
+                                1,
+                            )
+                            or 1
+                        ),
                         "label": f"{execution.actual_relative_path} @ {execution.result_declared_revision}",
                     }
                 )
@@ -399,6 +420,7 @@ class CommunityDeliveryEvidenceStore:
                             "kind": "test",
                             "id": scenario["id"],
                             "card_id": card.id,
+                            "card_version": int(card.policy_version or 1),
                             "label": f"{card.title}: {scenario.get('title', scenario['id'])}",
                         }
                     )
@@ -423,6 +445,7 @@ class CommunityDeliveryEvidenceStore:
             "implementations": [asdict(fact) for fact in snapshot.implementations],
             "tests": [asdict(fact) for fact in snapshot.tests],
             "candidates": candidates,
+            "per_card": per_card,
             "records": [
                 {
                     "id": r.id,
@@ -623,11 +646,35 @@ class CommunityDeliveryEvidenceStore:
                     tests.append(fact)
         return DeliveryEvidenceSnapshot(
             spec_scope,
-            card_delivery_inventory(spec, card),
+            self._snapshot_obligations(spec, card),
             tuple(implementations),
             tuple(tests),
             complete=True,
         )
+
+    @staticmethod
+    def _snapshot_obligations(spec, card):
+        """Obligation universe for one card's snapshot.
+
+        Normal/bug cards derive obligations from their own links (the task
+        DoD universe, FR-2). Test cards bind spec-level obligations — their
+        scenario links are not ``linked_task_ids`` on spec entities — so
+        their snapshot resolves the spec inventory (the rollup universe).
+        """
+        raw_type = getattr(card, "card_type", None)
+        card_type = str(getattr(raw_type, "value", raw_type or "normal"))
+        if card_type == "test":
+            return delivery_inventory(spec)
+        return card_delivery_inventory(spec, card)
+
+    @staticmethod
+    def _record_inventory(spec, card):
+        """Binding-resolution inventory for record_card (same rule)."""
+        raw_type = getattr(card, "card_type", None)
+        card_type = str(getattr(raw_type, "value", raw_type or "normal"))
+        if card_type == "test":
+            return delivery_inventory(spec)
+        return card_delivery_inventory(spec, card)
 
     async def record_card(
         self, command: CardDeliveryEvidenceCommand, *, actor_id, actor_kind
@@ -669,7 +716,7 @@ class CommunityDeliveryEvidenceStore:
             raise ValueError("delivery_version_conflict")
         inventory = {
             o.binding.obligation_ref: o.binding
-            for o in card_delivery_inventory(spec, card)
+            for o in self._record_inventory(spec, card)
         }
         if any(ref not in inventory for ref in command.obligation_refs):
             raise ValueError("delivery_obligation_not_found")
@@ -746,14 +793,21 @@ class CommunityDeliveryEvidenceStore:
                 raise ValueError("delivery_accepted_committed_task_execution_required")
         elif command.kind == "test":
             fact = await self._test(record, spec_scope, bindings, spec)
+            # The test-phase join is cross-card by design (BR-5): a test card
+            # verifies implementations recorded on OTHER cards, so the
+            # candidate is evaluated against the spec ROLLUP implementations,
+            # mirroring the legacy spec-ledger validation exactly.
+            rollup_snapshot, _ = await self.load_rollup_snapshot(
+                command.board_id, command.spec_id
+            )
             selected_implementations = tuple(
                 i
-                for i in existing.implementations
+                for i in rollup_snapshot.implementations
                 if i.id in command.implementation_ids
             )
             candidate = DeliveryEvidenceSnapshot(
                 spec_scope,
-                existing.obligations,
+                delivery_inventory(spec),
                 selected_implementations,
                 (fact,) if fact else (),
                 complete=True,
@@ -769,10 +823,117 @@ class CommunityDeliveryEvidenceStore:
                     "delivery_current_verified_test_and_implementation_required"
                 )
             valid_ids = {
-                f.id for f in existing.implementations if f.current_accepted_execution
+                f.id
+                for f in rollup_snapshot.implementations
+                if f.current_accepted_execution
             }
             if not set(command.implementation_ids) <= valid_ids:
                 raise ValueError("delivery_implementation_scope_invalid")
         self.session.add(record)
         await self.session.flush()
         return {"id": record.id, "replayed": False}
+
+    # ------------------------------------------------------------------
+    # Spec rollup (FR-4): the spec projection derives from the card ledgers.
+    # Waivers stay on the legacy spec ledger as the human-only, rollup-level
+    # exception surface (BR-3); implementation/test proof is aggregated from
+    # every linked card's snapshot.
+    # ------------------------------------------------------------------
+
+    async def _linked_cards(self, board_id, spec_id):
+        return list(
+            (
+                await self.session.scalars(
+                    select(Card)
+                    .where(
+                        Card.board_id == board_id,
+                        Card.spec_id == spec_id,
+                        Card.archived.is_(False),
+                    )
+                    .order_by(Card.id)
+                )
+            ).all()
+        )
+
+    async def _rollup_waivers(self, scope):
+        """Active human-authorized waivers from the legacy spec ledger."""
+        records = await self._records(scope)
+        revoked = {
+            r.payload.get("record_id")
+            for r in records
+            if r.kind == "revoke" and r.actor_kind in {"human", "user"}
+        }
+        waivers = []
+        for record in records:
+            if record.kind != "waiver" or record.id in revoked:
+                continue
+            if record.actor_kind not in {"human", "user"}:
+                continue
+            for binding in (
+                DeliveryBinding(**b) for b in record.payload.get("bindings", [])
+            ):
+                waivers.append(
+                    DeliveryWaiverFact(
+                        id=f"{record.id}:{binding.obligation_ref}",
+                        scope=scope,
+                        binding=binding,
+                        phase=DeliveryPhase(record.payload["phase"]),
+                        justification=record.payload["justification"],
+                        actor_id=record.actor_id,
+                        authorization_receipt_id=record.id,
+                        current_authorized=True,
+                    )
+                )
+        return waivers
+
+    async def load_rollup_snapshot(self, board_id, spec_id):
+        """Aggregate the card-ledger snapshots of a spec into one snapshot.
+
+        Returns ``(DeliveryEvidenceSnapshot, per_card)`` where per_card carries
+        each linked card's derived obligations and implementation satisfaction
+        (FR-8 name-first surfaces read the obligation titles from rows).
+        """
+        spec = await self._spec(board_id, spec_id)
+        scope = DeliveryScope(board_id, spec_id, int(spec.edition))
+        obligations = delivery_inventory(spec)
+        implementations, tests, per_card = [], [], []
+        for card in await self._linked_cards(board_id, spec_id):
+            card_scope = CardDeliveryScope(
+                board_id, card.id, spec_id, int(spec.edition)
+            )
+            snapshot = await self.load_card_snapshot(card_scope)
+            implementations.extend(snapshot.implementations)
+            tests.extend(snapshot.tests)
+            evaluation = evaluate_delivery_coverage(snapshot)
+            per_card.append(
+                {
+                    "card_id": card.id,
+                    "title": card.title,
+                    "card_type": str(
+                        getattr(card.card_type, "value", card.card_type)
+                    ),
+                    "status": str(getattr(card.status, "value", card.status)),
+                    "obligations": [
+                        {
+                            "ref": row.obligation.binding.obligation_ref,
+                            "title": row.obligation.title,
+                            "implementation_satisfied": (
+                                row.implementation_satisfied
+                            ),
+                        }
+                        for row in evaluation.rows
+                    ],
+                    "satisfied": bool(evaluation.rows)
+                    and all(row.implementation_satisfied for row in evaluation.rows),
+                }
+            )
+        waivers = await self._rollup_waivers(scope)
+        snapshot = DeliveryEvidenceSnapshot(
+            scope,
+            obligations,
+            tuple(implementations),
+            tuple(tests),
+            tuple(waivers),
+            complete=True,
+        )
+        return snapshot, per_card
