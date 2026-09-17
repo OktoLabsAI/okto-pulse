@@ -790,7 +790,19 @@ class CommunityDeliveryEvidenceStore:
             )
             result = evaluate_delivery_coverage(candidate)
             if fact is None or record.id in result.rejected_record_ids:
-                raise ValueError("delivery_accepted_committed_task_execution_required")
+                # evaluate_delivery_coverage only credits facts whose card is
+                # already DONE. The card-scoped surface records the task's own
+                # proof BEFORE completion (AC ac_c41b1fa3: record, then the
+                # done move passes), so a chain-valid fact (accepted committed
+                # execution) is acceptable here; its evaluator validity
+                # completes with the DONE status, and the card gate plus the
+                # spec rollup re-evaluate with the final status. Any other
+                # rejection (broken receipt chain, scope mismatch) still
+                # refuses the insert — no partial binding ever persists.
+                if fact is None or not fact.current_accepted_execution:
+                    raise ValueError(
+                        "delivery_accepted_committed_task_execution_required"
+                    )
         elif command.kind == "test":
             fact = await self._test(record, spec_scope, bindings, spec)
             # The test-phase join is cross-card by design (BR-5): a test card
