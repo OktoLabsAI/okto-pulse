@@ -2275,6 +2275,7 @@ export interface Spec extends TaskValidationGateOverride {
   architecture_designs?: ArchitectureDesignSummary[];
   skip_test_coverage: boolean;
   skip_code_evidence_coverage: boolean;
+  skip_delivery_evidence?: boolean;
   skip_rules_coverage?: boolean;
   skip_decisions_coverage?: boolean;
   skip_contract_coverage?: boolean;
@@ -4320,6 +4321,7 @@ export interface UpdateSpecRequest extends TaskValidationGateOverride {
   screen_mockups?: ScreenMockup[];
   skip_test_coverage?: boolean;
   skip_code_evidence_coverage?: boolean;
+  skip_delivery_evidence?: boolean;
   skip_contract_coverage?: boolean;
   skip_ir_coverage?: boolean;
   skip_or_coverage?: boolean;

@@ -21,7 +21,7 @@ export interface DeliveryEvidenceProjection {
     implementation_waiver_ids: string[]; test_waiver_ids: string[];
     implementation_satisfied: boolean; test_satisfied: boolean;
   }>;
-  implementations: Array<{ id: string; card_id: string; relative_path: string; result_revision: string; current_accepted_execution: boolean; source_ref?: string; symbol?: string; explanation?: string }>;
+  implementations: Array<{ id: string; card_id: string; relative_path: string; result_revision: string; current_accepted_execution: boolean; source_ref?: string; symbol?: string; explanation?: string; bindings?: Array<{ obligation_ref: string; semantic_sha256?: string }> }>;
   tests?: Array<{ id: string; card_id: string; scenario_id: string; result: string }>;
   candidates: Array<{ kind: 'implementation' | 'test'; id: string; card_id: string; card_version?: number; label: string }>;
   records: Array<{ id: string; kind: string; actor_id: string; created_at: string; revoked: boolean; payload: { justification: string; card_id?: string; scenario_id?: string; execution_id?: string; phase?: string } }>;

@@ -57,6 +57,7 @@ import type {
 } from '@/components/shared/tabRouting';
 import {
   ImplementationTargetsPanel,
+  CardDeliveryDoDPanel,
   useCodeTraceabilityAuthority,
 } from '@/components/code-traceability';
 import { CardResourcesPanel } from './CardResourcesPanel';
@@ -1265,6 +1266,15 @@ export function CardModal({
             : []
         ),
         ...(
+          canReadCodeTraceability && card.spec_id && ['normal', 'bug', 'test'].includes(card.card_type || 'normal')
+            ? [{
+                id: 'delivery' as const,
+                label: 'Delivery',
+                icon: <ShieldCheck size={14} />,
+              }]
+            : []
+        ),
+        ...(
           canReadTests && ['bug', 'test'].includes(card.card_type || 'normal')
             ? [{
                 id: 'tests' as const,
@@ -1730,6 +1740,24 @@ export function CardModal({
                       setActiveTab('references');
                       setReferencesTab('dependencies');
                     } : undefined}
+                  />
+                </AccessibleTabPanel>
+              )}
+
+              {canReadCodeTraceability && card.spec_id && ['normal', 'bug', 'test'].includes(card.card_type || 'normal') && (
+                <AccessibleTabPanel
+                  idBase={`${tabIdBase}-card-${card.id}`}
+                  tabId="delivery"
+                  value={activeTab}
+                  mount="lazy-keep"
+                >
+                  <CardDeliveryDoDPanel
+                    boardId={card.board_id}
+                    card={{ id: card.id, card_type: card.card_type || 'normal', spec_id: card.spec_id }}
+                    canRecord={perms.has('code_traceability.target.execution_submit')}
+                    canTest={perms.has('spec.tests.execute')}
+                    canWaiver={perms.has('code_traceability.waiver.create')}
+                    onChanged={() => loadCard(card.id)}
                   />
                 </AccessibleTabPanel>
               )}

@@ -2847,7 +2847,18 @@ export function SpecModal({
             />
           )}
           {activeTab === 'delivery-evidence' && spec && canReadCodeTraceability && (
-            <DeliveryEvidencePanel boardId={spec.board_id} specId={spec.id} />
+            <DeliveryEvidencePanel
+              boardId={spec.board_id} specId={spec.id}
+              skipDeliveryEvidence={spec.skip_delivery_evidence}
+              onSkipDeliveryEvidenceChange={async (value) => {
+                try {
+                  const updated = await api.updateSpec(specId, { skip_delivery_evidence: value } as any);
+                  setSpec(updated);
+                } catch (err) {
+                  toast.error(err instanceof Error && err.message ? err.message : 'Failed to update spec');
+                }
+              }}
+            />
           )}
           {activeTab === 'project-structure' && spec && showProjectStructure && (
             <ProjectStructureErrorBoundary>

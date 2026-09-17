@@ -96,6 +96,7 @@ export type SpecModalSubtab =
 export type CardModalTab =
   | 'details'
   | 'implementation-targets'
+  | 'delivery'
   | 'tests'
   | 'resources'
   | 'qa'

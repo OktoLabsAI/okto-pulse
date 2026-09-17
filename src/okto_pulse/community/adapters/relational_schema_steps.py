@@ -8824,6 +8824,32 @@ async def _migrate_add_code_evidence_coverage_skip() -> object:
     return None
 
 
+async def _migrate_add_skip_delivery_evidence() -> str | None:
+    """Add the spec-level skip_delivery_evidence override flag (0.3.4)."""
+    from sqlalchemy import inspect as sa_inspect
+
+    async with get_engine().begin() as conn:
+        table_names = await conn.run_sync(
+            lambda sync_conn: set(sa_inspect(sync_conn).get_table_names())
+        )
+        if "specs" not in table_names:
+            return "skipped"
+        columns = await conn.run_sync(
+            lambda sync_conn: {
+                str(column["name"])
+                for column in sa_inspect(sync_conn).get_columns("specs")
+            }
+        )
+        if "skip_delivery_evidence" in columns:
+            return "skipped"
+        default = "0" if conn.dialect.name == "sqlite" else "false"
+        await conn.exec_driver_sql(
+            "ALTER TABLE specs ADD COLUMN "
+            f"skip_delivery_evidence BOOLEAN DEFAULT {default} NOT NULL"
+        )
+    return None
+
+
 async def _migrate_add_ir_or_columns() -> None:
     """Add first-class IR/OR JSON columns and coverage flags to specs."""
     from sqlalchemy import text as sa_text
@@ -25242,4 +25268,5 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
         _migrate_add_project_structure_column
     ),
     "_migrate_agent_permissions": _migrate_agent_permissions,
+    "_migrate_add_skip_delivery_evidence": _migrate_add_skip_delivery_evidence,
 }

@@ -83,11 +83,36 @@ it('is strictly informational: no recording controls exist on this surface', asy
   expect(screen.getByRole('button', { name: /Refresh delivery rollup/ })).toBeTruthy();
 });
 
-it('keeps the blocked Move-to-Done cue with the gate reason as tooltip', async () => {
+it('has no Move-to-Done control: the tab is informational only', async () => {
   render(<DeliveryEvidencePanel boardId="b" specId="s" />);
-  const cue = await screen.findByTestId('delivery-done-cue');
-  expect(cue.getAttribute('title')).toBe('delivery_evidence_incomplete');
+  await screen.findByTestId('delivery-coverage-table');
+  expect(screen.queryByTestId('delivery-done-cue')).toBeNull();
+  expect(screen.queryByText('Move to Done')).toBeNull();
   expect(screen.getByText(/Waivers are recorded at rollup level/)).toBeTruthy();
+});
+
+it('renders the skip override toggle following the Tests-tab pattern', async () => {
+  const onSkip = vi.fn();
+  render(<DeliveryEvidencePanel boardId="b" specId="s" skipDeliveryEvidence={false} onSkipDeliveryEvidenceChange={onSkip} />);
+  const toggle = await screen.findByTestId('delivery-skip-toggle');
+  expect(toggle.getAttribute('role')).toBe('switch');
+  expect(toggle.getAttribute('aria-checked')).toBe('false');
+  expect(screen.getByText('Skip delivery evidence requirement')).toBeTruthy();
+  fireEvent.click(toggle);
+  expect(onSkip).toHaveBeenCalledWith(true);
+});
+
+it('reflects the active skip state on the toggle', async () => {
+  render(<DeliveryEvidencePanel boardId="b" specId="s" skipDeliveryEvidence onSkipDeliveryEvidenceChange={() => {}} />);
+  const toggle = await screen.findByTestId('delivery-skip-toggle');
+  expect(toggle.getAttribute('aria-checked')).toBe('true');
+});
+
+it('shows a passive badge when no update handler is available', async () => {
+  render(<DeliveryEvidencePanel boardId="b" specId="s" skipDeliveryEvidence />);
+  await screen.findByTestId('delivery-coverage-table');
+  expect(screen.queryByTestId('delivery-skip-toggle')).toBeNull();
+  expect(screen.getByText('Skipped')).toBeTruthy();
 });
 
 it('drops the done cue and shows Complete when every obligation is covered', async () => {

@@ -6,13 +6,15 @@ import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 interface Props {
   boardId: string;
   specId: string;
+  skipDeliveryEvidence?: boolean;
+  onSkipDeliveryEvidenceChange?: (value: boolean) => void;
 }
 
 // Spec "Delivery" tab — informational rollup over the linked cards' ledgers
 // (mockup sm_5ebd7063). Read-only by design: recording is card-scoped
 // (task DoD) and waivers are rollup-level, human-only — this surface only
 // presents the aggregated verdict, never mutates it.
-export function DeliveryEvidencePanel({ boardId, specId }: Props) {
+export function DeliveryEvidencePanel({ boardId, specId, skipDeliveryEvidence = false, onSkipDeliveryEvidenceChange }: Props) {
   const api = useDashboardApi();
   const [data, setData] = useState<DeliveryEvidenceProjection | null>(null);
   const [gateMode, setGateMode] = useState<'advisory' | 'blocking' | null>(null);
@@ -130,16 +132,32 @@ export function DeliveryEvidencePanel({ boardId, specId }: Props) {
         </div>
       )}
 
-      <div className="flex items-center justify-between gap-4">
-        <p className="text-xs text-gray-400 dark:text-gray-500">
-          Waivers are recorded at rollup level and require human authorization. Proof is recorded on each task or test card.
-        </p>
-        {!data.allowed && (
-          <span className="cursor-not-allowed rounded-md bg-gray-200 px-4 py-2 text-sm text-gray-400 dark:bg-gray-800" title="delivery_evidence_incomplete" data-testid="delivery-done-cue">
-            Move to Done
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50/50 px-3 py-2 dark:border-gray-700 dark:bg-gray-700/20">
+        <div className="min-w-0">
+          <span className="text-xs font-medium text-gray-700 dark:text-gray-300">Skip delivery evidence requirement</span>
+          <p className="text-[10px] text-gray-400">Allow moving spec to Done without complete delivery proof — the coverage verdict above stays visible. Waivers (per obligation) remain human-only.</p>
+        </div>
+        {onSkipDeliveryEvidenceChange ? (
+          <button
+            type="button"
+            role="switch"
+            aria-checked={skipDeliveryEvidence}
+            aria-label="Skip delivery evidence requirement"
+            data-testid="delivery-skip-toggle"
+            onClick={() => onSkipDeliveryEvidenceChange(!skipDeliveryEvidence)}
+            className={`relative h-5 w-10 shrink-0 rounded-full transition-colors ${skipDeliveryEvidence ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+          >
+            <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${skipDeliveryEvidence ? 'translate-x-5' : ''}`} />
+          </button>
+        ) : (
+          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide ${skipDeliveryEvidence ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'}`}>
+            {skipDeliveryEvidence ? 'Skipped' : 'Active'}
           </span>
         )}
       </div>
+      <p className="text-xs text-gray-400 dark:text-gray-500">
+        Waivers are recorded at rollup level and require human authorization. Proof is recorded on each task or test card.
+      </p>
     </>}
   </section>;
 }

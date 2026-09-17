@@ -682,3 +682,40 @@ async def test_upgrade_adds_only_delivery_table_and_is_idempotent(tmp_path):
             ).scalar_one() == 3
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_spec_level_skip_overrides_the_spec_done_gate(ledger):
+    """Spec-level skip flag (Tests-tab pattern) unblocks spec→done.
+
+    The gate returns early while the rollup projection keeps returning the
+    truthful incomplete verdict — the override is posture, not verdict.
+    """
+    from okto_pulse.core.services.delivery_evidence import (
+        require_spec_delivery,
+    )
+    from okto_pulse.community.adapters.relational_application import (
+        CommunityRelationalApplicationAdapter,
+    )
+    from okto_pulse.core.ports.relational_application import (
+        register_relational_application_adapter,
+    )
+
+    register_relational_application_adapter(CommunityRelationalApplicationAdapter())
+    session, store, _ = ledger
+    spec = await session.get(Spec, SPEC_ID)
+    # No delivery records exist: the gate must reject in blocking mode.
+    with pytest.raises(ValueError, match="delivery_evidence_incomplete"):
+        await require_spec_delivery(session, spec=spec, board=None)
+    # Spec-level skip (auditable override) allows the transition… set via a
+    # Core UPDATE: the ORM attribute listener requires the semantic session
+    # composition this isolated fixture deliberately does not wire.
+    await session.execute(
+        update(Spec).where(Spec.id == SPEC_ID).values(skip_delivery_evidence=True)
+    )
+    await session.commit()
+    spec = await session.get(Spec, SPEC_ID, populate_existing=True)
+    await require_spec_delivery(session, spec=spec, board=None)
+    # …while the projection still reports the truthful incomplete verdict.
+    view = await store.projection(BOARD_ID, SPEC_ID)
+    assert view["allowed"] is False
