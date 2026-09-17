@@ -2847,13 +2847,7 @@ export function SpecModal({
             />
           )}
           {activeTab === 'delivery-evidence' && spec && canReadCodeTraceability && (
-            <DeliveryEvidencePanel boardId={spec.board_id} specId={spec.id}
-              canRecord={!spec.archived && perms.has('code_traceability.target.execution_submit')}
-              canTest={!spec.archived && perms.has('spec.tests.execute')}
-              canCreateWaiver={!spec.archived && perms.has('code_traceability.waiver.create')}
-              canClearWaiver={!spec.archived && perms.has('code_traceability.waiver.clear')}
-              onChanged={() => void loadSpec()}
-            />
+            <DeliveryEvidencePanel boardId={spec.board_id} specId={spec.id} />
           )}
           {activeTab === 'project-structure' && spec && showProjectStructure && (
             <ProjectStructureErrorBoundary>
