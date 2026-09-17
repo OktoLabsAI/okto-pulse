@@ -12,12 +12,14 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Card,
     Spec,
     DeliveryEvidenceRecordRow as Record,
+    CardDeliveryEvidenceRecordRow as CardRecord,
     ImplementationTargetExecutionRecordRow as Execution,
     ImplementationTargetRow as Target,
     CodeInvestigationReceiptRow as Receipt,
     CodeInvestigationReceiptRevocationRow as Revocation,
 )
 from okto_pulse.core.domain.delivery_evidence import (
+    CardDeliveryScope,
     DeliveryBinding,
     DeliveryScope,
     DeliveryPhase,
@@ -28,9 +30,13 @@ from okto_pulse.core.domain.delivery_evidence import (
     evaluate_delivery_coverage,
 )
 from okto_pulse.core.domain.enums import CardType, CardStatus, TestScenarioStatus
-from okto_pulse.core.models.delivery_evidence import DeliveryEvidenceCommand
+from okto_pulse.core.models.delivery_evidence import (
+    CardDeliveryEvidenceCommand,
+    DeliveryEvidenceCommand,
+)
 from okto_pulse.core.ports.test_evidence import resolve_test_evidence_write_verifier
 from okto_pulse.core.services.delivery_evidence import (
+    card_delivery_inventory,
     delivery_digest,
     delivery_inventory,
 )
@@ -531,6 +537,222 @@ class CommunityDeliveryEvidenceStore:
             )
             candidate = DeliveryEvidenceSnapshot(
                 scope,
+                existing.obligations,
+                selected_implementations,
+                (fact,) if fact else (),
+                complete=True,
+            )
+            result = evaluate_delivery_coverage(candidate)
+            matching = {
+                r.obligation.binding.obligation_ref
+                for r in result.rows
+                if record.id in r.test_ids
+            }
+            if matching != set(command.obligation_refs):
+                raise ValueError(
+                    "delivery_current_verified_test_and_implementation_required"
+                )
+            valid_ids = {
+                f.id for f in existing.implementations if f.current_accepted_execution
+            }
+            if not set(command.implementation_ids) <= valid_ids:
+                raise ValueError("delivery_implementation_scope_invalid")
+        self.session.add(record)
+        await self.session.flush()
+        return {"id": record.id, "replayed": False}
+
+    # ------------------------------------------------------------------
+    # Card-scoped delivery ledger (per-task re-anchoring). The authenticated
+    # fact validators above are reused untouched; only the addressing scope
+    # and the CAS fence (card policy_version) change. Waivers stay on the
+    # spec rollup surface and are human-only.
+    # ------------------------------------------------------------------
+
+    async def _card(self, board_id, card_id):
+        card = await self._get(Card, card_id)
+        if card is None or card.board_id != board_id:
+            raise ValueError("delivery_card_not_found")
+        return card
+
+    async def _card_scope_guard(self, scope: CardDeliveryScope):
+        """Validate card↔spec ownership and return (card, spec, spec scope)."""
+        card = await self._card(scope.board_id, scope.card_id)
+        spec = await self._spec(scope.board_id, scope.spec_id)
+        if card.spec_id != scope.spec_id or int(spec.edition) != scope.spec_edition:
+            raise ValueError("delivery_edition_conflict")
+        return card, spec, DeliveryScope(scope.board_id, scope.spec_id, scope.spec_edition)
+
+    async def _card_records(self, scope: CardDeliveryScope):
+        return list(
+            (
+                await self.session.scalars(
+                    select(CardRecord)
+                    .where(
+                        CardRecord.board_id == scope.board_id,
+                        CardRecord.card_id == scope.card_id,
+                        CardRecord.spec_id == scope.spec_id,
+                        CardRecord.spec_edition == scope.spec_edition,
+                    )
+                    .order_by(CardRecord.created_at, CardRecord.id)
+                )
+            ).all()
+        )
+
+    async def load_card_snapshot(self, scope: CardDeliveryScope):
+        card, spec, spec_scope = await self._card_scope_guard(scope)
+        records = await self._card_records(scope)
+        revoked = {
+            r.payload.get("record_id")
+            for r in records
+            if r.kind == "revoke" and r.actor_kind in {"human", "user"}
+        }
+        implementations, tests = [], []
+        for record in records:
+            if record.id in revoked or record.kind == "revoke":
+                continue
+            bindings = tuple(
+                DeliveryBinding(**b) for b in record.payload.get("bindings", [])
+            )
+            if record.kind == "implementation":
+                fact = await self._implementation(record, spec_scope, bindings)
+                if fact is not None:
+                    implementations.append(fact)
+            elif record.kind == "test":
+                fact = await self._test(record, spec_scope, bindings, spec)
+                if fact is not None:
+                    tests.append(fact)
+        return DeliveryEvidenceSnapshot(
+            spec_scope,
+            card_delivery_inventory(spec, card),
+            tuple(implementations),
+            tuple(tests),
+            complete=True,
+        )
+
+    async def record_card(
+        self, command: CardDeliveryEvidenceCommand, *, actor_id, actor_kind
+    ):
+        if not actor_id or actor_kind not in {"human", "user", "agent"}:
+            raise ValueError("delivery_authenticated_actor_required")
+        if command.kind == "revoke" and actor_kind not in {"human", "user"}:
+            raise ValueError("delivery_human_authorization_required")
+        scope = CardDeliveryScope(
+            command.board_id,
+            command.card_id,
+            command.spec_id,
+            command.expected_spec_edition,
+        )
+        # Same board no-op write fence as the spec ledger serializes writers.
+        await self.lock_scope(
+            DeliveryScope(command.board_id, command.spec_id, command.expected_spec_edition)
+        )
+        request_digest = delivery_digest(command.model_dump())
+        replay = (
+            await self.session.scalars(
+                select(CardRecord).where(
+                    CardRecord.board_id == scope.board_id,
+                    CardRecord.card_id == scope.card_id,
+                    CardRecord.actor_id == actor_id,
+                    CardRecord.idempotency_key == command.idempotency_key,
+                )
+            )
+        ).one_or_none()
+        if replay is not None:
+            if (
+                replay.payload_sha256 != request_digest
+                or replay.actor_kind != actor_kind
+            ):
+                raise ValueError("delivery_idempotency_conflict")
+            return {"id": replay.id, "replayed": True}
+        card, spec, spec_scope = await self._card_scope_guard(scope)
+        if card.policy_version != command.expected_card_version:
+            raise ValueError("delivery_version_conflict")
+        inventory = {
+            o.binding.obligation_ref: o.binding
+            for o in card_delivery_inventory(spec, card)
+        }
+        if any(ref not in inventory for ref in command.obligation_refs):
+            raise ValueError("delivery_obligation_not_found")
+        payload = command.model_dump(
+            exclude={
+                "board_id",
+                "card_id",
+                "spec_id",
+                "idempotency_key",
+                "expected_card_version",
+                "expected_spec_edition",
+            }
+        )
+        payload["card_id"] = card.id
+        payload["bindings"] = [
+            asdict(inventory[ref]) for ref in command.obligation_refs
+        ]
+        if command.kind == "test":
+            scenarios = [
+                s
+                for s in spec.test_scenarios or []
+                if s.get("id") == command.scenario_id
+            ]
+            if len(scenarios) != 1:
+                raise ValueError("delivery_test_scenario_not_found")
+            payload["test_receipt"] = (scenarios[0].get("evidence") or {}).get(
+                "execution_receipt"
+            )
+        if command.kind == "revoke":
+            target = await self.session.get(CardRecord, command.record_id)
+            if (
+                target is None
+                or (
+                    target.board_id,
+                    target.card_id,
+                    target.spec_id,
+                    target.spec_edition,
+                )
+                != (
+                    scope.board_id,
+                    scope.card_id,
+                    scope.spec_id,
+                    scope.spec_edition,
+                )
+                or target.kind == "revoke"
+            ):
+                raise ValueError("delivery_record_not_found")
+        record = CardRecord(
+            id="card_delivery_" + uuid.uuid4().hex,
+            board_id=scope.board_id,
+            card_id=scope.card_id,
+            spec_id=scope.spec_id,
+            spec_edition=scope.spec_edition,
+            kind=command.kind,
+            actor_id=actor_id,
+            actor_kind=actor_kind,
+            idempotency_key=command.idempotency_key,
+            payload_sha256=request_digest,
+            payload=payload,
+            created_at=datetime.now(timezone.utc),
+        )
+        # Validate the candidate before inserting it. Rejected requests never
+        # leave a partially accepted binding even if the caller catches the
+        # exception — same contract as the spec ledger's record().
+        bindings = tuple(inventory[ref] for ref in command.obligation_refs)
+        existing = await self.load_card_snapshot(scope)
+        if command.kind == "implementation":
+            fact = await self._implementation(record, spec_scope, bindings)
+            candidate = DeliveryEvidenceSnapshot(
+                spec_scope, existing.obligations, (fact,) if fact else (), complete=True
+            )
+            result = evaluate_delivery_coverage(candidate)
+            if fact is None or record.id in result.rejected_record_ids:
+                raise ValueError("delivery_accepted_committed_task_execution_required")
+        elif command.kind == "test":
+            fact = await self._test(record, spec_scope, bindings, spec)
+            selected_implementations = tuple(
+                i
+                for i in existing.implementations
+                if i.id in command.implementation_ids
+            )
+            candidate = DeliveryEvidenceSnapshot(
+                spec_scope,
                 existing.obligations,
                 selected_implementations,
                 (fact,) if fact else (),
