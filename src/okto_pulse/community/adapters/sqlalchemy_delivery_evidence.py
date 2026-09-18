@@ -350,7 +350,10 @@ class CommunityDeliveryEvidenceStore:
                     Card.spec_id == spec_id,
                     Card.board_id == board_id,
                     Card.archived.is_(False),
-                    Card.status == CardStatus.DONE,
+                    # No card-status filter: the card-scoped surface records
+                    # proof BEFORE completion (the done gate consumes it), so
+                    # in-progress/validation cards' receipts must be pickable.
+                    # Record-time fact validation stays the authority.
                 )
             )
         ).all()

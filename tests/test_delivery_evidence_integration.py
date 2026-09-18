@@ -719,3 +719,21 @@ async def test_spec_level_skip_overrides_the_spec_done_gate(ledger):
     # …while the projection still reports the truthful incomplete verdict.
     view = await store.projection(BOARD_ID, SPEC_ID)
     assert view["allowed"] is False
+
+
+@pytest.mark.asyncio
+async def test_projection_lists_receipts_of_in_progress_cards(ledger):
+    """Card-panel candidates must be pickable BEFORE completion.
+
+    The card-scoped surface records proof pre-done (the done gate consumes
+    it), so the projection cannot filter execution candidates by
+    Card.status == DONE.
+    """
+    session, store, _ = ledger
+    await session.execute(
+        update(Card).where(Card.id == "task").values(status="in_progress")
+    )
+    await session.commit()
+    view = await store.projection(BOARD_ID, SPEC_ID)
+    impl_candidates = [c for c in view["candidates"] if c["kind"] == "implementation"]
+    assert any(c["card_id"] == "task" for c in impl_candidates)

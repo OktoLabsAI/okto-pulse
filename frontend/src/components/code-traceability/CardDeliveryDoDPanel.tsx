@@ -185,7 +185,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
                 <option value="">Select…</option>
                 {candidates.map(c => <option key={`${c.card_id}:${c.id}`} value={`${c.card_id}:${c.id}`}>{c.label}</option>)}
               </select>
-              {candidates.length === 0 && <span className="text-xs text-gray-400">No eligible receipts yet. {isTest ? 'Execute the linked scenarios with authenticated evidence and complete the test card.' : 'Submit an accepted execution receipt for the committed files and complete the card.'}</span>}
+              {candidates.length === 0 && <span className="text-xs text-gray-400">No eligible receipts yet. {isTest ? 'Execute the linked scenarios with authenticated evidence and complete the test card.' : 'Submit an accepted execution receipt for the committed files in the Implementation Targets tab — it becomes pickable here immediately, before completion.'}</span>}
             </label>
             {isTest && <fieldset>
               <legend className="text-sm font-medium">Implementation records verified by this run</legend>
