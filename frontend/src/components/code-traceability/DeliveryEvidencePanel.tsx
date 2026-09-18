@@ -62,6 +62,30 @@ export function DeliveryEvidencePanel({ boardId, specId, skipDeliveryEvidence = 
       </div>
     </div>
 
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50/50 px-3 py-2 dark:border-gray-700 dark:bg-gray-700/20">
+        <div className="min-w-0">
+          <span className="text-xs font-medium text-gray-700 dark:text-gray-300">Skip delivery evidence requirement</span>
+          <p className="text-[10px] text-gray-400">Allow moving spec to Done without complete delivery proof — the coverage verdict stays visible. Waivers (per obligation) remain human-only.</p>
+        </div>
+        {onSkipDeliveryEvidenceChange ? (
+          <button
+            type="button"
+            role="switch"
+            aria-checked={skipDeliveryEvidence}
+            aria-label="Skip delivery evidence requirement"
+            data-testid="delivery-skip-toggle"
+            onClick={() => onSkipDeliveryEvidenceChange(!skipDeliveryEvidence)}
+            className={`relative h-5 w-10 shrink-0 rounded-full transition-colors ${skipDeliveryEvidence ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+          >
+            <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${skipDeliveryEvidence ? 'translate-x-5' : ''}`} />
+          </button>
+        ) : (
+          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide ${skipDeliveryEvidence ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'}`}>
+            {skipDeliveryEvidence ? 'Skipped' : 'Active'}
+          </span>
+        )}
+      </div>
+
     {data && data.status === 'done' && !data.allowed && (
       <p className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-500 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-400">
         This completed Spec has not been reopened. Missing proof may have been recorded retrospectively or waived by an authorized human.
@@ -132,29 +156,6 @@ export function DeliveryEvidencePanel({ boardId, specId, skipDeliveryEvidence = 
         </div>
       )}
 
-      <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50/50 px-3 py-2 dark:border-gray-700 dark:bg-gray-700/20">
-        <div className="min-w-0">
-          <span className="text-xs font-medium text-gray-700 dark:text-gray-300">Skip delivery evidence requirement</span>
-          <p className="text-[10px] text-gray-400">Allow moving spec to Done without complete delivery proof — the coverage verdict above stays visible. Waivers (per obligation) remain human-only.</p>
-        </div>
-        {onSkipDeliveryEvidenceChange ? (
-          <button
-            type="button"
-            role="switch"
-            aria-checked={skipDeliveryEvidence}
-            aria-label="Skip delivery evidence requirement"
-            data-testid="delivery-skip-toggle"
-            onClick={() => onSkipDeliveryEvidenceChange(!skipDeliveryEvidence)}
-            className={`relative h-5 w-10 shrink-0 rounded-full transition-colors ${skipDeliveryEvidence ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
-          >
-            <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${skipDeliveryEvidence ? 'translate-x-5' : ''}`} />
-          </button>
-        ) : (
-          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide ${skipDeliveryEvidence ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'}`}>
-            {skipDeliveryEvidence ? 'Skipped' : 'Active'}
-          </span>
-        )}
-      </div>
       <p className="text-xs text-gray-400 dark:text-gray-500">
         Waivers are recorded at rollup level and require human authorization. Proof is recorded on each task or test card.
       </p>

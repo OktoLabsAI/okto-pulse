@@ -102,6 +102,13 @@ it('renders the skip override toggle following the Tests-tab pattern', async () 
   expect(onSkip).toHaveBeenCalledWith(true);
 });
 
+it('renders the skip toggle at the top of the tab, before the coverage table', async () => {
+  render(<DeliveryEvidencePanel boardId="b" specId="s" onSkipDeliveryEvidenceChange={() => {}} />);
+  const toggle = await screen.findByTestId('delivery-skip-toggle');
+  const table = await screen.findByTestId('delivery-coverage-table');
+  expect(toggle.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
 it('reflects the active skip state on the toggle', async () => {
   render(<DeliveryEvidencePanel boardId="b" specId="s" skipDeliveryEvidence onSkipDeliveryEvidenceChange={() => {}} />);
   const toggle = await screen.findByTestId('delivery-skip-toggle');
