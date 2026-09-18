@@ -38,7 +38,7 @@ class _FakeGrafxDatabase:
         self.identity = SimpleNamespace(page_size=page_size)
 
 
-def _ladybug(path: Path, payload: bytes = b"ladybug") -> Path:
+def _legacy(path: Path, payload: bytes = b"legacy") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
     return path
@@ -103,7 +103,7 @@ def _publish_active(
     if backend == "grafx":
         _grafx(target, page_size=page_size or 8192)
     else:
-        _ladybug(target)
+        _legacy(target)
     digest, _supported = write_generation_manifest(
         anchor,
         generation,
@@ -243,7 +243,7 @@ def test_unbound_ambiguous_storage_fails_without_fallback(
     store = CommunityGraphBackendBindingStore(tmp_path)
     databases: dict[Path, _FakeGrafxDatabase] = {}
     if scenario == "both":
-        _ladybug(store.board_ladybug_path("board-ambiguous"))
+        _legacy(store.board_ladybug_path("board-ambiguous"))
         path = store.board_grafx_path("board-ambiguous", "generation-1")
         databases[path] = _grafx(path)
     elif scenario == "multiple_grafx":
@@ -272,14 +272,14 @@ def test_unbound_ambiguous_storage_fails_without_fallback(
 
 
 @pytest.mark.parametrize("suffix", [".wal", ".shadow", ".wal.checkpoint"])
-def test_unbound_board_ladybug_sidecar_blocks_grafx_creation_and_publication(
+def test_unbound_board_legacy_sidecar_blocks_grafx_creation_and_publication(
     tmp_path: Path, suffix: str
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
     primary = store.board_ladybug_path("board-residue")
     primary.parent.mkdir(parents=True)
     sidecar = primary.with_name(primary.name + suffix)
-    sidecar.write_bytes(b"ladybug-residue")
+    sidecar.write_bytes(b"legacy-residue")
     resolver = _resolver(store, board_backend="grafx")
     creation_calls: list[CommunityGraphRouteCandidate] = []
 
@@ -291,7 +291,7 @@ def test_unbound_board_ladybug_sidecar_blocks_grafx_creation_and_publication(
 
     assert ambiguous.value.details["reason"] == "graph_route_storage_ambiguous"
     assert creation_calls == []
-    assert sidecar.read_bytes() == b"ladybug-residue"
+    assert sidecar.read_bytes() == b"legacy-residue"
     assert not (primary.parent / "graph_backend_binding.json").exists()
 
 
@@ -487,7 +487,7 @@ def test_unbound_global_ambiguous_physical_routes_never_open_or_publish(
     first = store.global_grafx_path("generation-1")
     databases[first] = _grafx(first)
     if scenario == "both_backends":
-        _ladybug(store.global_ladybug_path())
+        _legacy(store.global_ladybug_path())
     else:
         second = store.global_grafx_path("generation-2")
         databases[second] = _grafx(second)
@@ -922,13 +922,13 @@ def test_global_pointer_cutover_invalidates_snapshot_without_binding_fallback(
     assert mismatch.value.details["reason"] == "graph_route_snapshot_mismatch"
 
 
-@pytest.mark.skip(reason="Ladybug routing was removed from Community")
-def test_global_ladybug_binding_stays_on_anchor_across_pointer_cutovers(
+@pytest.mark.skip(reason="legacy graph routing was removed from Community")
+def test_global_legacy_binding_stays_on_anchor_across_pointer_cutovers(
     tmp_path: Path,
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
     anchor = store.global_ladybug_path()
-    _ladybug(anchor)
+    _legacy(anchor)
     first_path = _publish_active(anchor, "gdr_lady1", backend="ladybug")
     resolver = _resolver(store)
     adopted = resolver.initialize_global_route()

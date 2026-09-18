@@ -34,6 +34,7 @@ import sys
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.orm.exc import StaleDataError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.community.adapters.sqlalchemy_repositories import (
@@ -50,6 +51,7 @@ from okto_pulse.core.ports.application_persistence import (
     register_application_persistence_port,
 )
 from okto_pulse.core.domain.realm import RealmScope, require_realm_scope
+from okto_pulse.core.ports.guideline_policy import GuidelinePolicyVersionConflict
 from okto_pulse.core.repositories.interfaces.unit_of_work import (
     ConsistentReadContractError,
 )
@@ -82,6 +84,9 @@ logger = logging.getLogger(__name__)
 _UOW_CLEANUP_DRAIN_TIMEOUT_S = 5.0
 _pending_uow_cleanups: set[asyncio.Task[Any]] = set()
 _CONSISTENT_READ_INFO_KEY = "okto_pulse_consistent_read"
+_WRITE_INTENT_INFO_KEY = "okto_pulse_write_intent"
+_WRITE_INTENT_SQLITE_IMMEDIATE = "sqlite_immediate"
+SUBJECT_VERSION_CONFLICT_REASON = "subject_version_conflict"
 _REPEATABLE_READ = "REPEATABLE READ"
 
 
@@ -276,14 +281,63 @@ class CommunityUnitOfWork:
     async def commit(self) -> None:
         try:
             await self._application_persistence.commit(self._session)
+        except StaleDataError as exc:
+            # A versioned subject row (Ideation/Refinement/Spec/Sprint) changed
+            # underneath this unit of work: the ORM UPDATE/DELETE matched zero
+            # rows on its ``WHERE version = <loaded>`` fence.  Roll back and
+            # surface the Core port conflict so the REST/MCP boundaries answer
+            # a retryable 409 instead of a 500 (never a silent overwrite).
+            await self._application_persistence.rollback(self._session)
+            raise GuidelinePolicyVersionConflict(
+                SUBJECT_VERSION_CONFLICT_REASON
+            ) from exc
         finally:
             self._session.info.pop(_CONSISTENT_READ_INFO_KEY, None)
+            self._session.info.pop(_WRITE_INTENT_INFO_KEY, None)
 
     async def rollback(self) -> None:
         try:
             await self._application_persistence.rollback(self._session)
         finally:
             self._session.info.pop(_CONSISTENT_READ_INFO_KEY, None)
+            self._session.info.pop(_WRITE_INTENT_INFO_KEY, None)
+
+    async def begin_write(self) -> None:
+        """Acquire the SQLite write lock before the first read of a mutation.
+
+        aiosqlite only emits ``BEGIN`` before the first DML statement, so every
+        SELECT a mutation performs before its first UPDATE runs in autocommit
+        and may observe a row that a concurrent request is about to change
+        (the read-stale -> write-stale+1 window behind
+        ``semantic_subject_mutation_conflict``).  ``BEGIN IMMEDIATE`` takes the
+        RESERVED lock up front: concurrent writers queue on ``busy_timeout``
+        and then read fresh rows.  Idempotent per unit of work, a no-op when a
+        physical transaction is already active, and a no-op for non-SQLite
+        dialects (the Community runtime is SQLite-only).
+        """
+
+        if self._session.info.get(_WRITE_INTENT_INFO_KEY) is not None:
+            return
+
+        bind = self._session.get_bind()
+        dialect = bind.dialect.name if bind is not None else ""
+        if dialect != "sqlite":
+            self._session.info[_WRITE_INTENT_INFO_KEY] = f"{dialect}_noop"
+            return
+
+        connection = await self._session.connection()
+
+        def physical_transaction_active(sync_connection: Any) -> bool:
+            driver_connection = getattr(
+                sync_connection.connection,
+                "driver_connection",
+                None,
+            )
+            return bool(getattr(driver_connection, "in_transaction", False))
+
+        if not await connection.run_sync(physical_transaction_active):
+            await connection.exec_driver_sql("BEGIN IMMEDIATE")
+        self._session.info[_WRITE_INTENT_INFO_KEY] = _WRITE_INTENT_SQLITE_IMMEDIATE
 
     async def begin_consistent_read(self) -> None:
         """Pin one snapshot before a composite Core read performs any lookup.

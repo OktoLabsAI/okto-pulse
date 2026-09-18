@@ -20,6 +20,12 @@ from okto_pulse.core.ports.scheduler import SchedulerControl
 from okto_pulse.core.repositories import PulseUnitOfWork, UnitOfWorkFactory
 from okto_pulse.core.runtime_registry import resolve_unit_of_work_factory
 
+# HTTP methods whose handlers mutate state.  Their unit of work acquires the
+# SQLite write lock (``BEGIN IMMEDIATE``) before the handler's first read so
+# two concurrent mutations of the same subject serialize instead of racing
+# (read-stale -> write-stale+1).  Reads keep the deferred transaction.
+WRITE_HTTP_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
 
 def scheduler_control_from_request(request: Request) -> SchedulerControl | None:
     """Return the edition-owned scheduler port from the request composition."""
@@ -52,6 +58,17 @@ async def get_unit_of_work(
                     "message": str(exc),
                 },
             ) from exc
+
+        # A request without a method (minimal test doubles) is never a write:
+        # it keeps the deferred transaction exactly like GET/HEAD/OPTIONS.
+        request_method = str(getattr(request, "method", "") or "").upper()
+        if request_method in WRITE_HTTP_METHODS:
+            # Edition-owned concrete UoWs expose ``begin_write``; the public
+            # port does not require it, so a foreign UoW simply keeps the
+            # deferred transaction (duck-typed, never mandatory).
+            begin_write = getattr(uow, "begin_write", None)
+            if callable(begin_write):
+                await begin_write()
 
         # Exceptions raised by the route are injected at this yield point.
         # Keep them outside the provider-opening translation above so a domain

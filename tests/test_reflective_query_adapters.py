@@ -348,7 +348,7 @@ async def test_community_registry_mcp_real_retrieval_reaches_rejected_terminal(
     tmp_path,
     monkeypatch,
 ) -> None:
-    """TR-3: full Community composition -> MCP -> Kuzu -> critic terminal."""
+    """TR-3: full Community composition -> MCP -> graph -> critic terminal."""
 
     import okto_pulse.core.infra.config as core_config
     from okto_pulse.community.adapters.composition import (
@@ -364,7 +364,7 @@ async def test_community_registry_mcp_real_retrieval_reaches_rejected_terminal(
     from okto_pulse.core.mcp.catalog import CoreMcpCatalog
     from okto_pulse.core.mcp.kg_power_tools import register_kg_power_tools
 
-    board_id = "reflective-mcp-real-kuzu"
+    board_id = "reflective-mcp-real-graph"
     kg_root = tmp_path / "kg"
     original_settings = core_config.get_settings()
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))

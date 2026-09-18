@@ -107,29 +107,6 @@ def _baseline() -> MaterializationHealthBaseline:
     )
 
 
-class _ControllableGlobalOpenRuntime:
-    def __init__(self, *, corruption: bool, failures: int = 1) -> None:
-        self.corruption = corruption
-        self.failures_remaining = failures
-
-    def open_global_kuzu_db(
-        self,
-        _path: Path,
-        *,
-        on_corruption=None,
-    ) -> object:
-        if self.failures_remaining:
-            self.failures_remaining -= 1
-            failure = RuntimeError("invalid graph fixture")
-            if self.corruption and on_corruption is not None:
-                on_corruption(failure)
-            raise failure
-        return object()
-
-    def is_ladybug_corruption_error(self, _exc: BaseException) -> bool:
-        return self.corruption
-
-
 @pytest.mark.asyncio
 async def test_relational_census_is_exact_and_board_scoped(tmp_path: Path) -> None:
     engine, factory = await _database(tmp_path, "census.db")

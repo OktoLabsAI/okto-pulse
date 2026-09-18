@@ -118,7 +118,6 @@ def _settings(
         kg_global_graph_backend=global_backend,
         kg_grafx_page_size=page_size,
         kg_grafx_descriptor_revalidation=descriptor_revalidation,
-        kg_ladybug_max_db_size_gb=2,
     )
 
 
@@ -176,17 +175,17 @@ def test_schema_manager_receives_the_same_scoped_reader_scheduler(
     assert scope.__func__ is composition._GrafxBoardAccess.read_database_scope
 
 
-def _publish_ladybug_binding(
+def _publish_legacy_binding(
     bundle: composition.CommunityRoutedBoardGraphComposition,
     board_id: str,
 ) -> Path:
     path = bundle.binding_store.board_ladybug_path(board_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"ladybug")
+    path.write_bytes(b"legacy")
     bundle.binding_store.initialize_board_binding(
         board_id=board_id,
         backend="ladybug",
-        generation="ladybug-1",
+        generation="legacy-1",
         physical_path=path,
     )
     return path
@@ -205,11 +204,11 @@ def _make_windows_junction(link: Path, target: Path) -> None:
         pytest.skip(f"junction creation unavailable: {completed.stderr.strip()}")
 
 
-def _leave_erased_rollout_with_unbound_ladybug_residue(
+def _leave_erased_rollout_with_unbound_legacy_residue(
     bundle: composition.CommunityRoutedBoardGraphComposition,
     board_id: str,
 ) -> tuple[CommunityGraphRolloutJournal, Path, Path]:
-    source_path = _publish_ladybug_binding(bundle, board_id)
+    source_path = _publish_legacy_binding(bundle, board_id)
     source = bundle.binding_store.acquire_board_binding(board_id)
     candidate_path = bundle.binding_store.board_grafx_path(
         board_id,
@@ -426,7 +425,7 @@ def test_composed_rollout_privacy_keeps_tombstone_until_finalized(
 ) -> None:
     root = tmp_path / "kg"
     bundle = _build(root, _GrafxConnector(), board_backend="grafx")
-    source_path = _publish_ladybug_binding(bundle, "board-erase")
+    source_path = _publish_legacy_binding(bundle, "board-erase")
     source = bundle.binding_store.acquire_board_binding("board-erase")
     journal = CommunityGraphRolloutJournal(root, "board-erase")
     journal.start(
@@ -660,9 +659,9 @@ def test_adopt_returns_an_existing_binding_without_recreating_missing_physical(
 def test_adopt_fails_closed_on_ambiguous_existing_storage(tmp_path: Path) -> None:
     root = tmp_path / "kg"
     bundle = _build(root, _GrafxConnector())
-    ladybug = bundle.binding_store.board_ladybug_path("board-ambiguous")
-    ladybug.parent.mkdir(parents=True)
-    ladybug.write_bytes(b"ladybug")
+    legacy = bundle.binding_store.board_ladybug_path("board-ambiguous")
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"legacy")
     grafx = bundle.binding_store.board_grafx_path(
         "board-ambiguous",
         "generation-existing",

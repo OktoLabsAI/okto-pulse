@@ -124,7 +124,7 @@ def test_envelope_hashes_user_values_without_persisting_them() -> None:
     assert len(str(statement["statement_sha256"])) == 64
 
 
-def test_ladybug_capture_is_prepared_first_and_terminal_after_auto_apply() -> None:
+def test_legacy_capture_is_prepared_first_and_terminal_after_auto_apply() -> None:
     events: list[tuple[Any, ...]] = []
     scope, _delegate, _recorder = _scope("ladybug", events)
 

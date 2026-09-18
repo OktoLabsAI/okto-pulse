@@ -40,7 +40,6 @@ def _settings(root, budget=64):
         kg_grafx_page_size=PAGE_SIZE,
         kg_grafx_descriptor_revalidation="strict",
         kg_grafx_buffer_pool_mb=budget,
-        kg_ladybug_max_db_size_gb=2,
     )
 
 

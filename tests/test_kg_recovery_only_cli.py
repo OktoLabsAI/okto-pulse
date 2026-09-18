@@ -222,7 +222,7 @@ def test_recovery_defaults_match_the_pinned_release_dependencies() -> None:
     )
 
 
-def test_install_evidence_authenticates_grafx_without_kuzu(
+def test_install_evidence_authenticates_grafx_without_legacy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: list[tuple[str, str, bool, bool]] = []
@@ -265,7 +265,16 @@ def test_install_evidence_authenticates_grafx_without_kuzu(
     assert len(evidence.fingerprint) == 64
 
 
-def test_kuzu_version_alias_refuses_a_nondefault_ladybug_conflict() -> None:
+@pytest.mark.parametrize(
+    "retired_flag",
+    ["--expected-ladybug-version", "--expected-kuzu-version"],
+)
+def test_retired_embedded_graph_version_flags_are_refused(retired_flag: str) -> None:
+    """The embedded-graph version pins were removed with the Grafx cutover.
+
+    The parser must reject them outright instead of silently accepting a pin
+    that no longer controls anything.
+    """
     with pytest.raises(SystemExit):
         recovery._parse_args(
             [
@@ -274,9 +283,7 @@ def test_kuzu_version_alias_refuses_a_nondefault_ladybug_conflict() -> None:
                 "--board-id",
                 BOARD_ID,
                 "--inspect-install",
-                "--expected-ladybug-version",
-                "0.15.0",
-                "--expected-kuzu-version",
+                retired_flag,
                 "0.16.0",
             ]
         )
@@ -1078,7 +1085,7 @@ def test_snapshot_read_denial_reports_only_safe_relative_diagnostic(
     @contextmanager
     def guarded_open(path: Path):  # noqa: ANN202
         if path == graph:
-            error = PermissionError(13, "simulated Ladybug sharing violation")
+            error = PermissionError(13, "simulated graph-database sharing violation")
             error.winerror = 32
             raise error
         with original_open(path) as handle:
@@ -8673,7 +8680,8 @@ def test_grafx_storage_without_a_binding_refuses_before_any_durable_effect(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     # Canonical Grafx storage with no binding means a decision was made somewhere
-    # this executor cannot see; assuming Ladybug would recover the wrong database.
+    # this executor cannot see; assuming the legacy runtime would recover
+    # the wrong database.
     (guard_home / "boards" / BOARD_ID / "grafx" / GUARD_GENERATION).mkdir(parents=True)
     effects: list[str] = []
 
@@ -8715,7 +8723,7 @@ def test_a_board_with_no_binding_and_no_storage_reaches_administrative_adoption(
     assert effects == ["_resolve_external_existing_file"]
 
 
-def test_an_unbound_ladybug_primary_reaches_administrative_adoption(
+def test_an_unbound_legacy_primary_reaches_administrative_adoption(
     guard_home: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -8750,12 +8758,12 @@ def test_an_ambiguous_unbound_board_refuses_before_any_durable_effect(
     assert effects == []
 
 
-def test_an_authentic_ladybug_binding_written_by_the_store_runs_the_legacy_path(
+def test_an_authentic_legacy_binding_written_by_the_store_runs_the_legacy_path(
     guard_home: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Published by the real initializer, physical database and all, so this is
-    # the exact document Pulse writes for a Ladybug board.
+    # the exact document Pulse writes for a legacy-backend board.
     (guard_home / "boards" / BOARD_ID / "graph.lbug").write_bytes(b"")
     _store_module, store = _binding_store(guard_home)
     store.initialize_board_binding(
@@ -8771,7 +8779,7 @@ def test_an_authentic_ladybug_binding_written_by_the_store_runs_the_legacy_path(
     assert effects == []
 
 
-def test_an_authentic_ladybug_binding_decides_even_beside_grafx_storage(
+def test_an_authentic_legacy_binding_decides_even_beside_grafx_storage(
     guard_home: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -8832,7 +8840,7 @@ def test_a_tampered_binding_is_refused_rather_than_read_for_its_backend(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # Ladybug document, digest left behind, backend rewritten to grafx.  An
+    # Legacy-backend document, digest left behind, backend rewritten to grafx.  An
     # unauthentic document is not evidence of anything, so it is not consulted.
     _write_binding(guard_home, backend="ladybug", document_edit={"backend": "grafx"})
     effects: list[str] = []
@@ -9016,7 +9024,7 @@ def test_a_junctioned_board_directory_is_refused_without_reading_it(
 ) -> None:
     """A junction must be refused, not followed out of the data home.
 
-    The junction target holds a perfectly valid Ladybug binding.  If the guard
+    The junction target holds a perfectly valid legacy-backend binding.  If the guard
     followed the reparse point it would read that document and let the run
     proceed, so the refusal -- and the empty effect log -- is the proof that it
     never left the data home.

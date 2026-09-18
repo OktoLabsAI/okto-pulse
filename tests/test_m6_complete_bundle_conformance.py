@@ -82,7 +82,6 @@ def _settings(root: Path, backend: str) -> CommunitySettings:
         kg_global_graph_backend=backend,
         kg_grafx_page_size=8192,
         kg_embedding_mode="stub",
-        kg_kuzu_max_db_size_gb=2,
     )
 
 
@@ -139,7 +138,7 @@ async def _run_complete_bundle(
         node_types = registry.graph_store.find_node_types(board_id, node_id)
         assert node_types == ("Entity",)
 
-        # Ladybug statements are intentionally auto-committed while Grafx has
+        # Legacy-backend statements are intentionally auto-committed while Grafx has
         # atomic rollback.  Their common Core guarantee is that an explicit
         # rollback terminally releases an otherwise empty transaction scope;
         # backend-specific undo semantics remain in the transaction suites.

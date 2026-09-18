@@ -149,7 +149,7 @@ def _two_seeds():
 
 def _two_real_seeds():
     """R8-B7.1: two NON-identical board seeds whose embeddings have the REAL
-    Ladybug schema width (384-dim DOUBLE array), so the PRODUCTION runtime can
+    legacy graph schema width (384-dim DOUBLE array), so the PRODUCTION runtime can
     materialize them into actual graph/WAL bytes."""
 
     from okto_pulse.core.kg.interfaces.global_discovery_recovery import (
@@ -1408,7 +1408,7 @@ def _run_cold_resume(
     tmp_path, *, mode, live, kg_base, run_id, epoch, attempt_id, live_sha
 ):
     """R8-B7.7 (#1): run a completed+marker RESUME in a brand-new COLD python
-    process (fresh interpreter, fresh Ladybug/vector state) through the SAME
+    process (fresh interpreter, fresh graph/vector state) through the SAME
     public production reader, and return its reported outcome."""
 
     import os
@@ -1532,7 +1532,7 @@ def _tree_plus_orphans(tree_before, live: Path, orphan_dirs):
 
 
 # --- R8 B7.4: fabricated self-consistent seed truth dies ONLY on the fresh ----
-# --- REAL Ladybug reopen, through the PUBLIC production reader ----------------
+# --- REAL graph reopen, through the PUBLIC production reader ----------------
 
 
 # --- R8 B7.5 #1: unknown/malformed resume phase fails closed, zero mutation ---

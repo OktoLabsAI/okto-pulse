@@ -13,10 +13,10 @@ from types import SimpleNamespace
 
 import pytest
 
-# These fixtures model the retired Ladybug ``graph.lbug`` recovery lane.  The
+# These fixtures model the retired ``graph.lbug`` recovery lane.  The
 # Community runtime is Grafx-only; supported Grafx recovery coverage lives in
 # ``test_kg_recovery_only_cli.py`` and the routed lifecycle suites.
-pytestmark = pytest.mark.skip(reason="retired Ladybug recovery lane")
+pytestmark = pytest.mark.skip(reason="retired legacy graph recovery lane")
 
 from okto_pulse.community import kg_recovery_only as recovery
 from okto_pulse.community.adapters.board_rebuild_ingestion import (
@@ -1457,7 +1457,7 @@ def _create_legacy_artifacts(
 
 def _legacy_graph_binding(data_home: Path) -> recovery.OfflineBoardGraphBinding:
     # Historical queue-only evidence is tested below the runtime admission
-    # boundary. The current executable correctly refuses opening Ladybug;
+    # boundary. The current executable correctly refuses opening the legacy database;
     # constructing this archival fixture must not relax that production rule.
     binding = CommunityGraphBackendBindingStore(data_home).inspect_board_binding(
         BOARD_ID

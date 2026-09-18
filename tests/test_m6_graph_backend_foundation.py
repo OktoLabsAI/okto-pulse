@@ -38,9 +38,9 @@ class _FakeGrafxDatabase:
         self.mutations = 0
 
 
-def _ladybug_database(path: Path) -> Path:
+def _legacy_database(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"ladybug")
+    path.write_bytes(b"legacy")
     return path
 
 
@@ -113,34 +113,34 @@ def test_missing_binding_fails_closed_without_creating_state(tmp_path: Path) -> 
     assert list(tmp_path.iterdir()) == []
 
 
-def test_board_ladybug_binding_is_durable_immutable_and_idempotent(
+def test_board_legacy_binding_is_durable_immutable_and_idempotent(
     tmp_path: Path,
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
-    ladybug_path = _ladybug_database(store.board_ladybug_path("board-1"))
+    legacy_path = _legacy_database(store.board_ladybug_path("board-1"))
 
     first = store.initialize_board_binding(
         board_id="board-1",
         backend="ladybug",
         generation="generation-1",
-        physical_path=ladybug_path,
+        physical_path=legacy_path,
     )
     second = store.initialize_board_binding(
         board_id="board-1",
         backend="ladybug",
         generation="generation-1",
-        physical_path=ladybug_path,
+        physical_path=legacy_path,
     )
 
     assert first == second == store.acquire_board_binding("board-1")
     assert first.backend == "ladybug"
     assert first.page_size is None
-    assert first.physical_path == ladybug_path
+    assert first.physical_path == legacy_path
     with pytest.raises(FrozenInstanceError):
         first.backend = "grafx"  # type: ignore[misc]
 
     document = json.loads(
-        (ladybug_path.parent / "graph_backend_binding.json").read_text(encoding="utf-8")
+        (legacy_path.parent / "graph_backend_binding.json").read_text(encoding="utf-8")
     )
     assert document["physical_path"] == "boards/board-1/graph.lbug"
     assert len(document["binding_sha256"]) == 64
@@ -148,12 +148,12 @@ def test_board_ladybug_binding_is_durable_immutable_and_idempotent(
 
 def test_binding_refuses_rebind_without_m7_cas(tmp_path: Path) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
-    ladybug_path = _ladybug_database(store.board_ladybug_path("board-1"))
+    legacy_path = _legacy_database(store.board_ladybug_path("board-1"))
     store.initialize_board_binding(
         board_id="board-1",
         backend="ladybug",
         generation="generation-1",
-        physical_path=ladybug_path,
+        physical_path=legacy_path,
     )
     grafx_path = store.board_grafx_path("board-1", "generation-2")
     database = _grafx_database(grafx_path)
@@ -174,8 +174,8 @@ def test_binding_refuses_rebind_without_m7_cas(tmp_path: Path) -> None:
 
 def test_global_binding_is_separate_from_each_board(tmp_path: Path) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
-    board_path = _ladybug_database(store.board_ladybug_path("board-1"))
-    global_path = _ladybug_database(store.global_ladybug_path())
+    board_path = _legacy_database(store.board_ladybug_path("board-1"))
+    global_path = _legacy_database(store.global_ladybug_path())
 
     board = store.initialize_board_binding(
         board_id="board-1",
@@ -333,14 +333,14 @@ def test_binding_rejects_tampering_and_missing_physical_database(
     tmp_path: Path,
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
-    ladybug_path = _ladybug_database(store.board_ladybug_path("board-1"))
+    legacy_path = _legacy_database(store.board_ladybug_path("board-1"))
     store.initialize_board_binding(
         board_id="board-1",
         backend="ladybug",
         generation="generation-1",
-        physical_path=ladybug_path,
+        physical_path=legacy_path,
     )
-    binding_path = ladybug_path.parent / "graph_backend_binding.json"
+    binding_path = legacy_path.parent / "graph_backend_binding.json"
     document = json.loads(binding_path.read_text(encoding="utf-8"))
     document["generation"] = "generation-tampered"
     binding_path.write_text(json.dumps(document), encoding="utf-8")
@@ -354,12 +354,12 @@ def test_binding_rejects_tampering_and_missing_physical_database(
         board_id="board-1",
         backend="ladybug",
         generation="generation-1",
-        physical_path=ladybug_path,
+        physical_path=legacy_path,
     )
-    ladybug_path.unlink()
+    legacy_path.unlink()
     inspected = store.inspect_board_binding("board-1")
     assert inspected.backend == "ladybug"
-    assert inspected.physical_path == ladybug_path
+    assert inspected.physical_path == legacy_path
     with pytest.raises(GraphUnavailable) as missing:
         store.acquire_board_binding("board-1")
     assert missing.value.details["reason"] == "physical_database_missing"
@@ -369,7 +369,7 @@ def test_global_binding_inspection_survives_missing_database_but_not_tampering(
     tmp_path: Path,
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
-    global_path = _ladybug_database(store.global_ladybug_path())
+    global_path = _legacy_database(store.global_ladybug_path())
     expected = store.initialize_global_binding(
         backend="ladybug",
         generation="generation-1",
@@ -398,7 +398,7 @@ def test_binding_rejects_unsafe_ids_and_cross_backend_paths(tmp_path: Path) -> N
     with pytest.raises(GraphCapabilityUnavailable):
         store.acquire_board_binding("CON")
 
-    wrong_path = _ladybug_database(
+    wrong_path = _legacy_database(
         tmp_path / "boards" / "board-1" / "grafx" / "generation-1" / "db.lbug"
     )
     with pytest.raises(GraphCapabilityUnavailable) as captured:
@@ -416,7 +416,7 @@ def test_atomic_publication_fsyncs_and_replace_failure_leaves_no_binding(
     tmp_path: Path,
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
-    ladybug_path = _ladybug_database(store.board_ladybug_path("board-1"))
+    legacy_path = _legacy_database(store.board_ladybug_path("board-1"))
     fsynced: list[Path] = []
     monkeypatch.setattr(binding_module, "fsync_directory", fsynced.append)
 
@@ -424,11 +424,11 @@ def test_atomic_publication_fsyncs_and_replace_failure_leaves_no_binding(
         board_id="board-1",
         backend="ladybug",
         generation="generation-1",
-        physical_path=ladybug_path,
+        physical_path=legacy_path,
     )
-    assert fsynced == [ladybug_path.parent]
+    assert fsynced == [legacy_path.parent]
 
-    second_path = _ladybug_database(store.board_ladybug_path("board-2"))
+    second_path = _legacy_database(store.board_ladybug_path("board-2"))
 
     def refuse_replace(source: Path, destination: Path) -> None:
         del source, destination

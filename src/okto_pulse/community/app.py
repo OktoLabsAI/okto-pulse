@@ -694,6 +694,10 @@ def create_app(
     ):
         return JSONResponse(status_code=409, content=exc.to_error_dict())
 
+    # Spec bdfdc682 / FR4: persistence conflicts (stale subject version, semantic
+    # head CAS) become a retryable 409 envelope instead of an HTTP 500.
+    install_guideline_policy_error_handler(app)
+
     # S-LANE-01: canonicalize an invalid sprint ``lane_type`` (which fails Pydantic
     # body validation BEFORE the route handler runs) into the shared envelope.
     # Extracted to a module-level installer so tests register the identical handler.
@@ -705,6 +709,39 @@ def create_app(
         app.include_router(edition_router)
 
     return app
+
+
+def install_guideline_policy_error_handler(app: FastAPI) -> None:
+    """Answer ``GuidelinePolicyPersistenceError`` with the canonical envelope.
+
+    Spec bdfdc682 (FR4/D3): a persistence conflict such as
+    ``semantic_subject_mutation_conflict`` or ``subject_version_conflict`` is a
+    recoverable condition, not a server fault.  The Core mapper already
+    classifies the family (conflict subclasses -> 409, retryable,
+    ``refresh_and_retry``; bare persistence failure -> 503), so the REST
+    boundary only has to project it instead of letting it escape as HTTP 500.
+    Module-level installer so tests register the identical handler.
+    """
+
+    from fastapi.responses import JSONResponse
+
+    from okto_pulse.core.inbound.guideline_policy_error import (
+        guideline_policy_http_status,
+        project_guideline_policy_error,
+    )
+    from okto_pulse.core.ports.guideline_policy import (
+        GuidelinePolicyPersistenceError,
+    )
+
+    @app.exception_handler(GuidelinePolicyPersistenceError)
+    async def _guideline_policy_persistence_error_handler(
+        _request,
+        exc: GuidelinePolicyPersistenceError,
+    ):
+        return JSONResponse(
+            status_code=guideline_policy_http_status(exc),
+            content=project_guideline_policy_error(exc),
+        )
 
 
 def install_request_validation_handler(app: FastAPI) -> None:

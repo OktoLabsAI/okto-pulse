@@ -6,7 +6,8 @@ Cenários do test card 97764bbf:
 * S9 (ts_0393503b) — stress fail-closed: N threads fazendo open/read/write
   via BoardConnection em loop concorrente com close_board_db_cache,
   try_close_board_db e eviction LRU (KG_DB_CACHE_CAP=1); instrumentação da
-  fábrica + de ``ladybug.Database.close`` prova que NENHUM ``db.close()``
+  fábrica + de ``Database.close`` do runtime de grafo legado prova que
+  NENHUM ``db.close()``
   acontece com leitores registrados (>0) no modo runtime; leitor longo força
   o caminho deferido; reader_enter durante closing é fail-closed
   (``BoardCloseInProgressError`` OU espera-e-sucesso — nunca entrada

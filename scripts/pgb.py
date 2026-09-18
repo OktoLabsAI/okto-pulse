@@ -47,9 +47,16 @@ COMM_REPO = Path(__file__).resolve().parents[1]
 
 
 def _resolve_core_repo() -> Path:
+    # ``PGB_CORE_REPO`` stays the script-specific override; the paired-checkout
+    # convention shared by the test suite (``OKTO_PULSE_CORE_REPO``) is honored
+    # next, so worktrees whose sibling is not named ``okto-pulse-core`` resolve.
+    configured_by = "PGB_CORE_REPO"
     configured = str(os.environ.get("PGB_CORE_REPO", "")).strip()
+    if not configured:
+        configured_by = "OKTO_PULSE_CORE_REPO"
+        configured = str(os.environ.get("OKTO_PULSE_CORE_REPO", "")).strip()
     candidates = (
-        (Path(configured).expanduser(), "PGB_CORE_REPO")
+        (Path(configured).expanduser(), configured_by)
         if configured
         else (COMM_REPO.parent / "okto-pulse-core", "current")
     )
@@ -69,9 +76,9 @@ def _resolve_core_repo() -> Path:
             resolved / "src" / "okto_pulse" / "core"
         ).is_dir():
             return resolved
-        if selected_by == "PGB_CORE_REPO":
+        if selected_by in ("PGB_CORE_REPO", "OKTO_PULSE_CORE_REPO"):
             raise RuntimeError(
-                f"PGB_CORE_REPO does not point to a valid Core checkout: {resolved}"
+                f"{selected_by} does not point to a valid Core checkout: {resolved}"
             )
     raise RuntimeError(
         "Unable to locate the Core checkout; "

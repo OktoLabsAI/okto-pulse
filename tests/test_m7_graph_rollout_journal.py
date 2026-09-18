@@ -1130,7 +1130,7 @@ def test_checkpoint_cannot_ack_prepared_mutation_or_change_same_seq_evidence(
     assert mismatch.value.details["reason"] == "checkpoint_same_seq_mismatch"
 
 
-def test_reverse_checkpoint_is_tied_to_ladybug_generation(tmp_path: Path) -> None:
+def test_reverse_checkpoint_is_tied_to_legacy_generation(tmp_path: Path) -> None:
     journal = _journal(tmp_path)
     _start(journal)
 

@@ -18,6 +18,37 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ### Fixed
 
+- The Grafx global schema ensure now backfills `NULL` `graph_layer` values on
+  `DecisionDigest` to the explicit `legacy_unknown` state (fenced write),
+  and the digest vector writer accepts `legacy_unknown` as the durable
+  legacy state it was designed to be; search and read parameters keep
+  rejecting it.
+
+- The installed-wheel global-discovery recovery acceptance runs against the
+  routed Grafx backend: total-loss fixtures preserve the routing binding
+  document, fence-loss and hard-kill injections target the durable
+  active-pointer switch, and the frozen-boundary/attempt-journal proofs
+  match the Grafx artifact layout. `scripts/pgb.py` resolves the Core
+  checkout through `OKTO_PULSE_CORE_REPO` as well.
+
+- The Kuzu/Ladybug vocabulary is retired from the test suites: identifiers,
+  fixtures and comments now use Grafx/graph wording, retired-runtime fakes
+  are deleted, and the remaining tokens are live product identifiers,
+  on-disk sentinels of the legacy-adoption path, or explicit absence
+  guards.
+
+- Concurrent semantic mutations of the same subject (for example two Q&A
+  answers on one ideation) no longer fail with HTTP 500
+  `semantic_subject_mutation_conflict` or lose version bumps. REST
+  mutations (`POST`/`PUT`/`PATCH`/`DELETE`) now open their SQLite transaction
+  with `BEGIN IMMEDIATE` before the first read; `Ideation`, `Refinement`,
+  `Spec` and `Sprint` carry an ORM optimistic version fence; a stale write is
+  reported as `GuidelinePolicyVersionConflict("subject_version_conflict")`
+  and every `GuidelinePolicyPersistenceError` reaching the REST boundary is
+  answered with the canonical retryable `409 conflict` envelope. The Q&A
+  modals disable the answer while a request is in flight, retry once on a
+  retryable conflict and show the server message on failure.
+
 - Board deletion now consumes retryable Core lock-contention errors through
   public ports, preserving the HTTP 409 contract without reaching into private
   Core KG implementation modules.

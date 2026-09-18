@@ -155,7 +155,7 @@ class _Lease:
         return True
 
 
-class _LadybugRuntime:
+class _LegacyRuntime:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.bootstrap_calls = 0
@@ -206,10 +206,10 @@ def test_builder_retains_shared_dependency_identity_and_does_not_initialize(
     resolver = _Resolver(snapshot)
     pool = _Pool()
     lock = threading.RLock()
-    created: list[_LadybugRuntime] = []
+    created: list[_LegacyRuntime] = []
 
-    def runtime_factory(path: Path) -> _LadybugRuntime:
-        runtime = _LadybugRuntime(path)
+    def runtime_factory(path: Path) -> _LegacyRuntime:
+        runtime = _LegacyRuntime(path)
         created.append(runtime)
         return runtime
 
@@ -581,13 +581,13 @@ def test_real_grafx_privacy_handles_present_target_and_dual_layout(
     assert bundle.close_all_on_shutdown()["grafx_closed"] >= 1
 
 
-def test_shutdown_attempts_ladybug_and_grafx_before_reporting_failure() -> None:
+def test_shutdown_attempts_legacy_and_grafx_before_reporting_failure() -> None:
     calls: list[str] = []
 
-    class Ladybug:
+    class Legacy:
         def close_all(self) -> int:
-            calls.append("ladybug")
-            raise RuntimeError("ladybug-close")
+            calls.append("legacy")
+            raise RuntimeError("legacy-close")
 
     class Grafx:
         def close_all(self) -> int:

@@ -133,10 +133,10 @@ def _resolver(
     )
 
 
-def _bind_ladybug(store: CommunityGraphBackendBindingStore) -> Path:
+def _bind_legacy(store: CommunityGraphBackendBindingStore) -> Path:
     path = store.board_ladybug_path(BOARD_ID)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"ladybug")
+    path.write_bytes(b"legacy")
     store.initialize_board_binding(
         board_id=BOARD_ID,
         backend="ladybug",
@@ -161,7 +161,7 @@ def _bind_grafx(store: CommunityGraphBackendBindingStore) -> Path:
     return path
 
 
-def _ladybug_quarantine(root: Path, quarantine_id: str = "q_ladybug") -> Path:
+def _legacy_quarantine(root: Path, quarantine_id: str = "q_legacy") -> Path:
     directory = root / "quarantine" / quarantine_id
     directory.mkdir(parents=True)
     (directory / "graph.lbug").write_bytes(b"snapshot")
@@ -272,7 +272,7 @@ def _legacy_interrupted_quarantine(
 def _routed(
     root: Path,
     resolver: CommunityGraphRouteResolver,
-    ladybug: _RecordingRestore,
+    legacy: _RecordingRestore,
     grafx: _RecordingRestore | None = None,
     *,
     factory_calls: list[object] | None = None,
@@ -293,17 +293,17 @@ def _routed(
 def test_missing_binding_rejects_retired_quarantine_without_opening(
     tmp_path: Path,
 ) -> None:
-    _ladybug_quarantine(tmp_path)
+    _legacy_quarantine(tmp_path)
     store, resolver = _resolver(tmp_path)
-    ladybug = _RecordingRestore(
+    legacy = _RecordingRestore(
         board_id=BOARD_ID,
         board_dir=store.board_ladybug_path(BOARD_ID).parent,
     )
 
     with pytest.raises(QuarantineRestoreError, match="Retired|unsupported"):
-        _routed(tmp_path, resolver, ladybug).plan("q_ladybug")
+        _routed(tmp_path, resolver, legacy).plan("q_legacy")
 
-    assert ladybug.plan_calls == []
+    assert legacy.plan_calls == []
     assert not (tmp_path / "boards").exists()
 
 
@@ -328,12 +328,12 @@ def test_legacy_interrupted_checkpoint_never_routes_main_or_primary_wal(
     graph_path.parent.mkdir(parents=True)
     graph_path.write_bytes(b"live-board-must-survive")
     _store, resolver = _resolver(tmp_path)
-    ladybug = _RecordingRestore(board_id=LEGACY_BOARD_ID, board_dir=graph_path.parent)
+    legacy = _RecordingRestore(board_id=LEGACY_BOARD_ID, board_dir=graph_path.parent)
 
     with pytest.raises(QuarantineRestoreError):
-        _routed(tmp_path, resolver, ladybug).apply(quarantine_id)
+        _routed(tmp_path, resolver, legacy).apply(quarantine_id)
 
-    assert ladybug.apply_calls == []
+    assert legacy.apply_calls == []
     assert graph_path.read_bytes() == b"live-board-must-survive"
 
 
@@ -348,12 +348,12 @@ def test_legacy_interrupted_checkpoint_refuses_conflicting_board_identities(
     graph_path.parent.mkdir(parents=True)
     graph_path.write_bytes(b"other-live-board-must-survive")
     _store, resolver = _resolver(tmp_path)
-    ladybug = _RecordingRestore(board_id=LEGACY_BOARD_ID, board_dir=graph_path.parent)
+    legacy = _RecordingRestore(board_id=LEGACY_BOARD_ID, board_dir=graph_path.parent)
 
     with pytest.raises(QuarantineRestoreError, match="Retired|unsupported"):
-        _routed(tmp_path, resolver, ladybug).apply(quarantine_id)
+        _routed(tmp_path, resolver, legacy).apply(quarantine_id)
 
-    assert ladybug.apply_calls == []
+    assert legacy.apply_calls == []
     assert graph_path.read_bytes() == b"other-live-board-must-survive"
 
 
@@ -366,15 +366,15 @@ def test_legacy_interrupted_checkpoint_refuses_even_exact_producer_sidecars(
         payload_files=("graph.lbug.shadow", "graph.lbug.wal.checkpoint"),
     )
     _store, resolver = _resolver(tmp_path)
-    ladybug = _RecordingRestore(board_id=LEGACY_BOARD_ID, board_dir=graph_path.parent)
+    legacy = _RecordingRestore(board_id=LEGACY_BOARD_ID, board_dir=graph_path.parent)
 
     with pytest.raises(QuarantineRestoreError, match="Retired|unsupported"):
-        _routed(tmp_path, resolver, ladybug).plan(quarantine_id)
+        _routed(tmp_path, resolver, legacy).plan(quarantine_id)
 
-    assert ladybug.plan_calls == []
+    assert legacy.plan_calls == []
 
 
-def test_unproven_old_ladybug_wal_kind_is_not_a_legacy_escape(
+def test_unproven_old_wal_kind_is_not_a_legacy_escape(
     tmp_path: Path,
 ) -> None:
     directory = tmp_path / "quarantine" / "q_old_kind"
@@ -385,22 +385,22 @@ def test_unproven_old_ladybug_wal_kind_is_not_a_legacy_escape(
         encoding="utf-8",
     )
     store, resolver = _resolver(tmp_path)
-    ladybug = _RecordingRestore(
+    legacy = _RecordingRestore(
         board_id=BOARD_ID,
         board_dir=store.board_ladybug_path(BOARD_ID).parent,
     )
 
     with pytest.raises(QuarantineRestoreError, match="Retired|unsupported"):
-        _routed(tmp_path, resolver, ladybug).plan("q_old_kind")
+        _routed(tmp_path, resolver, legacy).plan("q_old_kind")
 
-    assert ladybug.plan_calls == []
+    assert legacy.plan_calls == []
 
 
 def test_missing_binding_refuses_grafx_before_factory_or_open(tmp_path: Path) -> None:
     path = tmp_path / "boards" / BOARD_ID / "grafx" / "generation-1"
     _grafx_wal_quarantine(tmp_path, path)
     store, resolver = _resolver(tmp_path)
-    ladybug = _RecordingRestore(board_id=BOARD_ID, board_dir=path.parent)
+    legacy = _RecordingRestore(board_id=BOARD_ID, board_dir=path.parent)
     grafx = _RecordingRestore(board_id=BOARD_ID, board_dir=path)
     factory_calls: list[object] = []
 
@@ -410,7 +410,7 @@ def test_missing_binding_refuses_grafx_before_factory_or_open(tmp_path: Path) ->
         _routed(
             tmp_path,
             resolver,
-            ladybug,
+            legacy,
             grafx,
             factory_calls=factory_calls,
         ).plan("grafx-wal-route")
@@ -426,7 +426,7 @@ def test_persisted_binding_is_authoritative_and_mismatch_never_falls_back(
 ) -> None:
     store, resolver = _resolver(tmp_path)
     if bound_backend == "ladybug":
-        bound_path = _bind_ladybug(store)
+        bound_path = _bind_legacy(store)
         quarantine_id = "grafx-wal-route"
         _grafx_wal_quarantine(
             tmp_path,
@@ -434,15 +434,15 @@ def test_persisted_binding_is_authoritative_and_mismatch_never_falls_back(
         )
     else:
         bound_path = _bind_grafx(store)
-        quarantine_id = "q_ladybug"
-        _ladybug_quarantine(tmp_path)
-    ladybug = _RecordingRestore(board_id=BOARD_ID, board_dir=bound_path.parent)
+        quarantine_id = "q_legacy"
+        _legacy_quarantine(tmp_path)
+    legacy = _RecordingRestore(board_id=BOARD_ID, board_dir=bound_path.parent)
     grafx = _RecordingRestore(board_id=BOARD_ID, board_dir=bound_path)
 
     with pytest.raises(QuarantineRestoreError, match="Retired|unsupported"):
-        _routed(tmp_path, resolver, ladybug, grafx).plan(quarantine_id)
+        _routed(tmp_path, resolver, legacy, grafx).plan(quarantine_id)
 
-    assert ladybug.plan_calls == []
+    assert legacy.plan_calls == []
     assert grafx.plan_calls == []
 
 
@@ -453,13 +453,13 @@ def test_grafx_wal_and_directory_are_fixed_to_exact_snapshot(tmp_path: Path) -> 
     snapshot = resolver.inspect_board_route(BOARD_ID)
     _grafx_wal_quarantine(tmp_path, path)
     _grafx_directory_quarantine(tmp_path, path, snapshot.binding_sha256)
-    ladybug = _RecordingRestore(board_id=BOARD_ID, board_dir=path.parent)
+    legacy = _RecordingRestore(board_id=BOARD_ID, board_dir=path.parent)
     grafx = _RecordingRestore(board_id=BOARD_ID, board_dir=path)
     factory_calls: list[object] = []
     adapter = _routed(
         tmp_path,
         resolver,
-        ladybug,
+        legacy,
         grafx,
         factory_calls=factory_calls,
     )
@@ -467,7 +467,7 @@ def test_grafx_wal_and_directory_are_fixed_to_exact_snapshot(tmp_path: Path) -> 
     assert adapter.plan("grafx-wal-route").board_dir == str(path)
     assert adapter.plan("grafx-directory-route").board_dir == str(path)
     assert factory_calls == [snapshot, snapshot]
-    assert ladybug.plan_calls == []
+    assert legacy.plan_calls == []
     assert opened == []
 
 
@@ -487,7 +487,7 @@ def test_concrete_grafx_factory_pins_dry_run_to_snapshot_without_open(
         revalidate_fence=lambda _board_id, _phase: None,
         mutation_guard=lambda _board_id: nullcontext(),
     )
-    ladybug = _RecordingRestore(board_id=BOARD_ID, board_dir=path.parent)
+    legacy = _RecordingRestore(board_id=BOARD_ID, board_dir=path.parent)
     adapter = CommunityRoutedQuarantineRestore(
         resolver,
         quarantine_root=tmp_path / "quarantine",
@@ -499,7 +499,7 @@ def test_concrete_grafx_factory_pins_dry_run_to_snapshot_without_open(
     assert plan.board_dir == str(path)
     assert [entry.name for entry in plan.files] == ["wal/000000000001.wal"]
     assert opened == []
-    assert ladybug.plan_calls == []
+    assert legacy.plan_calls == []
 
 
 def test_grafx_generation_binding_and_path_mismatch_fail_before_factory(
@@ -515,13 +515,13 @@ def test_grafx_generation_binding_and_path_mismatch_fail_before_factory(
     )
     manifest_path = directory / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    ladybug = _RecordingRestore(board_id=BOARD_ID, board_dir=path.parent)
+    legacy = _RecordingRestore(board_id=BOARD_ID, board_dir=path.parent)
     grafx = _RecordingRestore(board_id=BOARD_ID, board_dir=path)
     factory_calls: list[object] = []
     adapter = _routed(
         tmp_path,
         resolver,
-        ladybug,
+        legacy,
         grafx,
         factory_calls=factory_calls,
     )
@@ -556,13 +556,13 @@ def test_grafx_directory_tamper_and_duplicate_inventory_fail_before_factory(
     )
     manifest_path = directory / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    ladybug = _RecordingRestore(board_id=BOARD_ID, board_dir=path.parent)
+    legacy = _RecordingRestore(board_id=BOARD_ID, board_dir=path.parent)
     grafx = _RecordingRestore(board_id=BOARD_ID, board_dir=path)
     factory_calls: list[object] = []
     adapter = _routed(
         tmp_path,
         resolver,
-        ladybug,
+        legacy,
         grafx,
         factory_calls=factory_calls,
     )
@@ -618,23 +618,23 @@ def test_duplicate_or_stripped_mixed_markers_fail_before_provider(
     mutation,
     reason: str,
 ) -> None:
-    directory = _ladybug_quarantine(tmp_path)
+    directory = _legacy_quarantine(tmp_path)
     manifest_path = directory / "manifest.json"
     manifest_path.write_text(
         mutation(manifest_path.read_text(encoding="utf-8")), encoding="utf-8"
     )
     store, resolver = _resolver(tmp_path)
-    ladybug = _RecordingRestore(
+    legacy = _RecordingRestore(
         board_id=BOARD_ID,
         board_dir=store.board_ladybug_path(BOARD_ID).parent,
     )
 
     with pytest.raises(QuarantineRestoreError, match=reason):
-        _routed(tmp_path, resolver, ladybug).plan("q_ladybug")
-    assert ladybug.plan_calls == []
+        _routed(tmp_path, resolver, legacy).plan("q_legacy")
+    assert legacy.plan_calls == []
 
 
-def test_authenticated_grafx_manifest_with_ladybug_markers_is_rejected(
+def test_authenticated_grafx_manifest_with_legacy_markers_is_rejected(
     tmp_path: Path,
 ) -> None:
     store, resolver = _resolver(tmp_path)
@@ -658,7 +658,7 @@ def test_authenticated_grafx_manifest_with_ladybug_markers_is_rejected(
         json.dumps(_authenticated_manifest(manifest)),
         encoding="utf-8",
     )
-    ladybug = _RecordingRestore(board_id=BOARD_ID, board_dir=path.parent)
+    legacy = _RecordingRestore(board_id=BOARD_ID, board_dir=path.parent)
     grafx = _RecordingRestore(board_id=BOARD_ID, board_dir=path)
     factory_calls: list[object] = []
 
@@ -666,7 +666,7 @@ def test_authenticated_grafx_manifest_with_ladybug_markers_is_rejected(
         _routed(
             tmp_path,
             resolver,
-            ladybug,
+            legacy,
             grafx,
             factory_calls=factory_calls,
         ).plan("grafx-directory-route")
@@ -678,31 +678,31 @@ def test_authenticated_grafx_manifest_with_ladybug_markers_is_rejected(
 def test_oversize_manifest_and_alternate_payload_fail_before_provider(
     tmp_path: Path,
 ) -> None:
-    directory = _ladybug_quarantine(tmp_path)
+    directory = _legacy_quarantine(tmp_path)
     store, resolver = _resolver(tmp_path)
-    ladybug = _RecordingRestore(
+    legacy = _RecordingRestore(
         board_id=BOARD_ID,
         board_dir=store.board_ladybug_path(BOARD_ID).parent,
     )
-    adapter = _routed(tmp_path, resolver, ladybug)
+    adapter = _routed(tmp_path, resolver, legacy)
     (directory / "manifest.json").write_bytes(b"{" + b" " * (1024 * 1024))
     with pytest.raises(QuarantineRestoreError, match="unreadable"):
-        adapter.plan("q_ladybug")
+        adapter.plan("q_legacy")
 
-    directory = _ladybug_quarantine(tmp_path, "q_poison")
+    directory = _legacy_quarantine(tmp_path, "q_poison")
     (directory / "payload").mkdir()
     with pytest.raises(QuarantineRestoreError, match="Retired|unsupported"):
         adapter.plan("q_poison")
-    assert ladybug.plan_calls == []
+    assert legacy.plan_calls == []
 
 
 def test_alias_is_rejected_before_manifest_read(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    directory = _ladybug_quarantine(tmp_path)
+    directory = _legacy_quarantine(tmp_path)
     store, resolver = _resolver(tmp_path)
-    ladybug = _RecordingRestore(
+    legacy = _RecordingRestore(
         board_id=BOARD_ID,
         board_dir=store.board_ladybug_path(BOARD_ID).parent,
     )
@@ -714,17 +714,17 @@ def test_alias_is_rejected_before_manifest_read(
     )
 
     with pytest.raises(QuarantineRestoreError, match="alias"):
-        _routed(tmp_path, resolver, ladybug).plan("q_ladybug")
-    assert ladybug.plan_calls == []
+        _routed(tmp_path, resolver, legacy).plan("q_legacy")
+    assert legacy.plan_calls == []
 
 
-def test_missing_binding_refuses_aliased_ladybug_destination(
+def test_missing_binding_refuses_aliased_legacy_destination(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _ladybug_quarantine(tmp_path)
+    _legacy_quarantine(tmp_path)
     store, resolver = _resolver(tmp_path)
-    ladybug = _RecordingRestore(
+    legacy = _RecordingRestore(
         board_id=BOARD_ID,
         board_dir=store.board_ladybug_path(BOARD_ID).parent,
     )
@@ -742,17 +742,17 @@ def test_missing_binding_refuses_aliased_ladybug_destination(
     )
 
     with pytest.raises(QuarantineRestoreError, match="Retired|unsupported"):
-        _routed(tmp_path, resolver, ladybug).plan("q_ladybug")
-    assert ladybug.plan_calls == []
+        _routed(tmp_path, resolver, legacy).plan("q_legacy")
+    assert legacy.plan_calls == []
 
 
 def test_extensions_preserve_selected_backend(tmp_path: Path) -> None:
     store, resolver = _resolver(tmp_path)
     path = _bind_grafx(store)
     _grafx_wal_quarantine(tmp_path, path)
-    ladybug = _RecordingRestore(board_id=BOARD_ID, board_dir=path.parent)
+    legacy = _RecordingRestore(board_id=BOARD_ID, board_dir=path.parent)
     grafx = _RecordingRestore(board_id=BOARD_ID, board_dir=path)
-    adapter = _routed(tmp_path, resolver, ladybug, grafx)
+    adapter = _routed(tmp_path, resolver, legacy, grafx)
 
     report = adapter.apply_rebuild_compensation(
         "grafx-wal-route",
@@ -805,7 +805,7 @@ def test_composition_without_shared_resolver_leaves_optional_slot_fail_closed(
     assert list(tmp_path.iterdir()) == []
 
 
-def test_cli_uses_composed_restore_slot_without_constructing_ladybug(
+def test_cli_uses_composed_restore_slot_without_constructing_legacy(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
