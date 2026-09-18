@@ -42,7 +42,7 @@ dependencies = [
     # FastMCP 2.14.x still imports authlib.jose. Authlib 1.7 emits a runtime
     # deprecation warning for that namespace; keep the supported 1.6 line
     # until the Community MCP host is migrated to FastMCP 3 / joserfc.
-    "authlib>=1.6.5,<1.7.0",
+    "authlib>=1.6.5,<1.9.0",
     "mcp>=1.20.0,<2.0.0",
     "uvicorn[standard]>=0.27.0,<1.0.0",
     "wsproto>=1.2.0,<2.0.0",
