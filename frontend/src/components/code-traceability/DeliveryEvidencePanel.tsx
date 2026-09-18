@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { useDashboardApi } from '@/services/api';
+import { ObligationRefText } from './obligationPresentation';
 import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 
 interface Props {
@@ -112,7 +113,7 @@ export function DeliveryEvidencePanel({ boardId, specId, skipDeliveryEvidence = 
                 return <tr key={ref}>
                   <td className="min-w-0 py-1.5 pr-4 text-gray-700 dark:text-gray-200">
                     <span className="block">{row.obligation.title}</span>
-                    <code className="text-[10px] text-gray-400 dark:text-gray-500">{ref}</code>
+                    <ObligationRefText value={ref} />
                   </td>
                   <td className="px-2 text-green-600 dark:text-green-400" title={waivedImpl ? 'Explicitly waived — human authorization' : row.implementation_satisfied ? 'Accepted proof recorded' : 'No accepted proof'}>
                     {row.implementation_satisfied || waivedImpl ? '✓' : <span className="text-amber-500">◌</span>}

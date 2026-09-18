@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
+import { ObligationRefText } from './obligationPresentation';
 import type {
   CardDeliveryEvidenceInput,
   DeliveryEvidenceInput,
@@ -132,10 +133,10 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
             return <li key={ob.ref} className="flex items-center justify-between gap-3 py-2">
               <span className="min-w-0 text-gray-700 dark:text-gray-200">
                 <span className="block truncate">{ob.title}</span>
-                <code className="text-[10px] text-gray-400 dark:text-gray-500">{ob.ref}</code>
+                <ObligationRefText value={ob.ref} />
               </span>
               <span className={`shrink-0 text-xs font-medium ${ok ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}`}>
-                {ok ? `✓ Implementation · ${proof ? proof.id.slice(-12) : 'waived/rollup'}` : '◌ No accepted proof'}
+                {ok ? '✓ Implementation' : '◌ No accepted proof'}
               </span>
             </li>;
           })}
@@ -174,7 +175,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
               {selectableRefs.map(o => (
                 <label key={o.ref} className="flex items-start gap-2 text-sm">
                   <input type="checkbox" checked={refs.includes(o.ref)} onChange={e => setRefs(e.target.checked ? [...refs, o.ref] : refs.filter(v => v !== o.ref))} aria-label={`Select ${o.ref}`} />
-                  <span className="min-w-0"><span className="block truncate">{o.title}</span><code className="text-[10px] text-gray-400">{o.ref}</code></span>
+                  <span className="min-w-0"><span className="block truncate">{o.title}</span><ObligationRefText value={o.ref} /></span>
                 </label>
               ))}
             </div>

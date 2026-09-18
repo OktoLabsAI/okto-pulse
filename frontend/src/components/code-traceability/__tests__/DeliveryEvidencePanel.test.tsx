@@ -45,9 +45,9 @@ it('renders the informational rollup: verdict, summary and board gate mode', asy
 it('shows obligations name-first with the stable ref as secondary metadata', async () => {
   render(<DeliveryEvidencePanel boardId="b" specId="s" />);
   expect(await screen.findByText('Bindings live on the card ledger')).toBeTruthy();
-  expect(screen.getByText('fr:fr_3a9f')).toBeTruthy();
+  expect(screen.getByText('(fr_3a9f)')).toBeTruthy();
   expect(screen.getByText('Rollup derives from card ledgers')).toBeTruthy();
-  expect(screen.getByText('fr:fr_4b21')).toBeTruthy();
+  expect(screen.getByText('(fr_4b21)')).toBeTruthy();
 });
 
 it('marks implementation and test coverage per obligation', async () => {

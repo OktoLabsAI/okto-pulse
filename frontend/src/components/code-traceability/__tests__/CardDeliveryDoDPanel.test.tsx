@@ -49,8 +49,8 @@ afterEach(cleanup);
 it('renders the DoD obligations name-first with per-obligation proof state', async () => {
   render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
   expect(await screen.findByText('Bindings live on the card ledger')).toBeTruthy();
-  expect(screen.getByText('fr:fr_3a9f')).toBeTruthy();
-  expect(screen.getByText('✓ Implementation · ivery_abc111')).toBeTruthy();
+  expect(screen.getByText('(fr_3a9f)')).toBeTruthy();
+  expect(screen.getByText('✓ Implementation')).toBeTruthy();
   expect(screen.getAllByText('Done is rejected without proof').length).toBeGreaterThan(0);
   expect(screen.getByText('◌ No accepted proof')).toBeTruthy();
 });
