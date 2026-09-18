@@ -537,6 +537,13 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "Schema migration classified as post_create_all so legacy agent permissions "
         "are migrated before permission-flag data reconciliation.",
     ),
+    (
+        "_migrate_add_skip_delivery_evidence",
+        "post_create_all",
+        False,
+        "Add the spec-level skip_delivery_evidence override flag (0.3.4) before "
+        "any data-bootstrap step touches the Spec ORM.",
+    ),
     # Data bootstrap (_seed_builtin_presets / _reconcile_* /
     # _bootstrap_default_discovery_intents) runs after the schema ledger.
 )
