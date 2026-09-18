@@ -676,6 +676,15 @@ class Ideation(Base):
         Integer, default=1, server_default=text("1"), nullable=False
     )
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # Optimistic concurrency fence (spec bdfdc682, FR2/D2): every ORM
+    # UPDATE/DELETE carries ``WHERE version = <loaded>``.  The services keep
+    # authoring the increment (``_bump``, materialization, code traceability),
+    # hence ``version_id_generator=False``; a stale write raises
+    # ``StaleDataError`` instead of regressing or losing a bump.
+    __mapper_args__ = {
+        "version_id_col": version,
+        "version_id_generator": False,
+    }
     assignee_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -957,6 +966,15 @@ class Refinement(Base):
         Integer, default=1, server_default=text("1"), nullable=False
     )
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # Optimistic concurrency fence (spec bdfdc682, FR2/D2): every ORM
+    # UPDATE/DELETE carries ``WHERE version = <loaded>``.  The services keep
+    # authoring the increment (``_bump``, materialization, code traceability),
+    # hence ``version_id_generator=False``; a stale write raises
+    # ``StaleDataError`` instead of regressing or losing a bump.
+    __mapper_args__ = {
+        "version_id_col": version,
+        "version_id_generator": False,
+    }
     assignee_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -1384,6 +1402,15 @@ class Spec(Base):
     # the older marker inapplicable without destroying audit meaning.
     last_started_edition: Mapped[int | None] = mapped_column(Integer, nullable=True)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # Optimistic concurrency fence (spec bdfdc682, FR2/D2): every ORM
+    # UPDATE/DELETE carries ``WHERE version = <loaded>``.  The services keep
+    # authoring the increment (``_bump``, materialization, code traceability),
+    # hence ``version_id_generator=False``; a stale write raises
+    # ``StaleDataError`` instead of regressing or losing a bump.
+    __mapper_args__ = {
+        "version_id_col": version,
+        "version_id_generator": False,
+    }
     assignee_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -2191,6 +2218,15 @@ class Sprint(Base):
     )
     validation_max_drift: Mapped[int | None] = mapped_column(Integer, nullable=True)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # Optimistic concurrency fence (spec bdfdc682, FR2/D2): every ORM
+    # UPDATE/DELETE carries ``WHERE version = <loaded>``.  The services keep
+    # authoring the increment (``_bump``, materialization, code traceability),
+    # hence ``version_id_generator=False``; a stale write raises
+    # ``StaleDataError`` instead of regressing or losing a bump.
+    __mapper_args__ = {
+        "version_id_col": version,
+        "version_id_generator": False,
+    }
     labels: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     archived: Mapped[bool] = mapped_column(nullable=False, server_default=text("false"))
     pre_archive_status: Mapped[str | None] = mapped_column(String(50), nullable=True)

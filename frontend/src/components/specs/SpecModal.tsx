@@ -50,6 +50,7 @@ import {
 import toast from 'react-hot-toast';
 import { EntityExportButton } from '@/components/export';
 import { getErrorMessage } from '@/lib/getErrorMessage';
+import { answerErrorMessage, submitQaAnswerWithRetry } from '@/lib/qaAnswerSubmit';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { useDashboardApi } from '@/services/api';
 import { useCurrentBoard } from '@/store/dashboard';
@@ -974,10 +975,13 @@ function ChoiceAnswerForm({
   qa,
   onAnswer,
   onCancel,
+  submitting = false,
 }: {
   qa: SpecQAItem;
   onAnswer: (qaId: string, answer: string | null, selected: string[] | null) => void;
   onCancel: () => void;
+  /** True while an answer for this question is in flight; blocks double submits. */
+  submitting?: boolean;
 }) {
   const [sel, setSel] = useState<string[]>([]);
   const [freeText, setFreeText] = useState('');
@@ -1029,7 +1033,7 @@ function ChoiceAnswerForm({
         <button onClick={onCancel} className="btn btn-secondary text-xs">Cancel</button>
         <button
           onClick={() => onAnswer(qa.id, freeText.trim() || null, sel.length > 0 ? sel : null)}
-          disabled={!canSubmit}
+          disabled={!canSubmit || submitting}
           className="btn btn-primary text-xs"
         >
           Submit
@@ -1039,7 +1043,7 @@ function ChoiceAnswerForm({
   );
 }
 
-function QATab({
+export function QATab({
   specId,
   mentionables,
   onChanged,
@@ -1053,6 +1057,11 @@ function QATab({
   const [loading, setLoading] = useState(true);
   const [answeringId, setAnsweringId] = useState<string | null>(null);
   const [answerDraft, setAnswerDraft] = useState('');
+  // Single-in-flight guard, keyed by qa_id. The ref is the authority (it is
+  // updated synchronously, so two clicks in the same tick cannot both pass the
+  // guard); the state exists only to drive the disabled rendering.
+  const [answeringInFlight, setAnsweringInFlight] = useState<string | null>(null);
+  const answeringInFlightRef = useRef<string | null>(null);
 
   // Ask question form
   const [askMode, setAskMode] = useState<'text' | 'choice'>('text');
@@ -1101,14 +1110,26 @@ function QATab({
   };
 
   const handleAnswer = async (qaId: string, answer: string | null, selected: string[] | null) => {
+    // Ignore a second submit for the same question while one is in flight.
+    if (answeringInFlightRef.current === qaId) return;
+    answeringInFlightRef.current = qaId;
+    setAnsweringInFlight(qaId);
     try {
-      await api.answerSpecQuestion(specId, qaId, answer || '', selected);
+      await submitQaAnswerWithRetry({
+        send: () => api.answerSpecQuestion(specId, qaId, answer || '', selected),
+        reload: load,
+      });
       setAnsweringId(null);
       setAnswerDraft('');
       toast.success('Answer posted');
       await load();
       onChanged();
-    } catch { toast.error('Failed to post answer'); }
+    } catch (err) {
+      toast.error(answerErrorMessage(err));
+    } finally {
+      answeringInFlightRef.current = null;
+      setAnsweringInFlight(null);
+    }
   };
 
   const handleTextAnswer = async (qaId: string) => {
@@ -1239,7 +1260,7 @@ function QATab({
                 </div>
                 {answeringId === qa.id ? (
                   qa.question_type !== 'text' ? (
-                    <ChoiceAnswerForm qa={qa} onAnswer={handleAnswer} onCancel={() => setAnsweringId(null)} />
+                    <ChoiceAnswerForm qa={qa} onAnswer={handleAnswer} onCancel={() => setAnsweringId(null)} submitting={answeringInFlight === qa.id} />
                   ) : (
                     <div className="mt-2 flex gap-2">
                       <MentionInput
@@ -1251,7 +1272,7 @@ function QATab({
                         className="flex-1"
                         autoFocus
                       />
-                      <button onClick={() => handleTextAnswer(qa.id)} disabled={!answerDraft.trim()} className="btn btn-primary text-xs">Answer</button>
+                      <button onClick={() => handleTextAnswer(qa.id)} disabled={!answerDraft.trim() || answeringInFlight === qa.id} className="btn btn-primary text-xs">Answer</button>
                       <button onClick={() => { setAnsweringId(null); setAnswerDraft(''); }} className="btn btn-secondary text-xs">Cancel</button>
                     </div>
                   )
