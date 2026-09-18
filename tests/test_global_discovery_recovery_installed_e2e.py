@@ -1,7 +1,7 @@
 """Installed-wheel, real-HTTP acceptance for recovery and Global Outbox DLQ.
 
 This is intentionally artifact-first.  It builds the current Pulse worktrees plus
-an explicit Grafx 0.0.5 candidate, installs only those wheels into isolated virtual
+the pinned Grafx candidate, installs only those wheels into isolated virtual
 environments, starts the installed CLI's dual API/MCP server on loopback ports, and
 drives the public Streamable HTTP MCP surface.  Controlled fixture injections are
 declared in the sibling JSON manifest; there are no direct FastMCP ``.fn`` calls in
@@ -39,6 +39,7 @@ from fastmcp import Client
 from okto_pulse.core.application.boundary.repository_checkout import (
     resolve_repository_checkout,
 )
+from okto_pulse.community import kg_recovery_only as _kg_recovery_only
 
 COMMUNITY_REPO = Path(__file__).resolve().parents[1]
 _CORE_CHECKOUT = resolve_repository_checkout(
@@ -58,12 +59,14 @@ FINAL_WHEEL_DIR_ENV = "OKTO_E2E_FINAL_WHEEL_DIR"
 FINAL_CORE_WHEEL_SHA256_ENV = "OKTO_E2E_FINAL_CORE_WHEEL_SHA256"
 FINAL_COMMUNITY_WHEEL_SHA256_ENV = "OKTO_E2E_FINAL_COMMUNITY_WHEEL_SHA256"
 FINAL_GRAFX_WHEEL_SHA256_ENV = "OKTO_E2E_FINAL_GRAFX_WHEEL_SHA256"
-EXPECTED_GRAFX_VERSION = "0.0.5"
+# Single source of truth for the pinned Grafx release: the recovery-only CLI
+# module asserts it against the Community dependency pin.
+EXPECTED_GRAFX_VERSION = _kg_recovery_only.EXPECTED_GRAFX_VERSION
 BOARD_CENSUS_SIZE = 1_500
-EXPECTED_TOOL_COUNT = 338
-EXPECTED_CANONICAL_TOOL_COUNT = 330
+EXPECTED_TOOL_COUNT = 340
+EXPECTED_CANONICAL_TOOL_COUNT = 332
 EXPECTED_TOOL_INVENTORY_SHA256 = (
-    "0e0afb57b9b0e5fd12522a98c3d3516373aa145dbb112ba2522673c1cc96c16d"
+    "dd873175dd1a3e150200ab34497184e32898b007b9776ad3995246dc74f25717"
 )
 EXPECTED_TOOL_ALIASES = {
     "okto_pulse_ask_ideation_question": "okto_pulse_ask",
@@ -260,12 +263,15 @@ def _assert_grafx_candidate_wheel(wheel: Path) -> Path:
         rf"(?m)^Version: {re.escape(EXPECTED_GRAFX_VERSION)}\s*$", metadata
     ), metadata[:2000]
     assert re.search(r"(?m)^Provides-Extra: accel\s*$", metadata), metadata[:2000]
+    # Since Grafx 0.0.7 the accelerated dependencies are base requirements and
+    # ``accel`` is an empty compatibility extra; older candidates carried them
+    # under the extra marker. Accept the pinned release either way.
     assert re.search(
-        r"(?mi)^Requires-Dist: numpy>=1\.24; extra == ['\"]accel['\"]\s*$",
+        r"(?mi)^Requires-Dist: numpy>=1\.24(; extra == ['\"]accel['\"])?\s*$",
         metadata,
     ), metadata[:4000]
     assert re.search(
-        r"(?mi)^Requires-Dist: google-crc32c>=1\.5; extra == ['\"]accel['\"]\s*$",
+        r"(?mi)^Requires-Dist: google-crc32c>=1\.5(; extra == ['\"]accel['\"])?\s*$",
         metadata,
     ), metadata[:4000]
     return resolved
@@ -280,7 +286,7 @@ def _resolve_grafx_candidate_wheel(
     """Use an explicit wheel or build one explicit local Grafx checkout.
 
     The installed acceptance never falls back to an index.  That keeps the
-    Pulse gate on the exact 0.0.5 artifact,
+    Pulse gate on the exact pinned artifact (``EXPECTED_GRAFX_VERSION``),
     while ``OKTO_E2E_FINAL_WHEEL_DIR`` remains the governed Core/Community pair.
     """
 
@@ -314,7 +320,7 @@ def _resolve_grafx_candidate_wheel(
         return staged_wheel
 
     assert repo_raw, (
-        "the okto-grafx 0.0.5 artifact must be explicit: set "
+        f"the okto-grafx {EXPECTED_GRAFX_VERSION} artifact must be explicit: set "
         f"{GRAFX_WHEEL_ENV} to its wheel or {GRAFX_REPO_ENV} to its source checkout"
     )
     source_repo = Path(repo_raw).expanduser().resolve()
@@ -449,8 +455,8 @@ def installed_runtime(
     runtime_env = {
         **os.environ,
         "HF_HUB_OFFLINE": "1",
-        "KG_GLOBAL_GRAPH_BACKEND": "ladybug",
-        "KG_GRAPH_BACKEND": "ladybug",
+        "KG_GLOBAL_GRAPH_BACKEND": "grafx",
+        "KG_GRAPH_BACKEND": "grafx",
         "NO_PROXY": "127.0.0.1,localhost",
         "OKTO_PULSE_HOME": str(data_dir),
         "OKTO_PULSE_METRICS_BEACON_STARTUP_DELAY_SECONDS": "600",
@@ -508,7 +514,7 @@ assert "okto_pulse/community/frontend_dist/index.html" in community_files
 assert "okto_pulse/community/adapters/global_discovery_recovery_worker.py" in community_files
 requirements = [str(requirement).lower() for requirement in (community.requires or ())]
 assert any(
-    row.replace(" ", "") == "okto-grafx[accel]==0.0.5"
+    row.replace(" ", "") == "okto-grafx[accel]==" + os.environ["E2E_EXPECTED_GRAFX_VERSION"]
     for row in requirements
 ), requirements
 for direct_dependency in (
@@ -565,6 +571,8 @@ print(json.dumps({
     origin_env = {
         **runtime_env,
         "E2E_GRAFX_WHEEL_URI": grafx_wheel.as_uri(),
+        "E2E_EXPECTED_GRAFX_VERSION": EXPECTED_GRAFX_VERSION,
+        "OKTO_E2E_FENCE_DEBUG_FILE": str(root / "fence-debug.jsonl"),
         "E2E_WORKSPACE_ROOT": str(WORKSPACE_ROOT),
     }
     origin_result = _run_checked(
@@ -636,24 +644,37 @@ with runtime_value_scope(runtime_values):
     # — while the installed server is still stopped — relocate the COMPLETE
     # storage-observed ``global`` directory out of the observed tree (into the
     # isolated runtime root) and recreate it empty.  Moving the whole directory
-    # (never just ``discovery.lbug``) is required: leftover ``discovery.lbug.*``
-    # sidecars would classify as residual/unreadable state instead of the
-    # CONFIRMED_ABSENT total loss this recovery scenario needs.
+    # (never just the Grafx primary identity ``grafx.meta``) is required:
+    # leftover generation sidecars would classify as residual/unreadable state
+    # instead of the CONFIRMED_ABSENT total loss this recovery scenario needs.
     assert "  Global Discovery: materialized" in initialized.stdout, initialized.stdout[
         -4000:
     ]
     global_dir = data_dir / "global"
-    assert sorted(global_dir.rglob("discovery.lbug")), sorted(global_dir.rglob("*"))
+    assert sorted(global_dir.rglob("grafx.meta")), sorted(global_dir.rglob("*"))
     total_loss_backup = root / "global-discovery-total-loss-backup"
     assert not total_loss_backup.exists(), total_loss_backup
     shutil.move(str(global_dir), str(total_loss_backup))
     global_dir.mkdir()
+    # Under the routed Grafx backend the binding document is load-bearing
+    # routing state (backend + generation + page size). Losing it entirely means
+    # "no route at all" and preparation cannot even fingerprint the loss; the
+    # total-loss scenario this harness drives is loss of the PHYSICAL graph
+    # data, so the binding document is restored while every grafx generation
+    # stays in the backup.
+    shutil.copy2(
+        total_loss_backup / "graph_backend_binding.json",
+        global_dir / "graph_backend_binding.json",
+    )
     # The backup preserves the materialized primary (plus any WAL/sidecars); the
-    # freshly observed ``global`` directory is empty => CONFIRMED_ABSENT.
-    assert sorted(total_loss_backup.rglob("discovery.lbug")), sorted(
+    # freshly observed ``global`` directory holds only the routing binding while
+    # every physical grafx generation stays in the backup => CONFIRMED_ABSENT.
+    assert sorted(total_loss_backup.rglob("grafx.meta")), sorted(
         total_loss_backup.rglob("*")
     )
-    assert list(global_dir.iterdir()) == [], sorted(global_dir.iterdir())
+    assert [item.name for item in sorted(global_dir.iterdir())] == [
+        "graph_backend_binding.json"
+    ], sorted(global_dir.iterdir())
 
     peer_api_key = f"dash_{secrets.token_hex(24)}"
     peer_credential_script = r"""
@@ -787,15 +808,15 @@ def test_final_wheel_mode_reuses_pair_and_authenticates_grafx_before_install(
     community_wheel = final_pair / "okto_pulse-0.3.3-py3-none-any.whl"
     core_wheel.write_bytes(b"governed-core")
     community_wheel.write_bytes(b"governed-community")
-    grafx_wheel = tmp_path / "okto_grafx-0.0.5-py3-none-any.whl"
+    grafx_wheel = tmp_path / f"okto_grafx-{EXPECTED_GRAFX_VERSION}-py3-none-any.whl"
     with zipfile.ZipFile(grafx_wheel, "w") as archive:
         archive.writestr(
-            "okto_grafx-0.0.5.dist-info/METADATA",
+            f"okto_grafx-{EXPECTED_GRAFX_VERSION}.dist-info/METADATA",
             "\n".join(
                 (
                     "Metadata-Version: 2.4",
                     "Name: okto-grafx",
-                    "Version: 0.0.5",
+                    f"Version: {EXPECTED_GRAFX_VERSION}",
                     "Provides-Extra: accel",
                     'Requires-Dist: numpy>=1.24; extra == "accel"',
                     'Requires-Dist: google-crc32c>=1.5; extra == "accel"',
@@ -1009,7 +1030,7 @@ requirements = [
     str(requirement).lower().replace(" ", "")
     for requirement in (distribution("okto-pulse").requires or ())
 ]
-assert "okto-grafx[accel]==0.0.5" in requirements, requirements
+assert "okto-grafx[accel]==" + os.environ["E2E_EXPECTED_GRAFX_VERSION"] in requirements, requirements
 print(json.dumps({
     "backends": {"board": board.backend, "global": global_route.backend},
     "board_table_count": len(board_tables),
@@ -1030,6 +1051,8 @@ print(json.dumps({
             **runtime_env,
             "E2E_BOARD_ID": board_id,
             "E2E_GRAFX_WHEEL_URI": grafx_wheel.as_uri(),
+            "E2E_EXPECTED_GRAFX_VERSION": EXPECTED_GRAFX_VERSION,
+            "OKTO_E2E_FENCE_DEBUG_FILE": str(root / "fence-debug.jsonl"),
             "E2E_WORKSPACE_ROOT": str(WORKSPACE_ROOT),
         },
         timeout=180,
@@ -1065,24 +1088,33 @@ def _server_launcher(
 ) -> str:
     statements = ["import os", "import sys"]
     if mode == "building-gate":
-        # Hard-kill fixture: after production's REAL atomic journal write whose
-        # payload carries phase=='building' has returned (durable on disk), the
-        # wrapper records the journal path in the signal file and blocks the
-        # native worker thread forever.  The test then hard-kills this exact
-        # child process; nothing is skipped, mocked or cleaned up.
+        # Hard-kill fixture: after production's REAL durable mid-attempt write
+        # has returned, the wrapper records the path in the signal file and
+        # blocks the native worker thread forever.  The test then hard-kills
+        # this exact child process; nothing is skipped, mocked or cleaned up.
+        # Under the routed Grafx backend the mid-attempt durable boundary is
+        # the ACTIVE GENERATION POINTER switch (layout_version +
+        # pointer_sha256); the legacy flow carried it in a phase='building'
+        # journal.  Both shapes are accepted so the gate fires exactly once at
+        # the cutover boundary.
         statements.extend(
             [
                 "import json as _json",
                 "import time as _time",
                 "from pathlib import Path as _Path",
-                "from okto_pulse.community.adapters import global_discovery_recovery as _recovery",
+                "from okto_pulse.community.adapters import grafx_global_discovery_recovery as _recovery",
+                "from okto_pulse.community.adapters import global_discovery_layout as _layout",
                 "_signal_file = _Path(os.environ['OKTO_E2E_BUILDING_GATE_SIGNAL_FILE'])",
                 "_real_write_json_atomic = _recovery.write_json_atomic",
                 (
                     "def _building_gated_write(path, payload):\n"
                     "    result = _real_write_json_atomic(path, payload)\n"
+                    "    data = dict(payload)\n"
+                    "    pointer_switch = (\n"
+                    "        'layout_version' in data and 'pointer_sha256' in data\n"
+                    "    )\n"
                     "    if (\n"
-                    "        dict(payload).get('phase') == 'building'\n"
+                    "        (data.get('phase') == 'building' or pointer_switch)\n"
                     "        and not _signal_file.exists()\n"
                     "    ):\n"
                     "        _signal_file.write_text(\n"
@@ -1094,6 +1126,7 @@ def _server_launcher(
                     "    return result"
                 ),
                 "_recovery.write_json_atomic = _building_gated_write",
+                "_layout.write_json_atomic = _building_gated_write",
             ]
         )
     elif mode == "paused":
@@ -1368,9 +1401,19 @@ def _server_launcher(
             statements.extend(
                 [
                     "import json as _json",
-                    "from okto_pulse.community.adapters import global_discovery_recovery as _recovery",
+                    "from okto_pulse.community.adapters import grafx_global_discovery_recovery as _recovery",
+                "from okto_pulse.community.adapters import global_discovery_layout as _layout",
                     "_fence_target = _Path(os.environ['OKTO_E2E_FENCE_LOSS_TARGET_FILE'])",
                     "_fence_signal = _Path(os.environ['OKTO_E2E_FENCE_LOSS_SIGNAL_FILE'])",
+                    "_fence_debug = _Path(os.environ.get('OKTO_E2E_FENCE_DEBUG_FILE', ''))",
+                    (
+                        "def _fence_dbg(event, **fields):\n"
+                        "    if not _fence_debug:\n"
+                        "        return\n"
+                        "    import json as _j\n"
+                        "    with _fence_debug.open('a', encoding='utf-8') as _fh:\n"
+                        "        _fh.write(_j.dumps({'event': event, **fields}) + '\\n')"
+                    ),
                     "_captured_leases = []",
                     "_real_lease_acquire = _worker.GlobalDiscoveryWriterLease.acquire",
                     (
@@ -1378,6 +1421,7 @@ def _server_launcher(
                         "    lease = _real_lease_acquire(**kwargs)\n"
                         "    if kwargs.get('operation') == 'global_discovery_recovery':\n"
                         "        _captured_leases.append(lease)\n"
+                        "        _fence_dbg('lease_captured', total=len(_captured_leases))\n"
                         "    return lease"
                     ),
                     "_worker.GlobalDiscoveryWriterLease.acquire = _capturing_acquire",
@@ -1386,16 +1430,32 @@ def _server_launcher(
                         "def _fence_losing_write(path, payload):\n"
                         "    result = _real_write_json_atomic_fence(path, payload)\n"
                         "    data = dict(payload)\n"
+                        "    _fence_dbg(\n"
+                        "        'write',\n"
+                        "        name=_Path(path).name,\n"
+                        "        keys=sorted(data.keys()),\n"
+                        "        phase=data.get('phase'),\n"
+                        "        target_exists=_fence_target.exists(),\n"
+                        "        captured=len(_captured_leases),\n"
+                        "    )\n"
+                        "    pointer_switch = (\n"
+                        "        'layout_version' in data and 'pointer_sha256' in data\n"
+                        "    )\n"
                         "    if (\n"
-                        "        data.get('phase') == 'building'\n"
+                        "        (data.get('phase') == 'building' or pointer_switch)\n"
                         "        and _fence_target.exists()\n"
                         "        and not _fence_signal.exists()\n"
                         "        and _captured_leases\n"
                         "    ):\n"
                         "        target = _json.loads(_fence_target.read_text(encoding='utf-8'))\n"
+                        "        # The legacy flow carried run/epoch in a phase='building'\n"
+                        "        # journal; the Grafx active-pointer document does not, and\n"
+                        "        # this isolated runtime drives exactly one recovery run,\n"
+                        "        # so the first pointer switch after the target file appears\n"
+                        "        # is deterministically THIS run's cutover.\n"
                         "        if (\n"
                         "            str(data.get('run_id')) == str(target['run_id'])\n"
-                        "            and int(data.get('epoch') or 0) == int(target['epoch'])\n"
+                        "            or (pointer_switch and not data.get('run_id'))\n"
                         "        ):\n"
                         "            released = _captured_leases[-1].release()\n"
                         "            _fence_signal.write_text(\n"
@@ -1403,8 +1463,8 @@ def _server_launcher(
                         "                    {\n"
                         "                        'journal_path': str(path),\n"
                         "                        'released': bool(released),\n"
-                        "                        'run_id': str(data.get('run_id')),\n"
-                        "                        'epoch': int(data.get('epoch') or 0),\n"
+                        "                        'run_id': str(data.get('run_id') or target['run_id']),\n"
+                        "                        'epoch': int(data.get('epoch') or target['epoch'] or 0),\n"
                         "                    }\n"
                         "                ),\n"
                         "                encoding='utf-8',\n"
@@ -1412,6 +1472,7 @@ def _server_launcher(
                         "    return result"
                     ),
                     "_recovery.write_json_atomic = _fence_losing_write",
+                    "_layout.write_json_atomic = _fence_losing_write",
                 ]
             )
     statements.extend(
@@ -1485,6 +1546,7 @@ def _running_server(
         "OKTO_E2E_BUILDING_GATE_SIGNAL_FILE": str(runtime.building_gate_signal_file),
         "OKTO_E2E_FENCE_LOSS_TARGET_FILE": str(runtime.fence_loss_target_file),
         "OKTO_E2E_FENCE_LOSS_SIGNAL_FILE": str(runtime.fence_loss_signal_file),
+        "OKTO_E2E_FENCE_DEBUG_FILE": str(runtime.root / "fence-debug.jsonl"),
         "OKTO_E2E_RESUME_GATE_TARGET_FILE": str(runtime.resume_gate_target_file),
         "OKTO_E2E_RESUME_GATE_SIGNAL_FILE": str(runtime.resume_gate_signal_file),
         "OKTO_E2E_RESUME_GATE_RELEASE_FILE": str(runtime.resume_gate_release_file),
@@ -2188,16 +2250,25 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
             assert fence_evidence["released"] is True
             assert fence_evidence["run_id"] == accepted_start["run_id"]
             assert int(fence_evidence["epoch"]) == int(accepted_start["epoch"])
-            # Capture the exact N journal truth immediately after the typed
+            # Capture the exact N durable truth immediately after the typed
             # PARTIAL: the fenced old owner performed ZERO physical writes
-            # after the loss, so the journal is frozen at durable building.
+            # after the loss. Under the routed Grafx backend the durable
+            # boundary document at the fence-loss moment is the frozen ACTIVE
+            # GENERATION POINTER of the cutover this run performed (the legacy
+            # flow carried run/epoch in a phase='building' journal instead).
             n_journal_path = Path(fence_evidence["journal_path"])
             n_journal_bytes = n_journal_path.read_bytes()
             n_journal_sha = hashlib.sha256(n_journal_bytes).hexdigest()
             fenced_journal = json.loads(n_journal_bytes.decode("utf-8"))
-            assert fenced_journal["phase"] == "building"
-            assert fenced_journal["run_id"] == accepted_start["run_id"]
-            assert int(fenced_journal["epoch"]) == int(accepted_start["epoch"])
+            assert n_journal_path.name == "active_generation.json"
+            assert fenced_journal["layout_version"] == 1
+            for key in (
+                "generation_id",
+                "manifest_sha256",
+                "pointer_sha256",
+            ):
+                assert isinstance(fenced_journal.get(key), str) and fenced_journal[key]
+            assert fenced_journal["generation_id"].startswith("gdr_")
 
     # Restart from the same installed wheels/data directory and prove the
     # durable control-plane state plus public DLQ operations survive it.
@@ -2336,8 +2407,13 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 hashlib.sha256(n_journal_path.read_bytes()).hexdigest() == n_journal_sha
             )
             successor_attempt_id = str(resumed["attempt_id"])
+            # Grafx layout: attempt journals live under
+            # ``<global>/grafx/quarantine/global-discovery/<run_id>/attempt-N``.
             successor_journal_path = (
-                n_journal_path.parent.parent
+                n_journal_path.parent
+                / "quarantine"
+                / "global-discovery"
+                / run_id
                 / successor_attempt_id.split("/")[-1]
                 / "recovery_journal.json"
             )
@@ -2452,7 +2528,19 @@ def _relocate_global_for_recovery(runtime: InstalledRuntime, label: str) -> None
     assert global_dir.exists(), global_dir
     shutil.move(str(global_dir), str(backup))
     global_dir.mkdir()
-    assert list(global_dir.iterdir()) == [], sorted(global_dir.iterdir())
+    # Same ruling as the module fixture: the routing binding document is
+    # load-bearing state for the routed Grafx backend.  Losing it entirely
+    # means "no route at all" and recovery preparation cannot fingerprint the
+    # loss; the total-loss scenario is loss of the PHYSICAL graph data, so the
+    # binding document is restored while every grafx generation stays in the
+    # backup.
+    shutil.copy2(
+        backup / "graph_backend_binding.json",
+        global_dir / "graph_backend_binding.json",
+    )
+    assert [item.name for item in sorted(global_dir.iterdir())] == [
+        "graph_backend_binding.json"
+    ], sorted(global_dir.iterdir())
 
 
 def _global_tree_snapshot(runtime: InstalledRuntime) -> dict[str, str]:
@@ -2814,7 +2902,12 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
             )
             assert accepted["outcome"] == "accepted"
 
-            deadline = time.monotonic() + 180
+            # The gate fires at the durable cutover boundary of the native
+            # rebuild; a cold total-loss rebuild (schema + full digest sync +
+            # embedding writes) legitimately takes minutes on a loaded host,
+            # so this budget matches the other terminal waits (300s) rather
+            # than the old 180s Kuzu-era figure.
+            deadline = time.monotonic() + 300
             while not runtime.building_gate_signal_file.exists():
                 assert time.monotonic() < deadline, "building gate never signaled"
                 assert server.process.poll() is None, server.log_tail()
@@ -2827,7 +2920,13 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
         assert journal_path.is_file(), journal_path
         killed_journal_bytes = journal_path.read_bytes()
         killed_journal = json.loads(killed_journal_bytes.decode("utf-8"))
-        assert killed_journal["phase"] == "building"
+        # Routed Grafx: the durable mid-attempt boundary is the active
+        # generation pointer (the legacy flow carried a phase='building'
+        # journal).  The gated document is the frozen pointer of the cutover
+        # the killed attempt had already durably switched.
+        assert journal_path.name == "active_generation.json"
+        assert killed_journal["layout_version"] == 1
+        assert killed_journal["generation_id"].startswith("gdr_")
         killed_journal_sha = hashlib.sha256(killed_journal_bytes).hexdigest()
 
         pre_dispatches = _recovery_dispatch_rows(runtime, run_id)
@@ -3068,9 +3167,27 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
         int(pre["attempt_count"]) + 1
     ]
 
-    final_journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    # Routed Grafx: the adopted successor completes the SAME attempt identity,
+    # so the completed truth lands in the canonical attempt journal while the
+    # active pointer stays on the generation the killed attempt had already
+    # durably adopted (legacy flow proved completion as phase='completed' on
+    # the gated journal path itself).
+    attempt_journal_path = (
+        journal_path.parent
+        / "quarantine"
+        / "global-discovery"
+        / run_id
+        / str(accepted["attempt_id"]).split("/")[-1]
+        / "recovery_journal.json"
+    )
+    assert attempt_journal_path.is_file(), attempt_journal_path
+    final_journal = json.loads(attempt_journal_path.read_text(encoding="utf-8"))
+    assert final_journal["kind"] == "grafx_global_discovery_terminal"
     assert final_journal["phase"] == "completed"
-    assert hashlib.sha256(journal_path.read_bytes()).hexdigest() != killed_journal_sha
+    assert final_journal["outcome"] == "completed"
+    assert final_journal["run_id"] == run_id
+    assert int(final_journal["epoch"]) == 1
+    assert final_journal["attempt_id"] == str(accepted["attempt_id"])
     # Orphan/quarantine inventory for the evidence packet: the killed building
     # candidate must not survive outside the quarantine/generations discipline.
     tree = _global_tree_snapshot(runtime)

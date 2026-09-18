@@ -29,9 +29,9 @@ class _FakeGrafxDatabase:
         self.mutations = 0
 
 
-def _ladybug_database(path: Path) -> Path:
+def _legacy_database(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"ladybug")
+    path.write_bytes(b"legacy")
     return path
 
 
@@ -46,11 +46,11 @@ def _initial_board_binding(
     *,
     board_id: str = "board-1",
 ):
-    path = _ladybug_database(store.board_ladybug_path(board_id))
+    path = _legacy_database(store.board_ladybug_path(board_id))
     return store.initialize_board_binding(
         board_id=board_id,
         backend="ladybug",
-        generation="ladybug-source",
+        generation="legacy-source",
         physical_path=path,
     )
 
@@ -80,7 +80,7 @@ def test_board_binding_cas_publishes_admitted_grafx_and_fsyncs(
     assert published.backend == "grafx"
     assert published.physical_path == grafx_path
     assert published.binding_sha256 != source.binding_sha256
-    assert source.physical_path.read_bytes() == b"ladybug"
+    assert source.physical_path.read_bytes() == b"legacy"
     assert fsynced == [source.physical_path.parent]
 
     document = json.loads(
@@ -132,10 +132,10 @@ def test_global_binding_cas_uses_the_same_admission_and_authenticated_readback(
     tmp_path: Path,
 ) -> None:
     store = CommunityGraphBackendBindingStore(tmp_path)
-    source_path = _ladybug_database(store.global_ladybug_path())
+    source_path = _legacy_database(store.global_ladybug_path())
     source = store.initialize_global_binding(
         backend="ladybug",
-        generation="ladybug-source",
+        generation="legacy-source",
         physical_path=source_path,
     )
     grafx_path = store.global_grafx_path("grafx-candidate")
@@ -153,7 +153,7 @@ def test_global_binding_cas_uses_the_same_admission_and_authenticated_readback(
     assert published == store.acquire_global_binding()
     assert published.backend == "grafx"
     assert published.page_size == 4096
-    assert source_path.read_bytes() == b"ladybug"
+    assert source_path.read_bytes() == b"legacy"
 
 
 def test_stale_binding_cas_fails_closed_with_a_specific_conflict(
@@ -241,7 +241,7 @@ def test_binding_cas_rejects_invalid_target_and_failed_grafx_admission(
             board_id="board-1",
             expected_binding_sha256="not-a-sha256",
             backend="ladybug",
-            generation="ladybug-candidate",
+            generation="legacy-candidate",
             physical_path=source.physical_path,
         )
     assert (
@@ -303,7 +303,7 @@ def test_binding_cas_requires_exact_authenticated_readback(
             board_id="board-1",
             expected_binding_sha256=source.binding_sha256,
             backend="ladybug",
-            generation="ladybug-candidate",
+            generation="legacy-candidate",
             physical_path=source.physical_path,
         )
 
@@ -330,7 +330,7 @@ def test_binding_cas_replace_failure_preserves_the_previous_binding(
             board_id="board-1",
             expected_binding_sha256=source.binding_sha256,
             backend="ladybug",
-            generation="ladybug-candidate",
+            generation="legacy-candidate",
             physical_path=source.physical_path,
         )
 

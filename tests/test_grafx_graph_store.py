@@ -183,7 +183,7 @@ def _edge_attrs(session_id: str, rule_id: str) -> dict[str, Any]:
     }
 
 
-def test_grafx_timestamps_match_the_current_ladybug_boundary_shape() -> None:
+def test_grafx_timestamps_match_the_current_legacy_boundary_shape() -> None:
     expected = datetime(2026, 8, 28, 12, 34, 56, 123456)
     epoch = datetime(1970, 1, 1, tzinfo=UTC)
     delta = expected.replace(tzinfo=UTC) - epoch

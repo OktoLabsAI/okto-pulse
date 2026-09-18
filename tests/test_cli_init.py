@@ -297,7 +297,7 @@ def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
     output = result.stdout + result.stderr
     assert "community.seed.demo_failed" not in output
     assert "Knowledge Graph:" in output
-    # A real Ladybug first boot reports the board by its shared storage
+    # A real legacy graph-runtime first boot reports the board by its shared storage
     # reference. The line must not carry a filesystem path or a backend name,
     # because on a board stored by the other engine that text described a file
     # that does not exist while init still claimed success.

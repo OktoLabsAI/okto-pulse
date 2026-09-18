@@ -103,8 +103,8 @@ release oracle is:
 | Historical private reach-in baseline | `32` |
 | Current private reach-in budget | `0` |
 | Current governed private reach-ins | `0` |
-| Current full Community->Core import inventory | `1222` |
-| Inventory classification | `public_contract=1222`, `governed_temporary_reach_in=0` |
+| Current full Community->Core import inventory | `1225` |
+| Inventory classification | `public_contract=1225`, `governed_temporary_reach_in=0` |
 | Boundary violations | `0` violations, `0` stale ledger entries, `0` incomplete ledger entries, `0` baseline-growth violations |
 | Burn-down progression | `32 -> 21 -> 10 -> 0` after AF42 inventory, lifecycle/auth/MCP, then complete Community ORM ownership |
 | Community release command | `python -m pytest tests/test_af21_core_import_boundary.py tests/test_af25_docs_truthfulness.py tests/test_af33_capstone_community_readiness.py tests/test_af35_s1_community_adapters.py tests/test_af35_s2_community_kg_operational_adapters.py tests/test_af41_runtime_dependency_ownership.py tests/test_af41_serving_boundary.py tests/test_r06_mcp_auth_context_community.py tests/test_r08a_mcp_auth_adapter.py tests/test_cli_init.py tests/test_cli_kg_backfill.py tests/test_hnd2_credential_surface_gate.py tests/test_r01c_imp4_schema_lifecycle_orchestrator.py tests/test_r16b_relational_schema_migrator.py tests/test_r16c_data_bootstrapper.py -q` -> `105 passed` |
@@ -198,9 +198,20 @@ Adapter source map:
   repositories.
 - KG data and graph runtime: `community/adapters/data.py`,
   `community/adapters/memory.py`, `community/adapters/grafx_*`,
-  `community/adapters/routed_*`, `community/adapters/graph_operation_guards.py`,
-  `community/adapters/global_privacy_projection.py` and
-  `community/adapters/graph_runtime_budget.py`.
+  `community/adapters/routed_*`, `community/adapters/graph_*` (backend binding,
+  route resolution, DDL, memory pressure, rollout capture/journal, restore-serve
+  fence, operation guards and the runtime budget),
+  `community/adapters/global_privacy_projection.py`,
+  `community/adapters/global_operation_gate.py`,
+  `community/adapters/cypher_statement_policy.py`,
+  `community/adapters/startup_graph_routes.py`,
+  `community/adapters/kg_shutdown.py`,
+  `community/adapters/kg_chaos_executor.py` and
+  `community/adapters/sqlite_writer_diagnostics.py`.
+- Logical graph transfer (export/import of a board or global generation):
+  `community/adapters/logical_graph_file.py`,
+  `community/adapters/logical_graph_transfer.py` and
+  `community/adapters/logical_transfer_*`.
 - ML search helpers: `community/adapters/embedding.py` and
   `community/adapters/rerank.py`; orchestration lives in
   `community/adapters/hybrid_search.py` and
@@ -247,7 +258,7 @@ Adapter source map:
 - Ownership and local lifecycle support:
   `community/adapters/adapter_provenance.py`,
   `community/adapters/local_storage_ref.py`,
-  `community/adapters/quarantine_restore.py`,
+  `community/adapters/grafx_quarantine_restore.py`,
   `community/adapters/realm_migration.py`,
   `community/adapters/rebuild_effects.py`,
   `community/adapters/sqlite_only_boundary.py` and

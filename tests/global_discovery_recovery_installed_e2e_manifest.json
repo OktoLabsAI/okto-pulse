@@ -35,14 +35,14 @@
     {
       "id": "building-gate-hard-kill",
       "kind": "installed-process-test-monkeypatch",
-      "target": "okto_pulse.community.adapters.global_discovery_recovery.write_json_atomic",
+      "target": "okto_pulse.community.adapters.grafx_global_discovery_recovery.write_json_atomic (and global_discovery_layout.write_json_atomic)",
       "scope": "building-gate server lifecycle only (hard-kill adoption test)",
       "justification": "After production's REAL atomic journal write whose payload carries phase='building' has returned durable, record the journal path in a signal file and block the native worker thread forever so the test can hard-kill the exact child process at a durably persisted building journal. Nothing is skipped or mocked; the write itself is the unmodified production write."
     },
     {
       "id": "writer-fence-loss-at-durable-building",
       "kind": "installed-process-test-monkeypatch",
-      "target": "okto_pulse.community.adapters.global_discovery_recovery_worker.GlobalDiscoveryWriterLease.acquire + okto_pulse.community.adapters.global_discovery_recovery.write_json_atomic",
+      "target": "okto_pulse.community.adapters.global_discovery_recovery_worker.GlobalDiscoveryWriterLease.acquire + okto_pulse.community.adapters.grafx_global_discovery_recovery.write_json_atomic (and global_discovery_layout.write_json_atomic)",
       "scope": "controlled-clock-fence-loss server lifecycle only; exact run_id+epoch target file; one-shot",
       "justification": "Deterministic REAL writer-fence loss for the A5 INV-F4 installed proof: the acquire wrapper only records the productive lease instance unchanged; after production's real atomic journal write with phase='building' for the exact targeted run/epoch has returned durable, that exact lease is released exactly once through its OFFICIAL release path (no artificial exception, no SQL, no fabricated terminal). The very next productive fence check raises GlobalDiscoveryWriterFenceLost and the productive worker alone persists PARTIAL/recovery_physical_reconciliation_pending; the test awaits that terminal inside the same server so shutdown stays clean and bounded, and captures the frozen durable-building N journal bytes as evidence."
     },

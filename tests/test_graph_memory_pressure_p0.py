@@ -60,49 +60,6 @@ def test_global_buffer_budget_remains_environment_configurable(
     assert settings.kg_grafx_buffer_pool_mb == 192
 
 
-class _CapturingBoardBackend:
-    def __init__(self) -> None:
-        self.calls: list[tuple[Path, dict[str, object]]] = []
-
-    def _open_kuzu_db(self, path: Path, **kwargs: object) -> object:
-        self.calls.append((path, kwargs))
-        return object()
-
-
-class _MemoryFailingGlobalBackend:
-    def __init__(self) -> None:
-        self.open_calls = 0
-        self.succeed = False
-
-    def open_global_kuzu_db(
-        self,
-        _path: Path,
-        *,
-        on_corruption=None,
-    ) -> object:
-        del on_corruption
-        self.open_calls += 1
-        if not self.succeed:
-            raise MemoryError("std::bad_alloc")
-        return object()
-
-    def is_ladybug_corruption_error(self, _exc: BaseException) -> bool:
-        return False
-
-
-class _LegacyGlobalBackend:
-    def __init__(self) -> None:
-        self.open_calls = 0
-
-    def open_kuzu_db(self, _path: Path, *, on_corruption=None) -> object:
-        del on_corruption
-        self.open_calls += 1
-        return object()
-
-    def is_ladybug_corruption_error(self, _exc: BaseException) -> bool:
-        return False
-
-
 def test_global_existing_open_preserves_oom_type(tmp_path: Path) -> None:
     with pytest.raises(GraphMemoryPressure) as caught:
         raise_existing_global_graph_open_failed(

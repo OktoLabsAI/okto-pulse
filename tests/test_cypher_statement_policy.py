@@ -215,7 +215,7 @@ def test_every_adapter_returns_the_shared_answer(
     """No engine may disagree with the policy, in either direction.
 
     This is the regression that matters: before the extraction the Grafx side
-    fenced the read-only allowlist that the Ladybug side accepted, and nothing
+    fenced the read-only allowlist that the legacy graph runtime accepted, and nothing
     in the suite noticed.
     """
 
@@ -259,7 +259,8 @@ def test_converging_the_allowlist_removes_only_an_unnecessary_fence() -> None:
 
 
 def test_the_policy_module_does_not_load_an_engine() -> None:
-    """The helper runs on the Grafx path, so importing it must not pull Ladybug.
+    """The helper runs on the Grafx path, so importing it must not pull
+    the legacy graph runtime.
 
     Checked in a fresh interpreter: an import that only happens transitively
     would still be invisible to an in-process assertion made after the whole

@@ -134,8 +134,6 @@ def _runtime_settings(**updates):
         "kg_global_graph_backend": "grafx",
         "kg_grafx_page_size": 8192,
         "kg_grafx_descriptor_revalidation": "generation",
-        "kg_kuzu_buffer_pool_mb": 256,
-        "kg_kuzu_max_db_size_gb": 8,
         "kg_connection_pool_size": 4,
         "kg_wal_salvage_enabled": False,
         "kg_wal_only_recovery_enabled": False,

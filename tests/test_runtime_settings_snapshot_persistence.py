@@ -44,7 +44,6 @@ async def test_boot_persisted_settings_replace_composed_snapshot(
     async def _persisted(_db: object) -> dict[str, int]:
         return {
             "kg_grafx_buffer_pool_mb": 128,
-            "kg_kuzu_max_db_size_gb": 2,
             "kg_grafx_read_participants": 1,
         }
 

@@ -48,7 +48,7 @@ from okto_pulse.community.adapters.graph_ddl import (
 _BOARD_ID = "board-schema-bootstrap"
 _STAMP = Timestamp(micros=1_788_000_000_123_456)
 _FINGERPRINT = "4a7b425bf4b8c4864be633c1a87f034e5f7f641019dc029015b7d3ca786deb81"
-_KUZU_DDL_DIGEST = "18a8b1a1b9459d92d61670d734087a4212af29fa4039b0825d6e966ffa181e0e"
+_LEGACY_DDL_DIGEST = "18a8b1a1b9459d92d61670d734087a4212af29fa4039b0825d6e966ffa181e0e"
 
 
 def _meta_row(database) -> tuple:
@@ -218,7 +218,7 @@ def test_manifest_is_the_closed_current_pulse_authority() -> None:
     assert manifest.logical_fingerprint == _FINGERPRINT
 
 
-def test_structured_ddl_authority_preserves_the_existing_kuzu_rendering() -> None:
+def test_structured_ddl_authority_preserves_the_existing_legacy_rendering() -> None:
     assert len(COMMON_NODE_COLUMNS) == 44
     assert tuple(name for name, _type in COMMON_REL_COLUMNS) == (
         "confidence",
@@ -257,7 +257,7 @@ def test_structured_ddl_authority_preserves_the_existing_kuzu_rendering() -> Non
         ensure_ascii=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    assert hashlib.sha256(encoded).hexdigest() == _KUZU_DDL_DIGEST
+    assert hashlib.sha256(encoded).hexdigest() == _LEGACY_DDL_DIGEST
 
 
 def test_empty_bootstrap_is_exact_second_call_is_noop_and_reopen_is_stable(

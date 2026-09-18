@@ -260,14 +260,14 @@ class _RuntimeHarness:
         resolver: _Resolver,
         *,
         lock: _TracingRLock | None = None,
-        ladybug_factory: _SessionFactory | None = None,
+        legacy_factory: _SessionFactory | None = None,
         grafx_factory: _SessionFactory | None = None,
     ) -> None:
         self.resolver = resolver
         self.lock = lock or _TracingRLock()
-        self.ladybug_provider = _RuntimeProvider()
+        self.legacy_provider = _RuntimeProvider()
         self.grafx_provider = _RuntimeProvider()
-        self.ladybug_factory = ladybug_factory or _SessionFactory(self.ladybug_provider)
+        self.legacy_factory = legacy_factory or _SessionFactory(self.legacy_provider)
         self.grafx_factory = grafx_factory or _SessionFactory(self.grafx_provider)
         self.fence_phases: list[str] = []
         self.state_calls: list[tuple[str, CommunityGraphRouteSnapshot]] = []
@@ -357,7 +357,7 @@ def test_state_is_inspect_only_non_opening_and_missing_is_unavailable(
     assert observed.generation == "health-7"
     assert harness.state_calls == [("grafx", resolver.current)]
     assert harness.grafx_factory.entered == 0
-    assert harness.ladybug_factory.entered == 0
+    assert harness.legacy_factory.entered == 0
     assert resolver.acquire_calls == 0
 
     resolver.missing = True
@@ -376,7 +376,7 @@ def test_runtime_pins_one_selected_route_and_never_falls_back(tmp_path: Path) ->
 
     assert result.rows == (("MATCH (n) RETURN n",),)
     assert harness.grafx_factory.snapshots == [snapshot]
-    assert harness.ladybug_factory.entered == 0
+    assert harness.legacy_factory.entered == 0
     assert resolver.acquire_calls == 1
     assert resolver.revalidations[-1] == (snapshot, True)
 

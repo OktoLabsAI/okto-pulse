@@ -441,7 +441,7 @@ def test_semantic_store_explicitly_forwards_every_protocol_method(
         events,
     )
     windows = _Windows(events)
-    ladybug = Mock(name="ladybug_store")
+    legacy = Mock(name="legacy_store")
     grafx = Mock(name="grafx_store")
 
     def selected_call(*_args: object, **_kwargs: object) -> object:
@@ -462,7 +462,7 @@ def test_semantic_store_explicitly_forwards_every_protocol_method(
     else:
         assert result is None
     assert getattr(grafx, method).call_args == expected_call
-    assert ladybug.mock_calls == []
+    assert legacy.mock_calls == []
     assert events == [
         ("operation_enter", "board-g"),
         ("acquire", "board-g"),
@@ -476,9 +476,9 @@ def test_semantic_capabilities_are_the_conservative_backend_intersection() -> No
     events: list[tuple[Any, ...]] = []
     resolver = _RouteResolver({}, events)
     windows = _Windows(events)
-    ladybug = Mock()
+    legacy = Mock()
     grafx = Mock()
-    ladybug.capabilities.return_value = GraphCapabilities(True, True, False)
+    legacy.capabilities.return_value = GraphCapabilities(True, True, False)
     grafx.capabilities.return_value = GraphCapabilities(True, False, True)
     facade = CommunityRoutedSemanticGraphStore(
         resolver,  # type: ignore[arg-type]
@@ -487,7 +487,7 @@ def test_semantic_capabilities_are_the_conservative_backend_intersection() -> No
     )
 
     assert facade.capabilities() == GraphCapabilities(True, False, True)
-    ladybug.capabilities.assert_not_called()
+    legacy.capabilities.assert_not_called()
     grafx.capabilities.assert_called_once_with()
     assert events == []
 
@@ -497,7 +497,7 @@ def test_semantic_mutation_is_prepared_before_selected_auto_commit_provider() ->
     snapshot = _snapshot("board-g", "grafx", generation="generation-7")
     resolver = _RouteResolver({"board-g": snapshot}, events)
     windows = _Windows(events)
-    ladybug = Mock(name="ladybug_store")
+    legacy = Mock(name="legacy_store")
     grafx = Mock(name="grafx_store")
     recorder = _MutationRecorder(events)
 
@@ -542,7 +542,7 @@ def test_semantic_read_does_not_touch_mutation_recorder() -> None:
         events,
     )
     windows = _Windows(events)
-    ladybug = Mock(name="ladybug_store")
+    legacy = Mock(name="legacy_store")
     grafx = Mock(name="grafx_store")
     recorder = _MutationRecorder(events)
     grafx.get_schema_version.return_value = "0.5.0"
@@ -568,7 +568,7 @@ def test_two_boards_select_distinct_persisted_backends_and_generations() -> None
         events,
     )
     windows = _Windows(events)
-    ladybug = Mock()
+    legacy = Mock()
     grafx = Mock()
     grafx.get_schema_version.side_effect = lambda board: f"version:{board}"
     facade = CommunityRoutedSemanticGraphStore(
@@ -580,7 +580,7 @@ def test_two_boards_select_distinct_persisted_backends_and_generations() -> None
     assert facade.get_schema_version("board-l") == "version:board-l"
     assert facade.get_schema_version("board-g") == "version:board-g"
     assert grafx.get_schema_version.call_args_list == [call("board-l"), call("board-g")]
-    ladybug.get_schema_version.assert_not_called()
+    legacy.get_schema_version.assert_not_called()
     assert ("route", "grafx", "generation-4") in events
     assert ("route", "grafx", "grafx-9") in events
 
@@ -595,14 +595,14 @@ def test_persisted_bindings_override_current_resolver_backend_setting(
     tmp_path: Path,
 ) -> None:
     binding_store = CommunityGraphBackendBindingStore(tmp_path)
-    ladybug_path = binding_store.board_ladybug_path("board-l")
-    ladybug_path.parent.mkdir(parents=True)
-    ladybug_path.write_bytes(b"ladybug")
+    legacy_path = binding_store.board_ladybug_path("board-l")
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_bytes(b"legacy")
     binding_store.initialize_board_binding(
         board_id="board-l",
         backend="ladybug",
-        generation="ladybug-3",
-        physical_path=ladybug_path,
+        generation="legacy-3",
+        physical_path=legacy_path,
     )
     grafx_path = binding_store.board_grafx_path("board-g", "grafx-8")
     grafx_path.mkdir(parents=True)
@@ -622,9 +622,9 @@ def test_persisted_bindings_override_current_resolver_backend_setting(
         global_backend="grafx",
         grafx_page_size=8192,
     )
-    ladybug = Mock()
+    legacy = Mock()
     grafx = Mock()
-    ladybug.get_schema_version.return_value = "ladybug"
+    legacy.get_schema_version.return_value = "legacy"
     grafx.get_schema_version.return_value = "grafx"
 
     @contextmanager
@@ -640,7 +640,7 @@ def test_persisted_bindings_override_current_resolver_backend_setting(
     with pytest.raises(GraphUnavailable):
         facade.get_schema_version("board-l")
     assert facade.get_schema_version("board-g") == "grafx"
-    assert ladybug_path.read_bytes() == b"ladybug"
+    assert legacy_path.read_bytes() == b"legacy"
     assert changed_settings_resolver.acquire_board_route("board-g").generation == (
         "grafx-8"
     )
@@ -653,7 +653,7 @@ def test_cypher_single_and_paired_reads_pin_one_route_and_one_window_each() -> N
         events,
     )
     windows = _Windows(events)
-    ladybug = Mock()
+    legacy = Mock()
     grafx = Mock()
     single = {"rows": [[1]], "row_count": 1}
     paired = {"primary": single, "comparison": {"rows": [[1], [2]]}}
@@ -690,7 +690,7 @@ def test_cypher_single_and_paired_reads_pin_one_route_and_one_window_each() -> N
         {"x": 1},
         max_rows=13,
     )
-    assert ladybug.mock_calls == []
+    assert legacy.mock_calls == []
     assert resolver.acquire_calls == ["board-g", "board-g"]
     assert events.count(("route", "grafx", "grafx-5")) == 2
     assert events.count(("operation_enter", "board-g")) == 2
@@ -704,7 +704,7 @@ def test_cypher_batch_pins_one_route_and_one_complete_window() -> None:
         events,
     )
     windows = _Windows(events)
-    ladybug = Mock()
+    legacy = Mock()
     grafx = Mock()
     expected = [{"rows": [[1]], "row_count": 1}]
     grafx.execute_read_only_batch.return_value = expected
@@ -718,25 +718,25 @@ def test_cypher_batch_pins_one_route_and_one_complete_window() -> None:
     assert facade.execute_read_only_batch("board-g", statements) == expected
 
     grafx.execute_read_only_batch.assert_called_once_with("board-g", statements)
-    assert ladybug.mock_calls == []
+    assert legacy.mock_calls == []
     assert resolver.acquire_calls == ["board-g"]
     assert events.count(("operation_enter", "board-g")) == 1
     assert events.count(("operation_exit", "board-g")) == 1
 
 
 @pytest.mark.parametrize(
-    ("ladybug_supported", "grafx_supported", "expected"),
+    ("legacy_supported", "grafx_supported", "expected"),
     [(True, True, True), (True, False, False), (False, True, False)],
 )
 def test_cypher_support_is_conservative_and_probes_both_backends(
-    ladybug_supported: bool,
+    legacy_supported: bool,
     grafx_supported: bool,
     expected: bool,
 ) -> None:
     events: list[tuple[Any, ...]] = []
-    ladybug = Mock()
+    legacy = Mock()
     grafx = Mock()
-    ladybug.is_supported.return_value = ladybug_supported
+    legacy.is_supported.return_value = legacy_supported
     grafx.is_supported.return_value = grafx_supported
     facade = CommunityRoutedCypherExecutor(
         _RouteResolver({}, events),  # type: ignore[arg-type]
@@ -745,7 +745,7 @@ def test_cypher_support_is_conservative_and_probes_both_backends(
     )
 
     assert facade.is_supported() is grafx_supported
-    ladybug.is_supported.assert_not_called()
+    legacy.is_supported.assert_not_called()
     grafx.is_supported.assert_called_once_with()
     assert events == []
 
@@ -760,7 +760,7 @@ async def test_schema_manager_forwards_all_methods_inside_complete_async_window(
         events,
     )
     windows = _Windows(events)
-    ladybug = Mock()
+    legacy = Mock()
     grafx = Mock()
     migration = {"board_id": "board-l", "migrated": True}
     validation = SchemaValidationResult(
@@ -796,11 +796,11 @@ async def test_schema_manager_forwards_all_methods_inside_complete_async_window(
 def _runtime_facade(
     resolver: _RouteResolver,
     windows: _Windows,
-    ladybug: Mock,
+    legacy: Mock,
     grafx: Mock,
-    ladybug_purge: Mock | None = None,
+    legacy_purge: Mock | None = None,
     grafx_purge: Mock | None = None,
-    ladybug_erase: Mock | None = None,
+    legacy_erase: Mock | None = None,
     grafx_erase: Mock | None = None,
 ) -> CommunityRoutedGraphRuntimeStore:
     return CommunityRoutedGraphRuntimeStore(
@@ -820,7 +820,7 @@ def test_runtime_reads_and_purge_use_inspect_with_the_required_windows() -> None
         events,
     )
     windows = _StrictWindows(events)
-    ladybug = Mock()
+    legacy = Mock()
     grafx = Mock()
     state = GraphRuntimeState.from_observation(
         board_id="board-g",
@@ -859,7 +859,7 @@ def test_runtime_reads_and_purge_use_inspect_with_the_required_windows() -> None
     facade = _runtime_facade(
         resolver,
         windows,
-        ladybug,
+        legacy,
         grafx,
         grafx_purge=grafx_purge,
     )
@@ -873,7 +873,7 @@ def test_runtime_reads_and_purge_use_inspect_with_the_required_windows() -> None
     grafx.exists.assert_called_once_with("board-g")
     grafx.footprint.assert_called_once_with("board-g")
     grafx_purge.assert_called_once_with("board-g", reason="manual")
-    assert ladybug.mock_calls == []
+    assert legacy.mock_calls == []
     assert resolver.acquire_calls == []
     assert resolver.inspect_calls == ["board-g"] * 4
     assert events.count(("operation_enter", "board-g")) == 3
@@ -889,17 +889,17 @@ def test_runtime_budget_delegates_metadata_without_routing_or_opening_graphs() -
     events: list[tuple[Any, ...]] = []
     resolver = _RouteResolver({}, events)
     windows = _Windows(events)
-    ladybug = Mock()
+    legacy = Mock()
     grafx = Mock()
     grafx.budget_snapshot.return_value = build_native_runtime_budget_snapshot(SimpleNamespace(
         kg_grafx_buffer_pool_mb=64, kg_grafx_read_participants=2,
     ))
-    ladybug_erase = Mock()
+    legacy_erase = Mock()
     grafx_erase = Mock()
     facade = _runtime_facade(
         resolver,
         windows,
-        ladybug,
+        legacy,
         grafx,
         grafx_erase=grafx_erase,
     )
@@ -917,8 +917,8 @@ def test_runtime_budget_delegates_metadata_without_routing_or_opening_graphs() -
     assert resolver.acquire_calls == resolver.inspect_calls == []
     grafx.budget_snapshot.assert_called_once_with()
     assert len(grafx.mock_calls) == 1
-    assert ladybug.mock_calls == []
-    assert ladybug_erase.mock_calls == grafx_erase.mock_calls == []
+    assert legacy.mock_calls == []
+    assert legacy_erase.mock_calls == grafx_erase.mock_calls == []
     assert events == []
 
 
@@ -1010,14 +1010,14 @@ def test_missing_binding_returns_only_the_runtime_contracts_that_can_fail_closed
     events: list[tuple[Any, ...]] = []
     resolver = _RouteResolver({"board-m": _missing_binding()}, events)
     windows = _Windows(events)
-    ladybug = Mock()
+    legacy = Mock()
     grafx = Mock()
-    ladybug_erase = Mock()
+    legacy_erase = Mock()
     grafx_erase = Mock()
     facade = _runtime_facade(
         resolver,
         windows,
-        ladybug,
+        legacy,
         grafx,
         grafx_erase=grafx_erase,
     )
@@ -1037,9 +1037,9 @@ def test_missing_binding_returns_only_the_runtime_contracts_that_can_fail_closed
     assert purged.status == "failed"
     assert purged.error_code == "graph_route_binding_missing"
     assert purged.reason == "rebuild"
-    assert ladybug.mock_calls == []
+    assert legacy.mock_calls == []
     grafx.graph_state.assert_called_once_with("board-m", generation="requested")
-    assert ladybug_erase.mock_calls == grafx_erase.mock_calls == []
+    assert legacy_erase.mock_calls == grafx_erase.mock_calls == []
     assert resolver.acquire_calls == []
     assert resolver.inspect_calls == ["board-m"] * 4
 
@@ -1112,7 +1112,7 @@ async def test_missing_binding_recovery_returns_stable_failed_report() -> None:
     events: list[tuple[Any, ...]] = []
     resolver = _RouteResolver({"board-m": _missing_binding()}, events)
     windows = _Windows(events)
-    ladybug_recovery = AsyncMock()
+    legacy_recovery = AsyncMock()
     grafx_recovery = AsyncMock()
     facade = CommunityRoutedGraphRecovery(
         resolver,  # type: ignore[arg-type]
@@ -1128,7 +1128,7 @@ async def test_missing_binding_recovery_returns_stable_failed_report() -> None:
         main_untouched=True,
         reason="graph_route_binding_missing",
     )
-    ladybug_recovery.assert_not_awaited()
+    legacy_recovery.assert_not_awaited()
     grafx_recovery.assert_not_awaited()
     assert events == [
         ("mutation_enter", "board-m", "recover_wal_only"),
@@ -1140,8 +1140,8 @@ async def test_missing_binding_recovery_returns_stable_failed_report() -> None:
 @pytest.mark.parametrize(
     "initial",
     [
-        pytest.param({"ladybug": False, "grafx": True}, id="grafx-residue"),
-        pytest.param({"ladybug": True, "grafx": True}, id="coexisting-copies"),
+        pytest.param({"legacy": False, "grafx": True}, id="grafx-residue"),
+        pytest.param({"legacy": True, "grafx": True}, id="coexisting-copies"),
     ],
 )
 def test_privacy_erase_is_an_all_storage_admin_sweep_even_without_binding(
@@ -1158,7 +1158,7 @@ def test_privacy_erase_is_an_all_storage_admin_sweep_even_without_binding(
             calls.append((backend, board_id, reason))
             removed = physical[backend]
             physical[backend] = False
-            physical["ladybug"] = (
+            physical["legacy"] = (
                 False  # Opaque residues are owned by the single physical eraser.
             )
             return GraphPurgeResult(
@@ -1172,14 +1172,14 @@ def test_privacy_erase_is_an_all_storage_admin_sweep_even_without_binding(
 
         return erase
 
-    ladybug = Mock()
+    legacy = Mock()
     grafx = Mock()
-    ladybug_erase = Mock(side_effect=eraser("ladybug"))
+    legacy_erase = Mock(side_effect=eraser("legacy"))
     grafx_erase = Mock(side_effect=eraser("grafx"))
     facade = _runtime_facade(
         resolver,
         windows,
-        ladybug,
+        legacy,
         grafx,
         grafx_erase=grafx_erase,
     )
@@ -1189,12 +1189,12 @@ def test_privacy_erase_is_an_all_storage_admin_sweep_even_without_binding(
 
     assert first.status == "erased" and first.removed is True
     assert retry.status == "not_found" and retry.not_found is True
-    assert physical == {"ladybug": False, "grafx": False}
+    assert physical == {"legacy": False, "grafx": False}
     assert calls == [
         ("grafx", "board-m", "right_to_erasure"),
         ("grafx", "board-m", "right_to_erasure_retry"),
     ]
-    assert ladybug.mock_calls == grafx.mock_calls == []
+    assert legacy.mock_calls == grafx.mock_calls == []
     assert events.count(("mutation_enter", "board-m", "erase_board_graph")) == 2
     assert events.count(("mutation_exit", "board-m", "erase_board_graph")) == 2
 
@@ -1223,7 +1223,7 @@ def test_privacy_erase_partial_failure_stays_failed_and_retry_can_converge() -> 
             reason="privacy_retry",
         ),
     ]
-    ladybug_results = [
+    legacy_results = [
         GraphPurgeResult(
             board_id="board-g",
             removed=True,
@@ -1245,18 +1245,18 @@ def test_privacy_erase_partial_failure_stays_failed_and_retry_can_converge() -> 
         order.append("grafx")
         return grafx_results.pop(0)
 
-    def ladybug_erase(*_args: object, **_kwargs: object) -> GraphPurgeResult:
-        order.append("ladybug")
-        return ladybug_results.pop(0)
+    def legacy_erase(*_args: object, **_kwargs: object) -> GraphPurgeResult:
+        order.append("legacy")
+        return legacy_results.pop(0)
 
     grafx_eraser = Mock(side_effect=grafx_erase)
-    ladybug_eraser = Mock(side_effect=ladybug_erase)
-    ladybug = Mock()
+    legacy_eraser = Mock(side_effect=legacy_erase)
+    legacy = Mock()
     grafx = Mock()
     facade = _runtime_facade(
         resolver,
         windows,
-        ladybug,
+        legacy,
         grafx,
         grafx_erase=grafx_eraser,
     )
@@ -1271,9 +1271,9 @@ def test_privacy_erase_partial_failure_stays_failed_and_retry_can_converge() -> 
         call("board-g", reason="privacy"),
         call("board-g", reason="privacy_retry"),
     ]
-    assert ladybug_eraser.call_args_list == []
+    assert legacy_eraser.call_args_list == []
     assert order == ["grafx", "grafx"]
-    assert ladybug.erase_board_graph.call_count == 0
+    assert legacy.erase_board_graph.call_count == 0
     assert grafx.erase_board_graph.call_count == 0
 
 
@@ -1284,14 +1284,14 @@ def test_route_corruption_propagates_without_provider_or_privacy_mutation() -> N
     events: list[tuple[Any, ...]] = []
     resolver = _RouteResolver({"board-c": corruption}, events)
     windows = _Windows(events)
-    ladybug = Mock()
+    legacy = Mock()
     grafx = Mock()
-    ladybug_erase = Mock()
+    legacy_erase = Mock()
     grafx_erase = Mock()
     runtime = _runtime_facade(
         resolver,
         windows,
-        ladybug,
+        legacy,
         grafx,
         grafx_erase=grafx_erase,
     )
@@ -1303,8 +1303,8 @@ def test_route_corruption_propagates_without_provider_or_privacy_mutation() -> N
 
     assert state_failure.value is corruption
     assert erase_failure.value is corruption
-    assert ladybug.mock_calls == grafx.mock_calls == []
-    assert ladybug_erase.mock_calls == grafx_erase.mock_calls == []
+    assert legacy.mock_calls == grafx.mock_calls == []
+    assert legacy_erase.mock_calls == grafx_erase.mock_calls == []
     assert ("operation_exit", "board-c") in events
     assert ("mutation_exit", "board-c", "erase_board_graph") in events
 
@@ -1316,7 +1316,7 @@ def test_ordinary_route_failure_propagates_and_releases_operation_window() -> No
         events,
     )
     windows = _Windows(events)
-    ladybug = Mock()
+    legacy = Mock()
     grafx = Mock()
     grafx.execute_read_only.side_effect = RuntimeError("provider-failed")
     facade = CommunityRoutedCypherExecutor(
@@ -1328,7 +1328,7 @@ def test_ordinary_route_failure_propagates_and_releases_operation_window() -> No
     with pytest.raises(RuntimeError, match="provider-failed"):
         facade.execute_read_only("board-g", "RETURN 1")
 
-    assert ladybug.mock_calls == []
+    assert legacy.mock_calls == []
     assert events[-1] == ("operation_exit", "board-g")
 
 
@@ -1351,7 +1351,7 @@ def test_invalid_route_snapshot_never_crosses_into_a_provider(
     events: list[tuple[Any, ...]] = []
     resolver = _RouteResolver({"board-x": route}, events)
     windows = _Windows(events)
-    ladybug = Mock()
+    legacy = Mock()
     grafx = Mock()
     facade = CommunityRoutedSemanticGraphStore(
         resolver,  # type: ignore[arg-type]
@@ -1363,7 +1363,7 @@ def test_invalid_route_snapshot_never_crosses_into_a_provider(
         facade.get_schema_version("board-x")
 
     assert refused.value.details["reason"] == "graph_route_snapshot_scope_invalid"
-    assert ladybug.mock_calls == grafx.mock_calls == []
+    assert legacy.mock_calls == grafx.mock_calls == []
     assert events[-1] == ("operation_exit", "board-x")
 
 
@@ -1372,7 +1372,7 @@ async def test_missing_binding_never_falls_back_for_ordinary_facades() -> None:
     events: list[tuple[Any, ...]] = []
     resolver = _RouteResolver({"board-m": _missing_binding()}, events)
     windows = _Windows(events)
-    ladybug = Mock()
+    legacy = Mock()
     grafx = Mock()
     store = CommunityRoutedSemanticGraphStore(
         resolver,  # type: ignore[arg-type]
@@ -1397,7 +1397,7 @@ async def test_missing_binding_never_falls_back_for_ordinary_facades() -> None:
     with pytest.raises(GraphCapabilityUnavailable):
         await schema.validate("board-m")
 
-    assert ladybug.mock_calls == grafx.mock_calls == []
+    assert legacy.mock_calls == grafx.mock_calls == []
     assert resolver.acquire_calls == ["board-m"] * 3
     assert events.count(("operation_exit", "board-m")) == 3
 
@@ -1537,7 +1537,7 @@ def test_every_routed_grafx_semantic_mutation_revalidates_its_write_fence(
         {"board-l": _snapshot("board-l", "grafx", generation="legacy-1")},
         events,
     )
-    ladybug = Mock()
+    legacy = Mock()
     grafx = Mock()
     getattr(grafx, method).side_effect = lambda *_args, **_kwargs: events.append(
         ("provider_mutation", method)
@@ -1566,7 +1566,7 @@ async def test_every_routed_grafx_schema_mutation_revalidates_its_write_fence() 
         {"board-l": _snapshot("board-l", "grafx", generation="legacy-1")},
         events,
     )
-    ladybug = Mock()
+    legacy = Mock()
     grafx = Mock()
 
     async def ensure(board_id: str) -> None:

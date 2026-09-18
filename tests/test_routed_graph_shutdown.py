@@ -43,7 +43,7 @@ def test_worker_shutdown_closes_board_grafx_then_global_from_same_bundle(
         def close_all_on_shutdown(self):
             events.append("global")
             pooled.discard(str(global_path))
-            return {"ladybug_closed": 0, "grafx_closed": 1}
+            return {"legacy_closed": 0, "grafx_closed": 1}
 
     bundle = SimpleNamespace(
         binding_store=SimpleNamespace(root=tmp_path),
@@ -86,7 +86,7 @@ def test_worker_shutdown_attempts_global_after_routed_board_close_failure(
     class _Global:
         def close_all_on_shutdown(self):
             events.append("global")
-            return {"ladybug_closed": 1, "grafx_closed": 0}
+            return {"legacy_closed": 1, "grafx_closed": 0}
 
     bundle = SimpleNamespace(
         binding_store=SimpleNamespace(root=tmp_path),
