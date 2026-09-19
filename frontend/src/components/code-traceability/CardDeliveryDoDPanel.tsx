@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
 import { ObligationRefText } from './obligationPresentation';
+import { CardProgressPanel } from './CardProgressPanel';
 import type {
   CardDeliveryEvidenceInput,
   DeliveryEvidenceInput,
@@ -13,6 +14,7 @@ interface Props {
   canRecord?: boolean;
   canTest?: boolean;
   canWaiver?: boolean;
+  canProgress?: boolean;
   onChanged?: () => void;
 }
 
@@ -24,7 +26,7 @@ const field = 'w-full rounded border border-gray-300 bg-white p-2 text-sm dark:b
 // authenticated passing runs verifying implementations on other cards.
 // Waivers stay spec-level and human-only (BR-3): the button routes an
 // authorized human to the legacy rollup surface.
-export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest = false, canWaiver = false, onChanged }: Props) {
+export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest = false, canWaiver = false, canProgress = false, onChanged }: Props) {
   const api = useDashboardApi();
   const [data, setData] = useState<DeliveryEvidenceProjection | null>(null);
   const [gateMode, setGateMode] = useState<'advisory' | 'blocking'>('blocking');
@@ -49,7 +51,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
       if (!controller.signal.aborted) setGateMode(board.settings?.delivery_evidence_gate ?? 'blocking');
     }).catch(() => {});
     return () => controller.abort();
-  }, [api, boardId, card.spec_id, reload]);
+  }, [api, boardId, card.id, card.spec_id, reload]);
 
   const isTest = card.card_type === 'test';
   const mine = data?.per_card?.find(entry => entry.card_id === card.id) ?? null;
@@ -116,6 +118,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
     {error && <p role="alert" className="rounded-md border border-red-300 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900/70 dark:bg-red-950/25 dark:text-red-300">{error}</p>}
     {!data && !error && <p role="status" className="text-sm text-gray-500">Loading card delivery obligations…</p>}
     {data && <>
+      {mine && <CardProgressPanel key={`${boardId}:${card.id}:${data.edition}:${canProgress}`} boardId={boardId} specId={card.spec_id} edition={data.edition} card={mine} canWrite={canProgress} onSaved={() => { setReload(v => v + 1); onChanged?.(); }} />}
       <div className="rounded-md border border-gray-200 p-4 dark:border-gray-800">
         <div className="mb-3 flex items-center justify-between gap-3">
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Delivery Evidence (Definition of Done)</h3>

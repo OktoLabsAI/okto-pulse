@@ -25237,6 +25237,11 @@ async def _migrate_validation_cycle_editions() -> object:
     return None if changed else "skipped"
 
 
+async def _migrate_delivery_progress() -> str:
+    from .delivery_progress_migration import migrate_delivery_progress
+    return await migrate_delivery_progress(get_engine())
+
+
 SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_card_statuses": _migrate_card_statuses,
     "_migrate_add_priority_column": _migrate_add_priority_column,
@@ -25264,6 +25269,7 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_status_renames": _migrate_status_renames,
     "_migrate_add_permission_columns": _migrate_add_permission_columns,
     "_migrate_add_event_tables": _migrate_add_event_tables,
+    "_migrate_delivery_progress": _migrate_delivery_progress,
     "_migrate_architecture_classification_storage": _migrate_architecture_classification_storage,
     "_migrate_validation_cycle_editions": _migrate_validation_cycle_editions,
     "_migrate_add_consolidation_work_kinds": _migrate_add_consolidation_work_kinds,

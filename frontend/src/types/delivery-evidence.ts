@@ -29,13 +29,18 @@ export interface CardDeliveryEvidenceInput {
   expected_card_version: number;
   expected_spec_edition: number;
   idempotency_key: string;
-  kind: 'implementation' | 'test' | 'revoke';
+  kind: 'implementation' | 'test' | 'revoke' | 'progress';
   obligation_refs: string[];
   justification: string;
   execution_id?: string;
   scenario_id?: string;
   implementation_ids?: string[];
   record_id?: string;
+  progress?: {
+    contract_version: 'delivery-progress/v1';
+    source_state: { workspace_state: 'unknown' | 'dirty' | 'clean'; recoverability: 'unknown' | 'external_workspace' | 'declared_commit'; source_ref?: string | null; declared_revision?: string | null };
+    remaining: string;
+  };
 }
 
 export interface DeliveryPerCardObligation {
@@ -51,6 +56,11 @@ export interface DeliveryPerCard {
   status: string;
   obligations: DeliveryPerCardObligation[];
   satisfied: boolean;
+  card_version?: number;
+  progress?: {
+    total: number; truncated: boolean; recovery_verified: false;
+    items: Array<{ id: string; actor_id: string; created_at: string; revoked?: boolean; summary: string; remaining: string; text_truncated: boolean; source_state: { workspace_state: string; recoverability: string }; target_ids: string[] }>;
+  };
 }
 // Rollup projection extension (0.3.4): the spec read returns the aggregated
 // card-ledger view. Assign to DeliveryEvidenceProjection via declaration

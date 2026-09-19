@@ -174,10 +174,10 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
     # of Spec validation pointers lost by historical Code Traceability effects,
     # nullable Project structure, Delivery Evidence skip, and prospective
     # architecture selection without a legacy adoption backfill.
-    assert len(migrate_names) == 74, (
-        f"expected 74 _migrate_*, found {len(migrate_names)}"
+    assert len(migrate_names) == 75, (
+        f"expected 75 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 74
+    assert len(ledger_migrate_ids) == 75
     ordered_ids = [step.step_id for step in ledger]
     assert ordered_ids.index(
         "_migrate_guideline_policy_lifecycle_substrate"
@@ -755,6 +755,9 @@ def test_ts_7aacc71a_destructive_steps_are_explicitly_allowlisted():
     ledger = build_community_migration_ledger()
     destructive = {s.step_id for s in ledger if s.destructive}
     assert destructive == {
+        # SQLite CHECK expansion rebuilds the ledger; the dedicated upgrade
+        # tests require byte-preserved rows and restored append-only guards.
+        "_migrate_delivery_progress",
         "_migrate_drop_spec_skills",
         "_migrate_repair_known_fixture_fk_orphans",
     }
@@ -853,6 +856,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
     human_lifecycle_convergence_step = "_migrate_add_human_lifecycle_editions"
     validation_cycle_convergence_step = "_migrate_validation_cycle_editions"
     first_run_skip_steps = {
+        "_migrate_delivery_progress",
         repair_step,
         "_migrate_add_skip_delivery_evidence",
         "_migrate_add_spec_architecture_adoption",
@@ -886,6 +890,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         # observe that receipt and skip without touching fingerprints.
     }
     replay_skip_steps = {
+        "_migrate_delivery_progress",
         repair_step,
         "_migrate_add_skip_delivery_evidence",
         "_migrate_add_spec_architecture_adoption",

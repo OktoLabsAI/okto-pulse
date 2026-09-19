@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import re
 import uuid
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
@@ -30,6 +30,7 @@ from okto_pulse.core.domain.delivery_evidence import (
     evaluate_delivery_coverage,
 )
 from okto_pulse.core.domain.enums import CardType, CardStatus, TestScenarioStatus
+from okto_pulse.core.domain.delivery_progress import require_delivery_progress_mutable
 from okto_pulse.core.models.delivery_evidence import (
     CardDeliveryEvidenceCommand,
     DeliveryEvidenceCommand,
@@ -671,6 +672,26 @@ class CommunityDeliveryEvidenceStore:
         card, spec, spec_scope = await self._card_scope_guard(scope)
         if card.policy_version != command.expected_card_version:
             raise ValueError("delivery_version_conflict")
+        if command.kind == "progress":
+            require_delivery_progress_mutable(card)
+            progress = command.progress
+            targets = list((await self.session.scalars(
+                select(Target).where(
+                    Target.board_id == scope.board_id,
+                    Target.card_id == scope.card_id,
+                    Target.id.in_(progress.target_ids),
+                )
+            )).all()) if progress.target_ids else []
+            if {target.id for target in targets} != set(progress.target_ids):
+                raise ValueError("delivery_progress_target_unavailable")
+            source_ref = progress.source_state.source_ref
+            if source_ref and not await self.session.scalar(
+                select(Receipt.id).where(
+                    Receipt.board_id == scope.board_id,
+                    Receipt.source_ref == source_ref,
+                ).limit(1)
+            ):
+                raise ValueError("delivery_progress_source_unavailable")
         inventory = {
             o.binding.obligation_ref: o.binding
             for o in self._record_inventory(spec, card)
@@ -739,7 +760,9 @@ class CommunityDeliveryEvidenceStore:
         # leave a partially accepted binding even if the caller catches the
         # exception — same contract as the spec ledger's record().
         bindings = tuple(inventory[ref] for ref in command.obligation_refs)
-        existing = await self.load_card_snapshot(scope)
+        # A declared checkpoint does not need an admitted receipt chain. Do not
+        # revalidate unrelated historical proof just to persist a dirty attempt.
+        existing = await self.load_card_snapshot(scope) if command.kind != "progress" else None
         if command.kind == "implementation":
             fact = await self._implementation(record, spec_scope, bindings)
             candidate = DeliveryEvidenceSnapshot(
@@ -824,6 +847,52 @@ class CommunityDeliveryEvidenceStore:
             ).all()
         )
 
+    async def _progress_summary(self, scope):
+        """Bounded declared history; it is never passed to the proof evaluator."""
+        filters = (
+            CardRecord.board_id == scope.board_id,
+            CardRecord.card_id == scope.card_id,
+            CardRecord.spec_id == scope.spec_id,
+            CardRecord.spec_edition == scope.spec_edition,
+            CardRecord.kind == "progress",
+        )
+        total = await self.session.scalar(select(func.count()).select_from(CardRecord).where(*filters))
+        records = list((await self.session.scalars(
+            select(CardRecord).where(*filters).order_by(
+                CardRecord.created_at.desc(), CardRecord.id.desc(),
+            ).limit(20)
+        )).all())
+        revoked = set((await self.session.scalars(
+            select(CardRecord.payload["record_id"].as_string()).where(
+                CardRecord.board_id == scope.board_id,
+                CardRecord.card_id == scope.card_id,
+                CardRecord.spec_id == scope.spec_id,
+                CardRecord.spec_edition == scope.spec_edition,
+                CardRecord.kind == "revoke",
+                CardRecord.actor_kind.in_(("human", "user")),
+                CardRecord.payload["record_id"].as_string().in_([record.id for record in records]),
+            )
+        )).all()) if records else set()
+        return {
+            "total": total,
+            "truncated": total > len(records),
+            "recovery_verified": False,
+            "items": [
+                {
+                    "id": record.id, "actor_id": record.actor_id,
+                    "revoked": record.id in revoked,
+                    "created_at": record.created_at.isoformat(),
+                    "summary": record.payload["justification"][:1000],
+                    "remaining": record.payload["progress"]["remaining"][:1000],
+                    "text_truncated": len(record.payload["justification"]) > 1000 or len(record.payload["progress"]["remaining"]) > 1000,
+                    "source_state": record.payload["progress"]["source_state"],
+                    "target_ids": record.payload["progress"]["target_ids"][:10],
+                    "targets_truncated": len(record.payload["progress"]["target_ids"]) > 10,
+                }
+                for record in reversed(records)
+            ],
+        }
+
     async def _rollup_waivers(self, scope):
         """Active human-authorized waivers from the legacy spec ledger."""
         records = await self._records(scope)
@@ -878,6 +947,8 @@ class CommunityDeliveryEvidenceStore:
                 {
                     "card_id": card.id,
                     "title": card.title,
+                    "card_version": card.policy_version,
+                    "progress": await self._progress_summary(card_scope),
                     "card_type": str(
                         getattr(card.card_type, "value", card.card_type)
                     ),

@@ -12879,7 +12879,7 @@ class CardDeliveryEvidenceRecordRow(Base):
             "spec_edition >= 1", name="ck_card_delivery_evidence_edition"
         ),
         CheckConstraint(
-            "kind IN ('implementation', 'test', 'revoke')",
+            "kind IN ('implementation', 'test', 'revoke', 'progress')",
             name="ck_card_delivery_evidence_kind",
         ),
         Index(
@@ -12916,7 +12916,7 @@ class CardDeliveryEvidenceRecordRow(Base):
 # Append-only guards equivalent to the legacy delivery_audit_immutable pair:
 # rows are immutable while board/card exist, and inserts must resolve to a
 # real card in the same board. Migrations copy; they never move or edit.
-for _card_delivery_guard_name, _card_delivery_guard_sql in {
+CARD_DELIVERY_GUARDS = {
     "scope": """BEFORE INSERT ON card_delivery_evidence_records
 WHEN NOT EXISTS (SELECT 1 FROM cards WHERE id=NEW.card_id AND board_id=NEW.board_id)
 BEGIN SELECT RAISE(ABORT, 'card_delivery_scope_invalid'); END""",
@@ -12926,7 +12926,8 @@ BEGIN SELECT RAISE(ABORT, 'card_delivery_audit_immutable'); END""",
 WHEN EXISTS (SELECT 1 FROM cards WHERE id=OLD.card_id)
  AND EXISTS (SELECT 1 FROM boards WHERE id=OLD.board_id)
 BEGIN SELECT RAISE(ABORT, 'card_delivery_audit_immutable'); END""",
-}.items():
+}
+for _card_delivery_guard_name, _card_delivery_guard_sql in CARD_DELIVERY_GUARDS.items():
     event.listen(
         CardDeliveryEvidenceRecordRow.__table__,
         "after_create",

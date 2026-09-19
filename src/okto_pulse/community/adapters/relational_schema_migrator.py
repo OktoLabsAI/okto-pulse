@@ -211,6 +211,12 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
     ),
     # --- post_create_all: schema ALTERs applied AFTER create_all ---
     (
+        "_migrate_delivery_progress",
+        "post_create_all",
+        True,
+        "Expand the exact card-ledger predecessor CHECK, preserving immutable history and guards.",
+    ),
+    (
         "_migrate_architecture_classification_storage",
         "post_create_all",
         False,
