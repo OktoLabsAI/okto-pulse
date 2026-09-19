@@ -110,11 +110,12 @@ LEGACY_CORE_SCHEMA_SHA256 = (
 # columns on human-reviewed artifacts, and the exact rebuild compensation
 # journal used by terminal recovery reconciliation. This also includes the
 # fail-closed per-Spec Code Evidence Matrix coverage skip and the nullable
-# delivery/source-context overlay on Refinement snapshots and Specs.
+# delivery/source-context overlay on Refinement snapshots and Specs, plus the
+# per-Spec Delivery Evidence skip added by the card-delivery release.
 # Keep the pre-extraction hash above immutable so migration provenance remains
 # independently verifiable.
 CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
-    "cac384167d48703f86cc65c2fe8d0dea4322f9a3077a2bf26c473f5b26f4aa4a"
+    "8b43b7a24b81e783d6601ecf25bbaec41165f81dddd93bce46ef0b792340c09d"
 )
 
 # Additive Community-owned tables introduced after the F01 extraction. They
@@ -122,6 +123,7 @@ CURRENT_COMMUNITY_INHERITED_SCHEMA_SHA256 = (
 # schema matches the governed Community contract.
 COMMUNITY_SCHEMA_EXTENSION_TABLES = frozenset(
     {
+        "card_delivery_evidence_records",
         "artifact_deletion_tombstones",
         "global_discovery_delivery_ledger",
         "global_discovery_delivery_redrive_control",
