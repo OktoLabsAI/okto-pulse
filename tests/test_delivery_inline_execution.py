@@ -357,7 +357,10 @@ async def test_standalone_origin_keeps_its_commit_and_replay_contract(composed):
 
 
 @pytest.mark.asyncio
-async def test_rest_inline_and_mcp_replay_use_origin_composition(composed, monkeypatch):
+@pytest.mark.parametrize("declare_contribution", [False, True])
+async def test_rest_inline_and_mcp_replay_use_origin_composition(
+    composed, monkeypatch, declare_contribution
+):
     from contextlib import asynccontextmanager
     import httpx
     from test_code_traceability_rest import _projection_rest_app
@@ -382,6 +385,11 @@ async def test_rest_inline_and_mcp_replay_use_origin_composition(composed, monke
     payload = command().model_dump(
         mode="json", exclude={"board_id", "card_id", "spec_id"}
     )
+    if declare_contribution:
+        payload["entries"][0].pop("obligation_refs")
+        payload["entries"][0]["bindings"] = [
+            {"obligation_ref": "card:c", "contribution": "partial"}
+        ]
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=rest), base_url="http://test"
     ) as client:
@@ -415,3 +423,8 @@ async def test_rest_inline_and_mcp_replay_use_origin_composition(composed, monke
     assert not replay.is_error, replay
     assert replay.payload == {**saved.json(), "replayed": True}
     assert await counts(session) == [1, 1, 1, 1]
+    if declare_contribution:
+        record = await session.get(
+            CardDeliveryEvidenceRecordRow, saved.json()["entries"][0]["id"]
+        )
+        assert record.payload["contributions"] == payload["entries"][0]["bindings"]

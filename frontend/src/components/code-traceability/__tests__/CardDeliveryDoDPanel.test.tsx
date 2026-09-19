@@ -82,10 +82,43 @@ it('records implementation proof through the card-scoped surface with the card C
     expect.objectContaining({
       kind: 'implementation', execution_id: 'execution-1',
       expected_card_version: 4, expected_spec_edition: 2,
-      obligation_refs: ['ac:ac_77ce'],
+      obligation_refs: [],
+      bindings: [{ obligation_ref: 'ac:ac_77ce', contribution: 'partial' }],
     }),
   ]);
   expect(api.recordDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it('declares complete separately from partial for two obligations', async () => {
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
+  fireEvent.click(await screen.findByTestId('dod-record-button'));
+  fireEvent.click(screen.getByLabelText('Select fr:fr_3a9f'));
+  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
+  fireEvent.click(screen.getByLabelText('Complete contribution for ac:ac_77ce'));
+  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'task-1:execution-1' } });
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Gate complete, other work remains.' } });
+  fireEvent.click(screen.getByRole('button', { name: /Record delivery evidence/ }));
+  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledTimes(1));
+  expect(api.recordCardDeliveryEvidence.mock.calls[0][3].bindings).toEqual([
+    { obligation_ref: 'fr:fr_3a9f', contribution: 'partial' },
+    { obligation_ref: 'ac:ac_77ce', contribution: 'complete' },
+  ]);
+});
+
+it('shows a partial receipt after reload without marking implementation complete', async () => {
+  const value = projection();
+  value.per_card![0].obligations[0].implementation_satisfied = false;
+  value.implementations[0].contributions = [{ binding: { obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }, contribution: 'partial' }];
+  api.getDeliveryEvidence.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
+  expect(await screen.findByText('◌ Partial contribution')).toBeTruthy();
+  expect(screen.queryByText('✓ Implementation')).toBeNull();
+  expect(screen.getByTestId('dod-gate-pill').textContent).toContain('2 of 2 unproven');
+});
+
+it('identifies legacy proof without inventing a complete declaration', async () => {
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
+  expect(await screen.findByText('Legacy record · contribution not declared')).toBeTruthy();
 });
 
 it('offers only this card receipts as accepted proof', async () => {

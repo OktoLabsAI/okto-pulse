@@ -35,6 +35,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
   const [reload, setReload] = useState(0);
   const [formOpen, setFormOpen] = useState(false);
   const [refs, setRefs] = useState<string[]>([]);
+  const [contributions, setContributions] = useState<Record<string, 'partial' | 'complete'>>({});
   const [choice, setChoice] = useState('');
   const [testedIds, setTestedIds] = useState<string[]>([]);
   const [phase, setPhase] = useState<'implementation' | 'test'>('implementation');
@@ -43,7 +44,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
 
   useEffect(() => {
     const controller = new AbortController();
-    setData(null); setError(''); setRefs([]); setChoice(''); setTestedIds([]);
+    setData(null); setError(''); setRefs([]); setContributions({}); setChoice(''); setTestedIds([]);
     api.getDeliveryEvidence(boardId, card.spec_id, controller.signal).then(value => {
       if (!controller.signal.aborted) setData(value);
     }).catch(err => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'Delivery proof could not be loaded.'); });
@@ -57,7 +58,9 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
   const mine = data?.per_card?.find(entry => entry.card_id === card.id) ?? null;
   const obligations = mine?.obligations ?? [];
   const acceptedProofs = (data?.implementations ?? []).filter(i => i.card_id === card.id && i.current_accepted_execution);
-  const proofFor = (ref: string) => acceptedProofs.find(p => (p.bindings ?? []).some(b => b.obligation_ref === ref));
+  const proofFor = (ref: string) => acceptedProofs.find(p => (p.bindings ?? []).some(b => b.obligation_ref === ref)
+    && (p.contributions == null || p.contributions.some(c => c.binding.obligation_ref === ref && c.contribution === 'complete')));
+  const partialFor = (ref: string) => acceptedProofs.some(p => p.contributions?.some(c => c.binding.obligation_ref === ref && c.contribution === 'partial'));
   const unproven = obligations.filter(o => !o.implementation_satisfied);
   const canRecordKind = isTest ? canTest : canRecord;
   const candidates = (data?.candidates ?? []).filter(c => c.card_id === card.id && c.kind === (isTest ? 'test' : 'implementation'));
@@ -76,11 +79,11 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
       expected_spec_edition: data.edition,
       idempotency_key: key,
       kind: isTest ? 'test' : 'implementation',
-      obligation_refs: refs,
+      obligation_refs: isTest ? refs : [],
       justification,
       ...(isTest
         ? { scenario_id: selected?.id, implementation_ids: testedIds }
-        : { execution_id: selected?.id }),
+        : { execution_id: selected?.id, bindings: refs.map(ref => ({ obligation_ref: ref, contribution: contributions[ref] ?? 'partial' })) }),
     };
     const payload = JSON.stringify({ ...input, idempotency_key: '', card_id: card.id });
     if (replayRef.current?.payload === payload) input.idempotency_key = replayRef.current.key;
@@ -139,7 +142,8 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
                 <ObligationRefText value={ob.ref} />
               </span>
               <span className={`shrink-0 text-xs font-medium ${ok ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}`}>
-                {ok ? '✓ Implementation' : '◌ No accepted proof'}
+                {ok ? '✓ Implementation' : partialFor(ob.ref) ? '◌ Partial contribution' : '◌ No accepted proof'}
+                {proof && proof.contributions == null && <span className="block text-[10px] font-normal">Legacy record · contribution not declared</span>}
               </span>
             </li>;
           })}
@@ -176,13 +180,22 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
             <legend className="text-sm font-medium">Which obligations does this proof cover?</legend>
             <div className="mt-2 max-h-44 space-y-1 overflow-y-auto">
               {selectableRefs.map(o => (
-                <label key={o.ref} className="flex items-start gap-2 text-sm">
+                <div key={o.ref}>
+                <label className="flex items-start gap-2 text-sm">
                   <input type="checkbox" checked={refs.includes(o.ref)} onChange={e => setRefs(e.target.checked ? [...refs, o.ref] : refs.filter(v => v !== o.ref))} aria-label={`Select ${o.ref}`} />
                   <span className="min-w-0"><span className="block truncate">{o.title}</span><ObligationRefText value={o.ref} /></span>
                 </label>
+                {!isTest && canRecordKind && refs.includes(o.ref) && <fieldset className="ml-6 flex gap-3 text-xs">
+                  <legend>Contribution to {o.title}</legend>
+                  {(['partial', 'complete'] as const).map(value => <label key={value}>
+                    <input type="radio" name={`contribution-${o.ref}`} aria-label={`${value === 'partial' ? 'Partial' : 'Complete'} contribution for ${o.ref}`} checked={(contributions[o.ref] ?? 'partial') === value} onChange={() => setContributions(current => ({ ...current, [o.ref]: value }))} /> {value === 'partial' ? 'Partial' : 'Complete'}
+                  </label>)}
+                </fieldset>}
+                </div>
               ))}
             </div>
           </fieldset>
+          {!isTest && canRecordKind && <p className="text-xs">Declare the contribution separately for each obligation. Partial records do not add up to completion. Complete still requires accepted proof and the existing review.</p>}
           {canRecordKind ? <>
             <label className="block text-sm">{isTest ? 'Passing scenario on this test card' : 'Accepted execution receipt (this card)'}
               <select required value={choice} onChange={e => setChoice(e.target.value)} className={`${field} mt-1`}>

@@ -30,6 +30,7 @@ from okto_pulse.core.domain.delivery_evidence import (
     evaluate_delivery_coverage,
     require_delivery_entry_card_type,
     require_delivery_batch_state,
+    read_delivery_contributions,
 )
 from okto_pulse.core.domain.enums import CardType, CardStatus, TestScenarioStatus
 from okto_pulse.core.domain.delivery_progress import require_delivery_progress_mutable
@@ -181,6 +182,7 @@ class CommunityDeliveryEvidenceStore:
             current_accepted_execution=bool(valid),
             actor_id=record.actor_id,
             symbol=execution.actual_qualified_symbol,
+            contributions=read_delivery_contributions(payload, bindings),
         )
 
     async def _test(self, record, scope, bindings, spec):
@@ -846,7 +848,8 @@ class CommunityDeliveryEvidenceStore:
             o.binding.obligation_ref: o.binding
             for o in self._record_inventory(spec, card)
         }
-        if any(ref not in inventory for ref in command.obligation_refs):
+        refs = command.selected_obligation_refs
+        if any(ref not in inventory for ref in refs):
             raise ValueError("delivery_obligation_not_found")
         payload = command.model_dump(
             exclude={
@@ -861,8 +864,11 @@ class CommunityDeliveryEvidenceStore:
         payload["card_id"] = card.id
         if batch_context is not None:
             payload["_batch"] = batch_context
+        if command.bindings is not None:
+            payload["contribution_contract_version"] = "card-binding-contribution/v1"
+            payload["contributions"] = [item.model_dump() for item in command.bindings]
         payload["bindings"] = [
-            asdict(inventory[ref]) for ref in command.obligation_refs
+            asdict(inventory[ref]) for ref in refs
         ]
         if command.kind == "test":
             scenarios = [
@@ -911,7 +917,7 @@ class CommunityDeliveryEvidenceStore:
         # Validate the candidate before inserting it. Rejected requests never
         # leave a partially accepted binding even if the caller catches the
         # exception — same contract as the spec ledger's record().
-        bindings = tuple(inventory[ref] for ref in command.obligation_refs)
+        bindings = tuple(inventory[ref] for ref in refs)
         # A declared checkpoint does not need an admitted receipt chain. Do not
         # revalidate unrelated historical proof just to persist a dirty attempt.
         existing = await self.load_card_snapshot(scope) if command.kind != "progress" else None
