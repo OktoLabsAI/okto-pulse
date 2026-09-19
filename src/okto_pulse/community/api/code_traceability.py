@@ -10,7 +10,7 @@ invoke only those governance operations.
 """
 
 from __future__ import annotations
-from okto_pulse.core.models.delivery_evidence import CardDeliveryEvidenceCommand, CardDeliveryEvidenceInput, DeliveryEvidenceInput, DeliveryEvidenceCommand, DeliveryEvidenceQuery
+from okto_pulse.core.models.delivery_evidence import CardDeliveryEvidenceWriteInput, card_delivery_command, DeliveryBatchEntryError, DeliveryEvidenceInput, DeliveryEvidenceCommand, DeliveryEvidenceQuery
 from okto_pulse.core.application.use_cases.delivery_evidence import GetDeliveryEvidenceUseCase, RecordCardDeliveryEvidenceUseCase, RecordDeliveryEvidenceUseCase
 
 import base64
@@ -487,7 +487,7 @@ def _native(value: object, *, cursor_binding: str | None = None) -> object:
 def _http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, ValueError) and str(exc).startswith("delivery_"):
         code = str(exc).split(":", 1)[0]
-        return HTTPException(status_code=409 if code.endswith("_conflict") else 404 if code.endswith("_not_found") else 422, detail={"code": code, "message": str(exc), "remediation": [{"action": "review_delivery_evidence", "tool": "okto_pulse_get_delivery_evidence"}]})
+        return HTTPException(status_code=409 if code.endswith("_conflict") else 404 if code.endswith("_not_found") else 422, detail={"code": code, "message": str(exc), "details": exc.details() if isinstance(exc, DeliveryBatchEntryError) else {}, "remediation": [{"action": "review_delivery_evidence", "tool": "okto_pulse_get_delivery_evidence"}]})
     """Project the same typed envelope exposed by the Core MCP adapter."""
 
     if isinstance(
@@ -1295,13 +1295,13 @@ async def record_delivery_evidence(board_id: str, spec_id: str, body: DeliveryEv
 
 
 @router.post("/{board_id}/cards/{card_id}/specs/{spec_id}/delivery-evidence")
-async def record_card_delivery_evidence(board_id: str, card_id: str, spec_id: str, body: CardDeliveryEvidenceInput, principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
+async def record_card_delivery_evidence(board_id: str, card_id: str, spec_id: str, body: CardDeliveryEvidenceWriteInput, principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
     """Card-scoped recording surface (0.3.4, spec 793c43d0 / FR-7).
 
     The task owns its implementation/test bindings; the command carries the
     card CAS fence. Waivers are not accepted here (BR-3).
     """
-    command = CardDeliveryEvidenceCommand(board_id=board_id, card_id=card_id, spec_id=spec_id, **body.model_dump())
+    command = card_delivery_command(board_id=board_id, card_id=card_id, spec_id=spec_id, evidence=body)
     return await _execute(RecordCardDeliveryEvidenceUseCase(), command, board_id=board_id, principal=principal, uow=uow)
 
 

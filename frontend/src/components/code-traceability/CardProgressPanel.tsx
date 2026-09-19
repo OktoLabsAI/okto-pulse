@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
-import type { CardDeliveryEvidenceInput, DeliveryPerCard } from '@/types/delivery-evidence';
+import type { CardDeliveryBatchInput, DeliveryPerCard } from '@/types/delivery-evidence';
 
 export function CardProgressPanel({ boardId, specId, edition, card, canWrite, onSaved }: {
   boardId: string; specId: string; edition: number; card: DeliveryPerCard;
@@ -16,15 +16,17 @@ export function CardProgressPanel({ boardId, specId, edition, card, canWrite, on
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const retry = useRef<{ body: string; key: string } | null>(null);
-  const writable = canWrite && ['started', 'in_progress'].includes(card.status) && !!card.card_version;
+  const writable = canWrite && ['started', 'in_progress'].includes(card.status) && !!card.card_version && card.delivery_revision !== undefined;
 
   async function save() {
     if (!writable || pending.current || !summary.trim() || !remaining.trim()) return;
-    const input: CardDeliveryEvidenceInput = {
+    const input: CardDeliveryBatchInput = {
+      contract_version: 'card-delivery-batch/v1',
       expected_card_version: card.card_version!, expected_spec_edition: edition,
-      idempotency_key: '', kind: 'progress', obligation_refs: [], justification: summary.trim(),
-      progress: { contract_version: 'delivery-progress/v1', remaining: remaining.trim(),
-        source_state: { workspace_state: dirty ? 'dirty' : 'unknown', recoverability: dirty ? 'external_workspace' : 'unknown' } },
+      expected_delivery_revision: card.delivery_revision!, idempotency_key: '',
+      entries: [{ client_ref: 'progress', kind: 'progress', obligation_refs: [], justification: summary.trim(),
+        progress: { contract_version: 'delivery-progress/v1', remaining: remaining.trim(),
+          source_state: { workspace_state: dirty ? 'dirty' : 'unknown', recoverability: dirty ? 'external_workspace' : 'unknown' } } }],
     };
     const body = JSON.stringify(input);
     if (retry.current?.body !== body) retry.current = { body, key: crypto.randomUUID() };

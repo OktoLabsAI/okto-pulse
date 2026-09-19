@@ -28,11 +28,16 @@ from okto_pulse.core.domain.delivery_evidence import (
     TestDeliveryFact,
     DeliveryWaiverFact,
     evaluate_delivery_coverage,
+    require_delivery_entry_card_type,
+    require_delivery_batch_state,
 )
 from okto_pulse.core.domain.enums import CardType, CardStatus, TestScenarioStatus
 from okto_pulse.core.domain.delivery_progress import require_delivery_progress_mutable
 from okto_pulse.core.models.delivery_evidence import (
     CardDeliveryEvidenceCommand,
+    CardDeliveryEvidenceBatchCommand,
+    CardDeliveryEvidenceWriteCommand,
+    DeliveryBatchEntryError,
     DeliveryEvidenceCommand,
 )
 from okto_pulse.core.ports.test_evidence import resolve_test_evidence_write_verifier, require_supported_test_verification_method
@@ -635,7 +640,98 @@ class CommunityDeliveryEvidenceStore:
         return self.inventory.card_obligations(spec, card)
 
     async def record_card(
-        self, command: CardDeliveryEvidenceCommand, *, actor_id, actor_kind
+        self, command: CardDeliveryEvidenceWriteCommand, *, actor_id, actor_kind
+    ):
+        if isinstance(command, CardDeliveryEvidenceBatchCommand):
+            return await self._record_card_batch(command, actor_id=actor_id, actor_kind=actor_kind)
+        return await self._record_card_entry(command, actor_id=actor_id, actor_kind=actor_kind)
+
+    async def _delivery_revision(self, scope):
+        return int(await self.session.scalar(select(func.count()).select_from(CardRecord).where(
+            CardRecord.board_id == scope.board_id, CardRecord.card_id == scope.card_id,
+            CardRecord.spec_id == scope.spec_id, CardRecord.spec_edition == scope.spec_edition,
+        )))
+
+    async def _record_card_batch(self, command, *, actor_id, actor_kind):
+        if not actor_id or actor_kind not in {"human", "user", "agent"}:
+            raise ValueError("delivery_authenticated_actor_required")
+        scope = CardDeliveryScope(command.board_id, command.card_id, command.spec_id, command.expected_spec_edition)
+        await self.lock_scope(DeliveryScope(scope.board_id, scope.spec_id, scope.spec_edition))
+        card, _, _ = await self._card_scope_guard(scope)
+        request_digest = self.inventory.payload_digest(command.model_dump())
+        filters = (
+            CardRecord.board_id == scope.board_id, CardRecord.card_id == scope.card_id,
+            CardRecord.actor_id == actor_id,
+        )
+        head = (await self.session.scalars(select(CardRecord).where(
+            *filters, CardRecord.idempotency_key == command.idempotency_key,
+        ))).one_or_none()
+        if head is not None:
+            receipt = head.payload.get("_batch", {}).get("receipt")
+            if not receipt or head.payload_sha256 != request_digest or head.actor_kind != actor_kind:
+                raise ValueError("delivery_idempotency_conflict")
+            members = list((await self.session.scalars(select(CardRecord).where(
+                *filters, CardRecord.id.in_([item["id"] for item in receipt["entries"]]),
+            ))).all())
+            expected = {(item["id"], item["client_ref"]) for item in receipt["entries"]}
+            observed = {
+                (item.id, item.payload.get("_batch", {}).get("client_ref"))
+                for item in members
+                if item.spec_id == scope.spec_id and item.spec_edition == scope.spec_edition
+                and item.actor_kind == actor_kind and item.payload.get("_batch", {}).get("head_id") == head.id
+            }
+            if expected != observed or len(members) != len(receipt["entries"]):
+                raise ValueError("delivery_batch_replay_incomplete")
+            return {"entries": receipt["entries"], "delivery_revision": receipt["delivery_revision"], "replayed": True}
+        if card.policy_version != command.expected_card_version:
+            raise ValueError("delivery_version_conflict")
+        require_delivery_batch_state(card)
+        revision = await self._delivery_revision(scope)
+        if revision != command.expected_delivery_revision:
+            raise ValueError("delivery_revision_conflict")
+        for index, entry in enumerate(command.entries):
+            try:
+                require_delivery_entry_card_type(card.card_type, entry.kind)
+            except ValueError as exc:
+                raise DeliveryBatchEntryError(index, entry.client_ref, str(exc)) from exc
+        keys = [command.idempotency_key] + [
+            "delivery-batch-entry:" + self.inventory.payload_digest({
+                "batch_key": command.idempotency_key, "client_ref": entry.client_ref,
+            }) for entry in command.entries[1:]
+        ]
+        if await self.session.scalar(select(CardRecord.id).where(
+            *filters, CardRecord.idempotency_key.in_(keys),
+        ).limit(1)):
+            raise ValueError("delivery_idempotency_conflict")
+        results = [
+            {"client_ref": entry.client_ref, "id": "card_delivery_" + uuid.uuid4().hex}
+            for entry in command.entries
+        ]
+        receipt = {"request_digest": request_digest, "entries": results, "delivery_revision": revision + len(results)}
+        # The first immutable entry carries the batch receipt; there is no
+        # second journal or mutable batch head. A savepoint also protects a
+        # caller that catches the error and later commits its outer UoW.
+        async with self.session.begin_nested():
+            for index, entry in enumerate(command.entries):
+                child = CardDeliveryEvidenceCommand(
+                    board_id=scope.board_id, card_id=scope.card_id, spec_id=scope.spec_id,
+                    expected_card_version=command.expected_card_version,
+                    expected_spec_edition=scope.spec_edition, idempotency_key=keys[index],
+                    **entry.model_dump(exclude={"client_ref"}),
+                )
+                context = {"head_id": results[0]["id"], "client_ref": entry.client_ref}
+                if index == 0:
+                    context["receipt"] = receipt
+                try:
+                    await self._record_card_entry(child, actor_id=actor_id, actor_kind=actor_kind,
+                                                  record_identity=results[index]["id"], batch_context=context)
+                except ValueError as exc:
+                    raise DeliveryBatchEntryError(index, entry.client_ref, str(exc).split(":", 1)[0]) from exc
+        return {"entries": results, "delivery_revision": receipt["delivery_revision"], "replayed": False}
+
+    async def _record_card_entry(
+        self, command: CardDeliveryEvidenceCommand, *, actor_id, actor_kind,
+        record_identity=None, batch_context=None,
     ):
         if not actor_id or actor_kind not in {"human", "user", "agent"}:
             raise ValueError("delivery_authenticated_actor_required")
@@ -652,6 +748,8 @@ class CommunityDeliveryEvidenceStore:
             DeliveryScope(command.board_id, command.spec_id, command.expected_spec_edition)
         )
         request_digest = self.inventory.payload_digest(command.model_dump())
+        if batch_context and "receipt" in batch_context:
+            request_digest = batch_context["receipt"]["request_digest"]
         replay = (
             await self.session.scalars(
                 select(CardRecord).where(
@@ -664,6 +762,8 @@ class CommunityDeliveryEvidenceStore:
         ).one_or_none()
         if replay is not None:
             if (
+                batch_context is not None or "_batch" in replay.payload
+                or
                 replay.payload_sha256 != request_digest
                 or replay.actor_kind != actor_kind
             ):
@@ -709,6 +809,8 @@ class CommunityDeliveryEvidenceStore:
             }
         )
         payload["card_id"] = card.id
+        if batch_context is not None:
+            payload["_batch"] = batch_context
         payload["bindings"] = [
             asdict(inventory[ref]) for ref in command.obligation_refs
         ]
@@ -743,7 +845,7 @@ class CommunityDeliveryEvidenceStore:
             ):
                 raise ValueError("delivery_record_not_found")
         record = CardRecord(
-            id="card_delivery_" + uuid.uuid4().hex,
+            id=record_identity or "card_delivery_" + uuid.uuid4().hex,
             board_id=scope.board_id,
             card_id=scope.card_id,
             spec_id=scope.spec_id,
@@ -948,6 +1050,7 @@ class CommunityDeliveryEvidenceStore:
                     "card_id": card.id,
                     "title": card.title,
                     "card_version": card.policy_version,
+                    "delivery_revision": await self._delivery_revision(card_scope),
                     "progress": await self._progress_summary(card_scope),
                     "card_type": str(
                         getattr(card.card_type, "value", card.card_type)

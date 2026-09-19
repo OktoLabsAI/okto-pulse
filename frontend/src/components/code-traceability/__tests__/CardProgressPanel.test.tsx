@@ -6,7 +6,7 @@ import type { DeliveryPerCard } from '@/types/delivery-evidence';
 
 const api = vi.hoisted(() => ({ recordCardDeliveryEvidence: vi.fn(), getDeliveryEvidence: vi.fn(), getBoard: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
-const card: DeliveryPerCard = { card_id: 'card', card_version: 7, title: 'Parser', card_type: 'normal', status: 'in_progress', obligations: [], satisfied: false };
+const card: DeliveryPerCard = { card_id: 'card', card_version: 7, delivery_revision: 4, title: 'Parser', card_type: 'normal', status: 'in_progress', obligations: [], satisfied: false };
 const props = () => ({ boardId: 'board', specId: 'spec', edition: 2, card, canWrite: true, onSaved: vi.fn() });
 beforeEach(() => { vi.clearAllMocks(); api.recordCardDeliveryEvidence.mockResolvedValue({ id: 'saved' }); });
 afterEach(cleanup);
@@ -21,8 +21,9 @@ it('saves dirty progress without an execution receipt or final completion', asyn
   fireEvent.click(screen.getByRole('button', { name: 'Save progress' }));
   await waitFor(() => expect(p.onSaved).toHaveBeenCalledOnce());
   expect(api.recordCardDeliveryEvidence.mock.calls[0]).toEqual(['board', 'card', 'spec', expect.objectContaining({
-    kind: 'progress', expected_card_version: 7, expected_spec_edition: 2, obligation_refs: [], justification: 'Parser changed',
-    progress: { contract_version: 'delivery-progress/v1', remaining: 'Normalization missing', source_state: { workspace_state: 'dirty', recoverability: 'external_workspace' } },
+    contract_version: 'card-delivery-batch/v1', expected_card_version: 7, expected_spec_edition: 2, expected_delivery_revision: 4,
+    entries: [{ client_ref: 'progress', kind: 'progress', obligation_refs: [], justification: 'Parser changed',
+      progress: { contract_version: 'delivery-progress/v1', remaining: 'Normalization missing', source_state: { workspace_state: 'dirty', recoverability: 'external_workspace' } } }],
   })]);
   expect(api.recordCardDeliveryEvidence.mock.calls[0][3]).not.toHaveProperty('execution_id');
 });
@@ -58,6 +59,18 @@ it('removes the write action when permission is revoked', () => {
   const p = props(); const view = render(<CardProgressPanel {...p} />); fill();
   view.rerender(<CardProgressPanel {...p} canWrite={false} />);
   expect(screen.queryByRole('button', { name: 'Save progress' })).not.toBeInTheDocument();
+});
+
+it('does not invent a delivery revision when the projection is unavailable', () => {
+  render(<CardProgressPanel {...props()} card={{ ...card, delivery_revision: undefined }} />);
+  expect(screen.queryByRole('button', { name: 'Save progress' })).not.toBeInTheDocument();
+});
+
+it('uses zero as a real empty-ledger revision', async () => {
+  render(<CardProgressPanel {...props()} card={{ ...card, delivery_revision: 0 }} />); fill();
+  fireEvent.click(screen.getByRole('button', { name: 'Save progress' }));
+  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledOnce());
+  expect(api.recordCardDeliveryEvidence.mock.calls[0][3].expected_delivery_revision).toBe(0);
 });
 
 it('shows several saved facts and an explicit history limit after reload', async () => {

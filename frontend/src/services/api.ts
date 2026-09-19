@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import type { ArchitectureCandidatesResponse } from '@/types/architecture-candidates';
 import type { ArchitectureClassificationsResponse, ArchitectureReviewState, ArchitectureClassificationBatch, ArchitectureClassificationReceipt } from '@/types/architecture-classifications';
 import type { RequirementVerificationResponse, VerificationRequirementType } from '@/types/requirement-verification';
-import type { CardDeliveryEvidenceInput, DeliveryEvidenceInput, DeliveryEvidenceProjection } from '@/types/delivery-evidence';
+import type { CardDeliveryEvidenceInput, CardDeliveryBatchInput, CardDeliveryWriteResult, DeliveryEvidenceInput, DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 /**
  * API Service - all API calls centralized
  */
@@ -611,7 +611,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence`, { method: 'POST', body: JSON.stringify(body) });
     },
 
-    async recordCardDeliveryEvidence(boardId: string, cardId: string, specId: string, body: CardDeliveryEvidenceInput): Promise<{ id: string; replayed: boolean }> {
+    async recordCardDeliveryEvidence(boardId: string, cardId: string, specId: string, body: CardDeliveryEvidenceInput | CardDeliveryBatchInput): Promise<CardDeliveryWriteResult> {
       // Card-scoped surface (0.3.4, spec 793c43d0): the task owns its bindings.
       return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/cards/${encodeURIComponent(cardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence`, { method: 'POST', body: JSON.stringify(body) });
     },

@@ -43,6 +43,21 @@ export interface CardDeliveryEvidenceInput {
   };
 }
 
+export interface CardDeliveryBatchInput {
+  contract_version: 'card-delivery-batch/v1';
+  expected_card_version: number;
+  expected_spec_edition: number;
+  expected_delivery_revision: number;
+  idempotency_key: string;
+  entries: Array<Omit<CardDeliveryEvidenceInput, 'expected_card_version' | 'expected_spec_edition' | 'idempotency_key' | 'kind' | 'record_id'> & {
+    client_ref: string; kind: 'progress' | 'implementation' | 'test';
+  }>;
+}
+
+export type CardDeliveryWriteResult = { id: string; replayed: boolean } | {
+  entries: Array<{ client_ref: string; id: string }>; delivery_revision: number; replayed: boolean;
+};
+
 export interface DeliveryPerCardObligation {
   ref: string;
   title: string;
@@ -57,6 +72,7 @@ export interface DeliveryPerCard {
   obligations: DeliveryPerCardObligation[];
   satisfied: boolean;
   card_version?: number;
+  delivery_revision?: number;
   progress?: {
     total: number; truncated: boolean; recovery_verified: false;
     items: Array<{ id: string; actor_id: string; created_at: string; revoked?: boolean; summary: string; remaining: string; text_truncated: boolean; source_state: { workspace_state: string; recoverability: string }; target_ids: string[] }>;
