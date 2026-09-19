@@ -37,6 +37,8 @@ def batch(*, invalid=False):
             kind="progress",
             justification="Work in progress",
             progress=dict(
+                contract_version="delivery-progress/v2",
+                material_change="none",
                 source_state=dict(
                     workspace_state="dirty", recoverability="external_workspace"
                 ),
@@ -123,7 +125,10 @@ async def test_persisted_progress_reference_and_wrong_kind(composed):
     from test_delivery_progress import command as progress_command
 
     session, uow, use_case, actor = composed
-    checkpoint = await use_case.execute(progress_command(), actor=actor, uow=uow)
+    context = progress_command().model_dump()
+    context["progress"].update(contract_version="delivery-progress/v2", material_change="none")
+    from okto_pulse.core.models.delivery_evidence import CardDeliveryEvidenceCommand
+    checkpoint = await use_case.execute(CardDeliveryEvidenceCommand.model_validate(context), actor=actor, uow=uow)
     payload = command().model_dump()
     payload["expected_delivery_revision"] = 1
     payload["entries"][0]["progress_refs"] = [{"record_id": checkpoint["id"]}]

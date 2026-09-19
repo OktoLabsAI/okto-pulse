@@ -38,7 +38,7 @@ from okto_pulse.core.domain.delivery_evidence import (
     implementation_binding_ready,
 )
 from okto_pulse.core.domain.enums import CardType, CardStatus, TestScenarioStatus
-from okto_pulse.core.domain.delivery_progress import require_delivery_progress_mutable
+from okto_pulse.core.domain.delivery_progress import DeliveryProgress, progress_blocks_execution, progress_change_scope, require_delivery_progress_mutable
 from okto_pulse.core.models.delivery_evidence import (
     CardDeliveryEvidenceCommand,
     CardDeliveryEvidenceBatchCommand,
@@ -135,6 +135,8 @@ class CommunityDeliveryEvidenceStore:
                 explanation=payload["justification"], receipt_id="",
                 current_accepted_execution=len(proofs) == len(identities) and all(proof.current_accepted_execution for proof in proofs),
                 actor_id=record.actor_id, contributions=contributions, executions=tuple(proofs),
+                blocking_progress_ids=tuple(sorted({identity for proof in proofs for identity in proof.blocking_progress_ids}))[:20],
+                blocking_progress_truncated=any(proof.blocking_progress_truncated for proof in proofs) or len({identity for proof in proofs for identity in proof.blocking_progress_ids}) > 20,
             )
         proof = await self._execution_proof(payload.get("execution_id"), scope, card)
         if proof is None:
@@ -147,6 +149,8 @@ class CommunityDeliveryEvidenceStore:
             explanation=payload["justification"], receipt_id=proof.execution_id,
             current_accepted_execution=proof.current_accepted_execution,
             actor_id=record.actor_id, symbol=proof.symbol, contributions=contributions,
+            blocking_progress_ids=proof.blocking_progress_ids,
+            blocking_progress_truncated=proof.blocking_progress_truncated,
         )
 
     async def _execution_proof(self, execution_id, scope, card):
@@ -202,6 +206,12 @@ class CommunityDeliveryEvidenceStore:
             )
             is not None
         )
+        progress = await self._active_material_progress(scope, card.id)
+        blocking_progress_ids = tuple(record.id for record, declaration in progress if progress_blocks_execution(
+            declaration, target_id=execution.target_id, source_ref=execution.source_ref,
+            checkpoint_received_at=record.created_at,
+            execution_observed_at=receipt.observed_at if receipt else None,
+        ))
         # Receipt expiration concerns fresh source investigation, not the historical
         # existence of an accepted immutable delivery commit. Target heads and
         # explicit revocation still invalidate proof on every projection.
@@ -212,9 +222,25 @@ class CommunityDeliveryEvidenceStore:
             source_ref=execution.source_ref,
             result_revision=execution.result_declared_revision or "",
             relative_path=execution.actual_relative_path or "",
-            current_accepted_execution=bool(valid),
+            current_accepted_execution=bool(valid) and not blocking_progress_ids,
             symbol=execution.actual_qualified_symbol,
+            blocking_progress_ids=blocking_progress_ids[:20],
+            blocking_progress_truncated=len(blocking_progress_ids) > 20,
         )
+
+    async def _active_material_progress(self, scope: DeliveryScope, card_id: str):
+        # Read the full relevant population, never the capped resume summary.
+        filters = (CardRecord.board_id == scope.board_id, CardRecord.card_id == card_id,
+                   CardRecord.spec_id == scope.spec_id, CardRecord.spec_edition == scope.edition)
+        revoked = select(CardRecord.payload["record_id"].as_string()).where(
+            *filters, CardRecord.kind == "revoke", CardRecord.actor_kind.in_(("human", "user")),
+            CardRecord.payload["record_id"].as_string().is_not(None),
+        )
+        records = (await self.session.scalars(select(CardRecord).where(
+            *filters, CardRecord.kind == "progress", CardRecord.id.not_in(revoked),
+        ).order_by(CardRecord.created_at, CardRecord.id))).all()
+        return [(record, declaration) for record in records
+                if progress_change_scope(declaration := DeliveryProgress.model_validate(record.payload["progress"])) != "none"]
 
     async def _test(self, record, scope, bindings, spec):
         payload = record.payload
@@ -871,6 +897,8 @@ class CommunityDeliveryEvidenceStore:
             if {target.id for target in targets} != set(progress.target_ids):
                 raise ValueError("delivery_progress_target_unavailable")
             source_ref = progress.source_state.source_ref
+            if source_ref and any(target.source_ref != source_ref for target in targets):
+                raise ValueError("delivery_progress_target_source_conflict")
             if source_ref and not await self.session.scalar(
                 select(Receipt.id).where(
                     Receipt.board_id == scope.board_id,
@@ -1034,7 +1062,7 @@ class CommunityDeliveryEvidenceStore:
         )
 
     async def _progress_summary(self, scope):
-        """Bounded declared history; it is never passed to the proof evaluator."""
+        """Bounded history for resumption; currentness reads the full population."""
         filters = (
             CardRecord.board_id == scope.board_id,
             CardRecord.card_id == scope.card_id,
@@ -1059,7 +1087,14 @@ class CommunityDeliveryEvidenceStore:
                 CardRecord.payload["record_id"].as_string().in_([record.id for record in records]),
             )
         )).all()) if records else set()
+        targets = list((await self.session.scalars(select(Target).where(
+            Target.board_id == scope.board_id, Target.card_id == scope.card_id,
+            Target.lifecycle_status == "active",
+        ).order_by(Target.id).limit(101))).all())
         return {
+            "target_options": [{"id": target.id, "source_ref": target.source_ref,
+                                "label": target.relative_path_hint or target.id} for target in targets[:100]],
+            "targets_truncated": len(targets) > 100,
             "total": total,
             "truncated": total > len(records),
             "recovery_verified": False,
@@ -1072,6 +1107,8 @@ class CommunityDeliveryEvidenceStore:
                     "remaining": record.payload["progress"]["remaining"][:1000],
                     "text_truncated": len(record.payload["justification"]) > 1000 or len(record.payload["progress"]["remaining"]) > 1000,
                     "source_state": record.payload["progress"]["source_state"],
+                    "material_change": progress_change_scope(DeliveryProgress.model_validate(record.payload["progress"])),
+                    "change_declaration_origin": record.payload["progress"].get("contract_version", "delivery-progress/v1"),
                     "target_ids": record.payload["progress"]["target_ids"][:10],
                     "targets_truncated": len(record.payload["progress"]["target_ids"]) > 10,
                 }

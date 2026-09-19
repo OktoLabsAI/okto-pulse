@@ -13,7 +13,15 @@ afterEach(cleanup);
 function fill() {
   fireEvent.change(screen.getByLabelText('Work recorded'), { target: { value: 'Parser changed' } });
   fireEvent.change(screen.getByLabelText('Remaining work'), { target: { value: 'Normalization missing' } });
+  fireEvent.change(screen.getByLabelText('Code change in this checkpoint'), { target: { value: 'none' } });
 }
+
+it('requires a change declaration instead of inventing no code change from an empty form', () => {
+  render(<CardProgressPanel {...props()} />);
+  fireEvent.change(screen.getByLabelText('Work recorded'), { target: { value: 'Work' } });
+  fireEvent.change(screen.getByLabelText('Remaining work'), { target: { value: 'Next' } });
+  expect(screen.getByRole('button', { name: 'Save progress' })).toBeDisabled();
+});
 
 it('saves dirty progress without an execution receipt or final completion', async () => {
   const p = props(); render(<CardProgressPanel {...p} />); fill();
@@ -23,9 +31,40 @@ it('saves dirty progress without an execution receipt or final completion', asyn
   expect(api.recordCardDeliveryEvidence.mock.calls[0]).toEqual(['board', 'card', 'spec', expect.objectContaining({
     contract_version: 'card-delivery-batch/v1', expected_card_version: 7, expected_spec_edition: 2, expected_delivery_revision: 4,
     entries: [{ client_ref: 'progress', kind: 'progress', obligation_refs: [], justification: 'Parser changed',
-      progress: { contract_version: 'delivery-progress/v1', remaining: 'Normalization missing', source_state: { workspace_state: 'dirty', recoverability: 'external_workspace' } } }],
+      progress: { contract_version: 'delivery-progress/v2', material_change: 'unknown', target_ids: [], remaining: 'Normalization missing', source_state: { workspace_state: 'dirty', recoverability: 'external_workspace' } } }],
   })]);
   expect(api.recordCardDeliveryEvidence.mock.calls[0][3]).not.toHaveProperty('execution_id');
+});
+
+it('selects only affected Targets and requires a selection before saving a code change', async () => {
+  const p = props();
+  render(<CardProgressPanel {...p} card={{ ...card, progress: { total: 0, truncated: false, recovery_verified: false, items: [], target_options: [
+    { id: 't1', source_ref: 'source', label: 'src/parser.py' }, { id: 't2', source_ref: 'source', label: 'src/other.py' },
+  ] } }} />); fill();
+  fireEvent.change(screen.getByLabelText('Code change in this checkpoint'), { target: { value: 'targets' } });
+  expect(screen.getByRole('button', { name: 'Save progress' })).toBeDisabled();
+  fireEvent.click(screen.getByLabelText('src/parser.py · source'));
+  fireEvent.click(screen.getByRole('button', { name: 'Save progress' }));
+  await waitFor(() => expect(p.onSaved).toHaveBeenCalledOnce());
+  expect(api.recordCardDeliveryEvidence.mock.calls[0][3].entries[0].progress).toMatchObject({ material_change: 'targets', target_ids: ['t1'] });
+});
+
+it('can explicitly record a context note without declaring the external dirty work changed', async () => {
+  render(<CardProgressPanel {...props()} />); fill();
+  fireEvent.click(screen.getByLabelText('Work is in an external dirty workspace'));
+  fireEvent.change(screen.getByLabelText('Code change in this checkpoint'), { target: { value: 'none' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save progress' }));
+  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledOnce());
+  expect(api.recordCardDeliveryEvidence.mock.calls[0][3].entries[0].progress).toMatchObject({ material_change: 'none', target_ids: [] });
+});
+
+it('shows material change and legacy uncertainty after reload', () => {
+  render(<CardProgressPanel {...props()} card={{ ...card, progress: { total: 1, truncated: false, recovery_verified: false, items: [{
+    id: 'old', actor_id: 'author', created_at: 'today', summary: 'Changed code', remaining: 'Observe again', text_truncated: false,
+    source_state: { workspace_state: 'dirty', recoverability: 'unknown' }, target_ids: ['t1'], material_change: 'targets', change_declaration_origin: 'delivery-progress/v1',
+  }] } }} />);
+  expect(screen.getByText(/Earlier observations of the affected work/)).toBeInTheDocument();
+  expect(screen.getByText(/Legacy checkpoint/)).toBeInTheDocument();
 });
 
 it('reuses the idempotency key after an uncertain failure', async () => {

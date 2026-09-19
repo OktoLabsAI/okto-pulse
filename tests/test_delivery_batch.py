@@ -153,6 +153,8 @@ async def test_progress_and_real_accepted_implementation_share_transaction(ledge
         }
     )
     progress = batch().entries[0].model_dump()
+    # This batch describes existing proof; it does not declare subsequent changes.
+    progress["progress"].update(contract_version="delivery-progress/v2", material_change="none")
     result = await save(
         store,
         batch(
