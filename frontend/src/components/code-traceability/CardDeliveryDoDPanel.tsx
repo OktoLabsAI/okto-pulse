@@ -36,6 +36,8 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
   const [formOpen, setFormOpen] = useState(false);
   const [refs, setRefs] = useState<string[]>([]);
   const [contributions, setContributions] = useState<Record<string, 'partial' | 'complete'>>({});
+  const [composeProofs, setComposeProofs] = useState(false);
+  const [executionSets, setExecutionSets] = useState<Record<string, string[]>>({});
   const [choice, setChoice] = useState('');
   const [testedIds, setTestedIds] = useState<string[]>([]);
   const [phase, setPhase] = useState<'implementation' | 'test'>('implementation');
@@ -44,7 +46,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
 
   useEffect(() => {
     const controller = new AbortController();
-    setData(null); setError(''); setRefs([]); setContributions({}); setChoice(''); setTestedIds([]);
+    setData(null); setError(''); setRefs([]); setContributions({}); setComposeProofs(false); setExecutionSets({}); setChoice(''); setTestedIds([]);
     api.getDeliveryEvidence(boardId, card.spec_id, controller.signal).then(value => {
       if (!controller.signal.aborted) setData(value);
     }).catch(err => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'Delivery proof could not be loaded.'); });
@@ -57,17 +59,23 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
   const isTest = card.card_type === 'test';
   const mine = data?.per_card?.find(entry => entry.card_id === card.id) ?? null;
   const obligations = mine?.obligations ?? [];
-  const acceptedProofs = (data?.implementations ?? []).filter(i => i.card_id === card.id && i.current_accepted_execution);
-  const proofFor = (ref: string) => acceptedProofs.find(p => (p.bindings ?? []).some(b => b.obligation_ref === ref)
-    && (p.contributions == null || p.contributions.some(c => c.binding.obligation_ref === ref && c.contribution === 'complete')));
-  const partialFor = (ref: string) => acceptedProofs.some(p => p.contributions?.some(c => c.binding.obligation_ref === ref && c.contribution === 'partial'));
+  const acceptedProofs = (data?.implementations ?? []).filter(i => i.card_id === card.id
+    && (i.admitted_obligation_refs ? i.admitted_obligation_refs.length > 0 : i.current_accepted_execution));
+  const proofFor = (ref: string) => acceptedProofs.find(p => p.ready_obligation_refs
+    ? p.ready_obligation_refs.includes(ref)
+    : (p.bindings ?? []).some(b => b.obligation_ref === ref) && (p.contributions == null || p.contributions.some(c => c.binding.obligation_ref === ref && c.contribution === 'complete')));
+  const partialFor = (ref: string) => acceptedProofs.some(p => (!p.admitted_obligation_refs || p.admitted_obligation_refs.includes(ref))
+    && p.contributions?.some(c => c.binding.obligation_ref === ref && c.contribution === 'partial'));
   const unproven = obligations.filter(o => !o.implementation_satisfied);
   const canRecordKind = isTest ? canTest : canRecord;
   const candidates = (data?.candidates ?? []).filter(c => c.card_id === card.id && c.kind === (isTest ? 'test' : 'implementation'));
   const selectableRefs = isTest
     ? (data?.rows ?? []).map(row => ({ ref: row.obligation.binding.obligation_ref, title: row.obligation.title, satisfied: row.test_satisfied }))
     : obligations.map(o => ({ ref: o.ref, title: o.title, satisfied: o.implementation_satisfied }));
-  const verifiableImpls = (data?.implementations ?? []).filter(i => i.current_accepted_execution && !data?.rejected_record_ids.includes(i.id));
+  const verifiableImpls = (data?.implementations ?? []).filter(i => (i.ready_obligation_refs ? i.ready_obligation_refs.length > 0 : i.current_accepted_execution) && !data?.rejected_record_ids.includes(i.id));
+  const compose = !isTest && composeProofs;
+  const setsReady = refs.length > 0 && refs.every(ref => executionSets[ref]?.length
+    && executionSets[ref].every(id => candidates.some(candidate => candidate.id === id)));
 
   async function submit() {
     const justification = reason.trim();
@@ -75,7 +83,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
     const selected = candidates.find(c => `${c.card_id}:${c.id}` === choice);
     const key = crypto.randomUUID();
     const input: CardDeliveryEvidenceInput = {
-      expected_card_version: selected?.card_version ?? 1,
+      expected_card_version: compose ? mine?.card_version ?? candidates[0]?.card_version ?? 1 : selected?.card_version ?? 1,
       expected_spec_edition: data.edition,
       idempotency_key: key,
       kind: isTest ? 'test' : 'implementation',
@@ -83,14 +91,19 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
       justification,
       ...(isTest
         ? { scenario_id: selected?.id, implementation_ids: testedIds }
-        : { execution_id: selected?.id, bindings: refs.map(ref => ({ obligation_ref: ref, contribution: contributions[ref] ?? 'partial' })) }),
+        : {
+          ...(!compose ? { execution_id: selected?.id } : {}),
+          bindings: refs.map(ref => ({ obligation_ref: ref, contribution: contributions[ref] ?? 'partial',
+            ...(compose ? { execution_refs: (executionSets[ref] ?? []).map(id => ({ execution_id: id })) } : {}),
+          })),
+        }),
     };
     const payload = JSON.stringify({ ...input, idempotency_key: '', card_id: card.id });
     if (replayRef.current?.payload === payload) input.idempotency_key = replayRef.current.key;
     else replayRef.current = { payload, key: input.idempotency_key };
     setBusy(true); setError('');
     try {
-      if (!isTest && !selected) throw new Error('Select an accepted execution receipt for this card first.');
+      if (!isTest && (compose ? !setsReady : !selected)) throw new Error('Select the accepted execution receipts for each obligation first.');
       if (isTest && (!selected || !testedIds.length)) throw new Error('Select the passing scenario and the implementation records it verified.');
       await api.recordCardDeliveryEvidence(boardId, card.id, card.spec_id, input);
       replayRef.current = null; setReason(''); setRefs([]); setChoice(''); setTestedIds([]);
@@ -176,7 +189,8 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
 
       {formOpen && (canRecordKind || canWaiver) && (
         <form className="space-y-3 rounded-md border p-3" onSubmit={e => { e.preventDefault(); void (canWaiver && !canRecordKind ? submitWaiver() : submit()); }} data-testid="dod-record-form">
-          <fieldset>
+          {!isTest && canRecordKind && <label className="block text-sm"><input type="checkbox" checked={composeProofs} disabled={busy} onChange={e => setComposeProofs(e.target.checked)} /> Select receipts separately for each obligation</label>}
+          <fieldset disabled={busy}>
             <legend className="text-sm font-medium">Which obligations does this proof cover?</legend>
             <div className="mt-2 max-h-44 space-y-1 overflow-y-auto">
               {selectableRefs.map(o => (
@@ -191,26 +205,35 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
                     <input type="radio" name={`contribution-${o.ref}`} aria-label={`${value === 'partial' ? 'Partial' : 'Complete'} contribution for ${o.ref}`} checked={(contributions[o.ref] ?? 'partial') === value} onChange={() => setContributions(current => ({ ...current, [o.ref]: value }))} /> {value === 'partial' ? 'Partial' : 'Complete'}
                   </label>)}
                 </fieldset>}
+                {compose && canRecordKind && refs.includes(o.ref) && <fieldset className="ml-6 space-y-1 text-xs">
+                  <legend>Receipts supporting {o.title}</legend>
+                  {candidates.map(candidate => <label key={candidate.id} className="block">
+                    <input type="checkbox" aria-label={`Receipt ${candidate.id} for ${o.ref}`} checked={(executionSets[o.ref] ?? []).includes(candidate.id)} onChange={e => setExecutionSets(current => ({ ...current,
+                      [o.ref]: e.target.checked ? [...(current[o.ref] ?? []), candidate.id] : (current[o.ref] ?? []).filter(id => id !== candidate.id),
+                    }))} /> {candidate.label}
+                  </label>)}
+                </fieldset>}
                 </div>
               ))}
             </div>
           </fieldset>
           {!isTest && canRecordKind && <p className="text-xs">Declare the contribution separately for each obligation. Partial records do not add up to completion. Complete still requires accepted proof and the existing review.</p>}
+          {compose && <p className="text-xs">Each set must share the same observed source and immutable revision. A newer commit does not establish that it contains another receipt's changes.</p>}
           {canRecordKind ? <>
-            <label className="block text-sm">{isTest ? 'Passing scenario on this test card' : 'Accepted execution receipt (this card)'}
+            {!compose && <label className="block text-sm">{isTest ? 'Passing scenario on this test card' : 'Accepted execution receipt (this card)'}
               <select required value={choice} onChange={e => setChoice(e.target.value)} className={`${field} mt-1`}>
                 <option value="">Select…</option>
                 {candidates.map(c => <option key={`${c.card_id}:${c.id}`} value={`${c.card_id}:${c.id}`}>{c.label}</option>)}
               </select>
               {candidates.length === 0 && <span className="text-xs text-gray-400">No eligible receipts yet. {isTest ? 'Execute the linked scenarios with authenticated evidence and complete the test card.' : 'Submit an accepted execution receipt for the committed files in the Implementation Targets tab — it becomes pickable here immediately, before completion.'}</span>}
-            </label>
+            </label>}
             {isTest && <fieldset>
               <legend className="text-sm font-medium">Implementation records verified by this run</legend>
               <div className="mt-2 max-h-36 space-y-1 overflow-y-auto">
                 {verifiableImpls.map(i => (
                   <label key={i.id} className="flex items-start gap-2 text-sm">
                     <input type="checkbox" checked={testedIds.includes(i.id)} onChange={e => setTestedIds(e.target.checked ? [...testedIds, i.id] : testedIds.filter(v => v !== i.id))} />
-                    <span className="min-w-0"><span className="block truncate">{i.relative_path}{i.symbol ? ` · ${i.symbol}` : ''}</span><code className="text-[10px] text-gray-400">{i.id}</code></span>
+                    <span className="min-w-0"><span className="block truncate">{i.executions ? i.executions.map(proof => proof.relative_path).join(', ') : i.relative_path}{i.symbol ? ` · ${i.symbol}` : ''}</span><code className="text-[10px] text-gray-400">{i.id}</code></span>
                   </label>
                 ))}
               </div>
@@ -226,7 +249,7 @@ export function CardDeliveryDoDPanel({ boardId, card, canRecord = false, canTest
           <label className="block text-sm">Explanation / audit reason
             <textarea required maxLength={20000} className={`${field} mt-1`} value={reason} onChange={e => setReason(e.target.value)} placeholder={isTest ? 'Explain how this passing run verifies the selected obligations.' : 'Explain how this execution receipt covers the selected obligations.'} />
           </label>
-          <button type="submit" disabled={busy || !refs.length || !reason.trim() || (canRecordKind && (!choice || (isTest && !testedIds.length)))} className="rounded bg-cyan-700 px-3 py-2 text-sm text-white disabled:opacity-50">
+          <button type="submit" disabled={busy || !refs.length || !reason.trim() || (canRecordKind && (compose ? !setsReady : !choice || (isTest && !testedIds.length)))} className="rounded bg-cyan-700 px-3 py-2 text-sm text-white disabled:opacity-50">
             {busy ? 'Saving…' : canWaiver && !canRecordKind ? 'Record waiver (spec rollup)' : 'Record delivery evidence'}
           </button>
         </form>

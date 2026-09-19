@@ -25,12 +25,17 @@ from okto_pulse.core.domain.delivery_evidence import (
     DeliveryPhase,
     DeliveryEvidenceSnapshot,
     ImplementationDeliveryFact,
+    ImplementationExecutionProof,
     TestDeliveryFact,
     DeliveryWaiverFact,
     evaluate_delivery_coverage,
     require_delivery_entry_card_type,
     require_delivery_batch_state,
     read_delivery_contributions,
+    delivery_execution_ids,
+    implementation_binding_proof_current,
+    implementation_binding_proof_issue,
+    implementation_binding_ready,
 )
 from okto_pulse.core.domain.enums import CardType, CardStatus, TestScenarioStatus
 from okto_pulse.core.domain.delivery_progress import require_delivery_progress_mutable
@@ -112,9 +117,42 @@ class CommunityDeliveryEvidenceStore:
 
     async def _implementation(self, record, scope, bindings):
         payload = record.payload
-        execution = await self._get(Execution, payload.get("execution_id"))
         card = await self._get(Card, payload.get("card_id"))
-        if execution is None or card is None:
+        if card is None or card.board_id != scope.board_id or card.spec_id != scope.spec_id:
+            return None
+        contributions = read_delivery_contributions(payload, bindings)
+        if payload.get("contribution_contract_version") == "card-binding-contribution/v2":
+            identities = delivery_execution_ids(payload)
+            proofs = []
+            for identity in identities:
+                proof = await self._execution_proof(identity, scope, card)
+                if proof is not None:
+                    proofs.append(proof)
+            return ImplementationDeliveryFact(
+                id=record.id, scope=scope, card_id=card.id,
+                card_type=CardType(card.card_type), card_status=CardStatus(card.status),
+                bindings=bindings, source_ref="", result_revision="", relative_path="",
+                explanation=payload["justification"], receipt_id="",
+                current_accepted_execution=len(proofs) == len(identities) and all(proof.current_accepted_execution for proof in proofs),
+                actor_id=record.actor_id, contributions=contributions, executions=tuple(proofs),
+            )
+        proof = await self._execution_proof(payload.get("execution_id"), scope, card)
+        if proof is None:
+            return None
+        return ImplementationDeliveryFact(
+            id=record.id, scope=scope, card_id=card.id,
+            card_type=CardType(card.card_type), card_status=CardStatus(card.status),
+            bindings=bindings, source_ref=proof.source_ref,
+            result_revision=proof.result_revision, relative_path=proof.relative_path,
+            explanation=payload["justification"], receipt_id=proof.execution_id,
+            current_accepted_execution=proof.current_accepted_execution,
+            actor_id=record.actor_id, symbol=proof.symbol, contributions=contributions,
+        )
+
+    async def _execution_proof(self, execution_id, scope, card):
+        """The original receipt/head validator, shared by single and composed proofs."""
+        execution = await self._get(Execution, execution_id)
+        if execution is None or execution.board_id != scope.board_id or execution.card_id != card.id:
             return None
         target = await self._get(Target, execution.target_id)
         receipt = await self._get(Receipt, execution.result_investigation_receipt_id)
@@ -167,22 +205,15 @@ class CommunityDeliveryEvidenceStore:
         # Receipt expiration concerns fresh source investigation, not the historical
         # existence of an accepted immutable delivery commit. Target heads and
         # explicit revocation still invalidate proof on every projection.
-        return ImplementationDeliveryFact(
-            id=record.id,
-            scope=scope,
-            card_id=card.id,
-            card_type=CardType(card.card_type),
-            card_status=CardStatus(card.status),
-            bindings=bindings,
+        return ImplementationExecutionProof(
+            execution_id=execution.id,
+            target_id=execution.target_id,
+            target_revision=execution.target_revision,
             source_ref=execution.source_ref,
             result_revision=execution.result_declared_revision or "",
             relative_path=execution.actual_relative_path or "",
-            explanation=payload["justification"],
-            receipt_id=execution.id,
             current_accepted_execution=bool(valid),
-            actor_id=record.actor_id,
             symbol=execution.actual_qualified_symbol,
-            contributions=read_delivery_contributions(payload, bindings),
         )
 
     async def _test(self, record, scope, bindings, spec):
@@ -263,18 +294,17 @@ class CommunityDeliveryEvidenceStore:
                     ):
                         valid = False
                         break
-                    execution = await self.session.get(
-                        Execution, binding_record.payload.get("execution_id")
-                    )
-                    receipt = (
-                        await self.session.get(
-                            Receipt, execution.result_investigation_receipt_id
-                        )
-                        if execution
-                        else None
-                    )
-                    if receipt is None or executed_at < receipt.observed_at:
+                    execution_ids = delivery_execution_ids(binding_record.payload, bindings)
+                    if not execution_ids:
                         valid = False
+                        break
+                    for execution_id in execution_ids:
+                        execution = await self.session.get(Execution, execution_id)
+                        receipt = await self.session.get(Receipt, execution.result_investigation_receipt_id) if execution else None
+                        if receipt is None or executed_at < receipt.observed_at:
+                            valid = False
+                            break
+                    if not valid:
                         break
             except (KeyError, TypeError, ValueError):
                 valid = False
@@ -460,7 +490,11 @@ class CommunityDeliveryEvidenceStore:
                 }
                 for row in evaluation.rows
             ],
-            "implementations": [asdict(fact) for fact in snapshot.implementations],
+            "implementations": [{
+                **asdict(fact),
+                "admitted_obligation_refs": [binding.obligation_ref for binding in fact.bindings if implementation_binding_proof_current(fact, binding)],
+                "ready_obligation_refs": [binding.obligation_ref for binding in fact.bindings if implementation_binding_ready(fact, binding)],
+            } for fact in snapshot.implementations],
             "tests": [asdict(fact) for fact in snapshot.tests],
             "candidates": candidates,
             "per_card": per_card,
@@ -732,16 +766,16 @@ class CommunityDeliveryEvidenceStore:
         # caller that catches the error and later commits its outer UoW.
         async with self.session.begin_nested():
             for index, entry in enumerate(command.entries):
-                child = CardDeliveryEvidenceCommand(
-                    board_id=scope.board_id, card_id=scope.card_id, spec_id=scope.spec_id,
-                    expected_card_version=command.expected_card_version,
-                    expected_spec_edition=scope.spec_edition, idempotency_key=keys[index],
-                    **entry.resolved_fields(prior_results),
-                )
-                context = {"head_id": results[0]["id"], "client_ref": entry.client_ref}
-                if index == 0:
-                    context["receipt"] = receipt
                 try:
+                    child = CardDeliveryEvidenceCommand(
+                        board_id=scope.board_id, card_id=scope.card_id, spec_id=scope.spec_id,
+                        expected_card_version=command.expected_card_version,
+                        expected_spec_edition=scope.spec_edition, idempotency_key=keys[index],
+                        **entry.resolved_fields(prior_results),
+                    )
+                    context = {"head_id": results[0]["id"], "client_ref": entry.client_ref}
+                    if index == 0:
+                        context["receipt"] = receipt
                     saved = await self._record_card_entry(child, actor_id=actor_id, actor_kind=actor_kind,
                                                   record_identity=results[index]["id"], batch_context=context,
                                                   execution_submitter=execution_submitter)
@@ -865,8 +899,11 @@ class CommunityDeliveryEvidenceStore:
         if batch_context is not None:
             payload["_batch"] = batch_context
         if command.bindings is not None:
-            payload["contribution_contract_version"] = "card-binding-contribution/v1"
-            payload["contributions"] = [item.model_dump() for item in command.bindings]
+            payload["contribution_contract_version"] = "card-binding-contribution/v2" if command.composite_execution else "card-binding-contribution/v1"
+            payload["contributions"] = [{
+                "obligation_ref": item.obligation_ref, "contribution": item.contribution,
+                **({"execution_ids": [ref.execution_id for ref in item.execution_refs]} if command.composite_execution else {}),
+            } for item in command.bindings]
         payload["bindings"] = [
             asdict(inventory[ref]) for ref in refs
         ]
@@ -918,29 +955,17 @@ class CommunityDeliveryEvidenceStore:
         # leave a partially accepted binding even if the caller catches the
         # exception — same contract as the spec ledger's record().
         bindings = tuple(inventory[ref] for ref in refs)
-        # A declared checkpoint does not need an admitted receipt chain. Do not
-        # revalidate unrelated historical proof just to persist a dirty attempt.
-        existing = await self.load_card_snapshot(scope) if command.kind != "progress" else None
         if command.kind == "implementation":
             fact = await self._implementation(record, spec_scope, bindings)
-            candidate = DeliveryEvidenceSnapshot(
-                spec_scope, existing.obligations, (fact,) if fact else (), complete=True
-            )
-            result = evaluate_delivery_coverage(candidate)
-            if fact is None or record.id in result.rejected_record_ids:
-                # evaluate_delivery_coverage only credits facts whose card is
-                # already DONE. The card-scoped surface records the task's own
-                # proof BEFORE completion (AC ac_c41b1fa3: record, then the
-                # done move passes), so a chain-valid fact (accepted committed
-                # execution) is acceptable here; its evaluator validity
-                # completes with the DONE status, and the card gate plus the
-                # spec rollup re-evaluate with the final status. Any other
-                # rejection (broken receipt chain, scope mismatch) still
-                # refuses the insert — no partial binding ever persists.
-                if fact is None or not fact.current_accepted_execution:
-                    raise ValueError(
-                        "delivery_accepted_committed_task_execution_required"
-                    )
+            # Admission checks every named receipt without requiring Done or
+            # upgrading a partial declaration. Completion uses the same proof
+            # predicate plus declaration/lifecycle/review predicates.
+            if fact is None:
+                raise ValueError("delivery_accepted_committed_task_execution_required")
+            for binding in bindings:
+                issue = implementation_binding_proof_issue(fact, binding)
+                if issue is not None:
+                    raise ValueError(issue)
         elif command.kind == "test":
             fact = await self._test(record, spec_scope, bindings, spec)
             # The test-phase join is cross-card by design (BR-5): a test card
@@ -975,7 +1000,7 @@ class CommunityDeliveryEvidenceStore:
             valid_ids = {
                 f.id
                 for f in rollup_snapshot.implementations
-                if f.current_accepted_execution
+                if any(implementation_binding_proof_current(f, binding) for binding in f.bindings)
             }
             if not set(command.implementation_ids) <= valid_ids:
                 raise ValueError("delivery_implementation_scope_invalid")

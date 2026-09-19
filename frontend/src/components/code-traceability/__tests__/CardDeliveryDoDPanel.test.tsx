@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { CardDeliveryDoDPanel } from '../CardDeliveryDoDPanel';
 import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 
@@ -119,6 +119,53 @@ it('shows a partial receipt after reload without marking implementation complete
 it('identifies legacy proof without inventing a complete declaration', async () => {
   render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
   expect(await screen.findByText('Legacy record · contribution not declared')).toBeTruthy();
+});
+
+it('names exact receipt sets per obligation without a Cartesian assignment', async () => {
+  const value = projection();
+  value.candidates.push({ kind: 'implementation', id: 'execution-3', card_id: 'task-1', card_version: 4, label: 'src/other.py @ rev' });
+  api.getDeliveryEvidence.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
+  fireEvent.click(await screen.findByTestId('dod-record-button'));
+  fireEvent.click(screen.getByLabelText('Select receipts separately for each obligation'));
+  fireEvent.click(screen.getByLabelText('Select fr:fr_3a9f'));
+  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
+  fireEvent.click(screen.getByLabelText('Complete contribution for fr:fr_3a9f'));
+  fireEvent.click(screen.getByLabelText('Receipt execution-1 for fr:fr_3a9f'));
+  fireEvent.click(screen.getByLabelText('Receipt execution-3 for fr:fr_3a9f'));
+  expect(screen.queryByLabelText('Receipt execution-2 for fr:fr_3a9f')).toBeNull();
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Complete parser, partial gate.' } });
+  expect((screen.getByRole('button', { name: /Record delivery evidence/ }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByLabelText('Receipt execution-3 for ac:ac_77ce'));
+  fireEvent.click(screen.getByRole('button', { name: /Record delivery evidence/ }));
+  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledTimes(1));
+  const sent = api.recordCardDeliveryEvidence.mock.calls[0][3];
+  expect(sent.execution_id).toBeUndefined();
+  expect(sent.expected_card_version).toBe(4);
+  expect(sent.bindings).toEqual([
+    { obligation_ref: 'fr:fr_3a9f', contribution: 'complete', execution_refs: [{ execution_id: 'execution-1' }, { execution_id: 'execution-3' }] },
+    { obligation_ref: 'ac:ac_77ce', contribution: 'partial', execution_refs: [{ execution_id: 'execution-3' }] },
+  ]);
+});
+
+it('uses server readiness per binding when another receipt in the record is stale', async () => {
+  const value = projection();
+  value.per_card![0].obligations.forEach(obligation => { obligation.implementation_satisfied = false; });
+  value.implementations[0] = { ...value.implementations[0], current_accepted_execution: false,
+    admitted_obligation_refs: ['ac:ac_77ce'], ready_obligation_refs: ['ac:ac_77ce'],
+    bindings: [{ obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }, { obligation_ref: 'ac:ac_77ce', semantic_sha256: 'b'.repeat(64) }],
+    contributions: [
+      { binding: { obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }, contribution: 'complete' },
+      { binding: { obligation_ref: 'ac:ac_77ce', semantic_sha256: 'b'.repeat(64) }, contribution: 'complete' },
+    ],
+  };
+  api.getDeliveryEvidence.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
+  const obligations = await screen.findByTestId('dod-obligations');
+  expect(within(obligations).getByText('Bindings live on the card ledger')).toBeTruthy();
+  const items = obligations.querySelectorAll('li');
+  expect(items[0].textContent).toContain('No accepted proof');
+  expect(items[1].textContent).toContain('✓ Implementation');
 });
 
 it('offers only this card receipts as accepted proof', async () => {

@@ -57,13 +57,17 @@ db = _db
 
 
 @pytest_asyncio.fixture
-async def composed(db):
+async def composed(db, request):
     _, session, store = db
+    target_ids = getattr(request, "param", ("target",))
     now = datetime.now(timezone.utc)
     _, request, receipt, head, workspace = _attestation_bundle(now, subject_id="c")
     workspace = replace(workspace, declared_revision="a" * 40)
     digest = selector_scope_digest_for_card_targets(
-        board_id="b", card_id="c", card_version=1, targets=(("target", 1),)
+        board_id="b",
+        card_id="c",
+        card_version=1,
+        targets=tuple((identity, 1) for identity in target_ids),
     )
     request = replace(request, board_id="b", selector_scope_digest=digest)
     receipt = replace(
@@ -101,24 +105,27 @@ async def composed(db):
             updated_at=now,
         )
     )
-    session.add(
-        ImplementationTargetRow(
-            id="target",
-            board_id="b",
-            card_id="c",
-            source_ref=receipt.source_ref,
-            selector_kind="file",
-            relative_path_hint="src/file.py",
-            role="modify",
-            intent="Deliver",
-            required=True,
-            source_spec_version=1,
-            lifecycle_status="active",
-            revision=1,
-            created_by="agent-1",
-            created_at=now,
-            updated_at=now,
-        )
+    session.add_all(
+        [
+            ImplementationTargetRow(
+                id=identity,
+                board_id="b",
+                card_id="c",
+                source_ref=receipt.source_ref,
+                selector_kind="file",
+                relative_path_hint="src/file.py" if index == 0 else "src/other.py",
+                role="modify",
+                intent="Deliver",
+                required=True,
+                source_spec_version=1,
+                lifecycle_status="active",
+                revision=1,
+                created_by="agent-1",
+                created_at=now,
+                updated_at=now,
+            )
+            for index, identity in enumerate(target_ids)
+        ]
     )
     await session.commit()
 
@@ -357,7 +364,7 @@ async def test_standalone_origin_keeps_its_commit_and_replay_contract(composed):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("declare_contribution", [False, True])
+@pytest.mark.parametrize("declare_contribution", [False, True, "composite"])
 async def test_rest_inline_and_mcp_replay_use_origin_composition(
     composed, monkeypatch, declare_contribution
 ):
@@ -390,6 +397,21 @@ async def test_rest_inline_and_mcp_replay_use_origin_composition(
         payload["entries"][0]["bindings"] = [
             {"obligation_ref": "card:c", "contribution": "partial"}
         ]
+    if declare_contribution == "composite":
+        payload["entries"].append(
+            dict(
+                client_ref="composed",
+                kind="implementation",
+                justification="Consolidated receipt selection",
+                bindings=[
+                    dict(
+                        obligation_ref="card:c",
+                        contribution="complete",
+                        execution_refs=[{"client_ref": "proof"}],
+                    )
+                ],
+            )
+        )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=rest), base_url="http://test"
     ) as client:
@@ -422,7 +444,12 @@ async def test_rest_inline_and_mcp_replay_use_origin_composition(
     replay = await tool.fn(board_id="b", card_id="c", spec_id="s", evidence=payload)
     assert not replay.is_error, replay
     assert replay.payload == {**saved.json(), "replayed": True}
-    assert await counts(session) == [1, 1, 1, 1]
+    assert await counts(session) == [
+        1,
+        2 if declare_contribution == "composite" else 1,
+        1,
+        1,
+    ]
     if declare_contribution:
         record = await session.get(
             CardDeliveryEvidenceRecordRow, saved.json()["entries"][0]["id"]
