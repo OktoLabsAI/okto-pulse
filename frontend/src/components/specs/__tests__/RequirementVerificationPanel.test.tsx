@@ -26,7 +26,7 @@ const options = [
   { type: 'functional_requirement' as const, id: 'fr', title: 'Lock access' },
   { type: 'business_rule' as const, id: 'br', title: 'Blocking policy' },
 ];
-function props(extra = {}) { return { scope, canRead: true, canEdit: () => true, options, criteria: [{ id: 'ac-lock', text: 'Five failures lock access' }], onSaved, ...extra }; }
+function props(extra = {}) { return { scope, canRead: true, canReadPlanning: true, canEdit: () => true, options, criteria: [{ id: 'ac-lock', text: 'Five failures lock access' }], onSaved, ...extra }; }
 function open() { fireEvent.click(screen.getByRole('button', { name: 'Review requirement qualification' })); }
 async function edit() { open(); fireEvent.click(await screen.findByRole('button', { name: 'Edit qualification fr' })); }
 function useDefault() { fireEvent.click(screen.getByRole('button', { name: /Use proposed default/ })); }
@@ -43,7 +43,7 @@ describe('requirement qualification', () => {
     useDefault(); save();
     await waitFor(() => expect(onSaved).toHaveBeenCalledOnce());
     expect(api.updateSpecEntity).toHaveBeenCalledExactlyOnceWith('spec', 'functional_requirement', 'fr', { verification: row().default_proposal!.verification }, 8);
-    expect(screen.getByText(/Methods, work assignments, semantic review and evidence/)).toBeInTheDocument();
+    expect(screen.getByText(/Implementation responsibilities, dependencies, semantic review and delivery evidence/)).toBeInTheDocument();
   });
   it('does not fetch without all read permissions', () => {
     render(<RequirementVerificationPanel {...props({ canRead: false })} />);
@@ -128,5 +128,49 @@ describe('requirement qualification', () => {
     fireEvent.click(button); fireEvent.click(button);
     expect(api.updateSpecEntity).toHaveBeenCalledOnce(); view.unmount(); finish({ success: true });
     await Promise.resolve(); expect(onSaved).not.toHaveBeenCalled();
+  });
+  it.each([true, false])('shows the global planning verdict without inferring proof (%s)', async complete => {
+    api.getRequirementVerification.mockResolvedValue(response({ methods_evaluated: true,
+      verification_work_evaluated: true, method_plan_complete: complete,
+      verification_work_complete: complete, planning_population_complete: true,
+      population_total: 30, total: 30, has_more: true, next_offset: 25,
+    }));
+    render(<RequirementVerificationPanel {...props()} />); open();
+    expect(await screen.findByText(`Method planning: ${complete ? 'complete' : 'pending'} · Test Card planning: ${complete ? 'complete' : 'pending'}`)).toBeInTheDocument();
+    expect(screen.getByText('Planning does not require a passing run and does not grant delivery credit.')).toBeInTheDocument();
+  });
+  it('keeps authorized qualification visible when planning reads are restricted', async () => {
+    api.getRequirementVerification.mockResolvedValue(response({ planning_issues: [{ code: 'verification_planning_read_restricted' }] }));
+    render(<RequirementVerificationPanel {...props()} />); open();
+    expect(await screen.findByText(/requires scenario and Card read permissions/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit qualification fr' })).toBeInTheDocument();
+    expect(screen.getByText('Method and Test Card planning is unavailable.')).toBeInTheDocument();
+  });
+  it('shows unsupported methods, missing Test Cards and bounded scenario details', async () => {
+    api.getRequirementVerification.mockResolvedValue(response({ methods_evaluated: true,
+      method_plan_complete: false, verification_work_complete: false, planning_population_complete: false,
+      items: [row({ criteria_paths: [{ criterion_id: 'ac-lock', profile: 'functional', path: [], aspects: [], source_digests: [],
+        scenario_count: 22, scenarios_truncated: true,
+        scenario_plans: [{ scenario_id: 'ts', method: 'inspection', method_admitted: false, method_plan_complete: false,
+          blockers: ['verification_method_unsupported'], work_blockers: ['verification_test_card_required'],
+          test_card_ids: [], test_card_count: 0, test_cards_truncated: false }],
+      }] })],
+    }));
+    render(<RequirementVerificationPanel {...props()} />); open();
+    expect(await screen.findByText('This method has no supported evidence admission path.')).toBeInTheDocument();
+    expect(screen.getByText('Assign this scenario to a Test Card.')).toBeInTheDocument();
+    expect(screen.getByText(/planning considers all 22 scenarios/)).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('readiness is unknown');
+  });
+  it('discards loaded planning on loss of scenario or Card authority', async () => {
+    api.getRequirementVerification.mockResolvedValue(response({ methods_evaluated: true,
+      method_plan_complete: true, verification_work_complete: true, planning_population_complete: true }));
+    const view = render(<RequirementVerificationPanel {...props()} />); open();
+    expect(await screen.findByText('Method planning: complete · Test Card planning: complete')).toBeInTheDocument();
+    view.rerender(<RequirementVerificationPanel {...props({ canReadPlanning: false })} />);
+    expect(screen.queryByText(/Method planning: complete/)).not.toBeInTheDocument();
+    open();
+    expect(await screen.findByText('Method and Test Card planning is unavailable.')).toBeInTheDocument();
+    expect(screen.queryByText(/Method planning: complete/)).not.toBeInTheDocument();
   });
 });

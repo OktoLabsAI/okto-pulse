@@ -17,6 +17,14 @@ const blockerLabels: Record<string, string> = {
   verification_configuration_invalid: 'Review the unsupported qualification metadata.',
   verification_criterion_incomplete: 'Complete the criterion condition and profile.',
   verification_resolution_limit: 'The path resolution limit was reached; completeness is unknown.',
+  verification_method_required: 'Choose a verification method.',
+  verification_method_invalid: 'The stored method is unknown.',
+  verification_method_unsupported: 'This method has no supported evidence admission path.',
+  verification_method_capability_unavailable: 'Supported evidence methods could not be determined.',
+  verification_observation_required: 'Complete the Given, When and Then observations.',
+  verification_test_card_required: 'Assign this scenario to a Test Card.',
+  verification_scenario_required: 'Link a scenario to this criterion.',
+  verification_planning_read_restricted: 'Reading method and Test Card planning requires scenario and Card read permissions.',
 };
 interface Scope { boardId: string; specId: string; version: number; edition: number }
 function sameScope(response: RequirementVerificationResponse, scope: Scope) {
@@ -146,15 +154,16 @@ function QualificationEditor({ scope, row, options, criterionLabels, onSaved }: 
 
 type PanelProps = {
   scope: Scope; canRead: boolean; canEdit: (type: VerificationRequirementType) => boolean;
+  canReadPlanning?: boolean;
   options: VerificationRequirementOption[]; criteria: unknown[]; onSaved: () => Promise<void>;
 };
 
 export function RequirementVerificationPanel(props: PanelProps) {
-  const key = JSON.stringify([props.scope, props.canRead, ...(['functional_requirement', 'technical_requirement', 'integration_requirement', 'observability_requirement', 'business_rule'] as const).map(props.canEdit)]);
+  const key = JSON.stringify([props.scope, props.canRead, props.canReadPlanning, ...(['functional_requirement', 'technical_requirement', 'integration_requirement', 'observability_requirement', 'business_rule'] as const).map(props.canEdit)]);
   return <RequirementVerificationContent key={key} {...props} />;
 }
 
-function RequirementVerificationContent({ scope, canRead, canEdit, options, criteria, onSaved }: PanelProps) {
+function RequirementVerificationContent({ scope, canRead, canReadPlanning = false, canEdit, options, criteria, onSaved }: PanelProps) {
   const api = useDashboardApi();
   const [open, setOpen] = useState(false);
   const [offset, setOffset] = useState(0);
@@ -186,17 +195,34 @@ function RequirementVerificationContent({ scope, canRead, canEdit, options, crit
   return <section aria-label="Requirement qualification" className="space-y-3 rounded border border-slate-700 p-3">
     <button type="button" aria-expanded={open} onClick={() => { setOpen(!open); setEditor(null); }}>Review requirement qualification</button>
     {open && <>
-      <p className="text-xs text-slate-400">Criterion paths show declared structure. Methods, work assignments, semantic review and evidence still require evaluation.</p>
+      <p className="text-xs text-slate-400">Declared criteria, methods and Test Cards describe planned verification. Implementation responsibilities, dependencies, semantic review and delivery evidence are evaluated separately.</p>
       {!current && <p role="status">Loading qualification…</p>}
       {current?.error && <p role="alert">{current.error}</p>}
       {current?.data && <>
         <p>{current.data.resolved_count} with resolved criterion paths · {current.data.population_total ?? 'unknown'} requirements in scope · {current.data.issue_count} criterion/population issue(s)</p>
         {!current.data.population_complete && <p role="alert">The requirement population is incomplete. Counts describe only observed requirements.</p>}
+        {canReadPlanning && current.data.methods_evaluated ? <>
+          <p>Method planning: {current.data.method_plan_complete ? 'complete' : 'pending'} · Test Card planning: {current.data.verification_work_complete ? 'complete' : 'pending'}</p>
+          <p className="text-xs">Planning does not require a passing run and does not grant delivery credit.</p>
+          {!current.data.planning_population_complete && <p role="alert">The planning population is incomplete; readiness is unknown.</p>}
+        </> : <p>Method and Test Card planning is unavailable.</p>}
+        {!canReadPlanning && <p>{blockerLabels.verification_planning_read_restricted}</p>}
+        {canReadPlanning && current.data.planning_issues?.map((issue, i) => <p key={i} className="text-amber-400">{blockerLabels[issue.code] || 'Review the incomplete or invalid verification planning facts.'}</p>)}
+        {canReadPlanning && current.data.planning_issues_truncated && <p>Additional planning issues are not shown.</p>}
         {current.data.items.map(row => <div key={keyOf(row.requirement_type, row.requirement_id)} className="space-y-2 rounded border border-slate-700 p-2 text-sm">
           <p>{row.title} · {row.requirement_id} · {row.verification?.mode || 'Not qualified'}</p>
           <p>{row.verification?.required_profiles.join(', ') || 'Profiles not defined'}</p>
           {row.blockers.map((blocker, i) => <p key={i} className="text-amber-400">{blockerLabels[blocker.code] || 'Review this qualification.'}{blocker.profile ? ` (${blocker.profile})` : ''}</p>)}
-          {row.criteria_paths.map((path, i) => <p key={i} className="text-xs">{path.criterion_id} · {path.profile} · {path.path.map(step => step.requirement_id).join(' → ')}</p>)}
+          {row.criteria_paths.map((path, i) => <div key={i} className="space-y-1 text-xs">
+            <p>{path.criterion_id} · {path.profile} · {path.path.map(step => step.requirement_id).join(' → ')}</p>
+            {canReadPlanning && path.planning_blockers?.map(code => <p key={code}>{blockerLabels[code] || 'Review this verification plan.'}</p>)}
+            {canReadPlanning && path.scenario_plans?.map(plan => <div key={plan.scenario_id} className="ml-3">
+              <p>{plan.scenario_id} · {plan.method || 'Method not defined'} · Test Cards: {plan.test_card_ids.join(', ') || 'none'}</p>
+              {[...plan.blockers, ...plan.work_blockers].map(code => <p key={code} className="text-amber-400">{blockerLabels[code] || 'Review this scenario plan.'}</p>)}
+              {plan.test_cards_truncated && <p>Showing {plan.test_card_ids.length} of {plan.test_card_count} Test Cards.</p>}
+            </div>)}
+            {canReadPlanning && path.scenarios_truncated && <p>Additional scenarios are omitted from this summary; planning considers all {path.scenario_count} scenarios.</p>}
+          </div>)}
           {(row.paths_has_more || row.blockers_truncated) && <p>Additional paths or issues are not shown in this summary.</p>}
           {canEdit(row.requirement_type) && <button type="button" onClick={() => setEditor(row)}>Edit qualification {row.requirement_id}</button>}
         </div>)}

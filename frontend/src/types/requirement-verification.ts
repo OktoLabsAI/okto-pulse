@@ -19,6 +19,16 @@ export interface RequirementVerificationPath {
   path: VerificationRequirementRef[];
   aspects: Array<string | null>;
   source_digests: string[];
+  method_plan_complete?: boolean;
+  verification_work_complete?: boolean;
+  planning_blockers?: string[];
+  scenario_count?: number;
+  scenarios_truncated?: boolean;
+  scenario_plans?: Array<{
+    scenario_id: string; method: string | null; method_admitted: boolean;
+    method_plan_complete: boolean; blockers: string[]; work_blockers: string[];
+    test_card_ids: string[]; test_card_count: number; test_cards_truncated: boolean;
+  }>;
 }
 export interface RequirementVerificationRow extends VerificationRequirementRef {
   title: string;
@@ -48,6 +58,11 @@ export interface RequirementVerificationResponse {
   items: RequirementVerificationRow[];
   issues: Array<{ code: string; field?: string; criterion_id?: string }>;
   issue_count: number; issues_truncated: boolean;
-  methods_evaluated: false; execution_evaluated: false;
+  methods_evaluated: boolean; execution_evaluated: false;
+  verification_work_evaluated?: boolean;
+  method_plan_complete?: boolean; verification_work_complete?: boolean;
+  planning_population_complete?: boolean;
+  planning_issues?: Array<{ code: string }>;
+  planning_issue_count?: number; planning_issues_truncated?: boolean;
   semantic_review_evaluated: false; delivery_evaluated: false; rollout_evaluated: false;
 }

@@ -10,7 +10,12 @@ from fastmcp import Client
 from sqlalchemy import event, update
 
 from okto_pulse.community.adapters.mcp_host import CommunityMcpHostProvider
-from okto_pulse.community.adapters.sqlalchemy_models import Spec
+from okto_pulse.community.adapters.sqlalchemy_models import Spec, Card
+from okto_pulse.community.adapters.test_evidence import (
+    CommunityTestEvidenceWriteVerifier,
+)
+from okto_pulse.core.ports.test_evidence import register_test_evidence_write_verifier
+import test_evidence_v2_adapter as evidence_fixtures
 from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.application.use_cases.base import (
@@ -44,10 +49,13 @@ READ_FLAGS = {
 }
 
 
-def actor(denied=None, source="rest"):
+def actor(denied=None, source="rest", planning=False):
     flags = {}
     for flag in ALL_FLAGS:
-        set_permission_flag(flags, flag, flag in READ_FLAGS and flag != denied)
+        selected = READ_FLAGS | (
+            {"spec.tests.read", "card.entity.read"} if planning else set()
+        )
+        set_permission_flag(flags, flag, flag in selected and flag != denied)
     return ActorContext(
         "author",
         source,
@@ -138,11 +146,19 @@ async def test_cross_board_scope_cannot_return_another_specs_body(classified_con
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("planning", [False, True])
 async def test_native_transport_parity_global_pending_and_no_read_writes(
-    classified_context, monkeypatch
+    classified_context, monkeypatch, tmp_path, planning
 ):
     db = classified_context
     await seed(db)
+    if planning:
+        await seed_plan(db)
+        register_test_evidence_write_verifier(
+            CommunityTestEvidenceWriteVerifier(
+                ledger=evidence_fixtures._ledger(tmp_path)
+            )
+        )
     app, factory = transports.application(db)
     transports.mcp_factory(monkeypatch, factory)
     monkeypatch.setattr(
@@ -152,12 +168,14 @@ async def test_native_transport_parity_global_pending_and_no_read_writes(
             return_value=SimpleNamespace(
                 agent_id="author",
                 agent_name="Author",
-                permissions=actor(source="mcp").permissions,
+                permissions=actor(source="mcp", planning=planning).permissions,
             )
         ),
     )
     monkeypatch.setattr(
-        RESTAdapterContract, "actor", staticmethod(lambda *args, **kwargs: actor())
+        RESTAdapterContract,
+        "actor",
+        staticmethod(lambda *args, **kwargs: actor(planning=planning)),
     )
     catalog = CoreMcpCatalog(name="requirement-verification", version="test")
     catalog.tool()(server.okto_pulse_get_requirement_verification.fn)
@@ -195,7 +213,17 @@ async def test_native_transport_parity_global_pending_and_no_read_writes(
             data = first.json()
             assert data["population_total"] == 2 and data["resolved_count"] == 1
             assert len(data["items"]) == 1 and not data["criteria_resolution_complete"]
-            assert not data["delivery_evaluated"] and not data["methods_evaluated"]
+            assert (
+                not data["delivery_evaluated"] and data["methods_evaluated"] is planning
+            )
+            if planning:
+                assert data["items"][0]["verification_work_complete"]
+                assert not data[
+                    "verification_work_complete"
+                ]  # Unqualified TR outside page.
+                assert data["items"][0]["criteria_paths"][0]["scenario_plans"][0][
+                    "test_card_ids"
+                ] == ["test-card"]
             focused = await rest.get(
                 path,
                 params={
@@ -218,6 +246,80 @@ async def test_native_transport_parity_global_pending_and_no_read_writes(
     assert not any(
         sql.lstrip().startswith(("insert", "update", "delete")) for sql in statements
     )
+    if not planning:
+        assert not any(
+            "specs.test_scenarios" in sql or "cards.test_scenario_ids" in sql
+            for sql in statements
+        )
+
+
+async def seed_plan(db):
+    await db.execute(
+        update(Spec)
+        .where(Spec.id == "spec")
+        .values(
+            test_scenarios=[
+                {
+                    "id": "ts",
+                    "scenario_type": "manual",
+                    "status": "ready",
+                    "given": "Five failed attempts",
+                    "when": "Access requested",
+                    "then": "Access blocked",
+                    "linked_criteria": ["ac"],
+                    "verification_method": "automated_test",
+                }
+            ]
+        )
+    )
+    db.add(
+        Card(
+            id="test-card",
+            board_id="board",
+            spec_id="spec",
+            title="Observe blocking",
+            created_by="author",
+            card_type="test",
+            status="not_started",
+            archived=False,
+            test_scenario_ids=["ts"],
+        )
+    )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("denied", ["spec.tests.read", "card.entity.read"])
+async def test_planning_permissions_are_checked_before_loading_scenarios_or_cards(
+    classified_context, denied
+):
+    db = classified_context
+    await seed(db)
+    await seed_plan(db)
+    statements = []
+
+    def capture(conn, cursor, statement, parameters, context, many):
+        statements.append(statement.lower())
+
+    event.listen(db.bind.sync_engine, "before_cursor_execute", capture)
+    try:
+        who = actor(denied, planning=True)
+        async with CommunityUnitOfWork(db, actor=who) as uow:
+            result = await GetRequirementVerificationUseCase().execute(
+                GetRequirementVerificationCommand("board", "spec"), actor=who, uow=uow
+            )
+        assert result["resolved_count"] == 1
+        assert (
+            not result["methods_evaluated"]
+            and not result["planning_population_complete"]
+        )
+        assert "scenario_plans" not in json.dumps(result)
+        assert not any(
+            "specs.test_scenarios" in sql or "cards.test_scenario_ids" in sql
+            for sql in statements
+        )
+    finally:
+        event.remove(db.bind.sync_engine, "before_cursor_execute", capture)
 
 
 @pytest.mark.asyncio

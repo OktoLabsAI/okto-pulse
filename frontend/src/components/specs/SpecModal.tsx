@@ -2779,6 +2779,7 @@ export function SpecModal({
                   ...(['functional_requirement', 'technical_requirement', 'integration_requirement', 'observability_requirement', 'business_rule'] as const).map(type => canStructured(type, 'update'))])}
                 scope={{ boardId: spec.board_id, specId: spec.id, version: spec.version, edition: spec.edition }}
                 canRead={perms.has('spec.entity.read') && canReadIR && canReadOR}
+                canReadPlanning={perms.has('spec.tests.read') && perms.has('card.entity.read')}
                 canEdit={type => !spec.archived && spec.status === 'draft'
                   && hasPermissionWithState(perms.has, `spec.structured_entity.${type}.update`, 'spec', spec.status)}
                 options={verificationRequirementOptions(spec, canReadIR, canReadOR)}
