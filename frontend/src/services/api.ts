@@ -1646,6 +1646,16 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       await apiClient.fetchJson(`/specs/${specId}/scenarios/${scenarioId}/unlink-task/${cardId}`, { method: 'POST' });
     },
 
+    async updateScenarioVerificationMethod(
+      boardId: string, specId: string, scenarioId: string,
+      verificationMethod: 'automated_test' | 'static_analysis' | 'inspection' | 'demonstration' | null,
+      expectedSpecVersion: number,
+    ): Promise<{ scenario_id: string; evidence_invalidated: boolean; updated_fields: string[] }> {
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/scenarios/${encodeURIComponent(scenarioId)}/verification-method`, {
+        method: 'PATCH', body: JSON.stringify({ verification_method: verificationMethod, expected_spec_version: expectedSpecVersion }), maxRetries: 0,
+      });
+    },
+
     async updateTestScenarioStatus(
       specId: string,
       scenarioId: string,

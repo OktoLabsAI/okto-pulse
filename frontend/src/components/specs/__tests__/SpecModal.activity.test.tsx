@@ -22,7 +22,9 @@ const apiMock = vi.hoisted(() => ({
   listSpecHistory: vi.fn(),
   listSpecKnowledge: vi.fn(),
   updateSpec: vi.fn(),
+  updateScenarioVerificationMethod: vi.fn(),
 }));
+const methodDeniedPermissions = vi.hoisted(() => new Set<string>());
 const validationGateOverrideSpy = vi.hoisted(() => vi.fn());
 const evidenceMatrixPropsSpy = vi.hoisted(() => vi.fn());
 const currentBoardState = vi.hoisted(() => ({
@@ -53,7 +55,7 @@ vi.mock('@/hooks/usePermissions', async (importOriginal) => {
       preset: null,
       isLoading: false,
       error: null,
-      has: () => true,
+      has: (permission: string) => !methodDeniedPermissions.has(permission),
     }),
   };
 });
@@ -88,6 +90,11 @@ vi.mock('@/components/code-traceability', () => ({
 
 vi.mock('@/components/architecture', () => ({
   ArchitectureTab: () => <div />,
+}));
+
+vi.mock('@/components/policy-compliance', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/components/policy-compliance')>(),
+  PolicyCompliancePanel: () => <div />,
 }));
 
 vi.mock('@/components/resources/ResourceGateSummary', () => ({
@@ -217,6 +224,7 @@ function sprintSummary(overrides: Partial<SprintSummary> = {}): SprintSummary {
 describe('SpecModal Activity tab', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    methodDeniedPermissions.clear();
     currentBoardState.skipCodeEvidenceCoverageGlobal = false;
     apiMock.getSpec.mockResolvedValue(spec);
     apiMock.getAllowedTransitions.mockResolvedValue({ allowed_transitions: [] });
@@ -234,6 +242,32 @@ describe('SpecModal Activity tab', () => {
       next_cursor: null,
       resources: { architecture: [], mockup: [], knowledge_base: [] },
     });
+  });
+
+  it('edits the scenario method through the scoped writer without replacing the scenario list', async () => {
+    const scenario: TestScenario = { id: 'ts-method', title: 'Observe the condition', given: 'G', when: 'W', then: 'T', scenario_type: 'manual', status: 'ready', notes: null, linked_criteria: [], linked_task_ids: [] };
+    apiMock.getSpec.mockResolvedValueOnce({ ...spec, status: 'draft', test_scenarios: [scenario] }).mockResolvedValue({ ...spec, status: 'draft', version: spec.version + 1, test_scenarios: [{ ...scenario, verification_method: 'automated_test' }] });
+    apiMock.updateScenarioVerificationMethod.mockResolvedValue({ scenario_id: scenario.id, evidence_invalidated: false, updated_fields: ['verification_method'] });
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await screen.findByText(spec.title); fireEvent.click(screen.getByRole('tab', { name: /^Tests/ }));
+    fireEvent.click(screen.getByText(scenario.title));
+    fireEvent.change(screen.getByLabelText('Verification method ts-method'), { target: { value: 'automated_test' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save verification method' }));
+    await waitFor(() => expect(apiMock.updateScenarioVerificationMethod).toHaveBeenCalledExactlyOnceWith(spec.board_id, spec.id, scenario.id, 'automated_test', spec.version));
+    await waitFor(() => expect(apiMock.getSpec).toHaveBeenCalledTimes(2));
+    expect(apiMock.updateSpec).not.toHaveBeenCalled();
+  });
+
+  it.each(['review', 'validated', 'in_progress', 'done', 'archived', 'spec.tests.edit', 'spec.interact_in.draft'] as const)('keeps method authorship read-only for %s', async reason => {
+    if (reason.startsWith('spec.')) methodDeniedPermissions.add(reason);
+    const scenario: TestScenario = { id: 'ts-method', title: 'Observe the condition', given: 'G', when: 'W', then: 'T', scenario_type: 'manual', status: 'ready', notes: null, linked_criteria: [], linked_task_ids: [], verification_method: 'inspection' };
+    const status = reason === 'review' || reason === 'validated' || reason === 'in_progress' || reason === 'done' ? reason : 'draft';
+    apiMock.getSpec.mockResolvedValue({ ...spec, status, archived: reason === 'archived', test_scenarios: [scenario] });
+    render(<SpecModal specId={spec.id} boardId={spec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await screen.findByText(spec.title); fireEvent.click(screen.getByRole('tab', { name: /^Tests/ }));
+    fireEvent.click(screen.getByText(scenario.title));
+    expect(screen.queryByLabelText('Verification method ts-method')).not.toBeInTheDocument();
+    expect(screen.getByText('Verification method: inspection')).toBeInTheDocument();
   });
 
   it('identifies the Details override as the Task Validation Gate for descendant cards', async () => {

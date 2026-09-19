@@ -34,7 +34,7 @@ from okto_pulse.core.models.delivery_evidence import (
     CardDeliveryEvidenceCommand,
     DeliveryEvidenceCommand,
 )
-from okto_pulse.core.ports.test_evidence import resolve_test_evidence_write_verifier
+from okto_pulse.core.ports.test_evidence import resolve_test_evidence_write_verifier, require_supported_test_verification_method
 from okto_pulse.core.ports.delivery_inventory import (
     DeliveryInventoryPolicy,
     default_delivery_inventory_policy,
@@ -202,6 +202,11 @@ class CommunityDeliveryEvidenceStore:
             and bool(payload.get("test_receipt"))
             and verifier is not None
         )
+        if valid:
+            try:
+                require_supported_test_verification_method(scenario.get("verification_method"))
+            except ValueError:
+                valid = False
         if valid:
             digest = compute_test_scenario_semantic_sha256(
                 board_id=scope.board_id,

@@ -84,6 +84,7 @@ from okto_pulse.core.domain.code_traceability import CodeTraceabilityContractErr
 from okto_pulse.core.domain.spec_validation import (
     SpecValidationConflictError,
 )
+from okto_pulse.core.domain.spec_content_lock import SpecLockedError
 from okto_pulse.core.domain.human_validation_cycle import (
     LifecycleTransitionConflictError,
     SubjectEditRequiresDraftError,
@@ -730,6 +731,41 @@ class ScenarioStatusUpdate(BaseModel):
 
     status: str
     evidence: TestScenarioEvidence | None = None
+
+
+class ScenarioVerificationMethodUpdate(BaseModel):
+    """One semantic field through the existing governed scenario body writer."""
+
+    model_config = {"extra": "forbid"}
+    verification_method: Literal["automated_test", "static_analysis", "inspection", "demonstration"] | None
+    expected_spec_version: int = Field(..., strict=True, ge=1)
+
+
+@router.patch("/boards/{board_id}/specs/{spec_id}/scenarios/{scenario_id}/verification-method")
+async def update_scenario_verification_method(
+    board_id: str, spec_id: str, scenario_id: str, body: ScenarioVerificationMethodUpdate,
+    user_id: str = Depends(require_user), uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    from okto_pulse.core.application.use_cases.mcp_spec_crud import McpUpdateTestScenarioCommand, McpUpdateTestScenarioUseCase
+
+    try:
+        result = await McpUpdateTestScenarioUseCase().execute(
+            McpUpdateTestScenarioCommand(spec_id, scenario_id, title="", given="", when="", then="",
+                scenario_type=None, linked_criteria_tokens=None, notes="",
+                clear_fields=["verification_method"] if body.verification_method is None else None,
+                verification_method=body.verification_method, expected_spec_version=body.expected_spec_version),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id), uow=uow,
+        )
+        return result.result
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Spec or scenario not found") from exc
+    except PermissionDeniedError as exc:
+        raise HTTPException(status_code=403, detail=exc.message) from exc
+    except (SpecLockedError, SubjectEditRequiresDraftError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        code = str(exc)
+        raise HTTPException(status_code=409 if code == "spec_version_conflict" else 404 if code.startswith("scenario_not_found") else 422, detail=code) from exc
 
 
 class ScenarioEvidenceExecutionRequest(BaseModel):

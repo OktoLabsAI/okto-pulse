@@ -1727,6 +1727,7 @@ export interface TestScenario {
   linked_criteria: string[] | null;
   /** Raw read value; legacy rows may expose an unsupported historical type. */
   scenario_type: string;
+  verification_method?: string | null;
   given: string;
   when: string;
   then: string;

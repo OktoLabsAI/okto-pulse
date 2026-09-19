@@ -1683,6 +1683,12 @@ class CommunityTestEvidenceWriteVerifier:
     def __init__(self, *, ledger: CommunityEvidenceLedger) -> None:
         self._ledger = ledger
 
+    @property
+    def verification_methods(self) -> frozenset[str]:
+        # Authenticated V2 executions have a real replay, assertions, environment
+        # and a bound scenario definition. No inspection/report fallback exists.
+        return frozenset({"automated_test"})
+
     def verify(
         self,
         *,

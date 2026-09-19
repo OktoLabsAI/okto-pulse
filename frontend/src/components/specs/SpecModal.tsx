@@ -12,6 +12,7 @@ import {
 import { DeliveryEvidencePanel } from '@/components/code-traceability/DeliveryEvidencePanel';
 import { CriterionVerificationPanel } from './CriterionVerificationPanel';
 import { RequirementVerificationPanel } from './RequirementVerificationPanel';
+import { ScenarioVerificationMethodEditor } from './ScenarioVerificationMethodEditor';
 import { verificationRequirementOptions } from './criterionVerificationOptions';
 import {
   X,
@@ -569,6 +570,7 @@ function TestScenariosTab({
   policyRefreshKey: number;
 }) {
   const api = useDashboardApi();
+  const scenarioPermissions = usePermissions(spec.board_id);
   const [adding, setAdding] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [linkingScenarioId, setLinkingScenarioId] = useState<string | null>(null);
@@ -726,6 +728,9 @@ function TestScenariosTab({
             </div>
             {isExpanded && (
               <div className="px-3 py-2 space-y-2 text-sm">
+                <ScenarioVerificationMethodEditor boardId={spec.board_id} specId={spec.id} version={spec.version} scenario={scenario}
+                  canEdit={!spec.archived && spec.status === 'draft' && hasPermissionWithState(scenarioPermissions.has, 'spec.tests.edit', 'spec', spec.status)}
+                  onSaved={async () => { onSpecRefreshed(await api.getSpec(spec.id)); }} />
                 <div className="grid grid-cols-3 gap-3">
                   <div>
                     <span className="text-[10px] font-semibold text-green-600 uppercase">Given</span>
