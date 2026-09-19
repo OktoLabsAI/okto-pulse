@@ -103,8 +103,8 @@ release oracle is:
 | Historical private reach-in baseline | `32` |
 | Current private reach-in budget | `0` |
 | Current governed private reach-ins | `0` |
-| Current full Community->Core import inventory | `1225` |
-| Inventory classification | `public_contract=1225`, `governed_temporary_reach_in=0` |
+| Current full Community->Core import inventory | `1227` |
+| Inventory classification | `public_contract=1227`, `governed_temporary_reach_in=0` |
 | Boundary violations | `0` violations, `0` stale ledger entries, `0` incomplete ledger entries, `0` baseline-growth violations |
 | Burn-down progression | `32 -> 21 -> 10 -> 0` after AF42 inventory, lifecycle/auth/MCP, then complete Community ORM ownership |
 | Community release command | `python -m pytest tests/test_af21_core_import_boundary.py tests/test_af25_docs_truthfulness.py tests/test_af33_capstone_community_readiness.py tests/test_af35_s1_community_adapters.py tests/test_af35_s2_community_kg_operational_adapters.py tests/test_af41_runtime_dependency_ownership.py tests/test_af41_serving_boundary.py tests/test_r06_mcp_auth_context_community.py tests/test_r08a_mcp_auth_adapter.py tests/test_cli_init.py tests/test_cli_kg_backfill.py tests/test_hnd2_credential_surface_gate.py tests/test_r01c_imp4_schema_lifecycle_orchestrator.py tests/test_r16b_relational_schema_migrator.py tests/test_r16c_data_bootstrapper.py -q` -> `105 passed` |
@@ -118,9 +118,10 @@ listed above. Prohibited imports remain private implementation details:
 `core.models.db`, `core.infra.database`, `core.services.main`,
 `core.mcp.server`, `core.kg.workers.*`, `core.kg.governance`,
 `core.kg.interfaces.registry` and concrete core-owned DDL constants. A
-prohibited import may exist only as a governed temporary reach-in in
-`COMMUNITY_CORE_REACH_IN_LEDGER`, with owner, reason, target public surface,
-removal path and withdrawal criterion.
+prohibited import is a release-blocking failure: the terminal reach-in and
+bridge budgets are zero. If an adapter needs a missing Core capability, add a
+public port and keep the policy in Core; do not add an exception or duplicate
+the policy in Community.
 
 Bootstrap, schema migrations, CLI and seed paths must stay off
 `core.models.db`; they use Community-owned row/SQL adapters or public facades.
@@ -129,6 +130,11 @@ and graph adapters are locally defined Community symbols implementing public
 Core ports. Its bridge ledger and terminal bridge budget are both zero; adding a
 private import, alias, reexport, dynamic import or constructor target is a
 release-blocking failure.
+
+Delivery follows this boundary through `core.ports.delivery_inventory`:
+`DeliveryInventoryPolicy` exposes the canonical inventory/hash policy, whose
+single implementation is pure Core domain code. The SQLAlchemy ledger consumes
+that port; no SQLAlchemy model, concrete router or graph dialect enters Core.
 
 ### Adapters
 
