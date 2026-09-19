@@ -98,6 +98,7 @@ import { TechnicalRequirementsTab } from './TechnicalRequirementsTab';
 import { DecisionsTab } from './DecisionsTab';
 import { IntegrationRequirementsTab } from './IntegrationRequirementsTab';
 import { ArchitectureCandidatesPanel } from './ArchitectureCandidatesPanel';
+import { ArchitectureClassificationsPanel } from './ArchitectureClassificationsPanel';
 import { ObservabilityRequirementsTab } from './ObservabilityRequirementsTab';
 import { KGValidationTab } from './KGValidationTab';
 import { SpecValidationPanel } from './SpecValidationPanel';
@@ -3036,6 +3037,12 @@ export function SpecModal({
               specId={spec.id}
               specVersion={spec.version}
               canRead={perms.has('spec.architecture.read') && perms.has('spec.entity.read')}
+            />
+            <ArchitectureClassificationsPanel
+              boardId={spec.board_id}
+              specId={spec.id}
+              specVersion={spec.version}
+              canRead={canReadIR && perms.has('spec.architecture.read') && perms.has('spec.entity.read')}
             />
             <IntegrationRequirementsTab
               spec={spec}

@@ -20,6 +20,7 @@ const apiMock = vi.hoisted(() => ({
   getCurrentSpecValidation: vi.fn(),
   listSprints: vi.fn(),
   getArchitectureCandidates: vi.fn(),
+  getArchitectureClassifications: vi.fn(),
 }));
 const permissionMock = vi.hoisted(() => ({
   allowAll: true,
@@ -301,9 +302,17 @@ describe('SpecModal validation navigation', () => {
     renderSpec('draft');
     await screen.findByText(baseSpec.title);
     expect(apiMock.getArchitectureCandidates).not.toHaveBeenCalled();
+    expect(apiMock.getArchitectureClassifications).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('tab', { name: 'IRs' }));
     await screen.findByText('No declared contracts in the effective architecture.');
     expect(apiMock.getArchitectureCandidates).toHaveBeenCalledExactlyOnceWith(
+      baseSpec.board_id, baseSpec.id, expect.any(AbortSignal), { offset: 0, limit: 25 },
+    );
+    expect(apiMock.getArchitectureClassifications).not.toHaveBeenCalled();
+    apiMock.getArchitectureClassifications.mockRejectedValue(new Error('Isolated transport error'));
+    fireEvent.click(screen.getByRole('button', { name: 'Review classifications' }));
+    await screen.findByText('Classification review could not be loaded. Its completeness is unknown.');
+    expect(apiMock.getArchitectureClassifications).toHaveBeenCalledExactlyOnceWith(
       baseSpec.board_id, baseSpec.id, expect.any(AbortSignal), { offset: 0, limit: 25 },
     );
   });
@@ -324,6 +333,7 @@ describe('SpecModal validation navigation', () => {
         expect(screen.getByText('Architecture read permission is required.')).toBeInTheDocument();
       }
       expect(apiMock.getArchitectureCandidates).not.toHaveBeenCalled();
+      expect(apiMock.getArchitectureClassifications).not.toHaveBeenCalled();
     },
   );
 

@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import type { ArchitectureCandidatesResponse } from '@/types/architecture-candidates';
+import type { ArchitectureClassificationsResponse, ArchitectureReviewState } from '@/types/architecture-classifications';
 import type { CardDeliveryEvidenceInput, DeliveryEvidenceInput, DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 /**
  * API Service - all API calls centralized
@@ -1372,6 +1373,22 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     async getSpec(specId: string): Promise<Spec> {
       return apiClient.fetchJson<Spec>(`/specs/${specId}`);
+    },
+
+    async getArchitectureClassifications(
+      boardId: string, specId: string, signal?: AbortSignal,
+      options: { offset?: number; limit?: number; candidateId?: string; sourceDigest?: string; state?: ArchitectureReviewState } = {},
+    ): Promise<ArchitectureClassificationsResponse> {
+      const params = new URLSearchParams();
+      if (options.offset !== undefined) params.set('offset', String(options.offset));
+      if (options.limit !== undefined) params.set('limit', String(options.limit));
+      if (options.candidateId) params.set('candidate_id', options.candidateId);
+      if (options.sourceDigest) params.set('source_digest', options.sourceDigest);
+      if (options.state) params.set('state', options.state);
+      return apiClient.fetchJson<ArchitectureClassificationsResponse>(
+        `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/architecture-classifications${params.size ? `?${params}` : ''}`,
+        { signal },
+      );
     },
 
     async getArchitectureCandidates(

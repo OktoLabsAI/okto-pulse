@@ -61,6 +61,10 @@ from okto_pulse.core.application.use_cases.architecture_candidates import (
     GetArchitectureCandidatesUseCase,
 )
 from okto_pulse.core.domain.architecture_candidates import ArchitectureCandidateReadError
+from okto_pulse.core.application.use_cases.architecture_classification_review import (
+    GetArchitectureClassificationsCommand, GetArchitectureClassificationsUseCase,
+)
+from okto_pulse.core.domain.architecture_classification_review import ArchitectureReviewState
 from okto_pulse.core.domain.architecture_classification import (
     ArchitectureClassificationBatch, ArchitectureClassificationError, MAX_CLASSIFICATION_BYTES,
 )
@@ -1351,6 +1355,25 @@ async def get_architecture_candidates(
             status_code=409 if code == "architecture_candidate_source_changed" else 422,
             detail=code,
         ) from exc
+
+
+@router.get("/boards/{board_id}/specs/{spec_id}/architecture-classifications")
+async def get_architecture_classifications(
+    board_id: str, spec_id: str,
+    offset: int = Query(0, ge=0, le=2**63 - 1), limit: int = Query(25, ge=1, le=100),
+    candidate_id: str | None = Query(None), source_digest: str | None = Query(None),
+    state: ArchitectureReviewState | None = Query(None),
+    user_id: str = Depends(require_user), uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Read classification currentness/history; requires Spec, architecture and IR reads."""
+    try:
+        return await GetArchitectureClassificationsUseCase().execute(
+            GetArchitectureClassificationsCommand(board_id, spec_id, offset, limit, candidate_id, source_digest, state),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id), uow=uow,
+        )
+    except CLASSIFICATION_REQUEST_ERRORS as exc:
+        projected = classification_error(exc)
+        raise HTTPException(status_code=projected.status_code, detail=projected.payload()) from exc
 
 
 @router.post("/boards/{board_id}/specs/{spec_id}/architecture-classifications")
