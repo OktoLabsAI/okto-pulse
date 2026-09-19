@@ -1302,7 +1302,12 @@ async def record_card_delivery_evidence(board_id: str, card_id: str, spec_id: st
     card CAS fence. Waivers are not accepted here (BR-3).
     """
     command = card_delivery_command(board_id=board_id, card_id=card_id, spec_id=spec_id, evidence=body)
-    return await _execute(RecordCardDeliveryEvidenceUseCase(), command, board_id=board_id, principal=principal, uow=uow)
+    entries = getattr(command, "entries", (command,))
+    if any(entry.execution_submission is not None for entry in entries):
+        _require_agent_submission_principal(principal)
+    return await _execute(RecordCardDeliveryEvidenceUseCase(
+        SubmitImplementationTargetExecutionUseCase(_investigation_service(), ImplementationTargetService())
+    ), command, board_id=board_id, principal=principal, uow=uow)
 
 
 __all__ = ["router"]

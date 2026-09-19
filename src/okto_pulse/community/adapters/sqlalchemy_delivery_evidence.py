@@ -40,6 +40,8 @@ from okto_pulse.core.models.delivery_evidence import (
     DeliveryBatchEntryError,
     DeliveryEvidenceCommand,
 )
+from okto_pulse.core.models.code_traceability import ImplementationTargetExecutionSubmission
+from okto_pulse.core.ports.delivery_evidence import DeliveryExecutionSubmitter
 from okto_pulse.core.ports.test_evidence import resolve_test_evidence_write_verifier, require_supported_test_verification_method
 from okto_pulse.core.ports.delivery_inventory import (
     DeliveryInventoryPolicy,
@@ -640,10 +642,18 @@ class CommunityDeliveryEvidenceStore:
         return self.inventory.card_obligations(spec, card)
 
     async def record_card(
-        self, command: CardDeliveryEvidenceWriteCommand, *, actor_id, actor_kind
+        self, command: CardDeliveryEvidenceWriteCommand, *, actor_id, actor_kind,
+        execution_submitter: DeliveryExecutionSubmitter | None = None,
     ):
         if isinstance(command, CardDeliveryEvidenceBatchCommand):
-            return await self._record_card_batch(command, actor_id=actor_id, actor_kind=actor_kind)
+            return await self._record_card_batch(command, actor_id=actor_id, actor_kind=actor_kind,
+                                                 execution_submitter=execution_submitter)
+        if command.execution_submission is not None:
+            # Receipt, binding and origin outbox share the same rollback boundary.
+            await self.lock_scope(DeliveryScope(command.board_id, command.spec_id, command.expected_spec_edition))
+            async with self.session.begin_nested():
+                return await self._record_card_entry(command, actor_id=actor_id, actor_kind=actor_kind,
+                                                      execution_submitter=execution_submitter)
         return await self._record_card_entry(command, actor_id=actor_id, actor_kind=actor_kind)
 
     async def _delivery_revision(self, scope):
@@ -652,7 +662,7 @@ class CommunityDeliveryEvidenceStore:
             CardRecord.spec_id == scope.spec_id, CardRecord.spec_edition == scope.spec_edition,
         )))
 
-    async def _record_card_batch(self, command, *, actor_id, actor_kind):
+    async def _record_card_batch(self, command, *, actor_id, actor_kind, execution_submitter=None):
         if not actor_id or actor_kind not in {"human", "user", "agent"}:
             raise ValueError("delivery_authenticated_actor_required")
         scope = CardDeliveryScope(command.board_id, command.card_id, command.spec_id, command.expected_spec_edition)
@@ -682,7 +692,12 @@ class CommunityDeliveryEvidenceStore:
             }
             if expected != observed or len(members) != len(receipt["entries"]):
                 raise ValueError("delivery_batch_replay_incomplete")
-            return {"entries": receipt["entries"], "delivery_revision": receipt["delivery_revision"], "replayed": True}
+            by_id = {item.id: item for item in members}
+            response_entries = [dict(item) for item in receipt["entries"]]
+            for entry, item in zip(command.entries, response_entries, strict=True):
+                if entry.execution_submission is not None:
+                    item["execution_id"] = by_id[item["id"]].payload["execution_id"]
+            return {"entries": response_entries, "delivery_revision": receipt["delivery_revision"], "replayed": True}
         if card.policy_version != command.expected_card_version:
             raise ValueError("delivery_version_conflict")
         require_delivery_batch_state(card)
@@ -708,6 +723,7 @@ class CommunityDeliveryEvidenceStore:
             for entry in command.entries
         ]
         receipt = {"request_digest": request_digest, "entries": results, "delivery_revision": revision + len(results)}
+        response_entries = [dict(item) for item in results]
         # The first immutable entry carries the batch receipt; there is no
         # second journal or mutable batch head. A savepoint also protects a
         # caller that catches the error and later commits its outer UoW.
@@ -723,15 +739,18 @@ class CommunityDeliveryEvidenceStore:
                 if index == 0:
                     context["receipt"] = receipt
                 try:
-                    await self._record_card_entry(child, actor_id=actor_id, actor_kind=actor_kind,
-                                                  record_identity=results[index]["id"], batch_context=context)
+                    saved = await self._record_card_entry(child, actor_id=actor_id, actor_kind=actor_kind,
+                                                  record_identity=results[index]["id"], batch_context=context,
+                                                  execution_submitter=execution_submitter)
+                    if "execution_id" in saved:
+                        response_entries[index]["execution_id"] = saved["execution_id"]
                 except ValueError as exc:
                     raise DeliveryBatchEntryError(index, entry.client_ref, str(exc).split(":", 1)[0]) from exc
-        return {"entries": results, "delivery_revision": receipt["delivery_revision"], "replayed": False}
+        return {"entries": response_entries, "delivery_revision": receipt["delivery_revision"], "replayed": False}
 
     async def _record_card_entry(
         self, command: CardDeliveryEvidenceCommand, *, actor_id, actor_kind,
-        record_identity=None, batch_context=None,
+        record_identity=None, batch_context=None, execution_submitter=None,
     ):
         if not actor_id or actor_kind not in {"human", "user", "agent"}:
             raise ValueError("delivery_authenticated_actor_required")
@@ -768,10 +787,26 @@ class CommunityDeliveryEvidenceStore:
                 or replay.actor_kind != actor_kind
             ):
                 raise ValueError("delivery_idempotency_conflict")
-            return {"id": replay.id, "replayed": True}
+            result = {"id": replay.id, "replayed": True}
+            if command.execution_submission is not None:
+                result["execution_id"] = replay.payload["execution_id"]
+            return result
         card, spec, spec_scope = await self._card_scope_guard(scope)
         if card.policy_version != command.expected_card_version:
             raise ValueError("delivery_version_conflict")
+        inline = command.execution_submission
+        if inline is not None:
+            require_delivery_batch_state(card)
+            require_delivery_entry_card_type(card.card_type, command.kind)
+            if execution_submitter is None:
+                raise ValueError("delivery_execution_submitter_unavailable")
+            execution_id = await execution_submitter(ImplementationTargetExecutionSubmission(
+                board_id=scope.board_id, card_id=scope.card_id,
+                idempotency_key="delivery-inline:" + self.inventory.payload_digest({
+                    "card_id": scope.card_id, "key": command.idempotency_key,
+                }), justification=command.justification, **inline.model_dump(),
+            ))
+            command = command.model_copy(update={"execution_submission": None, "execution_id": execution_id})
         if command.kind == "progress":
             require_delivery_progress_mutable(card)
             progress = command.progress
@@ -925,7 +960,10 @@ class CommunityDeliveryEvidenceStore:
                 raise ValueError("delivery_implementation_scope_invalid")
         self.session.add(record)
         await self.session.flush()
-        return {"id": record.id, "replayed": False}
+        response = {"id": record.id, "replayed": False}
+        if inline is not None:
+            response["execution_id"] = command.execution_id
+        return response
 
     # ------------------------------------------------------------------
     # Spec rollup (FR-4): the spec projection derives from the card ledgers.
