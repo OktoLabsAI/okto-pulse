@@ -207,6 +207,7 @@ async def _seed_refinement_sources(
     *,
     refinement_id: str,
     roots: tuple[str, ...],
+    architecture_designs: tuple[Any, ...] = (),
 ) -> None:
     ideation_id = f"{refinement_id}-ideation"
     async with runtime.sessions() as session:
@@ -253,6 +254,7 @@ async def _seed_refinement_sources(
                 for root in roots
             ]
         )
+        session.add_all(architecture_designs)
         # The production lifecycle creates the immutable snapshot only after
         # every child mutation has been flushed, so it pins the post-mutation
         # version resolved by Spec derivation.
