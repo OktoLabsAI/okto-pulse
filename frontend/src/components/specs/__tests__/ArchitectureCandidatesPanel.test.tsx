@@ -148,3 +148,85 @@ it('replaces the whole adopted population after a Spec revision instead of retai
   expect(screen.getByText('Order event')).toBeInTheDocument();
   expect(screen.queryByText('Other contract')).not.toBeInTheDocument();
 });
+
+it.each(['Spec', 'board', 'revision', 'permission', 'refresh', 'page'] as const)(
+  'discards a late contract detail after changing %s', async (change) => {
+    let finishDetail!: (value: ArchitectureCandidatesResponse) => void;
+    api.getArchitectureCandidates.mockResolvedValueOnce(population({ has_more: true }))
+      .mockImplementationOnce(() => new Promise(resolve => { finishDetail = resolve; }))
+      .mockResolvedValueOnce(population({
+        spec_id: change === 'Spec' ? 'next' : 'spec',
+        board_id: change === 'board' ? 'next-board' : 'board',
+        total: 0, candidates: [],
+      }));
+    const { rerender } = render(<ArchitectureCandidatesPanel {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Order event' }));
+    await screen.findByText('Loading contract…');
+    const detailSignal = api.getArchitectureCandidates.mock.calls[1][2] as AbortSignal;
+
+    if (change === 'refresh') fireEvent.click(screen.getByRole('button', { name: 'Refresh candidates' }));
+    else if (change === 'page') fireEvent.click(screen.getByRole('button', { name: 'Next candidates' }));
+    else rerender(<ArchitectureCandidatesPanel {...props}
+      specId={change === 'Spec' ? 'next' : props.specId}
+      boardId={change === 'board' ? 'next-board' : props.boardId}
+      specVersion={change === 'revision' ? 2 : props.specVersion}
+      canRead={change !== 'permission'}
+    />);
+
+    expect(detailSignal.aborted).toBe(true);
+    await act(async () => finishDetail(population({ profile: 'detail', candidates: [{
+      ...population().candidates[0], contract: { description: 'Obsolete confidential contract' },
+    }] })));
+    expect(screen.queryByText(/Obsolete confidential contract/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Order event' })).not.toBeInTheDocument();
+    if (change === 'permission') {
+      expect(screen.getByText('Architecture read permission is required.')).toBeInTheDocument();
+      expect(api.getArchitectureCandidates).toHaveBeenCalledTimes(2);
+    } else await screen.findByText('No declared contracts in the effective architecture.');
+  },
+);
+
+it.each(['board', 'Spec', 'candidate', 'digest'] as const)(
+  'withholds a detail response with a different %s', async (mismatch) => {
+    api.getArchitectureCandidates.mockResolvedValueOnce(population()).mockResolvedValueOnce(population({
+      profile: 'detail',
+      board_id: mismatch === 'board' ? 'other' : 'board',
+      spec_id: mismatch === 'Spec' ? 'other' : 'spec',
+      candidates: [{ ...population().candidates[0],
+        id: mismatch === 'candidate' ? 'other' : 'candidate',
+        source_digest: mismatch === 'digest' ? 'b'.repeat(64) : 'a'.repeat(64),
+        contract: { description: 'Wrong contract body' },
+      }],
+    }));
+    render(<ArchitectureCandidatesPanel {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Order event' }));
+    await screen.findByText('The contract could not be loaded or access is no longer available.');
+    expect(screen.queryByText(/Wrong contract body/)).not.toBeInTheDocument();
+  },
+);
+
+it('reloads contracts after permission is restored instead of reusing previously visible details', async () => {
+  api.getArchitectureCandidates.mockResolvedValueOnce(population()).mockResolvedValueOnce(population({
+    profile: 'detail', candidates: [{ ...population().candidates[0], contract: { description: 'Old protected body' } }],
+  })).mockResolvedValueOnce(population({ total: 0, candidates: [] }));
+  const { rerender } = render(<ArchitectureCandidatesPanel {...props} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Order event' }));
+  await screen.findByText(/Old protected body/);
+  rerender(<ArchitectureCandidatesPanel {...props} canRead={false} />);
+  expect(screen.queryByText(/Old protected body/)).not.toBeInTheDocument();
+  rerender(<ArchitectureCandidatesPanel {...props} />);
+  await screen.findByText('No declared contracts in the effective architecture.');
+  expect(screen.queryByText(/Old protected body/)).not.toBeInTheDocument();
+  expect(api.getArchitectureCandidates).toHaveBeenCalledTimes(3);
+});
+
+it('recovers from unavailable sources through an explicit refresh', async () => {
+  api.getArchitectureCandidates.mockRejectedValueOnce(new Error('private transport diagnostic'))
+    .mockResolvedValueOnce(population());
+  render(<ArchitectureCandidatesPanel {...props} />);
+  await screen.findByText('Architecture candidates could not be loaded. The population is unknown.');
+  expect(screen.queryByText('private transport diagnostic')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh candidates' }));
+  await screen.findByText('Order event');
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});

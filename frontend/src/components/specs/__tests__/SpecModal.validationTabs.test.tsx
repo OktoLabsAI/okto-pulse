@@ -19,6 +19,7 @@ const apiMock = vi.hoisted(() => ({
   getSpecChecklistState: vi.fn(),
   getCurrentSpecValidation: vi.fn(),
   listSprints: vi.fn(),
+  getArchitectureCandidates: vi.fn(),
 }));
 const permissionMock = vi.hoisted(() => ({
   allowAll: true,
@@ -286,7 +287,45 @@ describe('SpecModal validation navigation', () => {
       previous_count: 0,
     });
     apiMock.listSprints.mockResolvedValue([]);
+    apiMock.getArchitectureCandidates.mockResolvedValue({
+      contract_version: 'architecture-candidates/v1',
+      board_id: baseSpec.board_id, spec_id: baseSpec.id,
+      spec_version: baseSpec.version, spec_edition: baseSpec.edition,
+      source_complete: true, population_state: 'complete', total: 0,
+      total_variants: 0, offset: 0, limit: 25, has_more: false,
+      profile: 'summary', candidates: [], issues: [], issue_counts: {}, issues_truncated: false,
+    });
   });
+
+  it('loads architecture candidates only when the user opens the IRs tab', async () => {
+    renderSpec('draft');
+    await screen.findByText(baseSpec.title);
+    expect(apiMock.getArchitectureCandidates).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: 'IRs' }));
+    await screen.findByText('No declared contracts in the effective architecture.');
+    expect(apiMock.getArchitectureCandidates).toHaveBeenCalledExactlyOnceWith(
+      baseSpec.board_id, baseSpec.id, expect.any(AbortSignal), { offset: 0, limit: 25 },
+    );
+  });
+
+  it.each(['spec.entity.read', 'spec.architecture.read', 'spec.integration_requirements.read'])(
+    'does not load architecture candidates when %s is missing', async (missing) => {
+      permissionMock.allowAll = false;
+      permissionMock.allowed = new Set([
+        'spec.entity.read', 'spec.architecture.read', 'spec.integration_requirements.read',
+      ].filter(permission => permission !== missing));
+      renderSpec('draft');
+      await screen.findByText(baseSpec.title);
+      const irTab = screen.queryByRole('tab', { name: 'IRs' });
+      if (missing === 'spec.integration_requirements.read') {
+        expect(irTab).not.toBeInTheDocument();
+      } else {
+        fireEvent.click(irTab!);
+        expect(screen.getByText('Architecture read permission is required.')).toBeInTheDocument();
+      }
+      expect(apiMock.getArchitectureCandidates).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ['draft', true],
