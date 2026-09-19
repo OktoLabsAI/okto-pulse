@@ -317,6 +317,30 @@ describe('SpecModal validation navigation', () => {
     );
   });
 
+  it.each(['review', 'approved', 'validated', 'in_progress', 'done'] as SpecStatus[])(
+    'keeps classification authoring unavailable in %s while retaining review', async status => {
+      renderSpec(status);
+      await screen.findByText(baseSpec.title);
+      fireEvent.click(screen.getByRole('tab', { name: 'IRs' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Review classifications' }));
+      expect(screen.getByText(/Classification authoring requires an unarchived Draft Spec/)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Save queued classifications' })).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(['spec.entity.edit_fields', 'spec.interact_in.draft'])(
+    'keeps Draft classification read-only when %s is missing', async missing => {
+      permissionMock.allowAll = false;
+      permissionMock.allowed = new Set(['spec.entity.read', 'spec.architecture.read', 'spec.integration_requirements.read', 'spec.entity.edit_fields', 'spec.interact_in.draft'].filter(flag => flag !== missing));
+      renderSpec('draft');
+      await screen.findByText(baseSpec.title);
+      fireEvent.click(screen.getByRole('tab', { name: 'IRs' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Review classifications' }));
+      expect(screen.queryByRole('button', { name: 'Save queued classifications' })).not.toBeInTheDocument();
+      expect(screen.getByText(/Classification authoring requires an unarchived Draft Spec/)).toBeInTheDocument();
+    },
+  );
+
   it.each(['spec.entity.read', 'spec.architecture.read', 'spec.integration_requirements.read'])(
     'does not load architecture candidates when %s is missing', async (missing) => {
       permissionMock.allowAll = false;

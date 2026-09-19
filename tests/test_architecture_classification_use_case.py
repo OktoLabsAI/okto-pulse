@@ -268,6 +268,7 @@ async def test_any_denied_permission_prevents_design_body_reads_and_all_writes(
         event.remove(db.bind.sync_engine, "before_cursor_execute", capture)
     assert statements
     assert not any("architecture_designs" in sql for sql in statements)
+    assert not any("specs.integration_requirements" in sql for sql in statements)
     assert not any(
         sql.lstrip().startswith(("insert", "update", "delete")) for sql in statements
     )

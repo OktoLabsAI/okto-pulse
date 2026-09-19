@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useDashboardApi } from '@/services/api';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import type { ArchitectureClassificationReviewItem, ArchitectureClassificationsResponse, ArchitectureReviewState } from '@/types/architecture-classifications';
+import { ArchitectureClassificationAuthoring, type ArchitectureAuthoringAuthority } from './ArchitectureClassificationAuthoring';
 
 const labels: Record<ArchitectureReviewState, string> = {
   pending: 'Pending', current: 'Current', review_required: 'Review required',
@@ -15,8 +16,9 @@ function failure(error: unknown) {
   return 'Classification review could not be loaded. Its completeness is unknown.';
 }
 
-function ReviewDetails({ boardId, specId, specVersion, specEdition, item }: {
+function ReviewDetails({ boardId, specId, specVersion, specEdition, item, children }: {
   boardId: string; specId: string; specVersion: number; specEdition: number; item: ArchitectureClassificationReviewItem;
+  children?: ReactNode;
 }) {
   const api = useDashboardApi();
   const [digest, setDigest] = useState<string | null>(null);
@@ -41,6 +43,7 @@ function ReviewDetails({ boardId, specId, specVersion, specEdition, item }: {
   const current = result?.digest === digest ? result : null;
   const variants = item.source_digests.length ? item.source_digests : item.analyzed_source_digest ? [item.analyzed_source_digest] : [];
   return <article className="mt-2 rounded border border-gray-200 p-2 dark:border-gray-700">
+    {children}
     <p className="text-sm font-medium">{item.name || item.interface_id} · {labels[item.state]}</p>
     <p className="text-xs">Origin: {item.root_design_id} · Interface: {item.interface_id}</p>
     {item.state === 'retired' && <p className="text-xs">The source left the current population. Existing IR obligations remain in scope.</p>}
@@ -75,8 +78,9 @@ function ReviewDetails({ boardId, specId, specVersion, specEdition, item }: {
   </article>;
 }
 
-export function ArchitectureClassificationsPanel({ boardId, specId, specVersion, canRead }: {
+export function ArchitectureClassificationsPanel({ boardId, specId, specVersion, canRead, authoring }: {
   boardId: string; specId: string; specVersion: number; canRead: boolean;
+  authoring?: ArchitectureAuthoringAuthority;
 }) {
   const api = useDashboardApi();
   const [open, setOpen] = useState(false);
@@ -120,12 +124,20 @@ export function ArchitectureClassificationsPanel({ boardId, specId, specVersion,
           {data.classification_complete && <p>Current contracts are classified. Execution gates and semantic review still apply.</p>}
           <ul aria-label="Global classification counts" className="mt-2 text-xs">{Object.entries(labels).map(([value, label]) => <li key={value}>{label}: {data.state_counts[value as ArchitectureReviewState]}</li>)}</ul>
           {data.items.length === 0 && <p>No classifications in this page or filter.</p>}
-          {data.items.map(item => <ReviewDetails key={`${scope}:${item.candidate_id}`} boardId={boardId} specId={specId} specVersion={data.spec_version} specEdition={data.spec_edition} item={item} />)}
+          {!authoring?.canClassify && data.items.map(item => <ReviewDetails key={`${scope}:${item.candidate_id}`} boardId={boardId} specId={specId} specVersion={data.spec_version} specEdition={data.spec_edition} item={item} />)}
           {(offset > 0 || data.has_more) && <nav aria-label="Classification pages" className="mt-2 flex gap-3 text-xs">
             <button type="button" disabled={offset === 0} onClick={() => setPage({ scope: baseScope, offset: Math.max(0, offset - 25) })}>Previous classifications</button>
             <button type="button" disabled={!data.has_more} onClick={() => setPage({ scope: baseScope, offset: offset + 25 })}>Next classifications</button>
           </nav>}
         </>}
+        {authoring?.canClassify && <ArchitectureClassificationAuthoring
+          key={JSON.stringify([boardId, specId, specVersion, authoring.specEdition, authoring.canPromote, authoring.canAssociate])}
+          {...authoring} boardId={boardId} specId={specId} specVersion={specVersion}
+          sourceReady={Boolean(data?.source_complete && data.spec_version === specVersion && data.spec_edition === authoring.specEdition)}
+          items={data?.items ?? []}
+          renderItem={(item, selection) => <ReviewDetails key={`${scope}:${item.candidate_id}`} boardId={boardId} specId={specId} specVersion={data!.spec_version} specEdition={data!.spec_edition} item={item}>{selection}</ReviewDetails>}
+        />}
+        {authoring && !authoring.canClassify && <p className="mt-2 text-xs">Classification authoring requires an unarchived Draft Spec and permission to edit its content.</p>}
       </>}
     </>}
   </section>;

@@ -3043,6 +3043,16 @@ export function SpecModal({
               specId={spec.id}
               specVersion={spec.version}
               canRead={canReadIR && perms.has('spec.architecture.read') && perms.has('spec.entity.read')}
+              authoring={{
+                canClassify: !spec.archived && spec.status === 'draft' && canReadIR
+                  && perms.has('spec.architecture.read') && perms.has('spec.entity.read')
+                  && hasPermissionWithState(perms.has, 'spec.entity.edit_fields', 'spec', spec.status),
+                canPromote: hasPermissionWithState(perms.has, 'spec.structured_entity.integration_requirement.create', 'spec', spec.status),
+                canAssociate: hasPermissionWithState(perms.has, 'spec.structured_entity.integration_requirement.update', 'spec', spec.status),
+                specEdition: spec.edition,
+                requirements: spec.integration_requirements || [],
+                onApplied: async () => { await reloadSpecAfterStructuredEdit(); },
+              }}
             />
             <IntegrationRequirementsTab
               spec={spec}

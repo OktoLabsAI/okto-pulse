@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import type { ArchitectureCandidatesResponse } from '@/types/architecture-candidates';
-import type { ArchitectureClassificationsResponse, ArchitectureReviewState } from '@/types/architecture-classifications';
+import type { ArchitectureClassificationsResponse, ArchitectureReviewState, ArchitectureClassificationBatch, ArchitectureClassificationReceipt } from '@/types/architecture-classifications';
 import type { CardDeliveryEvidenceInput, DeliveryEvidenceInput, DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 /**
  * API Service - all API calls centralized
@@ -1373,6 +1373,13 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     async getSpec(specId: string): Promise<Spec> {
       return apiClient.fetchJson<Spec>(`/specs/${specId}`);
+    },
+
+    async classifyArchitectureCandidates(boardId: string, specId: string, batch: ArchitectureClassificationBatch): Promise<ArchitectureClassificationReceipt> {
+      return apiClient.fetchJson<ArchitectureClassificationReceipt>(
+        `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/architecture-classifications`,
+        { method: 'POST', body: JSON.stringify(batch), maxRetries: 0 },
+      );
     },
 
     async getArchitectureClassifications(

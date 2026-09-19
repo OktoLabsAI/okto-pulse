@@ -1,3 +1,46 @@
+import type { IntegrationRequirementType } from '@/types';
+
+export interface AuthoredArchitectureIR {
+  title: string;
+  integration_type: IntegrationRequirementType;
+  description?: string;
+  provider?: string;
+  consumer?: string;
+  contract_ref?: string;
+  endpoint?: string;
+  method?: string;
+  data_contract?: Record<string, unknown>;
+  notes?: string;
+}
+export interface ArchitectureClassificationDecision {
+  candidate_ref: string;
+  expected_source_digest: string;
+  disposition: 'promote_to_ir' | 'associate_existing_ir' | 'context_only';
+  scope_paths: string[];
+  integration_requirements?: AuthoredArchitectureIR[];
+  integration_requirement_refs?: string[];
+  reason?: string;
+  remainder_reason?: string;
+}
+export interface ArchitectureClassificationBatch {
+  expected_spec_version: number;
+  expected_spec_edition: number;
+  idempotency_key: string;
+  decisions: ArchitectureClassificationDecision[];
+}
+export interface ArchitectureClassificationReceipt {
+  contract_version: 'architecture-classification/v1';
+  board_id: string;
+  spec_id: string;
+  spec_edition: number;
+  spec_version: number;
+  idempotency_key: string;
+  created_ir_ids: string[];
+  decisions: { decision_id: string; candidate_ref: string; source_digest: string; disposition: ArchitectureClassificationDecision['disposition']; integration_requirement_refs: string[]; scope_paths: string[] }[];
+  pending_checks: string[];
+  replayed: boolean;
+}
+
 export type ArchitectureReviewState = 'pending' | 'current' | 'review_required' | 'unresolved' | 'retired' | 'unavailable';
 
 export interface ArchitectureClassificationReviewItem {
@@ -17,6 +60,10 @@ export interface ArchitectureClassificationReviewItem {
   remainder_state: 'current' | 'review_required' | null;
   current_contract?: Record<string, unknown> | null;
   analyzed_contract?: Record<string, unknown> | null;
+  promotion_suggestion?: {
+    scope_paths: ['']; proposed_ir: Partial<AuthoredArchitectureIR>;
+    requires_author_review: true; missing_required_fields: string[];
+  } | null;
   changed_paths?: string[];
   changed_paths_truncated?: boolean;
   decisions?: {
