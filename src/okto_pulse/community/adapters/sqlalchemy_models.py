@@ -1229,6 +1229,9 @@ class Spec(Base):
     """Spec model - represents a specification that drives card creation."""
 
     __tablename__ = "specs"
+    # Versioned selection only; Design snapshots remain the contract store.
+    # NULL is deliberately legacy inheritance, not an empty adoption.
+    architecture_adoption: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     __table_args__ = (
         CheckConstraint("edition >= 1", name="ck_spec_edition"),
         CheckConstraint(

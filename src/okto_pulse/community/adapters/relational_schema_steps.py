@@ -8850,6 +8850,28 @@ async def _migrate_add_skip_delivery_evidence() -> str | None:
     return None
 
 
+async def _migrate_add_spec_architecture_adoption() -> str | None:
+    """Add selection storage without guessing or backfilling legacy adoption."""
+    from sqlalchemy import JSON, inspect, text as sa_text
+
+    def observed(connection):
+        inspector = inspect(connection)
+        if not inspector.has_table("specs"):
+            return None
+        return {column["name"]: column for column in inspector.get_columns("specs")}
+
+    async with get_engine().begin() as conn:
+        columns = await conn.run_sync(observed)
+        if columns is None:
+            return "skipped"  # Fresh install: create_all owns the complete table.
+        existing = columns.get("architecture_adoption")
+        if existing is not None:
+            if not isinstance(existing["type"], JSON) or not existing["nullable"]:
+                raise RuntimeError("spec_architecture_adoption_schema_drift")
+            return "skipped"
+        await conn.execute(sa_text("ALTER TABLE specs ADD COLUMN architecture_adoption JSON"))
+
+
 async def _migrate_add_ir_or_columns() -> None:
     """Add first-class IR/OR JSON columns and coverage flags to specs."""
     from sqlalchemy import text as sa_text
@@ -25183,6 +25205,7 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
         _migrate_add_code_evidence_coverage_skip
     ),
     "_migrate_add_ir_or_columns": _migrate_add_ir_or_columns,
+    "_migrate_add_spec_architecture_adoption": _migrate_add_spec_architecture_adoption,
     "_migrate_add_spec_validation_gate_columns": _migrate_add_spec_validation_gate_columns,
     "_migrate_add_ideation_skip_ambiguity_gate": _migrate_add_ideation_skip_ambiguity_gate,
     "_migrate_add_refinement_skip_ambiguity_gate": _migrate_add_refinement_skip_ambiguity_gate,

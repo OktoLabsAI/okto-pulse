@@ -26,6 +26,7 @@ from okto_pulse.core.ports.architecture_persistence import (
 )
 from okto_pulse.core.ports.relational_services import register_resource_gate_adapter_factory
 from okto_pulse.core.services.architecture_candidates import load_spec_architecture_candidates
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 
 
 @pytest_asyncio.fixture
@@ -189,6 +190,51 @@ async def test_missing_legacy_identity_remains_unresolved_without_writes(adopted
 async def test_invalid_scope_has_same_safe_error(adopted_context, spec_id):
     with pytest.raises(ValueError, match="^architecture_candidate_scope_unavailable$"):
         await load_spec_architecture_candidates(adopted_context, board_id="board", spec_id=spec_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["missing-source", "wrong-board", "future-edition", "extra-authority", "missing-format"])
+async def test_adoption_corruption_never_becomes_confirmed_empty(adopted_context, fault):
+    db = adopted_context
+    scope = ArchitectureAdoptionScope(
+        board_id="board", spec_id="spec", adopted_in_edition=2,
+        actor_id="author", inherited_resource_ids=(),
+    ).model_dump(mode="json")
+    if fault == "missing-source":
+        scope["inherited_resource_ids"] = ["architecture:deleted"]
+    elif fault == "wrong-board":
+        scope["board_id"] = "other-board"
+    elif fault == "future-edition":
+        scope["adopted_in_edition"] = 3
+    elif fault == "missing-format":
+        del scope["contract_version"]
+    else:
+        scope["bypass_gate"] = True
+    spec = await db.get(Spec, "spec")
+    spec.architecture_adoption = scope
+    await db.commit()
+    result = await read(db)
+    assert not result.source_complete and not result.resolved and not result.candidates
+
+
+@pytest.mark.asyncio
+async def test_empty_inherited_adoption_keeps_directly_authored_designs(adopted_context):
+    db = adopted_context
+    spec = await db.get(Spec, "spec")
+    spec.architecture_adoption = ArchitectureAdoptionScope(
+        board_id="board", spec_id="spec", adopted_in_edition=2,
+        actor_id="author", inherited_resource_ids=(),
+    ).model_dump(mode="json")
+    db.add_all([
+        design("not-adopted", "refinement", "refinement", value="parent"),
+        design("local", value="authored-here"),
+    ])
+    await db.commit()
+    result = await read(db)
+    assert result.resolved
+    assert len(result.candidates) == 1
+    assert result.candidates[0].root_design_id == "local"
+    assert result.candidates[0].contract["event_schema"] == {"const": "authored-here"}
 
 
 @pytest.mark.asyncio

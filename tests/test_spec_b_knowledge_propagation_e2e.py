@@ -8,6 +8,9 @@ stable, replayable pointers required by Pulse scenarios B1-B3.
 
 from __future__ import annotations
 
+from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import CommunitySqlAlchemyResourceGateAdapter
+from okto_pulse.core.ports.relational_services import register_resource_gate_adapter_factory
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -178,6 +181,7 @@ async def spec_b_runtime(tmp_path) -> _Runtime:
         CommunityRelationalApplicationAdapter()
     )
     register_architecture_persistence_port(CommunitySqlAlchemyArchitecturePersistence())
+    register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
     register_domain_event_publisher(CommunitySqlAlchemyDomainEventPublisher())
     register_spec_resource_propagation_store(
         CommunitySqlAlchemySpecResourcePropagationStore()

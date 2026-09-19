@@ -134,3 +134,17 @@ it('reports a stale detail digest without showing another contract revision', as
   await screen.findByText('The adopted contract changed. Refresh candidates before continuing.');
   expect(screen.queryByText(/private.invalid/)).not.toBeInTheDocument();
 });
+
+it('replaces the whole adopted population after a Spec revision instead of retaining unselected roots', async () => {
+  const first = population().candidates[0];
+  api.getArchitectureCandidates.mockResolvedValueOnce(population({ total: 2, total_variants: 2,
+    candidates: [first, { ...first, id: 'unselected', root_design_id: 'other-root', name: 'Other contract' }],
+  })).mockResolvedValueOnce(population({ spec_version: 2 }));
+  const { rerender } = render(<ArchitectureCandidatesPanel {...props} />);
+  await screen.findByText('Other contract');
+  rerender(<ArchitectureCandidatesPanel {...props} specVersion={2} />);
+  expect(screen.queryByText('Other contract')).not.toBeInTheDocument();
+  await screen.findByText('1 candidates across all adopted sources · 1 contract variants');
+  expect(screen.getByText('Order event')).toBeInTheDocument();
+  expect(screen.queryByText('Other contract')).not.toBeInTheDocument();
+});

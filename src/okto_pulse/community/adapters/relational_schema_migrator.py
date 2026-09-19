@@ -155,6 +155,12 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
         "Add integration-requirement OR columns.",
     ),
     (
+        "_migrate_add_spec_architecture_adoption",
+        "pre_create_all",
+        False,
+        "Add nullable prospective architecture adoption; leave legacy scopes unchanged.",
+    ),
+    (
         "_migrate_add_spec_validation_gate_columns",
         "pre_create_all",
         False,

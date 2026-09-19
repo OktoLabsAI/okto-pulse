@@ -108,6 +108,8 @@ class _ResourceGateEntityMetadata:
     ideation_id: str | None = None
     refinement_id: str | None = None
     spec_id: str | None = None
+    edition: int = 1
+    architecture_adoption: dict[str, Any] | None = None
 
 
 def _knowledge_stamp_aliases(stamp: Any) -> dict[str, Any]:
@@ -358,7 +360,7 @@ class CommunitySqlAlchemyResourceGateAdapter:
         self._validate_entity_type(entity_type)
         model = self._model_options(entity_type)[0]
         columns = [model.id, model.board_id, model.title]
-        for field_name in ("ideation_id", "refinement_id", "spec_id"):
+        for field_name in ("ideation_id", "refinement_id", "spec_id", "edition", "architecture_adoption"):
             column = getattr(model, field_name, None)
             if column is not None:
                 columns.append(column)
@@ -378,6 +380,8 @@ class CommunitySqlAlchemyResourceGateAdapter:
             ideation_id=row.get("ideation_id"),
             refinement_id=row.get("refinement_id"),
             spec_id=row.get("spec_id"),
+            edition=row.get("edition", 1),
+            architecture_adoption=row.get("architecture_adoption"),
         )
         return LineageEntityRef(
             entity_type=entity_type,
@@ -455,14 +459,15 @@ class CommunitySqlAlchemyResourceGateAdapter:
     async def collect_refs_metadata(
         self,
         ref: LineageEntityRef,
+        *, resource_types: tuple[str, ...] | None = None,
     ) -> dict[str, list[dict[str, Any]]]:
         """Collect bounded refs without selecting architecture/KB bodies."""
 
-        return {
-            "architecture": await self._architecture_refs_metadata(ref),
-            "mockup": await self._mockup_refs_metadata(ref),
-            "knowledge_base": await self._knowledge_refs_metadata(ref),
-        }
+        collectors = {"architecture": self._architecture_refs_metadata,
+                      "mockup": self._mockup_refs_metadata,
+                      "knowledge_base": self._knowledge_refs_metadata}
+        selected = tuple(collectors) if resource_types is None else resource_types
+        return {kind: await collectors[kind](ref) for kind in selected}
 
     async def filter_inherited_refs_metadata(
         self,
@@ -472,6 +477,8 @@ class CommunitySqlAlchemyResourceGateAdapter:
     ) -> dict[str, list[dict[str, Any]]]:
         """Apply persisted v2 assignment metadata without resolving content."""
 
+        if "knowledge_base" not in refs:
+            return refs
         scope = await self._knowledge_scope_metadata(root)
         if scope is None:
             return refs
