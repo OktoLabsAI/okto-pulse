@@ -61,6 +61,15 @@ from okto_pulse.core.application.use_cases.architecture_candidates import (
     GetArchitectureCandidatesUseCase,
 )
 from okto_pulse.core.domain.architecture_candidates import ArchitectureCandidateReadError
+from okto_pulse.core.domain.architecture_classification import (
+    ArchitectureClassificationBatch, ArchitectureClassificationError, MAX_CLASSIFICATION_BYTES,
+)
+from okto_pulse.core.application.use_cases.architecture_classification import (
+    ClassifyArchitectureCandidatesCommand, ClassifyArchitectureCandidatesUseCase,
+)
+from okto_pulse.core.inbound.architecture_classification import (
+    CLASSIFICATION_REQUEST_ERRORS, classification_error,
+)
 from okto_pulse.core.ports.knowledge_propagation import (
     KnowledgePropagationPortError,
 )
@@ -634,9 +643,15 @@ class _PrevalidatedSpecWriteRoute(APIRoute):
         async def prevalidated_route_handler(request: Request) -> Response:
             if model is not None:
                 raw_body = await request.body()
+                if model is ArchitectureClassificationBatch and len(raw_body) > MAX_CLASSIFICATION_BYTES:
+                    projected = classification_error(ArchitectureClassificationError("architecture_classification_payload_too_large"))
+                    return JSONResponse(status_code=projected.status_code, content={"detail": projected.payload()})
                 try:
                     model.model_validate_json(raw_body)
                 except ValidationError as exc:
+                    if model is ArchitectureClassificationBatch:
+                        projected = classification_error(exc)
+                        return JSONResponse(status_code=projected.status_code, content={"detail": projected.payload()})
                     if model is ProjectStructureBatchMutationRequest:
                         return JSONResponse(
                             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1336,6 +1351,26 @@ async def get_architecture_candidates(
             status_code=409 if code == "architecture_candidate_source_changed" else 422,
             detail=code,
         ) from exc
+
+
+@router.post("/boards/{board_id}/specs/{spec_id}/architecture-classifications")
+@_validate_spec_write_before_dependencies(ArchitectureClassificationBatch)
+async def classify_architecture_candidates(
+    board_id: str,
+    spec_id: str,
+    data: ArchitectureClassificationBatch,
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Classify adopted contracts and authored IRs in one authorized write UoW."""
+    try:
+        return await ClassifyArchitectureCandidatesUseCase().execute(
+            ClassifyArchitectureCandidatesCommand(board_id, spec_id, data),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id), uow=uow,
+        )
+    except CLASSIFICATION_REQUEST_ERRORS as exc:
+        projected = classification_error(exc)
+        raise HTTPException(status_code=projected.status_code, detail=projected.payload()) from exc
 
 
 @router.get("/boards/{board_id}/specs/{spec_id}/project-structure")

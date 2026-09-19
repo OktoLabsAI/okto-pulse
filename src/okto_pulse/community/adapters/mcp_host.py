@@ -474,6 +474,17 @@ class _OutcomeValidationMiddleware(Middleware):
         try:
             return await call_next(context)
         except ValidationError as exc:
+            if tool_name == "okto_pulse_classify_architecture_candidates":
+                # FastMCP validates typed arguments before invoking the Core
+                # handler. Use its public error contract at this boundary too;
+                # do not serialize Pydantic input/ctx or duplicate Core policy.
+                from okto_pulse.core.inbound.architecture_classification import classification_error
+
+                projected = classification_error(exc)
+                return _project_transport_tool_result(
+                    {"success": False, **projected.payload(), "status_code": projected.status_code},
+                    tool_name=tool_name, legacy_profile=False,
+                )
             issues = exc.errors(include_url=False, include_input=False)
             return self._validation_result(
                 tool_name=tool_name,
