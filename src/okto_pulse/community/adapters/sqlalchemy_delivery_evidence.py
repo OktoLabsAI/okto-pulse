@@ -695,7 +695,7 @@ class CommunityDeliveryEvidenceStore:
             by_id = {item.id: item for item in members}
             response_entries = [dict(item) for item in receipt["entries"]]
             for entry, item in zip(command.entries, response_entries, strict=True):
-                if entry.execution_submission is not None:
+                if entry.execution_submission is not None or entry.execution_client_ref is not None:
                     item["execution_id"] = by_id[item["id"]].payload["execution_id"]
             return {"entries": response_entries, "delivery_revision": receipt["delivery_revision"], "replayed": True}
         if card.policy_version != command.expected_card_version:
@@ -724,6 +724,7 @@ class CommunityDeliveryEvidenceStore:
         ]
         receipt = {"request_digest": request_digest, "entries": results, "delivery_revision": revision + len(results)}
         response_entries = [dict(item) for item in results]
+        prior_results = {}
         # The first immutable entry carries the batch receipt; there is no
         # second journal or mutable batch head. A savepoint also protects a
         # caller that catches the error and later commits its outer UoW.
@@ -733,7 +734,7 @@ class CommunityDeliveryEvidenceStore:
                     board_id=scope.board_id, card_id=scope.card_id, spec_id=scope.spec_id,
                     expected_card_version=command.expected_card_version,
                     expected_spec_edition=scope.spec_edition, idempotency_key=keys[index],
-                    **entry.model_dump(exclude={"client_ref"}),
+                    **entry.resolved_fields(prior_results),
                 )
                 context = {"head_id": results[0]["id"], "client_ref": entry.client_ref}
                 if index == 0:
@@ -744,6 +745,11 @@ class CommunityDeliveryEvidenceStore:
                                                   execution_submitter=execution_submitter)
                     if "execution_id" in saved:
                         response_entries[index]["execution_id"] = saved["execution_id"]
+                    elif entry.execution_client_ref is not None:
+                        response_entries[index]["execution_id"] = child.execution_id
+                    prior_results[entry.client_ref] = {
+                        **saved, "execution_id": saved.get("execution_id", child.execution_id),
+                    }
                 except ValueError as exc:
                     raise DeliveryBatchEntryError(index, entry.client_ref, str(exc).split(":", 1)[0]) from exc
         return {"entries": response_entries, "delivery_revision": receipt["delivery_revision"], "replayed": False}
@@ -794,6 +800,15 @@ class CommunityDeliveryEvidenceStore:
         card, spec, spec_scope = await self._card_scope_guard(scope)
         if card.policy_version != command.expected_card_version:
             raise ValueError("delivery_version_conflict")
+        if command.progress_refs:
+            reference_ids = {ref.record_id for ref in command.progress_refs}
+            existing_ids = set((await self.session.scalars(select(CardRecord.id).where(
+                CardRecord.id.in_(reference_ids), CardRecord.kind == "progress",
+                CardRecord.board_id == scope.board_id, CardRecord.card_id == scope.card_id,
+                CardRecord.spec_id == scope.spec_id, CardRecord.spec_edition == scope.spec_edition,
+            ))).all())
+            if reference_ids != existing_ids:
+                raise ValueError("delivery_progress_reference_unavailable")
         inline = command.execution_submission
         if inline is not None:
             require_delivery_batch_state(card)
