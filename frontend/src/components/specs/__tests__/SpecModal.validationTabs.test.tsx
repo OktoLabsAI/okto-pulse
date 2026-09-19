@@ -21,6 +21,7 @@ const apiMock = vi.hoisted(() => ({
   listSprints: vi.fn(),
   getArchitectureCandidates: vi.fn(),
   getArchitectureClassifications: vi.fn(),
+  updateSpecEntity: vi.fn(),
 }));
 const permissionMock = vi.hoisted(() => ({
   allowAll: true,
@@ -237,6 +238,51 @@ function blockedPolicyDecision() {
 }
 
 describe('SpecModal validation navigation', () => {
+  it('authors criterion verification through the existing versioned structured writer', async () => {
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec,
+      acceptance_criteria: [{ id: 'ac-plan', text: 'Five attempts block access' }],
+      functional_requirements: [{ id: 'fr-plan', text: 'Block access' }],
+    });
+    apiMock.updateSpecEntity.mockResolvedValue({ success: true, spec_version: 5 });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit verification ac-plan' }));
+    fireEvent.change(screen.getByLabelText('Verification profile'), { target: { value: 'functional' } });
+    fireEvent.change(screen.getByLabelText('Requirement to link'), { target: { value: JSON.stringify(['functional_requirement', 'fr-plan']) } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add link' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save verification plan' }));
+    await waitFor(() => expect(apiMock.updateSpecEntity).toHaveBeenCalledWith(baseSpec.id, 'acceptance_criterion', 'ac-plan', {
+      verification_profile: 'functional', requirement_links: [{ requirement_type: 'functional_requirement', requirement_id: 'fr-plan', aspect: null }],
+    }, 4));
+    await waitFor(() => expect(apiMock.getSpec).toHaveBeenCalledTimes(2));
+  });
+
+  it.each(['review', 'approved', 'validated', 'in_progress', 'done'] as SpecStatus[])('keeps criterion qualification read-only in %s', async status => {
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, status,
+      acceptance_criteria: [{ id: 'ac-plan', text: 'Five attempts block access' }],
+    });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await screen.findByRole('region', { name: 'Criterion verification' });
+    expect(screen.queryByRole('button', { name: 'Edit verification ac-plan' })).not.toBeInTheDocument();
+  });
+
+  it.each(['spec.structured_entity.acceptance_criterion.update', 'spec.interact_in.draft'])(
+    'keeps criterion qualification read-only without %s', async missing => {
+      permissionMock.allowAll = false;
+      permissionMock.allowed = new Set(['spec.entity.read', 'spec.structured_entity.acceptance_criterion.update', 'spec.interact_in.draft'].filter(flag => flag !== missing));
+      apiMock.getSpec.mockResolvedValue({ ...baseSpec, acceptance_criteria: [{ id: 'ac-plan', text: 'Condition' }] });
+      render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+      await screen.findByRole('region', { name: 'Criterion verification' });
+      expect(screen.queryByRole('button', { name: 'Edit verification ac-plan' })).not.toBeInTheDocument();
+    },
+  );
+
+  it('keeps archived Draft criterion qualification read-only', async () => {
+    apiMock.getSpec.mockResolvedValue({ ...baseSpec, archived: true, acceptance_criteria: [{ id: 'ac-plan', text: 'Condition' }] });
+    render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+    await screen.findByRole('region', { name: 'Criterion verification' });
+    expect(screen.queryByRole('button', { name: 'Edit verification ac-plan' })).not.toBeInTheDocument();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     permissionMock.allowAll = true;

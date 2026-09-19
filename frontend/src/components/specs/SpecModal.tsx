@@ -10,6 +10,8 @@ import {
   useState,
 } from 'react';
 import { DeliveryEvidencePanel } from '@/components/code-traceability/DeliveryEvidencePanel';
+import { CriterionVerificationPanel } from './CriterionVerificationPanel';
+import { verificationRequirementOptions } from './criterionVerificationOptions';
 import {
   X,
   ChevronRight,
@@ -2756,6 +2758,16 @@ export function SpecModal({
                   await syncTextEntityList('acceptance_criterion', spec.acceptance_criteria as unknown[] | null, items);
                 }}
               />
+              {perms.has('spec.entity.read') && <CriterionVerificationPanel
+                key={`${spec.id}:${spec.version}:${spec.status}:${Boolean(spec.archived)}:${canStructured('acceptance_criterion', 'update')}`}
+                specId={spec.id}
+                version={spec.version}
+                criteria={(spec.acceptance_criteria || []) as unknown[]}
+                options={verificationRequirementOptions(spec, canReadIR, canReadOR)}
+                canEdit={!spec.archived && spec.status === 'draft'
+                  && hasPermissionWithState(perms.has, 'spec.structured_entity.acceptance_criterion.update', 'spec', spec.status)}
+                onSaved={async () => { await reloadSpecAfterStructuredEdit(); }}
+              />}
               {/* Decisions — contextual choices, same bulleted pattern as FR/AC.
                   Only active decisions show in the list; supersedence/revocation
                   happens via MCP tools + KG. Text is mapped to Decision.title
