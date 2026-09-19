@@ -53,6 +53,7 @@ def _record(row: Any) -> StructuredSpecRecord:
         board_id=str(row.board_id),
         status=row.status,
         version=int(row.version),
+        edition=int(row.edition),
         archived=bool(row.archived),
         title=row.title,
         description=row.description,
