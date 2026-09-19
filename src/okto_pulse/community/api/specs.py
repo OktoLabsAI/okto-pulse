@@ -56,6 +56,11 @@ from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     PageRequest,
 )
+from okto_pulse.core.application.use_cases.architecture_candidates import (
+    GetArchitectureCandidatesCommand,
+    GetArchitectureCandidatesUseCase,
+)
+from okto_pulse.core.domain.architecture_candidates import ArchitectureCandidateReadError
 from okto_pulse.core.ports.knowledge_propagation import (
     KnowledgePropagationPortError,
 )
@@ -1302,6 +1307,35 @@ async def get_spec(
     ) as exc:
         return await _spec_knowledge_error_response(uow, exc)
     return result.spec
+
+
+@router.get("/boards/{board_id}/specs/{spec_id}/architecture-candidates")
+async def get_architecture_candidates(
+    board_id: str,
+    spec_id: str,
+    offset: int = Query(0, ge=0, le=2**63 - 1),
+    limit: int = Query(25, ge=1, le=100),
+    candidate_id: str | None = Query(None),
+    source_digest: str | None = Query(None),
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Read adopted contracts without classification, promotion or source fetch."""
+    try:
+        return await GetArchitectureCandidatesUseCase().execute(
+            GetArchitectureCandidatesCommand(board_id, spec_id, offset, limit, candidate_id, source_digest),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id), uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Spec not found") from exc
+    except PermissionDeniedError as exc:
+        raise HTTPException(status_code=403, detail=exc.message) from exc
+    except ArchitectureCandidateReadError as exc:
+        code = str(exc)
+        raise HTTPException(
+            status_code=409 if code == "architecture_candidate_source_changed" else 422,
+            detail=code,
+        ) from exc
 
 
 @router.get("/boards/{board_id}/specs/{spec_id}/project-structure")

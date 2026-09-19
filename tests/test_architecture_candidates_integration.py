@@ -42,8 +42,8 @@ async def adopted_context(tmp_path):
         )
         async with factory() as db:
             db.add_all([
-                Board(id="board", name="Architecture", owner_id="author"),
-                Board(id="other-board", name="Private", owner_id="someone-else"),
+                Board(id="board", name="Architecture", owner_id="author", realm_id="local"),
+                Board(id="other-board", name="Private", owner_id="someone-else", realm_id="local"),
             ])
             await db.flush()
             db.add(Ideation(id="idea", board_id="board", title="Idea", created_by="author"))
