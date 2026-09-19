@@ -35,10 +35,9 @@ from okto_pulse.core.models.delivery_evidence import (
     DeliveryEvidenceCommand,
 )
 from okto_pulse.core.ports.test_evidence import resolve_test_evidence_write_verifier
-from okto_pulse.core.services.delivery_evidence import (
-    card_delivery_inventory,
-    delivery_digest,
-    delivery_inventory,
+from okto_pulse.core.ports.delivery_inventory import (
+    DeliveryInventoryPolicy,
+    default_delivery_inventory_policy,
 )
 from okto_pulse.core.services.test_scenario_lifecycle import (
     compute_test_scenario_semantic_sha256,
@@ -46,8 +45,9 @@ from okto_pulse.core.services.test_scenario_lifecycle import (
 
 
 class CommunityDeliveryEvidenceStore:
-    def __init__(self, session):
+    def __init__(self, session, *, inventory: DeliveryInventoryPolicy | None = None):
         self.session = session
+        self.inventory = inventory if inventory is not None else default_delivery_inventory_policy()
         self._locked = False
 
     async def _get(self, model, identity):
@@ -323,7 +323,7 @@ class CommunityDeliveryEvidenceStore:
                     )
         return DeliveryEvidenceSnapshot(
             scope,
-            delivery_inventory(spec),
+            self.inventory.spec_obligations(spec),
             tuple(implementations),
             tuple(tests),
             tuple(waivers),
@@ -465,13 +465,14 @@ class CommunityDeliveryEvidenceStore:
     async def record(self, command: DeliveryEvidenceCommand, *, actor_id, actor_kind):
         if not actor_id or actor_kind not in {"human", "user", "agent"}:
             raise ValueError("delivery_authenticated_actor_required")
+        command.require_exception_kind()
         if command.kind in {"waiver", "revoke"} and actor_kind not in {"human", "user"}:
             raise ValueError("delivery_human_authorization_required")
         scope = DeliveryScope(
             command.board_id, command.spec_id, command.expected_edition
         )
         await self.lock_scope(scope)
-        request_digest = delivery_digest(command.model_dump())
+        request_digest = self.inventory.payload_digest(command.model_dump())
         replay = (
             await self.session.scalars(
                 select(Record).where(
@@ -493,7 +494,7 @@ class CommunityDeliveryEvidenceStore:
         if spec.version != command.expected_version:
             raise ValueError("delivery_version_conflict")
         inventory = {
-            o.binding.obligation_ref: o.binding for o in delivery_inventory(spec)
+            o.binding.obligation_ref: o.binding for o in self.inventory.spec_obligations(spec)
         }
         if any(ref not in inventory for ref in command.obligation_refs):
             raise ValueError("delivery_obligation_not_found")
@@ -509,17 +510,6 @@ class CommunityDeliveryEvidenceStore:
         payload["bindings"] = [
             asdict(inventory[ref]) for ref in command.obligation_refs
         ]
-        if command.kind == "test":
-            scenarios = [
-                s
-                for s in spec.test_scenarios or []
-                if s.get("id") == command.scenario_id
-            ]
-            if len(scenarios) != 1:
-                raise ValueError("delivery_test_scenario_not_found")
-            payload["test_receipt"] = (scenarios[0].get("evidence") or {}).get(
-                "execution_receipt"
-            )
         if command.kind == "revoke":
             target = await self.session.get(Record, command.record_id)
             if (
@@ -542,47 +532,8 @@ class CommunityDeliveryEvidenceStore:
             payload=payload,
             created_at=datetime.now(timezone.utc),
         )
-        # Validate the candidate before inserting it. Rejected requests never leave
-        # a partially accepted binding even if the caller catches the exception.
-        bindings = tuple(inventory[ref] for ref in command.obligation_refs)
-        existing = await self.load_snapshot(scope)
-        if command.kind == "implementation":
-            fact = await self._implementation(record, scope, bindings)
-            candidate = DeliveryEvidenceSnapshot(
-                scope, existing.obligations, (fact,) if fact else (), complete=True
-            )
-            result = evaluate_delivery_coverage(candidate)
-            if fact is None or record.id in result.rejected_record_ids:
-                raise ValueError("delivery_accepted_committed_task_execution_required")
-        elif command.kind == "test":
-            fact = await self._test(record, scope, bindings, spec)
-            selected_implementations = tuple(
-                i
-                for i in existing.implementations
-                if i.id in command.implementation_ids
-            )
-            candidate = DeliveryEvidenceSnapshot(
-                scope,
-                existing.obligations,
-                selected_implementations,
-                (fact,) if fact else (),
-                complete=True,
-            )
-            result = evaluate_delivery_coverage(candidate)
-            matching = {
-                r.obligation.binding.obligation_ref
-                for r in result.rows
-                if record.id in r.test_ids
-            }
-            if matching != set(command.obligation_refs):
-                raise ValueError(
-                    "delivery_current_verified_test_and_implementation_required"
-                )
-            valid_ids = {
-                f.id for f in existing.implementations if f.current_accepted_execution
-            }
-            if not set(command.implementation_ids) <= valid_ids:
-                raise ValueError("delivery_implementation_scope_invalid")
+        # Proof admission exists only in record_card. The legacy table remains
+        # readable and revocable; no historical bindings are rewritten here.
         self.session.add(record)
         await self.session.flush()
         return {"id": record.id, "replayed": False}
@@ -655,8 +606,7 @@ class CommunityDeliveryEvidenceStore:
             complete=True,
         )
 
-    @staticmethod
-    def _snapshot_obligations(spec, card):
+    def _snapshot_obligations(self, spec, card):
         """Obligation universe for one card's snapshot.
 
         Normal/bug cards derive obligations from their own links (the task
@@ -667,17 +617,16 @@ class CommunityDeliveryEvidenceStore:
         raw_type = getattr(card, "card_type", None)
         card_type = str(getattr(raw_type, "value", raw_type or "normal"))
         if card_type == "test":
-            return delivery_inventory(spec)
-        return card_delivery_inventory(spec, card)
+            return self.inventory.spec_obligations(spec)
+        return self.inventory.card_obligations(spec, card)
 
-    @staticmethod
-    def _record_inventory(spec, card):
+    def _record_inventory(self, spec, card):
         """Binding-resolution inventory for record_card (same rule)."""
         raw_type = getattr(card, "card_type", None)
         card_type = str(getattr(raw_type, "value", raw_type or "normal"))
         if card_type == "test":
-            return delivery_inventory(spec)
-        return card_delivery_inventory(spec, card)
+            return self.inventory.spec_obligations(spec)
+        return self.inventory.card_obligations(spec, card)
 
     async def record_card(
         self, command: CardDeliveryEvidenceCommand, *, actor_id, actor_kind
@@ -696,7 +645,7 @@ class CommunityDeliveryEvidenceStore:
         await self.lock_scope(
             DeliveryScope(command.board_id, command.spec_id, command.expected_spec_edition)
         )
-        request_digest = delivery_digest(command.model_dump())
+        request_digest = self.inventory.payload_digest(command.model_dump())
         replay = (
             await self.session.scalars(
                 select(CardRecord).where(
@@ -822,7 +771,7 @@ class CommunityDeliveryEvidenceStore:
             )
             candidate = DeliveryEvidenceSnapshot(
                 spec_scope,
-                delivery_inventory(spec),
+                self.inventory.spec_obligations(spec),
                 selected_implementations,
                 (fact,) if fact else (),
                 complete=True,
@@ -910,7 +859,7 @@ class CommunityDeliveryEvidenceStore:
         """
         spec = await self._spec(board_id, spec_id)
         scope = DeliveryScope(board_id, spec_id, int(spec.edition))
-        obligations = delivery_inventory(spec)
+        obligations = self.inventory.spec_obligations(spec)
         implementations, tests, per_card = [], [], []
         for card in await self._linked_cards(board_id, spec_id):
             card_scope = CardDeliveryScope(

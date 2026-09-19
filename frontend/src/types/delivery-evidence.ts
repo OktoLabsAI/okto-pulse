@@ -2,13 +2,9 @@ export interface DeliveryEvidenceInput {
   expected_edition: number;
   expected_version: number;
   idempotency_key: string;
-  kind: 'implementation' | 'test' | 'waiver' | 'revoke';
+  kind: 'waiver' | 'revoke';
   obligation_refs: string[];
   justification: string;
-  card_id?: string;
-  execution_id?: string;
-  scenario_id?: string;
-  implementation_ids?: string[];
   phase?: 'implementation' | 'test';
   record_id?: string;
 }

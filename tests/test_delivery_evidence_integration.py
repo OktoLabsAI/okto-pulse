@@ -547,6 +547,119 @@ async def test_rest_roundtrip_closed_schema_and_domain_errors(ledger, monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["implementation", "test"])
+async def test_legacy_spec_proof_writer_rejects_invisible_bindings(
+    ledger, monkeypatch, kind
+):
+    """DEI-T53/F09: the old DTO must not accept proof omitted by the rollup."""
+    from test_code_traceability_rest import _projection_rest_app
+    from okto_pulse.core.application.use_cases import delivery_evidence as app
+    from okto_pulse.community.api import code_traceability as api
+    from okto_pulse.core.ports.authentication import Principal
+
+    session, store, _ = ledger
+    if kind == "test":
+        # A historical legacy implementation is fixture data, not a supported
+        # new write. The legacy test path can validate it, unlike a card-ledger ID.
+        from okto_pulse.core.services.delivery_evidence import delivery_inventory
+        from dataclasses import asdict
+
+        spec = await session.get(Spec, SPEC_ID)
+        session.add(DeliveryEvidenceRecordRow(
+            id="legacy-implementation",
+            board_id=BOARD_ID,
+            spec_id=SPEC_ID,
+            edition=1,
+            kind="implementation",
+            actor_id="owner",
+            actor_kind="human",
+            idempotency_key="historical-implementation",
+            payload_sha256="0" * 64,
+            payload={
+                "card_id": "task", "execution_id": "execution",
+                "justification": "Historical implementation claim",
+                "bindings": [asdict(item.binding) for item in delivery_inventory(spec)],
+            },
+            created_at=datetime(2026, 7, 14, 15, tzinfo=timezone.utc),
+        ))
+        await session.commit()
+
+    before = {
+        model.__tablename__: tuple((await session.scalars(select(model.id))).all())
+        for model in (DeliveryEvidenceRecordRow, CardDeliveryEvidenceRecordRow)
+    }
+    uow = SimpleNamespace(
+        services=SimpleNamespace(delivery_evidence=store),
+        commit=AsyncMock(side_effect=session.commit),
+    )
+    monkeypatch.setattr(app, "require_authorization", AsyncMock())
+    rest_app = _projection_rest_app(uow)
+    rest_app.dependency_overrides[api.require_principal] = lambda: Principal(
+        subject="owner", realm_id="local", actor_kind="human"
+    )
+    payload = {
+        "expected_edition": 1, "expected_version": 1,
+        "idempotency_key": "obsolete-proof", "kind": kind,
+        "obligation_refs": ["ac:ac-about"], "card_id": "task",
+        "justification": "A valid legacy-shaped request must not vanish from rollup.",
+    }
+    if kind == "implementation":
+        payload["execution_id"] = "execution"
+    else:
+        payload.update(card_id="test", scenario_id=SCENARIO["id"],
+                       implementation_ids=["legacy-implementation"])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=rest_app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/boards/{BOARD_ID}/specs/{SPEC_ID}/delivery-evidence", json=payload
+        )
+        assert response.status_code == 422, response.text
+        assert "delivery_card_scope_required" in response.text
+    uow.commit.assert_not_awaited()
+    for model in (DeliveryEvidenceRecordRow, CardDeliveryEvidenceRecordRow):
+        assert tuple((await session.scalars(select(model.id))).all()) == before[model.__tablename__]
+    if kind == "test":
+        historical = await store.projection(BOARD_ID, SPEC_ID)
+        assert [row["id"] for row in historical["records"]] == ["legacy-implementation"]
+        await record(store, legacy_command("revoke", record_id="legacy-implementation"), human=True)
+        await session.commit()
+        historical = await store.projection(BOARD_ID, SPEC_ID)
+        assert next(row for row in historical["records"] if row["id"] == "legacy-implementation")["revoked"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["implementation", "test"])
+async def test_direct_legacy_writer_cannot_bypass_closed_transport(ledger, monkeypatch, kind):
+    """DEI-T53: both the public use case and persistence seam reject old writers."""
+    from okto_pulse.core.application.use_cases import delivery_evidence as app
+    from okto_pulse.core.application.use_cases.base import ActorContext
+
+    session, store, _ = ledger
+    obsolete = DeliveryEvidenceCommand.model_construct(
+        kind=kind, board_id=BOARD_ID, spec_id=SPEC_ID
+    )
+    auth = AsyncMock()
+    monkeypatch.setattr(app, "require_authorization", auth)
+    uow = SimpleNamespace(
+        services=SimpleNamespace(delivery_evidence=store), commit=AsyncMock()
+    )
+    actor = ActorContext(actor_id="owner", source="rest", actor_kind="human")
+    with pytest.raises(ValueError, match="delivery_card_scope_required"):
+        await app.RecordDeliveryEvidenceUseCase().execute(obsolete, actor=actor, uow=uow)
+    auth.assert_awaited_once()
+    assert auth.await_args.args[1].operation == (
+        "spec.tests.execute" if kind == "test" else "code_traceability.target.execution_submit"
+    )
+    uow.commit.assert_not_awaited()
+    with pytest.raises(ValueError, match="delivery_card_scope_required"):
+        await store.record(obsolete, actor_id="owner", actor_kind="human")
+    assert not store._locked
+    assert not (await session.scalars(select(DeliveryEvidenceRecordRow))).all()
+    assert not (await session.scalars(select(CardDeliveryEvidenceRecordRow))).all()
+
+
+@pytest.mark.asyncio
 async def test_mcp_runs_same_store_closed_inputs_permissions_and_explicit_errors(
     ledger, monkeypatch
 ):
