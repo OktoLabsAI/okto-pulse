@@ -1515,6 +1515,53 @@ class SpecHistory(Base):
     spec: Mapped["Spec"] = relationship("Spec", back_populates="history")
 
 
+class ArchitectureClassificationReceiptRow(Base):
+    """Actor-bound idempotency receipt, committed with decisions and IRs."""
+
+    __tablename__ = "architecture_classification_receipts"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(idempotency_key)) >= 1 AND length(request_digest) = 64 "
+            "AND length(trim(actor_id)) >= 1",
+            name="ck_architecture_classification_receipt_shape",
+        ),
+    )
+
+    spec_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("specs.id", ondelete="CASCADE", onupdate="RESTRICT"),
+        primary_key=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    board_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now(), nullable=False)
+
+
+class ArchitectureCandidateDecisionRow(Base):
+    """Immutable classification history; each batch may contain scope fragments."""
+
+    __tablename__ = "architecture_candidate_decisions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["spec_id", "idempotency_key"],
+            ["architecture_classification_receipts.spec_id", "architecture_classification_receipts.idempotency_key"],
+            ondelete="CASCADE", onupdate="RESTRICT",
+        ),
+        CheckConstraint("spec_edition >= 1 AND spec_version >= 1", name="ck_architecture_decision_versions"),
+        Index("ix_architecture_decision_latest", "spec_id", "spec_edition", "candidate_id", "spec_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    spec_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    spec_edition: Mapped[int] = mapped_column(Integer, nullable=False)
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    candidate_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
 class ProjectStructureMutationReceiptRow(Base):
     """Durable exact-replay receipt for one Project structure batch."""
 

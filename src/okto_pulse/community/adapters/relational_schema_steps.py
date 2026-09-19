@@ -8872,6 +8872,57 @@ async def _migrate_add_spec_architecture_adoption() -> str | None:
         await conn.execute(sa_text("ALTER TABLE specs ADD COLUMN architecture_adoption JSON"))
 
 
+async def _migrate_architecture_classification_storage() -> str:
+    """Validate additive classification tables created at create_all_boundary.
+
+    No backfill or classification is inferred for legacy Specs. Existing table
+    names with an incompatible shape fail closed instead of passing checkfirst.
+    """
+    import re
+    from sqlalchemy import CheckConstraint, inspect
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        ArchitectureCandidateDecisionRow, ArchitectureClassificationReceiptRow,
+    )
+
+    def check(connection):
+        inspector = inspect(connection)
+        def normalize_check(value):
+            return re.sub(r"[\s()]", "", str(value)).lower()
+        for table in (ArchitectureClassificationReceiptRow.__table__, ArchitectureCandidateDecisionRow.__table__):
+            if not inspector.has_table(table.name):
+                raise RuntimeError("architecture_classification_schema_missing")
+            columns = {item["name"]: item for item in inspector.get_columns(table.name)}
+            if set(columns) != set(table.columns.keys()):
+                raise RuntimeError("architecture_classification_schema_drift")
+            for expected in table.columns:
+                actual = columns[expected.name]
+                if (bool(actual["nullable"]) != expected.nullable
+                    or str(actual["type"].compile(dialect=connection.dialect)) != str(expected.type.compile(dialect=connection.dialect))):
+                    raise RuntimeError("architecture_classification_schema_drift")
+            if inspector.get_pk_constraint(table.name)["constrained_columns"] != [item.name for item in table.primary_key.columns]:
+                raise RuntimeError("architecture_classification_schema_drift")
+            foreign_keys = {
+                (tuple(item["constrained_columns"]), item["referred_table"], tuple(item["referred_columns"]),
+                 item["options"].get("ondelete"), item["options"].get("onupdate"))
+                for item in inspector.get_foreign_keys(table.name)
+            }
+            expected_foreign_keys = {
+                (tuple(item.parent.name for item in constraint.elements), constraint.referred_table.name,
+                 tuple(item.column.name for item in constraint.elements), constraint.ondelete, constraint.onupdate)
+                for constraint in table.foreign_key_constraints
+            }
+            indexes = {(item["name"], tuple(item["column_names"]), bool(item["unique"])) for item in inspector.get_indexes(table.name)}
+            expected_indexes = {(item.name, tuple(column.name for column in item.columns), bool(item.unique)) for item in table.indexes}
+            checks = {(item["name"], normalize_check(item["sqltext"])) for item in inspector.get_check_constraints(table.name)}
+            expected_checks = {(item.name, normalize_check(item.sqltext)) for item in table.constraints if isinstance(item, CheckConstraint)}
+            if foreign_keys != expected_foreign_keys or indexes != expected_indexes or checks != expected_checks:
+                raise RuntimeError("architecture_classification_schema_drift")
+
+    async with get_engine().begin() as conn:
+        await conn.run_sync(check)
+    return "skipped"
+
+
 async def _migrate_add_ir_or_columns() -> None:
     """Add first-class IR/OR JSON columns and coverage flags to specs."""
     from sqlalchemy import text as sa_text
@@ -25213,6 +25264,7 @@ SCHEMA_STEP_CALLABLES: dict[str, StepCallable] = {
     "_migrate_status_renames": _migrate_status_renames,
     "_migrate_add_permission_columns": _migrate_add_permission_columns,
     "_migrate_add_event_tables": _migrate_add_event_tables,
+    "_migrate_architecture_classification_storage": _migrate_architecture_classification_storage,
     "_migrate_validation_cycle_editions": _migrate_validation_cycle_editions,
     "_migrate_add_consolidation_work_kinds": _migrate_add_consolidation_work_kinds,
     "_migrate_global_discovery_delivery_contract": (

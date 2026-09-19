@@ -174,10 +174,10 @@ def test_ts_7aacc71a_ledger_covers_all_migrate_functions():
     # of Spec validation pointers lost by historical Code Traceability effects,
     # nullable Project structure, Delivery Evidence skip, and prospective
     # architecture selection without a legacy adoption backfill.
-    assert len(migrate_names) == 73, (
-        f"expected 73 _migrate_*, found {len(migrate_names)}"
+    assert len(migrate_names) == 74, (
+        f"expected 74 _migrate_*, found {len(migrate_names)}"
     )
-    assert len(ledger_migrate_ids) == 73
+    assert len(ledger_migrate_ids) == 74
     ordered_ids = [step.step_id for step in ledger]
     assert ordered_ids.index(
         "_migrate_guideline_policy_lifecycle_substrate"
@@ -856,6 +856,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         repair_step,
         "_migrate_add_skip_delivery_evidence",
         "_migrate_add_spec_architecture_adoption",
+        "_migrate_architecture_classification_storage",
         governed_queue_convergence_step,
         delivery_convergence_step,
         kb_governance_convergence_step,
@@ -888,6 +889,7 @@ def test_ts_7d52dffc_idempotent_replay_no_drift(tmp_path, _isolate_engine):
         repair_step,
         "_migrate_add_skip_delivery_evidence",
         "_migrate_add_spec_architecture_adoption",
+        "_migrate_architecture_classification_storage",
         recovery_convergence_step,
         governed_queue_convergence_step,
         delivery_convergence_step,
@@ -1079,7 +1081,8 @@ def test_v030_installed_schema_upgrades_to_exact_semantic_v2_and_replays(
     # Keep this fixture-level cardinality explicit: the five additional
     # migration-owned objects are part of the current terminal schema and the
     # replay assertion above proves they are idempotent over the v0.3.0 file.
-    assert len(schema_objects) == 873
+    # Classification adds two tables and one explicitly named lookup index.
+    assert len(schema_objects) == 876
     assert exact_ack_columns[10:13] == (
         ("membership_content_hash", "VARCHAR(64)", 1),
         ("audit_content_hash", "VARCHAR(64)", 1),

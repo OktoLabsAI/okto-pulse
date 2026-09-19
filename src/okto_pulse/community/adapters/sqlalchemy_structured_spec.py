@@ -3,20 +3,31 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import asdict
+from datetime import datetime
 from typing import Any, Sequence
 
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.orm.exc import StaleDataError
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Card,
+    ArchitectureCandidateDecisionRow,
+    ArchitectureClassificationReceiptRow,
     CodeEvidenceRow,
     CodeEvidenceSpecLinkRow,
     ProjectStructureMutationReceiptRow,
     Spec,
 )
 from okto_pulse.core.domain.enums import CardType
+from okto_pulse.core.ports.architecture_classification import (
+    ArchitectureClassificationPersistenceResult,
+    ArchitectureClassificationPersistenceState as ClassificationState,
+    ArchitectureClassificationReceipt,
+    ArchitectureDecisionRecord,
+)
 from okto_pulse.core.ports.structured_spec import (
     ProjectStructureMutationReceipt,
     ProjectStructureMutationPersistenceResult,
@@ -67,6 +78,108 @@ def _record(row: Any) -> StructuredSpecRecord:
 
 
 class CommunitySqlAlchemyStructuredSpecStore:
+    async def get_architecture_classification_receipt(
+        self, context: Any, *, spec_id: str, idempotency_key: str,
+    ) -> ArchitectureClassificationReceipt | None:
+        row = await context.get(ArchitectureClassificationReceiptRow, (spec_id, idempotency_key))
+        if row is None:
+            return None
+        return ArchitectureClassificationReceipt(
+            board_id=row.board_id, spec_id=row.spec_id, actor_id=row.actor_id,
+            idempotency_key=row.idempotency_key, request_digest=row.request_digest,
+            result=copy.deepcopy(row.result),
+        )
+
+    async def list_architecture_decisions(
+        self, context: Any, *, spec_id: str, spec_edition: int,
+    ) -> tuple[ArchitectureDecisionRecord, ...]:
+        row = ArchitectureCandidateDecisionRow
+        latest = (
+            select(row.candidate_id, func.max(row.spec_version).label("version"))
+            .where(row.spec_id == spec_id, row.spec_edition == spec_edition)
+            .group_by(row.candidate_id).subquery()
+        )
+        rows = (await context.scalars(
+            select(row).join(latest, (row.candidate_id == latest.c.candidate_id) & (row.spec_version == latest.c.version))
+            .where(row.spec_id == spec_id, row.spec_edition == spec_edition)
+            .order_by(row.candidate_id, row.id)
+        )).all()
+        return tuple(_decision_record(item) for item in rows)
+
+    async def save_architecture_classification(
+        self, context: Any, record: StructuredSpecRecord, *,
+        expected_spec_version: int, expected_spec_edition: int,
+        changed_fields: Sequence[str], decisions: Sequence[ArchitectureDecisionRecord],
+        receipt: ArchitectureClassificationReceipt,
+    ) -> ArchitectureClassificationPersistenceResult:
+        # Mechanical contract checks only. Core owns candidate/IR semantics,
+        # authorization and currentness, before invoking this atomic writer.
+        if (
+            receipt.spec_id != record.id or receipt.board_id != record.board_id
+            or record.version != expected_spec_version + 1
+            or record.edition != expected_spec_edition
+            or not decisions
+            or set(changed_fields) - (set(_JSON_FIELDS) - {"project_structure"})
+            or any(
+                item.spec_id != record.id or item.spec_edition != expected_spec_edition
+                or item.spec_version != record.version or item.actor_id != receipt.actor_id
+                for item in decisions
+            )
+        ):
+            raise ValueError("architecture_classification_persistence_envelope_invalid")
+        existing = await self.get_architecture_classification_receipt(
+            context, spec_id=record.id, idempotency_key=receipt.idempotency_key,
+        )
+        if existing is not None:
+            return _classification_replay(existing, receipt)
+        try:
+            async with context.begin_nested():
+                context.add(ArchitectureClassificationReceiptRow(
+                    board_id=receipt.board_id, spec_id=receipt.spec_id, actor_id=receipt.actor_id,
+                    idempotency_key=receipt.idempotency_key, request_digest=receipt.request_digest,
+                    result=copy.deepcopy(receipt.result),
+                ))
+                await context.flush()
+                # This no-op CAS takes the row's write lock through commit.
+                # Keep all three fences explicit, then use the normal ORM
+                # writer so semantic version/projection listeners still run.
+                fenced = await context.execute(
+                    update(Spec).where(
+                        Spec.id == record.id, Spec.board_id == record.board_id,
+                        Spec.version == expected_spec_version, Spec.edition == expected_spec_edition,
+                    ).values(version=Spec.version, updated_at=Spec.updated_at)
+                    .execution_options(synchronize_session=False)
+                )
+                if fenced.rowcount != 1:
+                    raise _ArchitectureClassificationVersionConflict
+                row = await context.get(Spec, record.id, populate_existing=True)
+                for field_name in changed_fields:
+                    setattr(row, field_name, copy.deepcopy(getattr(record, field_name)))
+                    flag_modified(row, field_name)
+                row.version = record.version
+                for decision in decisions:
+                    payload = asdict(decision)
+                    payload["classified_at"] = decision.classified_at.isoformat()
+                    context.add(ArchitectureCandidateDecisionRow(
+                        id=decision.id, spec_id=record.id,
+                        idempotency_key=receipt.idempotency_key,
+                        spec_edition=decision.spec_edition, spec_version=decision.spec_version,
+                        candidate_id=decision.candidate_id, payload=payload,
+                    ))
+                await context.flush()
+        except (_ArchitectureClassificationVersionConflict, StaleDataError):
+            return ArchitectureClassificationPersistenceResult(ClassificationState.VERSION_CONFLICT)
+        except IntegrityError:
+            winner = await self.get_architecture_classification_receipt(
+                context, spec_id=record.id, idempotency_key=receipt.idempotency_key,
+            )
+            if winner is None:
+                # A different integrity failure (e.g. a duplicate decision ID)
+                # is not a successful replay or an idempotency-key conflict.
+                raise
+            return _classification_replay(winner, receipt)
+        return ArchitectureClassificationPersistenceResult(ClassificationState.APPLIED, copy.deepcopy(receipt))
+
     async def get(
         self,
         context: Any,
@@ -319,6 +432,35 @@ class CommunitySqlAlchemyStructuredSpecStore:
             )
             if {str(value) for value in direct | linked} != evidence_set:
                 raise ValueError("project_structure_evidence_reference_invalid")
+
+
+def _decision_record(row: ArchitectureCandidateDecisionRow) -> ArchitectureDecisionRecord:
+    values = copy.deepcopy(row.payload)
+    for field_name in ("id", "spec_id", "spec_edition", "spec_version", "candidate_id"):
+        if values.get(field_name) != getattr(row, field_name):
+            raise ValueError("architecture_decision_storage_drift")
+    values["classified_at"] = datetime.fromisoformat(values["classified_at"])
+    values["adopted_sources"] = tuple(tuple(item) for item in values["adopted_sources"])
+    values["integration_requirement_ids"] = tuple(values["integration_requirement_ids"])
+    values["scope_paths"] = tuple(values["scope_paths"])
+    return ArchitectureDecisionRecord(**values)
+
+
+def _classification_replay(
+    existing: ArchitectureClassificationReceipt, requested: ArchitectureClassificationReceipt,
+) -> ArchitectureClassificationPersistenceResult:
+    if (
+        existing.actor_id == requested.actor_id
+        and existing.board_id == requested.board_id
+        and existing.request_digest == requested.request_digest
+    ):
+        return ArchitectureClassificationPersistenceResult(ClassificationState.REPLAYED, existing)
+    # Do not reveal a different actor's prior result through a conflict reply.
+    return ArchitectureClassificationPersistenceResult(ClassificationState.IDEMPOTENCY_CONFLICT)
+
+
+class _ArchitectureClassificationVersionConflict(Exception):
+    """Rollback the complete classification batch to its savepoint."""
 
 
 class _ProjectStructureVersionConflict(Exception):

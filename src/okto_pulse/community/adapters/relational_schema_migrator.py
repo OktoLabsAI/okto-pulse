@@ -211,6 +211,12 @@ _LEDGER: tuple[tuple[str, str, bool, str], ...] = (
     ),
     # --- post_create_all: schema ALTERs applied AFTER create_all ---
     (
+        "_migrate_architecture_classification_storage",
+        "post_create_all",
+        False,
+        "Verify additive architecture decision/receipt tables without classifying legacy Specs.",
+    ),
+    (
         "_migrate_validation_cycle_editions",
         "post_create_all",
         False,
