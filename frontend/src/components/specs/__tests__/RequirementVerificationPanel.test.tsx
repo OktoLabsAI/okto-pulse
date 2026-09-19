@@ -173,4 +173,36 @@ describe('requirement qualification', () => {
     expect(await screen.findByText('Method and Test Card planning is unavailable.')).toBeInTheDocument();
     expect(screen.queryByText(/Method planning: complete/)).not.toBeInTheDocument();
   });
+  it('shows inherited responsibility only for its declared Card and preserves provenance', async () => {
+    api.getRequirementVerification.mockResolvedValue(response({ implementation_plan_evaluated: true,
+      implementation_plan_complete: true, implementation_population_complete: true,
+      items: [row({ requirement_type: 'business_rule', requirement_id: 'br', contribution_count: 1,
+        implementation_contributions: [{ card_id: 'authorization', origin: 'inherited', scope: 'selected_criteria',
+          criterion_ids: ['ac-lock'], criterion_count: 1, criteria_truncated: false, summary: 'Authorization component',
+          scope_sha256: 'a'.repeat(64), sources: [{ requirement_type: 'functional_requirement', requirement_id: 'fr-auth', scope_sha256: 'b'.repeat(64) }],
+          source_count: 1, sources_truncated: false }],
+      })],
+    }));
+    render(<RequirementVerificationPanel {...props()} />); open();
+    expect(await screen.findByText('Implementation Card: authorization · inherited · selected criteria')).toBeInTheDocument();
+    expect(screen.getByText('Inherited from: fr-auth')).toBeInTheDocument();
+    expect(screen.getByText(/Contribution scope does not approve or complete the work/)).toBeInTheDocument();
+    expect(screen.queryByText(/Implementation Card: ui/)).not.toBeInTheDocument();
+  });
+  it('reports ambiguous responsibility and summary truncation without a complete verdict', async () => {
+    api.getRequirementVerification.mockResolvedValue(response({ implementation_plan_evaluated: true, implementation_plan_complete: false,
+      items: [row({ contribution_blockers: ['implementation_inheritance_allocation_ambiguous'], contribution_count: 25, contributions_truncated: true })] }));
+    render(<RequirementVerificationPanel {...props()} />); open();
+    expect(await screen.findByText('Declared implementation scope: pending')).toBeInTheDocument();
+    expect(screen.getByText(/Declare a direct allocation/)).toBeInTheDocument();
+    expect(screen.getByText(/result considers all 25 contributions/)).toBeInTheDocument();
+  });
+  it('does not expose implementation facts without planning authority', async () => {
+    api.getRequirementVerification.mockResolvedValue(response({ implementation_plan_evaluated: true, implementation_plan_complete: true,
+      items: [row({ contribution_blockers: ['implementation_inheritance_allocation_ambiguous'] })] }));
+    render(<RequirementVerificationPanel {...props({ canReadPlanning: false })} />); open();
+    await screen.findByRole('button', { name: 'Edit qualification fr' });
+    expect(screen.queryByText(/Declared implementation scope/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Declare a direct allocation/)).not.toBeInTheDocument();
+  });
 });

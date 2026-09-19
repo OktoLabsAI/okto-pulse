@@ -224,6 +224,12 @@ async def test_native_transport_parity_global_pending_and_no_read_writes(
                 assert data["items"][0]["criteria_paths"][0]["scenario_plans"][0][
                     "test_card_ids"
                 ] == ["test-card"]
+                assert data["implementation_plan_evaluated"]
+                assert not data["implementation_plan_complete"]
+                assert (
+                    data["items"][0]["implementation_contributions"][0]["card_id"]
+                    == "implementation-card"
+                )
             focused = await rest.get(
                 path,
                 params={
@@ -254,10 +260,24 @@ async def test_native_transport_parity_global_pending_and_no_read_writes(
 
 
 async def seed_plan(db):
+    spec = await db.get(Spec, "spec", populate_existing=True)
+    frs = [
+        {
+            **item,
+            "linked_task_ids": ["implementation-card"],
+            "implementation_plan": {
+                "contributions": [
+                    {"card_id": "implementation-card", "scope": "whole_requirement"}
+                ]
+            },
+        }
+        for item in spec.functional_requirements
+    ]
     await db.execute(
         update(Spec)
         .where(Spec.id == "spec")
         .values(
+            functional_requirements=frs,
             test_scenarios=[
                 {
                     "id": "ts",
@@ -269,7 +289,7 @@ async def seed_plan(db):
                     "linked_criteria": ["ac"],
                     "verification_method": "automated_test",
                 }
-            ]
+            ],
         )
     )
     db.add(
@@ -283,6 +303,18 @@ async def seed_plan(db):
             status="not_started",
             archived=False,
             test_scenario_ids=["ts"],
+        )
+    )
+    db.add(
+        Card(
+            id="implementation-card",
+            board_id="board",
+            spec_id="spec",
+            title="Implement blocking",
+            created_by="author",
+            card_type="normal",
+            status="not_started",
+            archived=False,
         )
     )
     await db.commit()

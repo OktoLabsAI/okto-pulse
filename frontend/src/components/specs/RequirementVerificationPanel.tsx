@@ -25,6 +25,14 @@ const blockerLabels: Record<string, string> = {
   verification_test_card_required: 'Assign this scenario to a Test Card.',
   verification_scenario_required: 'Link a scenario to this criterion.',
   verification_planning_read_restricted: 'Reading method and Test Card planning requires scenario and Card read permissions.',
+  implementation_plan_required: 'Declare the implementation contribution for each linked Card.',
+  implementation_contribution_links_changed: 'The Card links changed; review the declared contributions.',
+  implementation_contribution_card_unavailable: 'An implementation Card is missing, inactive or outside this scope.',
+  implementation_contribution_scope_uncovered: 'Some required criteria have no implementation contribution.',
+  implementation_contribution_criterion_unresolved: 'Review the criteria selected for this contribution.',
+  implementation_inheritance_allocation_ambiguous: 'The inherited responsibility has several possible owners or no owner. Declare a direct allocation.',
+  implementation_inheritance_source_unresolved: 'Review the canonical source requirement for inherited responsibility.',
+  implementation_qualification_unresolved: 'Resolve requirement qualification before completing the contribution plan.',
 };
 interface Scope { boardId: string; specId: string; version: number; edition: number }
 function sameScope(response: RequirementVerificationResponse, scope: Scope) {
@@ -209,9 +217,24 @@ function RequirementVerificationContent({ scope, canRead, canReadPlanning = fals
         {!canReadPlanning && <p>{blockerLabels.verification_planning_read_restricted}</p>}
         {canReadPlanning && current.data.planning_issues?.map((issue, i) => <p key={i} className="text-amber-400">{blockerLabels[issue.code] || 'Review the incomplete or invalid verification planning facts.'}</p>)}
         {canReadPlanning && current.data.planning_issues_truncated && <p>Additional planning issues are not shown.</p>}
+        {canReadPlanning && current.data.implementation_plan_evaluated && <>
+          <p>Declared implementation scope: {current.data.implementation_plan_complete ? 'complete' : 'pending'}</p>
+          <p className="text-xs">This summary covers functional, technical, integration and observability requirements, plus Business Rules.</p>
+          <p className="text-xs">Contribution scope does not approve or complete the work. Dependencies and delivery remain separate.</p>
+          {current.data.implementation_issues?.map(code => <p key={code}>{blockerLabels[code] || 'Implementation responsibility is unavailable or incomplete.'}</p>)}
+        </>}
         {current.data.items.map(row => <div key={keyOf(row.requirement_type, row.requirement_id)} className="space-y-2 rounded border border-slate-700 p-2 text-sm">
           <p>{row.title} · {row.requirement_id} · {row.verification?.mode || 'Not qualified'}</p>
           <p>{row.verification?.required_profiles.join(', ') || 'Profiles not defined'}</p>
+          {canReadPlanning && row.contribution_blockers?.map(code => <p key={code} className="text-amber-400">{blockerLabels[code] || 'Review the declared implementation scope.'}</p>)}
+          {canReadPlanning && row.implementation_contributions?.map(contribution => <div key={contribution.card_id} className="text-xs">
+            <p>Implementation Card: {contribution.card_id} · {contribution.origin} · {contribution.scope === 'whole_requirement' ? 'whole requirement' : 'selected criteria'}</p>
+            {contribution.summary && <p>{contribution.summary}</p>}
+            <p>Criteria: {contribution.criterion_ids.join(', ') || 'not resolved'}</p>
+            {contribution.sources.length > 0 && <p>Inherited from: {contribution.sources.map(source => source.requirement_id).join(', ')}</p>}
+            {(contribution.criteria_truncated || contribution.sources_truncated) && <p>Additional contribution details are omitted from this summary.</p>}
+          </div>)}
+          {canReadPlanning && row.contributions_truncated && <p>Additional contributions are omitted; the result considers all {row.contribution_count} contributions.</p>}
           {row.blockers.map((blocker, i) => <p key={i} className="text-amber-400">{blockerLabels[blocker.code] || 'Review this qualification.'}{blocker.profile ? ` (${blocker.profile})` : ''}</p>)}
           {row.criteria_paths.map((path, i) => <div key={i} className="space-y-1 text-xs">
             <p>{path.criterion_id} · {path.profile} · {path.path.map(step => step.requirement_id).join(' → ')}</p>

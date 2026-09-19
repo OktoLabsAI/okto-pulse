@@ -31,6 +31,16 @@ export interface RequirementVerificationPath {
   }>;
 }
 export interface RequirementVerificationRow extends VerificationRequirementRef {
+  contribution_blockers?: string[];
+  contribution_count?: number;
+  contributions_truncated?: boolean;
+  implementation_contributions?: Array<{
+    card_id: string; origin: 'direct' | 'inherited'; scope: 'whole_requirement' | 'selected_criteria';
+    criterion_ids: string[]; summary: string | null; scope_sha256: string;
+    criterion_count: number; criteria_truncated: boolean;
+    sources: Array<VerificationRequirementRef & { scope_sha256: string }>;
+    source_count: number; sources_truncated: boolean;
+  }>;
   title: string;
   source_digest: string | null;
   verification: RequirementVerification | null;
@@ -59,6 +69,11 @@ export interface RequirementVerificationResponse {
   issues: Array<{ code: string; field?: string; criterion_id?: string }>;
   issue_count: number; issues_truncated: boolean;
   methods_evaluated: boolean; execution_evaluated: false;
+  implementation_plan_evaluated?: boolean;
+  implementation_scope?: 'qualified_requirements';
+  implementation_plan_complete?: boolean;
+  implementation_population_complete?: boolean;
+  implementation_issues?: string[];
   verification_work_evaluated?: boolean;
   method_plan_complete?: boolean; verification_work_complete?: boolean;
   planning_population_complete?: boolean;
