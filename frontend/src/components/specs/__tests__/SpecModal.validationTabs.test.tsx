@@ -21,6 +21,7 @@ const apiMock = vi.hoisted(() => ({
   listSprints: vi.fn(),
   getArchitectureCandidates: vi.fn(),
   getArchitectureClassifications: vi.fn(),
+  getRequirementVerification: vi.fn(),
   updateSpecEntity: vi.fn(),
 }));
 const permissionMock = vi.hoisted(() => ({
@@ -238,6 +239,39 @@ function blockedPolicyDecision() {
 }
 
 describe('SpecModal validation navigation', () => {
+  it.each(['draft', 'review', 'approved', 'validated', 'in_progress', 'done'] as SpecStatus[])(
+    'allows requirement qualification authoring only in an unarchived authorized Draft: %s', async status => {
+      apiMock.getRequirementVerification.mockResolvedValue({
+        contract_version: 'requirement-verification/v1', board_id: baseSpec.board_id, spec_id: baseSpec.id,
+        spec_version: baseSpec.version, spec_edition: baseSpec.edition, population_complete: true,
+        population_total: 1, resolved_count: 0, issue_count: 0, next_offset: null,
+        items: [{ requirement_type: 'functional_requirement', requirement_id: 'fr-plan', title: 'Block access',
+          verification: null, default_proposal: null, criteria_paths: [], blockers: [] }],
+      });
+      renderSpec(status);
+      fireEvent.click(await screen.findByRole('button', { name: 'Review requirement qualification' }));
+      await screen.findByText(/Block access · fr-plan/);
+      expect(Boolean(screen.queryByRole('button', { name: 'Edit qualification fr-plan' }))).toBe(status === 'draft');
+    });
+
+  it.each(['spec.structured_entity.functional_requirement.update', 'spec.interact_in.draft', 'archived'])(
+    'keeps requirement qualification read-only when authority is absent: %s', async missing => {
+      permissionMock.allowAll = false;
+      permissionMock.allowed = new Set(['spec.entity.read', 'spec.integration_requirements.read', 'spec.observability_requirements.read', 'spec.structured_entity.functional_requirement.update', 'spec.interact_in.draft'].filter(flag => flag !== missing));
+      apiMock.getSpec.mockResolvedValue({ ...baseSpec, archived: missing === 'archived' });
+      apiMock.getRequirementVerification.mockResolvedValue({
+        contract_version: 'requirement-verification/v1', board_id: baseSpec.board_id, spec_id: baseSpec.id,
+        spec_version: baseSpec.version, spec_edition: baseSpec.edition, population_complete: true,
+        population_total: 1, resolved_count: 0, issue_count: 0, next_offset: null,
+        items: [{ requirement_type: 'functional_requirement', requirement_id: 'fr-plan', title: 'Block access',
+          verification: null, default_proposal: null, criteria_paths: [], blockers: [] }],
+      });
+      render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Review requirement qualification' }));
+      await screen.findByText(/Block access · fr-plan/);
+      expect(screen.queryByRole('button', { name: 'Edit qualification fr-plan' })).not.toBeInTheDocument();
+    });
+
   it('authors criterion verification through the existing versioned structured writer', async () => {
     apiMock.getSpec.mockResolvedValue({ ...baseSpec,
       acceptance_criteria: [{ id: 'ac-plan', text: 'Five attempts block access' }],

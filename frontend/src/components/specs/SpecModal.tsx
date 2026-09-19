@@ -11,6 +11,7 @@ import {
 } from 'react';
 import { DeliveryEvidencePanel } from '@/components/code-traceability/DeliveryEvidencePanel';
 import { CriterionVerificationPanel } from './CriterionVerificationPanel';
+import { RequirementVerificationPanel } from './RequirementVerificationPanel';
 import { verificationRequirementOptions } from './criterionVerificationOptions';
 import {
   X,
@@ -2768,6 +2769,17 @@ export function SpecModal({
                   && hasPermissionWithState(perms.has, 'spec.structured_entity.acceptance_criterion.update', 'spec', spec.status)}
                 onSaved={async () => { await reloadSpecAfterStructuredEdit(); }}
               />}
+              <RequirementVerificationPanel
+                key={JSON.stringify([spec.board_id, spec.id, spec.version, spec.edition, spec.status, spec.archived, perms.has('spec.entity.read'), canReadIR, canReadOR,
+                  ...(['functional_requirement', 'technical_requirement', 'integration_requirement', 'observability_requirement', 'business_rule'] as const).map(type => canStructured(type, 'update'))])}
+                scope={{ boardId: spec.board_id, specId: spec.id, version: spec.version, edition: spec.edition }}
+                canRead={perms.has('spec.entity.read') && canReadIR && canReadOR}
+                canEdit={type => !spec.archived && spec.status === 'draft'
+                  && hasPermissionWithState(perms.has, `spec.structured_entity.${type}.update`, 'spec', spec.status)}
+                options={verificationRequirementOptions(spec, canReadIR, canReadOR)}
+                criteria={(spec.acceptance_criteria || []) as unknown[]}
+                onSaved={async () => { await reloadSpecAfterStructuredEdit(); }}
+              />
               {/* Decisions — contextual choices, same bulleted pattern as FR/AC.
                   Only active decisions show in the list; supersedence/revocation
                   happens via MCP tools + KG. Text is mapped to Decision.title

@@ -1328,6 +1328,29 @@ async def get_spec(
     return result.spec
 
 
+@router.get("/boards/{board_id}/specs/{spec_id}/requirement-verification")
+async def get_requirement_verification(
+    board_id: str, spec_id: str,
+    offset: int = Query(0, ge=0, le=2**63 - 1), limit: int = Query(25, ge=1, le=100),
+    requirement_type: str | None = Query(None), requirement_id: str | None = Query(None),
+    paths_offset: int = Query(0, ge=0, le=2**63 - 1),
+    user_id: str = Depends(require_user), uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Resolve authored qualification paths; no admission or historical backfill."""
+    from okto_pulse.core.application.use_cases.requirement_verification import (
+        GetRequirementVerificationCommand, GetRequirementVerificationUseCase, RequirementVerificationReadError,
+    )
+    try:
+        command = GetRequirementVerificationCommand(board_id, spec_id, offset, limit, requirement_type, requirement_id, paths_offset)
+        return await GetRequirementVerificationUseCase().execute(command, actor=RESTAdapterContract.actor(user_id, board_id=board_id), uow=uow)
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Spec not found") from exc
+    except PermissionDeniedError as exc:
+        raise HTTPException(status_code=403, detail=exc.message) from exc
+    except RequirementVerificationReadError as exc:
+        raise HTTPException(status_code=503 if str(exc) == "verification_snapshot_unavailable" else 422, detail=str(exc)) from exc
+
+
 @router.get("/boards/{board_id}/specs/{spec_id}/architecture-candidates")
 async def get_architecture_candidates(
     board_id: str,

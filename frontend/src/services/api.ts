@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import type { ArchitectureCandidatesResponse } from '@/types/architecture-candidates';
 import type { ArchitectureClassificationsResponse, ArchitectureReviewState, ArchitectureClassificationBatch, ArchitectureClassificationReceipt } from '@/types/architecture-classifications';
+import type { RequirementVerificationResponse, VerificationRequirementType } from '@/types/requirement-verification';
 import type { CardDeliveryEvidenceInput, DeliveryEvidenceInput, DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 /**
  * API Service - all API calls centralized
@@ -1379,6 +1380,21 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson<ArchitectureClassificationReceipt>(
         `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/architecture-classifications`,
         { method: 'POST', body: JSON.stringify(batch), maxRetries: 0 },
+      );
+    },
+
+    async getRequirementVerification(
+      boardId: string, specId: string, signal?: AbortSignal,
+      options: { offset?: number; limit?: number; requirementType?: VerificationRequirementType; requirementId?: string; pathsOffset?: number } = {},
+    ): Promise<RequirementVerificationResponse> {
+      const params = new URLSearchParams();
+      if (options.offset !== undefined) params.set('offset', String(options.offset));
+      if (options.limit !== undefined) params.set('limit', String(options.limit));
+      if (options.requirementType !== undefined) params.set('requirement_type', options.requirementType);
+      if (options.requirementId !== undefined) params.set('requirement_id', options.requirementId);
+      if (options.pathsOffset !== undefined) params.set('paths_offset', String(options.pathsOffset));
+      return apiClient.fetchJson<RequirementVerificationResponse>(
+        `/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/requirement-verification${params.size ? `?${params}` : ''}`, { signal },
       );
     },
 

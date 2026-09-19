@@ -6,6 +6,7 @@ import type {
   PolicyComplianceTransitionDecision,
   RedactedPolicyComplianceTransitionDecision,
 } from './policy-governance';
+import type { RequirementVerification } from './requirement-verification';
 
 // Card status enum matching backend
 export type CardStatus =
@@ -1338,6 +1339,7 @@ export interface RefinementSummary {
 
 // Business Rule
 export interface BusinessRule {
+  verification?: RequirementVerification | null;
   id: string;
   title: string;
   rule: string;
@@ -1393,6 +1395,7 @@ export type IntegrationRequirementType =
   | 'other';
 
 export interface IntegrationRequirement {
+  verification?: RequirementVerification | null;
   id: string;
   title: string;
   integration_type: IntegrationRequirementType;
@@ -1422,6 +1425,7 @@ export type ObservabilitySignalType =
   | 'other';
 
 export interface ObservabilityRequirement {
+  verification?: RequirementVerification | null;
   id: string;
   title: string;
   signal_type: ObservabilitySignalType;
@@ -1440,6 +1444,7 @@ export interface ObservabilityRequirement {
 
 // Technical Requirement (structured)
 export interface TechnicalRequirement {
+  verification?: RequirementVerification | null;
   id: string;
   text: string;
   linked_task_ids: string[] | null;
