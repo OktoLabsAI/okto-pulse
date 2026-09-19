@@ -223,6 +223,13 @@ function RequirementVerificationContent({ scope, canRead, canReadPlanning = fals
           <p className="text-xs">Contribution scope does not approve or complete the work. Dependencies and delivery remain separate.</p>
           {current.data.implementation_issues?.map(code => <p key={code}>{blockerLabels[code] || 'Implementation responsibility is unavailable or incomplete.'}</p>)}
         </>}
+        {canReadPlanning && current.data.effective_inventory && <div className="rounded border border-slate-700 p-2 text-sm">
+          <p>Full delivery scope: {current.data.effective_inventory.population_complete ? `${current.data.effective_inventory.total} obligations` : 'unavailable'}</p>
+          {current.data.effective_inventory.population_complete
+            ? <p>{current.data.effective_inventory.pending_count} pending · {current.data.effective_inventory.unassigned_count} without allocation</p>
+            : <p role="alert">The complete obligation population is unavailable; readiness is unknown.</p>}
+          <p className="text-xs">Includes acceptance criteria, API contracts, decisions and Cards without requirement links. This planning inventory does not change the adopted delivery contract or grant credit.</p>
+        </div>}
         {current.data.items.map(row => <div key={keyOf(row.requirement_type, row.requirement_id)} className="space-y-2 rounded border border-slate-700 p-2 text-sm">
           <p>{row.title} · {row.requirement_id} · {row.verification?.mode || 'Not qualified'}</p>
           <p>{row.verification?.required_profiles.join(', ') || 'Profiles not defined'}</p>

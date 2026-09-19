@@ -133,6 +133,28 @@ async def test_all_body_read_permissions_are_required_before_query(
 
 
 @pytest.mark.asyncio
+async def test_full_inventory_includes_supplemental_obligations_and_unlinked_cards(classified_context):
+    db = classified_context
+    await seed(db)
+    await seed_plan(db)
+    await db.execute(update(Spec).where(Spec.id == "spec").values(
+        api_contracts=[{"id": "api", "title": "Contract", "linked_task_ids": ["implementation-card"]}],
+        decisions=[{"id": "decision", "title": "Unassigned decision"}],
+    ))
+    db.add(Card(id="unlinked", board_id="board", spec_id="spec", title="Standalone task", description="Normative", details="Details",
+        created_by="author", card_type="normal", status="not_started", archived=False))
+    await db.commit()
+    who = actor(planning=True)
+    async with CommunityUnitOfWork(db, actor=who) as uow:
+        result = await GetRequirementVerificationUseCase().execute(GetRequirementVerificationCommand("board", "spec", limit=1), actor=who, uow=uow)
+    summary = result["effective_inventory"]
+    assert summary["population_complete"] and not summary["plan_complete"]
+    assert summary["families"]["api"] == summary["families"]["decision"] == summary["families"]["card"] == 1
+    assert summary["unassigned_count"] > 0 and len(summary["snapshot_sha256"]) == 64
+    assert not summary["adoption_evaluated"] and not summary["delivery_evaluated"]
+
+
+@pytest.mark.asyncio
 async def test_cross_board_scope_cannot_return_another_specs_body(classified_context):
     db = classified_context
     who = actor()
@@ -346,8 +368,10 @@ async def test_planning_permissions_are_checked_before_loading_scenarios_or_card
             and not result["planning_population_complete"]
         )
         assert "scenario_plans" not in json.dumps(result)
+        assert "effective_inventory" not in result
         assert not any(
             "specs.test_scenarios" in sql or "cards.test_scenario_ids" in sql
+            or "specs.api_contracts" in sql or "specs.decisions" in sql
             for sql in statements
         )
     finally:

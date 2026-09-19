@@ -205,4 +205,26 @@ describe('requirement qualification', () => {
     expect(screen.queryByText(/Declared implementation scope/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Declare a direct allocation/)).not.toBeInTheDocument();
   });
+  it('shows full inventory pending even when qualified requirements are allocated', async () => {
+    api.getRequirementVerification.mockResolvedValue(response({ implementation_plan_evaluated: true, implementation_plan_complete: true,
+      effective_inventory: { contract_version: 'effective-delivery-inventory/v1', population_complete: true,
+        plan_complete: false, total: 7, pending_count: 2, unassigned_count: 1,
+        families: { fr: 2, ac: 2, api: 1, decision: 1, card: 1 }, snapshot_sha256: 'a'.repeat(64), issues: [],
+        adoption_evaluated: false, delivery_evaluated: false } }));
+    render(<RequirementVerificationPanel {...props()} />); open();
+    expect(await screen.findByText('Full delivery scope: 7 obligations')).toBeInTheDocument();
+    expect(screen.getByText('2 pending · 1 without allocation')).toBeInTheDocument();
+    expect(screen.getByText(/does not change the adopted delivery contract or grant credit/)).toBeInTheDocument();
+  });
+  it('does not report zero obligations for an unavailable inventory and hides it after permission loss', async () => {
+    api.getRequirementVerification.mockResolvedValue(response({ effective_inventory: {
+      contract_version: 'effective-delivery-inventory/v1', population_complete: false, plan_complete: false,
+      total: null, pending_count: null, unassigned_count: null, families: {}, snapshot_sha256: 'a'.repeat(64),
+      issues: ['delivery_inventory_population_unavailable'], adoption_evaluated: false, delivery_evaluated: false } }));
+    const view = render(<RequirementVerificationPanel {...props()} />); open();
+    expect(await screen.findByText('Full delivery scope: unavailable')).toBeInTheDocument();
+    expect(screen.getByText(/complete obligation population is unavailable/)).toBeInTheDocument();
+    view.rerender(<RequirementVerificationPanel {...props({ canReadPlanning: false })} />);
+    expect(screen.queryByText(/Full delivery scope/)).not.toBeInTheDocument();
+  });
 });

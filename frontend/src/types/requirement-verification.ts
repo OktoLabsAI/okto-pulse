@@ -74,6 +74,13 @@ export interface RequirementVerificationResponse {
   implementation_plan_complete?: boolean;
   implementation_population_complete?: boolean;
   implementation_issues?: string[];
+  effective_inventory?: {
+    contract_version: 'effective-delivery-inventory/v1';
+    population_complete: boolean; plan_complete: boolean;
+    total: number | null; pending_count: number | null; unassigned_count: number | null;
+    families: Record<string, number>; snapshot_sha256: string; issues: string[];
+    adoption_evaluated: false; delivery_evaluated: false;
+  };
   verification_work_evaluated?: boolean;
   method_plan_complete?: boolean; verification_work_complete?: boolean;
   planning_population_complete?: boolean;
