@@ -13,7 +13,8 @@ Board history: the relational database can contain credentials and many Boards.
 
 from __future__ import annotations
 
-from contextlib import ExitStack, closing
+from collections.abc import Iterator
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -141,8 +142,57 @@ def create_joint_recovery_snapshot(
     max_seconds: float = 60, batch_size: int = 500, kg_base_dir: Path | None = None,
     storage_root: Path | None = None,
 ) -> JointRecoverySnapshot:
+    """Capture and verify a backup, releasing startup exclusion on return.
+
+    An installer that will mutate the source must instead keep its work inside
+    ``joint_recovery_window`` so startup exclusion is not released in between.
+    """
+    with joint_recovery_window(source_database, graphs, recovery_directory,
+            snapshot_id=snapshot_id, builds=builds, runtime_directories=runtime_directories,
+            max_seconds=max_seconds, batch_size=batch_size, kg_base_dir=kg_base_dir,
+            storage_root=storage_root) as snapshot:
+        return snapshot
+
+
+@contextmanager
+def joint_recovery_window(
+    source_database: Path, graphs: tuple[RecoveryGraph, ...], recovery_directory: Path,
+    *, snapshot_id: str, builds: RecoveryBuildPair, runtime_directories: tuple[Path, ...],
+    max_seconds: float = 60, batch_size: int = 500, kg_base_dir: Path | None = None,
+    storage_root: Path | None = None,
+) -> Iterator[JointRecoverySnapshot]:
+    """Keep cooperating startup excluded from backup through caller-owned work.
+
+    The artifact is fully verified before yielding. The same startup mutexes
+    remain held until this context exits, including when the body raises. No
+    boolean or reusable snapshot object represents ownership of those mutexes.
+    Capture-specific SQL reservations and graph publication locks end before
+    the body, allowing it to own its transactions without nested lock attempts.
+
+    This does not exclude native Grafx/raw SQL writers or certify their absence.
+    It neither runs cutover nor automatically restores failed transformations.
+    A complete installer still needs durable interrupted-cutover admission and
+    separate writer exclusion; a process exit releases these OS mutexes.
+    max_seconds bounds capture/verification operations, not the caller's body.
+    """
+    with offline_migration_window(runtime_directories) as roots:
+        snapshot = _capture_joint_recovery_snapshot(source_database, graphs, recovery_directory,
+            snapshot_id=snapshot_id, builds=builds, runtime_directories=roots,
+            max_seconds=max_seconds, batch_size=batch_size, kg_base_dir=kg_base_dir,
+            storage_root=storage_root)
+        verify_joint_recovery_snapshot(snapshot, max_seconds=max_seconds)
+        yield snapshot
+
+
+def _capture_joint_recovery_snapshot(
+    source_database: Path, graphs: tuple[RecoveryGraph, ...], recovery_directory: Path,
+    *, snapshot_id: str, builds: RecoveryBuildPair, runtime_directories: tuple[Path, ...],
+    max_seconds: float = 60, batch_size: int = 500, kg_base_dir: Path | None = None,
+    storage_root: Path | None = None,
+) -> JointRecoverySnapshot:
     """Capture explicitly selected stores; publish only after stable-state proof.
 
+    Private capture body; its caller owns the enclosing offline runtime window.
     Graph handles remain caller-owned. This never repairs, checkpoints, binds or
     closes them. A graph commit at any point between the two LSN collections
     refuses publication, even when that commit later restores the old values.
@@ -187,7 +237,7 @@ def create_joint_recovery_snapshot(
     final = _explicit_path(root / snapshot_id)
     stage = root / f".{snapshot_id}.{secrets.token_hex(12)}.partial"
     lock_path = _explicit_path(root / ".joint-recovery.lock")
-    with offline_migration_window(runtime_directories), FileLock(str(lock_path), timeout=max_seconds), ExitStack() as publication:
+    with FileLock(str(lock_path), timeout=max_seconds), ExitStack() as publication:
         if final.exists():
             raise FileExistsError("joint_snapshot_destination_exists")
         stage.mkdir(mode=0o700)
